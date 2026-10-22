@@ -5787,10 +5787,15 @@ template pays it once; what its restores pay is to be measured with mappings.
   FUSE_WRITE's pwrite(2) of the whole page reads nothing (71 to 127 µs against 2 to 3 on
   Btrfs, PM M283), and M276's host, short of memory, held few of its file's pages.
   Reading each range ahead as it is mapped doubles the rate of a writer that writes a
-  range about 20 times and halves that of one that writes it once, so it is not done. So
-  windows stay asked for, none by default, until a guest's whole-page writes through a
-  window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
-  working set costs its guest less than its 64th at boot.
+  range about 20 times and halves that of one that writes it once, so it is not done.
+  Measured in the guest (PM M298), a window's write costs its 2 MiB range's mapping for
+  writing, about 170 µs on Fedora and 250 on the Mac, a read's mapping being to read alone:
+  writes scattered a few to a range run at a quarter to a third of FUSE's rate, and writes
+  close together, once their range is mapped, at 1.5 to 1.7 times it. So a write the
+  window takes should be a FUSE_WRITE until its range has had as many as repay the mapping
+  (some 6 on Fedora, 9 on the Mac): a patch of the guest's FUSE (fs/fuse/dax.c). Windows
+  stay asked for, none by default, until that is built and measured, and until a window
+  that holds a working set costs its guest less than its 64th at boot.
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 

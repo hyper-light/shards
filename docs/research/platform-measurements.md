@@ -11669,3 +11669,55 @@ revision before comparing a changed API/implementation.
   running and `--cpus 1`, n 50: the start 1.16 (4.86) → 1.43 (5.58), its p99 15.73 →
   8.14, the wall 32.79 → 37.79 at p50, its spread the host's: no first write there cost
   what Btrfs's readahead did.
+
+### M298. A guest's writes through a volume's DAX window, in the guest (D189, the user's plan, item 5)
+
+- **Question.** M283 found, on the host, that a store into a page its host does not hold
+  waits for the page to be read, where a FUSE_WRITE's pwrite(2) of the whole page reads
+  nothing; D189 keeps windows asked for until the guest's own side is measured. In the
+  guest, what does a write cost through a window and without one, its host holding the
+  file's pages or not, writes scattered or close together?
+- **Method.** `docs/research/measurements/dax-window-writes/measure.py` with `guestwrite.c`
+  (built static by zig, run from the volume itself): two homes of one release build,
+  85bdb0f5, one daemon giving each share a window of 4,096 MiB (`SHARDS_SHARE_WINDOW_MIB`);
+  each round lays the volume's file out with random bytes, synced, and runs the four arms
+  in a turning order, the file's host pages dropped (`cold`: Linux POSIX_FADV_DONTNEED;
+  macOS the file written again with F_NOCACHE) or read whole (`warm`) before each; in each
+  run, writes at random places of the file with O_DIRECT, each timed. Passes: 5,000 writes
+  of 4 KiB over 2 GiB (about 5 a 2 MiB range); the same with a page of each range read
+  first, untimed, so that a window maps each range before its writes (`premap`); 2,000 of
+  64 KiB so; 5,000 of 4 KiB over 64 MiB so (about 156 a range). 5 rounds each. The Mac
+  (Apple M5 Max, macOS 26.4.1, APFS, its load 5 to 28 from other projects' work) and
+  Fedora (Intel Core i9-14900HX, Linux 6.19.10-300.fc44, Btrfs, KVM, load 7.5 to 8.7),
+  2026-10-21 and 22.
+- **Results.** Each write's time, µs at p50, the p50 of the rounds and their range:
+
+  | host, pass | no window, warm | window, warm | no window, cold | window, cold |
+  |---|---|---|---|---|
+  | Mac, 4 KiB over 2 GiB | 87.6 [86.5, 171] | 289 [279, 681] | 906 [192, 2,766] | 811 [416, 3,374] |
+  | Mac, the same, mapped first | 83.1 [82.0, 86.6] | 309 [307, 314] | 1,959 [1,883, 2,681] | 2,997 [2,537, 3,396] |
+  | Mac, 64 KiB, mapped first | 140 [133, 257] | 321 [316, 525] | 142 [140, 259] | 3,278 [3,026, 3,985] |
+  | Mac, 4 KiB over 64 MiB, mapped first | 85.2 [81.1, 192] | 56.3 [53.6, 114] | 326 [199, 1,468] | 118 [65, 173] |
+  | Fedora, 4 KiB over 2 GiB | 86.2 [75.4, 119.4] | 288.4 [232.3, 351.2] | 87.7 [79.8, 115.8] | 361.1 [229.4, 391.0] |
+  | Fedora, the same, mapped first | 56.2 [46.5, 58.2] | 217.5 [203.6, 411.1] | 61.8 [59.6, 63.1] | 214.6 [195.1, 220.1] |
+  | Fedora, 64 KiB, mapped first | 153.7 [144.8, 164.9] | 294.7 [267.3, 550.5] | 160.4 [155.4, 167.3] | 306.3 [275.3, 361.4] |
+  | Fedora, 4 KiB over 64 MiB, mapped first | 78.4 [77.1, 119.2] | 47.0 [45.7, 71.3] | 86.3 [83.2, 89.0] | 46.4 [44.8, 86.7] |
+
+- **Reading.** What a window's write costs is its range's mapping for writing: a range
+  mapped first by a read still costs its first write about as much as one not mapped at
+  all (a read maps it to read alone, and a write asks the server again, fs/fuse/dax.c
+  `fuse_iomap_begin`, `fuse_upgrade_dax_mapping`), and a
+  write into a range written often before costs less than a FUSE_WRITE (47 µs against
+  78 on Fedora, 56 against 85 on the Mac). The mapping costs about 170 µs a range on
+  Fedora and 250 on the Mac (the mapped-first passes, less the close-together ones):
+  writes scattered a few to a range pay it each time and run at a quarter to a third of
+  FUSE's rate; writes close together repay it within some 6 (Fedora) to 9 (the Mac) to a
+  range. On Btrfs a FUSE_WRITE of a cold page costs what a warm one does; on the Mac a cold
+  4 KiB one took 1,959 µs and a 64 KiB one 142, APFS's pages being 16 KiB (M283). The
+  window's cold stores wait for their pages, as M283 found on the host.
+- **Consequence.** D189's windows stay asked for. A write a window takes should be a
+  FUSE_WRITE until its range has had enough writes to repay its mapping, then the
+  window's: a patch of the guest's FUSE (fs/fuse/dax.c, `fuse_dax_write_iter`) counting
+  the writes of each range it has not mapped to write, with the count from these costs;
+  and the window's page structures, a 64th of it, kept out of the guest's memory as the
+  layer's are in its head (D190), before any window is given by default.
