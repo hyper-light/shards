@@ -10402,6 +10402,12 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         "{}",
         beside.stderr
     );
+    // Refused before its container is made: none is left, nor its run, which would keep
+    // the daemon from ever exiting.
+    let left = shards(&["ps", "-aq"]);
+    assert_eq!(left.stdout, "", "{}", left.stderr);
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
 /// `SKILL --from=<agent>` takes, at build time, a skill the agent's OSI config lists into
