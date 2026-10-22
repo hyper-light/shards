@@ -1628,6 +1628,10 @@ impl<D: Disk> Daemon<D> {
             }
         }
         let watches = [watch(&self.home), watch(&images), watch(&contexts)];
+        // The slots' maker looked at its lists as it began, before the home was watched: a
+        // removal between that look and the watch, which a client its first slots served
+        // may make, is seen by one more look, now that the home is watched.
+        self.tell_slots(slots::Event::Look);
         let mut relays = relay::Relays::default();
         let mut contexts_changed = true;
         loop {
