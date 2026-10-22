@@ -632,6 +632,12 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>> 
         ) {
             (Some(node), Some(foffset), Some(len), Some(flags), Some(moffset)) => {
                 let writable = flags & MAP_WRITE != 0;
+                // A descriptor its server opens for each mapping, as virtiofsd's does: each
+                // range's host faults then read around them as a file opened anew does, where
+                // one open of the file for all its ranges stops reading around after a
+                // hundred misses, and the window's 1 MiB writes after a page of each range
+                // was written took 1,285 µs at p50 where they took 682 (PM M302). The window
+                // keeps one a file, not one a range.
                 slot.descriptor(node, writable)
                     .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
             }

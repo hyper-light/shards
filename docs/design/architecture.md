@@ -5829,6 +5829,22 @@ stores.
   `a_volumes_large_files_go_through_its_dax_window` (whole pages written where the host
   holds none, read by host and guest). The kernel with the patch is pinned once the Mac's
   passes are measured.
+- **One descriptor a file** (PM M302). The slowest write where ranges are mapped as
+  writes come took 7.8 to 32.6 ms on every kernel (M301): the window kept each mapped
+  range's descriptor, so its VM process's descriptor table grew as the run's mappings
+  passed 128, 256, 512 and 1,024 descriptors, and Linux, growing a table other threads
+  share, waits a grace period of RCU first (fs/file.c, expand_fdtable): 9 to 24 ms, once a
+  growth. The window now keeps one descriptor a file (`Node::file`), which follows its size
+  and maps more of it as it grows; each range's own, from its server, closes once the range
+  is mapped, as virtiofsd's does: the slowest mapping took 0.25 to 0.5 ms. Mapping a
+  file's ranges from one descriptor, which spares the server's open (6 to 19 µs), was
+  measured and not taken: one open file's readahead stops reading around its faults after
+  a hundred misses (mm/filemap.c, MMAP_LOTSAMISS), where each range's open begins anew
+  (1,285 µs against 682 at p50 for kernel A's writes after a page of each range was
+  written). A range mapped to be read alone keeps no record, which no guest reads: its
+  mincore(2) took 51 to 53 µs of a warm mapping's 75 to 77. Held by
+  `a_window_keeps_one_descriptor_of_a_file` (mutation-checked: 401 descriptors more for
+  400 ranges where each range's was kept).
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of

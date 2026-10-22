@@ -77,15 +77,16 @@ pub struct Mapped {
 /// A mapped range, and what it maps.
 struct Entry {
     mapped: Mapped,
-    /// The descriptor it maps, kept to look at its file's size: none where zeros stand in
-    /// for a file a restore could not reach ([`Window::map_zeros`]).
-    file: Option<OwnedFd>,
+    /// Whether zeros stand in for its file, which a restore could not reach
+    /// ([`Window::map_zeros`]); else its node's descriptor maps it ([`Node::file`]).
+    zeros: bool,
     /// How far into the range the file's pages go: whole pages, to the one that holds the
     /// file's end as the window last looked, or the range's end; zeros past it.
     file_to: u64,
     /// Whether its held record has been taken again since it was mapped
     /// ([`Window::rerecord`]): once, its host's reading around faults caught; after, the
-    /// guest records the pages it writes itself.
+    /// guest records the pages it writes itself. A range mapped to be read alone has no
+    /// record to take again.
     rerecorded: bool,
 }
 
@@ -106,6 +107,15 @@ struct Node {
     /// Its ranges, `(file offset, window offset)`: those a write meets, found by where it is
     /// in the file.
     ranges: BTreeSet<(u64, u64)>,
+    /// A descriptor of its file, which maps more of its ranges as the file grows, and is
+    /// looked at for the file's size: one a file, kept from the first of its ranges'
+    /// descriptors (or the first opened to write), the rest closed once their ranges are
+    /// mapped, where a descriptor kept for each range made its VM process's descriptor table
+    /// grow, and wait a grace period of RCU, each time it passed 128, 256, 512 and 1,024
+    /// (9 to 24 ms on Fedora, PM M302). None where zeros alone stand in for it.
+    file: Option<OwnedFd>,
+    /// Whether `file` was opened to write too.
+    writable: bool,
     /// The size its file had as each of its ranges last followed it ([`Window::follow`]);
     /// none where one may not have.
     followed: Option<u64>,
@@ -115,10 +125,18 @@ struct Node {
 }
 
 impl Table {
-    /// Maps `entry` at window offset `moffset`, in place of what was there.
-    fn insert(&mut self, moffset: u64, entry: Entry) {
+    /// Maps `entry` at window offset `moffset`, in place of what was there, from `file`, a
+    /// descriptor of its node's file, opened to write too where `.1`, which its node keeps
+    /// where it has none, or one opened to read alone where this was opened to write.
+    fn insert(&mut self, moffset: u64, entry: Entry, file: Option<(OwnedFd, bool)>) {
         self.remove(moffset);
         let node = self.nodes.entry(entry.mapped.node).or_default();
+        if let Some((fd, writable)) = file
+            && (node.file.is_none() || (writable && !node.writable))
+        {
+            node.file = Some(fd);
+            node.writable = writable;
+        }
         node.ranges.insert((entry.mapped.foffset, moffset));
         node.followed = None;
         node.unrecorded += usize::from(!entry.rerecorded);
@@ -301,11 +319,11 @@ fn file_end(size: u64, foffset: u64, len: u64, page: u64) -> u64 {
 struct Sizes(BTreeMap<u64, Option<u64>>);
 
 impl Sizes {
-    fn of(&mut self, e: &Entry) -> Option<u64> {
+    fn of(&mut self, node: u64, nodes: &BTreeMap<u64, Node>) -> Option<u64> {
         *self
             .0
-            .entry(e.mapped.node)
-            .or_insert_with(|| e.file.as_ref().and_then(size_of))
+            .entry(node)
+            .or_insert_with(|| nodes.get(&node)?.file.as_ref().and_then(size_of))
     }
 }
 
@@ -459,15 +477,12 @@ impl Window {
             return;
         }
         let mut now: Vec<(u64, OwnedFd, u64)> = Vec::new();
-        for e in mapped.ranges.values() {
-            if now.iter().any(|(node, ..)| *node == e.mapped.node) {
-                continue;
-            }
-            let Some(file) = e.file.as_ref() else {
+        for (&node, n) in &mapped.nodes {
+            let Some(file) = n.file.as_ref() else {
                 continue;
             };
             if let (Ok(copy), Some(size)) = (file.try_clone(), size_of(file)) {
-                now.push((e.mapped.node, copy, size));
+                now.push((node, copy, size));
             }
         }
         drop(mapped);
@@ -561,13 +576,25 @@ impl Window {
                     foffset,
                     writable,
                 },
-                file: Some(file),
+                zeros: false,
                 file_to,
-                rerecorded: false,
+                rerecorded: !writable,
             },
+            // Opened to write too where the mapping is to be written, or wherever the
+            // hypervisor asks it (`SHARED_NEEDS_WRITE`); one given to read alone may have been
+            // opened to write as well, which its node's own then is.
+            Some((file, writable || SHARED_NEEDS_WRITE)),
         );
-        // Before the guest hears of the mapping, which then reads what its host holds.
-        self.record_held(moffset, host, size);
+        // Before the guest hears of the mapping, which then reads what its host holds: for
+        // a mapping to be written alone, as a guest reads the record only where it has
+        // mapped a range to be written, upgrading one mapped to be read alone first (patch
+        // 0009); for one to be read, the record's mincore(2) would cost it 52 µs at p50 of
+        // 77 where its host holds the range (Fedora, PM M302), for nothing.
+        if writable {
+            self.record_held(moffset, host, size);
+        } else {
+            self.clear_held(moffset, size);
+        }
         self.settle(mapped, gone, watch);
         Ok(())
     }
@@ -609,10 +636,11 @@ impl Window {
                     foffset,
                     writable,
                 },
-                file: None,
+                zeros: true,
                 file_to: 0,
                 rerecorded: true,
             },
+            None,
         );
         self.clear_held(moffset, size);
         self.settle(mapped, gone, None);
@@ -684,7 +712,14 @@ impl Window {
     /// Makes `e`'s range, at window offset `at`, what its file is now, `size` bytes (none
     /// where it could not be looked at): its pages to the one that holds its end, where it
     /// has grown since, and zeros past that, where it was cut short. Whether it changed.
-    fn follow(&self, at: u64, e: &mut Entry, page: u64, size: Option<u64>) -> bool {
+    fn follow(
+        &self,
+        at: u64,
+        e: &mut Entry,
+        file: Option<BorrowedFd<'_>>,
+        page: u64,
+        size: Option<u64>,
+    ) -> bool {
         #[cfg(test)]
         FOLLOWED.set(FOLLOWED.get() + 1);
         let Some(size) = size else {
@@ -708,14 +743,10 @@ impl Window {
         if let Err(err) = self.stage2.unmap(gpa, size) {
             crate::debug!("virtio-fs: unmapping a DAX range's end at {gpa:#x}: {err}");
         }
-        let backed = match e.file.as_ref() {
-            Some(file) if file_to > e.file_to => file_range(
-                host,
-                size,
-                file.as_fd(),
-                e.mapped.foffset.saturating_add(from),
-                writable,
-            ),
+        let backed = match file.filter(|_| !e.zeros) {
+            Some(file) if file_to > e.file_to => {
+                file_range(host, size, file, e.mapped.foffset.saturating_add(from), writable)
+            }
             _ => zeros(host, size, writable),
         };
         let changed = match backed {
@@ -764,17 +795,14 @@ impl Window {
             };
             // Its file's size, looked at once, through any of its ranges' descriptors; its
             // ranges followed only where it changed since they last did.
-            let size = n
-                .ranges
-                .iter()
-                .find_map(|(_, at)| ranges.get(at)?.file.as_ref())
-                .and_then(size_of);
+            let size = n.file.as_ref().and_then(size_of);
             if size.is_some() && size == n.followed {
                 continue;
             }
+            let file = n.file.as_ref().map(|f| f.as_fd());
             for &(_, at) in &n.ranges {
                 if let Some(e) = ranges.get_mut(&at) {
-                    changed |= self.follow(at, e, page, size);
+                    changed |= self.follow(at, e, file, page, size);
                 }
             }
             n.followed = size;
@@ -812,8 +840,10 @@ impl Window {
                 continue;
             }
             held = true;
-            let size = sizes.of(e);
-            changed |= self.follow(at, e, page, size);
+            let node = e.mapped.node;
+            let size = sizes.of(node, nodes);
+            let file = nodes.get(&node).and_then(|n| n.file.as_ref()).map(|f| f.as_fd());
+            changed |= self.follow(at, e, file, page, size);
             // Its node's ranges no longer all follow one size.
             if let Some(n) = nodes.get_mut(&e.mapped.node) {
                 n.followed = None;
@@ -968,11 +998,12 @@ mod tests {
         assert_eq!(w.unmap(15 * MIB, 2 * MIB), Err(libc::EINVAL));
     }
 
-    /// The window records which of a range's pages its host holds as it maps the range, a
-    /// bit for each of its guest's pages, for its guest to write those its host does not
-    /// hold as FUSE_WRITEs (patch 0009): the file's pages its host has, held, a hole's
-    /// not, a host page whole; again after the first FUSE_WRITE there, once; and none of a
-    /// range once it is unmapped (D189).
+    /// The window records which of a range's pages its host holds as it maps the range to
+    /// be written, a bit for each of its guest's pages, for its guest to write those its
+    /// host does not hold as FUSE_WRITEs (patch 0009): the file's pages its host has, held,
+    /// a hole's not, a host page whole; again after the first FUSE_WRITE there, once; none
+    /// of a range once it is unmapped; and none of one mapped to be read alone, whose
+    /// record no guest reads (D189).
     #[test]
     fn a_ranges_held_pages_are_recorded_as_it_is_mapped() {
         use std::os::unix::fs::FileExt as _;
@@ -991,8 +1022,8 @@ mod tests {
         file.write_all_at(&[2u8; 4096], 2 * MIB + 2 * page).unwrap();
         let w = window(&Arc::new(Told::default()));
         let fd = || OwnedFd::from(file.try_clone().unwrap());
-        w.map(fd(), 7, 0, 0, 2 * MIB, false).unwrap();
-        w.map(fd(), 7, 2 * MIB, 2 * MIB, 2 * MIB, false).unwrap();
+        w.map(fd(), 7, 0, 0, 2 * MIB, true).unwrap();
+        w.map(fd(), 7, 2 * MIB, 2 * MIB, 2 * MIB, true).unwrap();
         let (host, len) = w.held();
         assert_eq!(
             len as u64,
@@ -1022,6 +1053,91 @@ mod tests {
         w.unmap(0, 2 * MIB).unwrap();
         assert!((0..8).all(|i| word(i) == 0));
         assert_ne!(word(8), 0, "another range's, as it was");
+        // Mapped to be read alone, its pages held by its host: no record, and none taken
+        // again after a write.
+        w.map(fd(), 7, 0, 0, 2 * MIB, false).unwrap();
+        assert!((0..8).all(|i| word(i) == 0));
+        w.rerecord(7, 0, 4096);
+        assert!((0..8).all(|i| word(i) == 0));
+    }
+
+    /// The window keeps one descriptor of a file, not one for each of its ranges: the
+    /// process holds one of the file's for 400 ranges mapped each from one of its own, and a
+    /// range left once those that brought its node's descriptor are gone still follows the
+    /// file as it grows (D189, PM M302).
+    #[test]
+    fn a_window_keeps_one_descriptor_of_a_file() {
+        use std::io::Write as _;
+        let dir = shards_testdir::TempDir::new("dax-one-fd").unwrap();
+        let path = dir.join("file");
+        // 3 MiB: its second range holds the file's pages to 1 MiB, zeros past them.
+        std::fs::write(&path, vec![1u8; (3 * MIB) as usize]).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        // The process's descriptors of this file, which no other test opens.
+        let ours = {
+            use std::os::unix::fs::MetadataExt as _;
+            let meta = file.metadata().unwrap();
+            let want = (meta.dev(), meta.ino());
+            move || {
+                std::fs::read_dir("/dev/fd")
+                    .unwrap()
+                    .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok())
+                    .filter(|&fd| {
+                        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+                        // SAFETY: fstat(2) of a descriptor number into a stat it fills where it
+                        // succeeds; one closed since is refused.
+                        if unsafe { libc::fstat(fd, st.as_mut_ptr()) } != 0 {
+                            return false;
+                        }
+                        // SAFETY: fstat(2) filled it.
+                        let st = unsafe { st.assume_init() };
+                        // dev_t and ino_t are of other widths on other hosts.
+                        #[allow(clippy::unnecessary_cast)]
+                        let at = (st.st_dev as u64, st.st_ino as u64);
+                        at == want
+                    })
+                    .count()
+            }
+        };
+        let stage2 = Recorded(Arc::new(Told::default()));
+        let w = Window::new(GPA, 1024 * MIB, |_| Ok(Box::new(stage2) as Box<dyn Stage2>)).unwrap();
+        assert_eq!(ours(), 1, "the test's own");
+        for range in 0..400 {
+            let fd = OwnedFd::from(file.try_clone().unwrap());
+            w.map(fd, 7, 0, range * 2 * MIB, 2 * MIB, true).unwrap();
+        }
+        assert_eq!(ours(), 2, "the test's own and the window's one, for 400 ranges");
+        // The second 2 MiB, from a descriptor of its own; then every range that brought one
+        // goes but it, and the file grows: it maps its new pages from its node's.
+        w.map(
+            OwnedFd::from(file.try_clone().unwrap()),
+            7,
+            2 * MIB,
+            1000 * MIB,
+            2 * MIB,
+            true,
+        )
+        .unwrap();
+        for range in 0..400 {
+            w.unmap(range * 2 * MIB, 2 * MIB).unwrap();
+        }
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&vec![2u8; MIB as usize])
+            .unwrap();
+        w.reconcile(&[7]);
+        // SAFETY: the window's own range, for as long as `w` is.
+        let seen = unsafe { std::slice::from_raw_parts(w.host().add(1000 << 20), 2 << 20) };
+        assert!(seen[..1 << 20].iter().all(|&b| b == 1));
+        assert!(seen[1 << 20..].iter().all(|&b| b == 2), "grown");
+        w.unmap(1000 * MIB, 2 * MIB).unwrap();
+        assert!(!w.maps(7), "let go of with its last range");
     }
 
     /// A file mapped in every range of a window is looked at once as a request about it is
@@ -1202,7 +1318,7 @@ mod tests {
         let w = Window::new(GPA, 2048 * MIB, |_| Ok(Box::new(stage2) as Box<dyn Stage2>)).unwrap();
         for range in 0..1024 {
             let fd = OwnedFd::from(file.try_clone().unwrap());
-            w.map(fd, 7, range * 2 * MIB, range * 2 * MIB, 2 * MIB, false)
+            w.map(fd, 7, range * 2 * MIB, range * 2 * MIB, 2 * MIB, true)
                 .unwrap();
         }
         let summary = |mut v: Vec<f64>| {

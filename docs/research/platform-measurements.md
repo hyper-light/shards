@@ -11962,3 +11962,76 @@ revision before comparing a changed API/implementation.
   alone, by FUSE_INIT's map_alignment, which the server sets from the host's page, and
   sends a part of a host page through the window, as before: on Linux, whose pages are 4
   KiB, as B2 did. Its Mac passes come with CI's build of it.
+
+### M302. What a write into a range of a DAX window not yet mapped pays before it writes (D189, item 5)
+
+- **Question.** M301 left a window's cold 1 MiB writes into ranges not yet mapped above
+  FUSE's (1,386 µs at p50 against 1,028 with patch 0009), and the slowest write where
+  ranges are mapped as writes come at 7.8 to 32.6 ms on every kernel. What does mapping a
+  range cost, part by part?
+- **Method.** `dax-window-writes/setup-costs.sh`: 500 writes of 1 MiB over a 2 GiB file,
+  its ranges not yet mapped, mapped to be read first (guestwrite's `premap`) or to be
+  written (`premapw`), cold and warm, on the pinned kernel (A) and with 0009 (B2, the
+  kernel CI then built as kernel-6.18.48-caeec082891b, byte for byte), every arm in each
+  round, 4 rounds; a release build carrying `setup-costs.patch`, whose VM process logs each
+  FUSE_SETUPMAPPING's parts (the descriptor its share process opens; the file's size, the
+  host mapping, stage 2, the table, the held record, the settling and its watch), read by
+  `setup-costs.py`. Three builds: 6f2929ee (before), the window keeping one descriptor a
+  file and its ranges mapped from copies of it (reuse), and as committed (one descriptor
+  a file kept, each range's own from its server closed once mapped, and no record of a
+  range mapped to be read alone). The VM process's descriptors and threads read from
+  /proc as a run began. Fedora 44, M298's host, 2026-10-22, load 4.5 to 6.7 from other
+  work.
+- **Results.** Each FUSE_SETUPMAPPING, µs, n of each arm's 4 runs (384 to 1,408 mappings a
+  run), p50, p99 and max:
+
+  | build | the descriptor from its server | the held record, cold / warm (p50) | the whole mapping |
+  |---|---|---|---|
+  | before | 8 to 14, 63 to 236, 14,626 to 23,552 | 5 to 9 / 51 to 53 | 24 to 77, 109 to 304, 14,738 to 23,587 |
+  | reuse | one a run, 14 to 21 (the rest the window's copy, 0) | 5 to 9 / 23 to 35 | 11 to 51, 34 to 99, 90 to 310 |
+  | as committed | 6 to 19, 27 to 172, 198 to 332 (once 1,358) | 5 to 8 / 21 to 28; read alone 0 | 19 to 56, 78 to 224, 254 to 498 (once 1,396) |
+
+  Before, the slowest descriptor of every run, 9,062 to 23,552 µs, came at its 60th,
+  188th, 444th or 956th mapping; as a run began, its VM process held 67 descriptors, the highest 68, on 50
+  threads. The writes' p50, µs, the median of 4 rounds:
+
+  | arm | A before | A as committed | B2 before | B2 as committed |
+  |---|---|---|---|---|
+  | cold, not mapped | 1,693.4 | 1,476.0 | 1,136.6 | 953.5 |
+  | cold, mapped to be written | 682.0 (reuse: 1,285.0) | 636.2 | 976.7 | 964.8 |
+  | cold, mapped to be read | | 724.8 | | 724.3 |
+  | warm, not mapped | 728.2 | 726.1 | 740.0 | 724.8 |
+  | warm, mapped to be written | 656.4 | 635.5 | 667.5 | 639.8 |
+  | warm, mapped to be read | | 718.3 | | 731.5 |
+
+  `held-ab.sh` with the build as committed (Fedora, load 3.0 to 5.4): the slowest write of
+  each window arm, 4 KiB over 2 GiB, took 0.5 to 3.4 ms where it took 14.1 to 25.5 in M301,
+  and 1 MiB into ranges not yet mapped 1.2 to 8.8 where 7.8 to 32.6; 64 KiB, mapped first,
+  cold: A 78.0
+  [77.7, 80.1], B2 81.6 [77.3, 84.1], FUSE 88.6; 1 MiB, not mapped, cold: A 1,515.4
+  [1,509.2, 1,535.8], B2 1,374.3 [905.9, 1,610.5], FUSE 914.0. B2's rounds there, in M301's
+  two runs and this one: 1,798, 1,607, 1,104, 1,009, 1,004; 969, 1,386, 1,561, 995, 1,502;
+  906, 1,194, 1,374, 1,447, 1,611; A's 1,495 to 2,032, FUSE's 874 to 1,543.
+- **Reading.** The slowest mapping was the VM process's descriptor table growing. Linux
+  grows a process's table as a descriptor passes its size, 128, 256, 512 and on (fs/file.c,
+  alloc_fdtable), and where other threads share the table it waits a grace period of RCU
+  first (expand_fdtable, synchronize_rcu): with 68 descriptors open as a run began and
+  each mapped range's kept, the 60th, 188th, 444th and 956th mappings passed 128, 256, 512
+  and 1,024. Keeping one descriptor a file, each range's own closed once it is mapped,
+  leaves the table as it was: the slowest mapping 0.25 to 0.5 ms, and the slowest 4 KiB
+  window write 0.5 to 3.4 ms where it was 14.1 to 25.5. Mapping a file's ranges from copies of its one descriptor spared the
+  server's open, but its ranges then share one open file's readahead, which Linux stops
+  after a hundred misses (mm/filemap.c, do_sync_mmap_readahead, MMAP_LOTSAMISS), where each
+  range's own open begins anew: kernel A's writes after a page of each range was written,
+  which find those ranges read around, lost that (1,285 µs against 682). B2's page writes
+  are FUSE_WRITEs, which read nothing, so its writes there cost a FUSE_WRITE's (965 against
+  A's 636), A having paid for its reads in writes the harness does not time. A range
+  mapped to be read alone has no record now: no guest reads it, and its `mincore(2)` took
+  51 to 53 µs of a warm mapping's 75 to 77. What a mapping costs a write into a range not
+  yet mapped is now 19 to 56 µs at p50: B2's cold 1 MiB writes there cost 954 µs at p50
+  run after run, as FUSE's do; in `held-ab.sh`'s rounds, 906 to 1,798, some near FUSE's
+  and others some 500 µs above them, in no order of rounds, which is unexplained.
+- **Consequence.** D189: one descriptor a file, each range's own closed once mapped, and
+  no record of a range mapped to be read (held by `a_window_keeps_one_descriptor_of_a_file`,
+  mutation-checked: 401 descriptors more for 400 ranges where each range's was kept). Next:
+  what puts a round of B2's cold 1 MiB writes some 500 µs above FUSE's.
