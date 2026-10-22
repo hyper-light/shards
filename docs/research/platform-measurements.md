@@ -11935,3 +11935,30 @@ revision before comparing a changed API/implementation.
   B2 are taken; CI builds the kernel with it, pinned after the Mac's passes. Next: what a
   write into a range not yet mapped pays before it writes, part by part, and the slowest
   write where ranges are mapped as writes come (7.8 to 32.6 ms).
+- **The Mac.** `held-ab.sh`'s passes with a release build of 6f2929ee, on the pinned arm64
+  kernel (A) and on CI's build of B2 (kernel-6.18.48-caeec082891b, whose x86_64 kernel is
+  byte for byte the one measured above), 5 rounds, macOS 26.4.1, APFS, load 2.8 to 4.0
+  (a minute's unit tests ran during the second pass); µs a write through the window, the
+  p50 of the rounds' p50 [their range], p90 and p99; FUSE's own p50 beside it:
+
+  | pass | arm | A | B2 | FUSE |
+  |---|---|---|---|---|
+  | 4 KiB over 2 GiB | cold | 1,894.8 [1,853.8, 1,971.0], 10,013.0, 22,051.2 | 2,334.1 [2,033.2, 2,952.7], 13,039.0, 22,538.1 | 1,748.1 |
+  | | warm | 53.3 [53.0, 54.6], 147.3, 167.8 | 52.9 [52.2, 53.3], 147.6, 165.6 | 86.8 |
+  | 64 KiB, mapped first | cold | 1,993.3 [1,926.7, 2,005.2], 10,967.1, 21,963.3 | 154.5 [152.8, 156.7], 293.6, 320.5 | 142.8 |
+  | | warm | 72.5 [71.1, 88.1], 167.0, 181.7 | 72.7 [67.2, 73.1], 167.8, 184.8 | 138.9 |
+  | 1 MiB, not mapped | cold | 19,920.7 [16,468.3, 21,993.4], 49,880.2, 85,666.0 | 1,031.7 [961.1, 1,044.1], 1,087.9, 1,170.0 | 915.5 |
+  | | warm | 243.5 [237.1, 254.2], 263.7, 300.1 | 244.3 [238.8, 248.9], 263.1, 287.3 | 911.0 |
+
+  Where a cold write is whole pages of the host's (16 KiB on Apple silicon), the record
+  takes a window's from 14 and 22 times FUSE's p50 to within 8 and 13% of it, its p99 from
+  21,963 and 85,666 µs to 321 and 1,170, at 19 and 25 times the rate; warm, it costs what
+  it did, 1.6 to 3.7 times less than FUSE. But B2 lost the cold 4 KiB pass, every round (p50 2,033 to
+  2,953 against 1,854 to 1,971; p90 13,039 against 10,013): a guest's 4 KiB page is a
+  quarter of the host's, so its FUSE_WRITE makes APFS read the rest of the host's page
+  first, as the store does, and without the store's fault no read comes about it. FUSE's
+  own cold arm lost little to the kernel (2,025 against 1,748, two of A's rounds' evictions
+  not taking: 194 and 249). So 0009 now writes as FUSE_WRITEs the host's whole pages
+  alone, by FUSE_INIT's map_alignment, which the server sets from the host's page, and
+  sends a part of a host page through the window, as before: on Linux, whose pages are 4
+  KiB, as B2 did. Its Mac passes come with CI's build of it.

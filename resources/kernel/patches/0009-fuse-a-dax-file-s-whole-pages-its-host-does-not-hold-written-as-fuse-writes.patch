@@ -16,14 +16,17 @@ held after. A range that a read mapped is upgraded to be written first, as a sto
 upgrades it: its record is then taken as the write comes, with the pages its host read
 around that read's faults, which a record taken as the read mapped it says it does not
 hold (shards' PM M301).
-A write not of whole pages goes through the window whole: a FUSE_WRITE of part of a page
-reads it too. A device without the record, or a kernel without this patch, writes through
-the window as before. The record is advice alone: a page the host let go of since reads
-in as a store meets it, as before.
+The host's page is what FUSE_INIT's map_alignment says it is (16 KiB on Apple silicon):
+a FUSE_WRITE of part of one makes the host read the rest first, as a store would, so a
+run goes as FUSE_WRITEs in the host's whole pages alone, and parts of host pages through
+the window. A write not of whole pages goes through the window whole. A device without
+the record, or a kernel without this patch, writes through the window as before. The
+record is advice alone: a page the host let go of since reads in as a store meets it, as
+before.
 
 --- a/fs/fuse/dax.c
 +++ b/fs/fuse/dax.c
-@@ -90,6 +90,15 @@ struct fuse_conn_dax {
+@@ -90,6 +90,22 @@ struct fuse_conn_dax {
  	struct list_head free_ranges;
  
  	unsigned long nr_ranges;
@@ -36,35 +39,47 @@ in as a store meets it, as before.
 +	 */
 +	unsigned long *held;
 +	unsigned long held_pages;
++
++	/*
++	 * shards: the host's page, as FUSE_INIT's map_alignment says it, at least this
++	 * kernel's: a FUSE_WRITE of part of one makes the host read the rest first, as a
++	 * store through the window would.
++	 */
++	unsigned int host_page_shift;
  };
  
  static inline struct fuse_dax_mapping *
-@@ -673,9 +682,74 @@ int fuse_dax_break_layouts(struct inode *inode, u64 dmap_start,
+@@ -673,9 +689,79 @@ int fuse_dax_break_layouts(struct inode *inode, u64 dmap_start,
  				fuse_wait_dax_page);
  }
  
 +/*
-+ * shards: the end of the run of whole pages from @pos, at most @end, that the host
-+ * holds, where @held, or does not, by the device's record (fcd->held); a page no range
-+ * of the window maps counts as not held. The caller holds fi->dax->sem.
++ * shards: the end of the run of whole host pages from @pos, at most @end, both host
++ * page aligned, that the host holds, where @held, or does not, by the device's record
++ * (fcd->held): a host page is held where any of its pages is; a page no range of the
++ * window maps counts as not held. The caller holds fi->dax->sem.
 + */
 +static loff_t fuse_dax_held_run(struct fuse_conn_dax *fcd, struct fuse_inode *fi,
 +				loff_t pos, loff_t end, bool held)
 +{
++	loff_t unit = (loff_t)1 << fcd->host_page_shift;
++
 +	while (pos < end) {
 +		unsigned long idx = pos >> FUSE_DAX_SHIFT;
 +		loff_t range_end = min_t(loff_t, end, (loff_t)(idx + 1) << FUSE_DAX_SHIFT);
 +		struct fuse_dax_mapping *dmap =
 +			node_to_dmap(interval_tree_iter_first(&fi->dax->tree, idx, idx));
 +
-+		for (; pos < range_end; pos += PAGE_SIZE) {
++		for (; pos < range_end; pos += unit) {
 +			bool is_held = false;
 +
 +			if (dmap) {
 +				u64 page = (dmap->window_offset + pos -
 +					    ((loff_t)dmap->itn.start << FUSE_DAX_SHIFT)) >> PAGE_SHIFT;
++				u64 last = page + (unit >> PAGE_SHIFT);
 +
-+				is_held = page < fcd->held_pages && test_bit(page, fcd->held);
++				for (; page < last && page < fcd->held_pages; page++)
++					is_held |= test_bit(page, fcd->held);
 +			}
 +			if (is_held != held)
 +				return pos;
@@ -114,7 +129,7 @@ in as a store meets it, as before.
  	ssize_t ret;
  
  	if (iocb->ki_flags & IOCB_NOWAIT) {
-@@ -686,6 +760,8 @@ ssize_t fuse_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
+@@ -686,6 +772,8 @@ ssize_t fuse_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
  	}
  
  	ret = dax_iomap_rw(iocb, to, &fuse_iomap_ops);
@@ -123,7 +138,7 @@ in as a store meets it, as before.
  	inode_unlock_shared(inode);
  
  	/* TODO file_accessed(iocb->f_filp) */
-@@ -713,6 +789,89 @@ static ssize_t fuse_dax_direct_write(struct kiocb *iocb, struct iov_iter *from)
+@@ -713,6 +801,100 @@ static ssize_t fuse_dax_direct_write(struct kiocb *iocb, struct iov_iter *from)
  	return ret;
  }
  
@@ -158,10 +173,11 @@ in as a store meets it, as before.
 +
 +/*
 + * shards: writes @from run by run where it is whole pages, each range it meets mapped
-+ * first: the pages the host does not hold as FUSE_WRITEs, whose pwrite(2) of whole pages
-+ * reads none of them, where a store through the window into each would wait for its host
-+ * to read it first (shards' PM M283, M299); those it holds through the window. Each run is
-+ * recorded held after. Anything else goes through the window whole, as before.
++ * first: the host's whole pages it does not hold as FUSE_WRITEs, whose pwrite(2) of whole
++ * pages reads none of them, where a store through the window into each would wait for its
++ * host to read it first (shards' PM M283, M299); those it holds, and parts of host pages,
++ * through the window. Each run is recorded held after. Anything else goes through the
++ * window whole, as before.
 + */
 +static ssize_t fuse_dax_write_runs(struct kiocb *iocb, struct iov_iter *from)
 +{
@@ -183,16 +199,27 @@ in as a store meets it, as before.
 +	while (iov_iter_count(from)) {
 +		size_t left = iov_iter_count(from);
 +		loff_t pos = iocb->ki_pos, end = pos + left, run_end;
-+		bool held;
++		loff_t unit = (loff_t)1 << fcd->host_page_shift;
++		loff_t whole = round_down(end, unit);
++		bool window;
 +		ssize_t ret;
 +
-+		down_read(&fi->dax->sem);
-+		held = fuse_dax_held_run(fcd, fi, pos, end, true) > pos;
-+		run_end = fuse_dax_held_run(fcd, fi, pos, end, held);
-+		up_read(&fi->dax->sem);
++		if (!IS_ALIGNED(pos, unit) || whole <= pos) {
++			/*
++			 * Part of a host page: through the window, as a FUSE_WRITE of it makes
++			 * the host read the rest of the page first all the same.
++			 */
++			window = true;
++			run_end = min_t(loff_t, end, round_up(pos + 1, unit));
++		} else {
++			down_read(&fi->dax->sem);
++			window = fuse_dax_held_run(fcd, fi, pos, whole, true) > pos;
++			run_end = fuse_dax_held_run(fcd, fi, pos, whole, window);
++			up_read(&fi->dax->sem);
++		}
 +
 +		iov_iter_truncate(from, run_end - pos);
-+		if (held)
++		if (window)
 +			ret = dax_iomap_rw(iocb, from, &fuse_iomap_ops);
 +		else
 +			ret = fuse_dax_direct_write(iocb, from);
@@ -201,8 +228,7 @@ in as a store meets it, as before.
 +			return written ? written : ret;
 +		}
 +		iov_iter_reexpand(from, left - ret);
-+		if (!held)
-+			fuse_dax_mark_held(inode, pos, ret);
++		fuse_dax_mark_held(inode, pos, ret);
 +		written += ret;
 +		if (ret < run_end - pos)
 +			break;
@@ -213,7 +239,7 @@ in as a store meets it, as before.
  ssize_t fuse_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
  {
  	struct inode *inode = file_inode(iocb->ki_filp);
-@@ -740,7 +899,7 @@ ssize_t fuse_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
+@@ -740,7 +922,7 @@ ssize_t fuse_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
  	if (file_extending_write(iocb, from))
  		ret = fuse_dax_direct_write(iocb, from);
  	else
@@ -222,7 +248,7 @@ in as a store meets it, as before.
  
  out:
  	inode_unlock(inode);
-@@ -1245,7 +1404,8 @@ out_err:
+@@ -1245,7 +1427,8 @@ out_err:
  }
  
  int fuse_dax_conn_alloc(struct fuse_conn *fc, enum fuse_dax_mode dax_mode,
@@ -232,15 +258,26 @@ in as a store meets it, as before.
  {
  	struct fuse_conn_dax *fcd;
  	int err;
-@@ -1261,6 +1421,8 @@ int fuse_dax_conn_alloc(struct fuse_conn *fc, enum fuse_dax_mode dax_mode,
+@@ -1261,6 +1444,9 @@ int fuse_dax_conn_alloc(struct fuse_conn *fc, enum fuse_dax_mode dax_mode,
  
  	spin_lock_init(&fcd->lock);
  	fcd->dev = dax_dev;
 +	fcd->held = held;
 +	fcd->held_pages = held_pages;
++	fcd->host_page_shift = PAGE_SHIFT;
  	err = fuse_dax_mem_range_init(fcd);
  	if (err) {
  		kfree(fcd);
+@@ -1340,6 +1526,9 @@ bool fuse_dax_check_alignment(struct fuse_conn *fc, unsigned int map_alignment)
+ 			map_alignment, FUSE_DAX_SZ);
+ 		return false;
+ 	}
++	/* shards: the host's page, which writes are split by (fuse_dax_write_runs) */
++	if (fc->dax)
++		fc->dax->host_page_shift = max_t(unsigned int, map_alignment, PAGE_SHIFT);
+ 	return true;
+ }
+ 
 --- a/fs/fuse/fuse_i.h
 +++ b/fs/fuse/fuse_i.h
 @@ -612,6 +612,11 @@ struct fuse_fs_context {

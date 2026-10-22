@@ -65,9 +65,10 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   - `0009`: a store through a DAX window into a page the host's page cache does not hold
     waits for the host to read the page in, where a FUSE_WRITE of the whole page reads
     nothing (PM M283, M299). Where the device keeps a record of which of the window's pages
-    its host holds (shared memory region 0xfd), a write of whole pages sends those the host
-    does not hold as FUSE_WRITEs, mapping or upgrading each range it meets first so that
-    the record is taken as the write comes (D189, PM M301).
+    its host holds (shared memory region 0xfd), a write of whole pages sends the host's
+    whole pages it does not hold (FUSE_INIT's map_alignment) as FUSE_WRITEs, mapping or
+    upgrading each range it meets first so that the record is taken as the write comes
+    (D189, PM M301).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new

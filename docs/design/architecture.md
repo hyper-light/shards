@@ -5808,9 +5808,11 @@ stores.
   once a mapping after its first FUSE_WRITE, as the host reads around faults since
   (`Window::rerecord`). The guest's kernel (shards' patch 0009) maps, or upgrades from
   read alone, each range a write of whole pages meets, as a store would, then writes the
-  pages its host does not hold as FUSE_WRITEs and the rest through the window, and records
-  the pages it writes and reads; a partial page goes through the window whole, as a
-  FUSE_WRITE of part of a page reads it too. The record is advice: a page the host let go
+  host's whole pages its host does not hold as FUSE_WRITEs and the rest through the
+  window, and records the pages it writes and reads. The host's page is FUSE_INIT's
+  map_alignment, 16 KiB on Apple silicon: a FUSE_WRITE of part of one makes the host read
+  the rest first, as a store does, so parts of host pages go through the window (on the
+  Mac, 4 KiB FUSE_WRITEs into cold 16 KiB pages lost to the stores they replaced, M301). The record is advice: a page the host let go
   of since is read in as a store meets it, as before. Nothing keeps it: a restore takes it
   again as it maps each range (snapshot format 26, for the layout). The VM process's
   seccomp allowlist has `mincore`. On Fedora a cold file's scattered 4 KiB writes through
