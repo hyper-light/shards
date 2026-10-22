@@ -97,6 +97,12 @@ still applies. The program each microVM runs first, `shards-init`, is part of sh
 On a terminal, shards draws its own pages. Piped, a `docker` command line prints what
 `docker` prints, so scripts written for it keep working.
 
+Images come from any registry, with the logins `docker login` keeps and the certificates
+Docker's `certs.d` holds. A registry on another machine that speaks plain HTTP is reached
+once Docker's `daemon.json` lists it under `insecure-registries`, as Docker reaches one;
+unlike Docker, shards still checks the certificate of one that answers in HTTPS, and never
+sends your password in plain HTTP.
+
 ### Tools that speak the Docker Engine API
 
 The `docker` CLI, `docker compose`, Docker's SDKs, Testcontainers and agent frameworks work

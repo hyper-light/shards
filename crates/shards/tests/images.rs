@@ -249,6 +249,54 @@ fn a_pulls_platform_defaults_to_the_default_platforms() {
     }
 }
 
+/// A registry off loopback that speaks plain HTTP is pulled from once Docker's daemon
+/// configuration names it insecure (D194), as dockerd pulls from one: the rootless
+/// engine's daemon.json, under `XDG_CONFIG_HOME` (the native one's on Windows, under
+/// `PROGRAMDATA`). Not named, it is asked in HTTPS alone, and its plain answer is the
+/// pull's failure.
+#[test]
+fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
+    let Some(ip) = common::routable_v4() else {
+        eprintln!("SKIP: this host has no IPv4 route to reach itself off loopback at");
+        return;
+    };
+    let (manifest, blobs) = test_image();
+    let (port, _) = common::registry_at(ip.into(), manifest, blobs);
+    let image = format!("{ip}:{port}/test/image:v1");
+    let home = TempDir::new("insecure");
+    let config = home.join("config");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let unnamed = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_ne!(unnamed.status, Some(0), "{unnamed}");
+    assert!(
+        unnamed
+            .stderr
+            .contains("server gave HTTP response to HTTPS client"),
+        "{unnamed}"
+    );
+    let file = if cfg!(windows) {
+        config.join("docker").join("config").join("daemon.json")
+    } else {
+        config.join("docker").join("daemon.json")
+    };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, format!(r#"{{"insecure-registries": ["{ip}:{port}"]}}"#)).unwrap();
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    assert_eq!(pulled.stdout.trim(), image, "{pulled}");
+    // A configuration dockerd would not start with fails the pull, saying where it is.
+    std::fs::write(&file, r#"{"insecure-registries": ["ftp://a"]}"#).unwrap();
+    let refused = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_ne!(refused.status, Some(0), "{refused}");
+    assert!(refused.stderr.contains("should not contain '://'"), "{refused}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
 /// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is
 /// through, as `make agentfile` writes one: into a directory as its `Agentfile`, where
 /// `shards build DIR` finds one, or to the file named; of the platform pulled. A pull that

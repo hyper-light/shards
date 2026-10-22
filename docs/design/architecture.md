@@ -5657,10 +5657,14 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   then a thread blocked in poll(2) on Linux 6.4 and later and on macOS; on an older Linux,
   a read of the host's average every ten seconds.
 
-**Measured (PM M267, macOS).** The guest's 944 MiB of a read file reclaimed in 33 ms
-(p50); with the flush, 946 MiB back to the host within 0.5 s (p50, the builtin 81 ms),
-where reporting at its own pace gave back 374 MiB by 2 s, 630 by 4 s and 952 by 8 s. 51
-MiB of the read's stays: the page structures of the memory it plugged, and the kernel's.
+**Measured (PM M267, M268).** On the Mac, the guest's 944 MiB of a read file reclaimed in
+33 ms (p50); with the flush, 946 MiB back to the host within 0.5 s (p50, the builtin 81
+ms), where reporting at its own pace gave back 374 MiB by 2 s, 630 by 4 s and 952 by 8 s.
+51 MiB of the read's stays: the page structures of the memory it plugged, and the
+kernel's. On Linux (KVM) the same: 835 MiB back within 0.5 s (p50, 70 ms with the flush),
+paced 357 by 1 s, 615 by 4 s, 866 by 8 s, 50 to 59 MiB staying. Unplugged after the
+working set shrinks, all but 12 to 20 MiB of a gigabyte the guest plugged, used and freed,
+on both.
 
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
 runs. E2E on Linux (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`):
@@ -5775,6 +5779,71 @@ template pays it once; what its restores pay is to be measured with mappings.
   windows stay asked for, none by default, until a guest's whole-page writes through a
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
+
+### D194. The registries Docker's daemon configuration names: an insecure one is asked in plain HTTP too (slice 1 built)
+
+**Found.** A registry off loopback that speaks plain HTTP, a `registry:2` on another
+machine of a LAN, a CI job's, could be neither pulled from nor pushed to: shards asked
+every registry in HTTPS but loopback's (containerd's defaults, `core/remotes/docker/
+registry.go`), and nothing could say otherwise. dockerd takes such a registry from its
+daemon.json's `insecure-registries`, and Docker Hub's mirrors from its `registry-mirrors`;
+shards read neither, and its `info` left out the `Insecure Registries` lines docker/cli
+prints.
+
+**Decided.**
+- **Read where Docker's daemons read it** (`shards_registry::registries`): Docker Desktop's
+  `~/.docker/daemon.json` (docker/docs `desktop/settings-and-maintenance/settings.md`), the
+  rootless engine's `$XDG_CONFIG_HOME/docker/daemon.json` or `~/.config/docker/daemon.json`,
+  and the native one's `/etc/docker/daemon.json`, `%PROGRAMDATA%\docker\config\daemon.json`
+  on Windows (`engine/daemon/_index.md`); what they name taken together, found through the
+  environment of whoever asks, as `certs.d` is (D23). A missing file names nothing; one that
+  cannot be read, or whose two keys hold what dockerd refuses, fails the pull, naming the
+  file and why, as dockerd would not start with it. Checked as dockerd checks them (moby
+  docker-v29.8.1 `daemon/pkg/registry/config.go`, `loadInsecureRegistries`,
+  `ValidateMirror`).
+- **Which registries are insecure**: one named by its `host[:port]` as a reference names it
+  (dockerd's `IndexConfigs` keys), or one with an address in a network named in CIDR
+  notation, its name looked up within a dial's time where any network is named
+  (`isCIDRMatch`).
+- **How one is asked**: in HTTPS first, then in plain HTTP once it answers HTTPS so or never
+  finishes the handshake (containerd's `isTLSError`, as a loopback registry on a port is
+  asked); one named without a port, once its HTTPS port refuses the connection too, then at
+  HTTP's port, as dockerd tries its `https://` endpoint and then its `http://` one
+  (`lookupV2Endpoints`). Pulls, pushes, logins and searches alike.
+- **Better than dockerd**, three deliberate differences:
+  - its certificate is verified where it answers in HTTPS, against `certs.d` and the
+    system's roots, as every registry's is: dockerd skips verifying an insecure registry's
+    (`newTLSConfig`, `InsecureSkipVerify = !isSecure`) and reads no `certs.d` for it. One
+    whose CA no system trusts is refused; its CA in `certs.d` is the remedy, as D167
+    refuses `splunk-insecureskipverify` and asks for its CA;
+  - its credentials never go to it in plain HTTP: a registry off this machine that asks for
+    them there is refused, saying so, where dockerd answers its Basic challenge with the
+    password (`daemon/internal/distribution/registry.go`, `newRepository`: one credential
+    store for every endpoint). A loopback registry is still given them, as containerd gives
+    them (`dockerAuthorizer`);
+  - no registry's name is looked up to decide whether it is loopback's: dockerd's networks
+    always hold loopback's, so it looks up every registry's name at each pull, and takes one
+    that resolves to loopback for insecure. shards takes `localhost` and loopback addresses
+    alone, and looks a name up only where a network is named; a registry that resolves to
+    loopback is named by its name.
+- **`info` says them** as dockerd does: `RegistryConfig`'s `IndexConfigs` (Docker Hub's,
+  with its mirrors, and each named insecure, not secure), its `InsecureRegistryCIDRs` (the
+  networks named, then loopback's) and `Mirrors`; and in its text, as docker/cli lays them
+  out (`prettyPrintServerInfo`), the `Insecure Registries` and `Registry Mirrors` lines,
+  which it left out before.
+- **Tested**: `registries`' (each key read and refused as dockerd reads and refuses it, a
+  registry insecure by its name or its network, every file read together); `registry`'s
+  (a registry at this host's address on its route out answering HTTPS in plain HTTP: asked
+  in HTTPS alone unnamed, in HTTPS once and then in plain HTTP named, its credentials
+  refused there and never sent; where each kind of registry is asked in plain HTTP);
+  `info`'s text and JSON; and `images`' `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`:
+  `shards pull` from such a registry fails, then pulls once the rootless engine's file
+  names it, then fails again, naming the file, once it holds what dockerd refuses. The
+  fallback and the credentials' refusal are mutation-checked.
+
+**Next.** Docker Hub's mirrors (slice 2): read and shown already, not yet asked. Each in
+order before Docker Hub for pulls alone, as dockerd asks them, and a mirror answered with
+its own host's credentials, not Docker Hub's.
 
 ### D193. A run past its pids limit says so: a `pids-limit` event (built)
 

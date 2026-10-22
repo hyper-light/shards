@@ -189,7 +189,12 @@ impl Url {
 
     /// The same URL in plain HTTP, its port kept.
     pub fn plain(&self) -> Result<Url, Error> {
-        Url::parse(&format!("http://{}:{}{}", self.host, self.port, self.target))
+        self.plain_at(self.port)
+    }
+
+    /// The same URL in plain HTTP, at `port`.
+    pub fn plain_at(&self, port: u16) -> Result<Url, Error> {
+        Url::parse(&format!("http://{}:{port}{}", self.host, self.target))
     }
 
     /// Whether `other` is the same origin: scheme, host and port (RFC 6454 §4).

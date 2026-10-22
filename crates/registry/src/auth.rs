@@ -186,10 +186,12 @@ impl Credentials {
 /// alone, and every other host is answered anonymously.
 pub struct Authorizer {
     registry: Url,
-    /// Whether the registry is also reached in plain HTTP at its host and port: a
-    /// loopback registry that answered HTTPS so (registry.rs). Its credentials go there
-    /// too, as containerd keys them by host alone (`dockerAuthorizer`).
-    plain_too: bool,
+    /// Where the registry is also reached in plain HTTP, at its host: the port, and
+    /// whether its credentials go there too. A loopback registry that answered HTTPS so
+    /// (registry.rs) is given them, as containerd keys them by host alone
+    /// (`dockerAuthorizer`); one Docker's daemon configuration names insecure (D194) never
+    /// is, as no credentials leave this machine unencrypted.
+    plain: Option<(u16, bool)>,
     /// The registry's credentials, or the helper asked for them.
     credentials: Source,
     /// How each host asked to be answered, and the tokens fetched for it.
@@ -328,7 +330,7 @@ impl Authorizer {
     pub fn new(registry: &Url, credentials: impl Into<Found>) -> Authorizer {
         Authorizer {
             registry: registry.clone(),
-            plain_too: false,
+            plain: None,
             credentials: Source::from(credentials.into()),
             hosts: Mutex::default(),
             fetched: Condvar::new(),
@@ -436,20 +438,33 @@ impl Authorizer {
         self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The same, also answering for the registry at its host and port in plain HTTP.
-    pub(crate) fn plain_too(self) -> Authorizer {
+    /// The same, also answering for the registry at its host and `port` in plain HTTP.
+    pub(crate) fn plain_too(self, port: u16) -> Authorizer {
         Authorizer {
-            plain_too: true,
+            plain: Some((port, true)),
             ..self
         }
     }
 
+    /// The same, the registry also reached at its host and `port` in plain HTTP, where
+    /// its credentials never go.
+    pub(crate) fn plain_without(self, port: u16) -> Authorizer {
+        Authorizer {
+            plain: Some((port, false)),
+            ..self
+        }
+    }
+
+    /// Whether `url` is the registry's in plain HTTP: `Some` of whether its credentials go
+    /// there.
+    fn plain_twin(&self, url: &Url) -> Option<bool> {
+        let (port, credentials) = self.plain?;
+        (url.scheme() == crate::url::Scheme::Http && url.host() == self.registry.host() && url.port() == port)
+            .then_some(credentials)
+    }
+
     fn is_registry(&self, url: &Url) -> bool {
-        url.same_origin(&self.registry)
-            || (self.plain_too
-                && url.scheme() == crate::url::Scheme::Http
-                && url.host() == self.registry.host()
-                && url.port() == self.registry.port())
+        url.same_origin(&self.registry) || self.plain_twin(url) == Some(true)
     }
 
     /// The `Authorization` value for a request to `url` that needs `scopes`, fetching a
@@ -588,6 +603,15 @@ impl Authorizer {
                     return Ok(true);
                 }
                 Scheme::Basic => {
+                    if self.plain_twin(url) == Some(false) {
+                        return Err(Error::of(
+                            ErrorKind::Unauthorized,
+                            format!(
+                                "{} asks for credentials in plain HTTP: shards sends a registry's credentials off this machine in HTTPS alone; serve it in HTTPS, its CA certificate in certs.d if no system trusts it",
+                                url.authority()
+                            ),
+                        ));
+                    }
                     // containerd's words (core/remotes/docker/authorizer.go).
                     if username.is_empty() || secret.is_empty() {
                         return Err(Error::of(

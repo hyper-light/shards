@@ -6,11 +6,14 @@ pressure, through the guest's cgroup, and free page reporting handing the pages 
 Each round is a privileged `shards run` of Alpine, no memory limit (its memory plugged as
 it needs it, D148), with a volume holding a file of SIZE MiB. It reads the file, then its
 cgroup (the run's: execs join it, D148) is asked to reclaim what memory.stat counts as its
-file pages. The VM process's memory on the host (macOS: phys_footprint, proc_pid_rusage;
-Linux: VmRSS) is read before the read, after it, and after the reclaim at 0.5, 1, 2, 4, 8,
-16 and 32 s: in alternate rounds reporting goes at its own pace (D151: a pass every 2 s,
-some 64 blocks of each free list a pass), or is flushed at once after the reclaim
-(page_reporting.flush, kernel patch 0005), as the guest's init would.
+inactive file pages, with swappiness=0, as init's RECLAIM builtin asks (D188). The VM
+process's memory on the host (macOS: phys_footprint, proc_pid_rusage; Linux: VmRSS) is
+read before the read, after it, and after the reclaim at 0.5, 1, 2, 4, 8, 16 and 32 s: in
+alternate rounds reporting goes at its own pace (D151: a pass every 2 s, some 64 blocks of
+each free list a pass), or is flushed at once after the reclaim (page_reporting.flush,
+kernel patch 0005), as the guest's init does, whatever the reclaim's write returned: it
+fails with EAGAIN where less was reclaimed than asked, which init takes as what there
+was. Each write's exit status is kept (`said`).
 
     measure.py SHARDS ROUNDS SIZE_MIB   (SHARDS_HOME and DOCKER_CONFIG as the caller sets)
 
@@ -103,11 +106,14 @@ def main():
                 row["guest_read"] = {k: before.get(k, 0) for k in
                                      ("file", "active_file", "inactive_file", "anon", "shmem",
                                       "MemFree")}
-                ask = before.get("file", 0)
-                flushing = " && echo 1 >/sys/module/page_reporting/parameters/flush" if flush else ""
+                cold = before.get("inactive_file", 0)
+                flushing = ("; echo 1 >/sys/module/page_reporting/parameters/flush; echo flush $?"
+                            if flush else "")
                 t0 = time.monotonic()
-                sh(shards, name, f"echo {ask} >/sys/fs/cgroup/memory.reclaim{flushing} || true")
+                said = sh(shards, name, f"echo '{cold} swappiness=0' >/sys/fs/cgroup/memory.reclaim; "
+                                        f"echo reclaim $?{flushing}")
                 row["reclaim_s"] = time.monotonic() - t0
+                row["said"] = said.split()
                 start = time.monotonic()
                 for at in AFTER:
                     time.sleep(max(0.0, start + at - time.monotonic()))

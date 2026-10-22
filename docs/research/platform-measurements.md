@@ -9868,10 +9868,38 @@ revision before comparing a changed API/implementation.
     pass's worth every two seconds (D151); flushed, all of it within 0.5 s. What stays,
     51 MiB, is what the guest grew by to hold the read: the page structures of what it
     plugged, and the kernel's.
+- **Linux** (Fedora 44, Linux 6.19.10, Intel Core i9-14900HX, KVM, VmRSS; shards 0aa00196,
+  2026-10-21; 10 rounds, 5 an arm, interleaved). The harness first asked to reclaim what
+  memory.stat counts as file pages with `memory.reclaim && flush`: Linux's write fails with
+  EAGAIN when it reclaims less than asked, and a few KiB of the file pages were active, so
+  no flush ran and both arms were paced (350 MiB back at 0.5 s, all at 8 s, flushed or
+  not). A probe of the guest's per-CPU and free lists after the reclaim
+  (`reclaim/lists.py`, n 3), its flush run whatever the reclaim's write returned, found it:
+  854 to 927 MiB back at once, the guest's per-CPU lists holding 19 to 25 MiB. init's
+  builtin asks for the inactive file pages with `swappiness=0` and flushes whatever the
+  write returned (`reclaim_cold`), so D188 was never so: the harness asks so too now, and
+  keeps each write's status (all 0 below). MiB, p50 / p90 / p99 / max of 5:
+
+  | | paced | flushed |
+  |---|---|---|
+  | the guest's file pages after the read | 872.8 / 901.6 / 901.6 / 901.6 | 868.5 / 955.4 / 955.4 / 955.4 |
+  | after the reclaim | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+  | the host's: what the read added | 916.2 / 955.0 / 955.0 / 955.0 | 906.1 / 1011.5 / 1011.5 / 1011.5 |
+  | given back 0.5 s after | -1.4 / 834.1 / 834.1 / 834.1 | 834.6 / 958.6 / 958.6 / 958.6 |
+  | 1 s after | 357.1 / 834.1 / 834.1 / 834.1 | 834.6 / 958.6 / 958.6 / 958.6 |
+  | 4 s after | 614.9 / 851.9 / 851.9 / 851.9 | 840.6 / 958.6 / 958.6 / 958.6 |
+  | 8 s after | 866.4 / 904.8 / 904.8 / 904.8 | 840.6 / 958.6 / 958.6 / 958.6 |
+  | 32 s after | 866.3 / 904.8 / 904.8 / 904.8 | 842.6 / 958.6 / 958.6 / 958.6 |
+  | still above before the read, at 32 s | 49.9 / 56.3 / 56.3 / 56.3 | 58.6 / 68.2 / 68.2 / 68.2 |
+  | the reclaim's exec, ms | 44 / 45 / 45 / 45 | 70 / 108 / 108 / 108 (with the flush) |
+
+  - Flushed, four rounds had 824 to 959 MiB back within 0.5 s, all their read held; the
+    fifth's read left 31 MiB in its guest's page cache (its host 92 MiB up), all of which
+    came back as soon. Paced, as on the Mac: a pass's worth every two seconds (one round
+    had all of it within 0.5 s and another a pass's, their passes falling there).
 - **Consequence.** D188: at the host's pressure, each microVM reclaims its inactive file
   pages and flushes its reports, so the host has the memory back before init answers, in
-  a tenth of a second for a gigabyte. Linux's numbers to come, on M258's host, once its
-  benchmark (M266) is done.
+  a tenth of a second for a gigabyte, on both hosts.
 
 ### M268. What the virtio-mem driver unplugs of memory a guest used and freed, by how it came online (D188, D133)
 
@@ -9904,9 +9932,21 @@ revision before comparing a changed API/implementation.
     what it cannot move, which group together. Auto-movable keeps 2 to 4 MiB less, in one
     block; all movable, nothing stays, at D133's risk of a kernel short of memory with
     memory free.
+- **Linux** (the same command; Fedora 44, Linux 6.19.10, Intel Core i9-14900HX, KVM,
+  shards 0aa00196 and the test guest of 3b296b9f, 2026-10-21; n 5 each, what is plugged
+  again the same from 0.1 s to 30 s in every boot):
+
+  | onlined as | still plugged, MiB: p50 / p90 / p99 / max | blocks of 8 still online: p50 / max |
+  |---|---|---|
+  | the kernel's own | 14 / 16 / 16 / 16 | 2 / 3 |
+  | auto-movable | 14 / 14 / 14 / 14 | 1 / 1 |
+  | movable | 0 / 0 / 0 / 0 | 0 / 0 |
+
+  The same within 4 MiB of the Mac's: the kernel's own keeps 12 to 16 MiB in 2 or 3
+  blocks, auto-movable 10 to 14 in one, movable nothing.
 - **Consequence.** D188's unplug keeps plugged memory online as the kernel's own: at this
-  size the other ways give back 2 to 4 MiB more and a block's page structures. Larger
-  sizes, and Linux, unmeasured.
+  size the other ways give back up to 4 MiB more and a block or two's page structures, on
+  both hosts. Larger sizes unmeasured.
 
 ### M269. What a virtio-fs DAX window costs a guest as it boots (D189)
 
@@ -11341,9 +11381,41 @@ revision before comparing a changed API/implementation.
   as in one of one, each host CPU as busy; idle, the two are alike. (The 1-CPU host's wall
   holds its daemon's and VM process's work on that CPU too.) The markers' own steps came
   back none: the VMM keeps a marker it knows of alone (`devices::control::MARKERS`), so
-  the patch keeps 101 to 106 too, and its second run is to say which step grows.
+  the patch keeps them too (numbered 11 up, the table's size raised past them: an array of
+  more than 32 atomics has no Default), and its second run is to say which step grows.
+- **Which steps grow** (`markers.patch` as committed with this entry: thirteen markers
+  through init's start of a run, phases.py's steps between them; one build of 5b1a1b57
+  with it as both arms, n 100 a host, 2026-10-21). p50 (p90), ms, of each step that is
+  more than 0.1 ms anywhere; marker 13 is written by no run's path here, its step joined
+  to the next:
+
+  | step | 1 CPU, 1 busy loop: 1 vCPU | 4 CPUs idle: 4 vCPUs | 4 CPUs, 4 busy loops: 4 vCPUs |
+  |---|---|---|---|
+  | `m11` the request to init's start of it | 0.25 to 0.26 (1.5 to 1.7) | 0.33 (0.9 to 1.3) | 0.41 to 0.54 (2.1 to 2.5) |
+  | `m20` its hostname, `/etc/hosts`, `/etc/resolv.conf` | 1.40 to 1.44 (7.1 to 8.0) | 3.0 to 3.1 (5.1 to 5.3) | **4.9 to 5.3 (10.3 to 13.2)** |
+  | `m23` its `cpu.*` limits (`cpu.max`) | 0.05 (0.05 to 0.06) | 0.17 (1.4 to 1.8) | **4.6 to 5.4 (11.6 to 14.0)** |
+  | `m14` the standby woken with its orders | 0.12 (0.13) | 0.21 (0.4 to 1.0) | 0.22 to 0.25 (6.4 to 7.0) |
+  | `m16` init woken as the command is executed | 0.50 to 0.54 (3.1 to 6.4) | 0.70 to 0.79 (1.2 to 1.9) | **4.5 to 4.7 (9.4 to 11.6)** |
+
+  Every other step (what the microVM may plug, its network, its standby, its devices, its
+  memory and pids limits, its `cpuset.*`, the standby's own setup, init's listener) is
+  under 0.1 ms at p50 on every host. Three steps take the growth: `cpu.max`'s write from
+  0.05 to 5 ms, the run's names and resolver files from 1.4 to 5, init's wake at the exec
+  from 0.5 to 4.6; the cpuset, which slice 1 added, is not among them.
+- **`cpu.max`'s cost is the kernel patching its own text.** A cgroup's first finite quota
+  turns the CFS bandwidth static key on (kernel/sched/core.c `tg_set_cfs_bandwidth`:
+  `cfs_bandwidth_usage_inc`, fair.c `static_key_slow_inc_cpuslocked(&__cfs_bandwidth_used)`;
+  Linux 6.18), and x86's jump labels patch every site of it at once
+  (`arch_jump_label_transform_apply`, `smp_text_poke_batch_finish`), each patch synced by
+  `smp_text_poke_sync_each_cpu`, `on_each_cpu(do_sync_core, NULL, 1)`, three times: three
+  rounds of IPIs to every online CPU, each waiting for all of them. In a microVM whose
+  other vCPUs are halted on a host whose CPUs are busy, each round waits for the host to
+  run every one of them. A template has no quota anywhere, so every `--cpus` run's start
+  pays it; a 1-vCPU guest syncs with itself alone.
 - **Consequence.** b96501d3's reason is withdrawn: its 240 s timeout stays for a slow,
   contended runner, not for a regression. A start on a contended host is an open
   regression of D191 slice 1, its tail's first item: the guest's start of a run's command,
   not its VM's restore, and of the microVM's vCPUs' count, not the host's load alone. Two
-  mechanisms are ruled out above.
+  mechanisms are ruled out above; the steps that grow are found: `cpu.max`'s static key,
+  the run's names and resolver files, and init's wake at the exec. Next: the key held on
+  from the template, measured against HEAD, and the names' step split.

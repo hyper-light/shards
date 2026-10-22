@@ -15,6 +15,7 @@ pub mod proxy;
 pub mod pull;
 pub mod push;
 pub mod referrers;
+pub mod registries;
 pub mod registry;
 pub mod search;
 #[cfg(test)]
@@ -33,6 +34,10 @@ pub struct Error {
     /// never finished it, as containerd's `isTLSError` finds. A loopback registry on a
     /// port that names no scheme is then asked in plain HTTP (registry.rs).
     not_tls: bool,
+    /// Whether every address the server was dialled at refused the connection: a
+    /// registry named insecure without a port is then asked in plain HTTP on HTTP's
+    /// (registry.rs, D194).
+    refused: bool,
 }
 
 /// What dockerd says of a registry's refusal in place of containerd's words
@@ -79,6 +84,7 @@ impl Error {
             kind,
             said: None,
             not_tls: false,
+            refused: false,
         }
     }
 
@@ -92,6 +98,18 @@ impl Error {
 
     pub(crate) fn is_not_tls(&self) -> bool {
         self.not_tls
+    }
+
+    /// The same error, from a server that refused the connection.
+    pub(crate) fn refused(self) -> Error {
+        Error {
+            refused: true,
+            ..self
+        }
+    }
+
+    pub(crate) fn is_refused(&self) -> bool {
+        self.refused
     }
 
     /// The same error, with what dockerd says of it.
@@ -124,6 +142,7 @@ impl Error {
             kind: self.kind,
             said: self.said,
             not_tls: self.not_tls,
+            refused: self.refused,
         }
     }
 }

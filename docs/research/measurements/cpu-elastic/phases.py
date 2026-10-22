@@ -13,11 +13,17 @@ wall time:
 - `command`: the command's run (WORKLOAD_STARTED to WORKLOAD_EXITED);
 - `answer`: its exit to the VM's answer (`answered_us`).
 
-With a build that writes markers 101 to 106 through init's start of a run
-(`markers.patch`), each step between them too: `m101` the request to init's taking it,
-`m102` its limits, `m103` the rest of its setup to the orders sent to the standby, `m104`
-the standby's waking with them, `m105` its own setup to its exec, `m106` init's waking as
-the exec is made, `m4` its listener and agents to WORKLOAD_STARTED.
+With a build that writes markers 11 to 23 through init's start of a run (`markers.patch`;
+the VMM keeps a marker below its table's size alone, which the patch raises to 24), each
+step between them too, in the order they come: `m11` the request to init's taking it,
+`m17` what the microVM may still plug, reported (`report_pluggable`), `m18` its network's
+setup, `m19` its standby made again where its kind changed, `m20` its hostname, hosts and
+resolv.conf, `m21` its devices, then its limits (`limit_in`): `m22` its cgroup's files but
+the CPU's, `m23` `cpu.*`, `m12` `cpuset.*`; `m13` the rest of its setup to the orders sent
+to the standby, `m14` the standby's waking with them, `m15` its own setup to its exec,
+`m16` init's waking as the exec is made, `m4` its listener and agents to
+WORKLOAD_STARTED. A marker a run's path does not write (13, where its orders go another
+way) is passed over: its step is the next one's.
 
 With --load N, N busy loops run throughout, on the CPUs this runs on (run it under
 `taskset`: its runs inherit them).
@@ -52,7 +58,7 @@ builds = {"old": (a.old, homes[0], revs[0]), "new": (a.new, homes[1], revs[1])}
 CONNECTED, STARTED, EXITED = 3, 4, 5
 PHASES = ["wall", "restore", "waited", "start", "command", "answer"]
 # The steps between markers.patch's markers, in order, where a build writes them.
-STEPS = [101, 102, 103, 104, 105, 106, STARTED]
+STEPS = [11, 17, 18, 19, 20, 21, 22, 23, 12, 13, 14, 15, 16, STARTED]
 
 
 def env(home, **more):
@@ -83,10 +89,12 @@ def once(build):
     if not all(k in marks for k in (CONNECTED, STARTED, EXITED)) or not j.get("request_us"):
         return None, f"markers missing: {line[:200]}"
     request, answered = j["request_us"], j["answered_us"]
+    # A step marker a run's path does not write is passed over, its step the next's.
     steps = {}
-    if all(m in marks for m in STEPS):
+    present = [m for m in STEPS if m in marks]
+    if len(present) > 1:
         at = request
-        for m in STEPS:
+        for m in present:
             steps[f"m{m}"] = (marks[m] - at) / 1000
             at = marks[m]
     return steps | {

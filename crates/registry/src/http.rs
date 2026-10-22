@@ -30,6 +30,7 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection};
 
 use crate::proxy::{Proxies, Proxy};
+use crate::registries::Registries;
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind};
 
@@ -69,6 +70,9 @@ pub struct Client {
     /// The name its servers' certificates are verified for, and TLS names them by, where
     /// not each URL's host.
     server_name: Option<String>,
+    /// What Docker's daemon configuration says of registries, for the registries it asks
+    /// (D194).
+    registries: Registries,
 }
 
 /// How long a request waits on its server: to connect, its name's lookup included; for
@@ -399,7 +403,19 @@ impl Client {
             patience: Patience::default(),
             reach: None,
             server_name: None,
+            registries: Registries::default(),
         }
+    }
+
+    /// This client, asking registries as `registries` says (D194).
+    pub fn with_registries(mut self, registries: Registries) -> Client {
+        self.registries = registries;
+        self
+    }
+
+    /// What Docker's daemon configuration says of the registries this client asks.
+    pub(crate) fn registries(&self) -> &Registries {
+        &self.registries
     }
 
     /// This client, verifying its servers' certificates for `name`, and naming them so to
@@ -1069,7 +1085,13 @@ impl Failure {
 /// The addresses `url`'s host names: at once for an address, and for a name looked up on a
 /// thread of its own, waited for until `deadline` or a cancel. getaddrinfo(3) takes no
 /// deadline; a lookup given up on ends on its own, its answer unread.
-fn resolve(url: &Url, deadline: Instant, cancel: Option<&Cancel>) -> Result<Vec<SocketAddr>, Error> {
+/// `url`'s host's addresses at its port, looked up by `deadline` unless `cancel` is
+/// cancelled first.
+pub(crate) fn resolve(
+    url: &Url,
+    deadline: Instant,
+    cancel: Option<&Cancel>,
+) -> Result<Vec<SocketAddr>, Error> {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     let port = url.port();
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
@@ -1193,6 +1215,9 @@ fn dial(
         }
     }
     Err(match last {
+        Some(e) if e.kind() == io::ErrorKind::ConnectionRefused => Error::from(e)
+            .context(format!("{}: connecting", url.authority()))
+            .refused(),
         Some(e) => Error::from(e).context(format!("{}: connecting", url.authority())),
         None => Error::of(
             ErrorKind::Transient,
