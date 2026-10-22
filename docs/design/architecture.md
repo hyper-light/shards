@@ -5963,7 +5963,11 @@ the user told).
   thread's CPU time (`platform::ThreadClock`: Linux its CPU-time clock, which counts its
   time in the guest; macOS thread_info, PM M288; Windows GetThreadTimes), and once a 100
   ms period's share is spent holds every vCPU out of its guest, by the same kick a
-  snapshot uses, until the period ends; what a period overran comes off the next. This
+  snapshot uses, until the period ends; what a period overran comes off the next. The
+  governor runs as it wakes, however busy its vCPUs keep the CPUs they may use: on macOS
+  at the vCPUs' real-time policy (M8, M10), on Windows at THREAD_PRIORITY_TIME_CRITICAL,
+  above them, where at their priority three spinning threads of a process held to two CPUs
+  kept it from running and used up to 1.58 s in a second held to one (PM M294). This
   bounds the whole guest — kernel threads, interrupts, and any escaped workload — to what
   a microVM of those CPUs alone could use, where the cpuset alone bounds only a workload
   that stays in its cgroup. It comes with the run (the `RUN` head's `cpus`), before the

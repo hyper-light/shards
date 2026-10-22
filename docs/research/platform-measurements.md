@@ -11419,3 +11419,52 @@ revision before comparing a changed API/implementation.
   mechanisms are ruled out above; the steps that grow are found: `cpu.max`'s static key,
   the run's names and resolver files, and init's wake at the exec. Next: the key held on
   from the template, measured against HEAD, and the names' step split.
+
+### M294. The vCPU hold's governor on Windows: its clocks, its waits, and its priority (D191 slice 2)
+
+- **Question.** `vm::hold::tests::threads_held_use_no_more_than_their_share` failed once on
+  CI's Windows runner (c77c1a4c, job 119601673333): three spinning threads held to one CPU
+  used 1.75 s of CPU in 1.0 s, where the test allows 1.3; it had passed on the three runs
+  before. Windows counts a thread's times by its clock's ticks, and wakes a wait at its
+  timer's resolution: is the hold's clock too coarse there, its governor's waits too
+  long, or its governor kept from running?
+- **Method.** `docs/research/measurements/windows-hold` (`cargo run --release -- [CPUS]`,
+  a crate of its own): how often a spinning thread's GetThreadTimes (the VMM's
+  `ThreadClock`) and QueryThreadCycleTime change in a second; what 50 one-millisecond
+  waits on a condition variable take, at the default timer resolution and under
+  timeBeginPeriod(1); then 10 rounds of hold.rs's governor loop over GetThreadTimes,
+  holding hold.rs's test's three spinning threads to one CPU for a second, its governor
+  at THREAD_PRIORITY_NORMAL (as the VMM ran it) and at THREAD_PRIORITY_TIME_CRITICAL in
+  turn, what they truly used read from their cycles at the TSC's rate. The process held to
+  2 CPUs (SetProcessAffinityMask), as a small runner's, and not held. Windows 11 Pro
+  10.0.26200, 32 CPUs, TSC 2.9943 GHz (kiln's `jupiter`), 2026-10-21.
+- **Results.**
+  - GetThreadTimes changes 53 to 60 times a second for a thread that spins all of it, in
+    steps of 15.625 ms (median), at either timer resolution; QueryThreadCycleTime about
+    2.6 million times. A one-millisecond wait takes 5.55 ms at p50 (p90 5.68 to 5.84) at
+    the default resolution and 1.34 to 1.51 under timeBeginPeriod(1).
+  - CPU used by three spinning threads in a second held to one CPU, s (n 10 a priority):
+
+    | process | governor | p50 | p90 | p99 | max |
+    |---|---|---|---|---|---|
+    | held to 2 CPUs | THREAD_PRIORITY_NORMAL | 1.071 | 1.137 | 1.285 | 1.285 |
+    | held to 2 CPUs | THREAD_PRIORITY_TIME_CRITICAL | 0.955 | 1.030 | 1.085 | 1.085 |
+    | every CPU | THREAD_PRIORITY_NORMAL | 0.937 | 0.992 | 1.020 | 1.020 |
+    | every CPU | THREAD_PRIORITY_TIME_CRITICAL | 0.944 | 1.045 | 1.055 | 1.055 |
+
+    An earlier run of the same rounds, 5 a priority, held to 2 CPUs: at NORMAL 1.584, 1.437,
+    1.052, 1.048, 1.077; at TIME_CRITICAL 1.080, 0.988, 1.010, 0.985, 1.047.
+- **Reading.** The coarse clock and waits hold the threads to within a tenth of a CPU when
+  the governor runs as it wakes: with every CPU free it does, at either priority. With the
+  threads on as many CPUs as there are of them less one, its governor, at their priority,
+  waits for a quantum of theirs to run, and they use up to 1.58 s of CPU in a second held
+  to one: CI's runner's 1.75. At TIME_CRITICAL it preempts them as it becomes ready
+  ("If a higher-priority thread becomes available to run, the system ceases to execute the
+  lower-priority thread (without allowing it to finish using its time slice)", Microsoft's
+  Scheduling Priorities; base priority 15 in NORMAL_PRIORITY_CLASS against their 8, a
+  boost of theirs lowered a level each time slice they complete, Priority Boosts), and they
+  use at most 1.085.
+- **Consequence.** D191: on Windows the hold's governor runs at
+  THREAD_PRIORITY_TIME_CRITICAL (`platform::prioritize_governor_thread`), a thread that runs
+  briefly between waits, as Microsoft reserves high priority for; its clock and waits stay
+  as they are.
