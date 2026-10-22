@@ -589,7 +589,13 @@ fn window_heads(
         .ok_or_else(|| at(format!("{} heads of {each} bytes", windows.len())))?;
     let head = match kept {
         Some(kept) => head::Head::restore(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
-        None => head::Head::new(len),
+        None => head::Head::new(len).inspect(|head| {
+            // On the host's base pages, as a restored head is: its guest writes a range's
+            // page structures as it first maps the range (shards' kernel patch 0011), 32 KiB
+            // of a 2 MiB block, which a huge page would hold whole (2 MiB for the one page
+            // structure a boot writes, on an x86_64 CI runner with THP always; PM M307).
+            crate::platform::small_pages(head.host(), head.len());
+        }),
     }
     .map_err(at)?;
     let heads = head::WindowHeads::new(head, windows.iter().map(|w| w.head.0).collect(), each).map_err(at)?;
