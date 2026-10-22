@@ -5791,10 +5791,14 @@ stores.
   before. A snapshot keeps the heads as it keeps a writable layer's (D190): each alike 2
   MiB block once, beside its memory (`window-heads`, format 25), mapped back after a
   template's save and privately by each restore. A microVM saved in format 24, as shards
-  0.6.0 saves, restores where it has no windows. On Fedora a 4 GiB window took 63.8 MiB of
-  its guest's free memory and, with its head, none past the spread of its boots, which
-  reached PID 1 20 ms sooner: its page structures go on the host's huge pages, not on a
-  boot's base pages (D29).
+  0.6.0 saves, restores where it has no windows. A window took a 64th of its length of its
+  guest's free memory, 64.1 MiB for 4 GiB on Fedora, and 72.0 on the Mac with its linear
+  map's page tables; with its head, none on Fedora (-0.2 to 0.1 MiB at every length, n 12)
+  and those page tables alone on the Mac (8.3 MiB). Fedora's 4 GiB boot reached PID 1 20 ms
+  sooner: its page structures go on the host's huge pages, not on a boot's base pages
+  (D29). The pinned
+  kernel (kernel-6.18.48-301acf1c45d0) carries the patch; held by
+  `a_dax_windows_page_structures_take_none_of_its_guests_memory`.
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5827,10 +5831,11 @@ template pays it once; what its restores pay is to be measured with mappings.
   worse middle (1,589 against 898 at p50). A guest's FUSE weighing each range's writes
   against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
   measured and not taken: its rationale was that cost. Windows stay asked for, none by
-  default, until a whole page a host does not hold is written as a FUSE_WRITE. A window's
-  page structures are its head's (above); arm64's, whose linear map takes a 512th of a
-  window in page tables of its own (M269), is measured with the kernel CI publishes with
-  patch 0008.
+  default, until a whole page a host does not hold is written as a FUSE_WRITE (on the Mac
+  too, 64 KiB writes into cold ranges 181 µs at p50 against FUSE's 139; M299). A window's
+  page structures are its head's (above); what it takes of an arm64 guest's memory is its
+  linear map's page tables, a 512th of head and window (M300), which arm64 Linux keeps in
+  base pages under rodata=full, and in blocks would be all but none.
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 

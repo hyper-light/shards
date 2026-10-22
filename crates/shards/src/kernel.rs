@@ -18,24 +18,24 @@ pub struct Pinned {
 /// (resources/kernel/hyperv.config, D140).
 pub const KERNEL: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows)) {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-hyperv-426ba771634e",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/vmlinux-6.18.48-x86_64-hyperv",
-        size: 27_753_608,
-        sha256: "4872a28d374fba8619f42035cbf26158de768c3118bce0266eb8af239fd0a102",
+        name: "vmlinux-6.18.48-x86_64-hyperv-301acf1c45d0",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-301acf1c45d0/vmlinux-6.18.48-x86_64-hyperv",
+        size: 27_753_600,
+        sha256: "3dc88e064d05048071dd4222424ebbadce45bf99893370808dce331138c20516",
     })
 } else if cfg!(target_arch = "x86_64") {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-426ba771634e",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/vmlinux-6.18.48-x86_64",
-        size: 27_724_288,
-        sha256: "16888ea7591da397ae0c7f7df270192a6df3a3f1cecca6328fd413393c087da2",
+        name: "vmlinux-6.18.48-x86_64-301acf1c45d0",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-301acf1c45d0/vmlinux-6.18.48-x86_64",
+        size: 27_724_280,
+        sha256: "124458c95cda39dee2434c541dcc510c356a501354b4543f472fd4343da70bf4",
     })
 } else if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-426ba771634e",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/Image-6.18.48-aarch64",
+        name: "Image-6.18.48-aarch64-301acf1c45d0",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-301acf1c45d0/Image-6.18.48-aarch64",
         size: 19_016_192,
-        sha256: "1fbbd508e8ef67e7a4380ca2e5c6264c78d14a36ff88605f8c3c62ad49891a61",
+        sha256: "48a55b7554d668bffc06f8119fe47d1a7bb7ab6e44c873f62bc4b97feaef11a3",
     })
 } else {
     None
@@ -48,17 +48,17 @@ pub const KERNEL_KVM: Option<Pinned> = if cfg!(windows) {
     None
 } else if cfg!(target_arch = "x86_64") {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-kvm-426ba771634e",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/vmlinux-6.18.48-x86_64-kvm",
-        size: 27_782_984,
-        sha256: "0e986fdc01a8627235d9613d7f39de98b04ee9b899713b2bbea64efd84d5a9ad",
+        name: "vmlinux-6.18.48-x86_64-kvm-301acf1c45d0",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-301acf1c45d0/vmlinux-6.18.48-x86_64-kvm",
+        size: 27_782_968,
+        sha256: "5c8a46ccd383856ebae9dbfd6c88694d64096f2db26d9a82194fcbec934946dc",
     })
 } else if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-kvm-426ba771634e",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/Image-6.18.48-aarch64-kvm",
+        name: "Image-6.18.48-aarch64-kvm-301acf1c45d0",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-301acf1c45d0/Image-6.18.48-aarch64-kvm",
         size: 20_167_168,
-        sha256: "08d0448b2db8ed9194776863244e09faeb0c2b2be6ef5b62c232c5a2435eb256",
+        sha256: "9b5ff9f43c2bffdae955938c84830ba30b7e8e465a6a3d2dd6ffe95787792ba0",
     })
 } else {
     None
@@ -69,10 +69,10 @@ pub const KERNEL_KVM: Option<Pinned> = if cfg!(windows) {
 /// alone have a GPU yet. Of the pinned kernels' own release.
 pub const KERNEL_GPU: Option<Pinned> = if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-gpu-426ba771634e",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/Image-6.18.48-aarch64-gpu",
+        name: "Image-6.18.48-aarch64-gpu-301acf1c45d0",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-301acf1c45d0/Image-6.18.48-aarch64-gpu",
         size: 19_614_208,
-        sha256: "8521aea5c793b1899807f4fa4358b540f48ff24c6828e84b1db33d97bb2e99ca",
+        sha256: "363a5467b4a814fcdd936e9fbcc01f632ec1a2c4d35bfe20f961281345ff38b4",
     })
 } else {
     None

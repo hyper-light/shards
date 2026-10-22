@@ -57,6 +57,67 @@ fn boots_to_root_mount_without_a_root_device() {
     );
 }
 
+/// A DAX window's page structures are its head's, not its guest's memory (D189, shards'
+/// kernel patch 0008, PM M300): a guest with a 4 GiB window has as much memory free as one
+/// with none, but for its linear map's page tables (8 bytes for each 4 KiB page of head and
+/// window, where Linux maps device memory in base pages, as arm64 does) and the spread of
+/// boots, where they took a 64th of the window, 64 MiB. Free memory is MemFree and the
+/// pages its CPUs' free lists hold, which held up to 16 MiB as a boot began (M300); each
+/// the most of three boots.
+#[test]
+fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (k, guest) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
+    let most_free = |window: &str| -> u64 {
+        (0..3)
+            .map(|_| {
+                let r = vm_run(
+                    &[
+                        "--kernel",
+                        k,
+                        "--init",
+                        guest,
+                        "--memory",
+                        "512",
+                        "--shares",
+                        "1",
+                        "--share-window",
+                        window,
+                        "--cmdline",
+                        "console=ttyS0 panic=-1 shards_test=memory",
+                    ],
+                    TIMEOUT,
+                );
+                assert_eq!(r.status, Some(0), "{r}");
+                // `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed>`
+                let line = r.stdout.lines().find(|l| l.contains("SHARDS-TEST MEMORY"));
+                let field =
+                    |n: usize| -> Option<u64> { line?.split_whitespace().nth(n)?.trim().parse().ok() };
+                field(3)
+                    .zip(field(6))
+                    .map(|(free, listed)| free + listed)
+                    .unwrap_or_else(|| panic!("no free memory said: {r}"))
+            })
+            .max()
+            .unwrap()
+    };
+    let none = most_free("0");
+    let window = 4u64 << 30;
+    let with = most_free("4096");
+    let head = shards_vmm::devices::virtio::head::window_head_len(window).unwrap();
+    let (tables, spread) = ((head + window) / 512, 2 << 20);
+    let taken = none.saturating_sub(with);
+    assert!(
+        taken <= tables + spread,
+        "a 4 GiB window took {} KiB of its guest's free memory, past {} KiB of page tables and {} KiB",
+        taken >> 10,
+        tables >> 10,
+        spread >> 10
+    );
+}
+
 /// A PCI bus (D153): the guest's pci-host-generic finds the test function, QEMU edu's IDs
 /// at 00:01.0, and the test guest reaches its BAR's registers, mapped from sysfs.
 #[test]

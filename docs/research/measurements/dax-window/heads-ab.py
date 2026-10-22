@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """heads-ab.sh's lines, by kernel and window length: n, free memory at PID 1 (MiB) at p50 and
 the most of the boots, what the window takes against no window by each, and PID 1's uptime
-(s, 10 ms steps) at p50 and max (PM M300). A boot's free memory may fall in a lower band of
-its own, the same for every length; the most free of a length's boots is what its window
-leaves, against the most free with none.
+(s, 10 ms steps) at p50 and max (PM M300). Free memory is MemFree and, where the test guest
+says it, the free pages its CPUs' lists hold, which MemFree leaves out; without them a
+boot's free memory may fall in a lower band of its own, and the most free of a length's
+boots is what its window leaves, against the most free with none.
 
     heads-ab.py FILE"""
 import collections, statistics, sys
@@ -15,7 +16,8 @@ for line in open(sys.argv[1]):
     if len(f) < 8 or not f[2].isdigit():
         continue
     kernel, length = f[0], int(f[2])
-    free[(kernel, length)].append(int(f[5]) / 2**20)
+    listed = int(f[8]) if len(f) > 8 else 0
+    free[(kernel, length)].append((int(f[5]) + listed) / 2**20)
     up[(kernel, length)].append(float(f[7]))
 for kernel in ("old", "new"):
     lengths = sorted(l for k, l in free if k == kernel)

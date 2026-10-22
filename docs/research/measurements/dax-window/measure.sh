@@ -4,9 +4,10 @@
 # devm_memremap_pages of MEMORY_DEVICE_FS_DAX), a 64th of it. Each boot is the test guest
 # as PID 1 under shards' VMM (testguest `memory`), with 512 MiB and one shared directory
 # whose device offers a window of each LENGTH MiB (0: none); it says MemTotal, MemFree,
-# MemAvailable and its uptime as it begins. ROUNDS boots of each, interleaved.
+# MemAvailable and its uptime as it begins, and, a test guest since PM M300, the free pages
+# its CPUs' lists hold, which MemFree leaves out. ROUNDS boots of each, interleaved.
 # Usage: measure.sh SHARDS KERNEL TESTGUEST ROUNDS LENGTH_MIB...
-#   (one line a boot: LENGTH ROUND TOTAL FREE AVAILABLE UPTIME, bytes and seconds)
+#   (one line a boot: LENGTH ROUND TOTAL FREE AVAILABLE UPTIME [LISTED], bytes and seconds)
 set -eu
 shards=$1 kernel=$2 guest=$3 rounds=$4
 shift 4
