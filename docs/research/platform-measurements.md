@@ -11420,6 +11420,65 @@ revision before comparing a changed API/implementation.
   the run's names and resolver files, and init's wake at the exec. Next: the key held on
   from the template, measured against HEAD, and the names' step split.
 
+### M293. DAMON's reclaim against D188's in a run's guest (the user's plan, item 4)
+
+- **Question.** The user's item 4 asks for DAMON to be measured as the alternative to D188's
+  reclaim at the host's pressure. The pinned kernel has DAMON_RECLAIM built in
+  (Firecracker's base configs, both architectures: `CONFIG_DAMON`, `_PADDR`, `_RECLAIM`,
+  `_LRU_SORT`, `_SYSFS`): kdamond samples the guest's physical memory every 5 ms and pages
+  out what has gone unaccessed for `min_age` (120 s), within quotas of 10 ms of CPU and
+  128 MiB a second, while the guest's free memory is between its watermarks (mm/damon/
+  reclaim.c, core.c `damos_wmark_wait_us`, Linux 6.18). What does it give back of a file a
+  run read, how soon, at what CPU while the guest idles, and what does a workload that
+  reads the file again pay?
+- **Method.** `docs/research/measurements/damon/measure.py SHARDS 6 1024`, SHARDS c77c1a4c
+  with `damon/no-pressure.patch` run with SHARDS_EXPERIMENT_NO_PRESSURE: D188's own pass
+  at the host's pressure, which took 833 MiB of the cold pages a first run's arms were
+  measuring once its service's cgroup stalled, off (the daemon's log after: no pass). Each
+  round a privileged `--pid host` run of Alpine reads a 1 GiB file on a volume; then each
+  arm: none; D188's (its cgroup's inactive file pages to memory.reclaim with
+  swappiness=0, then the flush, as init's RECLAIM builtin does); damon_reclaim enabled as
+  the kernel has it; enabled and active whatever the guest's free memory (watermarks 1000,
+  1000, 0); and that with min_age 5 s. The VM process's VmRSS every 5 s for the arm's
+  window (40 s, 180 s, 90 s for the last), its CPU and kdamond's over 30 s idle after, then
+  the file read again, timed. 6 rounds, the arms' order rotating. Fedora 44, Linux
+  6.19.10, Intel Core i9-14900HX, KVM, 2026-10-21.
+- **Results** (n 6 an arm; MiB unless said, p50 / p90 / max):
+
+  | arm | the guest's file pages at the window's end | given back to the host, by | idle CPU of the VM process, % of a CPU | kdamond's, % | the file read again, s |
+  |---|---|---|---|---|---|
+  | none | 874 / 983 / 983 | -1.5 / 1.9 / 1.9, 30 s | 0.2 / 0.3 / 0.3 | | 1.4 / 6.6 / 6.6 |
+  | D188 | 0 / 0 / 0 | **874.7 / 900.9 / 900.9, 10 s** | 0.2 / 0.3 / 0.3 | | 2.6 / 5.2 / 5.2 |
+  | DAMON as the kernel has it | 872 / 921 / 921 | -5.2 / 24.8 / 24.8, 180 s | 0.3 / 0.5 / 0.5 | 0.0 / 0.0 / 0.0 | 1.9 / 2.6 / 2.6 |
+  | DAMON active | 433 / 495 / 495 | 52.7 / 114.4 / 114.4, 180 s | 1.5 / 1.7 / 1.7 | 0.4 / 0.5 / 0.5 | 2.7 / 4.8 / 4.8 |
+  | DAMON active, min_age 5 s | 315 / 346 / 346 | 470.6 / 592.9 / 592.9, 30 s; 568.2 / 594.9 / 594.9, 90 s | 1.6 / 1.7 / 1.7 | 0.4 / 0.5 / 0.5 | 2.3 / 4.7 / 4.7 |
+
+  DAMON's own count of what it reclaimed: 0 at p50 as the kernel has it (364 MiB in one
+  round of six), 443 / 461 active, 584 / 622 at min_age 5 s. The region it monitored, the
+  biggest System RAM when enabled: one range of the memory the guest had plugged, 4 GiB
+  to 4.75 GiB or 5.75 GiB, of a guest whose read held about 900 MiB across more than it.
+- **Reading.**
+  - As the kernel has it, DAMON_RECLAIM does nothing in a run's guest: kdamond stayed idle
+    (0.0% of a CPU) in five rounds of six, its watermarks running it only while the guest's
+    free memory is between a fifth and a half of its memory (`wmarks_low`, `wmarks_high`;
+    the guest's free share was not read), and woke every 5 s to look.
+  - Held active, it gives back what it reclaims late and in part: with min_age's 120 s, 53
+    MiB in 180 s; with 5 s, 568 MiB in 90 s, two thirds of the read. It monitors one range
+    of physical memory (`monitor_region_start` and `_end`, the biggest System RAM), and a
+    plug-as-needed guest's page cache lies across ranges it does not see; and it pages out
+    regions as they age, freeing pages in pieces that page reporting gives back only once
+    they make whole 2 MiB blocks.
+  - Active, it costs the guest's idle: kdamond's sampling every 5 ms keeps the VM process
+    at 1.5 to 1.6% of a CPU where an idle guest takes 0.2: across a hundred idle microVMs,
+    one and a half CPUs.
+  - D188 gives back 93 to 96% of what the read added within 10 s and costs nothing until
+    the host is short; a re-read pays about the same for either (1.2 s a GiB more at p50
+    than from the guest's cache, the file coming again from the host's page cache over
+    virtio-fs).
+- **Consequence.** D188's reclaim at the host's pressure stays; DAMON_RECLAIM stays off, as
+  the kernel builds it. Its other mode, DAMON_LRU_SORT, sorts the LRU lists and frees
+  nothing.
+
 ### M294. The vCPU hold's governor on Windows: its clocks, its waits, and its priority (D191 slice 2)
 
 - **Question.** `vm::hold::tests::threads_held_use_no_more_than_their_share` failed once on

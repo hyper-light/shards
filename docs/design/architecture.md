@@ -5657,6 +5657,14 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   then a thread blocked in poll(2) on Linux 6.4 and later and on macOS; on an older Linux,
   a read of the host's average every ten seconds.
 
+**Measured against DAMON (PM M293).** DAMON_RECLAIM, built into the pinned kernel, does
+nothing in a run's guest as the kernel has it (its watermarks, which run it only while a
+guest's free memory is between a fifth and a half of it, kept it off in five rounds of
+six); held active it gives back 53 MiB of a gigabyte
+read in 180 s, or 568 MiB in 90 s with min_age 5 s, monitoring one range of the guest's
+memory, at 1.5% of a CPU idle against 0.2. D188 gives back 875 MiB within 10 s, and nothing
+until the host is short. DAMON stays off.
+
 **Measured (PM M267, M268).** On the Mac, the guest's 944 MiB of a read file reclaimed in
 33 ms (p50); with the flush, 946 MiB back to the host within 0.5 s (p50, the builtin 81
 ms), where reporting at its own pace gave back 374 MiB by 2 s, 630 by 4 s and 952 by 8 s.
