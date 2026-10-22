@@ -26,7 +26,7 @@
 //! [`memory_fault`]: Window::memory_fault
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -83,6 +83,65 @@ struct Entry {
     /// How far into the range the file's pages go: whole pages, to the one that holds the
     /// file's end as the window last looked, or the range's end; zeros past it.
     file_to: u64,
+    /// Whether its held record has been taken again since it was mapped
+    /// ([`Window::rerecord`]): once, its host's reading around faults caught; after, the
+    /// guest records the pages it writes itself.
+    rerecorded: bool,
+}
+
+/// A window's mapped ranges, by window offset, and for each node whose file they map which
+/// they are: a request about one file looks at its ranges alone, and at none where its
+/// file is as they last followed it. A window that walked every range at each reply about
+/// a file mapped in 1,024 of them took 8.5 µs a reply at p50 on Fedora and 7.8 on the Mac;
+/// this, 0.3 (PM M301).
+#[derive(Default)]
+struct Table {
+    ranges: BTreeMap<u64, Entry>,
+    nodes: BTreeMap<u64, Node>,
+}
+
+/// What a window maps of one node's file.
+#[derive(Default)]
+struct Node {
+    /// Its ranges, `(file offset, window offset)`: those a write meets, found by where it is
+    /// in the file.
+    ranges: BTreeSet<(u64, u64)>,
+    /// The size its file had as each of its ranges last followed it ([`Window::follow`]);
+    /// none where one may not have.
+    followed: Option<u64>,
+    /// How many of its ranges have not had their held record taken again
+    /// ([`Window::rerecord`]).
+    unrecorded: usize,
+}
+
+impl Table {
+    /// Maps `entry` at window offset `moffset`, in place of what was there.
+    fn insert(&mut self, moffset: u64, entry: Entry) {
+        self.remove(moffset);
+        let node = self.nodes.entry(entry.mapped.node).or_default();
+        node.ranges.insert((entry.mapped.foffset, moffset));
+        node.followed = None;
+        node.unrecorded += usize::from(!entry.rerecorded);
+        self.ranges.insert(moffset, entry);
+    }
+
+    /// Forgets the range at window offset `moffset`, and returns it.
+    fn remove(&mut self, moffset: u64) -> Option<Entry> {
+        let e = self.ranges.remove(&moffset)?;
+        if let Some(node) = self.nodes.get_mut(&e.mapped.node) {
+            node.ranges.remove(&(e.mapped.foffset, moffset));
+            node.unrecorded = node.unrecorded.saturating_sub(usize::from(!e.rerecorded));
+            if node.ranges.is_empty() {
+                self.nodes.remove(&e.mapped.node);
+            }
+        }
+        Some(e)
+    }
+
+    /// Whether any range maps node `node`.
+    fn maps(&self, node: u64) -> bool {
+        self.nodes.contains_key(&node)
+    }
 }
 
 /// Host address space reserved for a window: inaccessible where nothing is mapped,
@@ -109,8 +168,13 @@ pub struct Window {
     gpa: u64,
     len: u64,
     host: Reserved,
+    /// Which of its pages its host holds, one bit a guest's page, for its guest to read
+    /// (shared memory region `HELD`, kernel patch 0009): a range's written as it is mapped,
+    /// from what the host holds of it then ([`record_held`](Self::record_held)), cleared as
+    /// it is unmapped. Memory of the window's own, which its guest writes too.
+    held: Reserved,
     stage2: Box<dyn Stage2>,
-    mapped: Mutex<BTreeMap<u64, Entry>>,
+    mapped: Mutex<Table>,
     watch: OnceLock<Box<dyn Watch>>,
     /// Its changes to what its ranges hold, counted: a fault that came while one was under
     /// way is run again once it is done ([`Window::memory_fault`]).
@@ -188,10 +252,12 @@ fn file_range(
     unsafe { crate::platform::map_file_range(file, foffset, len, at, writable) }
 }
 
-// How many times this thread has looked at a file's size ([`size_of`]), for the tests.
+// How many times this thread has looked at a file's size ([`size_of`]), and had a range
+// follow its file ([`Window::follow`]), for the tests.
 #[cfg(test)]
 thread_local! {
     static SIZES_LOOKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FOLLOWED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The size of the file `fd` holds open.
@@ -243,11 +309,6 @@ impl Sizes {
     }
 }
 
-/// Whether any range maps node `node`.
-fn maps(mapped: &BTreeMap<u64, Entry>, node: u64) -> bool {
-    mapped.values().any(|e| e.mapped.node == node)
-}
-
 impl Window {
     /// A window of `len` bytes at guest address `gpa`, whole [`RANGE`]s, its host side
     /// reserved and nothing mapped; `stage2`, given where the reservation begins, gives what
@@ -267,13 +328,23 @@ impl Window {
         let at = reserve(std::ptr::null_mut(), size).map_err(|e| format!("reserving a DAX window: {e}"))?;
         // Unmapped as it drops, whatever comes next.
         let host = Reserved { at, len: size };
+        let held_len = crate::devices::virtio::head::window_held_len(len)?;
+        let held_size = usize::try_from(held_len).map_err(|_| format!("a DAX window of {len} bytes"))?;
+        let held_at =
+            reserve(std::ptr::null_mut(), held_size).map_err(|e| format!("a DAX window's record: {e}"))?;
+        let held = Reserved {
+            at: held_at,
+            len: held_size,
+        };
+        zeros(held_at, held_size, true).map_err(|e| format!("a DAX window's record: {e}"))?;
         let stage2 = stage2(at)?;
         Ok(Window {
             gpa,
             len,
             host,
+            held,
             stage2,
-            mapped: Mutex::new(BTreeMap::new()),
+            mapped: Mutex::new(Table::default()),
             watch: OnceLock::new(),
             changes: AtomicU64::new(0),
         })
@@ -286,6 +357,90 @@ impl Window {
 
     pub fn gpa(&self) -> u64 {
         self.gpa
+    }
+
+    /// Its held record's memory, `(host, len)`, which its VM maps for its guest, writable,
+    /// right after the window (`HELD`).
+    pub fn held(&self) -> (*mut u8, usize) {
+        (self.held.at, self.held.len)
+    }
+
+    /// The words of its held record for `size` bytes at window offset `moffset`, whole
+    /// ranges: 64 of the guest's pages a word, and a range eight of them (`place`).
+    fn held_words(&self, moffset: u64, size: usize) -> &[AtomicU64] {
+        let first =
+            usize::try_from(moffset / crate::devices::virtio::head::WINDOW_PAGE / 64).unwrap_or(usize::MAX);
+        let count = size / crate::devices::virtio::head::WINDOW_PAGE as usize / 64;
+        let words = self.held.len / std::mem::size_of::<AtomicU64>();
+        let (first, count) = if first.checked_add(count).is_some_and(|end| end <= words) {
+            (first, count)
+        } else {
+            (0, 0)
+        };
+        // SAFETY: the record's own memory, mapped for the window's life and aligned to the
+        // host's pages; its words are only ever read and written atomically, here and by
+        // the guest's kernel (set_bit, test_bit), and lie within it (checked above).
+        unsafe { std::slice::from_raw_parts(self.held.at.cast::<AtomicU64>().add(first), count) }
+    }
+
+    /// Records which of the pages of the range at window offset `moffset`, `size` bytes
+    /// mapped at `host`, its host holds (mincore(2)), one bit a guest's page, for its guest:
+    /// a write of whole pages its host does not hold goes as a FUSE_WRITE, which reads none
+    /// of them (patch 0009, PM M283). Where the host cannot say, none: advice alone.
+    fn record_held(&self, moffset: u64, host: *mut u8, size: usize) {
+        let page = crate::devices::virtio::head::WINDOW_PAGE as usize;
+        let host_page = crate::platform::page_size().unwrap_or(page).max(page);
+        // SAFETY: the range the window has just mapped, at `host`, page-aligned.
+        let in_core = unsafe { crate::platform::in_core(host, size) }.unwrap_or_default();
+        for (w, word) in self.held_words(moffset, size).iter().enumerate() {
+            let bits = (0..64).fold(0u64, |bits, b| {
+                let at = (w * 64 + b) * page;
+                let held = in_core.get(at / host_page).copied().unwrap_or(false);
+                bits | (u64::from(held) << b)
+            });
+            word.store(bits, Ordering::Release);
+        }
+    }
+
+    /// Records again which pages its host holds of each range that maps node `node`'s file
+    /// between `offset` and `offset + len` ([`record_held`](Self::record_held)), once a
+    /// mapping: after the first FUSE_WRITE there, as its host may have read around a fault
+    /// in the range since it was mapped (Btrfs reads 4 MiB around one, PM M297), which a
+    /// record taken as it was mapped says it does not hold. The pages a FUSE_WRITE writes
+    /// the guest records itself (patch 0009): a look at a whole range at every write would
+    /// cost each a 2 MiB mincore(2), 2.5 to 8.1 µs on Fedora and 26 on the Mac, where the
+    /// host's pwrite(2) of 4 KiB takes 1.0 (PM M299, M301).
+    pub fn rerecord(&self, node: u64, offset: u64, len: u64) {
+        let mut table = self.lock();
+        let Table { ranges, nodes } = &mut *table;
+        let Some(n) = nodes.get_mut(&node).filter(|n| n.unrecorded > 0) else {
+            return;
+        };
+        let end = offset.saturating_add(len);
+        // Those it meets: each begins within a range's length before its end.
+        for &(_, moffset) in n.ranges.range((offset.saturating_sub(RANGE - 1), 0)..(end, 0)) {
+            let Some(e) = ranges.get_mut(&moffset) else {
+                continue;
+            };
+            let from = e.mapped.foffset;
+            let to = from.saturating_add(e.mapped.len);
+            if e.rerecorded || to <= offset || end <= from {
+                continue;
+            }
+            if let Some((host, size)) = self.place(moffset, e.mapped.len) {
+                self.record_held(moffset, host, size);
+            }
+            e.rerecorded = true;
+            n.unrecorded = n.unrecorded.saturating_sub(1);
+        }
+    }
+
+    /// Says none of the pages of `size` bytes at window offset `moffset` held, as the
+    /// window unmaps them, or maps zeros there.
+    fn clear_held(&self, moffset: u64, size: usize) {
+        for word in self.held_words(moffset, size) {
+            word.store(0, Ordering::Release);
+        }
     }
 
     pub fn size(&self) -> u64 {
@@ -304,7 +459,7 @@ impl Window {
             return;
         }
         let mut now: Vec<(u64, OwnedFd, u64)> = Vec::new();
-        for e in mapped.values() {
+        for e in mapped.ranges.values() {
             if now.iter().any(|(node, ..)| *node == e.mapped.node) {
                 continue;
             }
@@ -323,7 +478,7 @@ impl Window {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, BTreeMap<u64, Entry>> {
+    fn lock(&self) -> MutexGuard<'_, Table> {
         self.mapped
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -366,7 +521,7 @@ impl Window {
         let file_size = size_of(&file).ok_or(libc::EIO)?;
         let file_to = file_end(file_size, foffset, len, page);
         let mut mapped = self.lock();
-        let watched = maps(&mapped, node);
+        let watched = mapped.maps(node);
         let gone = self.forget(&mut mapped, moffset, len);
         let backed = (|| {
             let n = usize::try_from(file_to).map_err(|_| libc::EINVAL)?;
@@ -408,8 +563,11 @@ impl Window {
                 },
                 file: Some(file),
                 file_to,
+                rerecorded: false,
             },
         );
+        // Before the guest hears of the mapping, which then reads what its host holds.
+        self.record_held(moffset, host, size);
         self.settle(mapped, gone, watch);
         Ok(())
     }
@@ -453,8 +611,10 @@ impl Window {
                 },
                 file: None,
                 file_to: 0,
+                rerecorded: true,
             },
         );
+        self.clear_held(moffset, size);
         self.settle(mapped, gone, None);
         Ok(())
     }
@@ -466,6 +626,7 @@ impl Window {
         let mut mapped = self.lock();
         let gone = self.forget(&mut mapped, moffset, len);
         let reserved = reserve(host, size);
+        self.clear_held(moffset, size);
         self.settle(mapped, gone, None);
         reserved.map(|_| ()).map_err(errno)
     }
@@ -474,9 +635,10 @@ impl Window {
     /// bytes at `moffset`, each whole: one a new mapping overlaps in part leaves nothing of
     /// it reachable (Linux maps whole 2 MiB ranges, which never overlap; a guest of another
     /// kind may). The nodes of those forgotten.
-    fn forget(&self, mapped: &mut BTreeMap<u64, Entry>, moffset: u64, len: u64) -> Vec<u64> {
+    fn forget(&self, mapped: &mut Table, moffset: u64, len: u64) -> Vec<u64> {
         let end = moffset.saturating_add(len);
         let meeting: Vec<(u64, u64)> = mapped
+            .ranges
             .range(..end)
             .filter(|(at, e)| at.saturating_add(e.mapped.len) > moffset)
             .map(|(at, e)| (*at, e.mapped.len))
@@ -492,7 +654,7 @@ impl Window {
             {
                 crate::debug!("virtio-fs: clearing a DAX range at {gpa:#x}: {e}");
             }
-            if let Some(e) = mapped.remove(&at) {
+            if let Some(e) = mapped.remove(at) {
                 gone.push(e.mapped.node);
             }
         }
@@ -502,15 +664,10 @@ impl Window {
     /// Lets go of the lock, then tells the window's watch of the nodes of `gone` it maps
     /// none of now, and of `watch`, a node it has begun to map: never under the lock, as
     /// the watch may wait on another process.
-    fn settle(
-        &self,
-        mapped: MutexGuard<'_, BTreeMap<u64, Entry>>,
-        mut gone: Vec<u64>,
-        watch: Option<(u64, OwnedFd, u64)>,
-    ) {
+    fn settle(&self, mapped: MutexGuard<'_, Table>, mut gone: Vec<u64>, watch: Option<(u64, OwnedFd, u64)>) {
         gone.sort_unstable();
         gone.dedup();
-        gone.retain(|node| !maps(&mapped, *node));
+        gone.retain(|node| !mapped.maps(*node));
         let watching = self.watch.get();
         drop(mapped);
         let Some(w) = watching else {
@@ -528,6 +685,8 @@ impl Window {
     /// where it could not be looked at): its pages to the one that holds its end, where it
     /// has grown since, and zeros past that, where it was cut short. Whether it changed.
     fn follow(&self, at: u64, e: &mut Entry, page: u64, size: Option<u64>) -> bool {
+        #[cfg(test)]
+        FOLLOWED.set(FOLLOWED.get() + 1);
         let Some(size) = size else {
             return false;
         };
@@ -593,18 +752,32 @@ impl Window {
         let Some(page) = page() else {
             return;
         };
-        let mut mapped = self.lock();
-        if mapped.is_empty() {
-            return;
-        }
-        let mut nodes = nodes.to_vec();
-        nodes.sort_unstable();
-        let (mut changed, mut sizes) = (false, Sizes::default());
-        for (&at, e) in mapped.iter_mut() {
-            if nodes.binary_search(&e.mapped.node).is_ok() {
-                let size = sizes.of(e);
-                changed |= self.follow(at, e, page, size);
+        let mut table = self.lock();
+        let Table {
+            ranges,
+            nodes: by_node,
+        } = &mut *table;
+        let mut changed = false;
+        for node in nodes {
+            let Some(n) = by_node.get_mut(node) else {
+                continue;
+            };
+            // Its file's size, looked at once, through any of its ranges' descriptors; its
+            // ranges followed only where it changed since they last did.
+            let size = n
+                .ranges
+                .iter()
+                .find_map(|(_, at)| ranges.get(at)?.file.as_ref())
+                .and_then(size_of);
+            if size.is_some() && size == n.followed {
+                continue;
             }
+            for &(_, at) in &n.ranges {
+                if let Some(e) = ranges.get_mut(&at) {
+                    changed |= self.follow(at, e, page, size);
+                }
+            }
+            n.followed = size;
         }
         if changed {
             self.changes.fetch_add(1, Ordering::AcqRel);
@@ -630,9 +803,10 @@ impl Window {
         let Some(page) = page() else {
             return false;
         };
-        let mut mapped = self.lock();
+        let mut table = self.lock();
+        let Table { ranges, nodes } = &mut *table;
         let (mut held, mut changed, mut sizes) = (false, false, Sizes::default());
-        for (&at, e) in mapped.iter_mut() {
+        for (&at, e) in ranges.iter_mut() {
             let start = self.gpa.saturating_add(at);
             if gpa.is_some_and(|g| g < start || g >= start.saturating_add(e.mapped.len)) {
                 continue;
@@ -640,8 +814,12 @@ impl Window {
             held = true;
             let size = sizes.of(e);
             changed |= self.follow(at, e, page, size);
+            // Its node's ranges no longer all follow one size.
+            if let Some(n) = nodes.get_mut(&e.mapped.node) {
+                n.followed = None;
+            }
         }
-        drop(mapped);
+        drop(table);
         if changed {
             self.changes.fetch_add(1, Ordering::AcqRel);
             UNCHANGED.set(None);
@@ -664,12 +842,12 @@ impl Window {
 
     /// Whether any range maps node `node`'s file.
     pub fn maps(&self, node: u64) -> bool {
-        maps(&self.lock(), node)
+        self.lock().maps(node)
     }
 
     /// Every mapping, by window offset: what a save keeps (D176).
     pub fn mappings(&self) -> Vec<(u64, Mapped)> {
-        self.lock().iter().map(|(at, e)| (*at, e.mapped)).collect()
+        self.lock().ranges.iter().map(|(at, e)| (*at, e.mapped)).collect()
     }
 
     /// Unmaps everything: the device reset, its guest's mappings gone with its driver.
@@ -790,6 +968,62 @@ mod tests {
         assert_eq!(w.unmap(15 * MIB, 2 * MIB), Err(libc::EINVAL));
     }
 
+    /// The window records which of a range's pages its host holds as it maps the range, a
+    /// bit for each of its guest's pages, for its guest to write those its host does not
+    /// hold as FUSE_WRITEs (patch 0009): the file's pages its host has, held, a hole's
+    /// not, a host page whole; again after the first FUSE_WRITE there, once; and none of a
+    /// range once it is unmapped (D189).
+    #[test]
+    fn a_ranges_held_pages_are_recorded_as_it_is_mapped() {
+        use std::os::unix::fs::FileExt as _;
+        let dir = shards_testdir::TempDir::new("dax-held").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dir.join("file"))
+            .unwrap();
+        file.set_len(4 * MIB).unwrap();
+        // The first range whole, and one page of the second; the rest a hole.
+        let page = crate::devices::virtio::head::WINDOW_PAGE;
+        file.write_all_at(&vec![1u8; (2 * MIB) as usize], 0).unwrap();
+        file.write_all_at(&[2u8; 4096], 2 * MIB + 2 * page).unwrap();
+        let w = window(&Arc::new(Told::default()));
+        let fd = || OwnedFd::from(file.try_clone().unwrap());
+        w.map(fd(), 7, 0, 0, 2 * MIB, false).unwrap();
+        w.map(fd(), 7, 2 * MIB, 2 * MIB, 2 * MIB, false).unwrap();
+        let (host, len) = w.held();
+        assert_eq!(
+            len as u64,
+            crate::devices::virtio::head::window_held_len(16 * MIB).unwrap()
+        );
+        // SAFETY: the window's record, for as long as `w` is, read as the window writes it.
+        let words = unsafe { std::slice::from_raw_parts(host.cast::<AtomicU64>(), len / 8) };
+        let word = |i: usize| words[i].load(Ordering::Acquire);
+        assert!((0..8).all(|i| word(i) == u64::MAX), "{:x}", word(0));
+        // The host's page that holds the written one, whole: four of the guest's on 16 KiB.
+        let per = (crate::platform::page_size().unwrap() as u64 / page).max(1);
+        let first = 2 / per * per;
+        assert_eq!(word(8), (first..first + per).fold(0, |bits, p| bits | 1 << p));
+        assert!((9..16).all(|i| word(i) == 0));
+        // A page its host comes to hold after the range was mapped, as a FUSE_WRITE writes
+        // one, is held once the window records the range again; another file's write
+        // records nothing of this one's.
+        file.write_all_at(&[3u8; 4096], 3 * MIB).unwrap();
+        w.rerecord(8, 3 * MIB, 4096);
+        assert_eq!(word(12), 0);
+        w.rerecord(7, 3 * MIB, 4096);
+        assert_eq!(word(12), (0..per).fold(0, |bits, p| bits | 1 << p));
+        // Once a mapping: the pages later writes write, the guest records itself.
+        file.write_all_at(&[4u8; 4096], 3 * MIB + 64 * page).unwrap();
+        w.rerecord(7, 3 * MIB + 64 * page, 4096);
+        assert_eq!(word(13), 0);
+        w.unmap(0, 2 * MIB).unwrap();
+        assert!((0..8).all(|i| word(i) == 0));
+        assert_ne!(word(8), 0, "another range's, as it was");
+    }
+
     /// A file mapped in every range of a window is looked at once as a request about it is
     /// answered, not once a range: a FUSE_WRITE into a file mapped in 1,024 ranges took
     /// 1,024 fstat(2)s, 393 µs where 76 was its own (PM M299).
@@ -809,6 +1043,42 @@ mod tests {
         let before = SIZES_LOOKED.get();
         w.reconcile(&[7]);
         assert_eq!(SIZES_LOOKED.get() - before, 1);
+    }
+
+    /// A file's ranges follow it at a request about it only where it changed since they last
+    /// did: a reply about a file mapped in 1,024 ranges walked each, 8.5 µs at p50 on Fedora
+    /// (PM M301). Another file's, and a range mapped since, are followed again.
+    #[test]
+    fn a_files_ranges_follow_it_only_where_it_changed() {
+        let dir = shards_testdir::TempDir::new("dax-follow").unwrap();
+        let path = dir.join("file");
+        std::fs::write(&path, vec![1u8; (8 * MIB) as usize]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let w = window(&Arc::new(Told::default()));
+        let fd = || OwnedFd::from(file.try_clone().unwrap());
+        for range in 0..4 {
+            w.map(fd(), 7, range * 2 * MIB, range * 2 * MIB, 2 * MIB, false)
+                .unwrap();
+        }
+        let followed = |nodes: &[u64]| {
+            let before = FOLLOWED.get();
+            w.reconcile(nodes);
+            FOLLOWED.get() - before
+        };
+        assert_eq!(followed(&[7]), 4);
+        assert_eq!(followed(&[7]), 0, "nothing changed");
+        assert_eq!(followed(&[8]), 0, "no range of it");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(9 * MIB)
+            .unwrap();
+        assert_eq!(followed(&[7]), 4, "grown");
+        assert_eq!(followed(&[7]), 0);
+        w.unmap(6 * MIB, 2 * MIB).unwrap();
+        w.map(fd(), 7, 6 * MIB, 6 * MIB, 2 * MIB, false).unwrap();
+        assert_eq!(followed(&[7]), 4, "a range mapped since");
     }
 
     /// A range past its file's end holds the file's pages to the one that holds its end,
@@ -905,5 +1175,79 @@ mod tests {
             seen.iter().all(|&b| b == 0),
             "nothing of the file is left in the range"
         );
+    }
+
+    /// What the window's own bookkeeping costs a request about a file it maps in 1,024
+    /// ranges (PM M301): a reply about the file, its size unchanged (`reconcile`); its held
+    /// record taken again, the first time in a range and after (`rerecord`); and the
+    /// `mincore(2)` of a range it is taken with, of pages the host holds and of none:
+    ///
+    ///     cargo test --release -p shards-vmm window_costs -- --ignored --nocapture
+    #[test]
+    #[ignore = "a measurement"]
+    fn window_costs() {
+        let dir = shards_testdir::TempDir::new("dax-costs").unwrap();
+        let path = dir.join("file");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        // 2 GiB, its first range's pages written, which its host then holds, the rest holes.
+        crate::platform::write_all_at(&file, &vec![1u8; (2 * MIB) as usize], 0).unwrap();
+        file.set_len(2048 * MIB).unwrap();
+        let stage2 = Recorded(Arc::new(Told::default()));
+        let w = Window::new(GPA, 2048 * MIB, |_| Ok(Box::new(stage2) as Box<dyn Stage2>)).unwrap();
+        for range in 0..1024 {
+            let fd = OwnedFd::from(file.try_clone().unwrap());
+            w.map(fd, 7, range * 2 * MIB, range * 2 * MIB, 2 * MIB, false)
+                .unwrap();
+        }
+        let summary = |mut v: Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            let at = |p: f64| v[((p * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1];
+            format!(
+                "n {} | p50 {:.2} | p90 {:.2} | p99 {:.2} | max {:.2} us",
+                v.len(),
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                v[v.len() - 1]
+            )
+        };
+        let time = |n: u64, f: &dyn Fn(u64)| -> Vec<f64> {
+            (0..n)
+                .map(|i| {
+                    let t = std::time::Instant::now();
+                    f(i);
+                    t.elapsed().as_secs_f64() * 1e6
+                })
+                .collect()
+        };
+        w.reconcile(&[7]);
+        eprintln!(
+            "reconcile, its size unchanged: {}",
+            summary(time(2000, &|_| w.reconcile(&[7])))
+        );
+        eprintln!(
+            "rerecord, a range's first: {}",
+            summary(time(1000, &|i| w.rerecord(7, (i + 1) * 2 * MIB, 4096)))
+        );
+        eprintln!(
+            "rerecord, taken already: {}",
+            summary(time(2000, &|_| w.rerecord(7, 2 * MIB, 4096)))
+        );
+        let host = w.host();
+        for (what, at) in [("held", 0), ("none held", 512 * MIB as usize)] {
+            eprintln!(
+                "mincore(2) of a range, its pages {what}: {}",
+                summary(time(2000, &|_| {
+                    // SAFETY: a range the window maps, page-aligned and within it.
+                    let _ = unsafe { crate::platform::in_core(host.add(at), (2 * MIB) as usize) };
+                }))
+            );
+        }
     }
 }

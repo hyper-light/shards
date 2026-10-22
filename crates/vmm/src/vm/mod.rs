@@ -465,12 +465,14 @@ pub(crate) fn has_windows(config: &crate::snapshot::MachineConfig) -> bool {
 
 /// A shared directory's DAX window's place in its guest (D189), `(guest address, length)`
 /// of each part: its head ([`head::window_head_len`]), at a GiB boundary, a section's start,
-/// and the window right after it.
+/// the window right after it, and its held record right after that
+/// ([`head::window_held_len`]).
 #[cfg(hv)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowAt {
     head: (u64, u64),
     window: (u64, u64),
+    held: (u64, u64),
 }
 
 /// Each shared directory's DAX window (D189), its share's first and the join share's last,
@@ -508,15 +510,18 @@ fn share_windows(
         ));
     }
     let head = head::window_head_len(len)?;
+    let held = head::window_held_len(len)?;
     let mut windows = Vec::with_capacity(count);
     let mut next = top;
     for _ in 0..count {
         let at = next.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
         let window = at.checked_add(head).ok_or_else(overflow)?;
-        next = window.checked_add(len).ok_or_else(overflow)?;
+        let record = window.checked_add(len).ok_or_else(overflow)?;
+        next = record.checked_add(held).ok_or_else(overflow)?;
         windows.push(WindowAt {
             head: (at, head),
             window: (window, len),
+            held: (record, held),
         });
     }
     if next > limit {
@@ -563,15 +568,17 @@ fn map_window_heads(vm: &crate::hv::Vm, heads: &head::WindowHeads) -> Result<(),
     Ok(())
 }
 
-/// A share's DAX window (D189) at `(gpa, len)`: its host side reserved, and on KVM one
-/// memslot over it, as memory to plug's (`add_hotplug`), which each range its guest maps is
-/// placed in; on other hypervisors each range mapped at stage 2 as it is placed.
+/// A share's DAX window (D189) at `at`: its host side reserved, and on KVM one memslot over
+/// it, as memory to plug's (`add_hotplug`), which each range its guest maps is placed in;
+/// on other hypervisors each range mapped at stage 2 as it is placed. Its held record is
+/// mapped right after it, writable.
 #[cfg(all(hv, unix))]
 fn dax_window(
     vm: Option<&crate::hv::Vm>,
-    (gpa, len): (u64, u64),
+    at: &WindowAt,
 ) -> Result<Arc<crate::devices::virtio::fs::window::Window>, String> {
     let vm = vm.ok_or("a DAX window with no VM to map it into")?;
+    let (gpa, len) = at.window;
     let size = usize::try_from(len).map_err(|_| format!("a DAX window of {len} bytes"))?;
     let window = crate::devices::virtio::fs::window::Window::new(gpa, len, |host| {
         // SAFETY: the window's reservation stays mapped until the window drops, which its
@@ -579,6 +586,15 @@ fn dax_window(
         let stage2 = unsafe { vm.add_hotplug(host, gpa, size) }.map_err(|e| e.to_string())?;
         Ok(Box::new(stage2) as Box<dyn crate::devices::virtio::fs::window::Stage2>)
     })?;
+    let (host, held) = window.held();
+    if held as u64 != at.held.1 {
+        return Err(format!(
+            "a DAX window's record of {held} bytes for {} given it",
+            at.held.1
+        ));
+    }
+    // SAFETY: as the window's own, the record stays mapped until the window drops.
+    unsafe { vm.map_device_memory(host, at.held.0, held, true) }.map_err(|e| e.to_string())?;
     Ok(Arc::new(window))
 }
 
@@ -693,7 +709,7 @@ fn virtio_devices(
             .clone();
         let window = windows
             .get(i)
-            .map(|w| dax_window(vm, w.window).map(|window| (window, w.head)))
+            .map(|w| dax_window(vm, w).map(|window| (window, w.head, w.held)))
             .transpose()?;
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
@@ -710,7 +726,7 @@ fn virtio_devices(
             .ok_or("the machine has a join share but no slot for it")?;
         let window = windows
             .get(config.shares as usize)
-            .map(|w| dax_window(vm, w.window).map(|window| (window, w.head)))
+            .map(|w| dax_window(vm, w).map(|window| (window, w.head, w.held)))
             .transpose()?;
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?
@@ -2084,12 +2100,16 @@ mod tests {
         // structures in one section, and the window right after it.
         let head = head::window_head_len(1536 << 20).unwrap();
         assert_eq!(head, pmem::SECTION);
+        // Its held record, a bit for each of 384 Ki pages, 48 KiB, in a range of its own.
+        let held = head::window_held_len(1536 << 20).unwrap();
+        assert_eq!(held, pmem::ALIGN);
         let at = |gib: u64| WindowAt {
             head: (gib * GIB, head),
             window: (gib * GIB + head, 1536 << 20),
+            held: (gib * GIB + head + (1536 << 20), held),
         };
         assert_eq!(windows, [at(6), at(8), at(10)]);
-        assert_eq!(end, 10 * GIB + head + (1536 << 20));
+        assert_eq!(end, 10 * GIB + head + (1536 << 20) + held);
         assert!(share_windows(&config, 5 * GIB + 1, end - 1).is_err());
         assert!(share_windows(&config, 5 * GIB + 1, end).is_ok());
         config.share_window_mib = 3;

@@ -190,6 +190,25 @@ impl Head {
     }
 }
 
+/// The guest's pages of a DAX window, 4 KiB in shards' kernels (x86_64's, and arm64's
+/// CONFIG_ARM64_4K_PAGES): what its held record has a bit for ([`window_held_len`]).
+pub const WINDOW_PAGE: u64 = 4 << 10;
+
+/// The bytes of a DAX window's held record (D189): which of the window's pages its host
+/// holds, one bit for each of its guest's pages ([`WINDOW_PAGE`]), in memory of the
+/// window's own right after it, shared memory region 0xfd, that its guest's kernel reads
+/// to write whole pages its host does not hold as FUSE_WRITEs (kernel patch 0009); for a
+/// window of `len` bytes, whole 2 MiB ranges, as the window is.
+pub fn window_held_len(len: u64) -> Result<u64, String> {
+    if len == 0 || !len.is_multiple_of(ALIGN) {
+        return Err(format!("a DAX window of {len} bytes: whole {} MiB", ALIGN >> 20));
+    }
+    (len / WINDOW_PAGE)
+        .div_ceil(8)
+        .checked_next_multiple_of(ALIGN)
+        .ok_or_else(|| format!("a DAX window of {len} bytes is past any guest's addresses"))
+}
+
 /// A machine's DAX windows' heads (D189), one after another in one [`Head`], each mapped at
 /// its window's head ([`window_head_len`]): what a snapshot keeps of them, and what a
 /// template's save maps back, as a writable layer's head is (pmem `Layer::remap_head`).

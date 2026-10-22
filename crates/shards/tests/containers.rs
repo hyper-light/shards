@@ -1669,7 +1669,8 @@ fn a_microvms_io_is_paced_at_its_limits() {
 /// reads, and what the host writes it reads, in ranges it maps to read and to write; a
 /// file grown past its end, by either, it reads whole; and one the host cuts short under
 /// its mapping leaves it zeros where the host has no page, never an end to its microVM,
-/// and the file once the host writes there again.
+/// and the file once the host writes there again; whole pages it writes where its host
+/// holds none of them, the host and the guest read (as FUSE_WRITEs, patch 0009).
 #[test]
 fn a_volumes_large_files_go_through_its_dax_window() {
     if cannot_run_vms() {
@@ -1865,6 +1866,38 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     std::fs::write(dir.join("held-go"), b"").unwrap();
     let held = holder.join().unwrap();
     assert_eq!(held.stdout, "hold /v/held 3145728 0\n", "{held}");
+    // Whole pages written by the guest where its host holds none of the file (D189, patch
+    // 0009): on Linux the host lets go of the file's pages first, and the guest's kernel
+    // writes them as a FUSE_WRITE, by its window's record; elsewhere through the window.
+    // Either way the host reads them, and the guest reads them through its window.
+    let pages: Vec<u8> = (0..4u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(dir.join("pages"), &pages).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let file = std::fs::File::open(dir.join("pages")).unwrap();
+        file.sync_all().unwrap();
+        // SAFETY: posix_fadvise(2) on a descriptor this test holds open.
+        let advised = unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+        assert_eq!(advised, 0);
+    }
+    assert_eq!(exec(&["fs", "dax:/v/pages"]), "dax /v/pages yes\n");
+    let at = (2 << 20) + 3 * 4096;
+    exec(&["fs", &format!("pages:/v/pages:{at}:4:7")]);
+    let host = std::fs::read(dir.join("pages")).unwrap();
+    assert!(host[at..at + 4 * 4096].iter().all(|&b| b == 7));
+    assert_eq!(
+        (host[at - 1], host[at + 4 * 4096]),
+        (pages[at - 1], pages[at + 4 * 4096])
+    );
+    for off in [at, at + 4 * 4096 - 1] {
+        assert_eq!(
+            exec(&["fs", &format!("peek:/v/pages:{off}")]),
+            format!("peek /v/pages {off} 7\n")
+        );
+    }
     assert_eq!(shards(&["rm", "-f", "dax"]).status, Some(0));
     // Mapped 2 MiB at a time by a process as the host grows it, then stat'ed and opened
     // again: the guest learns the new size, and lets go of none of the entries the process

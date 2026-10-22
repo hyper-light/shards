@@ -11848,3 +11848,90 @@ revision before comparing a changed API/implementation.
   (on both, its bound a 512th of head and window and 2 MiB). The test guest says its CPUs'
   listed free pages with its free memory. A window's linear map in blocks on arm64 is
   D189's next step for a guest's memory.
+
+### M301. Whole pages a host does not hold, written as FUSE_WRITEs by the window's record (D189, item 5)
+
+- **Question.** A store through a DAX window into a page its host does not hold waits for
+  the host to read it (M283; M299: a cold file's scattered 4 KiB writes 1,483 µs at p99
+  through the window, 206 through FUSE). With a record of which pages the host holds (the
+  window's held record: one bit a 4 KiB page, taken with `mincore(2)` as each range is
+  mapped, in shared memory region 0xfd) and a guest kernel that writes the whole pages its
+  host does not hold as FUSE_WRITEs (shards' patch 0009), what do writes through a window
+  cost?
+- **Method.** `dax-window-writes/held-ab.sh`: M299's `measure.py` passes (5,000 writes of 4
+  KiB at random over a 2 GiB file; 2,000 of 64 KiB, a page of each 2 MiB range read first;
+  500 of 1 MiB, no range mapped first), each through FUSE alone and through a window of
+  4,096 MiB, the file evicted from the host's page cache first (cold) or read whole (warm),
+  every arm on each kernel within each round (`--kernel`), 5 rounds. One release build of
+  shards (28f029fa with the held record as this entry commits it) on kernel A, the pinned
+  one (0008 alone, whose guest reads no record), and on B1, 0009 as first built, then B2,
+  0009 as committed; both built by `scripts/build-kernel-in-builder.sh`, CI's pinned
+  toolchain and config. Where B1 lost: `classes.sh`, guestwrite's writes of the 64 KiB pass
+  split into each range's first and the rest, A, B1 and B2 in each round, their order
+  turning, 6 rounds. The device's own costs: `window_costs` (window.rs; `cargo test
+  --release -p shards-vmm window_costs -- --ignored --nocapture`), and its first measure
+  against e1ac4cce's window, which walked every range. Fedora 44, Linux 6.19.10, M258's
+  i9-14900HX, 2026-10-22, load 2.4 to 9.7 from other work; the costs on the Mac too (M5
+  Max, macOS 26.4.1).
+- **Results.** µs a write through the window, the p50 of the rounds' p50 [their range],
+  p90 and p99; FUSE's own p50 beside it (A's arm of that run):
+
+  | pass | arm | A | B1 | FUSE | A | B2 | FUSE |
+  |---|---|---|---|---|---|---|---|
+  | 4 KiB over 2 GiB | cold | 31.0 [26.8, 76.3], 616.8, 1,603.9 | 50.9 [45.7, 139.8], 98.2, 315.1 | 66.2 | 30.2 [27.2, 66.7], 646.5, 1,905.3 | 53.6 [47.6, 75.3], 123.3, 318.6 | 45.3 |
+  | | warm | 29.5 [22.5, 58.9], 84.6, 243.3 | 24.8 [22.7, 74.5], 85.4, 235.5 | 62.3 | 23.0 [22.6, 30.4], 77.9, 299.8 | 23.3 [22.6, 34.6], 76.6, 288.2 | 46.2 |
+  | 64 KiB, mapped first | cold | 94.9 [79.9, 103.4], 169.1, 250.1 | 131.5 [114.4, 174.9], 211.3, 277.9 | 98.5 | 78.0 [76.2, 113.3], 138.7, 263.6 | 103.0 [76.7, 117.8], 185.3, 347.1 | 90.6 |
+  | | warm | 92.1 [78.0, 99.2], 181.0, 215.4 | 96.5 [81.6, 106.4], 179.1, 234.5 | 98.7 | 84.5 [78.4, 105.9], 161.8, 246.4 | 78.3 [77.1, 105.5], 136.6, 173.7 | 86.4 |
+  | 1 MiB, not mapped | cold | 1,609.4 [1,513.8, 1,726.8], 2,496.3, 2,916.7 | 1,103.8 [1,003.6, 1,797.9], 1,756.8, 2,130.1 | 973.0 | 1,728.8 [1,495.0, 2,031.5], 2,497.0, 2,950.9 | 1,386.2 [969.4, 1,561.4], 1,683.6, 2,366.9 | 1,028.0 |
+  | | warm | 766.3 [670.3, 809.2], 845.1, 1,476.4 | 730.2 [652.0, 768.4], 834.6, 1,551.7 | 989.1 | 702.6 [674.6, 809.7], 886.1, 1,183.4 | 729.1 [666.9, 1,253.3], 900.7, 1,655.0 | 936.9 |
+
+  The window's cold 4 KiB writes ran at 22.3 MiB/s on A and 48.6 on B1, 21.0 and 44.6 on
+  B2. In the passes that map ranges as writes come, the slowest write of every window arm,
+  on every kernel, took 7.8 to 32.6 ms; where a read had mapped them first, 1.4 at most.
+  The 64 KiB pass by class, cold, 874 first writes and 1,126 later ones a run: µs at p50,
+  the median of 6 rounds [their range]:
+
+  | | A | B1 | B2 |
+  |---|---|---|---|
+  | a range's first write | 158.5 [136.0, 184.4] | 152.9 [126.2, 198.6] | 137.4 [127.1, 189.4] |
+  | its later ones | 76.0 [61.0, 90.8] | 110.8 [95.9, 136.9] | 69.8 [52.3, 115.3] |
+  | all | 105.3 [85.8, 123.4] | 131.2 [104.7, 167.7] | 97.3 [79.4, 140.0] |
+
+  Warm, the first and later writes cost 136.8 and 68.6 on A, 171.0 and 73.2 on B1, 158.5
+  and 67.2 on B2. The device's own, µs, n 2,000 (1,000 for a range's first record), p50,
+  p90, p99, max:
+
+  | | Fedora | the Mac |
+  |---|---|---|
+  | a reply about a file in 1,024 ranges, its size unchanged | 0.29, 0.29, 0.30, 2.52 | 0.33, 0.38, 0.46, 2.29 |
+  | the same, e1ac4cce's window | 8.54, 9.00, 10.50, 80.29 | 7.83, 7.96, 11.54, 134.17 |
+  | a range's held record taken again, its first time | 3.40, 5.56, 6.30, 102.51 | 35.46, 43.62, 52.46, 62.33 |
+  | after | 0.04, 0.04, 0.04, 0.26 | 0.04, 0.04, 0.04, 3.42 |
+  | `mincore(2)` of a range, its pages held | 8.09, 8.21, 10.96, 25.18 | 25.88, 28.67, 34.96, 82.46 |
+  | of none | 2.48, 3.02, 3.65, 6.51 | 25.75, 25.96, 31.63, 44.54 |
+
+- **Reading.** With the record, a cold file's scattered 4 KiB writes have FUSE's tail: p99
+  315 to 319 µs where they took 1,604 to 1,905, p90 98 to 123 where 617 to 647, at twice
+  the rate. Their p50 is a FUSE_WRITE's, 51 to 54, where A's was 30 or 31: at least half of
+  A's met pages its host held already, which a fault's read-around brings in (Btrfs reads
+  4 MiB about a fault, M297); with the record no such fault comes, and the pages about a
+  write stay cold. 1 MiB into ranges not yet mapped, cold, costs a fifth to a third less
+  (1,104 against 1,609; 1,386 against 1,729), p99 a fifth to a quarter less, and still more than FUSE
+  (973; 1,028): each write maps its range first. Warm, no pass lost. B1 lost the 64 KiB
+  pass, cold (131.5 against 94.9, every round), by its later writes (110.8 against 76.0): a
+  range a read maps is mapped to be read alone, and its first store upgrades the mapping
+  (fuse_iomap_begin: another FUSE_SETUPMAPPING, the window mapping the range again), which
+  A's first write paid; B1's went as a FUSE_WRITE, its record taken before the read's fault
+  read the range around, and the store after it paid the upgrade. B2 upgrades a read's
+  mapping as a write comes, so its record is taken then: its later writes cost A's (69.8
+  against 76.0), and over the 11 paired rounds of both runs B2 less A had a median of +4.4
+  µs, 6 rounds above and 5 below, no difference past the host's own. The window's own
+  bookkeeping: a reply about a file in 1,024 ranges looks at that file's ranges alone,
+  where it walked every range (0.29 µs at p50 against 8.54 on Fedora, 0.33 against 7.83 on
+  the Mac), and a range's record is taken again once a mapping, as a `mincore(2)` of 2 MiB
+  costs 2.5 to 8.1 µs on Fedora and 26 on the Mac, where a host's pwrite(2) of 4 KiB takes
+  1.0 (M299).
+- **Consequence.** D189: the window's held record (snapshot format 26) and patch 0009 as
+  B2 are taken; CI builds the kernel with it, pinned after the Mac's passes. Next: what a
+  write into a range not yet mapped pays before it writes, part by part, and the slowest
+  write where ranges are mapped as writes come (7.8 to 32.6 ms).

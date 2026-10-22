@@ -2735,6 +2735,26 @@ fn fs(ops: &[String]) -> i32 {
                     _ => Err(io::Error::other("poke:PATH:OFFSET:BYTE")),
                 }
             }
+            // Whole pages written in place in one write, opened to write alone:
+            // `pages:PATH:OFFSET:COUNT:BYTE`, COUNT pages of BYTE at OFFSET, a page's
+            // multiple, as a DAX file's guest writes whole pages (D189, patch 0009).
+            "pages" => {
+                use std::os::unix::fs::FileExt as _;
+                let mut parts = rest.rsplitn(4, ':');
+                let (byte, count, offset, path) = (parts.next(), parts.next(), parts.next(), parts.next());
+                match (
+                    path,
+                    offset.and_then(|o| o.parse::<u64>().ok()),
+                    count.and_then(|c| c.parse::<usize>().ok()),
+                    byte.and_then(|b| b.parse::<u8>().ok()),
+                ) {
+                    (Some(path), Some(offset), Some(count), Some(byte)) => std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(path)
+                        .and_then(|f| f.write_all_at(&vec![byte; count * 4096], offset)),
+                    _ => Err(io::Error::other("pages:PATH:OFFSET:COUNT:BYTE")),
+                }
+            }
             // A read through a handle held across the host's change of its file,
             // `hold:PATH:OFFSET:SIGNAL`: PATH read whole through a handle of its own,
             // SIGNAL.ready made, and once the host makes SIGNAL, a byte read at OFFSET

@@ -391,10 +391,14 @@ pub struct Fs {
     limit: Option<&'static Limiter>,
     holds_limit: bool,
     /// Its DAX window (D189): the cache, shared memory region 0 (VIRTIO_FS_SHMCAP_ID_CACHE),
-    /// which its guest maps the files it reads into, and its head, region [`HEAD`]; and what
-    /// maps them there; none where it has none.
-    window: Option<([ShmRegion; 2], Arc<window::Window>)>,
+    /// which its guest maps the files it reads into, its head, region [`HEAD`], and its held
+    /// record, region [`HELD`]; and what maps them there; none where it has none.
+    window: Option<([ShmRegion; 3], Arc<window::Window>)>,
 }
+
+/// A DAX window (D189), and where its guest has its head and its held record, `(gpa, len)`
+/// each ([`HEAD`], [`HELD`]).
+pub type PlacedWindow = (Arc<window::Window>, (u64, u64), (u64, u64));
 
 /// The cache's shared memory region's id (include/uapi/linux/virtio_fs.h).
 pub const CACHE: u8 = 0;
@@ -402,6 +406,10 @@ pub const CACHE: u8 = 0;
 /// guest's kernel keeps the cache's page structures in rather than its RAM (shards' kernel
 /// patch 0008, VIRTIO_FS_SHMCAP_ID_SHARDS_HEAD).
 pub const HEAD: u8 = 0xfe;
+/// Its held record's (D189): which of the cache's pages its host holds, one bit a page,
+/// which the guest's kernel writes whole pages its host does not hold as FUSE_WRITEs by
+/// (shards' kernel patch 0009, VIRTIO_FS_SHMCAP_ID_SHARDS_HELD).
+pub const HELD: u8 = 0xfd;
 
 impl std::fmt::Debug for Fs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -449,15 +457,16 @@ impl Fs {
         self
     }
 
-    /// The device with DAX window `window` (D189), where one is given, and the window's
-    /// head right before it, `(gpa, len)` ([`HEAD`]).
-    pub fn with_window(mut self, window: Option<(Arc<window::Window>, (u64, u64))>) -> Fs {
+    /// The device with DAX window `window` (D189), where one is given, the window's head
+    /// right before it, `(gpa, len)` ([`HEAD`]), and its held record right after it
+    /// ([`HELD`]).
+    pub fn with_window(mut self, window: Option<PlacedWindow>) -> Fs {
         *self
             .server
             .window
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = window.as_ref().map(|(w, _)| w.clone());
-        self.window = window.map(|(w, (head, head_len))| {
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = window.as_ref().map(|(w, _, _)| w.clone());
+        self.window = window.map(|(w, (head, head_len), (held, held_len))| {
             let regions = [
                 ShmRegion {
                     id: CACHE,
@@ -468,6 +477,11 @@ impl Fs {
                     id: HEAD,
                     base: head,
                     len: head_len,
+                },
+                ShmRegion {
+                    id: HELD,
+                    base: held,
+                    len: held_len,
                 },
             ];
             (regions, w)
@@ -555,6 +569,7 @@ fn serve(
                 if let (Some(w), Some(reply)) = (window, reply.as_deref_mut()) {
                     w.reconcile(&told(&req, reply));
                     keep_mapped(&req, reply, w);
+                    rerecord_written(&req, reply, w);
                 }
                 reply
             }
@@ -732,6 +747,32 @@ fn keep_mapped(req: &[u8], reply: &mut [u8], window: &window::Window) {
         && let Ok(bytes) = <[u8; 4]>::try_from(&*flags)
     {
         flags.copy_from_slice(&(u32::from_le_bytes(bytes) | KEEP_CACHE).to_le_bytes());
+    }
+}
+
+/// Has the window record again which pages its host holds of the ranges it maps of a file
+/// a FUSE_WRITE wrote, once the write is done ([`window::Window::rerecord`]): a guest's
+/// kernel with patch 0009 sends a write of whole pages its host does not hold as one, by
+/// the window's record, which goes stale as the host reads around a fault (D189).
+fn rerecord_written(req: &[u8], reply: &[u8], window: &window::Window) {
+    // fuse_in_header, 40 bytes, its nodeid at 16; then fuse_write_in: fh, offset, size.
+    const IN_HEADER: usize = 40;
+    let long = |at: usize| {
+        req.get(at..at.checked_add(8)?)
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
+    };
+    let word = |b: &[u8], at: usize| {
+        b.get(at..at.checked_add(4)?)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+    };
+    if word(req, 4) != Some(server::op::WRITE) || word(reply, 4) != Some(0) {
+        return;
+    }
+    if let (Some(node), Some(offset), Some(size)) = (long(16), long(IN_HEADER + 8), word(req, IN_HEADER + 16))
+    {
+        window.rerecord(node, offset, u64::from(size));
     }
 }
 

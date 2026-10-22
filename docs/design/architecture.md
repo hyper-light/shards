@@ -5799,6 +5799,34 @@ stores.
   (D29). The pinned
   kernel (kernel-6.18.48-301acf1c45d0) carries the patch; held by
   `a_dax_windows_page_structures_take_none_of_its_guests_memory`.
+- **Whole pages a host does not hold written as FUSE_WRITEs** (PM M301). A store into a
+  page its host does not hold waits for the host to read it, where a FUSE_WRITE's pwrite(2)
+  of the whole page reads nothing (M283). Each window's device now keeps a record of which
+  of the window's pages its host holds, one bit a 4 KiB page, in memory of its own right
+  after the window, shared memory region 0xfd (`fs::HELD`, `head::window_held_len`): taken
+  with `mincore(2)` as each range is mapped, cleared as it is unmapped, and taken again
+  once a mapping after its first FUSE_WRITE, as the host reads around faults since
+  (`Window::rerecord`). The guest's kernel (shards' patch 0009) maps, or upgrades from
+  read alone, each range a write of whole pages meets, as a store would, then writes the
+  pages its host does not hold as FUSE_WRITEs and the rest through the window, and records
+  the pages it writes and reads; a partial page goes through the window whole, as a
+  FUSE_WRITE of part of a page reads it too. The record is advice: a page the host let go
+  of since is read in as a store meets it, as before. Nothing keeps it: a restore takes it
+  again as it maps each range (snapshot format 26, for the layout). The VM process's
+  seccomp allowlist has `mincore`. On Fedora a cold file's scattered 4 KiB writes through
+  the window took 315 to 319 µs at p99 where they took 1,604 to 1,905 (FUSE's 153 to 180),
+  at twice the rate; 1 MiB into ranges not yet mapped a fifth to a third less at p50;
+  nothing warm lost. Its first build sent a range's first write after a read as a FUSE_WRITE
+  by a record taken before the read's fault read the range around, and the next store paid
+  the upgrade after it (64 KiB writes 131.5 µs at p50 against 94.9): a read's mapping is
+  upgraded as the write comes. A reply about a file the window maps in 1,024 ranges looks at
+  that file's ranges alone, and its ranges follow it only where its size changed (`Table`,
+  0.29 µs at p50 where walking every range took 8.54). Held by
+  `a_ranges_held_pages_are_recorded_as_it_is_mapped`,
+  `a_files_ranges_follow_it_only_where_it_changed`, and
+  `a_volumes_large_files_go_through_its_dax_window` (whole pages written where the host
+  holds none, read by host and guest). The kernel with the patch is pinned once the Mac's
+  passes are measured.
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5830,9 +5858,12 @@ template pays it once; what its restores pay is to be measured with mappings.
   tail (4 KiB, p99 1,483 µs against 206) and 1 MiB writes into ranges not yet mapped the
   worse middle (1,589 against 898 at p50). A guest's FUSE weighing each range's writes
   against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
-  measured and not taken: its rationale was that cost. Windows stay asked for, none by
-  default, until a whole page a host does not hold is written as a FUSE_WRITE (on the Mac
-  too, 64 KiB writes into cold ranges 181 µs at p50 against FUSE's 139; M299). A window's
+  measured and not taken: its rationale was that cost. A whole page a host does not hold
+  is written as a FUSE_WRITE now (above; M301), measured on Fedora; windows stay asked for,
+  none by default, until the Mac's passes are measured with it (there 64 KiB writes into
+  cold ranges took 181 µs at p50 against FUSE's 139; M299), and what a write into a range
+  not yet mapped pays before it writes, still more than a FUSE_WRITE of 1 MiB (M301), is
+  measured part by part. A window's
   page structures are its head's (above); what it takes of an arm64 guest's memory is its
   linear map's page tables, a 512th of head and window (M300), which arm64 Linux keeps in
   base pages under rodata=full, and in blocks would be all but none.

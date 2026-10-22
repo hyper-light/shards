@@ -381,7 +381,7 @@ struct Assembled {
     virtio: Vec<boot::MmioDevice>,
     mpidrs: Vec<u64>,
     /// Each pmem region's guest address and length, its writable layer's, and its DAX
-    /// windows' heads': the memory a working set may name besides its RAM.
+    /// windows' heads' and held records': the memory a working set may name besides its RAM.
     pmem: Vec<(u64, u64)>,
     /// The GPU's window's length, where it has a GPU.
     gpu_window: Option<u64>,
@@ -484,7 +484,7 @@ fn assemble(
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
         .chain(layer.iter().map(|(layer, gpa)| (*gpa, layer.len())))
-        .chain(windows.iter().map(|w| w.head))
+        .chain(windows.iter().flat_map(|w| [w.head, w.held]))
         .collect();
     let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
