@@ -31,7 +31,15 @@ folios readahead makes, not those its save wrote. Arms `shipped`, `random` and `
 and `evict-`; two rounds of the comparison; the restore bench, three rounds warm and two
 evicted; the image bench warm only (a pool's runs under the drops would time the drops).
 
-Results: pending (runs dispatched 2026-10-21).
+Runs 39693491072, 39693526565 and 39693536834 (6dd8e985) and 39694508087 (e2160f7f), all on
+7.0.0-1017-azure; their tables by `summarize.py`, in PM M291. With the page cache dropped,
+`evict-shipped` held a restore's file at 7.8 to 9.7 MiB (max 9.8) and a fleet at 1.2 to 1.3
+MiB a VM, under Firecracker's (1.7 to 1.9): readahead, reading the file again, makes no
+folio that maps 26 MiB, and `evict-whole` held as little (8.0 to 9.7): the 26 MiB are the
+save's own long writes' folios, still in the page cache. `evict-random` held 2.6 to 2.9 MiB
+in 7 rounds of 8 and 0.8 MiB a VM, each fault mapping its page alone; warm, `random` held
+what `shipped` did, and restored 5 to 17 ms slower at p50 in the fourth run, mixed in
+the other three.
 
 ## Second experiment (2026-10-21): the write path shards ships, warm
 

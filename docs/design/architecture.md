@@ -105,8 +105,9 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   never a warm pooled run; a restore's first beat and a pooled run are as quick either way
   (M37 once measured large runs 17 to 25% quicker to the first beat), and a cold restore as
   quick as 6.17's, up to 10 ms slower at p50 than whole runs' on 7.0 in one run of two,
-  whose faults map 2 MiB at once (M291). Whether readahead, refilling a file its host
-  dropped, makes large folios again is open (M291).
+  whose faults map 2 MiB at once (M291). Dropped from the host's page cache and read again,
+  a file written either way holds 7.8 to 9.7 MiB: the 26 were the save's own folios, which
+  writing a page at a time leaves none of (M291).
   Decoding treats the files as untrusted.
 - **Generations.** A snapshot directory holds generations, each a directory of its own
   (`state`, `memory`, and later a `working-set`), and `current`, naming the one in use.

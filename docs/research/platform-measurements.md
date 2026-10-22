@@ -11149,8 +11149,13 @@ revision before comparing a changed API/implementation.
     written whole: the control); two rounds of the comparison, three of the benches.
   - Dropping the file in the VM process (the second's `evict`, the first's `drop`) gave
     nothing: its seccomp filter refuses fadvise(2) (`seccomp refused syscall 221`, x86_64's
-    fadvise64) and killed each restore. The third experiment drops the host's page cache
-    from outside it.
+    fadvise64) and killed each restore.
+  - Third (6dd8e985 and e2160f7f; runs 39693491072, 39693526565, 39693536834 and 39694508087,
+    all on 7.0): `shipped`, `random` and `whole`, warm and `evict-`, an evicted arm's
+    bench run while root drops the host's page cache once a second (`arms.sh`), shards'
+    VMs' and Firecracker's alike: each restore finds the file as a busy host leaves it,
+    read again with the folios readahead makes. Two rounds of the comparison; the restore
+    bench three rounds warm and two evicted; the image bench warm only.
 - **Results.** The restored memory file, resident MiB, p50 (max); a fleet's PSS a VM, MiB,
   p50; the first beat, p50 ms; Firecracker's in parentheses:
 
@@ -11185,7 +11190,20 @@ revision before comparing a changed API/implementation.
   | 6.17, second | shipped | 24.39, 17.38, 21.80 | 22.69, 15.74, 19.83 | 14.9 to 15.2 | 42.94, 36.11, 42.21 |
   | | whole | 24.71, 37.36, 29.71 | 23.31, 35.95, 27.62 | 15.0 to 15.9 | 39.92, 40.15, 41.55 |
 
-  `random`'s bench rows, within the others' spread, are in the README.
+  `random`'s bench rows, within the others' spread, are in the README. The third, the four
+  runs' two rounds each (MiB, p50; a fleet's PSS a VM, p50; Firecracker's in parentheses):
+
+  | arm | memory file | fleet PSS a VM | cold restore p50, ms | warm peak RSS |
+  |---|---|---|---|---|
+  | shipped | 9.0 to 9.3 (13.6 to 13.9) | 1.2 (1.9) | 11.1 to 27.1 | 14.6 to 16.4 |
+  | random | 8.9 to 9.4 (13.6 to 14.1) | 1.2 (1.9) | 12.4 to 34.4 | 14.7 to 15.7 |
+  | whole | 26.0 to 27.0 (13.5 to 13.9) | 2.3 (1.9) | 12.7 to 31.9 | 29.4 to 32.9 |
+  | evict-shipped | **7.8 to 9.7**, max 9.8 (9.0 to 14.0) | **1.2 to 1.3** (1.7 to 1.9) | 12.6 to 27.5 | 15.8 to 16.5 |
+  | evict-whole | 8.0 to 9.7, max 9.9 (9.2 to 13.6) | 1.2 to 1.3 (1.7 to 1.8) | 9.1 to 23.0 | 15.4 to 28.2 |
+  | evict-random | **2.6 to 8.7**, 2.6 to 2.9 in 7 rounds of 8 (8.5 to 13.4) | **0.8 to 0.9** (1.6 to 1.8) | 15.3 to 35.6 | 5.7 to 14.8 |
+
+  First beats with the drops run 6 to 54 ms, shards' and Firecracker's alike, as each
+  restore reads cold or not: README.
 - **Reading.** On 7.0 a save that writes each run whole leaves its file in large folios,
   and a restore's faults map them whole: 26 MiB of it, past Firecracker's 14, and a fleet
   at 2.3 MiB of PSS a VM, past its 1.9. MADV_RANDOM changes nothing: it stops readahead,
@@ -11194,14 +11212,22 @@ revision before comparing a changed API/implementation.
   VM, 6.17's own and under Firecracker's on both; the first beat stays within the rounds'
   spread. What it costs is the faults large folios spare: in one 7.0 run of the two, cold
   restores 6 to 10 ms longer at p50 and warm requests 2 to 9, in the other none; a restore
-  as quick as 6.17's; pooled runs the same. With the page cache dropped: pending (the
-  third experiment).
+  as quick as 6.17's; pooled runs the same. With the page cache dropped, a restore's file
+  read again with readahead's folios holds 7.8 to 9.7 MiB, written either way, and a fleet
+  1.2 to 1.3 MiB a VM, under Firecracker's (whose VMs the drops read cold too): the 26 MiB
+  is a restore's of folios its save's long writes left in the page cache, and writing a
+  page at a time leaves none. MADV_RANDOM, which changes nothing while the file is in the
+  page cache, holds one read again to the pages its guest faults, 2.6 to 2.9 MiB in most
+  rounds and 0.8 a VM in a fleet, readahead reading no page around a fault in; but
+  restores with it ran slower in the fourth run, by 5 to 17 ms at p50 warm (`random`
+  against `shipped`), and mixed in the other three; why is not measured (warm, it maps as
+  much of the file as `shipped`, so not for mapping less around a fault).
 - **Consequence.** `memory.rs::write_run` writes a page at a time on a Linux host
   (ffe3d1cb; what that costs the save is M290's), and the restore mapping keeps
-  MADV_NOHUGEPAGE alone. Open: whether readahead, refilling a dropped file, makes large
-  folios again (the third experiment); and a write between a page and a run (64 to 256
-  KiB), whose folios might map as few faults as large ones with as little memory as small
-  ones.
+  MADV_NOHUGEPAGE alone. Open: MADV_RANDOM's trade, a third of a dropped file's memory
+  for slower restores, measured at more than two rounds before it is taken or left; and a
+  write between a page and a run (64 to 256 KiB), whose folios might map as few faults as
+  large ones with as little memory as small ones.
 
 ### M292. A run's start and its memory-heavy work, before and after D191's slice 1, on an idle host and a contended one
 
@@ -11253,6 +11279,48 @@ revision before comparing a changed API/implementation.
   hold, the contended host's fills took 9 and 16% longer (n 8, its load rising). The same
   build filled 2484 MiB in 1458 ms in one run and in 680 in the next: the host's state
   between runs moves it as much, so only what one run interleaves is compared.
+- **Where the start goes** (`docs/research/measurements/cpu-elastic/phases.py`: the same
+  two builds, 1468f07d against 0aa00196, each start's VM timing line, `SHARDS_TIMING`; 4
+  CPUs; 10 rounds of 5 starts, alternating, n 50 a side; the host's load 1.8 to 2.9).
+  p50, p90 and max, ms; `restore` is the VM process's start to its guest's connection,
+  ahead of the request (none waited for one); `start` the request to the command
+  executing; `command` its run, `true`, to its exit seen:
+
+  | phase | 4 busy loops: 1468f07d | 0aa00196 | idle: 1468f07d | 0aa00196 |
+  |---|---|---|---|---|
+  | wall | 31.36, 46.99, 60.73 | 39.33, 54.36, 68.63 | 10.43, 16.30, 20.24 | 12.46, 16.44, 20.26 |
+  | restore | 21.66, 32.34, 46.07 | 26.38, 34.29, 39.66 | 9.38, 12.66, 17.41 | 12.47, 15.91, 18.54 |
+  | start | **10.11, 21.09, 31.60** | **19.92, 34.98, 44.89** | 4.72, 8.00, 10.85 | 5.43, 8.71, 11.86 |
+  | command | **0.23, 3.85, 17.48** | **4.21, 10.05, 18.30** | 0.11, 0.27, 0.53 | 0.39, 1.09, 2.76 |
+  | answer | 0.80, 4.89, 6.89 | 0.36, 1.81, 3.59 | 0.23, 0.59, 2.22 | 0.22, 0.66, 3.13 |
+
+  What grows is the guest's own handling of the run: the request to the command
+  executing twice as long, and `true` 4 ms where 0.2; its VM's restore, ahead of the
+  request, is off the path. The wall's gap here, 8 ms, is M292's 22 at a host's load of
+  2 where that was of 9: it grows with what else the host runs. Those are the phases in
+  which the guest's work passes between its CPUs (its init in the root cgroup, on any;
+  the command on the run's): which hand-offs, not yet measured.
+- **Keeping the guest's own work on the run's CPUs does not mend it** (`cpu-elastic/
+  confine.patch`: where a run's cpuset is fewer than its guest's CPUs, init's processes
+  in a cgroup of that cpuset, the kernel's unbound workqueues and every interrupt on it,
+  as the run starts; e2160f7f with it against 0aa00196, phases.py, n 50 a side; the host's
+  load 4 to 8). p50 and p90, ms:
+
+  | host | phase | 0aa00196 | with the confinement |
+  |---|---|---|---|
+  | 4 CPUs, 4 busy loops | wall | 40.72, 55.39 | 51.26, 64.62 |
+  | | start | 21.09, 33.84 | **33.91, 52.39** |
+  | | command | 4.59, 8.31 | **0.70, 4.05** |
+  | 16 P-cores, 16 busy loops | wall | 46.58, 53.56 | 76.93, 94.92 |
+  | | start | 28.34, 36.55 | **58.50, 69.69** |
+  | 4 CPUs, idle | wall | 13.05, 18.17 | 12.89, 24.07 |
+
+  The command's run is as quick as a CPU's microVM's again (0.70 ms where 4.59), its exit
+  seen on the CPU it ran on; but the request to the command executing takes half as long
+  again on 4 CPUs and twice as long on 16, all of a start's work on one vCPU of a host
+  whose CPUs are busy (and the confinement's own writes on that path). So it is not taken.
 - **Consequence.** b96501d3's reason is withdrawn: its 240 s timeout stays for a slow,
   contended runner, not for a regression. A start on a contended host is an open
-  regression of D191 slice 1, its tail's first item.
+  regression of D191 slice 1, its tail's first item: the guest's start of a run's command,
+  not its VM's restore; where in that start a microVM of many vCPUs waits is to be
+  measured, not moved.
