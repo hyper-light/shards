@@ -192,6 +192,23 @@ pub fn still_pluggable() -> u64 {
     most.saturating_sub(mem_total().map_or(0, |total| total.saturating_sub(boot)))
 }
 
+/// [`Plug::tmpfs`] of a tmpfs made as the microVM runs, a joiner's writable layer (D119):
+/// of all the memory it may have now, its run's own most; none where it plugs none, whose
+/// tmpfs is sized by the memory it has, all of it.
+pub fn tmpfs_now() -> Option<String> {
+    let boot = *BOOT.get()?;
+    let most = control_read64(control::HOTPLUG_SIZE)
+        .ok()
+        .filter(|&most| most > 0)?;
+    Some(tmpfs_holding(boot.saturating_add(most)))
+}
+
+/// The options of a tmpfs that holds `full` bytes, and the inodes a tmpfs has by default
+/// in that much memory.
+fn tmpfs_holding(full: u64) -> String {
+    format!("size={full},nr_inodes={}", full / page_size() / 2)
+}
+
 fn plug_of(cgroup: &'static str, whose: &'static str) -> io::Result<Option<Plug>> {
     let most = control_read64(control::HOTPLUG_SIZE)?;
     if most == 0 {
@@ -284,8 +301,7 @@ impl Plug {
     /// `shmem_default_max_inodes`), both of all of it. A size of 100% would be of the
     /// memory it boots with.
     pub fn tmpfs(&self) -> String {
-        let full = self.full();
-        format!("size={full},nr_inodes={}", full / page_size() / 2)
+        tmpfs_holding(self.full())
     }
 
     /// Raises what the kernel sized by the memory it booted with to what it sizes by all

@@ -4466,24 +4466,34 @@ impl Workload {
                                     // SAFETY: kill(2) of a joiner's first process, init's child.
                                     unsafe { libc::kill(e.pid, libc::SIGKILL) };
                                 }
+                                // The layers of joiners that ended, being sent by children
+                                // of init's, go on however the rest ends: one cut short
+                                // leaves its host waiting for the rest of it (D119).
+                                let sending: Vec<libc::pid_t> = execs
+                                    .iter()
+                                    .filter_map(|e| match e.save {
+                                        Save::Sending(pid) => Some(pid),
+                                        _ => None,
+                                    })
+                                    .collect();
                                 if execs.iter().any(|e| e.joined && e.pid > 0 && e.status.is_none()) {
                                     outlived = true;
-                                    // And init's own work for them: their built-ins, and
-                                    // the layers of those that ended, being sent.
+                                    // And init's own work for them: their built-ins.
                                     let spared: Vec<libc::pid_t> = execs
                                         .iter()
-                                        .filter_map(|e| match e.save {
-                                            Save::Sending(pid) => Some(pid),
-                                            _ => (e.into_joiner && e.pid > 0 && e.status.is_none())
-                                                .then_some(e.pid),
-                                        })
+                                        .filter(|e| e.into_joiner && e.pid > 0 && e.status.is_none())
+                                        .map(|e| e.pid)
                                         .collect();
-                                    kill_all_but_joiners(&[&spared[..], hosts_pid.as_slice()].concat());
+                                    kill_all_but_joiners(
+                                        &[&spared[..], &sending[..], hosts_pid.as_slice()].concat(),
+                                    );
                                 } else if let Some(hosts) = hosts_pid {
                                     // Every process but init and the relays of the host's
                                     // network, which finish what its servers sent (D124).
-                                    kill_all_but_joiners(&[hosts]);
+                                    kill_all_but_joiners(&[&sending[..], &[hosts]].concat());
                                     self.hosts = None;
+                                } else if !sending.is_empty() {
+                                    kill_all_but_joiners(&sending);
                                 } else {
                                     // SAFETY: kill(2) of every process but init.
                                     unsafe { libc::kill(-1, libc::SIGKILL) };
@@ -4524,9 +4534,14 @@ impl Workload {
                                 // Its layer sent, whole or not: the host keeps only a whole
                                 // one, and closes the connection once it has what came. The
                                 // connection's file, which the child made blocking to write
-                                // it, is nonblocking again for this loop.
+                                // it, is nonblocking again for this loop. A child that
+                                // failed may have ended amid a frame, or been killed: the
+                                // connection goes, so that the host hears its end rather
+                                // than waiting on the rest.
                                 e.save = Save::Done;
-                                if let Some(conn) = &e.conn {
+                                if code != 0 {
+                                    e.conn = None;
+                                } else if let Some(conn) = &e.conn {
                                     set_nonblocking(conn.as_raw_fd(), true);
                                 }
                             }

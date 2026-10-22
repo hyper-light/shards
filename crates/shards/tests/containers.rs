@@ -911,6 +911,42 @@ fn a_joiner_keeps_its_files_as_it_stops() {
     let _ = exit(&mut provider);
 }
 
+/// A joiner's writable layer is kept whole though its provider's command ends as it is
+/// sent (D119): init goes on sending it as it ends the provider's other processes. Killed
+/// with them, its sender left the host waiting for the rest of the layer, and the
+/// provider's run never ended (a `--use-api-socket` run's member, on x86_64 Linux).
+#[test]
+fn a_joiners_layer_is_kept_whole_as_its_provider_ends() {
+    let Some((home, image)) = home("containers-joiner-ends") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let provider = run_in(&home, &image, &["-d", "--name", "prov"], &["sleep"]);
+    assert_eq!(provider.status, Some(0), "{provider}");
+    // A layer whose sending outlasts the provider's kill, which follows its end.
+    let joined = run_in(
+        &home,
+        &image,
+        &["--name", "joiner", "--network", "container:prov", "-u", "0"],
+        &["big", "/big", "256"],
+    );
+    assert_eq!(joined.status, Some(0), "{joined}");
+    let killed = shards(&["kill", "prov"]);
+    assert_eq!(killed.status, Some(0), "{killed}");
+    let waited = shards(&["wait", "prov"]);
+    assert_eq!(
+        (waited.status, waited.stdout.as_str()),
+        (Some(0), "137\n"),
+        "{waited}"
+    );
+    let diff = shards(&["diff", "joiner"]);
+    assert_eq!(
+        (diff.status, diff.stdout.as_str()),
+        (Some(0), "A /big\n"),
+        "{diff}"
+    );
+}
+
 /// A joiner's `--sysctl` is set in its own namespaces, as runc sets a container's from
 /// within them (D119): an IPC one in its own IPC namespace, its provider's untouched; a
 /// network one in the network namespace it shares, which Docker's joiner may set too.

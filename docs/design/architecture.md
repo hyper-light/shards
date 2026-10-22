@@ -8131,8 +8131,13 @@ inside the microVM the other runs in (D119).
   the bits a umask clears.
 - **`--storage-opt size=`: its writable layer's size.** A run's writable layer is an ext4
   file system on its host's disk (D190), made to hold the size asked: its microVM restores
-  a template of that size. A joiner's is a tmpfs in its microVM's memory, made at it. Docker
-  serves `size` only on overlay over XFS with project quotas; every run here takes it.
+  a template of that size. A joiner's is a tmpfs in its microVM's memory, made at it, and
+  unsized it holds what the workload's tmpfs does, all the memory its microVM may have
+  (D148): the kernel's default, half the memory at its mount, held a joiner of a microVM
+  that plugs its memory as it needs it to half of what it booted with, and a 256 MiB file
+  failed with ENOSPC (`a_joiners_layer_is_kept_whole_as_its_provider_ends` writes one).
+  Docker serves `size` only on overlay over XFS with project quotas; every run here takes
+  it.
   `size` is the one key; above 0; for a joiner no more than the memory its layer is held in
   (`--memory`, or the host's, which the microVM may grow to), and for a microVM's own no
   more than the memory its page structures take as it boots, a 64th of it, of all its host
@@ -10573,7 +10578,17 @@ the boundary is a container's, which is what the mode asks for.
   workload's own, once joiners outlive it, where init's loop packed it before and its
   joiners waited meanwhile; what init has for the host meanwhile follows the layer
   (`a_joiner_is_a_container_of_its_own`: the provider's file, saved as it ended beside its
-  joiner, read once their microVM has gone; mutation-checked). Put back
+  joiner, read once their microVM has gone; mutation-checked). The child goes on as the
+  provider's command ends, however init then ends the rest of the microVM's processes:
+  init spared it only where joiners outlived the command, and killed with the rest it cut
+  the layer short, its host waiting for the rest and init for the host to close, so the
+  run never ended (a `--use-api-socket` run whose member had ended, 3 rounds of 30 on
+  x86_64 Linux, PM M296). And a child that fails, perhaps amid a frame, or is killed
+  otherwise takes init's end of the connection with it: its host hears the end and keeps
+  no layer (`a_joiners_layer_is_kept_whole_as_its_provider_ends`: a provider killed as its
+  joiner's 256 MiB layer is sent; mutation-checked: killed with the rest, the layer is
+  lost; without the close as well, the provider's run ends only as the daemon ends its
+  microVM, 10 s after the kill). Put back
   as it starts again: the VM process appends the layer to the join disk beside its image
   (`join-layer=OFFSET,LEN`), and the joiner's child applies it over its root as ApplyLayer
   does, before it reads its users and before anything is mounted in its root, with its
