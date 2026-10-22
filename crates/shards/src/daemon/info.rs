@@ -7,6 +7,8 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use shards_registry::registries::Registries;
+
 use super::commands::{Asker, Reply};
 use super::{Daemon, lock};
 use crate::containers::State as Life;
@@ -28,6 +30,8 @@ pub(super) struct Facts {
     /// A microVM's own engine's (D181): nothing of its host's that the microVM has no
     /// part of, its proxies (whose URLs may hold credentials) and descriptors among them.
     scoped: bool,
+    /// What Docker's daemon configuration says of registries (D194).
+    registries: Registries,
 }
 
 /// What a microVM's own engine says of itself (D181): its own containers and images, and
@@ -56,6 +60,7 @@ impl Facts {
             name: s.name,
             root: String::new(),
             scoped: true,
+            registries: Registries::default(),
             ..self
         }
     }
@@ -115,6 +120,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             name: host_name(),
             root: self.home.display().to_string(),
             scoped: false,
+            // One that does not read is said where a registry is asked.
+            registries: Registries::from_env(&|k| std::env::var(k).ok()).unwrap_or_default(),
         }
     }
 }
@@ -226,19 +233,31 @@ pub(super) fn server(f: &Facts, name: &'static str) -> shards_template::Struct {
             .unwrap_or_default()
     };
     let commit = || Struct::new("system.Commit").field("ID", s("")).value();
-    let index = Struct::pointer("registry.IndexInfo")
-        .field("Name", s("docker.io"))
-        .field("Mirrors", strs(&[]))
-        .field("Secure", Value::Bool(true))
-        .field("Official", Value::Bool(true))
-        .value();
+    // dockerd's (loadInsecureRegistries): Docker Hub's, with its mirrors, and each
+    // registry named insecure by `host[:port]`.
+    let index = |name: &str, mirrors: &[String], official: bool| {
+        Struct::pointer("registry.IndexInfo")
+            .field("Name", s(name))
+            .field("Mirrors", Value::strings(mirrors.iter().map(String::as_str)))
+            .field("Secure", Value::Bool(official))
+            .field("Official", Value::Bool(official))
+            .value()
+    };
+    let r = &f.registries;
+    let mut indexes: std::collections::BTreeMap<String, Value> = r
+        .hosts()
+        .iter()
+        .map(|h| (h.clone(), index(h, &[], false)))
+        .collect();
+    indexes.insert("docker.io".to_owned(), index("docker.io", r.mirrors(), true));
+    let networks = r.networks();
     let registry = Struct::pointer("registry.ServiceConfig")
-        .field("InsecureRegistryCIDRs", strs(&["::1/128", "127.0.0.0/8"]))
         .field(
-            "IndexConfigs",
-            Value::Map(Kind::Any, [("docker.io".to_owned(), index)].into_iter().collect()),
+            "InsecureRegistryCIDRs",
+            Value::strings(networks.iter().map(String::as_str)),
         )
-        .field("Mirrors", strs(&[]))
+        .field("IndexConfigs", Value::Map(Kind::Any, indexes))
+        .field("Mirrors", Value::strings(r.mirrors().iter().map(String::as_str)))
         .value();
     let runtime = Struct::new("system.RuntimeWithStatus")
         .tagged("Path", Some("path"), true, s("shards"))
@@ -440,7 +459,20 @@ fn pretty(f: &Facts) -> String {
     };
     put("Name", f.name.as_deref());
     let _ = writeln!(out, " Docker Root Dir: {}", f.root);
-    out.push_str(" Debug Mode: false\n Experimental: true\n Live Restore Enabled: false\n\n");
+    out.push_str(" Debug Mode: false\n Experimental: true\n");
+    // docker/cli's (prettyPrintServerInfo): the registries named insecure, then the
+    // networks, loopback's among them; then Docker Hub's mirrors, where there are any.
+    out.push_str(" Insecure Registries:\n");
+    for name in f.registries.hosts().iter().chain(&f.registries.networks()) {
+        let _ = writeln!(out, "  {name}");
+    }
+    if !f.registries.mirrors().is_empty() {
+        out.push_str(" Registry Mirrors:\n");
+        for mirror in f.registries.mirrors() {
+            let _ = writeln!(out, "  {mirror}");
+        }
+    }
+    out.push_str(" Live Restore Enabled: false\n\n");
     out
 }
 
@@ -537,5 +569,55 @@ mod tests {
         std::fs::write(&dir, b"no banner").unwrap();
         assert_eq!(kernel_version(&dir), None);
         let _ = std::fs::remove_file(&dir);
+    }
+
+    /// The registries Docker's daemon configuration names, said as dockerd says them
+    /// (D194): in the text as docker/cli lays them out, and in its `RegistryConfig`.
+    #[test]
+    fn info_says_the_registries_daemon_json_names() {
+        let registries = Registries::parse(
+            r#"{"insecure-registries": ["registry.lan:5000", "10.1.0.0/16"],
+                "registry-mirrors": ["https://mirror.gcr.io"]}"#,
+        )
+        .unwrap();
+        let facts = |registries: Registries| Facts {
+            containers: 0,
+            running: 0,
+            paused: 0,
+            stopped: 0,
+            images: 0,
+            kernel: None,
+            os: None,
+            cpus: 1,
+            memory: None,
+            name: None,
+            root: String::new(),
+            scoped: false,
+            registries,
+        };
+        let text = pretty(&facts(registries.clone()));
+        assert!(
+            text.contains(
+                " Experimental: true\n Insecure Registries:\n  registry.lan:5000\n  10.1.0.0/16\n  ::1/128\n  127.0.0.0/8\n Registry Mirrors:\n  https://mirror.gcr.io/\n Live Restore Enabled: false\n"
+            ),
+            "{text}"
+        );
+        let none = pretty(&facts(Registries::default()));
+        assert!(
+            none.contains(" Insecure Registries:\n  ::1/128\n  127.0.0.0/8\n Live Restore Enabled"),
+            "{none}"
+        );
+        let t = shards_template::Template::parse("", "{{json .RegistryConfig}}").unwrap();
+        let mut json = String::new();
+        t.execute_into(&value(&facts(registries)), &mut json).unwrap();
+        assert_eq!(
+            json,
+            concat!(
+                r#"{"InsecureRegistryCIDRs":["10.1.0.0/16","::1/128","127.0.0.0/8"],"#,
+                r#""IndexConfigs":{"docker.io":{"Name":"docker.io","Mirrors":["https://mirror.gcr.io/"],"Secure":true,"Official":true},"#,
+                r#""registry.lan:5000":{"Name":"registry.lan:5000","Mirrors":[],"Secure":false,"Official":false}},"#,
+                r#""Mirrors":["https://mirror.gcr.io/"]}"#
+            )
+        );
     }
 }

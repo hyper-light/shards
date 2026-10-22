@@ -186,10 +186,12 @@ impl Credentials {
 /// alone, and every other host is answered anonymously.
 pub struct Authorizer {
     registry: Url,
-    /// Whether the registry is also reached in plain HTTP at its host and port: a
-    /// loopback registry that answered HTTPS so (registry.rs). Its credentials go there
-    /// too, as containerd keys them by host alone (`dockerAuthorizer`).
-    plain_too: bool,
+    /// Where the registry is also reached in plain HTTP, at its host: the port, and
+    /// whether its credentials go there too. A loopback registry that answered HTTPS so
+    /// (registry.rs) is given them, as containerd keys them by host alone
+    /// (`dockerAuthorizer`); one Docker's daemon configuration names insecure (D194) never
+    /// is, as no credentials leave this machine unencrypted.
+    plain: Option<(u16, bool)>,
     /// The registry's credentials, or the helper asked for them.
     credentials: Source,
     /// How each host asked to be answered, and the tokens fetched for it.
@@ -328,7 +330,7 @@ impl Authorizer {
     pub fn new(registry: &Url, credentials: impl Into<Found>) -> Authorizer {
         Authorizer {
             registry: registry.clone(),
-            plain_too: false,
+            plain: None,
             credentials: Source::from(credentials.into()),
             hosts: Mutex::default(),
             fetched: Condvar::new(),
@@ -436,20 +438,33 @@ impl Authorizer {
         self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The same, also answering for the registry at its host and port in plain HTTP.
-    pub(crate) fn plain_too(self) -> Authorizer {
+    /// The same, also answering for the registry at its host and `port` in plain HTTP.
+    pub(crate) fn plain_too(self, port: u16) -> Authorizer {
         Authorizer {
-            plain_too: true,
+            plain: Some((port, true)),
             ..self
         }
     }
 
+    /// The same, the registry also reached at its host and `port` in plain HTTP, where
+    /// its credentials never go.
+    pub(crate) fn plain_without(self, port: u16) -> Authorizer {
+        Authorizer {
+            plain: Some((port, false)),
+            ..self
+        }
+    }
+
+    /// Whether `url` is the registry's in plain HTTP: `Some` of whether its credentials go
+    /// there.
+    fn plain_twin(&self, url: &Url) -> Option<bool> {
+        let (port, credentials) = self.plain?;
+        (url.scheme() == crate::url::Scheme::Http && url.host() == self.registry.host() && url.port() == port)
+            .then_some(credentials)
+    }
+
     fn is_registry(&self, url: &Url) -> bool {
-        url.same_origin(&self.registry)
-            || (self.plain_too
-                && url.scheme() == crate::url::Scheme::Http
-                && url.host() == self.registry.host()
-                && url.port() == self.registry.port())
+        url.same_origin(&self.registry) || self.plain_twin(url) == Some(true)
     }
 
     /// The `Authorization` value for a request to `url` that needs `scopes`, fetching a
@@ -588,6 +603,15 @@ impl Authorizer {
                     return Ok(true);
                 }
                 Scheme::Basic => {
+                    if self.plain_twin(url) == Some(false) {
+                        return Err(Error::of(
+                            ErrorKind::Unauthorized,
+                            format!(
+                                "{} asks for credentials in plain HTTP: shards sends a registry's credentials off this machine in HTTPS alone; serve it in HTTPS, its CA certificate in certs.d if no system trusts it",
+                                url.authority()
+                            ),
+                        ));
+                    }
                     // containerd's words (core/remotes/docker/authorizer.go).
                     if username.is_empty() || secret.is_empty() {
                         return Err(Error::of(
@@ -920,7 +944,7 @@ fn refused(response: &mut Response) -> Error {
 
 /// Hosts containerd serves over plain HTTP by default: `localhost`, 127.0.0.0/8 and ::1
 /// (`core/remotes/docker/registry.go`).
-pub(crate) fn loopback(url: &Url) -> bool {
+pub fn loopback(url: &Url) -> bool {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
@@ -1519,6 +1543,73 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(get().as_deref(), Some("Bearer second"));
+    }
+
+    /// A credential helper, `docker-credential-NAME` in `dir` running `script`, which a config
+    /// there names the registry's store: found for the registry, asked as a pull asks it.
+    #[cfg(unix)]
+    fn helper(dir: &std::path::Path, name: &str, script: &str) -> Found {
+        use std::io::Write as _;
+        // Written by a child, as credentials.rs's tests write theirs: an exec of a file this
+        // process holds open to write fails (ETXTBSY, Linux).
+        let path = dir.join(format!("docker-credential-{name}"));
+        let mut writer = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"cat > "$0" && chmod 755 "$0""#)
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success());
+        std::fs::write(dir.join("config.json"), format!(r#"{{"credsStore":"{name}"}}"#)).unwrap();
+        let vars = HashMap::from([
+            ("DOCKER_CONFIG".to_string(), dir.to_string_lossy().into_owned()),
+            ("PATH".to_string(), format!("{}:/bin:/usr/bin", dir.display())),
+        ]);
+        let env = |k: &str| vars.get(k).cloned();
+        let (found, _) = crate::credentials::find("127.0.0.1:5000", &env, None).unwrap();
+        assert!(matches!(found, Found::Asked(_)), "{found:?}");
+        found
+    }
+
+    /// No anonymous fallback (D184): a Bearer challenge of the registry's own, its helper
+    /// still to answer, waits for the helper, as a user may be answering its prompt, and asks
+    /// for its token with what the user configured, never anonymously in its place.
+    #[cfg(unix)]
+    #[test]
+    fn a_bearer_challenge_waits_for_the_helper_the_user_configured() {
+        let dir = shards_testdir::TempDir::new("auth-late").unwrap();
+        let release = dir.join("release");
+        let found = helper(
+            &dir,
+            "late",
+            &format!(
+                "#!/bin/sh\nwhile [ ! -e '{}' ]; do /bin/sleep 0.01; done\necho '{{\"ServerURL\":\"127.0.0.1:5000\",\"Username\":\"u\",\"Secret\":\"s\"}}'\n",
+                release.display()
+            ),
+        );
+        let tokens = token_server(&[r#"{"access_token":"theirs"}"#]);
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            tokens.port
+        );
+        let auth = Authorizer::new(&registry(), found);
+        std::thread::scope(|s| {
+            let challenged = s.spawn(|| auth.challenged(&registry(), &refusal(&plain(), &challenge), false));
+            // Still waiting on the helper: the challenge is not answered without it.
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!challenged.is_finished(), "answered without the helper's answer");
+            std::fs::write(&release, "").unwrap();
+            assert!(challenged.join().unwrap().unwrap());
+        });
+        let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
+        assert_eq!(value.as_deref(), Some("Bearer theirs"));
+        let requests = tokens.requests();
+        assert_eq!(requests.len(), 1, "no anonymous token asked for first");
+        // With a secret, an OAuth2 POST whose body carries it.
+        assert!(requests[0].starts_with("POST /token"), "{}", requests[0]);
+        assert!(requests[0].contains("password=s"), "{}", requests[0]);
     }
 
     #[test]

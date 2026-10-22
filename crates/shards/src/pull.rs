@@ -10,13 +10,14 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_image::platform::{self as image_platform, Target};
-use shards_image::reference::Reference;
+use shards_image::reference::{DOCKER_HUB, Reference};
 use shards_image::store::{Limits, Store};
 use shards_ipc::Progress;
 
 use shards_registry::http::{Cancel, Client};
 use shards_registry::proxy::Proxies;
 use shards_registry::pull::{self, Event, Pulled};
+use shards_registry::registries::Registries;
 use shards_registry::registry::{self, Registry};
 use shards_registry::{certs, credentials, tls};
 
@@ -415,24 +416,25 @@ pub fn registry_for_delete(
     Registry::for_delete(http, reference, credentials).map_err(|e| e.to_string())
 }
 
-/// The HTTP client and credentials a push to `reference`'s registry uses: its
-/// certificates and proxies, cancelled by `cancel` if given; what the credentials lookup
-/// warns of, said.
+/// The HTTP client and credentials a pull from or a push to `reference`'s registry uses:
+/// its certificates, proxies and daemon configuration ([`host_client`]), cancelled by
+/// `cancel` if given; its credential helper asked now, its answer read where the registry
+/// asks for it (D184); what the credentials lookup warns of, said.
 fn client_for(
     reference: &Reference,
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(Client, credentials::Found), String> {
-    let (credentials, warnings) =
-        credentials::find(&reference.domain, env, cancel).map_err(|e| e.to_string())?;
-    for warning in warnings {
-        let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
-    }
     let http = host_client(registry::host(reference), env).map_err(|e| e.to_string())?;
     let http = match cancel {
         Some(cancel) => http.cancelled_by(cancel.clone()),
         None => http,
     };
+    let (credentials, warnings) =
+        credentials::find(&reference.domain, env, cancel).map_err(|e| e.to_string())?;
+    for warning in warnings {
+        let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
+    }
     Ok((http, credentials))
 }
 
@@ -497,32 +499,44 @@ pub fn fetch(
 }
 
 /// A registry to pull `reference`'s repository from, until `cancel`, if given, is
-/// cancelled, with the credentials, certificates and proxies `env` finds.
+/// cancelled, with the credentials, certificates, proxies and daemon configuration `env`
+/// finds.
 pub fn registry(
     reference: &Reference,
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Registry, String> {
-    // Its helper asked now, its answer read where the registry asks for it (D184).
-    let (credentials, warnings) =
-        credentials::find(&reference.domain, env, cancel).map_err(|e| e.to_string())?;
-    for warning in warnings {
-        let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
+    let (http, credentials) = client_for(reference, cancel, env)?;
+    let mut registry = Registry::new(http, reference, credentials).map_err(|e| e.to_string())?;
+    // Docker Hub's mirrors, asked first as dockerd asks them (D194), each with its own
+    // host's certificates and credentials; one in plain HTTP off this machine with none.
+    if reference.domain == DOCKER_HUB {
+        for mirror in Registries::from_env(env).map_err(|e| e.to_string())?.mirrors() {
+            let url = shards_registry::url::Url::parse(mirror).map_err(|e| e.to_string())?;
+            let host = url.authority();
+            let http = host_client(&host, env).map_err(|e| e.to_string())?;
+            let http = match cancel {
+                Some(cancel) => http.cancelled_by(cancel.clone()),
+                None => http,
+            };
+            let plain_off_here =
+                url.scheme() == shards_registry::url::Scheme::Http && !shards_registry::auth::loopback(&url);
+            let credentials = match plain_off_here {
+                true => credentials::Found::Known(shards_registry::auth::Credentials::Anonymous),
+                false => {
+                    let (found, warnings) =
+                        credentials::find(&host, env, cancel).map_err(|e| e.to_string())?;
+                    for warning in warnings {
+                        let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
+                    }
+                    found
+                }
+            };
+            let mirror = Registry::mirror(http, mirror, reference, credentials).map_err(|e| e.to_string())?;
+            registry = registry.with_mirror(mirror);
+        }
     }
-    // One TLS configuration serves every host of the pull, as dockerd's per-registry client
-    // does: the registry, its token realm and its CDN.
-    let material = certs::load(registry::host(reference), env).map_err(|e| e.to_string())?;
-    let config = tls::client_config(material.roots, material.client).map_err(|e| e.to_string())?;
-    let http = Client::new(
-        Box::new(move |_| Ok(config.clone())),
-        &format!("shards/{}", env!("CARGO_PKG_VERSION")),
-    );
-    let http = match cancel {
-        Some(cancel) => http.cancelled_by(cancel.clone()),
-        None => http,
-    }
-    .with_proxies(Proxies::from_env(env));
-    Registry::new(http, reference, credentials).map_err(|e| e.to_string())
+    Ok(registry)
 }
 
 /// Checks `credentials` with the registry at `host` (`registry-1.docker.io` for Docker
@@ -537,8 +551,10 @@ pub fn check_login(
     Registry::login(host_client(host, env)?, host, credentials)
 }
 
-/// A client for the registry at `host`, with the certificates (`certs.d`) and proxies
-/// `env` finds for it, as a pull's.
+/// A client for the registry at `host`, with the certificates (`certs.d`), proxies and
+/// what Docker's daemon configuration says of registries (D194) that `env` finds for it,
+/// as a pull's. One TLS configuration serves every host it asks, as dockerd's
+/// per-registry client does: the registry, its token realm and its CDN.
 pub(crate) fn host_client(
     host: &str,
     env: &dyn Fn(&str) -> Option<String>,
@@ -549,7 +565,8 @@ pub(crate) fn host_client(
         Box::new(move |_| Ok(config.clone())),
         &format!("shards/{}", env!("CARGO_PKG_VERSION")),
     )
-    .with_proxies(Proxies::from_env(env)))
+    .with_proxies(Proxies::from_env(env))
+    .with_registries(Registries::from_env(env)?))
 }
 
 /// Docker's short layer ID: the digest's first 12 hex digits.

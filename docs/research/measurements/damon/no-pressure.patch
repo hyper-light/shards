@@ -1,0 +1,14 @@
+--- a/crates/shards/src/daemon/reclaim.rs
++++ b/crates/shards/src/daemon/reclaim.rs
+@@ -31,6 +31,11 @@
+     /// Watches the host's memory pressure on a thread of its own, where its kernel lets
+     /// this process watch it; says what it watches, or why it watches nothing.
+     pub(super) fn start_pressure<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
++        // Experiment (docs/research/measurements/damon): DAMON's reclaim measured alone.
++        if std::env::var_os("SHARDS_EXPERIMENT_NO_PRESSURE").is_some() {
++            log("the host's memory pressure is not watched: an experiment".to_string());
++            return;
++        }
+         let pressure = match MemoryPressure::new() {
+             Ok((pressure, watches)) => {
+                 *lock(&self.watching.watches) = Some(watches);

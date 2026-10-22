@@ -1489,7 +1489,34 @@ fn registry_serving(
     image: Served,
     stalls: Option<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
 ) -> (u16, Arc<AtomicUsize>, Served) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    registry_serving_at(std::net::Ipv4Addr::LOCALHOST.into(), image, stalls)
+}
+
+/// [`registry`], listening at `ip`: a registry off loopback where `ip` is this host's on
+/// its route out ([`routable_v4`]).
+pub fn registry_at(ip: std::net::IpAddr, manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize>) {
+    let image = Arc::new(std::sync::Mutex::new((manifest, blobs)));
+    let (port, served, _) = registry_serving_at(ip, image, None);
+    (port, served)
+}
+
+/// This host's IPv4 address on its route out, where it has one.
+pub fn routable_v4() -> Option<std::net::Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // TEST-NET-1 (RFC 5737): a route is chosen, nothing is sent.
+    socket.connect("192.0.2.1:9").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => Some(v4),
+        _ => None,
+    }
+}
+
+fn registry_serving_at(
+    ip: std::net::IpAddr,
+    image: Served,
+    stalls: Option<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
+) -> (u16, Arc<AtomicUsize>, Served) {
+    let listener = TcpListener::bind((ip, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let served = Arc::new(AtomicUsize::new(0));
     let count = served.clone();
@@ -1804,8 +1831,17 @@ pub fn crashing_program(arch: &str) -> Vec<u8> {
     elf
 }
 
-/// Serves the test image at `127.0.0.1:<port>/test/image:v1`.
+/// Serves the test image at `127.0.0.1:<port>/test/image:v1`: one registry for every test
+/// of the binary, started by the first that asks, so that no test leaves a server of its
+/// own behind (each had one, its thread blocked in accept(2) until the binary ended). What
+/// it counts is every test's requests; a test that counts its own has [`served_counting`].
 pub fn served() -> (String, Arc<AtomicUsize>) {
+    static SHARED: OnceLock<(String, Arc<AtomicUsize>)> = OnceLock::new();
+    SHARED.get_or_init(served_counting).clone()
+}
+
+/// [`served`], from a registry of the caller's own, whose count is its requests alone.
+pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     let (manifest, blobs) = test_image();
     let (port, served) = registry(manifest, blobs);
     (format!("127.0.0.1:{port}/test/image:v1"), served)

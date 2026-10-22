@@ -1,91 +1,62 @@
 diff --git a/crates/shards/src/netproc.rs b/crates/shards/src/netproc.rs
-index 3833c44c..d745c30f 100644
+index 3833c44c..071ade88 100644
 --- a/crates/shards/src/netproc.rs
 +++ b/crates/shards/src/netproc.rs
-@@ -43,8 +43,17 @@ pub fn resolvers() -> Vec<String> {
+@@ -43,10 +43,18 @@ pub fn resolvers() -> Vec<String> {
  }
  
  pub fn child_env() -> Vec<(&'static str, std::ffi::OsString)> {
 -    ["SHARDS_LOG", "SHARDS_TIMING"]
 -        .into_iter()
+-        .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
+-        .collect()
 +    // Experiment (docs/research/measurements/restore-folios): its switches reach the
 +    // daemon and its VM processes.
 +    [
 +        "SHARDS_LOG",
 +        "SHARDS_TIMING",
++        "SHARDS_SAVE_WHOLE",
 +        "SHARDS_RESTORE_RANDOM",
-+        "SHARDS_SAVE_PAGEWISE",
-+        "SHARDS_SAVE_DROP",
 +        "SHARDS_WS_LOG",
 +    ]
 +    .into_iter()
-         .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
-         .collect()
- }
-diff --git a/crates/vmm/src/memory.rs b/crates/vmm/src/memory.rs
-index ff5db3b3..a41effe0 100644
---- a/crates/vmm/src/memory.rs
-+++ b/crates/vmm/src/memory.rs
-@@ -991,6 +991,13 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
-     }
-     let at = offset + run.start as u64;
-     let mut done = 0;
-+    // Experiment (docs/research/measurements/restore-folios): a page a write, so that the
-+    // page cache holds the file in folios of a page.
-+    let most = if std::env::var_os("SHARDS_SAVE_PAGEWISE").is_some_and(|v| v == "1") {
-+        platform::page_size()?
-+    } else {
-+        usize::MAX
-+    };
-     while done < run.len() {
-         // SAFETY: `run.start + done .. run.end` lies in the region (checked above); the
-         // kernel reads it.
-@@ -998,7 +1005,7 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
-             platform::write_at(
-                 file,
-                 r.host.as_ptr().add(run.start + done),
--                run.len() - done,
-+                (run.len() - done).min(most),
-                 at + done as u64,
-             )?
-         };
-diff --git a/crates/vmm/src/platform/unix.rs b/crates/vmm/src/platform/unix.rs
-index 0a0cbfb8..5136e2b2 100644
---- a/crates/vmm/src/platform/unix.rs
-+++ b/crates/vmm/src/platform/unix.rs
-@@ -470,6 +470,12 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
-     if p != at.as_ptr().cast() {
-         return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
-     }
-+    // Experiment (docs/research/measurements/restore-folios): no readahead for the
-+    // snapshot's mapping, so that a fault reads one page into a folio of its own.
-+    if std::env::var_os("SHARDS_RESTORE_RANDOM").is_some_and(|v| v == "1") {
-+        // SAFETY: advice on the mapping just made.
-+        unsafe { libc::madvise(at.as_ptr().cast(), len, libc::MADV_RANDOM) };
-+    }
-     Ok(())
++    .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
++    .collect()
  }
  
-diff --git a/crates/vmm/src/snapshot/mod.rs b/crates/vmm/src/snapshot/mod.rs
-index 7f1ed58e..d9c4130d 100644
---- a/crates/vmm/src/snapshot/mod.rs
-+++ b/crates/vmm/src/snapshot/mod.rs
-@@ -672,6 +672,15 @@ fn stage_with(
-     let mut staged = staging(dir, name)?;
-     let files = (|| -> io::Result<Vec<File>> {
-         let memory_file = create_unsynced(&staged.staging.join(MEMORY), |f| memory.save(f))?;
-+        // Experiment (docs/research/measurements/restore-folios): the file written back and
-+        // its pages dropped from the page cache, which restores read again.
-+        #[cfg(target_os = "linux")]
-+        if std::env::var_os("SHARDS_SAVE_DROP").is_some_and(|v| v == "1") {
-+            use std::os::fd::AsRawFd as _;
-+            memory_file.sync_data()?;
-+            // SAFETY: advice on a descriptor of ours.
-+            unsafe { libc::posix_fadvise(memory_file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
-+        }
-         after(Step::Memory)?;
-         let state_file = create_unsynced(&staged.staging.join(STATE), |mut f| f.write_all(&state))?;
-         after(Step::State)?;
+ /// [`child_env`], as `shards_ipc::spawn_in` (and on Windows `shards_ipc::Spawn`) takes it.
+diff --git a/crates/vmm/src/memory.rs b/crates/vmm/src/memory.rs
+index 5f6210d9..1fe403a1 100644
+--- a/crates/vmm/src/memory.rs
++++ b/crates/vmm/src/memory.rs
+@@ -440,6 +440,13 @@ impl GuestMemory {
+             match unsafe { platform::map_file_private(file, offset, r.len, r.host) } {
+                 Ok(()) => {
+                     platform::small_pages(r.host, r.len);
++                    // Experiment (docs/research/measurements/restore-folios): no readahead
++                    // for the guest's memory, so that a fault reads only its page.
++                    #[cfg(target_os = "linux")]
++                    if std::env::var_os("SHARDS_RESTORE_RANDOM").is_some_and(|v| v == "1") {
++                        // SAFETY: advice on the mapping just made.
++                        unsafe { libc::madvise(r.host.as_ptr().cast(), r.len, libc::MADV_RANDOM) };
++                    }
+                     mem.file_backed = true;
+                 }
+                 Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+@@ -1001,6 +1008,13 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
+     } else {
+         usize::MAX
+     };
++    // Experiment (docs/research/measurements/restore-folios): each run written whole, as
++    // before the fix, the control that shows what the fix holds back.
++    let most = if std::env::var_os("SHARDS_SAVE_WHOLE").is_some_and(|v| v == "1") {
++        usize::MAX
++    } else {
++        most
++    };
+     let at = offset + run.start as u64;
+     let mut done = 0;
+     while done < run.len() {
 diff --git a/crates/vmm/src/vm/x86_64.rs b/crates/vmm/src/vm/x86_64.rs
 index fe00e8f6..2e35b1d3 100644
 --- a/crates/vmm/src/vm/x86_64.rs

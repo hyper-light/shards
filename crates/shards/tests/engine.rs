@@ -22,7 +22,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use base64::Engine as _;
-use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, tar};
+use common::{
+    Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, served_counting, tar,
+};
 use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -889,7 +891,7 @@ fn a_container_is_made_started_waited_for_logged_and_removed() {
     );
     assert_eq!(taken.status, 409, "{}", taken.text());
     // An image the store lacks: not found, which its client pulls on.
-    let (unpulled, _) = served();
+    let (unpulled, _) = served_counting();
     let missing = api.call("POST", "/containers/create", Some(json!({"Image": unpulled})));
     assert_eq!(missing.status, 404, "{}", missing.text());
     assert_eq!(
@@ -2148,7 +2150,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     let (status, _, err) = docker(&["run", "--rm", &image, "exit", "7"]);
     assert_eq!(status, Some(7), "{err}");
     // One the home has not: pulled through the engine as the create finds none.
-    let (unpulled, _) = served();
+    let (unpulled, _) = served_counting();
     let (status, out, err) = docker(&["run", "--rm", &unpulled, "streams", "pulled", "then"]);
     assert_eq!((status, out.as_str()), (Some(0), "pulled\n"), "{err}");
     assert!(

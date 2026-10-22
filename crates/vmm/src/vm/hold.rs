@@ -132,10 +132,11 @@ impl Hold {
     /// may run that period through before they are held. What a period overran comes off
     /// the next ones.
     pub(super) fn govern(&self, kick: &dyn Fn()) {
-        // Its waits end on time, as a vCPU's timers do (PM M8, M10): one that ends late
-        // holds the vCPUs past their period.
-        if let Err(e) = crate::platform::prioritize_vcpu_thread() {
-            crate::debug!("the hold's governor runs without real-time policy: {e}");
+        // It runs as it wakes, its waits ending on time, as a vCPU's timers do (PM M8,
+        // M10, M294): one that runs late lets the vCPUs overrun, or holds them past their
+        // period.
+        if let Err(e) = crate::platform::prioritize_governor_thread() {
+            crate::debug!("the hold's governor runs at its vCPUs' priority: {e}");
         }
         let vcpus = u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1);
         let period = u64::try_from(PERIOD.as_nanos()).unwrap_or(u64::MAX);

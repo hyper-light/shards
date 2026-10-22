@@ -238,6 +238,9 @@ pub fn main(device: &str, template: bool) -> ! {
         if oom_killed() {
             let _ = send(&conn, kind::OOM, &oom_facts(WORKLOAD_CGROUP));
         }
+        if let Some(facts) = pids_refused() {
+            let _ = send(&conn, kind::PIDS, &facts);
+        }
         let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
         // The host may ask for the container's writable layer, to keep (layer.rs): packed
         // and sent, or kept where it is, in its host's file (D190).
@@ -1507,6 +1510,34 @@ fn oom_facts(dir: &str) -> Vec<u8> {
         out.push_str(&line);
     }
     out.into_bytes()
+}
+
+/// What the workload's cgroup was refused past its `pids.max` (D193): where its
+/// `pids.events` counts a `max` (Documentation/admin-guide/cgroup-v2.rst, a fork or clone
+/// the limit failed), what it was allowed and held at most, and how many; none where none
+/// was. The words of the run's `PIDS`, which its daemon logs and says as an event.
+fn pids_refused() -> Option<Vec<u8>> {
+    let read = |file: &str| {
+        std::fs::read_to_string(format!("{WORKLOAD_CGROUP}/{file}"))
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_else(|_| "-".into())
+    };
+    let events = read("pids.events");
+    let refused = events
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find(|w| w.first() == Some(&"max"))
+        .and_then(|w| w.get(1)?.parse::<u64>().ok())
+        .filter(|&n| n > 0)?;
+    Some(
+        format!(
+            "pids.max {} pids.peak {} refused {refused}; pids.events {events}",
+            read("pids.max"),
+            read("pids.peak")
+        )
+        .into_bytes(),
+    )
 }
 
 /// Whether the kernel killed a process of the workload's cgroup for want of memory: its
@@ -4221,6 +4252,13 @@ impl Workload {
                     let len = u32::try_from(facts.len()).unwrap_or(0);
                     to_host.extend(&[
                         &run::header(kind::OOM, len),
+                        facts.get(..len as usize).unwrap_or_default(),
+                    ]);
+                }
+                if let Some(facts) = pids_refused() {
+                    let len = u32::try_from(facts.len()).unwrap_or(0);
+                    to_host.extend(&[
+                        &run::header(kind::PIDS, len),
                         facts.get(..len as usize).unwrap_or_default(),
                     ]);
                 }

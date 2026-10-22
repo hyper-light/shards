@@ -1,8 +1,9 @@
 name: restore folios
 
-# Which way of writing and mapping a snapshot's memory file keeps a restored guest's
-# memory small where Linux maps a page cache folio whole on a read fault (6.18 and later:
-# mm/filemap.c, filemap_map_folio_range), without slowing its first beat
+# Whether the way shards writes and maps a snapshot's memory file (a page a write on
+# Linux) keeps a restored guest's memory small where Linux maps a page cache folio whole
+# on a read fault (6.18 and later: mm/filemap.c, filemap_map_folio_range), warm and with
+# the file dropped from the page cache, and what it costs a restore
 # (docs/research/measurements/restore-folios). Runs when the experiment changes, or when
 # asked.
 on:
@@ -33,40 +34,63 @@ jobs:
         run: |
           uname -r
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag} || true
-          findmnt -no FSTYPE -T target || true
+          for at in target /tmp "$RUNNER_TEMP"; do echo "$at: $(findmnt -no FSTYPE -T "$at" || true)"; done
           cat /sys/kernel/mm/transparent_hugepage/hugepages-*/enabled 2>/dev/null | sort | uniq -c || true
-          for arm in base random pagewise drop; do
-            vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-$arm.log"
-            case $arm in
-              random) vars="$vars SHARDS_RESTORE_RANDOM=1" ;;
-              pagewise) vars="$vars SHARDS_SAVE_PAGEWISE=1 SHARDS_RESTORE_RANDOM=1" ;;
-              drop) vars="$vars SHARDS_SAVE_DROP=1 SHARDS_RESTORE_RANDOM=1" ;;
-            esac
-            echo "=== $arm: $vars"
-            env $vars cargo bench --locked -p shards --bench firecracker -- --runs 20 2>&1 |
-              awk '/^firecracker(_restore|_density)?:/ || /^(shards|fc)_(to_ready|to_beat|overhead|peak_rss|rss_file|pss_file|pss|rss_anon|fleet_pss|fleet_private|fleet_host) / || /mappings by resident bytes/ || /^  rss .*memory$/'
-            # Working sets only where a recording restore wrote them (the daemon path, not
-            # the bench's cold restores): reported if present, never failing the step.
+          . docs/research/measurements/restore-folios/arms.sh
+          for round in 1 2; do
+            for arm in shipped random whole evict-shipped evict-random evict-whole; do
+              vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-$arm.log $(arm_vars $arm)"
+              echo "=== round $round, $arm: $vars"
+              out="$RUNNER_TEMP/compare-$round-$arm.log"
+              arm_on $arm
+              env $vars cargo bench --locked -p shards --bench firecracker -- --runs 20 < /dev/null > "$out" 2>&1
+              status=$?
+              arm_off $arm
+              if [ $status -eq 0 ]; then
+                awk '/^firecracker(_restore|_density)?:/ || /^(shards|fc)_(to_ready|to_beat|overhead|peak_rss|rss_file|pss_file|pss|rss_anon|fleet_pss|fleet_private|fleet_host) / || /mappings by resident bytes/ || /^  rss .*memory$/' "$out"
+              else
+                echo "--- $arm FAILED (exit $status), its last lines:"
+                tail -40 "$out"
+              fi
+            done
+          done
+          for arm in shipped random whole evict-shipped evict-random evict-whole; do
             if [ -s "$RUNNER_TEMP/ws-$arm.log" ]; then
               echo "--- $arm's working sets"
               sort "$RUNNER_TEMP/ws-$arm.log" | uniq -c | sort -rn | head -8
             fi
           done
-      # Where a run's time is: warm requests, and runs served from a template's pool;
-      # the arms alternating, twice each.
+      # Where a run's time is: cold restores, warm requests and runs served from a
+      # template's pool, the arms alternating; restores alone where the page cache is
+      # dropped (a pool's runs there would time the drops, not the restores).
       - name: Warm requests and pooled runs, each arm
         run: |
-          for round in 1 2; do
-            for arm in base pagewise drop; do
-              vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-bench-$arm.log"
-              case $arm in
-                pagewise) vars="$vars SHARDS_SAVE_PAGEWISE=1 SHARDS_RESTORE_RANDOM=1" ;;
-                drop) vars="$vars SHARDS_SAVE_DROP=1 SHARDS_RESTORE_RANDOM=1" ;;
-              esac
+          . docs/research/measurements/restore-folios/arms.sh
+          for round in 1 2 3; do
+            for arm in shipped random whole evict-shipped evict-random evict-whole; do
+              case $arm in evict-*) [ $round -le 2 ] || continue; benches="restore -- --runs 30" ;;
+                *) benches="restore -- --runs 30
+          image -- --runs 60 --templates 3" ;; esac
+              vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-bench-$arm.log $(arm_vars $arm)"
               echo "=== round $round, $arm: $vars"
-              env $vars cargo bench --locked -p shards --bench restore -- --runs 30 2>&1 |
-                grep -E '^(cold_restore|cold_spawn_exit|warm_request|warm_peak_rss) '
-              env $vars cargo bench --locked -p shards --bench image -- --runs 60 --templates 3 2>&1 |
-                grep -E '^(run_template|template_command|template_outside|run_template_rss) '
+              echo "$benches" | while read -r bench; do
+                out="$RUNNER_TEMP/bench-$round-$arm-${bench%% *}.log"
+                arm_on $arm
+                env $vars cargo bench --locked -p shards --bench $bench < /dev/null > "$out" 2>&1
+                status=$?
+                arm_off $arm
+                if [ $status -eq 0 ]; then
+                  grep -E '^(cold_restore|cold_spawn_exit|warm_request|warm_peak_rss|run_template|template_command|template_outside|run_template_rss) ' "$out" || true
+                else
+                  echo "--- $arm ${bench%% *} FAILED (exit $status), its last lines:"
+                  tail -40 "$out"
+                fi
+              done
             done
+          done
+          for arm in shipped random whole evict-shipped evict-random evict-whole; do
+            if [ -s "$RUNNER_TEMP/ws-bench-$arm.log" ]; then
+              echo "--- $arm's working sets (benches)"
+              sort "$RUNNER_TEMP/ws-bench-$arm.log" | uniq -c | sort -rn | head -8
+            fi
           done

@@ -1339,6 +1339,30 @@ impl<D: Disk> Daemon<D> {
             // none of: no length of an interface's, no two networks' bridge in common, to
             // refuse.
         }
+        // shards' own option (D192): what its members' commands may reach past their
+        // microVMs, which only a bridge network's members reach past them at all, and an
+        // internal one's never; a config-only network keeps it for those made from it,
+        // which take it as theirs.
+        let egress = from
+            .as_ref()
+            .map_or(options.get(nets::EGRESS), |f| f.options.get(nets::EGRESS));
+        if let Some(value) = egress {
+            if let Err(why) = nets::parse_egress(value) {
+                return daemon(&format!("--opt {}: {why}", nets::EGRESS));
+            }
+            if driver != "bridge" && !config_only {
+                return daemon(&format!(
+                    "--opt {}: only a bridge network's members reach past their microVMs",
+                    nets::EGRESS
+                ));
+            }
+            if parsed.bool("internal") {
+                return daemon(&format!(
+                    "--opt {}: an internal network's members reach nothing past their microVMs",
+                    nets::EGRESS
+                ));
+            }
+        }
         if from.is_some() {
             options.clear();
         }

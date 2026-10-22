@@ -90,6 +90,22 @@ pub fn prioritize_vcpu_thread() -> Result<(), String> {
     Ok(())
 }
 
+/// Has the calling thread, a machine's vCPU hold's governor (D191), run as it wakes,
+/// however busy its vCPU threads keep the CPUs they may use: on macOS at their real-time
+/// policy ([`prioritize_vcpu_thread`]); on Windows above them, at
+/// THREAD_PRIORITY_TIME_CRITICAL, where at their priority three spinning vCPU threads of a
+/// process held to two CPUs kept it from running and used up to 1.58 s of CPU in a second
+/// held to one (PM M294). On Linux, where the hold's test has held on every runner, as it
+/// is.
+pub fn prioritize_governor_thread() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return macos_thread::make_current_realtime();
+    #[cfg(windows)]
+    return windows::run_time_critical();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    Ok(())
+}
+
 /// The bytes of `name` in the directory `dir` holds open, or `None` if there is no such
 /// file. A file longer than `max` bytes is an error, found before it is read.
 pub fn read_in(dir: &File, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> {

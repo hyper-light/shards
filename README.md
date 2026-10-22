@@ -97,6 +97,13 @@ still applies. The program each microVM runs first, `shards-init`, is part of sh
 On a terminal, shards draws its own pages. Piped, a `docker` command line prints what
 `docker` prints, so scripts written for it keep working.
 
+Images come from any registry, with the logins `docker login` keeps and the certificates
+Docker's `certs.d` holds. A registry on another machine that speaks plain HTTP is reached
+once Docker's `daemon.json` lists it under `insecure-registries`, as Docker reaches one;
+unlike Docker, shards still checks the certificate of one that answers in HTTPS, and never
+sends your password in plain HTTP. Its `registry-mirrors` are asked first for what comes
+from Docker Hub, each with its own login, never your Docker Hub one.
+
 ### Tools that speak the Docker Engine API
 
 The `docker` CLI, `docker compose`, Docker's SDKs, Testcontainers and agent frameworks work
@@ -126,8 +133,13 @@ registry's catalog), disk use, version and system information. Disk use counts t
 microVMs that make starts fast, too. Copies are packed and unpacked inside the microVM, and
 land where its program will find them: in its volumes, running or stopped, and its tmpfs
 mounts while it runs. A network's microVMs reach each other by name and nothing else through
-it. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
-time). A setting a microVM can't take is refused with the reason, never dropped.
+it. A network can let them reach chosen hosts outside, and only those: made with `--opt
+shards.egress=api.anthropic.com:443,github.com:443`, its microVMs reach each host on its
+port, look up those names and no others, and reach nothing else past themselves; a
+network made without it lets nothing out. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
+time). A setting a microVM can't take is refused with the reason, never dropped. A microVM
+refused a process past its `--pids-limit` says so in its events (`pids-limit`, with the
+limit and how many it refused), as one that runs out of memory says `oom`.
 
 ### A microVM's own engine
 

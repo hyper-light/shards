@@ -60,23 +60,51 @@ pub(crate) const CHUNK: usize = 64 << 10;
 
 /// A repository's registry, reached as containerd's default hosts reach it
 /// (`core/remotes/docker/registry.go`): Docker Hub at `registry-1.docker.io`, loopback
-/// hosts over plain HTTP, and every other host over https.
+/// hosts over plain HTTP, those Docker's daemon configuration names insecure over plain
+/// HTTP too (D194), and every other host over https.
 pub struct Registry {
     http: Client,
     auth: Authorizer,
     /// `scheme://host/v2/<repository>/`
     base: Url,
-    /// For a loopback host on a port that names no scheme: whether it answered HTTPS in
-    /// plain HTTP, and is now asked in plain HTTP (`None` for every other host).
-    plain: Option<AtomicBool>,
+    /// For a registry that may be asked in plain HTTP, a loopback host on a port that
+    /// names no scheme or a host named insecure: how (`None` for every other host).
+    plain: Option<Plain>,
     /// containerd's `RepositoryScope`: pull access to the repository.
     scopes: Vec<String>,
+    /// Docker Hub's mirrors a pull from it asks first, in order (D194): each a registry of
+    /// its own, its host's certificates and credentials its own.
+    mirrors: Vec<Mirror>,
+}
+
+/// A mirror of Docker Hub's a pull asks first, and whether it failed: once it has, the
+/// pull asks it nothing more, as dockerd goes on to its next endpoint after a mirror's
+/// error (`continueOnError`, any error of a mirror's).
+#[derive(Debug)]
+struct Mirror {
+    registry: Registry,
+    failed: AtomicBool,
+}
+
+/// How a registry that may be asked in plain HTTP is: asked in HTTPS first, then in plain
+/// HTTP once it answers HTTPS so, or never finishes the handshake; or, named insecure
+/// without a port, once its HTTPS port refuses the connection, as dockerd tries its
+/// `https://` endpoint and then its `http://` one (`lookupV2Endpoints`).
+#[derive(Debug)]
+struct Plain {
+    /// Whether it is asked in plain HTTP now.
+    fallen: AtomicBool,
+    /// The port it is asked at in plain HTTP: its own, or HTTP's for one named without.
+    port: u16,
+    /// Whether a refused connection falls back too.
+    on_refusal: bool,
 }
 
 impl fmt::Debug for Registry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Registry")
             .field("base", &self.base.to_string())
+            .field("mirrors", &self.mirrors.len())
             .finish_non_exhaustive()
     }
 }
@@ -345,8 +373,13 @@ impl Registry {
     /// containerd v2.4.1's defaults for a loopback host (core/remotes/docker/config/
     /// hosts.go), HTTPS alone on 443 or no port, plain HTTP on 80, and on any other port
     /// HTTPS first, then plain HTTP once the server answers it so (NewHTTPFallback).
-    /// containerd skips verifying a loopback host's certificate; shards verifies it,
-    /// against certs.d and the system's roots.
+    /// A host Docker's daemon configuration names insecure, by its `host[:port]` or a
+    /// network it is in (D194), is asked in HTTPS first, then in plain HTTP, as dockerd
+    /// asks one, at its port, or HTTP's where it names none. containerd skips verifying a
+    /// loopback host's certificate, and dockerd an insecure one's; shards verifies both,
+    /// against certs.d and the system's roots. A loopback registry's credentials go to it
+    /// in plain HTTP too, as containerd's do; an insecure one's never leave the machine
+    /// unencrypted (auth.rs).
     fn at(
         http: Client,
         mut base: Url,
@@ -354,20 +387,68 @@ impl Registry {
         scopes: Vec<String>,
     ) -> Result<Registry, Error> {
         let mut plain = None;
-        if loopback(&base) && base.authority() != base.host() {
+        let ported = base.authority() != base.host();
+        let fallback = |port, on_refusal| Plain {
+            fallen: AtomicBool::new(false),
+            port,
+            on_refusal,
+        };
+        let local = loopback(&base);
+        if local && ported {
             match base.port() {
                 80 => base = base.plain()?,
-                _ => plain = Some(AtomicBool::new(false)),
+                port => plain = Some(fallback(port, false)),
             }
+        } else if !local && http.registries().insecure(&base.authority()) {
+            plain = Some(match ported {
+                true => fallback(base.port(), false),
+                false => fallback(Scheme::Http.default_port(), true),
+            });
         }
         let auth = auth(&base);
+        let auth = match &plain {
+            Some(p) if local => auth.plain_too(p.port),
+            Some(p) => auth.plain_without(p.port),
+            None => auth,
+        };
         Ok(Registry {
-            auth: if plain.is_some() { auth.plain_too() } else { auth },
+            auth,
             http,
             base,
             plain,
             scopes,
+            mirrors: Vec::new(),
         })
+    }
+
+    /// A mirror of Docker Hub's at `mirror` (`scheme://host[:port][/path]/`, as
+    /// [`crate::registries`] keeps one), for `reference`'s repository, its credentials
+    /// those of the mirror's own host: dockerd gives a mirror Docker Hub's
+    /// (`daemon/internal/distribution/registry.go`, `newRepository`); shards, where its
+    /// user logged in to the mirror, the mirror's (D194).
+    pub fn mirror(
+        http: Client,
+        mirror: &str,
+        reference: &Reference,
+        credentials: impl Into<Found>,
+    ) -> Result<Registry, Error> {
+        let base = Url::parse(&format!("{mirror}v2/{}/", reference.path))?;
+        Registry::at(
+            http,
+            base,
+            Authorizer::new_for(credentials),
+            vec![format!("repository:{}:pull", reference.path)],
+        )
+    }
+
+    /// This registry, asking `mirror` (a [`Registry::mirror`]) first, after the mirrors it
+    /// asks already: a pull from Docker Hub with its mirrors (D194).
+    pub fn with_mirror(mut self, mirror: Registry) -> Registry {
+        self.mirrors.push(Mirror {
+            registry: mirror,
+            failed: AtomicBool::new(false),
+        });
+        self
     }
 
     /// Logs in to the registry at `host` (Docker Hub's at `registry-1.docker.io`), as
@@ -426,8 +507,40 @@ impl Registry {
         self.send(method, url, headers, &[], None)
     }
 
-    /// [`request`](Self::request), with a body: `body`, or so much of a file.
+    /// [`request`](Self::request), with a body: `body`, or so much of a file. A request of
+    /// this registry's own repository goes to its mirrors first (D194), each in turn until
+    /// one answers it with success; one that does not, or cannot be reached, is asked
+    /// nothing more, and the registry itself is asked last.
     fn send<'a>(
+        &self,
+        method: &'a str,
+        url: &Url,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        file: Option<(&std::fs::File, u64, u64)>,
+    ) -> Result<(Response<'_>, &'a str), Error> {
+        if let Some(rest) = url.as_str().strip_prefix(self.base.as_str()) {
+            for mirror in &self.mirrors {
+                if mirror.failed.load(Ordering::Acquire) {
+                    continue;
+                }
+                let mirrored = Url::parse(&format!("{}{rest}", mirror.registry.base))?;
+                match mirror.registry.send_here(method, &mirrored, headers, body, file) {
+                    Ok(answer) if (200..300).contains(&answer.0.status) => return Ok(answer),
+                    // A manifest or blob it could not give: the pull's are asked of the
+                    // next. A list it has no API for (referrers, tags) is this one's alone.
+                    _ if rest.starts_with("manifests/") || rest.starts_with("blobs/") => {
+                        mirror.failed.store(true, Ordering::Release);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.send_here(method, url, headers, body, file)
+    }
+
+    /// [`send`](Self::send), of this registry itself.
+    fn send_here<'a>(
         &self,
         method: &'a str,
         url: &Url,
@@ -443,14 +556,14 @@ impl Registry {
         loop {
             attempt += 1;
             // The registry's own host, once it answered HTTPS in plain HTTP, is asked so.
-            let ours = |plain: &AtomicBool| {
+            let ours = |plain: &Plain| {
                 url.scheme() == Scheme::Https
                     && url.host() == self.base.host()
                     && url.port() == self.base.port()
-                    && plain.load(Ordering::Acquire)
+                    && plain.fallen.load(Ordering::Acquire)
             };
             let fallen = match &self.plain {
-                Some(plain) if ours(plain) => Some(url.plain()?),
+                Some(plain) if ours(plain) => Some(url.plain_at(plain.port)?),
                 _ => None,
             };
             let sent = self.http.follow(
@@ -467,14 +580,15 @@ impl Registry {
             let mut response = match sent {
                 Ok(response) => response,
                 Err(e)
-                    if e.is_not_tls()
-                        && fallen.is_none()
+                    if fallen.is_none()
+                        && url.scheme() == Scheme::Https
                         && url.host() == self.base.host()
                         && url.port() == self.base.port()
-                        && let Some(plain) = &self.plain =>
+                        && let Some(plain) = &self.plain
+                        && (e.is_not_tls() || (e.is_refused() && plain.on_refusal)) =>
                 {
                     // Asked again at once, as the fallback's round trip does: not an attempt.
-                    plain.store(true, Ordering::Release);
+                    plain.fallen.store(true, Ordering::Release);
                     attempt -= 1;
                     continue;
                 }
@@ -1512,6 +1626,234 @@ mod tests {
                 "asked in HTTPS once, silent {silent}"
             );
         }
+    }
+
+    /// This host's address on its route out, where it has one: what a registry on the
+    /// machine is reached at from off it.
+    fn routable_v4() -> Option<std::net::Ipv4Addr> {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        // TEST-NET-1 (RFC 5737): a route is chosen, nothing is sent.
+        socket.connect("192.0.2.1:9").ok()?;
+        match socket.local_addr().ok()?.ip() {
+            std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => Some(v4),
+            _ => None,
+        }
+    }
+
+    /// A registry off loopback that answers HTTPS in plain HTTP is asked in HTTPS alone,
+    /// unless Docker's daemon configuration names it insecure (D194): then in HTTPS once,
+    /// then in plain HTTP, as dockerd asks one; and its credentials never go to it there,
+    /// where it asks for them in plain HTTP, but are refused as such.
+    #[test]
+    fn a_registry_named_insecure_is_asked_in_plain_http_without_credentials() {
+        use std::io::Write as _;
+        let Some(ip) = routable_v4() else {
+            eprintln!("SKIP: this host has no IPv4 route to reach itself off loopback at");
+            return;
+        };
+        let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hellos = Arc::new(AtomicUsize::new(0));
+        let authorized = Arc::new(AtomicUsize::new(0));
+        let (seen, sent) = (hellos.clone(), authorized.clone());
+        std::thread::spawn(move || {
+            for tcp in listener.incoming() {
+                let Ok(mut tcp) = tcp else { return };
+                let (seen, sent) = (seen.clone(), sent.clone());
+                std::thread::spawn(move || {
+                    let mut first = [0u8; 1];
+                    if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        let mut header = [0u8; 5];
+                        if tcp.read_exact(&mut header).is_ok() {
+                            let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
+                            let mut record = vec![0u8; len];
+                            let _ = tcp.read_exact(&mut record);
+                        }
+                        let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
+                        let _ = tcp.shutdown(std::net::Shutdown::Write);
+                        let mut sink = [0u8; 4096];
+                        while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
+                        return;
+                    }
+                    loop {
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") && matches!(tcp.read(&mut byte), Ok(1)) {
+                            head.push(byte[0]);
+                        }
+                        if head.is_empty() {
+                            return;
+                        }
+                        let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                        if head.contains("\r\nauthorization:") {
+                            sent.fetch_add(1, Ordering::SeqCst);
+                        }
+                        let answer: &[u8] = if head.starts_with("get /v2/private/") {
+                            b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"r\"\r\nContent-Length: 0\r\n\r\n"
+                        } else {
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+                        };
+                        if tcp.write_all(answer).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let client = || {
+            Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+        };
+        let reference = |path: &str| Reference::parse(&format!("{ip}:{port}/{path}:v1")).unwrap();
+        // Not named: HTTPS alone, its plain answer a failure.
+        let secure = Registry::new(client(), &reference("test/image"), Credentials::Anonymous).unwrap();
+        let url = secure.base.join("manifests/v1").unwrap();
+        let refused = secure.request("GET", &url, &[]).err().unwrap().to_string();
+        assert!(
+            refused.contains("server gave HTTP response to HTTPS client"),
+            "{refused}"
+        );
+        assert_eq!(hellos.load(Ordering::SeqCst), 1);
+        // Named: HTTPS once, then plain HTTP.
+        let named =
+            crate::registries::Registries::parse(&format!(r#"{{"insecure-registries": ["{ip}:{port}"]}}"#))
+                .unwrap();
+        let insecure = Registry::new(
+            client().with_registries(named.clone()),
+            &reference("test/image"),
+            Credentials::Anonymous,
+        )
+        .unwrap();
+        let url = insecure.base.join("manifests/v1").unwrap();
+        for _ in 0..2 {
+            let (response, _) = insecure.request("GET", &url, &[]).unwrap();
+            assert_eq!(response.status, 404);
+            assert!(
+                response.url().as_str().starts_with("http://"),
+                "{}",
+                response.url()
+            );
+        }
+        assert_eq!(hellos.load(Ordering::SeqCst), 2, "asked in HTTPS once more");
+        // Its credentials stay here: asked for them in plain HTTP, it is refused so.
+        let private = Registry::new(
+            client().with_registries(named),
+            &reference("private/image"),
+            Credentials::Password {
+                username: "u".into(),
+                password: "p".into(),
+            },
+        )
+        .unwrap();
+        let url = private.base.join("manifests/v1").unwrap();
+        let said = private.request("GET", &url, &[]).err().unwrap();
+        assert_eq!(said.kind(), ErrorKind::Unauthorized, "{said}");
+        assert!(
+            said.to_string().contains("asks for credentials in plain HTTP"),
+            "{said}"
+        );
+        assert_eq!(authorized.load(Ordering::SeqCst), 0, "no credentials sent");
+    }
+
+    /// A registry named insecure without a port is asked in plain HTTP at HTTP's port once
+    /// its HTTPS port refuses the connection; one named with its port, at that port, once
+    /// it answers HTTPS in plain HTTP alone; one not named, never.
+    #[test]
+    fn where_an_insecure_registry_is_asked_in_plain_http() {
+        let named = crate::registries::Registries::parse(
+            r#"{"insecure-registries": ["10.255.0.1", "10.255.0.2:5000"]}"#,
+        )
+        .unwrap();
+        let plain = |host: &str| {
+            let client = Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+            .with_registries(named.clone());
+            let reference = Reference::parse(&format!("{host}/test/image:v1")).unwrap();
+            let registry = Registry::new(client, &reference, Credentials::Anonymous).unwrap();
+            registry.plain.map(|p| (p.port, p.on_refusal))
+        };
+        assert_eq!(plain("10.255.0.1"), Some((80, true)));
+        assert_eq!(plain("10.255.0.2:5000"), Some((5000, false)));
+        assert_eq!(plain("10.255.0.2"), None);
+        assert_eq!(plain("10.255.0.3:5000"), None);
+        assert_eq!(plain("localhost:5000"), Some((5000, false)));
+        assert_eq!(plain("localhost"), None);
+    }
+
+    /// Docker Hub's mirrors (D194): a request of the repository is asked of each mirror in
+    /// turn, then of the registry; a mirror that cannot give a manifest or a blob is asked
+    /// nothing more, one that has no list asked for (referrers) is asked the next request.
+    #[test]
+    fn a_pull_asks_its_mirrors_first_and_a_failed_one_nothing_more() {
+        let answering = |refused: &'static str| {
+            route(None, move |seen| {
+                let status = if seen.target.contains(refused) {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                Some((http(status, &[]), After::Keep))
+            })
+        };
+        let hub = answering("/nothing/");
+        let first = answering("/manifests/");
+        let second = answering("/referrers/");
+        let client = || {
+            Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+        };
+        let reference = Reference::parse(&format!("127.0.0.1:{}/library/x:v1", hub.port)).unwrap();
+        let mirror = |port: u16| {
+            Registry::mirror(
+                client(),
+                &format!("http://127.0.0.1:{port}/"),
+                &reference,
+                Credentials::Anonymous,
+            )
+            .unwrap()
+        };
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous)
+            .unwrap()
+            .with_mirror(mirror(first.port))
+            .with_mirror(mirror(second.port));
+        let get = |path: &str| {
+            let url = registry.base.join(path).unwrap();
+            let (response, _) = registry.request("GET", &url, &[]).unwrap();
+            (response.status, response.url().port())
+        };
+        let digest = |c: char| format!("blobs/sha256:{}", c.to_string().repeat(64));
+        assert_eq!(get(&digest('a')), (200, first.port), "the first mirror's");
+        assert_eq!(get("manifests/v1"), (200, second.port), "the first had none");
+        assert_eq!(get(&digest('b')), (200, second.port), "the first asked no more");
+        assert_eq!(
+            get(&format!("referrers/sha256:{}", "c".repeat(64))),
+            (200, hub.port)
+        );
+        assert_eq!(
+            get(&digest('d')),
+            (200, second.port),
+            "a list the second lacks is its alone"
+        );
+        let asked = |s: &crate::testing::Server| {
+            s.requests()
+                .iter()
+                .map(|r| r.lines().next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(asked(&first).len(), 2, "{:?}", asked(&first));
+        assert_eq!(asked(&hub).len(), 1, "{:?}", asked(&hub));
+        assert!(
+            asked(&hub)[0].starts_with("GET /v2/library/x/referrers/"),
+            "{:?}",
+            asked(&hub)
+        );
     }
 
     /// The tag is asked for where the API is not found or refuses, a 404 of both an empty

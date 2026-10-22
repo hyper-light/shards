@@ -636,6 +636,22 @@ pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
     Ok((available, total))
 }
 
+/// Runs the calling thread at THREAD_PRIORITY_TIME_CRITICAL, base priority 15 in its
+/// process's NORMAL_PRIORITY_CLASS against its other threads' 8: as it becomes ready it
+/// preempts them, "without allowing it to finish using its time slice" (Microsoft,
+/// Scheduling Priorities). For a thread that runs briefly between waits, as that page
+/// reserves high priority for (PM M294).
+pub fn run_time_critical() -> Result<(), String> {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    };
+    // SAFETY: the calling thread's pseudo-handle, which is not closed.
+    if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) } == 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
 /// A thread's CPU clock, read from any thread of the process while the thread lives
 /// (D191): its kernel and user times (GetThreadTimes), which Windows counts by its clock's
 /// ticks. The handle it holds is closed as it goes.

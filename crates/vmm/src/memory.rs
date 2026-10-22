@@ -992,10 +992,11 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
     // On a Linux host the page cache holds a file written in large contiguous runs as
     // large folios (ext4 makes them, 6.16+), and a restore's read fault then maps a whole
     // folio of the file at once (filemap_map_folio_range, 6.18+), whatever the mapping's
-    // advice: a restored guest's memory file held 26 MiB of its working set to
-    // Firecracker's 14 (PM M288, M289). Writing a page at a time keeps the folios to a
-    // page, so a fault maps a page (8.9 MiB, beating Firecracker). Elsewhere, and where the
-    // host makes no large folios, there is nothing to split and the run goes whole.
+    // advice: a restored guest's memory file held 26 MiB to Firecracker's 14 (PM M287,
+    // M291). Writing a page at a time keeps the folios to a page, so a fault maps no more
+    // than fault-around's (9.1 to 9.2 MiB, beating Firecracker). Every Linux host writes so,
+    // one that makes no large folios too (what it costs a save: M290); macOS writes the run
+    // whole.
     let most = if cfg!(target_os = "linux") {
         platform::page_size()?
     } else {

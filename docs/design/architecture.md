@@ -98,12 +98,16 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   written whole on macOS, and a page at a time on a Linux host (`memory.rs::write_run`):
   on ext4 a write's length sets the order of the page-cache folios it fills, and from 6.18
   a restore's read fault maps a whole folio of the file at once (filemap_map_folio_range),
-  so a snapshot written in large runs gave a restored guest 26 MiB of its working set to
-  Firecracker's 14, where one written a page at a time gave 8.9 and beat Firecracker (PM
-  M289). Writing a page at a time costs the save 10–40 ms of a tens-of-MiB memory file
-  (PM M290), paid on template creation and `save`, never a warm pooled run; a restore's
-  first beat is within ~5% either way, where M37 once measured large runs 17–25% faster
-  (the working set is prefetched now, so the fault pattern at first beat barely shows).
+  so a snapshot written in large runs gave a restored guest 26 MiB of its file to
+  Firecracker's 14, where one written a page at a time holds 9.1 to 9.2 and beats
+  Firecracker, its fleets' PSS too (PM M291, Linux 7.0). Writing a page at a time costs the
+  save 12 to 47 ms of a 64 to 256 MiB file (PM M290), paid on template creation and `save`,
+  never a warm pooled run; a restore's first beat and a pooled run are as quick either way
+  (M37 once measured large runs 17 to 25% quicker to the first beat), and a cold restore as
+  quick as 6.17's, up to 10 ms slower at p50 than whole runs' on 7.0 in one run of two,
+  whose faults map 2 MiB at once (M291). Dropped from the host's page cache and read again,
+  a file written either way holds 7.8 to 9.7 MiB: the 26 were the save's own folios, which
+  writing a page at a time leaves none of (M291).
   Decoding treats the files as untrusted.
 - **Generations.** A snapshot directory holds generations, each a directory of its own
   (`state`, `memory`, and later a `working-set`), and `current`, naming the one in use.
@@ -5653,10 +5657,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   then a thread blocked in poll(2) on Linux 6.4 and later and on macOS; on an older Linux,
   a read of the host's average every ten seconds.
 
-**Measured (PM M267, macOS).** The guest's 944 MiB of a read file reclaimed in 33 ms
-(p50); with the flush, 946 MiB back to the host within 0.5 s (p50, the builtin 81 ms),
-where reporting at its own pace gave back 374 MiB by 2 s, 630 by 4 s and 952 by 8 s. 51
-MiB of the read's stays: the page structures of the memory it plugged, and the kernel's.
+**Measured against DAMON (PM M293).** DAMON_RECLAIM, built into the pinned kernel, does
+nothing in a run's guest as the kernel has it (its watermarks, which run it only while a
+guest's free memory is between a fifth and a half of it, kept it off in five rounds of
+six); held active it gives back 53 MiB of a gigabyte
+read in 180 s, or 568 MiB in 90 s with min_age 5 s, monitoring one range of the guest's
+memory, at 1.5% of a CPU idle against 0.2. D188 gives back 875 MiB within 10 s, and nothing
+until the host is short. DAMON stays off.
+
+**Measured (PM M267, M268).** On the Mac, the guest's 944 MiB of a read file reclaimed in
+33 ms (p50); with the flush, 946 MiB back to the host within 0.5 s (p50, the builtin 81
+ms), where reporting at its own pace gave back 374 MiB by 2 s, 630 by 4 s and 952 by 8 s.
+51 MiB of the read's stays: the page structures of the memory it plugged, and the
+kernel's. On Linux (KVM) the same: 835 MiB back within 0.5 s (p50, 70 ms with the flush),
+paced 357 by 1 s, 615 by 4 s, 866 by 8 s, 50 to 59 MiB staying. Unplugged after the
+working set shrinks, all but 12 to 20 MiB of a gigabyte the guest plugged, used and freed,
+on both.
 
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
 runs. E2E on Linux (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`):
@@ -5674,7 +5690,11 @@ staying (p50) in 3 of its 8 blocks; online as auto-movable, 14 MiB in one; all m
 none. Plugged memory stays the kernel's own (D133).
 
 **Not yet.** Builders (D133) give back nothing at pressure: a build runs in `shards build`'s
-own process, not the daemon's. M267 and M268 on Linux, and M268 at larger sizes.
+own process, not the daemon's. And they hold little a pass could take (PM M295): what a
+builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
+MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
+leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
+D188's file pages. M268 at larger sizes.
 
 ### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (in progress: mappings built, opt-in)
 
@@ -5772,6 +5792,158 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
+### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
+
+**Found.** A registry off loopback that speaks plain HTTP, a `registry:2` on another
+machine of a LAN, a CI job's, could be neither pulled from nor pushed to: shards asked
+every registry in HTTPS but loopback's (containerd's defaults, `core/remotes/docker/
+registry.go`), and nothing could say otherwise. dockerd takes such a registry from its
+daemon.json's `insecure-registries`, and Docker Hub's mirrors from its `registry-mirrors`;
+shards read neither, and its `info` left out the `Insecure Registries` lines docker/cli
+prints.
+
+**Decided.**
+- **Read where Docker's daemons read it** (`shards_registry::registries`): Docker Desktop's
+  `~/.docker/daemon.json` (docker/docs `desktop/settings-and-maintenance/settings.md`), the
+  rootless engine's `$XDG_CONFIG_HOME/docker/daemon.json` or `~/.config/docker/daemon.json`,
+  and the native one's `/etc/docker/daemon.json`, `%PROGRAMDATA%\docker\config\daemon.json`
+  on Windows (`engine/daemon/_index.md`); what they name taken together, found through the
+  environment of whoever asks, as `certs.d` is (D23). A missing file names nothing; one that
+  cannot be read, or whose two keys hold what dockerd refuses, fails the pull, naming the
+  file and why, as dockerd would not start with it. Checked as dockerd checks them (moby
+  docker-v29.8.1 `daemon/pkg/registry/config.go`, `loadInsecureRegistries`,
+  `ValidateMirror`).
+- **Which registries are insecure**: one named by its `host[:port]` as a reference names it
+  (dockerd's `IndexConfigs` keys), or one with an address in a network named in CIDR
+  notation, its name looked up within a dial's time where any network is named
+  (`isCIDRMatch`).
+- **How one is asked**: in HTTPS first, then in plain HTTP once it answers HTTPS so or never
+  finishes the handshake (containerd's `isTLSError`, as a loopback registry on a port is
+  asked); one named without a port, once its HTTPS port refuses the connection too, then at
+  HTTP's port, as dockerd tries its `https://` endpoint and then its `http://` one
+  (`lookupV2Endpoints`). Pulls, pushes, logins and searches alike.
+- **Better than dockerd**, three deliberate differences:
+  - its certificate is verified where it answers in HTTPS, against `certs.d` and the
+    system's roots, as every registry's is: dockerd skips verifying an insecure registry's
+    (`newTLSConfig`, `InsecureSkipVerify = !isSecure`) and reads no `certs.d` for it. One
+    whose CA no system trusts is refused; its CA in `certs.d` is the remedy, as D167
+    refuses `splunk-insecureskipverify` and asks for its CA;
+  - its credentials never go to it in plain HTTP: a registry off this machine that asks for
+    them there is refused, saying so, where dockerd answers its Basic challenge with the
+    password (`daemon/internal/distribution/registry.go`, `newRepository`: one credential
+    store for every endpoint). A loopback registry is still given them, as containerd gives
+    them (`dockerAuthorizer`);
+  - no registry's name is looked up to decide whether it is loopback's: dockerd's networks
+    always hold loopback's, so it looks up every registry's name at each pull, and takes one
+    that resolves to loopback for insecure. shards takes `localhost` and loopback addresses
+    alone, and looks a name up only where a network is named; a registry that resolves to
+    loopback is named by its name.
+- **Docker Hub's mirrors** (`registry-mirrors`, slice 2): a pull from Docker Hub asks each
+  in order first, as dockerd does (`lookupV2Endpoints`, mirrors for pulls alone), then
+  Docker Hub; pushes, deletes, logins and searches never ask a mirror. A mirror is a
+  registry of its own (`Registry::mirror`): its host's certificates (`certs.d`) and its
+  host's credentials, where its user logged in to it, never Docker Hub's, which dockerd
+  gives a mirror (`newRepository`: one credential store for every endpoint); one in plain
+  HTTP off this machine is asked with none. A request of the repository goes to the first
+  mirror that has not failed; one that cannot give a manifest or a blob, or cannot be
+  reached, is asked nothing more for the pull, as dockerd goes on to its next endpoint
+  after any error of a mirror's (`continueOnError`); one with no list asked for
+  (referrers, tags) is asked the next request still, where dockerd asks none. Tested:
+  `registry`'s `a_pull_asks_its_mirrors_first_and_a_failed_one_nothing_more`
+  (mutation-checked), and `images`' `a_mirror_daemon_json_names_serves_docker_hubs_pull`:
+  `test/image:v1`, a Docker Hub name, pulled from a mirror on loopback, its digest the
+  test image's.
+- **`info` says them** as dockerd does: `RegistryConfig`'s `IndexConfigs` (Docker Hub's,
+  with its mirrors, and each named insecure, not secure), its `InsecureRegistryCIDRs` (the
+  networks named, then loopback's) and `Mirrors`; and in its text, as docker/cli lays them
+  out (`prettyPrintServerInfo`), the `Insecure Registries` and `Registry Mirrors` lines,
+  which it left out before.
+- **Tested**: `registries`' (each key read and refused as dockerd reads and refuses it, a
+  registry insecure by its name or its network, every file read together); `registry`'s
+  (a registry at this host's address on its route out answering HTTPS in plain HTTP: asked
+  in HTTPS alone unnamed, in HTTPS once and then in plain HTTP named, its credentials
+  refused there and never sent; where each kind of registry is asked in plain HTTP);
+  `info`'s text and JSON; and `images`' `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`:
+  `shards pull` from such a registry fails, then pulls once the rootless engine's file
+  names it, then fails again, naming the file, once it holds what dockerd refuses. The
+  fallback and the credentials' refusal are mutation-checked.
+
+**Next.** A mirror that answers but stalls a blob's body: the pull's resumes go on asking
+it (fetch.rs), where dockerd's pull would fall to its next endpoint.
+
+### D193. A run past its pids limit says so: a `pids-limit` event (built)
+
+**Found** (kiln's harnesses, 2026-10-21). A run held to `--pids-limit` whose processes or
+threads were refused, a fork or clone past its cgroup's `pids.max` failing with EAGAIN,
+said nothing of it: its command failed as such a failure makes it, and nothing outside its
+microVM said why. dockerd says nothing either: no event, and its State has no such field.
+A harness that sorts its runs' failures could not tell a pids limit from any other.
+
+**Decided.**
+- **init reads the workload cgroup's `pids.events`** as the run ends, where its end is said
+  alone and where its joiners go on past it (D119): a `max` count above 0 goes to the host
+  before `EXIT` as `PIDS` (shards_abi::run::kind::PIDS, `pids_refused`), with the cgroup's
+  `pids.max`, `pids.peak`, the count and `pids.events` whole, as `OOM` goes with memory's
+  (D159). `max.imposed`, a newer kernel's count of an ancestor's limit, is not it.
+- **The VM process passes it on** (shards_ipc::kind::PIDS), as it passes `OOM`; the daemon
+  logs the facts and says a **`pids-limit` event** of the container's, shards' own action
+  (dockerd has none): its attributes the name and image every event of a container's has,
+  with `pids.max` and `refused`. Docker's typed State stays Docker's: inspect gains
+  nothing.
+- **Tested** (containers.rs `a_run_past_its_pids_limit_says_so`, on real microVMs): a
+  `--pids-limit 4` run starting eight threads at once says one `pids-limit` event, with
+  `pids.max` 4 and a count of what was refused, and the daemon's log its facts; a run
+  within its limit says none.
+
+**Next.** A joiner's (D119), from its own cgroup's `pids.events`, as its OOM is read.
+
+### D192. A network's egress: its members' own commands reach the destinations it names, and nothing else (built)
+
+**Found** (kiln's harnesses, 2026-10-21). A run's own command had three reaches past its
+microVM: none (`--network none`, and every network by default), its network's own members,
+or everything (`--network host`, D124). An Agentfile's egress and remote MCP grants are its
+agents' (D59), never the command's (D115). So a sandboxed run could not be granted
+"api.anthropic.com on 443, and its name": the one thing an agent harness needs, and
+`--network host` gave it all of the host's reach instead.
+
+**Decided.**
+- **Where a grant lives: on a network**, as shards' own driver option `shards.egress`
+  (`networks::EGRESS`): `docker network create --opt shards.egress=HOST:PORT[,...]`, which
+  the Docker CLI, a Compose file's `driver_opts` and the Engine API's NetworkCreate all
+  say, so no flag of `docker run`'s is added (its flags stay docker/cli's, held to them by
+  the CLI's golden answers). Who is granted: the network's members, each joined by name;
+  to whom: each destination, a host's name or an IPv4 address; which port: its TCP port;
+  which way: out alone. A network without the option grants nothing past its microVMs,
+  as before: default deny.
+- **Held by the member's network process**, as a remote MCP server's grant is (D59 part
+  seven): its policy the destinations alone (`encode_policy`, no ports, the names), a flow
+  passed only to an address its own resolver answered for a destination's name, or the
+  address a destination is, on that destination's port; and of names, only the
+  destinations' asked of the host's resolver (`SHARDS_DNS` or its own), every other
+  question REFUSED. A member asks through the network's relay at 127.0.0.11 (D46), which
+  asks the gateway, where the network process answers its members' names and the granted
+  ones.
+- **Refused where it could not be held.** A destination that is no `HOST:PORT` (a port of 1
+  to 65535; a host a name of DNS's letters, digits and hyphens, or an IPv4 address; no
+  pattern, no IPv6 address yet), said as the network is made; on a driver but bridge, or
+  an internal network, whose members reach nothing past their microVMs; and, as a run
+  starts, beside its image's agents' grants past the microVM: its network process holds
+  those for the whole microVM, and its command's flows and its agents' come to it alike,
+  so the command would reach what the agents were granted (D115).
+- **Tested** (containers.rs `a_networks_egress_is_a_grant_of_its_destinations_alone`, on
+  real microVMs): a member reaches its destination by name; not another port of the same
+  host, not a name the destinations do not name though the host's resolver has it, not
+  the destination's address in a microVM that never asked its name; a run of the default
+  bridge reaches none of it; and the option's refusals as the network is made. build.rs
+  `a_remote_mcp_server_is_a_grant_of_that_server_alone`: beside an image's agents' grants,
+  the start is refused. networks' `egress_names_each_destination_and_its_port` holds the
+  option's reading.
+
+**Next.** IPv6 destinations (the network process learns A records alone); a destination
+on a network whose members' images have agents with grants of their own, held apart by
+the address its flows come from; a run's own grant on the default bridge, if one is
+asked for beside a network's.
+
 ### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built)
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
@@ -5803,7 +5975,11 @@ the user told).
   thread's CPU time (`platform::ThreadClock`: Linux its CPU-time clock, which counts its
   time in the guest; macOS thread_info, PM M288; Windows GetThreadTimes), and once a 100
   ms period's share is spent holds every vCPU out of its guest, by the same kick a
-  snapshot uses, until the period ends; what a period overran comes off the next. This
+  snapshot uses, until the period ends; what a period overran comes off the next. The
+  governor runs as it wakes, however busy its vCPUs keep the CPUs they may use: on macOS
+  at the vCPUs' real-time policy (M8, M10), on Windows at THREAD_PRIORITY_TIME_CRITICAL,
+  above them, where at their priority three spinning threads of a process held to two CPUs
+  kept it from running and used up to 1.58 s in a second held to one (PM M294). This
   bounds the whole guest — kernel threads, interrupts, and any escaped workload — to what
   a microVM of those CPUs alone could use, where the cpuset alone bounds only a workload
   that stays in its cgroup. It comes with the run (the `RUN` head's `cpus`), before the
@@ -5821,7 +5997,11 @@ the user told).
   of a `--cpus 1` run, 4.01 and 4.04 CPUs used where 1.00 and 1.02. A run with a limit pays
   what one without pays: 5 MiB more of its VM process's footprint at `--cpus 1` (Linux 8.4
   of Pss), and its start, 2.5 ms more at p50 paced on macOS (12.73 against 10.23 ms), 2.6
-  back to back on Linux.
+  back to back on Linux; on a contended host 22 ms more (PM M292: 17.9 against 39.7 ms at
+  p50, a `--cpus 1` run on 4 CPUs that 4 busy loops hold), slice 1's own. The host's hold
+  (PM M289, n 10 a side): an escaped workload of a `--cpus 1` run uses 1.02 CPUs held, 3.99
+  where only its microVM's cgroups hold it; on an idle host it costs a run nothing
+  measurable.
 - **Tested.** resources' `workload_limits_are_written` (a cpuset for every run: none given
   its microVM's every CPU, a quota's first N, `--cpu-count`'s); on real microVMs,
   `a_microvm_takes_its_cpus_real_time_isolation_and_annotations` (`--cpu-count 2` CPUs 0-1,
@@ -5838,13 +6018,14 @@ the user told).
   `platform`'s `a_threads_clock_counts_what_it_runs`. Mutation-checked: a run naming no
   cpuset given none fails resources' test, the CPUs test and the update test; a microVM of
   its run's CPUs alone fails the limits test and the CPUs test; the host hold removed, the
-  escaped workload uses every CPU (11.4 s of CPU in a 3 s window).
+  escaped workload's four threads use four CPUs' time (11.41 s of CPU in 3.03 s, PM M289).
 - **Next.**
-  - What a microVM's vCPUs cost its run's start (M288: 2.5 ms paced at 18 against 1,
-    which every run without a limit pays too): where it goes, and taking off what is not
-    its guest's own.
-  - What the hold's governor costs a run (slice 2's A/B): its thread, made only for a
-    limited run, and the per-exit check every vCPU makes.
+  - A start on a contended host, this slice's regression (PM M292: 22 ms more at p50 on
+    4 busy CPUs, 2 to 3 idle, M288): where a microVM's vCPUs, one for each host CPU, spend
+    it, and taking off what is not its guest's own. Every run without a limit pays it
+    too. Its timing line (`SHARDS_TIMING`) splits a start's phases.
+  - What the hold costs a memory-heavy run on a contended host: fills 9 and 16% longer
+    there (PM M292, n 8, its load rising). Repeated before it is read, and then why.
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 6 built)
 

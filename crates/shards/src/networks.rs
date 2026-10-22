@@ -87,6 +87,49 @@ pub const INHIBIT_IPV4: &str = "com.docker.network.bridge.inhibit_ipv4";
 pub const DEFAULT_BRIDGE: &str = "com.docker.network.bridge.default_bridge";
 pub const HOST_IPV4: &str = "com.docker.network.host_ipv4";
 pub const HOST_IPV6: &str = "com.docker.network.host_ipv6";
+/// shards' own option, not dockerd's: the destinations past their microVMs that its
+/// members' own commands may reach, each `HOST:PORT` of TCP, comma-separated, a host a name
+/// or an IPv4 address (D192). Default deny: nothing else, and of names only those the
+/// destinations name, resolved through each member's network process alone.
+pub const EGRESS: &str = "shards.egress";
+
+/// [`EGRESS`]'s destinations, each a host (lowercased) and a TCP port, as given.
+pub fn parse_egress(value: &str) -> Result<Vec<(String, u16)>, String> {
+    let mut out = Vec::new();
+    for entry in value.split(',').map(str::trim) {
+        if entry.is_empty() {
+            return Err("an empty destination, where each is HOST:PORT".into());
+        }
+        let Some((host, port)) = entry.rsplit_once(':') else {
+            return Err(format!("{entry}: a destination is HOST:PORT"));
+        };
+        let Some(port) = port.parse::<u16>().ok().filter(|p| *p > 0) else {
+            return Err(format!("{entry}: {port} is no TCP port, 1 to 65535"));
+        };
+        let host = host.to_ascii_lowercase();
+        if host.parse::<Ipv4Addr>().is_err() && !host_name(&host) {
+            return Err(format!(
+                "{entry}: {host} is neither a host's name nor an IPv4 address"
+            ));
+        }
+        out.push((host, port));
+    }
+    Ok(out)
+}
+
+/// A host's name as DNS has one (RFC 1035 §2.3.1, RFC 1123 §2.1): labels of letters,
+/// digits and hyphens, none at a label's ends, each at most 63 bytes, 253 in all.
+fn host_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
 
 impl Network {
     /// Whether it is one of dockerd's predefined ones.
@@ -108,6 +151,14 @@ impl Network {
     pub fn host_binding(&self) -> Option<IpAddr> {
         let ip: IpAddr = self.options.get(HOST_BINDING)?.parse().ok()?;
         Some(ip.to_canonical()).filter(|ip| *ip != IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+    }
+
+    /// The destinations its members' own commands may reach past their microVMs ([`EGRESS`],
+    /// D192): none where it names none.
+    pub fn egress(&self) -> Result<Vec<(String, u16)>, String> {
+        self.options
+            .get(EGRESS)
+            .map_or(Ok(Vec::new()), |v| parse_egress(v))
     }
 
     /// Whether a gateway mode of its says `routed`: its members' addresses reached from
@@ -383,6 +434,54 @@ pub fn parse_prefix(s: &str) -> Option<Prefix> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A network's egress (D192): each destination `HOST:PORT` of TCP, a host's name
+    /// (lowercased) or an IPv4 address; anything else refused, saying which and why.
+    #[test]
+    fn egress_names_each_destination_and_its_port() {
+        assert_eq!(
+            parse_egress("api.anthropic.com:443, Registry.Example:5000,192.0.2.7:8080"),
+            Ok(vec![
+                ("api.anthropic.com".to_string(), 443),
+                ("registry.example".to_string(), 5000),
+                ("192.0.2.7".to_string(), 8080),
+            ])
+        );
+        for (value, why) in [
+            ("", "an empty destination, where each is HOST:PORT"),
+            ("a.example:443,", "an empty destination, where each is HOST:PORT"),
+            ("a.example", "a.example: a destination is HOST:PORT"),
+            ("a.example:0", "a.example:0: 0 is no TCP port, 1 to 65535"),
+            (
+                "a.example:65536",
+                "a.example:65536: 65536 is no TCP port, 1 to 65535",
+            ),
+            (
+                "a.example:https",
+                "a.example:https: https is no TCP port, 1 to 65535",
+            ),
+            (
+                "*.example:443",
+                "*.example:443: *.example is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "-a.example:443",
+                "-a.example:443: -a.example is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "[::1]:443",
+                "[::1]:443: [::1] is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "a..example:443",
+                "a..example:443: a..example is neither a host's name nor an IPv4 address",
+            ),
+        ] {
+            assert_eq!(parse_egress(value), Err(why.to_string()), "{value}");
+        }
+        let long = format!("{}.example:443", "a".repeat(64));
+        assert!(parse_egress(&long).is_err(), "a label past 63 bytes");
+    }
 
     fn p(s: &str) -> Prefix {
         parse_prefix(s).unwrap()

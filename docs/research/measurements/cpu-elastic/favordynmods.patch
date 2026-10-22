@@ -1,0 +1,13 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -985,7 +985,9 @@
+         "/sys/fs/cgroup",
+         "cgroup2",
+         nosuid | noexec | nodev,
+-        "nsdelegate",
++        // Experiment (docs/research/measurements/cpu-elastic, favordynmods): a task's
++        // migration into a cgroup without a grace period of every CPU's (cgroup-v2.rst).
++        "nsdelegate,favordynmods",
+     )?;
+     // One at a time: a controller the kernel lacks stays off, and a limit of it then
+     // fails where it is asked for. The root's, and the run's below it (D148).

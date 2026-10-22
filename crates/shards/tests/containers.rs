@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, registry, run_shards_env, served,
-    sha256_digest, shards, shards_vm, test_index,
+    served_counting, sha256_digest, shards, shards_vm, test_index,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -64,6 +64,18 @@ fn run_in_within(home: &Path, image: &str, options: &[&str], command: &[&str], t
     let args = run_args(image, options, command);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     shards_in_within(home, &args, timeout)
+}
+
+/// What `home`'s daemon logged of processes ended for want of memory, for a failure's
+/// message: init's facts of each (its cgroup's memory files, and the guest kernel's own
+/// words, which say whether the cgroup's limit ran out or the microVM's memory did; D159).
+/// A test's home goes as it drops, a failing test's too, and its log with it.
+fn oom_said(home: &Path) -> String {
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    log.lines()
+        .filter(|l| l.contains("for want of memory"))
+        .map(|l| format!("\n  daemon.log: {l}"))
+        .collect()
 }
 
 /// A run left going: its client, with the command's first line read.
@@ -2903,6 +2915,137 @@ fn an_endpoints_sysctls_are_its_interfaces() {
 /// one no interface can have fails the start in libnetwork's words; on `none` it is taken,
 /// and no interface has it. A published port reaches a run past its change, and two given
 /// one MAC on a network reach one another, as on Docker's bridge they would not.
+/// A network's egress is a grant of its destinations alone (D192, its `shards.egress`;
+/// networks are default deny): its member's own command reaches each destination it names,
+/// by name, at the addresses that name resolved to through the member's network process,
+/// and nothing else: not another port of the same host, not a name the destinations do not
+/// name, not the host's address unasked; a run of the default bridge reaches none of it.
+/// The option is refused where it names no destination, or where nothing could reach one.
+#[test]
+fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
+    use std::io::Write as _;
+    if cannot_run_vms() {
+        return;
+    }
+    // The host's own address on its network, which the guest's flows reach it at.
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(std::net::SocketAddr::V4(host)) = host else {
+        eprintln!("SKIP: this host has no IPv4 route to give a guest an address of it");
+        return;
+    };
+    let address = *host.ip();
+    let serve = |hello: &'static str| {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in listener.incoming().flatten() {
+                let mut c = c;
+                let _ = c.write_all(hello.as_bytes());
+            }
+        });
+        port
+    };
+    let (granted, other) = (serve("granted"), serve("other"));
+    // The host's resolver, as the daemon is told to ask (SHARDS_DNS): api.example and
+    // also.example are this host, so that a name refused is shards' refusal, not the
+    // resolver's.
+    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let resolver_at = format!("{address}:{}", resolver.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let mut q = [0u8; 512];
+        while let Ok((n, from)) = resolver.recv_from(&mut q) {
+            let q = &q[..n];
+            let mut at = 12;
+            let mut name = Vec::new();
+            while at < q.len() && q[at] != 0 {
+                let len = usize::from(q[at]);
+                name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
+                at += 1 + len;
+            }
+            let a = q.get(at + 1..at + 3) == Some(&[0, 1]);
+            let count = u8::from(a && matches!(name.join(".").as_str(), "api.example" | "also.example"));
+            let mut r = q[..2].to_vec();
+            r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, count, 0, 0, 0, 0]);
+            r.extend_from_slice(&q[12..at + 5]);
+            if count == 1 {
+                r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+                r.extend_from_slice(&address.octets());
+            }
+            let _ = resolver.send_to(&r, from);
+        }
+    });
+    let (image, _) = served();
+    let home = TempDir::new("containers-egress");
+    let (kernel, init) = (kernel(), guest_init());
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_DNS", OsStr::new(&resolver_at)),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    // Refused as the network is made: a destination of no port, none at all, a pattern,
+    // and an internal network's, whose members reach nothing past their microVMs.
+    for (opt, internal, why) in [
+        (
+            "shards.egress=api.example",
+            false,
+            "--opt shards.egress: api.example: a destination is HOST:PORT",
+        ),
+        (
+            "shards.egress=",
+            false,
+            "--opt shards.egress: an empty destination, where each is HOST:PORT",
+        ),
+        (
+            "shards.egress=*.example:443",
+            false,
+            "--opt shards.egress: *.example:443: *.example is neither a host's name nor an IPv4 address",
+        ),
+        (
+            "shards.egress=api.example:443",
+            true,
+            "--opt shards.egress: an internal network's members reach nothing past their microVMs",
+        ),
+    ] {
+        let mut args = vec!["network", "create", "--opt", opt];
+        if internal {
+            args.push("--internal");
+        }
+        args.push("refused");
+        let made = shards(&args);
+        assert_ne!(made.status, Some(0), "{opt}: {made}");
+        assert!(made.stderr.contains(why), "{opt}: {made}");
+    }
+    let option = format!("shards.egress=api.example:{granted}");
+    let made = shards(&["network", "create", "--opt", &option, "out"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let run = |network: &str, command: &[&str]| {
+        let mut args = vec!["run", "--rm", "--network", network, image.as_str()];
+        args.extend(command);
+        shards(&args)
+    };
+    // Its destination, by its name.
+    let reached = run("out", &["tcp", &format!("api.example:{granted}")]);
+    assert_eq!(reached.stdout, "tcp 7 granted\n", "{reached}");
+    // Another port of the same host, whose name it may ask.
+    let refused = run("out", &["tcp", &format!("api.example:{other}")]);
+    assert!(refused.stdout.starts_with("tcp error"), "{refused}");
+    // A name its destinations do not name, though the host's resolver has it.
+    let unnamed = run("out", &["resolve", "also.example"]);
+    assert!(unnamed.stdout.starts_with("resolve error"), "{unnamed}");
+    // The destination's address, in a microVM that never asked for its name.
+    let unasked = run("out", &["tcp", &format!("{address}:{granted}")]);
+    assert!(unasked.stdout.starts_with("tcp error"), "{unasked}");
+    // A run of the default bridge, whose network grants nothing past its microVM.
+    let bridged = run("bridge", &["tcp", &format!("{address}:{granted}")]);
+    assert!(bridged.stdout.starts_with("tcp error"), "{bridged}");
+}
+
 #[test]
 fn a_runs_mac_is_its_own() {
     use std::io::{Read as _, Write as _};
@@ -4550,7 +4693,7 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
         "{unread}"
     );
     // `-q`: an image not yet here is pulled without a word.
-    let (fresh, _) = served();
+    let (fresh, _) = served_counting();
     let quiet = shards(&["run", "-q", &fresh, "exit", "0"]);
     assert_eq!(quiet.status, Some(0), "{quiet}");
     assert!(
@@ -4712,7 +4855,12 @@ fn run_limits_a_microvms_resources() {
             &["alloc", &wanted],
             Duration::from_secs(240),
         );
-        assert_eq!(held.status, Some(0), "{limit}, --cpus {cpus}: {held}");
+        assert_eq!(
+            held.status,
+            Some(0),
+            "{limit}, --cpus {cpus}: {held}{}",
+            oom_said(&home)
+        );
         assert!(
             held.stdout.contains(&format!("allocated {wanted}")),
             "{limit}, --cpus {cpus}: {held}"
@@ -9796,6 +9944,66 @@ fn restart_policies_start_microvms_again() {
 /// `update`, as `docker update` takes it: a running microVM's limits written to its
 /// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
 #[cfg(unix)]
+/// A run refused a process or thread past its `--pids-limit` says so (D193): a
+/// `pids-limit` event of its container's, with the limit and how many it refused, which no
+/// state of Docker's has, and the daemon's log of what its cgroup was allowed and held; a
+/// run within its limit says nothing of it.
+#[test]
+fn a_run_past_its_pids_limit_says_so() {
+    let Some((home, image)) = home("containers-pids") else {
+        return;
+    };
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let since = now().to_string();
+    // Eight threads at once where four tasks are allowed, its own among them.
+    let past = run_in(
+        &home,
+        &image,
+        &["--rm", "--name", "forked", "--pids-limit", "4"],
+        &["burn", "8", "100"],
+    );
+    assert!(past.stdout.contains("of 8 threads"), "{past}");
+    let within = run_in(
+        &home,
+        &image,
+        &["--rm", "--name", "within", "--pids-limit", "64"],
+        &["burn", "2", "100"],
+    );
+    assert!(within.stdout.contains("burned"), "{within}");
+    let until = (now() + 1).to_string();
+    let events = shards_in(
+        &home,
+        &[
+            "events",
+            "--since",
+            &since,
+            "--until",
+            &until,
+            "--filter",
+            "event=pids-limit",
+            "--format",
+            r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}} {{.Actor.Attributes.refused}}"#,
+        ],
+    );
+    assert_eq!(events.status, Some(0), "{events}");
+    let said: Vec<&str> = events.stdout.lines().collect();
+    assert_eq!(said.len(), 1, "one run past its limit: {events}");
+    let fields: Vec<&str> = said[0].split(' ').collect();
+    assert_eq!(fields.get(..2), Some(&["forked", "4"][..]), "{events}");
+    let refused: u64 = fields.get(2).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(refused > 0, "{events}");
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    assert!(
+        log.contains("past its pids limit, a process or thread was refused: pids.max 4"),
+        "{log}"
+    );
+}
+
 /// `update -m` moves a running microVM's memory both ways (the user's plan, item 3): every
 /// run plugs memory as it needs it up to its limit (D148), and an update tells its VM its
 /// new most before its guest's cgroup, which its guest then reports it may plug (D149).
@@ -9822,7 +10030,8 @@ fn update_moves_a_microvms_memory_both_ways() {
     assert_eq!(
         (held_more.status, held_more.stdout.as_str()),
         (Some(0), "allocated 512\n"),
-        "{held_more}"
+        "{held_more}{}",
+        oom_said(&home)
     );
     // What it reports it has: a gigabyte, its kernel's own aside, where it booted with
     // what a run without a limit boots with.

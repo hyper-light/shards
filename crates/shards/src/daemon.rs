@@ -3136,6 +3136,34 @@ impl<D: Disk> Daemon<D> {
             None => prepared.spec.encode_into(&mut payload),
         }
         let detached = run.detach.then_some(conn);
+        // Its user network's own destinations for its members' commands (D192, the
+        // network's shards.egress): kept apart from an image's agents' grants, whose flows
+        // its network process could not tell from the command's, so refused beside them.
+        let network_egress = match user_net
+            .as_ref()
+            .map(crate::networks::Network::egress)
+            .transpose()
+        {
+            Ok(egress) => egress.unwrap_or_default(),
+            Err(e) => {
+                refuse(&format!(
+                    "network {}: --opt {}: {e}",
+                    run.network,
+                    crate::networks::EGRESS
+                ));
+                abandon(&id);
+                return None;
+            }
+        };
+        if !network_egress.is_empty() && grants.is_some() {
+            refuse(&format!(
+                "network {}: --opt {} beside its image's agents' grants past the microVM: their flows and its command's are not held apart yet",
+                run.network,
+                crate::networks::EGRESS
+            ));
+            abandon(&id);
+            return None;
+        }
         // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
         // them from the image's own normalized Agentfile, checked against its digest
         // (D109), never from its labels: its VM's network process's policy.
@@ -3145,6 +3173,12 @@ impl<D: Disk> Daemon<D> {
             None if start == network::Start::Attach(network::Net::Host) => {
                 Some(shards_net::HOST_POLICY.to_vec())
             }
+            // Its network's destinations alone, by name, and of names only theirs.
+            None if !network_egress.is_empty() => Some(shards_net::encode_policy(
+                &shards_net::Ports::default(),
+                &network_egress,
+                false,
+            )),
             None => None,
             Some(g) => {
                 let ports = if g.egress.is_empty() {
@@ -4488,6 +4522,7 @@ impl<D: Disk> Daemon<D> {
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id, &m.payload),
+                kind::PIDS => self.pids_refused(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
                 // A file its share's DAX window maps, watched for another process cutting
                 // it short, and one it maps no more (D189, PM M273).
@@ -4823,6 +4858,39 @@ impl<D: Disk> Daemon<D> {
         }
         if let Some((name, image, labels)) = named {
             self.event_for(id, &name, &image, &labels, "oom", &[]);
+        }
+    }
+
+    /// Run `id`'s guest refused it a process or thread past its pids limit (D193): a
+    /// `pids-limit` event of shards' own, with the limit and how many it refused, which no
+    /// state of Docker's has (its State says an OOM alone); and in the daemon's log what its
+    /// cgroup was allowed and held, as its init sends them.
+    fn pids_refused(&self, id: &str, facts: &[u8]) {
+        let facts = String::from_utf8_lossy(facts);
+        log(format!(
+            "container {id}: past its pids limit, a process or thread was refused: {facts}"
+        ));
+        let words: Vec<&str> = facts.split([' ', ';']).filter(|w| !w.is_empty()).collect();
+        let after = |key: &str| {
+            words
+                .windows(2)
+                .find(|w| w.first() == Some(&key))
+                .and_then(|w| w.get(1))
+                .map(|v| (*v).to_string())
+                .unwrap_or_default()
+        };
+        let named = lock(&self.containers)
+            .made(id)
+            .map(|c| (c.name.clone(), c.image.clone(), c.labels.clone()));
+        if let Some((name, image, labels)) = named {
+            self.event_for(
+                id,
+                &name,
+                &image,
+                &labels,
+                "pids-limit",
+                &[("pids.max", after("pids.max")), ("refused", after("refused"))],
+            );
         }
     }
 
