@@ -2406,6 +2406,9 @@ fn beat() -> Result<(), String> {
             && beats == after
         {
             control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+            // A restore of it goes on from here: said by the VMM's clock (its log's guest
+            // marker), where the Firecracker comparison looks for its restores' `resumed`.
+            control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
         }
     }
 }
