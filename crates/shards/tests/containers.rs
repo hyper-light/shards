@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, registry, run_shards_env, served,
-    sha256_digest, shards, shards_vm, test_index,
+    served_counting, sha256_digest, shards, shards_vm, test_index,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -4693,7 +4693,7 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
         "{unread}"
     );
     // `-q`: an image not yet here is pulled without a word.
-    let (fresh, _) = served();
+    let (fresh, _) = served_counting();
     let quiet = shards(&["run", "-q", &fresh, "exit", "0"]);
     assert_eq!(quiet.status, Some(0), "{quiet}");
     assert!(
