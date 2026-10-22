@@ -2133,13 +2133,15 @@ fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
 fn granted_template(dir: &Path) -> Result<(), String> {
     use crate::grant::Access;
     ask(&[(Access::ReadIfThere, shards_vmm::snapshot::pointer(dir))])?;
-    let ([state, memory], [working_set, layer_head, layer]) = shards_vmm::snapshot::generation_files(dir)?;
+    let ([state, memory], [working_set, layer_head, layer, window_heads]) =
+        shards_vmm::snapshot::generation_files(dir)?;
     ask(&[
         (Access::Read, state),
         (Access::Read, memory),
         (Access::ReadIfThere, working_set),
         (Access::ReadIfThere, layer_head),
         (Access::ReadIfThere, layer),
+        (Access::ReadIfThere, window_heads),
     ])
 }
 

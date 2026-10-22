@@ -2333,8 +2333,10 @@ fn unplug_cost() -> Result<(), String> {
 
 /// The memory the kernel has as PID 1 begins, as /proc/meminfo says it, in bytes: what
 /// devices took of it as they were probed, a DAX window's page structures among them
-/// (D189), and how long the kernel took to come to it (/proc/uptime, in seconds):
-/// `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime>`.
+/// (D189), and how long the kernel took to come to it (/proc/uptime, in seconds); then the
+/// free pages its CPUs' lists hold (/proc/zoneinfo, each pageset's `count`), which MemFree
+/// leaves out and which held 2 to 16 MiB at a boot's start (PM M300):
+/// `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed free>`.
 fn memory_report() -> Result<(), String> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
     let field = |name: &str| -> Result<u64, String> {
@@ -2347,13 +2349,27 @@ fn memory_report() -> Result<(), String> {
             .ok_or_else(|| format!("/proc/meminfo: no {name}"))
     };
     let uptime = std::fs::read_to_string("/proc/uptime").map_err(|e| format!("/proc/uptime: {e}"))?;
+    let zones = std::fs::read_to_string("/proc/zoneinfo").map_err(|e| format!("/proc/zoneinfo: {e}"))?;
+    let listed: u64 = zones
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("count:"))
+        .map(|n| {
+            n.trim()
+                .parse::<u64>()
+                .map_err(|e| format!("/proc/zoneinfo: count {n:?}: {e}"))
+        })
+        .sum::<Result<u64, String>>()?;
+    // SAFETY: sysconf(3) reads a constant of the system's.
+    let page =
+        u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).map_err(|e| format!("page size: {e}"))?;
     let _ = writeln!(
         io::stdout(),
-        "SHARDS-TEST MEMORY {} {} {} {}",
+        "SHARDS-TEST MEMORY {} {} {} {} {}",
         field("MemTotal:")?,
         field("MemFree:")?,
         field("MemAvailable:")?,
-        uptime.split_whitespace().next().unwrap_or("?")
+        uptime.split_whitespace().next().unwrap_or("?"),
+        listed.saturating_mul(page)
     );
     Ok(())
 }

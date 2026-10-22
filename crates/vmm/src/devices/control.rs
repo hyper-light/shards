@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use shards_abi::{control, marker};
 
+use super::virtio::head::WindowHeads;
 use super::virtio::mem::Sizes;
 use super::virtio::pmem::{Layer, SwapWindow};
 use super::{MmioDevice, get_le, put_le};
@@ -39,6 +40,8 @@ pub struct Control {
     swap: OnceLock<std::sync::Arc<SwapWindow>>,
     /// The run's writable layer and its guest address, where it has one (D190).
     layer: OnceLock<(std::sync::Arc<Layer>, u64)>,
+    /// Its DAX windows' heads, where it has windows (D189).
+    window_heads: OnceLock<std::sync::Arc<WindowHeads>>,
     /// What runs as the guest first says its PID 1 runs (`marker::INIT_STARTED`).
     on_init_started: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -104,10 +107,23 @@ impl Control {
         self.layer.get().map(|(layer, _)| layer)
     }
 
-    /// Whether the guest has lost its writable layer or its run's swap: a mapping taken
-    /// from it for a save that could not be given back, so that its machine cannot go on.
+    /// Its DAX windows' heads (D189), which a snapshot keeps.
+    pub fn on_window_heads(&self, heads: std::sync::Arc<WindowHeads>) {
+        let _ = self.window_heads.set(heads);
+    }
+
+    /// Its DAX windows' heads, where it has windows.
+    pub fn window_heads(&self) -> Option<&std::sync::Arc<WindowHeads>> {
+        self.window_heads.get()
+    }
+
+    /// Whether the guest has lost its writable layer, its run's swap or a DAX window's head:
+    /// a mapping taken from it for a save that could not be given back, so that its machine
+    /// cannot go on.
     pub fn lost(&self) -> bool {
-        self.layer().is_some_and(|l| l.lost()) || self.swap().is_some_and(|w| w.lost())
+        self.layer().is_some_and(|l| l.lost())
+            || self.swap().is_some_and(|w| w.lost())
+            || self.window_heads().is_some_and(|h| h.lost())
     }
 
     /// Runs `hook` as the guest first says its PID 1 runs (`marker::INIT_STARTED`), on

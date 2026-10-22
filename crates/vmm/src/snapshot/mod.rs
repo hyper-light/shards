@@ -11,6 +11,8 @@
 //! - `g-<id>/layer-head` and `g-<id>/layer`: of a machine with a writable layer (D190), its
 //!   device's head as memory, all-zero pages as holes, and its ext4 file system as the guest
 //!   had it, which each run restored from the snapshot is given a copy of
+//! - `g-<id>/window-heads`: of a machine with DAX windows (D189), their heads, the page
+//!   structures its guest's kernel keeps there, kept as a layer's head is
 //!
 //! and, once a VM resumed from the generation has recorded one, a third:
 //!
@@ -49,6 +51,9 @@ const SWAP: &str = "swap";
 pub const LAYER_HEAD: &str = "layer-head";
 /// A writable layer's file system, as its guest had it (D190).
 pub const LAYER: &str = "layer";
+/// A machine's DAX windows' heads, the page structures its guest's kernel wrote there
+/// (D189).
+pub const WINDOW_HEADS: &str = "window-heads";
 const WORKING_SET_MAGIC: [u8; 8] = *b"SHRDWSET";
 const WORKING_SET_VERSION: u32 = 1;
 /// A working set's bytes before its entries: magic, version, architecture, page size
@@ -87,7 +92,13 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     its new server (D189, D176).
 /// 24: and the length of its writable layer's file system in MiB, 0 for none, whose head and
 ///     file system the generation keeps beside it (D190).
-const VERSION: u32 = 24;
+/// 25: each DAX window has a head before it, its guest's page structures, which the
+///     generation keeps beside it (D189).
+const VERSION: u32 = 25;
+/// The format before, which this build reads too where the machine has no DAX windows: for
+/// such a machine it says what this one says, so that a microVM saved by shards 0.6.0
+/// restores (D176).
+const VERSION_WITHOUT_WINDOWS: u32 = 24;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -265,9 +276,9 @@ pub fn has_layer(dir: &Path) -> Result<bool, String> {
 
 /// The files of the generation the snapshot in `dir` is at, for a VM in App Sandbox to be
 /// granted before it reads the snapshot (shards `grant`; PM M70): its state and memory,
-/// then its working set and its writable layer's head and file system (D190), which it may
-/// not have. Its pointer is read as the VM's input.
-pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], [PathBuf; 3]), String> {
+/// then its working set, its writable layer's head and file system (D190) and its DAX
+/// windows' heads (D189), which it may not have. Its pointer is read as the VM's input.
+pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], [PathBuf; 4]), String> {
     let name = current(dir).map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => format!("{}: no snapshot here", dir.display()),
         _ => format!("{}: {CURRENT}: {e}", dir.display()),
@@ -279,6 +290,7 @@ pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], [PathBuf; 3]), Stri
             generation.join(WORKING_SET),
             generation.join(LAYER_HEAD),
             generation.join(LAYER),
+            generation.join(WINDOW_HEADS),
         ],
     ))
 }
@@ -433,7 +445,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
         return Err(DecodeError("not a shards snapshot".into()));
     }
     let version = r.u32()?;
-    if version != VERSION {
+    if version != VERSION && version != VERSION_WITHOUT_WINDOWS {
         return Err(DecodeError(format!(
             "snapshot format {version}; this shards reads {VERSION}"
         )));
@@ -481,6 +493,12 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let gpu_window = r.u64()?;
     let swap_mib = r.u64()?;
     let share_window_mib = r.u64()?;
+    // Whose windows had no heads before them (D189).
+    if version == VERSION_WITHOUT_WINDOWS && share_window_mib > 0 && (shares > 0 || join_share) {
+        return Err(DecodeError(format!(
+            "snapshot format {version} of a machine with DAX windows; this shards reads {VERSION}"
+        )));
+    }
     let layer_mib = r.u64()?;
     // At most a run for every other block of the most a guest may plug.
     let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
@@ -618,7 +636,7 @@ fn write_with(
     memory: &GuestMemory,
     after: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> Result<File, String> {
-    let staged = stage_with(dir, snap, memory, None, after)?;
+    let staged = stage_with(dir, snap, memory, Beside::default(), after)?;
     let generation = staged.generation()?;
     staged.commit_with(after)?;
     Ok(generation)
@@ -635,33 +653,44 @@ pub struct Staged {
     name: String,
     staging: PathBuf,
     /// Its files, made durable by the commit: its memory and state, a run's swap where it
-    /// keeps one (D176), and its writable layer's head and file system (D190).
+    /// keeps one (D176), its writable layer's head and file system (D190), and its DAX
+    /// windows' heads (D189).
     files: Vec<File>,
     /// Which of its files is its writable layer's head as [`stage`] wrote it, where it
     /// keeps one.
     layer_head: Option<usize>,
+    /// Which is its DAX windows' heads as [`stage`] wrote them, where it keeps them.
+    window_heads: Option<usize>,
     /// Whether its commit has run, which leaves nothing of it the staging's to remove.
     committed: bool,
     /// Writers to one snapshot take turns, this one until its commit.
     _lock: File,
 }
 
+/// What a snapshot keeps beside a machine's memory: its writable layer (D190) and its DAX
+/// windows' heads (D189), where it has them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Beside<'a> {
+    pub layer: Option<&'a crate::devices::virtio::pmem::Layer>,
+    pub window_heads: Option<&'a crate::devices::virtio::head::WindowHeads>,
+}
+
 /// Stages a snapshot of a paused VM in `dir`, creating `dir` if needed ([`Staged`]), with
-/// its writable `layer` where it has one (D190).
+/// what it keeps `beside` its memory.
 pub fn stage(
     dir: &Path,
     snap: &Snapshot,
     memory: &GuestMemory,
-    layer: Option<&crate::devices::virtio::pmem::Layer>,
+    beside: Beside<'_>,
 ) -> Result<Staged, String> {
-    stage_with(dir, snap, memory, layer, &mut |_| Ok(()))
+    stage_with(dir, snap, memory, beside, &mut |_| Ok(()))
 }
 
 fn stage_with(
     dir: &Path,
     snap: &Snapshot,
     memory: &GuestMemory,
-    layer: Option<&crate::devices::virtio::pmem::Layer>,
+    beside: Beside<'_>,
     after: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> Result<Staged, String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
@@ -670,24 +699,32 @@ fn stage_with(
     let name = fresh_name();
     let state = state_of(snap, &name).map_err(|e| at(&e))?;
     let mut staged = staging(dir, name)?;
-    let files = (|| -> io::Result<Vec<File>> {
+    let files = (|| -> io::Result<(Vec<File>, Option<usize>, Option<usize>)> {
         let memory_file = create_unsynced(&staged.staging.join(MEMORY), |f| memory.save(f))?;
         after(Step::Memory)?;
         let state_file = create_unsynced(&staged.staging.join(STATE), |mut f| f.write_all(&state))?;
         after(Step::State)?;
         let mut files = vec![memory_file, state_file];
-        if let Some(layer) = layer {
+        let mut layer_head = None;
+        if let Some(layer) = beside.layer {
             let head = create_unsynced(&staged.staging.join(LAYER_HEAD), |_| Ok(()))?;
             let data = create_unsynced(&staged.staging.join(LAYER), |_| Ok(()))?;
             layer.save(&head, &data).map_err(io::Error::other)?;
+            layer_head = Some(files.len());
             files.extend([head, data]);
         }
-        Ok(files)
+        let mut window_heads = None;
+        if let Some(heads) = beside.window_heads {
+            let kept = create_unsynced(&staged.staging.join(WINDOW_HEADS), |f| heads.save(f))?;
+            window_heads = Some(files.len());
+            files.push(kept);
+        }
+        Ok((files, layer_head, window_heads))
     })();
     match files {
-        Ok(files) => {
-            // The layer's head and file system are its last two.
-            staged.layer_head = layer.and(files.len().checked_sub(2));
+        Ok((files, layer_head, window_heads)) => {
+            staged.layer_head = layer_head;
+            staged.window_heads = window_heads;
             staged.files = files;
             Ok(staged)
         }
@@ -701,12 +738,12 @@ fn stage_with(
 
 /// Stages an empty generation in `dir`, creating `dir` if needed, for a VM to fill
 /// ([`fill`]) that writes only the files it is handed (D30): its memory and state and, for
-/// a `run`'s, the run's swap (D176) and its writable layer's head and file system (D190),
-/// which a machine without them leaves empty. The VM's are [`Staged::handed`]; the commit
+/// a `run`'s, the run's swap (D176), its writable layer's head and file system (D190) and
+/// its DAX windows' heads (D189), which a machine without them leaves empty. The VM's are [`Staged::handed`]; the commit
 /// makes the generation durable and the one in use once the VM has filled them.
 pub fn prepare(dir: &Path, run: bool) -> Result<Staged, String> {
     let mut staged = staging(dir, fresh_name())?;
-    let names = [MEMORY, STATE, SWAP, LAYER_HEAD, LAYER];
+    let names = [MEMORY, STATE, SWAP, LAYER_HEAD, LAYER, WINDOW_HEADS];
     let made = names
         .iter()
         .take(if run { names.len() } else { 2 })
@@ -792,6 +829,7 @@ fn staging(dir: &Path, name: String) -> Result<Staged, String> {
         staging,
         files: Vec::new(),
         layer_head: None,
+        window_heads: None,
         committed: false,
         _lock: lock,
     })
@@ -817,8 +855,16 @@ impl Staged {
         self.layer_head.and_then(|i| self.files.get(i))
     }
 
+    /// Its DAX windows' heads as [`stage`] wrote them (D189), where it keeps them: what the
+    /// machine that goes on maps back ([`WindowHeads::remap`]).
+    ///
+    /// [`WindowHeads::remap`]: crate::devices::virtio::head::WindowHeads::remap
+    pub fn window_heads(&self) -> Option<&File> {
+        self.window_heads.and_then(|i| self.files.get(i))
+    }
+
     /// Its files for the VM that fills them ([`prepare`]): its memory, its state, and a
-    /// run's swap, layer head and layer, each a descriptor of its own.
+    /// run's swap, layer head, layer and windows' heads, each a descriptor of its own.
     pub fn handed(&self) -> Result<Vec<File>, String> {
         self.files
             .iter()
@@ -831,7 +877,8 @@ impl Staged {
     /// no VM writes, made durable with the rest by the commit (D176). A name of the
     /// generation's own files is refused.
     pub fn add(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        if [STATE, MEMORY, SWAP, LAYER_HEAD, LAYER, WORKING_SET].contains(&name) || name.contains(['/', '\\'])
+        if [STATE, MEMORY, SWAP, LAYER_HEAD, LAYER, WINDOW_HEADS, WORKING_SET].contains(&name)
+            || name.contains(['/', '\\'])
         {
             return Err(format!("{name:?} names no file a generation's spawner adds"));
         }
@@ -1195,6 +1242,36 @@ mod tests {
         assert!(decode(&short).unwrap_err().0.contains("2 identities for 3"));
     }
 
+    /// A state of the format before this one reads as it was written where its machine has
+    /// no DAX windows, a microVM shards 0.6.0 saved; one with windows, which had no heads
+    /// before them, is refused, as is any older format (D189, D176).
+    #[test]
+    fn a_state_of_the_format_before_reads_where_its_machine_has_no_dax_windows() {
+        let ids = vec![Identity::default(); 3];
+        let as_before = |snap: &Snapshot| {
+            let mut bytes = encode(snap, "g-1", &ids).unwrap();
+            bytes[8..12].copy_from_slice(&VERSION_WITHOUT_WINDOWS.to_le_bytes());
+            bytes
+        };
+        let mut snap = sample(&nowhere(), 1);
+        assert_eq!(decode(&as_before(&snap)).unwrap().snapshot, snap);
+        // A length for windows, but no share to give one: none.
+        snap.config.shares = 0;
+        snap.config.join_share = false;
+        snap.config.share_window_mib = 64;
+        assert_eq!(decode(&as_before(&snap)).unwrap().snapshot, snap);
+        snap.config.join_share = true;
+        let e = decode(&as_before(&snap)).unwrap_err();
+        assert!(e.0.contains("with DAX windows"), "{e:?}");
+        assert_eq!(
+            decode(&encode(&snap, "g-1", &ids).unwrap()).unwrap().snapshot,
+            snap
+        );
+        let mut older = as_before(&sample(&nowhere(), 1));
+        older[8..12].copy_from_slice(&(VERSION_WITHOUT_WINDOWS - 1).to_le_bytes());
+        assert!(decode(&older).unwrap_err().0.contains("this shards reads"));
+    }
+
     /// Backing files are named by absolute path (audit A18).
     #[test]
     fn a_relative_backing_path_is_refused() {
@@ -1342,15 +1419,16 @@ mod tests {
             write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
             let mut staged = prepare(&dir, true).unwrap();
             let handed = staged.handed().unwrap();
-            assert_eq!(handed.len(), 5);
+            assert_eq!(handed.len(), 6);
             let name = staged.name().to_string();
             fill(&name, &sample(&s.0, 2), &ram(2), &handed[0], &handed[1]).unwrap();
             platform::write_all_at(&handed[2], b"swap", 0).unwrap();
             platform::write_all_at(&handed[3], b"head", 0).unwrap();
             platform::write_all_at(&handed[4], b"ext4", 0).unwrap();
+            platform::write_all_at(&handed[5], b"heads", 0).unwrap();
             // And a file of the spawner's own, beside the VM's; none of theirs.
             staged.add("resume", b"tokens").unwrap();
-            for theirs in [STATE, LAYER_HEAD, LAYER] {
+            for theirs in [STATE, LAYER_HEAD, LAYER, WINDOW_HEADS] {
                 assert!(staged.add(theirs, b"x").unwrap_err().contains("names no file"));
             }
             assert_eq!(markers(&read(&dir).unwrap()), (1, 1));
@@ -1362,6 +1440,7 @@ mod tests {
             assert_eq!(fs::read(swap_of(&p.path)).unwrap(), b"swap");
             assert_eq!(fs::read(p.path.join(LAYER_HEAD)).unwrap(), b"head");
             assert_eq!(fs::read(layer_of(&p.path)).unwrap(), b"ext4");
+            assert_eq!(fs::read(p.path.join(WINDOW_HEADS)).unwrap(), b"heads");
             assert_eq!(fs::read(p.path.join("resume")).unwrap(), b"tokens");
             // Only its user's: a generation holds a guest's memory.
             {

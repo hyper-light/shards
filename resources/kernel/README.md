@@ -57,6 +57,11 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
     counting of DAX pages by their mappings a 2 MiB entry still mapped split with its
     counts wrong: processes that faulted there got SIGBUS (PM M274). A DAX file's entries
     are left to its layouts' own breaking.
+  - `0008`: a DAX window's page structures, a 64th of the window, came out of the guest's
+    memory as it probed the device (PM M269), which a guest given its memory as it needs
+    it boots with little of. Where the device gives a region of its own right before the
+    window (shared memory region 0xfe), they go there, as a pmem namespace keeps its own
+    (D189, PM M300).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new

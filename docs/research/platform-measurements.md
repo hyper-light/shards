@@ -11777,3 +11777,74 @@ revision before comparing a changed API/implementation.
   window is given by default: a whole page the host does not hold written as a FUSE_WRITE,
   and the window's page structures out of the guest's memory. The Mac's passes are to be
   run again with the fix.
+- **The Mac, again with the fix.** M298's four passes with a release build of 892ab553 (5
+  rounds, macOS 26.4.1, APFS, load 2.6 to 4.2 from other work), 2026-10-22; µs a write at
+  p50, the p50 of the rounds and their range (p99 in brackets):
+
+  | pass | no window, warm | window, warm | no window, cold | window, cold |
+  |---|---|---|---|---|
+  | 4 KiB over 2 GiB | 86.7 [85.6, 87.2] (110.0) | 54.6 [54.3, 55.0] (123.9) | 189.2 [188.5, 2,012] (352) | 1,785 [156, 1,987] (21,572) |
+  | the same, mapped first | 85.7 [84.4, 86.7] (103.9) | 55.8 [54.5, 56.1] (125.0) | 188.4 [186.2, 2,003] (215.5) | 158.8 [158.5, 163.4] (240.7) |
+  | 64 KiB, mapped first | 137.7 [137.5, 138.7] (165.8) | 66.9 [63.0, 67.3] (136.0) | 138.9 [137.9, 139.2] (163.8) | 181.2 [178.9, 181.8] (252.2) |
+  | 4 KiB over 64 MiB, mapped first | 86.7 [86.1, 87.0] (106.5) | 49.5 [49.4, 49.9] (98.5) | 127.2 [122.7, 179.0] (247.2) | 47.2 [46.6, 47.7] (231.3) |
+
+  Warm, the window beats FUSE in every pass, where before the fix it lost every pass but
+  the last (M298: 289, 309 and 321 µs). Cold, it beats FUSE in the passes of 4 KiB writes
+  into ranges mapped first, and loses the pass of 64 KiB writes, 181 against 139: sixteen
+  pages a write that the host reads before the store, where a FUSE_WRITE of whole pages
+  reads none. A round of the first pass's cold arms took some 2 ms a write through either,
+  window or not (2 rounds of 5 of FUSE's, 3 of the window's), as M298's cold arms' wide
+  ranges did: the host's own, its eviction (the file written again with F_NOCACHE) not
+  always taking.
+
+### M300. What a DAX window takes of its guest's memory with its head (D189, item 5)
+
+- **Question.** Linux takes a DAX window's page structures, a 64th of it, from its guest's
+  memory as it probes the device (M269). With the window's head, a region of the device's
+  own right before the window that the guest's kernel keeps them in (shards' kernel patch
+  0008, a vmem_altmap, as libnvdimm keeps a pmem namespace's), what does a window take?
+- **Method.** `dax-window/heads-ab.sh`, M269's `measure.sh` with each kernel booted in
+  turn, round by round, and `heads-ab.py`: the test guest as PID 1, 512 MiB, one shared
+  directory whose device gives a window of each length with its head (a release build of
+  the working tree, 2026-10-22), on the pinned kernel (no patch) and on one built with 0008,
+  byte for byte the one CI then published (kernel-6.18.48-301acf1c45d0). Fedora 44, Linux
+  6.19.10, M258's i9-14900HX, load about 1, and the Mac (Apple M5 Max, macOS 26.4.1, the two
+  published arm64 kernels, load 3 to 4): 12 rounds of 0, 128, 256, 512, 1024, 2048 and
+  4096 MiB. Free memory is MemFree and the free pages the CPUs' lists hold
+  (/proc/zoneinfo, each pageset's `count`), which MemFree leaves out: of 12 boots without
+  a window, the lists held 2.3 to 15.7 MiB as PID 1 began, and MemFree with them was 463.7
+  to 465.5 MiB; MemFree alone fell in two bands 12 MiB apart. The VM process's minor
+  faults for a boot, by `/usr/bin/time`, n 3 each.
+- **Results.** What a window takes of its guest's free memory against none, MiB, at p50
+  (and by the most free of its boots), n 12 each:
+
+  | window | x86_64, pinned kernel | x86_64, with the head | arm64, pinned kernel | arm64, with the head |
+  |---|---|---|---|---|
+  | 128 MiB | 2.0 (2.1) | -0.1 (0.1) | 2.2 (2.3) | 0.5 (0.5) |
+  | 256 MiB | 3.9 (3.8) | -0.1 (0.1) | 4.5 (4.6) | 0.8 (0.8) |
+  | 512 MiB | 8.0 (8.1) | -0.2 (-0.1) | 9.0 (9.1) | 1.3 (1.3) |
+  | 1 GiB | 16.0 (15.9) | -0.2 (0.0) | 18.0 (18.1) | 2.3 (2.4) |
+  | 2 GiB | 32.1 (32.0) | -0.1 (-0.0) | 36.0 (36.1) | 4.3 (4.3) |
+  | 4 GiB | 64.1 (64.1) | -0.2 (-0.2) | 72.0 (72.0) | 8.3 (8.3) |
+
+  PID 1 ran at 0.07 s at p50 (10 ms steps) for every length to 2 GiB on either kernel; at
+  4 GiB, 0.10 on the pinned kernel (max 0.10) and 0.08 with the head (max 0.20, one boot;
+  the rest 0.08). Minor faults: 9,428 to 9,625 without a window on either kernel; 25,866
+  to 25,954 with a 4 GiB one on the pinned kernel, 8,769 to 9,635 with its head.
+- **Reading.** Without its head a window takes a 64th of its length on x86_64, its page
+  structures alone, and on arm64 a 64th and a 512th, its linear map's page tables too (72
+  MiB for 4 GiB: M269's 15% more). With it, x86_64's takes none, and arm64's its linear
+  map's page tables alone: a 512th of head and window, to the tenth of a MiB (8.25 for 4
+  GiB and its 128 MiB head). arm64 Linux 6.18 maps memory it adds in base pages where
+  rodata=full and the CPU has no BBML2_NOABORT (arch_add_memory, force_pte_mapping), so
+  that a page's permissions can change alone; a window's linear alias is never changed so,
+  and in blocks it would take none. Its page structures are written still,
+  into the head, and a 4 GiB window's boot is 20 ms sooner: in guest RAM, which a boot
+  keeps on the host's base pages (D29), its 64 MiB took 16,400 more faults, one a 4 KiB
+  page; the head is on huge pages as its reservation advises, and they took none
+  measurable.
+- **Consequence.** D189: a window's page structures are its head's (snapshot format 25),
+  with that kernel pinned; held by `a_dax_windows_page_structures_take_none_of_its_guests_memory`
+  (on both, its bound a 512th of head and window and 2 MiB). The test guest says its CPUs'
+  listed free pages with its free memory. A window's linear map in blocks on arm64 is
+  D189's next step for a guest's memory.

@@ -53,6 +53,11 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7.0.1
+      # The commit `shards version` says it was built from, short as docker/cli's
+      # (scripts/build/.variables, GITCOMMIT): the same seven characters on every runner.
+      - name: The commit
+        shell: bash
+        run: echo "SHARDS_GIT_COMMIT=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
       - name: Install pinned Rust
         if: ${{ !matrix.musl }}
         shell: bash
@@ -86,7 +91,7 @@ jobs:
       - name: Build on the native architecture, in Alpine
         if: matrix.musl
         run: |
-          docker run --rm -v "$PWD:/work" -w /work -e TARGET -e MUSL_CI=build \
+          docker run --rm -v "$PWD:/work" -w /work -e TARGET -e SHARDS_GIT_COMMIT -e MUSL_CI=build \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             "$MUSL_IMAGE" scripts/musl-ci

@@ -1047,6 +1047,10 @@ impl<D: Disk> Daemon<D> {
             }
             left
         };
+        // A run on no user network: no network to read.
+        if left.is_empty() {
+            return;
+        }
         let networks = self.all_networks();
         for net in left {
             if let Some(n) = networks.iter().find(|n| n.id == net) {

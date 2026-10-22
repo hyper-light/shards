@@ -391,13 +391,17 @@ pub struct Fs {
     limit: Option<&'static Limiter>,
     holds_limit: bool,
     /// Its DAX window (D189): the cache, shared memory region 0 (VIRTIO_FS_SHMCAP_ID_CACHE),
-    /// which its guest maps the files it reads into, and what maps them there; none where
-    /// it has none.
-    window: Option<([ShmRegion; 1], Arc<window::Window>)>,
+    /// which its guest maps the files it reads into, and its head, region [`HEAD`]; and what
+    /// maps them there; none where it has none.
+    window: Option<([ShmRegion; 2], Arc<window::Window>)>,
 }
 
 /// The cache's shared memory region's id (include/uapi/linux/virtio_fs.h).
 pub const CACHE: u8 = 0;
+/// Its head's (D189): a region of the device's own right before its cache, which the
+/// guest's kernel keeps the cache's page structures in rather than its RAM (shards' kernel
+/// patch 0008, VIRTIO_FS_SHMCAP_ID_SHARDS_HEAD).
+pub const HEAD: u8 = 0xfe;
 
 impl std::fmt::Debug for Fs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -445,20 +449,28 @@ impl Fs {
         self
     }
 
-    /// The device with DAX window `window` (D189), where one is given.
-    pub fn with_window(mut self, window: Option<Arc<window::Window>>) -> Fs {
+    /// The device with DAX window `window` (D189), where one is given, and the window's
+    /// head right before it, `(gpa, len)` ([`HEAD`]).
+    pub fn with_window(mut self, window: Option<(Arc<window::Window>, (u64, u64))>) -> Fs {
         *self
             .server
             .window
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = window.clone();
-        self.window = window.map(|w| {
-            let region = ShmRegion {
-                id: CACHE,
-                base: w.gpa(),
-                len: w.size(),
-            };
-            ([region], w)
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = window.as_ref().map(|(w, _)| w.clone());
+        self.window = window.map(|(w, (head, head_len))| {
+            let regions = [
+                ShmRegion {
+                    id: CACHE,
+                    base: w.gpa(),
+                    len: w.size(),
+                },
+                ShmRegion {
+                    id: HEAD,
+                    base: head,
+                    len: head_len,
+                },
+            ];
+            (regions, w)
         });
         self
     }

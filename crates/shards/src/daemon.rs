@@ -1628,6 +1628,10 @@ impl<D: Disk> Daemon<D> {
             }
         }
         let watches = [watch(&self.home), watch(&images), watch(&contexts)];
+        // The slots' maker looked at its lists as it began, before the home was watched: a
+        // removal between that look and the watch, which a client its first slots served
+        // may make, is seen by one more look, now that the home is watched.
+        self.tell_slots(slots::Event::Look);
         let mut relays = relay::Relays::default();
         let mut contexts_changed = true;
         loop {
@@ -2395,9 +2399,13 @@ impl<D: Disk> Daemon<D> {
                 }
             },
         };
-        // What a run that does not start leaves: a new container's directory goes, and a
-        // spare is made; a container started again only waits no more to be (`again`).
+        // What a run refused before its container is made leaves: what its start took is let
+        // go, a new container's directory goes, and a spare is made; a container started
+        // again only waits no more to be (`again`). Once a new one is made, a run that does
+        // not start fails as a start does (`not_started`): never abandoned, whose container
+        // would be seen with no directory, and its run pending to the daemon's end.
         let abandon = |id: &str| {
+            self.let_go(id);
             if again.is_some() {
                 self.not_again(id);
             } else {
@@ -2592,6 +2600,108 @@ impl<D: Disk> Daemon<D> {
             }
             Err(e) => (Vec::new(), Vec::new(), Some(e)),
         };
+        // Its own MAC where it has an interface of its own (D46, PM M173): given
+        // (`--mac-address`, its endpoint's `mac-address`), which its VM takes as the run
+        // comes; else made for it, as dockerd makes each endpoint's, so that no two runs of
+        // one template share its MAC: its VM's own, made with the VM, which the VM's guest
+        // took before the run came (D31, E1). One that is not a MAC is refused before the
+        // container is made, as dockerd refuses it (validateEndpointSettings).
+        let run_mac: Option<Vec<u8>> = match start {
+            network::Start::Attach(network::Net::Bridge | network::Net::User) => {
+                match crate::setup::own_endpoint(&run)
+                    .map(|e| e.mac.trim())
+                    .filter(|m| !m.is_empty())
+                {
+                    Some(given) => match shards_cmdline::network::mac_octets(given) {
+                        Some(octets) => Some(octets),
+                        None => {
+                            refuse(&format!("{given} is not a valid mac address"));
+                            abandon(&id);
+                            return None;
+                        }
+                    },
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        // An image whose Agentfile grants its agents anything past the microVM (D59, D99).
+        let grants = prepared
+            .agentfile
+            .as_ref()
+            .map(|a| &a.grants)
+            .filter(|g| !g.egress.is_empty() || !g.mcp.is_empty() || g.dns);
+        // Its user network's own destinations for its members' commands (D192, the
+        // network's shards.egress): kept apart from an image's agents' grants, whose flows
+        // its network process could not tell from the command's, so refused beside them,
+        // before its container is made, as a setting dockerd refuses is.
+        let network_egress = match user_net
+            .as_ref()
+            .map(crate::networks::Network::egress)
+            .transpose()
+        {
+            Ok(egress) => egress.unwrap_or_default(),
+            Err(e) => {
+                refuse(&format!(
+                    "network {}: --opt {}: {e}",
+                    run.network,
+                    crate::networks::EGRESS
+                ));
+                abandon(&id);
+                return None;
+            }
+        };
+        if !network_egress.is_empty() && grants.is_some() {
+            refuse(&format!(
+                "network {}: --opt {} beside its image's agents' grants past the microVM: their flows and its command's are not held apart yet",
+                run.network,
+                crate::networks::EGRESS
+            ));
+            abandon(&id);
+            return None;
+        }
+        // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
+        // them from the image's own normalized Agentfile, checked against its digest
+        // (D109), never from its labels: its VM's network process's policy.
+        let egress = match grants {
+            // The host's network (D124), which an Agentfile's agents refuse, whose grants
+            // these would be.
+            None if start == network::Start::Attach(network::Net::Host) => {
+                Some(shards_net::HOST_POLICY.to_vec())
+            }
+            // Its network's destinations alone, by name, and of names only theirs.
+            None if !network_egress.is_empty() => Some(shards_net::encode_policy(
+                &shards_net::Ports::default(),
+                &network_egress,
+                false,
+            )),
+            None => None,
+            Some(g) => {
+                let ports = if g.egress.is_empty() {
+                    Ok(shards_net::Ports::default())
+                } else {
+                    shards_net::Ports::parse(&joined(&g.egress))
+                };
+                let ports = match ports {
+                    Ok(p) => p,
+                    Err(e) => {
+                        refuse(&format!("the image's egress grants: {e}"));
+                        abandon(&id);
+                        return None;
+                    }
+                };
+                let named: Vec<(String, u16)> = g
+                    .mcp
+                    .iter()
+                    .filter_map(|e| {
+                        let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
+                        Some((host.to_string(), port.parse().ok()?))
+                    })
+                    .collect();
+                Some(shards_net::encode_policy(&ports, &named, g.dns))
+            }
+        };
+        let confined = grants.is_some();
         // The run's container, before anything starts: its name must be free. Its record
         // is written while a VM is found for it.
         let made = match &again {
@@ -2642,7 +2752,6 @@ impl<D: Disk> Daemon<D> {
             }
             Ok(name) => name,
             Err(e) => {
-                self.free_ports(Some(&id), None);
                 refuse(&e);
                 abandon(&id);
                 return None;
@@ -2655,6 +2764,12 @@ impl<D: Disk> Daemon<D> {
         } else if joins_host {
             say(&format!("WARNING: {}", shards_abi::run::NETWORK_HOST_JOINED));
         }
+        // From here, a run that cannot start fails as a start does: its container stays,
+        // with its error, or goes with `--rm`, and what its start took is let go.
+        let fails = |why: &str| {
+            self.let_go(&id);
+            refuse(&self.not_started(&id, why));
+        };
         // Its name is a member's name on its network (DNSNames' first).
         self.name_member(&id, &name);
         // A driver that ships its log to a cloud finds its credentials with this client's
@@ -2678,11 +2793,12 @@ impl<D: Disk> Daemon<D> {
                 ));
             }
         }
-        // `shards create`: made, not started, its ports not yet bound (moby
-        // daemon/create.go makes no network endpoint).
+        // `shards create`: made, not started, its ports not yet bound and no member of its
+        // network, its address no one's (moby daemon/create.go makes no network endpoint).
         if run.create {
-            self.free_ports(Some(&id), None);
+            self.let_go(&id);
             lock(&self.runs).remove(&id);
+            self.resolved.notify_all();
             self.record_arrival(threads, &id);
             self.await_arrival(&id);
             let _ = shards_ipc::send(conn, kind::CREATED, id.as_bytes(), &[]);
@@ -2705,30 +2821,6 @@ impl<D: Disk> Daemon<D> {
             Ok(Some(e)) => crate::volumes::cdi_points(&e.mounts),
             Ok(None) => Ok(Vec::new()),
             Err(e) => Err(e.clone()),
-        };
-        // Its own MAC where it has an interface of its own (D46, PM M173): given
-        // (`--mac-address`, its endpoint's `mac-address`), which its VM takes as the run
-        // comes; else made for it, as dockerd makes each endpoint's, so that no two runs of
-        // one template share its MAC: its VM's own, made with the VM, which the VM's guest
-        // took before the run came (D31, E1).
-        let run_mac: Option<Vec<u8>> = match start {
-            network::Start::Attach(network::Net::Bridge | network::Net::User) => {
-                match crate::setup::own_endpoint(&run)
-                    .map(|e| e.mac.trim())
-                    .filter(|m| !m.is_empty())
-                {
-                    Some(given) => match shards_cmdline::network::mac_octets(given) {
-                        Some(octets) => Some(octets),
-                        None => {
-                            refuse(&format!("{given} is not a valid mac address"));
-                            abandon(&id);
-                            return None;
-                        }
-                    },
-                    None => None,
-                }
-            }
-            _ => None,
         };
         // Its link-local addresses where it has an interface of its own (PM M175), as
         // libnetwork adds them: an IPv4-mapped one as IPv4, a zone gone.
@@ -3021,11 +3113,10 @@ impl<D: Disk> Daemon<D> {
             Some(_) => match self.layer_in(threads, &id, joining) {
                 Ok(file) => file,
                 Err(e) => {
-                    refuse(&format!(
+                    fails(&format!(
                         "{}: its writable layer: {e}",
                         id.get(..12).unwrap_or(&id)
                     ));
-                    abandon(&id);
                     return None;
                 }
             },
@@ -3050,8 +3141,8 @@ impl<D: Disk> Daemon<D> {
                 match snapshots::copy_swap(&r.generation, &at) {
                     Ok(copied) => copied.map(|file| (file, at)),
                     Err(e) => {
-                        refuse(&format!("{}: its swap: {e}", id.get(..12).unwrap_or(&id)));
-                        abandon(&id);
+                        let _ = std::fs::remove_file(&at);
+                        fails(&format!("{}: its swap: {e}", id.get(..12).unwrap_or(&id)));
                         return None;
                     }
                 }
@@ -3062,12 +3153,12 @@ impl<D: Disk> Daemon<D> {
                 match open_swap(&at, crate::resources::swap_device_bytes(bytes, vcpus)) {
                     Ok(file) => Some((file, at)),
                     Err(e) => {
-                        refuse(&format!(
+                        let _ = std::fs::remove_file(&at);
+                        fails(&format!(
                             "{}: its swap, {}: {e}",
                             id.get(..12).unwrap_or(&id),
                             at.display()
                         ));
-                        abandon(&id);
                         return None;
                     }
                 }
@@ -3085,12 +3176,7 @@ impl<D: Disk> Daemon<D> {
         // the run's own processes from those grants (eth0's own subnet alone, of both
         // versions) before its command starts, as its VM's network process holds the
         // grants for the whole microVM from before the run (D59, D99).
-        let grants = prepared
-            .agentfile
-            .as_ref()
-            .map(|a| &a.grants)
-            .filter(|g| !g.egress.is_empty() || !g.mcp.is_empty() || g.dns);
-        if grants.is_some() {
+        if confined {
             prepared.spec.setup.push(b"confine-eth0".to_vec());
         }
         // Its head, then the spec, in one allocation (audit D10).
@@ -3136,75 +3222,6 @@ impl<D: Disk> Daemon<D> {
             None => prepared.spec.encode_into(&mut payload),
         }
         let detached = run.detach.then_some(conn);
-        // Its user network's own destinations for its members' commands (D192, the
-        // network's shards.egress): kept apart from an image's agents' grants, whose flows
-        // its network process could not tell from the command's, so refused beside them.
-        let network_egress = match user_net
-            .as_ref()
-            .map(crate::networks::Network::egress)
-            .transpose()
-        {
-            Ok(egress) => egress.unwrap_or_default(),
-            Err(e) => {
-                refuse(&format!(
-                    "network {}: --opt {}: {e}",
-                    run.network,
-                    crate::networks::EGRESS
-                ));
-                abandon(&id);
-                return None;
-            }
-        };
-        if !network_egress.is_empty() && grants.is_some() {
-            refuse(&format!(
-                "network {}: --opt {} beside its image's agents' grants past the microVM: their flows and its command's are not held apart yet",
-                run.network,
-                crate::networks::EGRESS
-            ));
-            abandon(&id);
-            return None;
-        }
-        // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
-        // them from the image's own normalized Agentfile, checked against its digest
-        // (D109), never from its labels: its VM's network process's policy.
-        let egress = match grants {
-            // The host's network (D124), which an Agentfile's agents refuse, whose grants
-            // these would be.
-            None if start == network::Start::Attach(network::Net::Host) => {
-                Some(shards_net::HOST_POLICY.to_vec())
-            }
-            // Its network's destinations alone, by name, and of names only theirs.
-            None if !network_egress.is_empty() => Some(shards_net::encode_policy(
-                &shards_net::Ports::default(),
-                &network_egress,
-                false,
-            )),
-            None => None,
-            Some(g) => {
-                let ports = if g.egress.is_empty() {
-                    Ok(shards_net::Ports::default())
-                } else {
-                    shards_net::Ports::parse(&joined(&g.egress))
-                };
-                let ports = match ports {
-                    Ok(p) => p,
-                    Err(e) => {
-                        refuse(&format!("the image's egress grants: {e}"));
-                        abandon(&id);
-                        return None;
-                    }
-                };
-                let named: Vec<(String, u16)> = g
-                    .mcp
-                    .iter()
-                    .filter_map(|e| {
-                        let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
-                        Some((host.to_string(), port.parse().ok()?))
-                    })
-                    .collect();
-                Some(shards_net::encode_policy(&ports, &named, g.dns))
-            }
-        };
         let started = self.start_run(
             threads,
             &id,
@@ -3269,9 +3286,7 @@ impl<D: Disk> Daemon<D> {
         match started {
             Ok(inbox) => Some((id, inbox)),
             Err(said) => {
-                self.free_ports(Some(&id), None);
-                // A joiner's volumes go from its microVM's join share (D119).
-                lock(&self.joiner_links).remove(&id);
+                self.let_go(&id);
                 refuse(&said);
                 None
             }
@@ -3393,6 +3408,16 @@ impl<D: Disk> Daemon<D> {
             at,
             listeners: Vec::new(),
         });
+    }
+
+    /// Lets go of what the start of container `id`'s run took, as the run does not start:
+    /// its published ports; its membership of its network, whose address and names are
+    /// then free, as libnetwork's endpoint goes with a start that fails (moby
+    /// daemon/start.go, Cleanup); and a joiner's volumes in its microVM's join share (D119).
+    fn let_go(&self, id: &str) {
+        self.free_ports(Some(id), None);
+        self.leave_network(id);
+        lock(&self.joiner_links).remove(id);
     }
 
     /// Lets go of what container `id`'s run, or VM `vm`'s network process, held: the
@@ -4504,9 +4529,9 @@ impl<D: Disk> Daemon<D> {
                         // started (D190): its journal written in place where it said so
                         // (`LAYER_KEPT`), else to replay.
                         if inbox.layer.is_some() && inbox.started {
-                            self.settle_kept(id, inbox);
+                            self.settle_kept(id, inbox, None);
                         } else {
-                            self.settle_layer(id, inbox, false);
+                            self.settle_layer(id, inbox, false, None);
                         }
                     }
                     continue;
@@ -4625,30 +4650,20 @@ impl<D: Disk> Daemon<D> {
                 // said once nothing of its machine writes it (`warm::tell_kept`): the
                 // container's from now on.
                 kind::LAYER_KEPT => {
+                    let used = <[u8; 8]>::try_from(m.payload.as_slice())
+                        .ok()
+                        .map(u64::from_be_bytes);
                     if inbox.layer_pending {
-                        self.settle_kept(id, inbox);
-                    }
-                    if let Ok(used) = <[u8; 8]>::try_from(m.payload.as_slice()) {
-                        let used = u64::from_be_bytes(used);
-                        if lock(&self.containers)
-                            .change(id, |c| c.size_rw = Some(used))
-                            .is_ok()
-                        {
-                            self.record_soon(id, Vec::new());
-                        }
+                        self.settle_kept(id, inbox, used);
+                    } else {
+                        self.layer_used(id, used);
                     }
                 }
                 kind::LAYER_SAVED => {
-                    self.settle_layer(id, inbox, true);
-                    if let Ok(used) = <[u8; 8]>::try_from(m.payload.as_slice()) {
-                        let used = u64::from_be_bytes(used);
-                        if lock(&self.containers)
-                            .change(id, |c| c.size_rw = Some(used))
-                            .is_ok()
-                        {
-                            self.record_soon(id, Vec::new());
-                        }
-                    }
+                    let used = <[u8; 8]>::try_from(m.payload.as_slice())
+                        .ok()
+                        .map(u64::from_be_bytes);
+                    self.settle_layer(id, inbox, true, used);
                 }
                 kind::EXEC_ENDED => {
                     if let Some((n, &[status])) = m.payload.split_first_chunk::<8>()
@@ -4717,7 +4732,20 @@ impl<D: Disk> Daemon<D> {
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
     /// else what came of it goes, and the layer it had before stays.
-    fn settle_layer(&self, id: &str, inbox: &mut Inbox, whole: bool) {
+    /// What container `id`'s writable layer uses as its last run left it, where its VM said
+    /// (`SizeRw`, inspect's): recorded before its layer is settled, so that a reader that
+    /// waited for it (`await_settled`) reads it.
+    fn layer_used(&self, id: &str, used: Option<u64>) {
+        if let Some(used) = used
+            && lock(&self.containers)
+                .change(id, |c| c.size_rw = Some(used))
+                .is_ok()
+        {
+            self.record_soon(id, Vec::new());
+        }
+    }
+
+    fn settle_layer(&self, id: &str, inbox: &mut Inbox, whole: bool, used: Option<u64>) {
         inbox.layer_pending = false;
         // Its VM's file goes (D190): what the VM sent is its layer now, or nothing is.
         inbox.layer = None;
@@ -4733,13 +4761,14 @@ impl<D: Disk> Daemon<D> {
         {
             log(format!("container {id}: its writable layer: {e}"));
         }
+        self.layer_used(id, used);
         lock(&self.settling).remove(id);
         self.settled.notify_all();
     }
 
     /// Container `id`'s writable layer, kept in its VM's file (D190), its VM gone: the
     /// file is its layer from now on, in its directory, in place of what it had.
-    fn settle_kept(&self, id: &str, inbox: &mut Inbox) {
+    fn settle_kept(&self, id: &str, inbox: &mut Inbox, used: Option<u64>) {
         inbox.layer_pending = false;
         // A container removed as its microVM went (`rm -f`) keeps nothing: the file goes.
         if let Some(layer) = inbox.layer.take()
@@ -4755,6 +4784,7 @@ impl<D: Disk> Daemon<D> {
         if let Err(e) = remove_if_there(&inbox.container.join(LAYER_NEW)) {
             log(format!("container {id}: its writable layer: {e}"));
         }
+        self.layer_used(id, used);
         lock(&self.settling).remove(id);
         self.settled.notify_all();
     }
