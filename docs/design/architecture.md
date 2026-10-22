@@ -5882,10 +5882,11 @@ template pays it once; what its restores pay is to be measured with mappings.
   against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
   measured and not taken: its rationale was that cost. A whole page a host does not hold
   is written as a FUSE_WRITE now (above; M301), on Fedora and the Mac, and what a write into
-  a range not yet mapped pays before it writes was measured part by part (M302); windows
-  stay asked for, none by default, while some rounds of a cold file's 1 MiB writes into
-  ranges not yet mapped cost some 500 µs more than FUSE's on Fedora, which is unexplained
-  (M302). A window's
+  a range not yet mapped pays before it writes was measured part by part (M302): a cold
+  file's 1 MiB writes into ranges not yet mapped cost 6% more than FUSE's, on Fedora's
+  performance cores and on its efficient cores alike, their rounds' spread the cores the
+  scheduler put a run on (M302). Windows stay asked for, none by default, until the
+  default is decided. A window's
   page structures are its head's (above); what it takes of an arm64 guest's memory is its
   linear map's page tables, a 512th of head and window (M300), which arm64 Linux keeps in
   base pages under rodata=full, and in blocks would be all but none.

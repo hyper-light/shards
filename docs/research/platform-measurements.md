@@ -12066,7 +12066,19 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D189: one descriptor a file, each range's own closed once mapped, and
   no record of a range mapped to be read (held by `a_window_keeps_one_descriptor_of_a_file`,
   mutation-checked: 401 descriptors more for 400 ranges where each range's was kept). Next:
-  what puts a round of B2's cold 1 MiB writes some 500 µs above FUSE's.
+  what puts a round of B2's cold 1 MiB writes some 500 µs above FUSE's (below).
+- **The rounds' spread.** `rounds.sh`: 20 pairs back to back, a FUSE run then a window run,
+  B3, the build as committed, the file evicted before each, /proc/vmstat read about each: no run
+  reclaimed or faulted in a page from disk, each began with 2 to 11 MiB dirty and 19 GiB
+  free, and in a slow window run its writes into ranges it mapped and those into ranges
+  mapped already were slow alike (first 1,938 to 2,168 µs at p50 against 932 to 979 in a
+  fast one, later 1,130 to 1,419 against 595 to 640). The host's CPU is hybrid, its
+  performance cores' threads 0 to 15 and its efficient cores' 16 to 31: 12 pairs with
+  every process on the performance cores (`taskset`, which the daemon and its VMs inherit)
+  gave FUSE 889 µs at p50 [833, 1,074] and the window 946 [893, 1,168]; 12 on the
+  efficient cores 1,499 [1,468, 1,531] and 1,592 [1,564, 1,731]. A round's spread is where
+  the scheduler put its processes: the window's cold 1 MiB writes into ranges not yet
+  mapped cost 6% more than FUSE's on either kind of core.
 
 ### M303. A provider's end held behind its ended joiner's layer (D119)
 
