@@ -11527,3 +11527,29 @@ revision before comparing a changed API/implementation.
   THREAD_PRIORITY_TIME_CRITICAL (`platform::prioritize_governor_thread`), a thread that runs
   briefly between waits, as Microsoft reserves high priority for; its clock and waits stay
   as they are.
+
+### M295. What a builder microVM holds of its memory after a build's steps (D188, D133)
+
+- **Question.** D188 gives back, at the host's pressure, what a run's guest holds cold of
+  its files. A build's microVM is out of its reach (a build runs in `shards build`'s own
+  process); were it in reach, what would there be to take?
+- **Method.** `docs/research/measurements/builder-mem/measure.sh SHARDS 3`: a build, `--no-cache`,
+  of `node:22-alpine` (mirror.gcr.io) whose steps print the builder guest's /proc/meminfo,
+  then `npm install` typescript 5, eslint 9 and webpack 5 (73.2 MiB of `node_modules`), then
+  print it again. 3 builds. macOS 26.4.1, Apple M5 Max, shards 34f0c417 (its test-release
+  build), 2026-10-21.
+- **Results** (each build alike, KiB; before → after the install):
+
+  | | before | after |
+  |---|---|---|
+  | Cached | 1,824 | 152,632 to 152,640 |
+  | Shmem | 1,860 | 151,400 to 151,408 |
+  | Active(file) + Inactive(file) | 0 | 1,424 to 1,428 |
+  | AnonPages | 0 | 120 to 164 |
+
+- **Reading.** A builder's base image is read through DAX, which leaves no page cache (node,
+  run from it for the install, is not among the file pages after); what its steps write,
+  the packages and the rest the install wrote, it holds in tmpfs, as Shmem: of the 149 MiB
+  it grew, 1.4 MiB are file pages D188 could take.
+- **Consequence.** D188: builders' memory comes back as their layers leave memory (the swap
+  window, or a layer on the host's disk as D190's), not by reclaiming their files.

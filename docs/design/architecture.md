@@ -5690,7 +5690,11 @@ staying (p50) in 3 of its 8 blocks; online as auto-movable, 14 MiB in one; all m
 none. Plugged memory stays the kernel's own (D133).
 
 **Not yet.** Builders (D133) give back nothing at pressure: a build runs in `shards build`'s
-own process, not the daemon's. M267 and M268 on Linux, and M268 at larger sizes.
+own process, not the daemon's. And they hold little a pass could take (PM M295): what a
+builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
+MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
+leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
+D188's file pages. M268 at larger sizes.
 
 ### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (in progress: mappings built, opt-in)
 
