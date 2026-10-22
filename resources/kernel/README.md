@@ -73,7 +73,9 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
     page's permissions in the linear map can change alone; a file system DAX device's
     memory (a pmem namespace, a virtio-fs DAX window) is never given out by the page
     allocator, nor its permissions changed, and its page tables took a 512th of it from
-    the guest's memory (PM M300). It is mapped in blocks (D189).
+    the guest's memory (PM M300). It is mapped in blocks: a 4 GiB window and a 64 GiB
+    writable layer take none of the guest's memory, where they took 8.3 and 133 MiB, and the
+    layer's probe is 41 ms shorter (D189, D190, PM M300).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new

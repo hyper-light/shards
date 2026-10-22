@@ -10368,7 +10368,8 @@ revision before comparing a changed API/implementation.
     KiB at a time in the kernel's linear map, 8 bytes a page, a 512th, which arm64 builds
     without block mappings under `rodata=full`, its default (arch/arm64/mm/mmu.c,
     arch_add_memory and force_pte_mapping; pageattr.c, `rodata_full` true); x86_64 maps
-    its direct map with large pages.
+    its direct map with large pages. Shards' kernel patch 0010 maps it in blocks: none
+    (M300, its follow-up).
   - The head is written as the guest probes the device, a 2 MiB block for each 128 MiB: a
     boot's cost by size. On the Mac up to 2.3 ms a GiB (64 GiB in 148 ms more than none); on
     KVM, on huge pages, 1.9 ms a GiB when the host has them free (16 GiB in 30 ms more) and
@@ -11848,6 +11849,45 @@ revision before comparing a changed API/implementation.
   (on both, its bound a 512th of head and window and 2 MiB). The test guest says its CPUs'
   listed free pages with its free memory. A window's linear map in blocks on arm64 is
   D189's next step for a guest's memory.
+- **Patch 0010** (2026-10-22). arm64's linear map of a file system DAX device's memory
+  (MEMORY_DEVICE_FS_DAX: a window, a writable layer) in blocks, where rodata=full forced
+  base pages, but where debug_pagealloc or a realm needs them: a linear alias's
+  permissions change only for a vmalloc area's pages (arm64 `change_memory_common`), which
+  are RAM. `heads-ab.sh` on the Mac (as above, the release build of 4aec5baa), the pinned
+  kernel (kernel-6.18.48-4970e0190ebe) against one with 0010 (kernel-6.18.48-8df0015cca35,
+  its x86_64 images byte for byte the pinned ones), 12 rounds; and `layer/kernels-ab.sh`,
+  M277's `measure.sh` booting each kernel in turn, round by round, 5 rounds of 0, 4, 16 and
+  64 GiB layers, then 8 of 0, 16 and 64 GiB (`kernels-ab.py`; free memory MemFree once the
+  NVDIMM buses' probes are done). Nothing else was measured or built meanwhile. What each
+  takes of its guest's free memory against none, MiB at p50 (by the most free):
+
+  | | pinned kernel | with 0010 |
+  |---|---|---|
+  | window 128 MiB | 0.5 (0.5) | 0.0 (0.0) |
+  | window 256 MiB | 0.7 (0.8) | 0.0 (0.1) |
+  | window 512 MiB | 1.3 (1.3) | 0.0 (0.0) |
+  | window 1 GiB | 2.2 (2.2) | 0.0 (0.0) |
+  | window 2 GiB | 4.2 (4.3) | 0.0 (0.1) |
+  | window 4 GiB | 8.3 (8.3) | 0.0 (0.1) |
+  | layer 4 GiB, n 5 | 9.3 (9.0) | 0.3 (0.2) |
+  | layer 16 GiB, n 5 then 8 | 39.1, 38.4 (36.9, 32.2) | -0.5, -0.2 (-0.1, -0.5) |
+  | layer 64 GiB, n 5 then 8 | 133.6, 133.2 (133.3, 132.1) | -0.7, -0.3 (-0.1, -0.5) |
+
+  PID 1 ran at 0.04 to 0.05 s at p50 with either kernel at every window length (max 0.06
+  and 0.05). A layer's probes were done sooner with 0010: 16 GiB at 76.3 and 74.9 ms at p50
+  against 86.8 and 85.7, 64 GiB at 157.9 and 156.6 against 197.7 and 197.3. Its first
+  mount: in the first run 21.5 (16 GiB) and 41.7 ms (64 GiB) at p50 on the pinned kernel
+  against 57.9 and 68.8 with 0010, each kernel's boots spread over the other's (15 to 127
+  ms); in the second, 8.3 and 8.8 against 8.0 and 9.1, max 290.8 and 23.9 against 13.2
+  and 12.7: no difference the runs agree on. Its writes alike (64 MiB in 14.5 to 14.7 ms,
+  1,000 files in 7.2 to 7.3), and 8 MiB through a mapping in 30.6 to 34.5 ms against 37.0
+  to 39.8 (first run, n 5).
+- **Reading (0010).** In blocks, an arm64 guest's window and writable layer take none of
+  its memory, as x86_64's: what they took, a 512th of head and device (8.3 MiB for a 4 GiB
+  window, 133 MiB for a 64 GiB layer), was the linear map's page tables alone, and a
+  layer's probe is shorter by the time it took to write them. 0010 is pinned, and
+  `a_dax_windows_page_structures_take_none_of_its_guests_memory` holds a 4 GiB window to
+  the spread of boots alone, 2 MiB, on both architectures (D189, D190).
 
 ### M301. Whole pages a host does not hold, written as FUSE_WRITEs by the window's record (D189, item 5)
 

@@ -5796,9 +5796,14 @@ stores.
   map's page tables; with its head, none on Fedora (-0.2 to 0.1 MiB at every length, n 12)
   and those page tables alone on the Mac (8.3 MiB). Fedora's 4 GiB boot reached PID 1 20 ms
   sooner: its page structures go on the host's huge pages, not on a boot's base pages
-  (D29). The pinned
-  kernel (kernel-6.18.48-301acf1c45d0) carries the patch; held by
-  `a_dax_windows_page_structures_take_none_of_its_guests_memory`.
+  (D29). arm64 Linux maps memory it adds in base pages under rodata=full (arch_add_memory,
+  force_pte_mapping), so that a page's permissions can change alone, which a DAX device's
+  linear alias never does: shards' kernel patch 0010 maps a file system DAX device's memory
+  in blocks, but where debug_pagealloc or a realm needs base pages, and an arm64 window
+  takes none of its guest's memory either (0.0 to 0.1 MiB at every length to 4 GiB, n 12,
+  M300). The pinned kernel (kernel-6.18.48-8df0015cca35) carries both; held by
+  `a_dax_windows_page_structures_take_none_of_its_guests_memory`, its bound the spread of
+  boots alone.
 - **Whole pages a host does not hold written as FUSE_WRITEs** (PM M301). A store into a
   page its host does not hold waits for the host to read it, where a FUSE_WRITE's pwrite(2)
   of the whole page reads nothing (M283). Each window's device now keeps a record of which
@@ -5827,8 +5832,8 @@ stores.
   `a_ranges_held_pages_are_recorded_as_it_is_mapped`,
   `a_files_ranges_follow_it_only_where_it_changed`, and
   `a_volumes_large_files_go_through_its_dax_window` (whole pages written where the host
-  holds none, read by host and guest). The pinned kernel (kernel-6.18.48-4970e0190ebe)
-  carries the patch. On the Mac, evicted with msync(2) MS_INVALIDATE (M301: rewriting the
+  holds none, read by host and guest). The pinned kernel carries the patch (since
+  kernel-6.18.48-4970e0190ebe). On the Mac, evicted with msync(2) MS_INVALIDATE (M301: rewriting the
   file had timed the SSD's flush), cold 64 KiB writes into ranges mapped first took 306 µs
   at p50 where they took 2,459 (FUSE's 204 to 220), and 1 MiB into ranges not yet mapped
   1,310 where 2,811 (FUSE's 1,243 to 1,434); cold 4 KiB writes, parts of 16 KiB host
@@ -5886,10 +5891,8 @@ template pays it once; what its restores pay is to be measured with mappings.
   file's 1 MiB writes into ranges not yet mapped cost 6% more than FUSE's, on Fedora's
   performance cores and on its efficient cores alike, their rounds' spread the cores the
   scheduler put a run on (M302). Windows stay asked for, none by default, until the
-  default is decided. A window's
-  page structures are its head's (above); what it takes of an arm64 guest's memory is its
-  linear map's page tables, a 512th of head and window (M300), which arm64 Linux keeps in
-  base pages under rodata=full, and in blocks would be all but none.
+  default is decided. A window takes none of its guest's memory on either architecture
+  (above: its page structures its head's, and arm64's linear map of it in blocks).
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
@@ -6343,6 +6346,16 @@ the guest keeps their metadata alone.
   `a_layer_reads_ahead_once_its_command_runs` (its mapping's VmFlags; mutation-checked both
   ways).
 
+- **Its linear map in blocks on arm64** (PM M300, shards' kernel patch 0010). arm64 Linux
+  mapped the device memory it added 4 KiB at a time under `rodata=full`, its default
+  (arch_add_memory, force_pte_mapping), so that a page's permissions could change alone,
+  which a DAX device's linear alias never does: a 512th of the layer in page tables, 133
+  MiB of a guest's memory for a 64 GiB layer (M277). 0010 maps a file system DAX device's
+  memory in blocks, but where debug_pagealloc or a realm needs base pages: a layer of 4 to
+  64 GiB takes none of its guest's memory (-0.7 to 0.3 MiB at p50), and its probe is done
+  11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel (kernel-6.18.48-8df0015cca35)
+  carries it.
+
 **Next** (the slices after these).
 - A restart that goes on over the kept file itself: today its files are put back, packed
   on the host, into the warm microVM's own layer, which its template mounted as its root's
@@ -6355,8 +6368,6 @@ the guest keeps their metadata alone.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
-- arm64 guests map device memory 4 KiB at a time in their linear map under `rodata=full`,
-  its default: a 512th of the layer in page tables (M277).
 - Hosts whose microVMs take no snapshots yet (arm64 KVM, Windows: D140) boot every run, so
   each run pays the head's probe and the layer's first mount: not measured there yet.
 - APFS fills a hole shorter than 16 MiB between written blocks of a sparse file (PM
