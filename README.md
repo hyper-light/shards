@@ -101,7 +101,8 @@ Images come from any registry, with the logins `docker login` keeps and the cert
 Docker's `certs.d` holds. A registry on another machine that speaks plain HTTP is reached
 once Docker's `daemon.json` lists it under `insecure-registries`, as Docker reaches one;
 unlike Docker, shards still checks the certificate of one that answers in HTTPS, and never
-sends your password in plain HTTP.
+sends your password in plain HTTP. Its `registry-mirrors` are asked first for what comes
+from Docker Hub, each with its own login, never your Docker Hub one.
 
 ### Tools that speak the Docker Engine API
 

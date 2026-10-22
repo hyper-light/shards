@@ -297,6 +297,49 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
+/// Docker Hub's mirrors (D194): a pull of a Docker Hub repository asks the mirror Docker's
+/// daemon configuration names first, as dockerd does, and an image the mirror holds is
+/// the one pulled: the test image, at a Docker Hub name it is not at, served by a
+/// registry on loopback. Its digest is the test image's, which Docker Hub has not.
+#[test]
+fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
+    let (manifest, blobs) = test_image();
+    let digest = sha256_digest(&manifest);
+    let (port, served) = common::registry(manifest, blobs);
+    let home = TempDir::new("mirror");
+    let config = home.join("config");
+    let file = if cfg!(windows) {
+        config.join("docker").join("config").join("daemon.json")
+    } else {
+        config.join("docker").join("daemon.json")
+    };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        format!(r#"{{"registry-mirrors": ["http://127.0.0.1:{port}"]}}"#),
+    )
+    .unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let pulled = run_shards_env(&["pull"], &["-q", "test/image:v1"], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    assert_eq!(pulled.stdout.trim(), "docker.io/test/image:v1", "{pulled}");
+    assert!(served.load(Ordering::SeqCst) > 0, "the mirror served it");
+    let digests = run_shards_env(
+        &["image", "inspect"],
+        &["--format", "{{json .RepoDigests}}", "test/image:v1"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(digests.status, Some(0), "{digests}");
+    assert!(digests.stdout.contains(&digest), "{digests}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
 /// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is
 /// through, as `make agentfile` writes one: into a directory as its `Agentfile`, where
 /// `shards build DIR` finds one, or to the file named; of the platform pulled. A pull that

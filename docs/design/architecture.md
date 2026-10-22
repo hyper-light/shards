@@ -5780,7 +5780,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
-### D194. The registries Docker's daemon configuration names: an insecure one is asked in plain HTTP too (slice 1 built)
+### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
 **Found.** A registry off loopback that speaks plain HTTP, a `registry:2` on another
 machine of a LAN, a CI job's, could be neither pulled from nor pushed to: shards asked
@@ -5826,6 +5826,21 @@ prints.
     that resolves to loopback for insecure. shards takes `localhost` and loopback addresses
     alone, and looks a name up only where a network is named; a registry that resolves to
     loopback is named by its name.
+- **Docker Hub's mirrors** (`registry-mirrors`, slice 2): a pull from Docker Hub asks each
+  in order first, as dockerd does (`lookupV2Endpoints`, mirrors for pulls alone), then
+  Docker Hub; pushes, deletes, logins and searches never ask a mirror. A mirror is a
+  registry of its own (`Registry::mirror`): its host's certificates (`certs.d`) and its
+  host's credentials, where its user logged in to it, never Docker Hub's, which dockerd
+  gives a mirror (`newRepository`: one credential store for every endpoint); one in plain
+  HTTP off this machine is asked with none. A request of the repository goes to the first
+  mirror that has not failed; one that cannot give a manifest or a blob, or cannot be
+  reached, is asked nothing more for the pull, as dockerd goes on to its next endpoint
+  after any error of a mirror's (`continueOnError`); one with no list asked for
+  (referrers, tags) is asked the next request still, where dockerd asks none. Tested:
+  `registry`'s `a_pull_asks_its_mirrors_first_and_a_failed_one_nothing_more`
+  (mutation-checked), and `images`' `a_mirror_daemon_json_names_serves_docker_hubs_pull`:
+  `test/image:v1`, a Docker Hub name, pulled from a mirror on loopback, its digest the
+  test image's.
 - **`info` says them** as dockerd does: `RegistryConfig`'s `IndexConfigs` (Docker Hub's,
   with its mirrors, and each named insecure, not secure), its `InsecureRegistryCIDRs` (the
   networks named, then loopback's) and `Mirrors`; and in its text, as docker/cli lays them
@@ -5841,9 +5856,8 @@ prints.
   names it, then fails again, naming the file, once it holds what dockerd refuses. The
   fallback and the credentials' refusal are mutation-checked.
 
-**Next.** Docker Hub's mirrors (slice 2): read and shown already, not yet asked. Each in
-order before Docker Hub for pulls alone, as dockerd asks them, and a mirror answered with
-its own host's credentials, not Docker Hub's.
+**Next.** A mirror that answers but stalls a blob's body: the pull's resumes go on asking
+it (fetch.rs), where dockerd's pull would fall to its next endpoint.
 
 ### D193. A run past its pids limit says so: a `pids-limit` event (built)
 

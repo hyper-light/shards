@@ -944,7 +944,7 @@ fn refused(response: &mut Response) -> Error {
 
 /// Hosts containerd serves over plain HTTP by default: `localhost`, 127.0.0.0/8 and ::1
 /// (`core/remotes/docker/registry.go`).
-pub(crate) fn loopback(url: &Url) -> bool {
+pub fn loopback(url: &Url) -> bool {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }

@@ -72,6 +72,18 @@ pub struct Registry {
     plain: Option<Plain>,
     /// containerd's `RepositoryScope`: pull access to the repository.
     scopes: Vec<String>,
+    /// Docker Hub's mirrors a pull from it asks first, in order (D194): each a registry of
+    /// its own, its host's certificates and credentials its own.
+    mirrors: Vec<Mirror>,
+}
+
+/// A mirror of Docker Hub's a pull asks first, and whether it failed: once it has, the
+/// pull asks it nothing more, as dockerd goes on to its next endpoint after a mirror's
+/// error (`continueOnError`, any error of a mirror's).
+#[derive(Debug)]
+struct Mirror {
+    registry: Registry,
+    failed: AtomicBool,
 }
 
 /// How a registry that may be asked in plain HTTP is: asked in HTTPS first, then in plain
@@ -92,6 +104,7 @@ impl fmt::Debug for Registry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Registry")
             .field("base", &self.base.to_string())
+            .field("mirrors", &self.mirrors.len())
             .finish_non_exhaustive()
     }
 }
@@ -404,7 +417,38 @@ impl Registry {
             base,
             plain,
             scopes,
+            mirrors: Vec::new(),
         })
+    }
+
+    /// A mirror of Docker Hub's at `mirror` (`scheme://host[:port][/path]/`, as
+    /// [`crate::registries`] keeps one), for `reference`'s repository, its credentials
+    /// those of the mirror's own host: dockerd gives a mirror Docker Hub's
+    /// (`daemon/internal/distribution/registry.go`, `newRepository`); shards, where its
+    /// user logged in to the mirror, the mirror's (D194).
+    pub fn mirror(
+        http: Client,
+        mirror: &str,
+        reference: &Reference,
+        credentials: impl Into<Found>,
+    ) -> Result<Registry, Error> {
+        let base = Url::parse(&format!("{mirror}v2/{}/", reference.path))?;
+        Registry::at(
+            http,
+            base,
+            Authorizer::new_for(credentials),
+            vec![format!("repository:{}:pull", reference.path)],
+        )
+    }
+
+    /// This registry, asking `mirror` (a [`Registry::mirror`]) first, after the mirrors it
+    /// asks already: a pull from Docker Hub with its mirrors (D194).
+    pub fn with_mirror(mut self, mirror: Registry) -> Registry {
+        self.mirrors.push(Mirror {
+            registry: mirror,
+            failed: AtomicBool::new(false),
+        });
+        self
     }
 
     /// Logs in to the registry at `host` (Docker Hub's at `registry-1.docker.io`), as
@@ -463,8 +507,40 @@ impl Registry {
         self.send(method, url, headers, &[], None)
     }
 
-    /// [`request`](Self::request), with a body: `body`, or so much of a file.
+    /// [`request`](Self::request), with a body: `body`, or so much of a file. A request of
+    /// this registry's own repository goes to its mirrors first (D194), each in turn until
+    /// one answers it with success; one that does not, or cannot be reached, is asked
+    /// nothing more, and the registry itself is asked last.
     fn send<'a>(
+        &self,
+        method: &'a str,
+        url: &Url,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        file: Option<(&std::fs::File, u64, u64)>,
+    ) -> Result<(Response<'_>, &'a str), Error> {
+        if let Some(rest) = url.as_str().strip_prefix(self.base.as_str()) {
+            for mirror in &self.mirrors {
+                if mirror.failed.load(Ordering::Acquire) {
+                    continue;
+                }
+                let mirrored = Url::parse(&format!("{}{rest}", mirror.registry.base))?;
+                match mirror.registry.send_here(method, &mirrored, headers, body, file) {
+                    Ok(answer) if (200..300).contains(&answer.0.status) => return Ok(answer),
+                    // A manifest or blob it could not give: the pull's are asked of the
+                    // next. A list it has no API for (referrers, tags) is this one's alone.
+                    _ if rest.starts_with("manifests/") || rest.starts_with("blobs/") => {
+                        mirror.failed.store(true, Ordering::Release);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.send_here(method, url, headers, body, file)
+    }
+
+    /// [`send`](Self::send), of this registry itself.
+    fn send_here<'a>(
         &self,
         method: &'a str,
         url: &Url,
@@ -1707,6 +1783,77 @@ mod tests {
         assert_eq!(plain("10.255.0.3:5000"), None);
         assert_eq!(plain("localhost:5000"), Some((5000, false)));
         assert_eq!(plain("localhost"), None);
+    }
+
+    /// Docker Hub's mirrors (D194): a request of the repository is asked of each mirror in
+    /// turn, then of the registry; a mirror that cannot give a manifest or a blob is asked
+    /// nothing more, one that has no list asked for (referrers) is asked the next request.
+    #[test]
+    fn a_pull_asks_its_mirrors_first_and_a_failed_one_nothing_more() {
+        let answering = |refused: &'static str| {
+            route(None, move |seen| {
+                let status = if seen.target.contains(refused) {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                Some((http(status, &[]), After::Keep))
+            })
+        };
+        let hub = answering("/nothing/");
+        let first = answering("/manifests/");
+        let second = answering("/referrers/");
+        let client = || {
+            Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+        };
+        let reference = Reference::parse(&format!("127.0.0.1:{}/library/x:v1", hub.port)).unwrap();
+        let mirror = |port: u16| {
+            Registry::mirror(
+                client(),
+                &format!("http://127.0.0.1:{port}/"),
+                &reference,
+                Credentials::Anonymous,
+            )
+            .unwrap()
+        };
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous)
+            .unwrap()
+            .with_mirror(mirror(first.port))
+            .with_mirror(mirror(second.port));
+        let get = |path: &str| {
+            let url = registry.base.join(path).unwrap();
+            let (response, _) = registry.request("GET", &url, &[]).unwrap();
+            (response.status, response.url().port())
+        };
+        let digest = |c: char| format!("blobs/sha256:{}", c.to_string().repeat(64));
+        assert_eq!(get(&digest('a')), (200, first.port), "the first mirror's");
+        assert_eq!(get("manifests/v1"), (200, second.port), "the first had none");
+        assert_eq!(get(&digest('b')), (200, second.port), "the first asked no more");
+        assert_eq!(
+            get(&format!("referrers/sha256:{}", "c".repeat(64))),
+            (200, hub.port)
+        );
+        assert_eq!(
+            get(&digest('d')),
+            (200, second.port),
+            "a list the second lacks is its alone"
+        );
+        let asked = |s: &crate::testing::Server| {
+            s.requests()
+                .iter()
+                .map(|r| r.lines().next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(asked(&first).len(), 2, "{:?}", asked(&first));
+        assert_eq!(asked(&hub).len(), 1, "{:?}", asked(&hub));
+        assert!(
+            asked(&hub)[0].starts_with("GET /v2/library/x/referrers/"),
+            "{:?}",
+            asked(&hub)
+        );
     }
 
     /// The tag is asked for where the API is not found or refuses, a 404 of both an empty

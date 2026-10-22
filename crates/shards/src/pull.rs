@@ -10,7 +10,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_image::platform::{self as image_platform, Target};
-use shards_image::reference::Reference;
+use shards_image::reference::{DOCKER_HUB, Reference};
 use shards_image::store::{Limits, Store};
 use shards_ipc::Progress;
 
@@ -507,7 +507,36 @@ pub fn registry(
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Registry, String> {
     let (http, credentials) = client_for(reference, cancel, env)?;
-    Registry::new(http, reference, credentials).map_err(|e| e.to_string())
+    let mut registry = Registry::new(http, reference, credentials).map_err(|e| e.to_string())?;
+    // Docker Hub's mirrors, asked first as dockerd asks them (D194), each with its own
+    // host's certificates and credentials; one in plain HTTP off this machine with none.
+    if reference.domain == DOCKER_HUB {
+        for mirror in Registries::from_env(env).map_err(|e| e.to_string())?.mirrors() {
+            let url = shards_registry::url::Url::parse(mirror).map_err(|e| e.to_string())?;
+            let host = url.authority();
+            let http = host_client(&host, env).map_err(|e| e.to_string())?;
+            let http = match cancel {
+                Some(cancel) => http.cancelled_by(cancel.clone()),
+                None => http,
+            };
+            let plain_off_here =
+                url.scheme() == shards_registry::url::Scheme::Http && !shards_registry::auth::loopback(&url);
+            let credentials = match plain_off_here {
+                true => credentials::Found::Known(shards_registry::auth::Credentials::Anonymous),
+                false => {
+                    let (found, warnings) =
+                        credentials::find(&host, env, cancel).map_err(|e| e.to_string())?;
+                    for warning in warnings {
+                        let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
+                    }
+                    found
+                }
+            };
+            let mirror = Registry::mirror(http, mirror, reference, credentials).map_err(|e| e.to_string())?;
+            registry = registry.with_mirror(mirror);
+        }
+    }
+    Ok(registry)
 }
 
 /// Checks `credentials` with the registry at `host` (`registry-1.docker.io` for Docker
