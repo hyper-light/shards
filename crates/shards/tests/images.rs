@@ -14,8 +14,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use common::{
-    TempDir, cannot_run_vms, guest_init, kernel, rootfs_dir, run_shards_env, served, sha256_digest,
-    test_image,
+    TempDir, cannot_run_vms, guest_init, kernel, rootfs_dir, run_shards_env, served, served_counting,
+    sha256_digest, test_image,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -42,7 +42,7 @@ fn images_run_from_a_registry() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
-    let (image, served) = served();
+    let (image, served) = served_counting();
     let home = TempDir::new("images");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -974,7 +974,7 @@ fn actions_on_an_image_not_here_convert_it_first() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
-    let (image, served) = served();
+    let (image, served) = served_counting();
     let home = TempDir::new("convert");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),

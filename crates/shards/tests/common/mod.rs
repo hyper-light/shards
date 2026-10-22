@@ -1804,8 +1804,17 @@ pub fn crashing_program(arch: &str) -> Vec<u8> {
     elf
 }
 
-/// Serves the test image at `127.0.0.1:<port>/test/image:v1`.
+/// Serves the test image at `127.0.0.1:<port>/test/image:v1`: one registry for every test
+/// of the binary, started by the first that asks, so that no test leaves a server of its
+/// own behind (each had one, its thread blocked in accept(2) until the binary ended). What
+/// it counts is every test's requests; a test that counts its own has [`served_counting`].
 pub fn served() -> (String, Arc<AtomicUsize>) {
+    static SHARED: OnceLock<(String, Arc<AtomicUsize>)> = OnceLock::new();
+    SHARED.get_or_init(served_counting).clone()
+}
+
+/// [`served`], from a registry of the caller's own, whose count is its requests alone.
+pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     let (manifest, blobs) = test_image();
     let (port, served) = registry(manifest, blobs);
     (format!("127.0.0.1:{port}/test/image:v1"), served)

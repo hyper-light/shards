@@ -11326,9 +11326,24 @@ revision before comparing a changed API/implementation.
   start's p50, ms, then the wall's: 4 CPUs with 4 busy loops 19.77 against 18.88 (38.32,
   38.67); 16 P-cores with 16, 25.91 against 29.61 (42.33, 45.89); 4 CPUs idle, 4.96 against
   4.87. No change: the command's migration is not what a start waits on.
+- **It is the vCPUs' count, at the same contention** (phases.py, one build, 3b296b9f with
+  markers.patch, its arms alike, n 100 a host; the host's load 1.4 to 2.5): on 1 CPU with
+  1 busy loop, where a run's microVM has 1 vCPU, against 4 CPUs with 4, where it has 4,
+  each CPU as shared. p50 and p90, ms:
+
+  | host | microVM | start | command | wall |
+  |---|---|---|---|---|
+  | 1 CPU, 1 busy loop | 1 vCPU | 4.21, 10.61 | 0.06, 5.52 | 28.40, 42.63 |
+  | 4 CPUs, 4 busy loops | 4 vCPUs | **20.94, 29.31** | 4.93, 10.50 | 38.68, 49.43 |
+  | 4 CPUs, idle | 4 vCPUs | 4.98, 10.73 | 0.35, 1.77 | 12.45, 17.39 |
+
+  The guest's start of the command takes five times as long in a microVM of four vCPUs
+  as in one of one, each host CPU as busy; idle, the two are alike. (The 1-CPU host's wall
+  holds its daemon's and VM process's work on that CPU too.) The markers' own steps came
+  back none: the VMM keeps a marker it knows of alone (`devices::control::MARKERS`), so
+  the patch keeps 101 to 106 too, and its second run is to say which step grows.
 - **Consequence.** b96501d3's reason is withdrawn: its 240 s timeout stays for a slow,
   contended runner, not for a regression. A start on a contended host is an open
   regression of D191 slice 1, its tail's first item: the guest's start of a run's command,
-  not its VM's restore. Two mechanisms are ruled out above; next, markers through init's
-  start of a run, a microVM of one CPU against one of four on the same contended host, to
-  find the step that grows before anything is moved.
+  not its VM's restore, and of the microVM's vCPUs' count, not the host's load alone. Two
+  mechanisms are ruled out above.

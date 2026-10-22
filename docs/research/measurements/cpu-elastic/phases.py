@@ -13,6 +13,12 @@ wall time:
 - `command`: the command's run (WORKLOAD_STARTED to WORKLOAD_EXITED);
 - `answer`: its exit to the VM's answer (`answered_us`).
 
+With a build that writes markers 101 to 106 through init's start of a run
+(`markers.patch`), each step between them too: `m101` the request to init's taking it,
+`m102` its limits, `m103` the rest of its setup to the orders sent to the standby, `m104`
+the standby's waking with them, `m105` its own setup to its exec, `m106` init's waking as
+the exec is made, `m4` its listener and agents to WORKLOAD_STARTED.
+
 With --load N, N busy loops run throughout, on the CPUs this runs on (run it under
 `taskset`: its runs inherit them).
 
@@ -45,6 +51,8 @@ revs = a.revs.split(",")
 builds = {"old": (a.old, homes[0], revs[0]), "new": (a.new, homes[1], revs[1])}
 CONNECTED, STARTED, EXITED = 3, 4, 5
 PHASES = ["wall", "restore", "waited", "start", "command", "answer"]
+# The steps between markers.patch's markers, in order, where a build writes them.
+STEPS = [101, 102, 103, 104, 105, 106, STARTED]
 
 
 def env(home, **more):
@@ -75,7 +83,13 @@ def once(build):
     if not all(k in marks for k in (CONNECTED, STARTED, EXITED)) or not j.get("request_us"):
         return None, f"markers missing: {line[:200]}"
     request, answered = j["request_us"], j["answered_us"]
-    return {
+    steps = {}
+    if all(m in marks for m in STEPS):
+        at = request
+        for m in STEPS:
+            steps[f"m{m}"] = (marks[m] - at) / 1000
+            at = marks[m]
+    return steps | {
         "wall": wall,
         "restore": marks[CONNECTED] / 1000,
         "waited": max(0, marks[CONNECTED] - request) / 1000,
@@ -104,7 +118,7 @@ def first(path, key):
 reset()
 loops = [subprocess.Popen(["sh", "-c", "while :; do :; done"]) for _ in range(a.load)]
 load0 = os.getloadavg()
-got = {b: {k: [] for k in PHASES} for b in builds}
+got = {b: {k: [] for k in PHASES + [f"m{m}" for m in STEPS]} for b in builds}
 errors = []
 try:
     for r in range(a.warmup + a.rounds):
@@ -133,7 +147,7 @@ print(f"host: {platform.node()}, {first('/proc/cpuinfo', 'model name')}; "
 print(f"old {builds['old'][2]}, new {builds['new'][2]}; image {a.image}; {a.rounds} rounds of "
       f"{a.starts} starts after {a.warmup} warmup, alternating")
 print(f"{'phase':9} {'build':5} {'n':>4} {'p50':>8} {'p90':>8} {'p99':>8} {'max':>8}  ms")
-for k in PHASES:
+for k in PHASES + [f"m{m}" for m in STEPS]:
     for b in builds:
         if got[b][k]:
             n, p50, p90, p99, mx = stats(got[b][k])

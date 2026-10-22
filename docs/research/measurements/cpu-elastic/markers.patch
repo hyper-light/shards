@@ -1,0 +1,62 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -182,6 +182,7 @@
+         let procs = (spec.builtin != run::builtin::HOLD)
+             .then(|| crate::procevents::Listener::new().map_err(|e| e.to_string()));
+         let (mut workload, declared) = standby.start(&spec)?;
++        let _ = crate::linux::control_write(control::MARKER, 106); // experiment: start markers
+         workload.procs = procs;
+         // A visit to a stopped container's files (`HOLD`, D37) runs nothing of the image's:
+         // no command, and no agent or harness.
+@@ -2428,6 +2429,7 @@
+     /// standby that has ended is replaced first. With it, the image's Agentfile as read
+     /// before the workload starts, for a run that starts its domains (D115).
+     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
++        let _ = crate::linux::control_write(control::MARKER, 101); // experiment: start markers
+         // What its microVM may still plug, its run's own, which its VM set before its run
+         // came, where the kernel reports it (D149): before anything of the run's starts.
+         crate::plug::report_pluggable()
+@@ -2591,6 +2593,7 @@
+             .transpose()
+             .map_err(setup_failed)?;
+         limit(&spec.cgroup, devices.as_ref())?;
++        let _ = crate::linux::control_write(control::MARKER, 102); // experiment: start markers
+         // A joiner's volumes are its own (D119): the microVM's own run mounts none.
+         if spec.setup.iter().any(|e| e.starts_with(b"join-volume=")) {
+             return Err(setup_failed(
+@@ -2677,6 +2680,7 @@
+             sigchld,
+             ..
+         } = self;
++        let _ = crate::linux::control_write(control::MARKER, 103); // experiment: start markers
+         File::from(to_standby)
+             .write_all(&orders)
+             .map_err(|e| setup_failed(format!("holding the container's files: {e}")))?;
+@@ -2949,6 +2953,7 @@
+     };
+     let mut bytes = Vec::new();
+     let got = File::from(orders).read_to_end(&mut bytes);
++    let _ = crate::linux::control_write(control::MARKER, 104); // experiment: start markers
+     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
+     let built = decoded.and_then(|mut o| {
+         // Its TERM, where it is to be chosen: the first of its client's terminal types
+@@ -3049,6 +3054,7 @@
+     let nnp = o.setup.iter().any(|e| e == b"nnp");
+     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
+     // runs on data built above.
++    let _ = crate::linux::control_write(control::MARKER, 105); // experiment: start markers
+     unsafe {
+         child(&Child {
+             stdio: [stdin, stdout.as_raw_fd(), stderr.as_raw_fd()],
+--- a/crates/vmm/src/devices/control.rs
++++ b/crates/vmm/src/devices/control.rs
+@@ -18,7 +18,8 @@
+ pub type SnapshotRequest = Box<dyn Fn() + Send + Sync>;
+ 
+ /// The markers a guest may send: shards_abi::marker's, 1 to POWERING_OFF.
+-const MARKERS: usize = marker::POWERING_OFF as usize + 1;
++// Experiment (docs/research/measurements/cpu-elastic, start markers): 101 to 106 too.
++const MARKERS: usize = 107;
+ 
+ #[derive(Default)]
+ pub struct Control {
