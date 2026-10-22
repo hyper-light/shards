@@ -11419,6 +11419,34 @@ revision before comparing a changed API/implementation.
   mechanisms are ruled out above; the steps that grow are found: `cpu.max`'s static key,
   the run's names and resolver files, and init's wake at the exec. Next: the key held on
   from the template, measured against HEAD, and the names' step split.
+- **The key held on, and init on the first CPU.** `keys.patch`: an empty cgroup of init's
+  whose `cpu.max` is finite from the template, so that the key is on before any run's
+  quota. `pin.patch`, with it: init and its standby on the first CPU from the template.
+  `markers.patch` as committed with this (markers 11 to 26: the names' step split into
+  `m24` eth0's confinement and sethostname, `m25` `/etc/hostname`, `m26` `/etc/hosts`,
+  `m20` `/etc/resolv.conf`). phases.py, d3195115 with each, n 50 a case, the host
+  carrying other work (load 1.4 to 7.3), 2026-10-21. p50 (p90), ms:
+
+  | case | wall, HEAD → keys | `m23` `cpu.*`, HEAD → keys | wall, keys → keys and pin |
+  |---|---|---|---|
+  | 4 CPUs idle, `--cpus 1` | 13.07 (17.27) → 12.57 (16.58) | 0.20 (1.64) → 0.03 (0.03) | 12.45 (19.45) → 12.30 (16.07) |
+  | 4 CPUs idle, no `--cpus` | 12.33 (16.80) → 12.15 (16.59) | 0.00 → 0.00 | 11.93 (16.85) → 13.05 (17.52) |
+  | 4 CPUs, 4 busy loops, `--cpus 1` | 36.20 (51.88) → 39.55 (62.19) | 6.27 (16.12) → 0.04 (0.04) | 38.89 (48.26) → 34.92 (57.51) |
+  | 4 CPUs, 4 busy loops, no `--cpus` | 36.11 (50.35) → 34.67 (52.38) | 0.00 → 0.00 | 38.06 (50.55) → 35.28 (48.75) |
+  | 1 CPU, 1 busy loop, `--cpus 1` | 28.20 (37.44) → 29.75 (40.86) | 0.05 (0.05) → 0.02 (0.02) | 27.38 (42.33) → 28.84 (42.16) |
+
+  The key held on takes `cpu.max`'s write to 0.03 ms from 0.2 idle and 6.3 contended, and
+  costs runs with no quota nothing seen; but the wall moves within its spread either way.
+  On the contended host the time the patching's rounds took goes to the steps after it,
+  each waiting for the host to run a vCPU: init's wake at the exec (`m16`) 6.32 → 8.24 ms,
+  the command's run 4.79 → 6.53. Init on the first CPU moves the wall within its spread
+  too. And on 4 idle CPUs `m25`, `/etc/hostname` alone, takes 2.6 to 3.7 ms at p50 where
+  `/etc/hosts` after it takes 0.1: half of an idle start.
+- **Consequence.** Neither patch is taken: neither shows the wall a gain at n 50. The
+  names' step comes first: `markers7.patch` splits `/etc/hostname`'s write into its
+  removal, creation and write, and `probe.patch` writes a file of the run's own first, to
+  say whether the cost is the file's or the run's first change to its root: M297, the
+  run's first write into its writable layer, its host's readahead.
 
 ### M293. DAMON's reclaim against D188's in a run's guest (the user's plan, item 4)
 
@@ -11587,3 +11615,57 @@ revision before comparing a changed API/implementation.
   Max): it kills a provider as its joiner's 256 MiB layer is sent; with the sender killed,
   the layer is lost, and with no close as well, the provider's run ends only as its daemon
   ends its microVM, 10 s past the kill (moby's kill wait).
+
+### M297. A run's first write into its writable layer: its host's readahead over a hole of the layer's clone (D190)
+
+- **Question.** M292's markers put half of an idle start in its names' step, `/etc/hostname`
+  alone: 2.6 to 3.7 ms at p50 on 4 idle CPUs, where `/etc/hosts` after it took 0.1. What is
+  it?
+- **Method.** Fedora (M266's host: Intel Core i9-14900HX, Fedora 44, Linux 6.19.10-300.fc44,
+  its home on Btrfs; guest Linux 6.18.48), 85bdb0f5 with each patch of
+  `docs/research/measurements/cpu-elastic` and `layer-first-write`, release builds,
+  phases.py, `--cpus 1` on 4 idle CPUs unless said, 2026-10-21 and 22; the Mac (Apple M5
+  Max, macOS 26.4.1, APFS) for the host's side, other projects' work running.
+- **Results**, step by step (p50, ms unless said):
+  1. The write's own steps (`markers7.patch`, n 100): the file's removal 0.07, its creation
+     0.04, its 13 bytes' write 2.8 to 3.7 (`m29`).
+  2. A file of the run's own written in /tmp first (`probe.patch`, n 100): it takes 2.9 to
+     3.2, and `/etc/hostname`'s write 0.02. The cost is the run's first data write into its
+     root, whatever the file.
+  3. Neither the root's first since its boot nor any file system's (n 50): a file written
+     and removed as the template boots (`prime.patch`) leaves `m29` 3.21 (3.76 without);
+     a tmpfs file written first (`shmprobe.patch`) takes 0.05, and the root's write after
+     it 3.58 (4.68).
+  4. On the host alone (`layer-first-write/measure.py`, 1 GiB sparse files holding a MiB of
+     data, a store a page past it through a fresh MAP_SHARED mapping, n 40), µs: into the
+     file itself 429, into a clone of it (FICLONE, as each warm microVM's layer is a clone
+     of its snapshot's, daemon/layers.rs) 905, the next stores 1 to 2; the clone's first
+     page written first with pwrite(2), 873; the mapping advised MADV_RANDOM, 5.2. Btrfs
+     reads 4 MiB around a fault (`btrfs_init_bdi` raises its readahead to 4 MiB), and over
+     a hole that is 4 MiB of pages allocated and zeroed. The Mac (n 20): 1,929 µs into a
+     clone, 35 into its source, 30 with MADV_RANDOM.
+  5. In the microVM, its layer's mapping advised MADV_RANDOM throughout
+     (`layer-random.patch`, n 50): `m29` 2.42 → 0.05 (p90 5.52 → 0.15), the start 5.01 →
+     2.35 (9.16 → 4.33), the wall 11.99 → 7.07 (17.63 → 10.54).
+  6. What readahead gives a cold sequential read through such a mapping (`coldmap.py`, a
+     1 GiB file, its pages dropped until util-linux's fincore says none are resident, a
+     byte of each page read in order, n 5): 5,089 MiB/s with readahead, 86 without.
+- **Reading.** A run's first write lands in a hole of its layer's file, a clone made for
+  its warm microVM, of whose pages its host holds none; the fault reads 4 MiB around it
+  on Btrfs, every run, each run's clone being new. The rest of a run's faults on its layer
+  want readahead: 60 times the rate for a cold sequential read.
+- **Consequence.** D190: a layer's mapping reads at random until its run's command runs,
+  then ahead (`Layer::read_ahead`, as the guest says STARTED; a resumed microVM's at once).
+  Against 85bdb0f5 (phases.py, n 50 a side, the host carrying other work, its load 6.5 to
+  10.1), p50 (p90), ms:
+
+  | case | wall | start |
+  |---|---|---|
+  | 4 CPUs idle, no `--cpus` | 17.85 (31.01) → 11.85 (15.79) | 8.10 (17.02) → 2.58 (6.39) |
+  | 4 CPUs idle, `--cpus 1` | 18.93 (29.17) → 12.46 (17.33) | 9.36 (18.15) → 3.54 (7.28) |
+  | 4 CPUs, 4 busy loops, `--cpus 1` | 55.02 (105.97) → 43.32 (65.53) | 31.92 (72.85) → 18.91 (33.03) |
+
+  The contended start's p99, 190.83 ms, is 41.81. On the Mac, at load 7.4 with a lint
+  running and `--cpus 1`, n 50: the start 1.16 (4.86) → 1.43 (5.58), its p99 15.73 →
+  8.14, the wall 32.79 → 37.79 at p50, its spread the host's: no first write there cost
+  what Btrfs's readahead did.

@@ -6231,6 +6231,19 @@ the guest keeps their metadata alone.
   again; a microVM killed after its guest committed a file, its layer kept with its
   journal to replay, replayed as `diff` visits it, and the file found.
 
+- **Read at random until its command runs** (PM M297). A run's first write into its root
+  landed in a hole of its layer's file, a clone made for its warm microVM of whose pages its
+  host held none, and the host read 4 MiB around it (Btrfs's readahead): 2.4 ms of a 5 ms
+  start, every run. The layer's mapping is advised MADV_RANDOM as it is made
+  (`platform::reads_at_random`), and to read ahead again as its command runs
+  (`Layer::read_ahead`, as the guest says STARTED; a resumed microVM's at once): a
+  sequential read of what the layer holds, cold, reads 5,089 MiB/s with readahead and 86
+  without. A start on Fedora, its host busy, takes 2.6 to 3.5 ms at p50 where it took 8.1
+  to 9.4, and on 4 contended CPUs 18.9 where it took 31.9; on the Mac, where no write paid
+  it, a start stays about 1.2 ms. Held by vmm's
+  `a_layer_reads_ahead_once_its_command_runs` (its mapping's VmFlags; mutation-checked both
+  ways).
+
 **Next** (the slices after these).
 - A restart that goes on over the kept file itself: today its files are put back, packed
   on the host, into the warm microVM's own layer, which its template mounted as its root's

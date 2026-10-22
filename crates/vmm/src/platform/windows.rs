@@ -83,6 +83,12 @@ pub fn small_pages(_ptr: NonNull<u8>, _len: usize) {}
 
 pub fn huge_pages(_ptr: NonNull<u8>, _len: usize) {}
 
+/// A file's mapping read without readahead, where the host gives a way (unix.rs); a
+/// Windows host runs no writable layers (D190).
+pub fn reads_at_random(_ptr: NonNull<u8>, _len: usize) {}
+
+pub fn reads_ahead(_ptr: NonNull<u8>, _len: usize) {}
+
 pub fn advised_huge_page() -> Option<usize> {
     None
 }

@@ -1141,6 +1141,8 @@ fn serve_workload(
                         interactive,
                         hold,
                     } => {
+                        // Its start's writes made, its layer reads ahead again (PM M297).
+                        let started = || stopper.layer_reads_ahead();
                         // Held, the guest is connected and waiting: the request is a line
                         // on stdin. A snapshot this VM saves is committed, and out of its
                         // reach, before the command goes to the guest.
@@ -1157,7 +1159,7 @@ fn serve_workload(
                                 interactive,
                                 detached: false,
                                 log: None,
-                                started: None,
+                                started: Some(&started),
                                 layer_in: None,
                                 layer_out: None,
                                 told: None,
@@ -1191,6 +1193,8 @@ fn serve_workload(
                         let started = || {
                             crate::warm::started(&link);
                             end_recording_in(&stopper, RECORD_FOR);
+                            // Its start's writes made, its layer reads ahead again (PM M297).
+                            stopper.layer_reads_ahead();
                         };
                         // The daemon and the client hear how the command ended as soon as it
                         // has, before its layer is saved (D37): once, here or after.
@@ -1317,6 +1321,8 @@ fn serve_workload(
                                         ));
                                     }
                                     stopper.release();
+                                    // Its command runs already: its layer reads ahead (PM M297).
+                                    stopper.layer_reads_ahead();
                                     Some(conns)
                                 }
                                 None => None,
