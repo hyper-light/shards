@@ -1882,6 +1882,14 @@ audit's "Security and test coverage").
     only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
     huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
+  - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
+    first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
+    is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes
+    as its host reclaims memory, and Landlock holds a rule's inode, not its dentry. So the
+    rule stopped meeting the path, and a template's save, which reads
+    `/proc/self/pagemap`, was refused on a busy host: its image's pool never filled (6 of
+    55 rounds of the daemon tests on Fedora; every round with the test unit's memory
+    reclaimed twice a second, and none with the descriptor held).
   - It fails closed: a kernel without Landlock, or whose ABI is older than v5 (Linux 6.10,
     the first to govern device ioctls), starts no VM, as does a path it must allow that is
     not there. rootless-security.md R7 forbids weakening a policy silently; Landlock's

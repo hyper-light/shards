@@ -12191,3 +12191,39 @@ revision before comparing a changed API/implementation.
   past them from 16 KiB on, as macOS's memcpy does (M137).
 - **Consequence.** D189: device memory is reached by the host's devices as RAM is, by
   system calls given its pages (`GuestMemory::io_ptr`) and copies by `copy_checked`.
+
+### M305. A VM process's rule on its own /proc entry, lost as its host reclaims memory (D30)
+
+- **Question.** The daemon tests failed now and then on a busy host (Fedora, 6 of 55 rounds
+  of them in a loop), each a pool that never filled or settled within its 5 s: why? (x86_64
+  CI's one failure of `a_restored_microvm_ends_with_its_home` on df08ffe1, a daemon that
+  outlived its home, is not this, and was not seen again here.)
+- **Method.** `crates/shards/tests/daemon.rs` (41 tests), round after round on Fedora (M258's
+  i9-14900HX, Linux 6.19.10, itself a CI runner: load 7 to 75 meanwhile), in a scratch copy
+  given diagnostics: a wait that missed its 5 s watched on to 60 s and failed with the home's
+  daemon.log; the VM process said its snapshot directory's inode as it granted it, which
+  step of a snapshot's save was refused, and when its seal (D30's second layer) ran. Then
+  a descriptor of `/proc/self` held for the VM process's life (`confine.rs`). And both again
+  with a reclaimer writing the test unit's cgroup's `memory.reclaim` (256 MiB,
+  `swappiness=0`) every half second, which reclaims the unused dentries charged to it.
+  2026-10-22, revision c2500a20 with the diagnostics.
+- **Results.**
+  - Unfixed: 6 of 55 rounds failed, each a pool that never filled ("held false after 60 s"):
+    its image's template was never saved, the VM's save refused (EACCES) as
+    `GuestMemory::save` opened `/proc/self/pagemap`; its snapshot directory granted and made
+    (its inode logged), and the seal 6 ms after the refusal.
+  - Unfixed, memory reclaimed: every round failed, 5 of 5 (6 to 8 tests each), a save
+    refused in each.
+  - Fixed: none of 51 rounds failed, nor any save was refused, 33 of them with memory
+    reclaimed (13 within a run of 31, then 20 more).
+- **Reading.** procfs makes a new inode for `/proc/PID` each time its dentry is made afresh
+  (fs/proc/base.c, `proc_pid_lookup` → `proc_pid_make_inode`: "We need a new inode"), a
+  live process's unused dentry goes on the LRU as any other (`pid_delete_dentry`), and
+  Landlock holds a rule's inode, not its dentry (security/landlock/fs.c, `get_inode_object`:
+  `ihold`). Once its host reclaimed the dentry, `/proc/self` met no rule, and the save's
+  read of the guest's untouched pages was refused. A descriptor held for the process's life
+  holds the dentry, and the rule's inode with it.
+- **Consequence.** D30: the VM process holds its `/proc/self` from its first Landlock layer
+  on. Its other reads under `/proc/self` after confining (`fd/N`, a share's handles, a
+  file's grant) were as exposed, and are held by it too. The network process allows no
+  file at all.
