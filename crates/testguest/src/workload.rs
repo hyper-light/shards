@@ -521,6 +521,17 @@ pub fn main() -> ! {
             }
             0
         }
+        // The objects in use of slab cache NAME, as /proc/slabinfo says them: `slab NAME N`,
+        // or `slab NAME none`.
+        "slab" => {
+            let info = std::fs::read_to_string("/proc/slabinfo").unwrap_or_default();
+            let active = info.lines().find_map(|l| {
+                let mut f = l.split_whitespace();
+                (f.next() == Some(arg(1))).then(|| f.next()).flatten()
+            });
+            let _ = writeln!(io::stdout(), "slab {} {}", arg(1), active.unwrap_or("none"));
+            0
+        }
         // Its umask, as the kernel tells it (/proc/self/status).
         "umask" => {
             let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();

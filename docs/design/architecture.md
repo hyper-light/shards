@@ -5809,7 +5809,7 @@ stores.
   linear alias never does: shards' kernel patch 0010 maps a file system DAX device's memory
   in blocks, but where debug_pagealloc or a realm needs base pages, and an arm64 window
   takes none of its guest's memory either (0.0 to 0.1 MiB at every length to 4 GiB, n 12,
-  M300). The pinned kernel (kernel-6.18.48-8df0015cca35) carries both; held by
+  M300). The pinned kernel carries both (since kernel-6.18.48-8df0015cca35); held by
   `a_dax_windows_page_structures_take_none_of_its_guests_memory`, its bound the spread of
   boots alone.
 - **Whole pages a host does not hold written as FUSE_WRITEs** (PM M301). A store into a
@@ -5895,6 +5895,34 @@ stores.
   `a_frame_from_device_memory_is_sent_and_one_whose_page_is_gone_dropped`,
   `a_checked_copy_fails_where_its_pages_are_gone` and
   `a_fault_outside_a_checked_copy_still_ends_its_process`.
+- **What a window's guest makes of it, made as its guest uses it** (PM M306). A window's
+  length cost its microVM what its guest's kernel made of the window at once, whatever it
+  went on to map: its page structures, a 64th of it, written into its head as the guest
+  probed the device (for 64 GiB, 1,044 MiB of its VM process's memory on the Mac and on
+  Fedora, and 1.4 s of Fedora's boot), every one of which a template's save then read;
+  the structures of its head's own pages, a 4,096th of it, each its own (each lists
+  itself), so that every template kept them (18 MiB for 64 GiB); and FUSE DAX's mapping of
+  each 2 MiB range, 128 bytes, made at every mount and freed at every unmount (a 64 GiB
+  window's run in its microVM set up 3.0 ms slower and ran 4.2 ms longer at p50 on Fedora
+  than with 0012 and 0013, n 40). shards' kernel makes each as its guest uses it: patch
+  0011 a range's page structures as FUSE first sets the range up (`PGMAP_LAZY_MEMMAP`),
+  0012 none of the head's own pages', its metadata, which no pfn of it hands out, and 0013
+  a range's mapping as the range is first wanted. A head's save reads none of the blocks of its own memory its guest never touched
+  (`Head::untouched`, by `platform::untouched`), where reading them gave each of their pages
+  memory on macOS, and a block mapped from a snapshot's copy is read whole, its untouched
+  pages the copy's; one its guest wrote zeros over is mapped back as fresh memory, where a
+  discard (MADV_DONTNEED) brought the copy's bytes back on Linux. A 64 GiB window costs a
+  boot 2.1 MiB of its VM process's memory on the Mac and 2.8 on Fedora, a template what one
+  of 4 GiB costs, and a run with a volume nothing measured (Fedora, n 40: setup 2.69 ms at
+  p50 against 2.84 with no window, 5.66 before 0013). The pinned kernel carries the three
+  (since kernel-6.18.48-e39058b2b627). Held by
+  `a_long_dax_window_costs_its_boot_next_to_nothing` (an 8,192th of the window: 0011 alone
+  took 20,544 KiB, the kernel before it 1,069,184),
+  `a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range` (768 kmalloc-128
+  objects in use with no window, 33,440 with a 64 GiB one before 0013), and vmm's
+  `a_heads_save_reads_no_block_its_guest_never_touched` and
+  `a_heads_blocks_from_its_copy_are_saved_whole_and_zeroed_ones_mapped_back_fresh`
+  (mutation-checked on Linux and the Mac; the two above on the Mac).
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -6391,8 +6419,8 @@ the guest keeps their metadata alone.
   MiB of a guest's memory for a 64 GiB layer (M277). 0010 maps a file system DAX device's
   memory in blocks, but where debug_pagealloc or a realm needs base pages: a layer of 4 to
   64 GiB takes none of its guest's memory (-0.7 to 0.3 MiB at p50), and its probe is done
-  11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel (kernel-6.18.48-8df0015cca35)
-  carries it.
+  11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel carries it (since
+  kernel-6.18.48-8df0015cca35).
 
 **Next** (the slices after these).
 - A restart that goes on over the kept file itself: today its files are put back, packed

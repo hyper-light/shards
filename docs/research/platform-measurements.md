@@ -12227,3 +12227,102 @@ revision before comparing a changed API/implementation.
   on. Its other reads under `/proc/self` after confining (`fd/N`, a share's handles, a
   file's grant) were as exposed, and are held by it too. The network process allows no
   file at all.
+
+### M306. What a DAX window's length costs, and what shards' kernel patches 0011 to 0013 and a head's save of touched blocks take off (D189)
+
+- **Question.** A default window as long as its host's memory is what D189's plan asks
+  for: what does a window's length cost a microVM's boot, its template, its first run, its
+  restored runs and a run's volume mount, where does it go, and what do patches 0011 to
+  0013 and a head's save that skips untouched blocks take off?
+- **Method.** `docs/research/measurements/dax-window/`: `costs.sh`/`costs.py` (boots of the
+  test guest, 512 MiB, one share with a window of each length, the VM process's peak RSS
+  and minor faults by /usr/bin/time, PID 1's uptime and the guest's free memory, lengths
+  and kernels interleaved round by round); `firsts.sh` (an image's first run with a
+  volume, which boots and saves its template, in fresh homes cloned from a seed's image
+  store, and the template's size; KERNEL and INIT boot a guest `shards configure guest`
+  records); `restores.sh`/`restores.py` (that first run, then 10 runs restored from it a
+  second apart and 10 back to back, and a detached run's and its pool's VM processes'
+  resident memory); `mounts.sh`/`mounts.py` (runs with a volume, arms of a length and a
+  kernel interleaved, the run's setup in its microVM, its request to its command's start,
+  and its whole run there, to its answer, from SHARDS_TIMING's markers); and
+  `dax-window-writes/setup-costs.sh` (M302's 500 writes of 1 MiB into ranges not yet
+  mapped). vmm's ignored `a_heads_save_costs` saves a 64 GiB window's head (576 blocks)
+  with one block touched, read whole and with untouched blocks skipped, six rounds, their
+  order turning. Kernels: the pinned kernel-6.18.48-8df0015cca35; 0011,
+  kernel-6.18.48-6701799ab12c; 0011 to 0013, built in the pinned builder (x86_64 on
+  Fedora, arm64 in Docker Desktop on the Mac), byte for byte CI's
+  kernel-6.18.48-e39058b2b627. shards: gpu ad4670a8 with the head's save skipping
+  untouched blocks (B), and without (A: 132256b4 on Fedora, c2500a20 on the Mac). Hosts:
+  Fedora (M258's i9-14900HX, Linux 6.19.10, a CI runner: load 1.3 to 7 meanwhile) and the
+  Mac (Apple M5 Max, 18 CPUs, 128 GiB, macOS 26.4, shared with other projects' builds and a
+  Docker bench holding 81 GB: load 7 to 32). Each run's volume share and its join share
+  (D119) have a window each. 2026-10-22.
+- **Results.**
+  - Boots, n 8 a length and kernel; the VM process's peak RSS and PID 1's uptime at p50,
+    at no window, 4, 16 and 64 GiB:
+
+    | Host, kernel | Peak RSS (MiB) | PID 1 (s) |
+    |---|---|---|
+    | Fedora, pinned | 60.3, 125.9, 323.0, 1,104.3 | 0.07, 0.07, 0.48, 1.44 (max 3.48) |
+    | Fedora, 0011 | 59.9, 64.3, 68.8, 81.9 | 0.06 to 0.07 (max 0.07) |
+    | Fedora, 0011 then 0013 (n 4, 0 and 64 GiB) | 60.1 to 80.3; 60.1 to 62.9 | 0.10; 0.08 |
+    | Mac, pinned | 67.5, 133.5, 330.0, 1,111.5 | 0.06, 0.06, 0.09, 0.19 |
+    | Mac, 0011 | 67.5, 69.7, 74.0, 87.5 | 0.06 (max 0.12) |
+    | Mac, 0013 | 67.4, 67.6, 68.0, 69.5 | 0.06 (max 0.06) |
+
+    The Mac's three kernels in one run, interleaved. The guest's free memory moved -0.5 to
+    0.2 MiB at every length on every kernel (M300's heads).
+  - Templates, by firsts.sh, n 5: 77.5, 85.1, 93.0 and 117.2 MiB on Fedora (pinned and 0011
+    alike), 74.6, 85.2, 92.7 and 116.2 on the Mac with 0011, and 74.3, 80.9, 80.8 and 80.2
+    with 0013. A 64 GiB window's heads, 42 MiB for the two windows on Fedora (0011 and
+    pinned alike): a 2 MiB index and ten 2 MiB blocks a window, nine of them the
+    structures of the head's own pages, each different from every other, and one the
+    window's first page's; the pinned kernel's 512 blocks of a window's own pages'
+    structures alike, kept once (M277).
+  - First runs (n 5, p50 [min, max] ms) at 64 GiB: Fedora pinned 5,766 [4,702, 14,364],
+    0011 with A 714 [671, 741] and with B 662 [499, 702], where 579 to 628 with no window;
+    the Mac pinned 2,696 [2,165, 3,725], 0011 1,043 [853, 2,501], 0013 887 [707, 1,455].
+  - Restored runs (n 10 paced, 10 back to back; the client's wall time, p50): Fedora 20.5
+    to 35.0 ms at every length on the pinned kernel and 0011; the Mac 8.0 to 17.0 on the
+    pinned kernel, 0011 and 0013. Their VM processes 47.4 to 50.3 MiB on Fedora and 30.4 to
+    36.8 on the Mac, 0.5 to 3 MiB more at 64 GiB.
+  - A run's setup and whole run in its microVM, n 40, p50 (ms): Fedora 0011, no window, 16
+    and 64 GiB: setup 3.84, 5.00, 5.97, run 5.66, 7.88, 9.61; again, interleaved with 0013:
+    0011 at 64 GiB 5.66 and 8.42, 0013 at 64 GiB 2.69 and 4.25, 0013 with none 2.84 and
+    4.44. The Mac, 0011: setup 1.84, 1.93, 2.84, run 5.50, 4.33, 10.11 (load 7 to 14); a
+    later run of 0013 at load 9 to 32 had p99s of 0.8 to 2.6 s and is not read here.
+  - 1 MiB writes into ranges not yet mapped (5 rounds of 500, 4 GiB window, Fedora): 0011
+    against the pinned kernel, warm 689 µs at p50 [666, 762] against 681 [667, 756], cold
+    1,365 [1,024, 1,469] against 1,180 [1,024, 1,335].
+  - A 64 GiB window's head saved (n 6 a side): read whole, 553 to 832 ms on the Mac and 18
+    to 19 ms on Fedora (90 the first time), all of its 1,152 MiB touched after; skipped,
+    2.9 to 13.2 ms and 1.0 to 1.5 ms, the 2 MiB block written alone touched.
+  - Guest memory at a mount (containers.rs, the Mac): 768 kmalloc-128 objects in use with no
+    window and 33,440 with a 64 GiB one on 0011 (33,504 on the pinned kernel), fewer than
+    16,384 more with 0013.
+- **Reading.** What a window's length cost was what its guest's kernel made of the window
+  at once, whatever it went on to use. Its page structures, a 64th of it, were written into
+  its head as the guest probed the device: on Fedora 1,044 MiB of the VM process, 223,788
+  more minor faults and 1.4 s of its boot for 64 GiB, and a first run took 5.8 s where
+  one with no window took 0.6. 0011 makes a range's as FUSE first sets the range up. What
+  was left grew with the length still: the structures of the head's own pages, a 4,096th
+  of the window, each its own (each lists itself), made as its range moved to ZONE_DEVICE
+  and kept by every template (18 MiB for 64 GiB, of the 20 the boot still took), which
+  0012 leaves unmade; and FUSE DAX's 128-byte mapping of each 2 MiB range, 32,768 of them
+  for 64 GiB, made at every mount and freed at every unmount, which 0013 makes as each
+  range is first wanted. With 0011 alone a run's setup in its microVM took 3.0 ms longer
+  at 64 GiB than with all three, and its whole run 4.2 ms longer (Fedora). With the three,
+  a 64 GiB window costs a boot 2.1 MiB on the Mac and 2.8 on Fedora, a template what a 4
+  GiB one does, and a run with a volume what one without a window does. A range's first
+  mapping makes its 512 page structures (32 KiB): 1 MiB writes into fresh ranges did not
+  show it past their rounds' spread. A head's save that read its untouched blocks gave each
+  of their pages memory on macOS (1,152 MiB of a 64 GiB window's head, 0.55 to 0.83 s) and
+  mapped the zero page on Linux (18 ms); skipping them it reads what its guest wrote. The
+  first runs' A and B did not show this apart from their order: with no window A took
+  1,693 ms at p50 on the Mac and B 850.
+- **Consequence.** D189: the pinned kernel carries 0011 to 0013
+  (kernel-6.18.48-e39058b2b627), and a head's save reads only what its guest touched
+  (`Head::untouched`). A window's length costs what its guest maps of it, so its default
+  can follow what it serves, the host's page cache. Held by
+  `a_long_dax_window_costs_its_boot_next_to_nothing` and
+  `a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range`.

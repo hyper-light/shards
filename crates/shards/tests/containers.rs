@@ -1967,6 +1967,60 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
 }
 
+/// A volume's DAX window costs its guest the ranges it maps, not every range it could: its
+/// guest's FUSE makes a range's mapping (128 bytes, kmalloc-128) as it first wants the
+/// range, not one for each 2 MiB of the window as the volume is mounted (D189, shards'
+/// kernel patch 0013, PM M306). A microVM whose volume has a 64 GiB window holds, once its
+/// command runs, fewer than half the 32,768 such a mount made more of them than one whose
+/// volume has none.
+#[test]
+fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (kernel, init) = (kernel(), guest_init());
+    let dir = TempDir::new("containers-daxlong-v");
+    let volume = format!("{}:/v", dir.display());
+    let in_use = |window: &str| -> u64 {
+        let home = TempDir::new("containers-daxlong");
+        let env: [(&str, &OsStr); 4] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+            ("SHARDS_SHARE_WINDOW_MIB", window.as_ref()),
+        ];
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let pulled = shards(&["pull", "-q", &image]);
+        assert_eq!(pulled.status, Some(0), "{pulled}");
+        let r = shards(&[
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "-u",
+            "0",
+            "-v",
+            &volume,
+            &image,
+            "slab",
+            "kmalloc-128",
+        ]);
+        assert_eq!(r.status, Some(0), "{r}");
+        let _ = shards(&["stop", "daemon"]);
+        r.stdout
+            .strip_prefix("slab kmalloc-128 ")
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no kmalloc-128 said: {r}"))
+    };
+    let none = in_use("0");
+    let long = in_use("65536");
+    assert!(
+        long.saturating_sub(none) < 32_768 / 2,
+        "kmalloc-128: {none} objects in use with no window, {long} with a 64 GiB one"
+    );
+}
+
 /// A microVM's devices reach the pages of the files its guest maps, device memory, as they
 /// reach its RAM (D189): a write from a mapping of its image's root (pmem) or of a file a
 /// volume's DAX window maps, appended to a file the window maps, which its guest's kernel
