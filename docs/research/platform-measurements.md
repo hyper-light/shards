@@ -12300,6 +12300,10 @@ revision before comparing a changed API/implementation.
   - Guest memory at a mount (containers.rs, the Mac): 768 kmalloc-128 objects in use with no
     window and 33,440 with a 64 GiB one on 0011 (33,504 on the pinned kernel), fewer than
     16,384 more with 0013.
+  - The boot test on an x86_64 CI runner (GitHub's ubuntu-24.04, the least of three boots):
+    a 64 GiB window's boot took 8,392 KiB more of its VM process with all three patches,
+    where Fedora's took 2.8 MiB. 2 MiB of each was the held record a device's reset wrote
+    whole (M307); why that runner takes 5.6 MiB more than Fedora is not known yet.
 - **Reading.** What a window's length cost was what its guest's kernel made of the window
   at once, whatever it went on to use. Its page structures, a 64th of it, were written into
   its head as the guest probed the device: on Fedora 1,044 MiB of the VM process, 223,788
@@ -12326,3 +12330,63 @@ revision before comparing a changed API/implementation.
   can follow what it serves, the host's page cache. Held by
   `a_long_dax_window_costs_its_boot_next_to_nothing` and
   `a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range`.
+
+### M307. What every share's window as long as its host's memory costs, and APFS's holes (D189)
+
+- **Question.** With patches 0011 to 0013 (M306) a window's length costs what its guest
+  maps of it: what then does a default of the host's memory cost every microVM, the join
+  share's window in each of them, on the Mac; and where the guest's addresses cannot hold
+  every window that long, does a fitted length run?
+- **Method.** `dax-window/` again, the `default` arm leaving `SHARDS_SHARE_WINDOW_MIB`
+  unset (the daemon's default) against 0: `costs.sh` (boots with a window of the host's
+  128 GiB), `firsts.sh` (n 5: each home's two templates, its first run without a volume
+  and its first with one), `restores.sh` (n 10 a side) and `mounts.sh` (n 40), and `vmmap
+  -summary` of a detached run's VM process. A run with eight volumes on the Mac and on
+  Fedora, `SHARDS_LOG=info`. APFS's handling of holes: files written past their ends and
+  extended, synced, by `os.fstat`'s blocks (`/tmp` on the Mac; ext4 in Docker Desktop's
+  VM). The Mac as M306's, load 10 to 15 (a second pass beside a Docker VM at 1,205% CPU);
+  Fedora as M306's. The pinned kernel (kernel-6.18.48-e39058b2b627), gpu 26fa2261 with the
+  default. 2026-10-22.
+- **Results.**
+  - Boots (n 8): 67.4 MiB of the VM process at p50 with no window, 71.6 with one of 128
+    GiB; PID 1 at 0.06 s both. Where it went, on Fedora (smaps of the VM process, the test
+    guest idling, a 64 GiB window): its held record, 2 MiB, every page of it resident and
+    every byte zero, with a kernel that never maps it (no 0009) too; the device's reset,
+    which the guest's driver makes as it probes, unmapped the whole window and cleared the
+    whole record (`Window::clear`). Clearing the record of the ranges it unmaps alone: 67.4,
+    67.5 and 67.6 MiB at no window, 64 and 128 GiB on the Mac, PID 1 0.05 to 0.06 s; 60.0
+    and 60.3 at none and 64 GiB on Fedora (n 8 each).
+  - Templates, first: with no volume 75.5 to 76.9 MB with none and 79.8 to 81.1 with the
+    default; with a volume 76.2 to 77.1 and 82.2 to 84.1. A window's heads file 4 MiB on
+    disk, three of its pages not zeros.
+  - APFS: a file of 8 KiB written across 4 MiB (its holes from writes past its end and an
+    extension) took 8 KiB before fsync and 4,096 KiB after; across 32 MiB, 32,768 after;
+    across 128 MiB, 32 KiB; one only extended, nothing. ext4 kept 8 KiB after fsync at 4
+    and 32 MiB. Holes punched (F_PUNCHHOLE, 4 KiB aligned), before the sync or after, kept
+    (8 to 32 KiB).
+  - Templates, heads' holes punched: a window's heads file 12 KiB (one window) and 20 KiB
+    (two), the writable layer's head 6,664 KiB where 12,288; templates 70.0 to 72.0 MB with
+    no window and 70.3 to 72.2 with the default.
+  - Restored runs (load 10 to 15): 9.0 ms at p50 paced and 8.0 back to back with the
+    default, 8.0 and 8.0 with none (the client's wall time). The second pass's restores
+    too noisy to read (p90 to 2.4 s); its restored VMs' physical footprint 19.2 MiB with
+    the default and 19.5 with none, their address space 384 GiB and 128 GiB.
+  - A run's setup in its microVM (n 40): 1.44 ms at p50 with the default, 1.75 with none;
+    its whole run 3.71 and 3.48.
+  - Eight volumes: nine windows of 83,538 MiB each where 131,072 were asked on the Mac
+    (40-bit addresses), and of 41,202 where 64,018 on Fedora (39 bits); each run mounted
+    its eight volumes and read through them. Its template's map-back of the heads: 6,473 µs
+    on the Mac with a call for each zero block, 5,392 with one for each run of them; 187
+    µs on Fedora.
+- **Reading.** The default costs a template's boot 0.2 MiB for a window of 128 GiB, once a
+  reset clears the record of what its window mapped alone (4.2 MiB before, the record
+  whole), and nothing measured in a template, a restored VM or a run's start, once a head's
+  copy keeps its holes: APFS zero-fills the holes a small file's writes leave as it is synced (32 MiB
+  and less here, not 128), which ext4 does not, so a head's copy punches them, and the
+  writable layer's head, in every template, takes half of what it did. Where the guest's
+  addresses fall short, every window fitted to what they leave runs. What is left of the
+  map-back on the Mac, 5.4 ms where Fedora's took 0.19, was not split here.
+- **Consequence.** D189: every share's window is as long as its host's memory by default,
+  fitted to its guest's addresses where they fall short; a head's copy punches its holes
+  (`platform::punch_hole`); a map-back gives back each run of zero blocks at once; a
+  window's unmap clears the record of the ranges it unmaps alone.

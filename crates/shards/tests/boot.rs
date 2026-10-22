@@ -119,10 +119,13 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
 
 /// A DAX window costs its boot what its guest maps of it (D189, shards' kernel patches
 /// 0011 and 0012, PM M306): its page structures are made as each range is first mapped,
-/// and its head's own pages' never, so a 64 GiB window takes its VM process less than an
-/// 8,192th of the window (8 MiB) more memory than none, where its page structures took a
-/// 64th of it (1,044 MiB on the Mac and on Fedora) and its head's own pages' a 4,096th
-/// (20 MiB); each the least of three boots' peaks.
+/// and its head's own pages' never, so a 64 GiB window takes its VM process less than a
+/// 4,096th of the window (16 MiB), what its head's own pages' structures alone would,
+/// more memory than none: where its page structures took a 64th of it (1,044 MiB on the
+/// Mac and on Fedora), and with them made but its head's own pages' 20 MiB; with neither,
+/// 0.1 MiB on the Mac and 0.3 on Fedora (2.1, 2.8 and 8.2 on an x86_64 CI runner while
+/// a device's reset wrote its window's whole held record, PM M307). Each the least of
+/// three boots' peaks.
 // Shared directories, and so DAX windows, are Unix hosts' alone.
 #[cfg(unix)]
 #[test]
@@ -161,7 +164,7 @@ fn a_long_dax_window_costs_its_boot_next_to_nothing() {
     };
     let none = least_peak("0");
     let long = least_peak("65536");
-    let bound = ((64u128 << 30) / 8192) >> 10;
+    let bound = ((64u128 << 30) / 4096) >> 10;
     let more = long.saturating_sub(none);
     assert!(
         more < bound,

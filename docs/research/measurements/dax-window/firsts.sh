@@ -1,11 +1,12 @@
 #!/bin/sh
 # What a DAX window's length costs an image's first run with a volume, which boots its
-# template and saves it (D189, PM M306): for each LENGTH MiB (0 none), ROUNDS fresh homes
-# under WORK, each given SEED's image store (a clone where the file system makes one, so
-# that no run pulls), a first run without a volume (which fetches the pinned kernel and
-# boots a template of its own), then the timed run with a volume of DIR and the daemon
-# giving it a window of LENGTH (SHARDS_SHARE_WINDOW_MIB). Lengths interleaved, round by
-# round. With KERNEL and INIT set, each home boots them instead (`shards configure guest`,
+# template and saves it (D189, PM M306): for each LENGTH MiB (0 none, `default` the
+# daemon's own, as long as the host's memory), ROUNDS fresh homes under WORK, each given
+# SEED's image store (a clone where the file system makes one, so that no run pulls), the
+# daemon giving each share a window of LENGTH (SHARDS_SHARE_WINDOW_MIB): a first run
+# without a volume (which fetches the pinned kernel and boots a template of its own, its
+# join share's window alone), then the timed run with a volume of DIR. Lengths
+# interleaved, round by round. With KERNEL and INIT set, each home boots them instead (`shards configure guest`,
 # D28), templates and all. One line a run: LENGTH ROUND MS TEMPLATE_KIB.
 # Usage: [KERNEL=… INIT=…] firsts.sh SHARDS SEED WORK IMAGE DIR ROUNDS LENGTH_MIB...
 #   (SEED holds IMAGE)
@@ -27,11 +28,10 @@ for round in $(seq "$rounds"); do
         mkdir -p "$home"
         cp -cR "$seed/images" "$home/images" 2>/dev/null || cp -a --reflink=auto "$seed/images" "$home/images"
         export SHARDS_HOME="$home"
-        unset SHARDS_SHARE_WINDOW_MIB
+        if [ "$len" = default ]; then unset SHARDS_SHARE_WINDOW_MIB; else export SHARDS_SHARE_WINDOW_MIB=$len; fi
         if [ -n "${KERNEL:-}" ]; then "$shards" configure guest --kernel "$KERNEL" --init "$INIT" >/dev/null; fi
         "$shards" run --rm --pull never "$image" true >/dev/null
         "$shards" stop daemon >/dev/null 2>&1 || true
-        if [ "$len" -gt 0 ]; then export SHARDS_SHARE_WINDOW_MIB=$len; fi
         ls "$home/templates" | sort >"$cfg/before"
         ms=$(timed "$shards" run --rm --pull never -v "$dir:/v" "$image" true)
         ls "$home/templates" | sort >"$cfg/after"

@@ -1,7 +1,8 @@
 #!/bin/sh
 # What a DAX window costs a run restored from its template, by its length (D189, PM M306):
 # with the daemon giving each volume a window of LENGTH MiB (SHARDS_SHARE_WINDOW_MIB, 0
-# none), the image's first run with a volume, which boots its template and saves it,
+# none, `default` the daemon's own, as long as the host's memory), the image's first run
+# with a volume, which boots its template and saves it,
 # timed; the template's size on disk; ROUNDS runs after, each restored from it, timed; and
 # a detached run's VM process's resident memory, beside its pool's warm VMs'. HOME holds
 # IMAGE already. With KERNEL and INIT set, HOME boots them (`shards configure guest`, D28).
@@ -24,7 +25,7 @@ sys.exit(r.returncode) if r.returncode else print(round((time.monotonic() - t) *
 }
 for len in "$@"; do
     "$shards" stop daemon >/dev/null 2>&1 || true
-    if [ "$len" -gt 0 ]; then export SHARDS_SHARE_WINDOW_MIB=$len; else unset SHARDS_SHARE_WINDOW_MIB; fi
+    if [ "$len" = default ]; then unset SHARDS_SHARE_WINDOW_MIB; else export SHARDS_SHARE_WINDOW_MIB=$len; fi
     ls "$home/templates" 2>/dev/null | sort >"$cfg/before"
     echo "$len first $(timed "$shards" run --rm --pull never -v "$dir:/v" "$image" true)"
     ls "$home/templates" 2>/dev/null | sort >"$cfg/after"

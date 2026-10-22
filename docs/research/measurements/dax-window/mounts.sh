@@ -1,7 +1,8 @@
 #!/bin/sh
 # What a DAX window's length costs a run's start, its volume's mount among it (D189, PM
 # M306): one home an arm, NAME:LENGTH:HOME[:KERNEL], its daemon giving each volume a window
-# of LENGTH MiB (SHARDS_SHARE_WINDOW_MIB, 0 none) and serving its runs from its template,
+# of LENGTH MiB (SHARDS_SHARE_WINDOW_MIB, 0 none, `default` the daemon's own, as long as the
+# host's memory) and serving its runs from its template,
 # and booting KERNEL with INIT where it names one (`shards configure guest`, D28); ROUNDS
 # rounds, a run of each arm in turn, a second apart, each with a volume of DIR and
 # SHARDS_TIMING's line, whose guest markers time the run's setup in its microVM (its request
@@ -22,7 +23,11 @@ ARM
     SHARDS_HOME=$home "$shards" stop daemon >/dev/null 2>&1 || true
     if [ -n "$kernel" ]; then SHARDS_HOME=$home "$shards" configure guest --kernel "$kernel" --init "$INIT" >/dev/null; fi
     # Its daemon started at its length, and its template made, by a first run.
-    SHARDS_HOME=$home SHARDS_SHARE_WINDOW_MIB=$len "$shards" run --rm --pull never -v "$dir:/v" "$image" true >/dev/null
+    if [ "$len" = default ]; then
+        SHARDS_HOME=$home "$shards" run --rm --pull never -v "$dir:/v" "$image" true >/dev/null
+    else
+        SHARDS_HOME=$home SHARDS_SHARE_WINDOW_MIB=$len "$shards" run --rm --pull never -v "$dir:/v" "$image" true >/dev/null
+    fi
 done
 for round in $(seq "$rounds"); do
     for arm in "$@"; do

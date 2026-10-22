@@ -385,6 +385,8 @@ struct Assembled {
     pmem: Vec<(u64, u64)>,
     /// The GPU's window's length, where it has a GPU.
     gpu_window: Option<u64>,
+    /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
+    share_window_mib: u64,
     /// Its PCI host bridge, where it has a PCI bus (D153).
     pci: Option<boot::PciBridge>,
 }
@@ -478,7 +480,8 @@ fn assemble(
     // each share's DAX window past it (D189).
     let reach = ipa_reach()?;
     let (swap_at, top) = super::swap_layout(config, top, reach)?;
-    let (windows, top) = super::share_windows(config, top, reach)?;
+    let (windows, top, share_window_mib) =
+        super::share_windows(config, top, reach, hosts.window_heads.is_some())?;
     let window_heads = super::window_heads(&windows, hosts.window_heads)?;
     let pmem: Vec<(u64, u64)> = regions
         .iter()
@@ -722,6 +725,7 @@ fn assemble(
         mpidrs,
         pmem,
         gpu_window,
+        share_window_mib,
         pci,
     })
 }
@@ -791,6 +795,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     debug!("kernel and initrd copied");
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;
+    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
+    config.share_window_mib = a.share_window_mib;
     let mut rng_seed = [0u8; 64];
     platform::fill_random(&mut rng_seed).map_err(|e| format!("host entropy: {e}"))?;
     let fdt = boot::build_fdt(&boot::Machine {

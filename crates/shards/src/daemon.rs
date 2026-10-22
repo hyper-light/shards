@@ -99,8 +99,8 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
   SHARDS_MAX_CLIENTS: the most clients served at once (default: as many as the threads
     the daemon may have hold).
   SHARDS_SHARE_WINDOW_MIB: a DAX window of this many MiB, whole 2 MiB ranges, for each
-    volume of a microVM (default 0, none): its large files read and written from the
-    host's page cache, never copied into the guest's.";
+    volume of a microVM (default: as long as the host's memory; 0, none): its large files
+    read and written from the host's page cache, never copied into the guest's.";
 
 /// How long a VM may take to be ready: a restore takes milliseconds, a boot that saves a
 /// template tens of them.
@@ -1200,7 +1200,11 @@ fn settings() -> Result<Settings, String> {
     } else {
         None
     };
-    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", 0)?;
+    // Each share's window as long as the host's memory, the most of its files the host's
+    // page cache holds at once, as a run's swap window is (D159); its guest makes what it
+    // maps of it as it maps it (PM M306), and its VM fits it to its guest's addresses.
+    let host_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
+    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", host_mib)?;
     if !share_window_mib.is_multiple_of(2) {
         return Err(format!(
             "SHARDS_SHARE_WINDOW_MIB: {share_window_mib} MiB: a DAX window is whole 2 MiB ranges"

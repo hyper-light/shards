@@ -1114,6 +1114,30 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
     file.sync_data()
 }
 
+/// Gives back the file system's blocks under `len` bytes of `file` from `offset`, whole 4
+/// KiB pages, which read as zeros after (fcntl(2) F_PUNCHHOLE): APFS fills the holes a
+/// small file's writes skip as the file is synced (PM M307: a 4 MiB file of 8 KiB written,
+/// 4 MiB after fsync), where Linux's file systems keep them (ext4: 8 KiB after), so
+/// elsewhere it does nothing.
+pub fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if len > 0 {
+        let hole = libc::fpunchhole_t {
+            fp_flags: 0,
+            reserved: 0,
+            fp_offset: file_offset(offset)?,
+            fp_length: file_offset(len)?,
+        };
+        // SAFETY: fcntl(2) F_PUNCHHOLE on an owned, open descriptor, reading the structure.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PUNCHHOLE, &raw const hole) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (file, offset, len);
+    Ok(())
+}
+
 /// The names in the directory `dir` holds open, but for `.` and `..`, wherever it has gone
 /// (fdopendir(3), readdir(3)).
 pub fn names_in(dir: &File) -> io::Result<Vec<std::ffi::OsString>> {

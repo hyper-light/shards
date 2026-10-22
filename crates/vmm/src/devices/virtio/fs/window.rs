@@ -125,6 +125,17 @@ struct Node {
 }
 
 impl Table {
+    /// The mappings that meet `len` bytes at window offset `moffset`, `(window offset,
+    /// length)` each, whole.
+    fn meeting(&self, moffset: u64, len: u64) -> Vec<(u64, u64)> {
+        let end = moffset.saturating_add(len);
+        self.ranges
+            .range(..end)
+            .filter(|(at, e)| at.saturating_add(e.mapped.len) > moffset)
+            .map(|(at, e)| (*at, e.mapped.len))
+            .collect()
+    }
+
     /// Maps `entry` at window offset `moffset`, in place of what was there, from `file`, a
     /// descriptor of its node's file, opened to write too where `.1`, which its node keeps
     /// where it has none, or one opened to read alone where this was opened to write.
@@ -652,9 +663,16 @@ impl Window {
     pub fn unmap(&self, moffset: u64, len: u64) -> Result<(), i32> {
         let (host, size) = self.place(moffset, len).ok_or(libc::EINVAL)?;
         let mut mapped = self.lock();
+        // The record of the ranges it maps there alone: no other's has a bit set, each
+        // cleared as its range goes or maps zeros, and clearing all of it, as a device's
+        // reset unmaps the whole window, wrote every page of it: 2 MiB of the VM process's
+        // memory for a 64 GiB window at every boot (PM M307).
+        let recorded = mapped.meeting(moffset, len);
         let gone = self.forget(&mut mapped, moffset, len);
         let reserved = reserve(host, size);
-        self.clear_held(moffset, size);
+        for (at, n) in recorded {
+            self.clear_held(at, usize::try_from(n).unwrap_or(usize::MAX));
+        }
         self.settle(mapped, gone, None);
         reserved.map(|_| ()).map_err(errno)
     }
@@ -664,13 +682,7 @@ impl Window {
     /// it reachable (Linux maps whole 2 MiB ranges, which never overlap; a guest of another
     /// kind may). The nodes of those forgotten.
     fn forget(&self, mapped: &mut Table, moffset: u64, len: u64) -> Vec<u64> {
-        let end = moffset.saturating_add(len);
-        let meeting: Vec<(u64, u64)> = mapped
-            .ranges
-            .range(..end)
-            .filter(|(at, e)| at.saturating_add(e.mapped.len) > moffset)
-            .map(|(at, e)| (*at, e.mapped.len))
-            .collect();
+        let meeting = mapped.meeting(moffset, len);
         let mut gone = Vec::with_capacity(meeting.len());
         for (at, len) in meeting {
             let gpa = self.gpa.saturating_add(at);
@@ -1059,6 +1071,46 @@ mod tests {
         assert!((0..8).all(|i| word(i) == 0));
         w.rerecord(7, 0, 4096);
         assert!((0..8).all(|i| word(i) == 0));
+    }
+
+    /// A window cleared, as its device's reset clears it, clears the record of the ranges
+    /// it mapped alone: the rest of the record, whose bits no range has set, is left
+    /// untouched, where clearing it whole wrote every page of it at every boot (D189, PM
+    /// M307).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_cleared_window_leaves_the_record_of_ranges_it_never_mapped_untouched() {
+        let dir = shards_testdir::TempDir::new("dax-clear").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dir.join("file"))
+            .unwrap();
+        file.set_len(2 * MIB).unwrap();
+        // 64 GiB: a record of 2 MiB, many host pages of it.
+        let told = Arc::new(Told::default());
+        let stage2 = Recorded(told.clone());
+        let w = Window::new(GPA, 64 << 30, |_| Ok(Box::new(stage2) as Box<dyn Stage2>)).unwrap();
+        w.map(OwnedFd::from(file.try_clone().unwrap()), 7, 0, 0, 2 * MIB, true)
+            .unwrap();
+        w.clear();
+        let (host, len) = w.held();
+        // SAFETY: the window's record, for as long as `w` is, read as the window writes it.
+        let words = unsafe { std::slice::from_raw_parts(host.cast::<AtomicU64>(), len / 8) };
+        assert!((0..8).all(|i| words[i].load(Ordering::Acquire) == 0));
+        let page = crate::platform::page_size().unwrap();
+        // SAFETY: the record, which `w` holds, whole host pages.
+        let untouched = unsafe { crate::platform::untouched(host.cast_const(), len, page) }
+            .unwrap()
+            .unwrap();
+        assert!(
+            untouched.iter().skip(1).all(|u| *u),
+            "{} of its {} pages touched",
+            untouched.iter().filter(|u| !**u).count(),
+            untouched.len()
+        );
     }
 
     /// The window keeps one descriptor of a file, not one for each of its ranges: the

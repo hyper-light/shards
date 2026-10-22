@@ -204,7 +204,31 @@ impl Head {
         let index = read_head_index(kept, blocks)?;
         // On the host's base pages, as a restore's head is ([`restore`](Self::restore)).
         platform::small_pages(self.host, self.len);
+        // Whether to go on: where no file maps over part of a reservation (Windows), the
+        // head stays its own memory.
+        let on = |done: std::io::Result<()>| match done {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Ok(false),
+            Err(e) => Err(e.to_string()),
+        };
+        // Blocks `from..to` of its own memory that hold zeros, given back in one call, not
+        // one a block: all but a few of a long window's head.
+        let discard = |from: usize, to: usize| {
+            // SAFETY: whole blocks of the head, which nothing touches meanwhile (the
+            // caller's contract).
+            unsafe { platform::discard(self.host.add(from * HEAD_BLOCK), (to - from) * HEAD_BLOCK) }
+        };
+        let mut zeros = None;
         for ((i, kept_at), filed) in index.iter().enumerate().zip(self.filed.iter()) {
+            if kept_at.is_none() && !filed.load(Ordering::Acquire) {
+                zeros.get_or_insert(i);
+                continue;
+            }
+            if let Some(from) = zeros.take()
+                && !on(discard(from, i))?
+            {
+                return Ok(());
+            }
             // SAFETY: a whole block of the head, which nothing touches meanwhile (the
             // caller's contract), and which held what the copy keeps of it.
             let block = unsafe { self.host.add(i * HEAD_BLOCK) };
@@ -212,12 +236,10 @@ impl Head {
                 // Zeros where its guest wrote them over a copy's block: fresh memory, as a
                 // discard would bring the copy's bytes back (madvise(2), MADV_DONTNEED of
                 // a private file mapping).
-                None if filed.load(Ordering::Acquire) => {
+                None => {
                     // SAFETY: as above.
                     unsafe { fresh(block, HEAD_BLOCK) }.map(|()| filed.store(false, Ordering::Release))
                 }
-                // SAFETY: as above.
-                None => unsafe { platform::discard(block, HEAD_BLOCK) },
                 Some(n) => {
                     let offset = kept_block_at(*n, blocks)?;
                     // Counted the copy's before it may be: a save reads such a block whole.
@@ -226,11 +248,12 @@ impl Head {
                     unsafe { platform::map_file_private(kept, offset, HEAD_BLOCK, block) }
                 }
             };
-            match remapped {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => return Ok(()),
-                Err(e) => return Err(e.to_string()),
+            if !on(remapped)? {
+                return Ok(());
             }
+        }
+        if let Some(from) = zeros {
+            on(discard(from, blocks))?;
         }
         Ok(())
     }
@@ -376,6 +399,9 @@ const HEAD_MAGIC: [u8; 8] = *b"SHRDHEAD";
 /// The most blocks a kept head's index compares each block with before it keeps it as one
 /// more: a head's alike blocks are a few kinds.
 const HEAD_KINDS: usize = 64;
+/// What a kept block writes of itself, or leaves a hole: the pages of the file systems a
+/// snapshot lies on, 4 KiB (APFS, ext4, Btrfs, tmpfs on 4 KiB pages).
+const KEPT_PAGE: usize = 4096;
 
 /// The bytes of a kept head's index for `blocks` blocks: its magic, its count, and a 32-bit
 /// number for each, whole blocks of it, so that what follows lies at block boundaries.
@@ -395,8 +421,9 @@ pub(crate) fn kept_block_at(n: u32, blocks: usize) -> Result<u64, String> {
 
 /// Writes the `len` bytes of a head at `host`, whole [`HEAD_BLOCK`]s, into `file`: an index
 /// of its blocks, each a number among those kept after it, or `u32::MAX` for all zeros;
-/// then each kept block once, in the order first met. Blocks `untouched` marks hold zeros,
-/// and are not read.
+/// then each kept block once, in the order first met, its pages of zeros left holes, which
+/// read as zeros: a block its guest wrote one page structure of keeps a page of the file,
+/// not 2 MiB (PM M306). Blocks `untouched` marks hold zeros, and are not read.
 pub(crate) fn save_head(
     file: &File,
     host: NonNull<u8>,
@@ -443,20 +470,51 @@ pub(crate) fn save_head(
     }
     file.set_len(0)?;
     platform::write_all_at(file, &header, 0)?;
+    // What it leaves zeros, the index's block past its pages and the kept blocks' pages of
+    // zeros, given back once the file has its length (`platform::punch_hole`).
+    let index_end = (header.len() as u64).next_multiple_of(KEPT_PAGE as u64);
+    let mut holes = vec![(index_end, first.saturating_sub(index_end))];
     for (n, &i) in kept.iter().enumerate() {
         let at = first + (n * HEAD_BLOCK) as u64;
-        let mut done = 0;
-        while done < HEAD_BLOCK {
-            // SAFETY: the rest of block `i` of the head, which the kernel only reads.
-            let wrote =
-                unsafe { platform::write_at(file, block(i).add(done), HEAD_BLOCK - done, at + done as u64) }?;
-            if wrote == 0 {
-                return Err(std::io::ErrorKind::WriteZero.into());
+        // SAFETY: a whole page of block `i`, which the paused machine leaves alone.
+        let zeros = |page: usize| unsafe { words_zero(block(i).wrapping_add(page), KEPT_PAGE) };
+        let mut page = 0;
+        while page < HEAD_BLOCK {
+            if zeros(page) {
+                let hole = page;
+                while page < HEAD_BLOCK && zeros(page) {
+                    page += KEPT_PAGE;
+                }
+                holes.push((at + hole as u64, (page - hole) as u64));
+                continue;
             }
-            done += wrote;
+            // A run of pages that hold anything, written at once.
+            let run = page;
+            while page < HEAD_BLOCK && !zeros(page) {
+                page += KEPT_PAGE;
+            }
+            let mut done = run;
+            while done < page {
+                // SAFETY: the rest of the run, in block `i` of the head, which the kernel
+                // only reads.
+                let wrote =
+                    unsafe { platform::write_at(file, block(i).add(done), page - done, at + done as u64) }?;
+                if wrote == 0 {
+                    return Err(std::io::ErrorKind::WriteZero.into());
+                }
+                done += wrote;
+            }
         }
     }
-    file.set_len(first + (kept.len() * HEAD_BLOCK) as u64)
+    file.set_len(first + (kept.len() * HEAD_BLOCK) as u64)?;
+    for (at, len) in holes {
+        // Disk alone: the bytes read back the same either way.
+        if let Err(e) = platform::punch_hole(file, at, len) {
+            crate::debug!("a head's copy keeps its blocks of zeros: {e}");
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// The index of a head [`save_head`] kept in `file`, of `blocks` blocks: each block's
@@ -703,6 +761,74 @@ mod tests {
             assert_eq!(heads.lost(), !maps);
             // SAFETY: as above.
             assert_eq!(unsafe { *host.add(2 * each - 1) }, 0x40);
+        }
+    }
+
+    /// A head mapped back gives back the pages of its blocks of zeros, a run of them in one
+    /// call, those before a kept block and those after the last (D189).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_head_mapped_back_gives_back_its_blocks_of_zeros() {
+        let dir = shards_testdir::TempDir::new("head-zeros").unwrap();
+        let len = 5 * HEAD_BLOCK;
+        let head = Head::new(len).unwrap();
+        let host = head.host().as_ptr();
+        // SAFETY: within the head, which `head` holds.
+        unsafe {
+            for i in [1, 3, 4] {
+                host.add(i * HEAD_BLOCK).write_bytes(0, HEAD_BLOCK);
+            }
+            host.add(2 * HEAD_BLOCK).write_bytes(0x40, 64);
+        }
+        let kept = file(&dir, "head");
+        head.save(&kept).unwrap();
+        assert_eq!(
+            read_head_index(&kept, 5).unwrap(),
+            [None, None, Some(0), None, None]
+        );
+        // SAFETY: nothing else touches the head, which no hypervisor maps.
+        unsafe { head.map_back(&kept) }.unwrap();
+        let page = platform::page_size().unwrap();
+        // SAFETY: the whole head, which `head` holds.
+        let untouched = unsafe { platform::untouched(host, len, page) }.unwrap().unwrap();
+        for (i, pages) in untouched.chunks(HEAD_BLOCK / page).enumerate() {
+            if i != 2 {
+                assert!(pages.iter().all(|u| *u), "block {i} still held");
+            }
+        }
+        // SAFETY: within the head, which `head` holds.
+        assert_eq!(unsafe { *host.add(2 * HEAD_BLOCK) }, 0x40);
+    }
+
+    /// A kept block's pages of zeros are holes in its copy, made durable as a snapshot's
+    /// commit makes it (APFS fills a small file's holes as it is synced, PM M307): a block its
+    /// guest wrote 64 bytes of takes a page of the file, not the block's 2 MiB, and reads
+    /// back whole (D189).
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_blocks_pages_of_zeros_are_holes_in_its_copy() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = shards_testdir::TempDir::new("head-holes").unwrap();
+        let (blocks, len) = (2, 2 * HEAD_BLOCK);
+        let head = Head::new(len).unwrap();
+        // SAFETY: within the head, which `head` holds.
+        unsafe { head.host().as_ptr().add(HEAD_BLOCK + 8192).write_bytes(0x40, 64) };
+        let kept = file(&dir, "head");
+        head.save(&kept).unwrap();
+        platform::sync_durable(&kept).unwrap();
+        assert_eq!(read_head_index(&kept, blocks).unwrap(), [None, Some(0)]);
+        let used = kept.metadata().unwrap().blocks() * 512;
+        assert!(used < (HEAD_BLOCK / 8) as u64, "{used} bytes of the file used");
+        let restored = Head::restore(kept, len).unwrap();
+        // SAFETY: within both heads, which their values hold.
+        unsafe {
+            for i in 0..blocks {
+                let (a, b) = (
+                    head.host().as_ptr().add(i * HEAD_BLOCK),
+                    restored.host().as_ptr().add(i * HEAD_BLOCK),
+                );
+                assert!(words_equal(a, b, HEAD_BLOCK), "block {i}");
+            }
         }
     }
 

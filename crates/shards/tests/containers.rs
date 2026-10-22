@@ -1967,6 +1967,49 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
 }
 
+/// A volume's large files go through a DAX window by default, one as long as its host's
+/// memory (D189, PM M306), and through FUSE where `SHARDS_SHARE_WINDOW_MIB` is 0.
+#[test]
+fn a_volumes_large_files_go_through_a_dax_window_by_default() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (kernel, init) = (kernel(), guest_init());
+    let dir = TempDir::new("containers-daxdef-v");
+    std::fs::write(dir.join("big"), vec![7u8; 4 << 20]).unwrap();
+    let volume = format!("{}:/v", dir.display());
+    for (window, dax) in [(None, "yes"), (Some("0"), "no")] {
+        let home = TempDir::new("containers-daxdef");
+        let mut env: Vec<(&str, &OsStr)> = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+        ];
+        if let Some(mib) = window {
+            env.push(("SHARDS_SHARE_WINDOW_MIB", mib.as_ref()));
+        }
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let pulled = shards(&["pull", "-q", &image]);
+        assert_eq!(pulled.status, Some(0), "{pulled}");
+        let r = shards(&[
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "-u",
+            "0",
+            "-v",
+            &volume,
+            &image,
+            "fs",
+            "dax:/v/big",
+        ]);
+        assert_eq!(r.stdout, format!("dax /v/big {dax}\n"), "{window:?}: {r}");
+        let _ = shards(&["stop", "daemon"]);
+    }
+}
+
 /// A volume's DAX window costs its guest the ranges it maps, not every range it could: its
 /// guest's FUSE makes a range's mapping (128 bytes, kmalloc-128) as it first wants the
 /// range, not one for each 2 MiB of the window as the volume is mounted (D189, shards'

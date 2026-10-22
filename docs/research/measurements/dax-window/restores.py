@@ -10,8 +10,8 @@ import collections, statistics, sys
 v = collections.defaultdict(lambda: collections.defaultdict(list))
 for line in open(sys.argv[1]):
     f = line.split()
-    if len(f) == 3 and f[0].isdigit() and f[2].isdigit():
-        v[int(f[0])][f[1]].append(int(f[2]))
+    if len(f) == 3 and (f[0].isdigit() or f[0] == "default") and f[2].isdigit():
+        v[f[0]][f[1]].append(int(f[2]))
 
 
 def q(xs, p):
@@ -19,10 +19,12 @@ def q(xs, p):
     return xs[min(len(xs) - 1, int(p * len(xs)))]
 
 
-for length in sorted(v):
+# Lengths in MiB in order, then the daemon's default.
+for length in sorted(v, key=lambda n: (not n.isdigit(), int(n) if n.isdigit() else 0)):
     m = v[length]
     rss = [k / 1024 for k in m["rss"]]
-    line = f"{length:6} MiB  first {m['first'] or '-'} ms  template {[round(k / 1024, 1) for k in m['template']] or '-'} MiB"
+    named = f"{length:>6} MiB" if length.isdigit() else f"{length:>10}"
+    line = f"{named}  first {m['first'] or '-'} ms  template {[round(k / 1024, 1) for k in m['template']] or '-'} MiB"
     for kind in ("paced", "burst"):
         runs = m[kind]
         if runs:

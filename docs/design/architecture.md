@@ -5704,7 +5704,7 @@ MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its 
 leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
 D188's file pages. M268 at larger sizes.
 
-### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (in progress: mappings built, opt-in)
+### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory)
 
 **Found.** The user's plan, item 5. A volume's file the guest reads is in the host's page
 cache and again in the guest's (944 MiB of a 1 GiB file, PM M267), and every read and write
@@ -5720,8 +5720,8 @@ stores.
   (`MachineConfig::share_window_mib`, snapshot format 22): virtio-fs's cache, shared memory
   region 0 (VIRTIO_FS_SHMCAP_ID_CACHE), at a GiB boundary past the swap window, whole 2 MiB
   ranges as the guest maps files in them, within the addresses the guest's CPU has. The
-  daemon gives every microVM's shares one of `SHARDS_SHARE_WINDOW_MIB` (default none), and
-  keys its templates by it.
+  daemon gives every microVM's shares one, as long as its host's memory unless
+  `SHARDS_SHARE_WINDOW_MIB` says another length (below), and keys its templates by it.
 - The VM process answers FUSE_SETUPMAPPING and FUSE_REMOVEMAPPING itself
   (devices/virtio/fs/window.rs). Linux names a mapping's file by its node alone, its handle
   -1 (fs/fuse/dax.c, `fuse_setup_one_mapping`), so the VM process asks its share process
@@ -5916,13 +5916,45 @@ stores.
   of 4 GiB costs, and a run with a volume nothing measured (Fedora, n 40: setup 2.69 ms at
   p50 against 2.84 with no window, 5.66 before 0013). The pinned kernel carries the three
   (since kernel-6.18.48-e39058b2b627). Held by
-  `a_long_dax_window_costs_its_boot_next_to_nothing` (an 8,192th of the window: 0011 alone
-  took 20,544 KiB, the kernel before it 1,069,184),
+  `a_long_dax_window_costs_its_boot_next_to_nothing` (a 4,096th of the window, what the
+  structures of the head's own pages take: 0011 alone took 20,544 KiB, the kernel before it
+  1,069,184, an x86_64 CI runner 8,392 with all three while each boot wrote its whole held
+  record, M307),
   `a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range` (768 kmalloc-128
   objects in use with no window, 33,440 with a 64 GiB one before 0013), and vmm's
   `a_heads_save_reads_no_block_its_guest_never_touched` and
   `a_heads_blocks_from_its_copy_are_saved_whole_and_zeroed_ones_mapped_back_fresh`
   (mutation-checked on Linux and the Mac; the two above on the Mac).
+- **Every share's window as long as its host's memory, by default** (PM M307). A window
+  maps what its guest reads and writes of a volume's files from the host's page cache,
+  which holds no more of them at once than the host has memory, and one shorter than what
+  its guest maps churns its mappings (M276: 1 GiB under a 2 GiB file read slower than 4
+  GiB). Its length now costs what its guest maps of it (above), so the daemon gives every
+  share, the join share's too, a window as long as its host's memory, as it gives a run a
+  swap window that long (D159); `SHARDS_SHARE_WINDOW_MIB` another length, 0 none. Where its
+  guest's addresses cannot hold so many that long past its RAM, the memory it may plug and
+  its swap window (each the host's memory too), its VM gives each the most whole ranges
+  that fit and says so, as its swap window takes what the addresses leave
+  (`share_windows`), and records the length its machine has: a restore, its heads kept for
+  that length, has it or is refused. Eight volumes and the join share took 83,538 MiB each
+  on the Mac (40-bit addresses, 128 GiB) and 41,202 on Fedora (39-bit, 62.5 GiB). APFS
+  fills the holes a small file's writes leave as the file is synced, so a head's copy
+  punches them (`platform::punch_hole`, F_PUNCHHOLE; ext4 keeps them): a window's heads
+  file takes 12 KiB where 4 MiB, and a writable layer's head 6.5 MiB where 12. A device's
+  reset, which every boot's driver makes, unmaps its whole window, and cleared the whole of
+  its held record with it, writing every page of it (2 MiB for 64 GiB); it clears the
+  record of the ranges it unmaps alone, the only ones whose bits are set. On the Mac, with
+  a window of its host's 128 GiB, a template's boot takes 0.2 MiB more of its VM process's
+  memory (4.2 before), its template is the size of one without (70 MB), its restored VMs'
+  footprint is the same (19.2 MiB against 19.5), and a run with a volume sets up as fast
+  (1.44 ms at p50 against 1.75, n 40); on Fedora a 64 GiB window's boot takes 0.3 MiB. A
+  template's map-back gives a head's run of zero blocks back in one call (5.4 ms for nine
+  83 GiB windows on the Mac, where 6.5; 187 µs on Fedora). Held by `a_volumes_large_files_go_through_a_dax_window_by_default` (a 4 MiB
+  file mapped by default, through FUSE with 0), vmm's `share_windows_go_one_after_another`
+  (fitted, none, a kept length refused), `a_kept_blocks_pages_of_zeros_are_holes_in_its_copy`
+  (synced as a commit syncs it), `a_head_mapped_back_gives_back_its_blocks_of_zeros` and
+  `a_cleared_window_leaves_the_record_of_ranges_it_never_mapped_untouched`, each
+  mutation-checked on the Mac.
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5931,7 +5963,8 @@ it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 Gi
 template pays it once; what its restores pay is to be measured with mappings.
 
 **Next.**
-- How long a window, and from what size a file is mapped. Measured against FUSE (PM
+- From what size a file is mapped: a range, 2 MiB, not measured below it. How long a
+  window was decided (above, PM M306), after this. Measured against FUSE (PM
   M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
   reads through it (4 GiB under fio's 2 GiB file) reads 17 to 62 times as fast and writes
   whole MiBs 2 to 2.8 times as fast, the guest holding 28 MiB of memory where 2.1 GiB
@@ -5956,9 +5989,9 @@ template pays it once; what its restores pay is to be measured with mappings.
   a range not yet mapped pays before it writes was measured part by part (M302): a cold
   file's 1 MiB writes into ranges not yet mapped cost 6% more than FUSE's, on Fedora's
   performance cores and on its efficient cores alike, their rounds' spread the cores the
-  scheduler put a run on (M302). Windows stay asked for, none by default, until the
-  default is decided. A window takes none of its guest's memory on either architecture
-  (above: its page structures its head's, and arm64's linear map of it in blocks).
+  scheduler put a run on (M302). A window takes none of its guest's memory on either
+  architecture (above: its page structures its head's, and arm64's linear map of it in
+  blocks).
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
