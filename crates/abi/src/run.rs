@@ -142,6 +142,10 @@ pub mod kind {
     /// is written in place (EXT4_IOC_CHECKPOINT), so that the host reads it as it stands
     /// once it has stopped the machine.
     pub const KEEP: u8 = 40;
+    /// Guest to host, before [`EXIT`]: the kernel refused the workload's cgroup a process
+    /// or thread past its limit (its `pids.events` counts a `max`, cgroup-v2.rst), with what
+    /// its cgroup was allowed and held: as [`OOM`] says memory's (D193).
+    pub const PIDS: u8 = 41;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its

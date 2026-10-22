@@ -9944,6 +9944,66 @@ fn restart_policies_start_microvms_again() {
 /// `update`, as `docker update` takes it: a running microVM's limits written to its
 /// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
 #[cfg(unix)]
+/// A run refused a process or thread past its `--pids-limit` says so (D193): a
+/// `pids-limit` event of its container's, with the limit and how many it refused, which no
+/// state of Docker's has, and the daemon's log of what its cgroup was allowed and held; a
+/// run within its limit says nothing of it.
+#[test]
+fn a_run_past_its_pids_limit_says_so() {
+    let Some((home, image)) = home("containers-pids") else {
+        return;
+    };
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let since = now().to_string();
+    // Eight threads at once where four tasks are allowed, its own among them.
+    let past = run_in(
+        &home,
+        &image,
+        &["--rm", "--name", "forked", "--pids-limit", "4"],
+        &["burn", "8", "100"],
+    );
+    assert!(past.stdout.contains("of 8 threads"), "{past}");
+    let within = run_in(
+        &home,
+        &image,
+        &["--rm", "--name", "within", "--pids-limit", "64"],
+        &["burn", "2", "100"],
+    );
+    assert!(within.stdout.contains("burned"), "{within}");
+    let until = (now() + 1).to_string();
+    let events = shards_in(
+        &home,
+        &[
+            "events",
+            "--since",
+            &since,
+            "--until",
+            &until,
+            "--filter",
+            "event=pids-limit",
+            "--format",
+            r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}} {{.Actor.Attributes.refused}}"#,
+        ],
+    );
+    assert_eq!(events.status, Some(0), "{events}");
+    let said: Vec<&str> = events.stdout.lines().collect();
+    assert_eq!(said.len(), 1, "one run past its limit: {events}");
+    let fields: Vec<&str> = said[0].split(' ').collect();
+    assert_eq!(fields.get(..2), Some(&["forked", "4"][..]), "{events}");
+    let refused: u64 = fields.get(2).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(refused > 0, "{events}");
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    assert!(
+        log.contains("past its pids limit, a process or thread was refused: pids.max 4"),
+        "{log}"
+    );
+}
+
 /// `update -m` moves a running microVM's memory both ways (the user's plan, item 3): every
 /// run plugs memory as it needs it up to its limit (D148), and an update tells its VM its
 /// new most before its guest's cgroup, which its guest then reports it may plug (D149).

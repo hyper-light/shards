@@ -1360,6 +1360,10 @@ pub fn finish(
     if let Some(facts) = served.as_ref().ok().and_then(|ended| ended.oom.as_deref()) {
         let _ = shards_ipc::send(&link.daemon, kind::OOM, facts, &[]);
     }
+    // A process or thread its pids limit refused it (D193), said as its OOM is.
+    if let Some(facts) = served.as_ref().ok().and_then(|ended| ended.pids.as_deref()) {
+        let _ = shards_ipc::send(&link.daemon, kind::PIDS, facts, &[]);
+    }
     if let Some((name, set)) = working_set {
         let _ = shards_ipc::working_set_parts(name, set, |part| {
             shards_ipc::send(&link.daemon, kind::WORKING_SET, part, &[])

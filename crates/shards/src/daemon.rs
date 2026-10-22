@@ -4522,6 +4522,7 @@ impl<D: Disk> Daemon<D> {
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id, &m.payload),
+                kind::PIDS => self.pids_refused(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
                 // A file its share's DAX window maps, watched for another process cutting
                 // it short, and one it maps no more (D189, PM M273).
@@ -4857,6 +4858,39 @@ impl<D: Disk> Daemon<D> {
         }
         if let Some((name, image, labels)) = named {
             self.event_for(id, &name, &image, &labels, "oom", &[]);
+        }
+    }
+
+    /// Run `id`'s guest refused it a process or thread past its pids limit (D193): a
+    /// `pids-limit` event of shards' own, with the limit and how many it refused, which no
+    /// state of Docker's has (its State says an OOM alone); and in the daemon's log what its
+    /// cgroup was allowed and held, as its init sends them.
+    fn pids_refused(&self, id: &str, facts: &[u8]) {
+        let facts = String::from_utf8_lossy(facts);
+        log(format!(
+            "container {id}: past its pids limit, a process or thread was refused: {facts}"
+        ));
+        let words: Vec<&str> = facts.split([' ', ';']).filter(|w| !w.is_empty()).collect();
+        let after = |key: &str| {
+            words
+                .windows(2)
+                .find(|w| w.first() == Some(&key))
+                .and_then(|w| w.get(1))
+                .map(|v| (*v).to_string())
+                .unwrap_or_default()
+        };
+        let named = lock(&self.containers)
+            .made(id)
+            .map(|c| (c.name.clone(), c.image.clone(), c.labels.clone()));
+        if let Some((name, image, labels)) = named {
+            self.event_for(
+                id,
+                &name,
+                &image,
+                &labels,
+                "pids-limit",
+                &[("pids.max", after("pids.max")), ("refused", after("refused"))],
+            );
         }
     }
 

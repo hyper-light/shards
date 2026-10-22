@@ -130,7 +130,9 @@ it. A network can let them reach chosen hosts outside, and only those: made with
 shards.egress=api.anthropic.com:443,github.com:443`, its microVMs reach each host on its
 port, look up those names and no others, and reach nothing else past themselves; a
 network made without it lets nothing out. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
-time). A setting a microVM can't take is refused with the reason, never dropped.
+time). A setting a microVM can't take is refused with the reason, never dropped. A microVM
+refused a process past its `--pids-limit` says so in its events (`pids-limit`, with the
+limit and how many it refused), as one that runs out of memory says `oom`.
 
 ### A microVM's own engine
 

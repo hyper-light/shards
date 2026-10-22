@@ -5776,6 +5776,32 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
+### D193. A run past its pids limit says so: a `pids-limit` event (built)
+
+**Found** (kiln's harnesses, 2026-10-21). A run held to `--pids-limit` whose processes or
+threads were refused, a fork or clone past its cgroup's `pids.max` failing with EAGAIN,
+said nothing of it: its command failed as such a failure makes it, and nothing outside its
+microVM said why. dockerd says nothing either: no event, and its State has no such field.
+A harness that sorts its runs' failures could not tell a pids limit from any other.
+
+**Decided.**
+- **init reads the workload cgroup's `pids.events`** as the run ends, where its end is said
+  alone and where its joiners go on past it (D119): a `max` count above 0 goes to the host
+  before `EXIT` as `PIDS` (shards_abi::run::kind::PIDS, `pids_refused`), with the cgroup's
+  `pids.max`, `pids.peak`, the count and `pids.events` whole, as `OOM` goes with memory's
+  (D159). `max.imposed`, a newer kernel's count of an ancestor's limit, is not it.
+- **The VM process passes it on** (shards_ipc::kind::PIDS), as it passes `OOM`; the daemon
+  logs the facts and says a **`pids-limit` event** of the container's, shards' own action
+  (dockerd has none): its attributes the name and image every event of a container's has,
+  with `pids.max` and `refused`. Docker's typed State stays Docker's: inspect gains
+  nothing.
+- **Tested** (containers.rs `a_run_past_its_pids_limit_says_so`, on real microVMs): a
+  `--pids-limit 4` run starting eight threads at once says one `pids-limit` event, with
+  `pids.max` 4 and a count of what was refused, and the daemon's log its facts; a run
+  within its limit says none.
+
+**Next.** A joiner's (D119), from its own cgroup's `pids.events`, as its OOM is read.
+
 ### D192. A network's egress: its members' own commands reach the destinations it names, and nothing else (built)
 
 **Found** (kiln's harnesses, 2026-10-21). A run's own command had three reaches past its

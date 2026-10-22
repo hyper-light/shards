@@ -322,6 +322,10 @@ pub mod kind {
     /// together (8, big-endian), 0 for every one, as `update` changes the run's CPU limits
     /// (D191): before its guest's cgroup is written.
     pub const CPUS: u8 = 68;
+    /// Warm VM → daemon, before DONE: the guest refused the command a process or thread
+    /// past its `--pids-limit` (shards_abi::run::kind::PIDS), and what its cgroup was
+    /// allowed and held (D193).
+    pub const PIDS: u8 = 69;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
