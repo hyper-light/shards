@@ -5766,6 +5766,17 @@ stores.
   again from its new share process, as the run gives the share its server, once that
   server has the tables the guest's node IDs are in, and before the guest runs; a range
   whose file that server no longer reaches is zeros, as past a file's end.
+- **Each file's size looked at once a request** (PM M299). Each reply of the server's has
+  the window follow the files it tells of first (`Window::reconcile`), the request's own
+  among them; it looked at a file's size once for each range it mapped of it, so a request
+  about a file mapped in 1,024 ranges took 1,024 fstat(2)s, and every write through such a
+  file's window paid for the guest's requests about it: on Fedora a 4 KiB write took 288
+  µs where a FUSE_WRITE took 86. Each file is now looked at once a pass (`window::Sizes`),
+  and a write through the window costs less than a FUSE_WRITE at p50 in every case
+  measured: 4 KiB at random over 2 GiB 30.6 µs against 44.6, close together 23.4 against
+  44.4, 1 MiB close together 74 against 855. Held by
+  `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
+  ranges).
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5787,10 +5798,19 @@ template pays it once; what its restores pay is to be measured with mappings.
   FUSE_WRITE's pwrite(2) of the whole page reads nothing (71 to 127 µs against 2 to 3 on
   Btrfs, PM M283), and M276's host, short of memory, held few of its file's pages.
   Reading each range ahead as it is mapped doubles the rate of a writer that writes a
-  range about 20 times and halves that of one that writes it once, so it is not done. So
-  windows stay asked for, none by default, until a guest's whole-page writes through a
-  window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
-  working set costs its guest less than its 64th at boot.
+  range about 20 times and halves that of one that writes it once, so it is not done.
+  In the guest (PM M298, M299), what M276 and M298 took for a range's mapping was the
+  device's own following of each file it maps, a look at its size for each range of it, as
+  each request about it was answered: looked at once a request, a write through the window
+  costs less than a FUSE_WRITE at p50 in every case measured (above). What stays is the
+  page its host does not hold: a store there waits for the host to read it, which a
+  FUSE_WRITE of the whole page does not, so a cold file's scattered writes have the worse
+  tail (4 KiB, p99 1,483 µs against 206) and 1 MiB writes into ranges not yet mapped the
+  worse middle (1,589 against 898 at p50). A guest's FUSE weighing each range's writes
+  against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
+  measured and not taken: its rationale was that cost. Windows stay asked for, none by
+  default, until a whole page a host does not hold is written as a FUSE_WRITE, and a window
+  that holds a working set costs its guest less than its 64th at boot.
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
@@ -6230,6 +6250,19 @@ the guest keeps their metadata alone.
   journal written in place, holding its file and its whiteout, put back as it starts
   again; a microVM killed after its guest committed a file, its layer kept with its
   journal to replay, replayed as `diff` visits it, and the file found.
+
+- **Read at random until its command runs** (PM M297). A run's first write into its root
+  landed in a hole of its layer's file, a clone made for its warm microVM of whose pages its
+  host held none, and the host read 4 MiB around it (Btrfs's readahead): 2.4 ms of a 5 ms
+  start, every run. The layer's mapping is advised MADV_RANDOM as it is made
+  (`platform::reads_at_random`), and to read ahead again as its command runs
+  (`Layer::read_ahead`, as the guest says STARTED; a resumed microVM's at once): a
+  sequential read of what the layer holds, cold, reads 5,089 MiB/s with readahead and 86
+  without. A start on Fedora, its host busy, takes 2.6 to 3.5 ms at p50 where it took 8.1
+  to 9.4, and on 4 contended CPUs 18.9 where it took 31.9; on the Mac, where no write paid
+  it, a start stays about 1.2 ms. Held by vmm's
+  `a_layer_reads_ahead_once_its_command_runs` (its mapping's VmFlags; mutation-checked both
+  ways).
 
 **Next** (the slices after these).
 - A restart that goes on over the kept file itself: today its files are put back, packed

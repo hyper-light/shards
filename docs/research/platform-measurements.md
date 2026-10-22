@@ -11419,6 +11419,34 @@ revision before comparing a changed API/implementation.
   mechanisms are ruled out above; the steps that grow are found: `cpu.max`'s static key,
   the run's names and resolver files, and init's wake at the exec. Next: the key held on
   from the template, measured against HEAD, and the names' step split.
+- **The key held on, and init on the first CPU.** `keys.patch`: an empty cgroup of init's
+  whose `cpu.max` is finite from the template, so that the key is on before any run's
+  quota. `pin.patch`, with it: init and its standby on the first CPU from the template.
+  `markers.patch` as committed with this (markers 11 to 26: the names' step split into
+  `m24` eth0's confinement and sethostname, `m25` `/etc/hostname`, `m26` `/etc/hosts`,
+  `m20` `/etc/resolv.conf`). phases.py, d3195115 with each, n 50 a case, the host
+  carrying other work (load 1.4 to 7.3), 2026-10-21. p50 (p90), ms:
+
+  | case | wall, HEAD → keys | `m23` `cpu.*`, HEAD → keys | wall, keys → keys and pin |
+  |---|---|---|---|
+  | 4 CPUs idle, `--cpus 1` | 13.07 (17.27) → 12.57 (16.58) | 0.20 (1.64) → 0.03 (0.03) | 12.45 (19.45) → 12.30 (16.07) |
+  | 4 CPUs idle, no `--cpus` | 12.33 (16.80) → 12.15 (16.59) | 0.00 → 0.00 | 11.93 (16.85) → 13.05 (17.52) |
+  | 4 CPUs, 4 busy loops, `--cpus 1` | 36.20 (51.88) → 39.55 (62.19) | 6.27 (16.12) → 0.04 (0.04) | 38.89 (48.26) → 34.92 (57.51) |
+  | 4 CPUs, 4 busy loops, no `--cpus` | 36.11 (50.35) → 34.67 (52.38) | 0.00 → 0.00 | 38.06 (50.55) → 35.28 (48.75) |
+  | 1 CPU, 1 busy loop, `--cpus 1` | 28.20 (37.44) → 29.75 (40.86) | 0.05 (0.05) → 0.02 (0.02) | 27.38 (42.33) → 28.84 (42.16) |
+
+  The key held on takes `cpu.max`'s write to 0.03 ms from 0.2 idle and 6.3 contended, and
+  costs runs with no quota nothing seen; but the wall moves within its spread either way.
+  On the contended host the time the patching's rounds took goes to the steps after it,
+  each waiting for the host to run a vCPU: init's wake at the exec (`m16`) 6.32 → 8.24 ms,
+  the command's run 4.79 → 6.53. Init on the first CPU moves the wall within its spread
+  too. And on 4 idle CPUs `m25`, `/etc/hostname` alone, takes 2.6 to 3.7 ms at p50 where
+  `/etc/hosts` after it takes 0.1: half of an idle start.
+- **Consequence.** Neither patch is taken: neither shows the wall a gain at n 50. The
+  names' step comes first: `markers7.patch` splits `/etc/hostname`'s write into its
+  removal, creation and write, and `probe.patch` writes a file of the run's own first, to
+  say whether the cost is the file's or the run's first change to its root: M297, the
+  run's first write into its writable layer, its host's readahead.
 
 ### M293. DAMON's reclaim against D188's in a run's guest (the user's plan, item 4)
 
@@ -11587,3 +11615,165 @@ revision before comparing a changed API/implementation.
   Max): it kills a provider as its joiner's 256 MiB layer is sent; with the sender killed,
   the layer is lost, and with no close as well, the provider's run ends only as its daemon
   ends its microVM, 10 s past the kill (moby's kill wait).
+
+### M297. A run's first write into its writable layer: its host's readahead over a hole of the layer's clone (D190)
+
+- **Question.** M292's markers put half of an idle start in its names' step, `/etc/hostname`
+  alone: 2.6 to 3.7 ms at p50 on 4 idle CPUs, where `/etc/hosts` after it took 0.1. What is
+  it?
+- **Method.** Fedora (M266's host: Intel Core i9-14900HX, Fedora 44, Linux 6.19.10-300.fc44,
+  its home on Btrfs; guest Linux 6.18.48), 85bdb0f5 with each patch of
+  `docs/research/measurements/cpu-elastic` and `layer-first-write`, release builds,
+  phases.py, `--cpus 1` on 4 idle CPUs unless said, 2026-10-21 and 22; the Mac (Apple M5
+  Max, macOS 26.4.1, APFS) for the host's side, other projects' work running.
+- **Results**, step by step (p50, ms unless said):
+  1. The write's own steps (`markers7.patch`, n 100): the file's removal 0.07, its creation
+     0.04, its 13 bytes' write 2.8 to 3.7 (`m29`).
+  2. A file of the run's own written in /tmp first (`probe.patch`, n 100): it takes 2.9 to
+     3.2, and `/etc/hostname`'s write 0.02. The cost is the run's first data write into its
+     root, whatever the file.
+  3. Neither the root's first since its boot nor any file system's (n 50): a file written
+     and removed as the template boots (`prime.patch`) leaves `m29` 3.21 (3.76 without);
+     a tmpfs file written first (`shmprobe.patch`) takes 0.05, and the root's write after
+     it 3.58 (4.68).
+  4. On the host alone (`layer-first-write/measure.py`, 1 GiB sparse files holding a MiB of
+     data, a store a page past it through a fresh MAP_SHARED mapping, n 40), µs: into the
+     file itself 429, into a clone of it (FICLONE, as each warm microVM's layer is a clone
+     of its snapshot's, daemon/layers.rs) 905, the next stores 1 to 2; the clone's first
+     page written first with pwrite(2), 873; the mapping advised MADV_RANDOM, 5.2. Btrfs
+     reads 4 MiB around a fault (`btrfs_init_bdi` raises its readahead to 4 MiB), and over
+     a hole that is 4 MiB of pages allocated and zeroed. The Mac (n 20): 1,929 µs into a
+     clone, 35 into its source, 30 with MADV_RANDOM.
+  5. In the microVM, its layer's mapping advised MADV_RANDOM throughout
+     (`layer-random.patch`, n 50): `m29` 2.42 → 0.05 (p90 5.52 → 0.15), the start 5.01 →
+     2.35 (9.16 → 4.33), the wall 11.99 → 7.07 (17.63 → 10.54).
+  6. What readahead gives a cold sequential read through such a mapping (`coldmap.py`, a
+     1 GiB file, its pages dropped until util-linux's fincore says none are resident, a
+     byte of each page read in order, n 5): 5,089 MiB/s with readahead, 86 without.
+- **Reading.** A run's first write lands in a hole of its layer's file, a clone made for
+  its warm microVM, of whose pages its host holds none; the fault reads 4 MiB around it
+  on Btrfs, every run, each run's clone being new. The rest of a run's faults on its layer
+  want readahead: 60 times the rate for a cold sequential read.
+- **Consequence.** D190: a layer's mapping reads at random until its run's command runs,
+  then ahead (`Layer::read_ahead`, as the guest says STARTED; a resumed microVM's at once).
+  Against 85bdb0f5 (phases.py, n 50 a side, the host carrying other work, its load 6.5 to
+  10.1), p50 (p90), ms:
+
+  | case | wall | start |
+  |---|---|---|
+  | 4 CPUs idle, no `--cpus` | 17.85 (31.01) → 11.85 (15.79) | 8.10 (17.02) → 2.58 (6.39) |
+  | 4 CPUs idle, `--cpus 1` | 18.93 (29.17) → 12.46 (17.33) | 9.36 (18.15) → 3.54 (7.28) |
+  | 4 CPUs, 4 busy loops, `--cpus 1` | 55.02 (105.97) → 43.32 (65.53) | 31.92 (72.85) → 18.91 (33.03) |
+
+  The contended start's p99, 190.83 ms, is 41.81. On the Mac, at load 7.4 with a lint
+  running and `--cpus 1`, n 50: the start 1.16 (4.86) → 1.43 (5.58), its p99 15.73 →
+  8.14, the wall 32.79 → 37.79 at p50, its spread the host's: no first write there cost
+  what Btrfs's readahead did.
+
+### M298. A guest's writes through a volume's DAX window, in the guest (D189, the user's plan, item 5)
+
+- **Question.** M283 found, on the host, that a store into a page its host does not hold
+  waits for the page to be read, where a FUSE_WRITE's pwrite(2) of the whole page reads
+  nothing; D189 keeps windows asked for until the guest's own side is measured. In the
+  guest, what does a write cost through a window and without one, its host holding the
+  file's pages or not, writes scattered or close together?
+- **Method.** `docs/research/measurements/dax-window-writes/measure.py` with `guestwrite.c`
+  (built static by zig, run from the volume itself): two homes of one release build,
+  85bdb0f5, one daemon giving each share a window of 4,096 MiB (`SHARDS_SHARE_WINDOW_MIB`);
+  each round lays the volume's file out with random bytes, synced, and runs the four arms
+  in a turning order, the file's host pages dropped (`cold`: Linux POSIX_FADV_DONTNEED;
+  macOS the file written again with F_NOCACHE) or read whole (`warm`) before each; in each
+  run, writes at random places of the file with O_DIRECT, each timed. Passes: 5,000 writes
+  of 4 KiB over 2 GiB (about 5 a 2 MiB range); the same with a page of each range read
+  first, untimed, so that a window maps each range before its writes (`premap`); 2,000 of
+  64 KiB so; 5,000 of 4 KiB over 64 MiB so (about 156 a range). 5 rounds each. The Mac
+  (Apple M5 Max, macOS 26.4.1, APFS, its load 5 to 28 from other projects' work) and
+  Fedora (Intel Core i9-14900HX, Linux 6.19.10-300.fc44, Btrfs, KVM, load 7.5 to 8.7),
+  2026-10-21 and 22.
+- **Results.** Each write's time, µs at p50, the p50 of the rounds and their range:
+
+  | host, pass | no window, warm | window, warm | no window, cold | window, cold |
+  |---|---|---|---|---|
+  | Mac, 4 KiB over 2 GiB | 87.6 [86.5, 171] | 289 [279, 681] | 906 [192, 2,766] | 811 [416, 3,374] |
+  | Mac, the same, mapped first | 83.1 [82.0, 86.6] | 309 [307, 314] | 1,959 [1,883, 2,681] | 2,997 [2,537, 3,396] |
+  | Mac, 64 KiB, mapped first | 140 [133, 257] | 321 [316, 525] | 142 [140, 259] | 3,278 [3,026, 3,985] |
+  | Mac, 4 KiB over 64 MiB, mapped first | 85.2 [81.1, 192] | 56.3 [53.6, 114] | 326 [199, 1,468] | 118 [65, 173] |
+  | Fedora, 4 KiB over 2 GiB | 86.2 [75.4, 119.4] | 288.4 [232.3, 351.2] | 87.7 [79.8, 115.8] | 361.1 [229.4, 391.0] |
+  | Fedora, the same, mapped first | 56.2 [46.5, 58.2] | 217.5 [203.6, 411.1] | 61.8 [59.6, 63.1] | 214.6 [195.1, 220.1] |
+  | Fedora, 64 KiB, mapped first | 153.7 [144.8, 164.9] | 294.7 [267.3, 550.5] | 160.4 [155.4, 167.3] | 306.3 [275.3, 361.4] |
+  | Fedora, 4 KiB over 64 MiB, mapped first | 78.4 [77.1, 119.2] | 47.0 [45.7, 71.3] | 86.3 [83.2, 89.0] | 46.4 [44.8, 86.7] |
+
+- **Reading.** What a window's write costs is its range's mapping for writing: a range
+  mapped first by a read still costs its first write about as much as one not mapped at
+  all (a read maps it to read alone, and a write asks the server again, fs/fuse/dax.c
+  `fuse_iomap_begin`, `fuse_upgrade_dax_mapping`), and a
+  write into a range written often before costs less than a FUSE_WRITE (47 µs against
+  78 on Fedora, 56 against 85 on the Mac). The mapping costs about 170 µs a range on
+  Fedora and 250 on the Mac (the mapped-first passes, less the close-together ones):
+  writes scattered a few to a range pay it each time and run at a quarter to a third of
+  FUSE's rate; writes close together repay it within some 6 (Fedora) to 9 (the Mac) to a
+  range. On Btrfs a FUSE_WRITE of a cold page costs what a warm one does; on the Mac a cold
+  4 KiB one took 1,959 µs and a 64 KiB one 142, APFS's pages being 16 KiB (M283). The
+  window's cold stores wait for their pages, as M283 found on the host.
+- **Consequence.** D189's windows stay asked for. A write a window takes should be a
+  FUSE_WRITE until its range has had enough writes to repay its mapping, then the
+  window's: a patch of the guest's FUSE (fs/fuse/dax.c, `fuse_dax_write_iter`) counting
+  the writes of each range it has not mapped to write, with the count from these costs;
+  and the window's page structures, a 64th of it, kept out of the guest's memory as the
+  layer's are in its head (D190), before any window is given by default.
+- **Correction (M299).** The window's costs above were not its mappings': with each reply
+  the device followed the files it told of, and looked at a file's size once for each
+  range it mapped of it, so that the guest's every request about a file mapped in many
+  ranges took as many fstat(2)s. Looked at once a request, the window's writes cost less
+  than FUSE_WRITEs at p50 throughout; the Reading and the Consequence above stand for
+  that build alone.
+
+### M299. A DAX window's writes once each file it maps is looked at once a request (D189, item 5)
+
+- **Question.** M298 put a window write's cost in its range's mapping, and a patch of the
+  guest's FUSE was to write through FUSE_WRITEs until a range's writes repaid it (as a
+  rental is bought once its rent reaches its price). Tried, its pass of 4 KiB writes into a
+  2 GiB file whose ranges a read had mapped found each FUSE_WRITE there taking 393 µs at
+  p50, where one through no window took 58. Why?
+- **Method.** The host alone first (`dax-window-writes/mapped_pwrite.py`): the server's
+  pwrite(2) of 4 KiB at random into a 2 GiB file, with nothing else mapping it and with a
+  read-only shared mapping of it holding each 2 MiB range's first page, 5,000 writes, 5
+  rounds, Fedora's Btrfs. Then the device's code: each reply the server gives has the
+  window follow the files it tells of first (`Window::reconcile`, the request's own file
+  among them), and `follow` looked at a file's size once for each range it mapped of it.
+  Fixed to once a pass (`window::Sizes`), M298's passes and the size sweep's again with it
+  (a release build of the working tree, 2026-10-22, Fedora as M298's, its load 1.4 to
+  2.3): on the pinned kernel, then on one with the patch
+  (`fuse-writes-until-mapped.patch`), its costs given by the daemon
+  (`daemon-costs.patch`: M298's, a range's mapping 170.5 µs, a FUSE_WRITE 25.9 µs and
+  1.375 µs a KiB more than stores).
+- **Results.** The host's pwrite: 1.0 µs at p50 either way. With the device fixed, µs a
+  write at p50 (p99), the p50 of 5 rounds:
+
+  | pass | no window, warm | window, warm | no window, cold | window, cold | window, warm, with the patch |
+  |---|---|---|---|---|---|
+  | 4 KiB over 2 GiB | 44.6 (164.9) | 30.6 (225.0) | 46.3 (206.1) | 38.0 (1,483.1) | 46.5 |
+  | the same, mapped first | 40.3 (74.8) | 30.2 (125.9) | 45.5 (73.8) | 31.0 (97.5) | 57.4 |
+  | 4 KiB over 64 MiB, mapped first | 44.4 (119.4) | 23.4 (65.5) | 46.4 (186.6) | 22.7 (84.5) | 29.5 |
+  | 64 KiB over 2 GiB, mapped first | 84.5 (227.5) | 76.2 (205.4) | 88.4 (214.1) | 64.0 (187.2) | 96.0 |
+  | 64 KiB over 64 MiB, mapped first | 83.8 | 30.8 | 85.7 | 25.5 | 25.7 |
+  | 256 KiB over 64 MiB, mapped first | 199.3 | 34.0 | 207.7 | 37.6 | 33.1 |
+  | 1 MiB over 64 MiB, mapped first | 855.3 | 73.8 | 812.9 | 82.1 | 86.6 |
+  | 1 MiB over 2 GiB, not mapped | 923.3 | 630.4 | 897.6 | 1,588.7 | 624.6 |
+
+- **Reading.** A file of 1,024 mapped ranges took 1,024 fstat(2)s at each request about it,
+  and the guest's requests about a file it writes through the window, as its writes go,
+  paid them: what M298 took for a range's mapping. Looked at once a request, a write
+  through the window costs less than a FUSE_WRITE at p50 in every pass, and up to 11.6
+  times less (1 MiB close together). Its p99 is worse where a range is first mapped (4 KiB
+  scattered, warm: 225 against 165) and, cold, where its store meets a page the host does
+  not hold and waits for it to be read (1,483 against 206), as M283 found on the host; 1
+  MiB into ranges not yet mapped over a cold file is the one pass whose p50 the window
+  loses (1,589 against 898). The patch sends writes away from a window now the quicker:
+  worse at p50 in five passes of the eight (4 KiB scattered 46.5 against 30.6), better in
+  none past its rounds' spread.
+- **Consequence.** D189: each file's size is looked at once a request (the fix, held by
+  `a_file_mapped_in_many_ranges_is_looked_at_once`); the patch is not taken. Before a
+  window is given by default: a whole page the host does not hold written as a FUSE_WRITE,
+  and the window's page structures out of the guest's memory. The Mac's passes are to be
+  run again with the fix.

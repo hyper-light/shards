@@ -1,0 +1,152 @@
+fuse: a DAX range's writes as FUSE_WRITEs until they repay its mapping
+
+A write into a range of a virtiofs DAX window that has no mapping it may
+write through first maps the range: FUSE_SETUPMAPPING, a round trip to the
+server, and the host's own mapping of the file there. A guest's writes
+scattered a few to a range pay that each time: 4 KiB writes at random over
+a 2 GiB file ran at a quarter to a third of FUSE_WRITEs' rate (shards' PM
+M298: 288 us a write through the window against 86, on Linux 6.19 KVM over
+Btrfs; 289 against 88 on macOS's Hypervisor.framework), and a range mapped
+first by a read is mapped to read alone, so that its first write asks the
+server again. Writes close together repay the mapping within a few (47 us
+a write through the window against 78), and large ones within one (1 MiB:
+115 against 1,450).
+
+So a range's writes go as FUSE_WRITEs (fuse_dax_direct_write(), as file
+extending writes already do) until what they would have cost less through
+a mapping reaches what the mapping costs, and the range is mapped then: a
+rental bought once its rent reaches its price, which never costs more than
+twice the better choice in hindsight. The costs are the host's, which its
+VMM measures and gives as module parameters, in ns: dax_map_ns, what a
+range's mapping for writing costs, and dax_write_ns and
+dax_write_ns_per_kib, what a FUSE_WRITE costs more than stores through a
+mapping, each write and each KiB. Each inode keeps, in an xarray by range,
+what its range's writes have cost more since it was last mapped. A write
+spanning two ranges, one into a range mapped to write, and every write
+with dax_map_ns 0, the default, go through the window as before.
+
+A FUSE_WRITE into a range a read maps is seen there at once: the window
+maps the host's page cache of the file, which the server's pwrite(2)
+writes.
+
+--- a/fs/fuse/dax.c
++++ b/fs/fuse/dax.c
+@@ -25,6 +25,30 @@
+ #define FUSE_DAX_RECLAIM_CHUNK		(10)
+ 
+ /*
++ * What mapping a range of the window for writing costs, and what a write into a range no
++ * mapping of which may be written costs more as a FUSE_WRITE than as stores through such a
++ * mapping, each write and each KiB it writes: nanoseconds, as the host measured them. A
++ * range's writes are FUSE_WRITEs until what they would have cost less through a mapping
++ * reaches what the mapping costs, and the range is mapped then: as a rental that is bought
++ * once its rent reaches its price, never more than twice what the better of the two would
++ * have cost. A host's mapping for writing is a round trip to the server and a mapping of
++ * its own; writes scattered a few to a range pay it each time, and ran at a quarter to a
++ * third of FUSE_WRITEs' rate, where writes close together repay it within a few. With
++ * dax_map_ns 0 a range is mapped at its first write.
++ */
++static unsigned int dax_map_ns;
++module_param(dax_map_ns, uint, 0444);
++MODULE_PARM_DESC(dax_map_ns, "ns a range's mapping for writing costs (0: mapped at its first write)");
++
++static unsigned int dax_write_ns;
++module_param(dax_write_ns, uint, 0444);
++MODULE_PARM_DESC(dax_write_ns, "ns a FUSE_WRITE costs more than stores through a mapping");
++
++static unsigned int dax_write_ns_per_kib;
++module_param(dax_write_ns_per_kib, uint, 0444);
++MODULE_PARM_DESC(dax_write_ns_per_kib, "ns a FUSE_WRITE costs more for each KiB it writes");
++
++/*
+  * Dax memory reclaim threshold in percetage of total ranges. When free
+  * number of free ranges drops below this threshold, reclaim can trigger
+  * Default is 20%
+@@ -66,6 +90,12 @@
+ 	/* Sorted rb tree of struct fuse_dax_mapping elements */
+ 	struct rb_root_cached tree;
+ 	unsigned long nr;
++
++	/*
++	 * For each range written as FUSE_WRITEs since a mapping of it was last made or let
++	 * go of, what those writes would have cost less through a mapping, in ns.
++	 */
++	struct xarray writes;
+ };
+ 
+ struct fuse_conn_dax {
+@@ -383,6 +413,7 @@
+ 	 */
+ 	inode_reclaim_dmap_range(fc->dax, inode, 0, -1);
+ 	WARN_ON(fi->dax->nr);
++	xa_destroy(&fi->dax->writes);
+ }
+ 
+ static void fuse_fill_iomap_hole(struct iomap *iomap, loff_t length)
+@@ -699,6 +730,44 @@
+ 	return (iov_iter_rw(from) == WRITE &&
+ 		((iocb->ki_pos) >= i_size_read(inode) ||
+ 		  (iocb->ki_pos + iov_iter_count(from) > i_size_read(inode))));
++}
++
++/*
++ * Whether a write is a FUSE_WRITE rather than stores through the window: a write within one
++ * range no mapping of which may be written, while what the range's writes would have cost
++ * less through a mapping, this one's with them, stays short of what its mapping costs.
++ * Called with the inode locked.
++ */
++static bool fuse_dax_write_through(struct inode *inode, loff_t pos, size_t count)
++{
++	struct fuse_inode *fi = get_fuse_inode(inode);
++	unsigned long idx = pos >> FUSE_DAX_SHIFT;
++	struct interval_tree_node *node;
++	unsigned long owed = 0, more;
++	bool writable;
++	void *entry;
++
++	if (!dax_map_ns || !count || ((pos + count - 1) >> FUSE_DAX_SHIFT) != idx)
++		return false;
++
++	down_read(&fi->dax->sem);
++	node = interval_tree_iter_first(&fi->dax->tree, idx, idx);
++	writable = node && node_to_dmap(node)->writable;
++	up_read(&fi->dax->sem);
++	if (writable)
++		return false;
++
++	more = dax_write_ns + (unsigned long)dax_write_ns_per_kib * DIV_ROUND_UP(count, 1024);
++	entry = xa_load(&fi->dax->writes, idx);
++	if (xa_is_value(entry))
++		owed = xa_to_value(entry);
++	if (owed + more >= dax_map_ns) {
++		xa_erase(&fi->dax->writes, idx);
++		return false;
++	}
++	/* Where the sum cannot be kept, this write is a FUSE_WRITE all the same. */
++	xa_store(&fi->dax->writes, idx, xa_mk_value(owed + more), GFP_KERNEL);
++	return true;
+ }
+ 
+ static ssize_t fuse_dax_direct_write(struct kiocb *iocb, struct iov_iter *from)
+@@ -735,9 +804,11 @@
+ 	/* TODO file_update_time() but we don't want metadata I/O */
+ 
+ 	/* Do not use dax for file extending writes as write and on
+-	 * disk i_size increase are not atomic otherwise.
++	 * disk i_size increase are not atomic otherwise; nor for a write into a range that
++	 * has not yet repaid its mapping.
+ 	 */
+-	if (file_extending_write(iocb, from))
++	if (file_extending_write(iocb, from) ||
++	    fuse_dax_write_through(inode, iocb->ki_pos, iov_iter_count(from)))
+ 		ret = fuse_dax_direct_write(iocb, from);
+ 	else
+ 		ret = dax_iomap_rw(iocb, from, &fuse_iomap_ops);
+@@ -1283,6 +1354,7 @@
+ 
+ 		init_rwsem(&fi->dax->sem);
+ 		fi->dax->tree = RB_ROOT_CACHED;
++		xa_init(&fi->dax->writes);
+ 	}
+ 
+ 	return true;

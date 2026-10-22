@@ -2030,13 +2030,18 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
     // Charged there from its first page: all the VM process's own memory is the slice's, as
     // it would not be of a process moved there once it ran (cgroup-v2.rst, "Memory
     // Ownership").
-    let own_kib = std::fs::read_to_string(format!("/proc/{vm}/status"))
-        .unwrap()
-        .lines()
-        .find_map(|l| l.strip_prefix("RssAnon:"))
-        .and_then(|v| v.trim().strip_suffix("kB"))
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap();
+    // Read again with each reading of the slice's: what the guest frees goes back to its
+    // host as it goes (D151), so the VM's own is less by then (gnu x86_64 CI 39735519783:
+    // 231,160 KiB as it was first read, 229,260 as the slice's 229,424 caught up).
+    let own = || {
+        std::fs::read_to_string(format!("/proc/{vm}/status"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("RssAnon:"))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap()
+    };
     let slice_dir = scope_dir.parent().unwrap().to_path_buf();
     // Read until they have caught up: a cgroup's statistics are its descendants' as they were
     // last flushed into it (mm/memcontrol.c, memcg_vmstats_needs_flush and the periodic
@@ -2052,9 +2057,10 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
             .unwrap()
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let mut charged = slice_anon();
+    let (mut own_kib, mut charged) = (own(), slice_anon());
     while charged < own_kib << 10 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
+        own_kib = own();
         charged = slice_anon();
     }
     // What each cgroup holds, as a failure says it (gnu x86_64 CI 39273610992: none of it

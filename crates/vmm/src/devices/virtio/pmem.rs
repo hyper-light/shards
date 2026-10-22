@@ -498,6 +498,16 @@ impl Shared {
     fn released(&self) -> bool {
         self.released.load(Ordering::Acquire)
     }
+
+    /// Its faults read ahead again ([`platform::reads_ahead`]), while it is mapped: under
+    /// the lock [`release`](Self::release) unmaps it under, so that no other mapping that
+    /// took its place is advised.
+    fn read_ahead(&self) {
+        let file = lock(&self.file);
+        if file.is_some() && !self.released() {
+            platform::reads_ahead(self.host, self.len);
+        }
+    }
 }
 
 impl Drop for Shared {
@@ -704,6 +714,11 @@ impl Layer {
     fn over(head: Head, file: File, data: u64) -> Result<Layer, String> {
         let len = usize::try_from(data).map_err(|_| format!("a layer of {data} bytes"))?;
         let data = Shared::map(file, len).map_err(|e| format!("its layer: {e}"))?;
+        // Read without readahead until its run's command runs ([`read_ahead`]): the run's
+        // first write into its file lands in a hole of a clone whose pages its host holds
+        // none of, and readahead there filled 4 MiB on Btrfs, 2.4 ms of a 5 ms start
+        // (PM M297).
+        platform::reads_at_random(data.host, data.len);
         Ok(Layer {
             head,
             data,
@@ -718,6 +733,13 @@ impl Layer {
     /// holds the pages it maps (`hv::Stage2`, PM M193). Once.
     pub fn placed(&self, gpa: u64, mapper: Box<dyn Mapper>) {
         let _ = self.guest.set((gpa, mapper));
+    }
+
+    /// Has its file read ahead again, as its run's command runs: its start's few writes
+    /// are made, and a sequential read of what the file holds, cold, read 5,089 MiB/s
+    /// with readahead and 86 without (PM M297). Once its mapping is let go of, nothing.
+    pub fn read_ahead(&self) {
+        self.data.read_ahead();
     }
 
     /// Whether its guest has lost it: a mapping taken from the guest that could not be given
@@ -1381,6 +1403,33 @@ mod tests {
             hi = hi.wrapping_add(lo);
         }
         assert_eq!(u64_at(4088), (hi << 32) | lo);
+    }
+
+    /// A layer's file is read without readahead until its run's command runs, then with it
+    /// (PM M297): its mapping advised random, `rr` among its VmFlags in /proc/self/smaps
+    /// (fs/proc/task_mmu.c, show_smap_vma_flags), and then not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_layer_reads_ahead_once_its_command_runs() {
+        let dir = shards_testdir::TempDir::new("layer-ahead").unwrap();
+        let booted = Layer::boot(file(&dir, "fs", 8 * ALIGN)).unwrap();
+        let [_, (_, data, _)] = booted.mappings(SECTION).unwrap();
+        let random = || {
+            let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+            let start = format!("{:x}-", data as usize);
+            let flags = smaps
+                .lines()
+                .skip_while(|l| !l.starts_with(&start))
+                .find_map(|l| l.strip_prefix("VmFlags:").map(str::to_string))
+                .unwrap();
+            flags.split_whitespace().any(|f| f == "rr")
+        };
+        assert!(random(), "a layer's mapping reads ahead before its command runs");
+        booted.read_ahead();
+        assert!(
+            !random(),
+            "a layer's mapping still reads at random once its command runs"
+        );
     }
 
     /// What the guest wrote to a layer's head and file system a save keeps, the head as

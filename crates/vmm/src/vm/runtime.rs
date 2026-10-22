@@ -63,6 +63,15 @@ impl Handle {
         }
     }
 
+    /// Has its writable layer's file read ahead again (D190), as its run's command runs
+    /// ([`Layer::read_ahead`](crate::devices::virtio::pmem::Layer::read_ahead)): nothing
+    /// where it has none.
+    pub fn layer_reads_ahead(&self) {
+        if let Some(layer) = self.control.layer() {
+            layer.read_ahead();
+        }
+    }
+
     /// Holds its vCPUs together to `cpus` CPUs' time of the host's each period, its run's
     /// limit (D191), whatever its guest does with its own cgroups; 0, or as many CPUs as
     /// it has vCPUs, lets them be. Its governor's thread is made with the first limit.

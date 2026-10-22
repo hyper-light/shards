@@ -145,6 +145,32 @@ pub fn huge_pages(ptr: NonNull<u8>, len: usize) {
     let _ = (ptr, len);
 }
 
+/// Has the kernel read only the page each fault on `ptr..ptr+len`, a file's shared
+/// mapping, asks for: no readahead around it (madvise(2) `MADV_RANDOM`), where the first
+/// fault in a hole of a file Btrfs keeps fills its whole 4 MiB window (PM M297). Advice
+/// only: where it fails, the mapping reads ahead as before.
+pub fn reads_at_random(ptr: NonNull<u8>, len: usize) {
+    #[cfg(not(miri))]
+    // SAFETY: madvise(2) of a mapping the caller holds.
+    if unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_RANDOM) } != 0 {
+        crate::debug!("MADV_RANDOM: {}", io::Error::last_os_error());
+    }
+    #[cfg(miri)]
+    let _ = (ptr, len);
+}
+
+/// Takes [`reads_at_random`] back: the faults on `ptr..ptr+len` read ahead again
+/// (`MADV_NORMAL`), as a sequential read of what the file holds needs them to (PM M297).
+pub fn reads_ahead(ptr: NonNull<u8>, len: usize) {
+    #[cfg(not(miri))]
+    // SAFETY: madvise(2) of a mapping the caller holds.
+    if unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_NORMAL) } != 0 {
+        crate::debug!("MADV_NORMAL: {}", io::Error::last_os_error());
+    }
+    #[cfg(miri)]
+    let _ = (ptr, len);
+}
+
 /// The transparent huge page size guest RAM is advised for, where the host has them and
 /// the advice is not left out (SHARDS_THP_ADVICE=never, PM M157, M225): Linux's.
 pub fn advised_huge_page() -> Option<usize> {
