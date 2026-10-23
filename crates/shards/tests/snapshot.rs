@@ -86,6 +86,21 @@ fn restore_logged(dir: &Path) -> Run {
     )
 }
 
+/// KVM's counters of a restored VM, as the Firecracker comparison reads them from debugfs
+/// (`common::kvm_counters`): each counter summed over the directories listed, a file of
+/// several values (a histogram) left out, and a counter not listed absent, not zero.
+#[test]
+fn kvm_counters_are_summed_per_name_and_absent_where_unlisted() {
+    let counters = common::kvm_counters_in(
+        "pf_taken 10 \nexits 3 \nhalt_poll_success_hist 0 4 9 \npf_taken 5 \nnot_a_number x \n",
+    );
+    assert_eq!(counters.get("pf_taken"), Some(&15));
+    assert_eq!(counters.get("exits"), Some(&3));
+    assert_eq!(counters.get("halt_poll_success_hist"), None);
+    assert_eq!(counters.get("not_a_number"), None);
+    assert_eq!(counters.get("mmio_exits"), None);
+}
+
 #[test]
 fn every_restore_continues_the_guest_where_it_asked_for_the_snapshot() {
     if cannot_run_vms() || cannot_snapshot() {

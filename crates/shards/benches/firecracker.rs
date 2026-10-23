@@ -135,6 +135,13 @@ mod compare {
         pss_bytes: u64,
         pss_file_bytes: u64,
         anon_huge_bytes: u64,
+        /// KVM's counters of its VM as its guest first beat after a restore
+        /// (`common::kvm_counters`): none for a boot, or where debugfs cannot be read.
+        kvm: Option<std::collections::BTreeMap<String, u64>>,
+        /// Its memory file's pages the host mapped by then, and of them those it holds a
+        /// private copy of ([`touched`]): what a working set recorded then would hold,
+        /// read and written; none for a boot.
+        touched: Option<(u64, u64)>,
     }
 
     /// The walking guest's command line (testguest `walk`, 512 MiB).
@@ -491,13 +498,13 @@ mod compare {
                     Vmm::Shards => {
                         let mut c = Command::new(common::shards_vm());
                         c.arg("restore").arg(&snapshot);
-                        restore_sample(&mut c, guest_bytes, || {})
+                        restore_sample(&mut c, guest_bytes, "/memory", || {})
                     }
                     Vmm::Firecracker => {
                         let socket = sockets.join(format!("{i}.sock"));
                         let mut c = Command::new(firecracker);
                         c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
-                        restore_sample(&mut c, guest_bytes, || {
+                        restore_sample(&mut c, guest_bytes, "/fc.memory", || {
                             api(&socket, "PUT", "/snapshot/load", &load);
                         })
                     }
@@ -517,6 +524,73 @@ mod compare {
         let phase = |f: fn(&Phases) -> f64| phases.iter().map(f).collect::<Vec<_>>();
         let mib =
             |v: &[Sample], f: fn(&Sample) -> u64| v.iter().map(|s| f(s) as f64 / MIB).collect::<Vec<_>>();
+        let mut rows = vec![
+            support::stats("shards_to_beat", "us", to_beat(&shards)),
+            support::stats("fc_to_beat", "us", to_beat(&fc)),
+            support::stats("shards_overhead", "MiB", mib(&shards, |s| s.overhead_bytes)),
+            support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
+            support::stats("shards_peak_rss", "MiB", mib(&shards, |s| s.peak_rss_bytes)),
+            support::stats("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes)),
+            support::stats("shards_rss_anon", "MiB", mib(&shards, |s| s.rss_anon_bytes)),
+            support::stats("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes)),
+            support::stats("shards_rss_file", "MiB", mib(&shards, |s| s.rss_file_bytes)),
+            support::stats("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes)),
+            support::stats("shards_pss", "MiB", mib(&shards, |s| s.pss_bytes)),
+            support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
+            support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
+            support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
+            support::diagnostic("restored", "us", phase(|p| p.restored_us)),
+            support::diagnostic("vcpus_ready", "us", phase(|p| p.vcpus_ready_us)),
+            support::diagnostic("resumed", "us", phase(|p| p.resumed_us)),
+            support::diagnostic("logged_to_beat", "us", phase(|p| p.to_beat_us)),
+        ];
+        // What each guest touched and wrote of its memory file and KVM's counters by its first
+        // beat, which the envelope does not check.
+        let pages = |t: &Option<(u64, u64)>, written: bool| {
+            t.map_or(f64::NAN, |(touched, copied)| {
+                (if written { copied } else { touched }) as f64
+            })
+        };
+        for (name, written) in [("touched_pages", false), ("written_pages", true)] {
+            rows.push(support::diagnostic(
+                &format!("shards_{name}"),
+                "",
+                shards.iter().map(|s| pages(&s.touched, written)).collect(),
+            ));
+            rows.push(support::diagnostic(
+                &format!("fc_{name}"),
+                "",
+                fc.iter().map(|s| pages(&s.touched, written)).collect(),
+            ));
+            rows.push(support::diagnostic(
+                &format!("logged_{name}"),
+                "",
+                phases.iter().map(|p| pages(&p.touched, written)).collect(),
+            ));
+        }
+        for name in KVM_COUNTERS {
+            let of = |kvm: &Option<std::collections::BTreeMap<String, u64>>| {
+                kvm.as_ref()
+                    .and_then(|k| k.get(name))
+                    .map_or(f64::NAN, |&v| v as f64)
+            };
+            rows.push(support::diagnostic(
+                &format!("shards_{name}"),
+                "",
+                shards.iter().map(|s| of(&s.kvm)).collect(),
+            ));
+            rows.push(support::diagnostic(
+                &format!("fc_{name}"),
+                "",
+                fc.iter().map(|s| of(&s.kvm)).collect(),
+            ));
+            rows.push(support::diagnostic(
+                &format!("logged_{name}"),
+                "",
+                phases.iter().map(|p| of(&p.kvm)).collect(),
+            ));
+        }
+        write_kvm(&shards, &fc, &phases);
         support::report(
             "firecracker_restore",
             &[
@@ -526,27 +600,87 @@ mod compare {
                 ("kernel", common::kernel_artifact().name.to_string()),
                 ("firecracker", FIRECRACKER.to_string()),
             ],
-            &[
-                support::stats("shards_to_beat", "us", to_beat(&shards)),
-                support::stats("fc_to_beat", "us", to_beat(&fc)),
-                support::stats("shards_overhead", "MiB", mib(&shards, |s| s.overhead_bytes)),
-                support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
-                support::stats("shards_peak_rss", "MiB", mib(&shards, |s| s.peak_rss_bytes)),
-                support::stats("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes)),
-                support::stats("shards_rss_anon", "MiB", mib(&shards, |s| s.rss_anon_bytes)),
-                support::stats("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes)),
-                support::stats("shards_rss_file", "MiB", mib(&shards, |s| s.rss_file_bytes)),
-                support::stats("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes)),
-                support::stats("shards_pss", "MiB", mib(&shards, |s| s.pss_bytes)),
-                support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
-                support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
-                support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
-                support::diagnostic("restored", "us", phase(|p| p.restored_us)),
-                support::diagnostic("vcpus_ready", "us", phase(|p| p.vcpus_ready_us)),
-                support::diagnostic("resumed", "us", phase(|p| p.resumed_us)),
-                support::diagnostic("logged_to_beat", "us", phase(|p| p.to_beat_us)),
-            ],
+            &rows,
         );
+    }
+
+    /// KVM's counters each restore reads as its guest first beats: its stage-2 faults (taken,
+    /// those that mapped a page, and those another vCPU or the host had mapped already), and
+    /// its exits, all, for MMIO, to halt and for port I/O.
+    const KVM_COUNTERS: [&str; 7] = [
+        "pf_taken",
+        "pf_fixed",
+        "pf_spurious",
+        "exits",
+        "mmio_exits",
+        "halt_exits",
+        "io_exits",
+    ];
+
+    /// Each restore's time to its first beat, shards' logged phases, and KVM's counters, a
+    /// row each, into `firecracker_restore-kvm.tsv` beside the samples (SHARDS_BENCH_SAMPLES),
+    /// which the envelope does not read: what each restore's faults cost on its host.
+    fn write_kvm(shards: &[Sample], fc: &[Sample], phases: &[Phases]) {
+        let Some(dir) = std::env::var_os("SHARDS_BENCH_SAMPLES") else {
+            return;
+        };
+        let counter = |kvm: &Option<std::collections::BTreeMap<String, u64>>, name: &str| {
+            kvm.as_ref()
+                .and_then(|k| k.get(name))
+                .map_or_else(|| "-".to_string(), u64::to_string)
+        };
+        let mut tsv = format!(
+            "vmm\trun\tto_beat_us\trestored_us\tvcpus_ready_us\tresumed_us\ttouched_pages\twritten_pages\t{}\n",
+            KVM_COUNTERS.join("\t")
+        );
+        let mut row = |vmm: &str,
+                       i: usize,
+                       times: [f64; 4],
+                       touched: Option<(u64, u64)>,
+                       kvm: &Option<std::collections::BTreeMap<String, u64>>| {
+            let times: Vec<String> = times.iter().map(|t| format!("{t:.1}")).collect();
+            let (read, written) = touched.map_or_else(
+                || ("-".to_string(), "-".to_string()),
+                |(t, w)| (t.to_string(), w.to_string()),
+            );
+            let counters: Vec<String> = KVM_COUNTERS.iter().map(|n| counter(kvm, n)).collect();
+            tsv.push_str(&format!(
+                "{vmm}\t{i}\t{}\t{read}\t{written}\t{}\n",
+                times.join("\t"),
+                counters.join("\t")
+            ));
+        };
+        let none = [f64::NAN; 3];
+        for (i, s) in shards.iter().enumerate() {
+            row(
+                "shards",
+                i,
+                [s.to_ready_us, none[0], none[1], none[2]],
+                s.touched,
+                &s.kvm,
+            );
+        }
+        for (i, s) in fc.iter().enumerate() {
+            row(
+                "firecracker",
+                i,
+                [s.to_ready_us, none[0], none[1], none[2]],
+                s.touched,
+                &s.kvm,
+            );
+        }
+        for (i, p) in phases.iter().enumerate() {
+            row(
+                "shards-logged",
+                i,
+                [p.to_beat_us, p.restored_us, p.vcpus_ready_us, p.resumed_us],
+                p.touched,
+                &p.kvm,
+            );
+        }
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("firecracker_restore-kvm.tsv"), tsv).unwrap();
     }
 
     /// A restored VM held running: its process, and the threads that drain its output.
@@ -726,6 +860,10 @@ mod compare {
         vcpus_ready_us: f64,
         resumed_us: f64,
         to_beat_us: f64,
+        /// KVM's counters of its VM as its guest first beat (`common::kvm_counters`).
+        kvm: Option<std::collections::BTreeMap<String, u64>>,
+        /// Its memory file's pages touched and written by then ([`touched`]).
+        touched: Option<(u64, u64)>,
     }
 
     fn restore_phases(snapshot: &Path) -> Phases {
@@ -747,6 +885,11 @@ mod compare {
             all
         });
         let beat = beat.recv_timeout(TIMEOUT);
+        let touched = beat
+            .is_ok()
+            .then(|| touched(child.id() as libc::pid_t, "/memory"))
+            .flatten();
+        let kvm = beat.is_ok().then(|| common::kvm_counters(child.id())).flatten();
         let _ = child.kill();
         child.wait().unwrap();
         let (out, err) = (out.join().unwrap(), err.join().unwrap());
@@ -774,12 +917,19 @@ mod compare {
             vcpus_ready_us: at(" ready to run after "),
             resumed_us: at(" guest marker 2 at "),
             to_beat_us: beat.duration_since(start).as_secs_f64() * 1e6,
+            kvm,
+            touched,
         }
     }
 
     /// One restore: `command` spawned, then `after_spawn` (Firecracker's load), then the
     /// time to the guest's first beat, the overhead readings, and the peak.
-    fn restore_sample(command: &mut Command, guest_bytes: u64, after_spawn: impl FnOnce()) -> Sample {
+    fn restore_sample(
+        command: &mut Command,
+        guest_bytes: u64,
+        memory_file: &str,
+        after_spawn: impl FnOnce(),
+    ) -> Sample {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -796,6 +946,10 @@ mod compare {
         });
         after_spawn();
         let beat = beat.recv_timeout(TIMEOUT);
+        // What the guest touched of its memory file and KVM's counters as it first beat, read
+        // before the readings below: what its restore took, a few beats' more at most.
+        let touched = beat.is_ok().then(|| touched(pid, memory_file)).flatten();
+        let kvm = beat.is_ok().then(|| common::kvm_counters(pid as u32)).flatten();
         let overhead = beat.is_ok().then(|| {
             (0..READINGS)
                 .map(|_| {
@@ -832,7 +986,39 @@ mod compare {
             pss_bytes: pss.expect("the VMM's Pss"),
             pss_file_bytes: pss_file.expect("the VMM's Pss_File"),
             anon_huge_bytes: anon_huge.unwrap_or(0),
+            kvm,
+            touched,
         }
+    }
+
+    /// Of VM process `pid`'s mappings of a file whose path ends `name` (its restored guest's
+    /// memory file), the pages the host maps, and of them those it holds a private copy of
+    /// (`Rss` and `Anonymous` in /proc/PID/smaps, in 4 KiB pages): what shards' recorder
+    /// takes for a working set, touched and written (vm::x86_64::recorded). None where it
+    /// maps no such file.
+    fn touched(pid: libc::pid_t, name: &str) -> Option<(u64, u64)> {
+        let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).ok()?;
+        let (mut ours, mut found) = (false, false);
+        let (mut rss, mut anon) = (0u64, 0u64);
+        for line in smaps.lines() {
+            let mut fields = line.split_whitespace();
+            let Some(first) = fields.next() else { continue };
+            if first.contains('-') && !first.ends_with(':') {
+                ours = line
+                    .split_whitespace()
+                    .nth(5)
+                    .is_some_and(|path| path.ends_with(name));
+                found |= ours;
+            } else if ours {
+                let kib = fields.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                match first {
+                    "Rss:" => rss += kib,
+                    "Anonymous:" => anon += kib,
+                    _ => {}
+                }
+            }
+        }
+        found.then_some((rss / 4, anon / 4))
     }
 
     /// Firecracker's API over its socket: `method path` with a JSON `body`, which must
@@ -1018,6 +1204,8 @@ mod compare {
             pss_bytes: pss.expect("the VMM's Pss"),
             pss_file_bytes: pss_file.expect("the VMM's Pss_File"),
             anon_huge_bytes: anon_huge.unwrap_or(0),
+            kvm: None,
+            touched: None,
         }
     }
 

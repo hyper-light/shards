@@ -493,6 +493,39 @@ pub fn docker_config() -> &'static Path {
     })
 }
 
+/// KVM's counters of a VM as `name value` lines (each file of its debugfs directory,
+/// /sys/kernel/debug/kvm/PID-FD/, which sums its vCPUs'), summed per name over every
+/// directory listed; a file of several values (a histogram) is left out, and a counter not
+/// listed is absent, not zero.
+pub fn kvm_counters_in(text: &str) -> std::collections::BTreeMap<String, u64> {
+    let mut sums = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        if let (Some(name), Some(value), None) = (words.next(), words.next(), words.next())
+            && let Ok(value) = value.parse::<u64>()
+        {
+            *sums.entry(name.to_string()).or_insert(0) += value;
+        }
+    }
+    sums
+}
+
+/// KVM's counters of VM process `pid` ([`kvm_counters_in`]), from debugfs, which only root
+/// reads: through `sudo -n`, as CI's runners allow; none where they cannot be read.
+pub fn kvm_counters(pid: u32) -> Option<std::collections::BTreeMap<String, u64>> {
+    let script = format!(
+        "for f in /sys/kernel/debug/kvm/{pid}-*/*; do [ -f \"$f\" ] && printf '%s %s\\n' \"${{f##*/}}\" \"$(tr '\\n' ' ' < \"$f\")\"; done; true"
+    );
+    let out = Command::new("sudo")
+        .args(["-n", "sh", "-c", &script])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let counters = kvm_counters_in(&String::from_utf8_lossy(&out.stdout));
+    (out.status.success() && !counters.is_empty()).then_some(counters)
+}
+
 /// The VM process, for what runs microVMs without the command in front.
 pub fn shards_vm() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
