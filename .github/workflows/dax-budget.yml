@@ -14,6 +14,9 @@ on:
       args:
         description: measure.py's arguments, after its build and output directory
         default: --rounds 2
+      fuse:
+        description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
+        default: ""
 
 permissions:
   contents: read
@@ -51,17 +54,25 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
       - name: perf
         run: scripts/retry 3 30 sudo apt-get install -y "linux-tools-$(uname -r)" || echo "no perf for $(uname -r)"
-      # The tree's shards, and the tree's with each window range on huge pages
-      # (docs/research/measurements/dax-budget/huge.patch), each kept apart.
+      # The tree's shards, the tree's with each window range on huge pages
+      # (docs/research/measurements/dax-budget/huge.patch), and the tree's with each patch
+      # asked for, each kept apart.
       - name: Build
+        env:
+          FUSE: ${{ github.event.inputs.fuse }}
         run: |
           cargo build --locked -p shards --release
           cp target/release/shards "$RUNNER_TEMP/shards"
-          git apply docs/research/measurements/dax-budget/huge.patch
-          cargo build --locked -p shards --release
-          cp target/release/shards "$RUNNER_TEMP/shards-huge"
-          git checkout -- crates
+          for patch in huge $FUSE; do
+            git apply "docs/research/measurements/dax-budget/$patch.patch"
+            cargo build --locked -p shards --release
+            cp target/release/shards "$RUNNER_TEMP/shards-$patch"
+            git checkout -- crates
+          done
       - name: Measure
+        env:
+          ARGS: ${{ github.event.inputs.args }}
+          FUSE: ${{ github.event.inputs.fuse }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m
@@ -70,9 +81,10 @@ jobs:
           perf=""
           command -v perf > /dev/null && sudo -n perf --version && perf=--perf
           # Pushed: two rounds; asked for: the arguments asked with.
-          args="${{ github.event.inputs.args }}"
+          fuse=""
+          for patch in $FUSE; do fuse="$fuse --fuse $patch=$RUNNER_TEMP/shards-$patch"; done
           python3 -I docs/research/measurements/dax-budget/measure.py "$RUNNER_TEMP/shards" dax-budget \
-            --huge "$RUNNER_TEMP/shards-huge" ${args:---rounds 2} $perf
+            --huge "$RUNNER_TEMP/shards-huge" $fuse ${ARGS:---rounds 2} $perf
           python3 -I docs/research/measurements/dax-budget/samples.py dax-budget
       - uses: actions/upload-artifact@v7.0.1
         if: always()

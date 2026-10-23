@@ -8,19 +8,26 @@ through the guest's page cache), the file sparse and written out; and under no b
 interleave the cases, each first in turn; the file's pages are out of the host's page cache
 before each read, so that the read's microVM brings them in and pays for them.
 
-    measure.py SHARDS OUT [--huge SHARDS] [--rounds N] [--highs 384M,infinity]
-               [--size-mib 1024] [--perf]
+    measure.py SHARDS OUT [--huge SHARDS] [--fuse NAME=SHARDS]... [--arms A,B]
+               [--guest-mib N] [--rounds N] [--highs 384M,infinity] [--size-mib 1024]
+               [--perf] [--stop-slice]
 
 With --huge, a third arm: that build of shards (huge.patch: each window range on huge
 pages, MADV_HUGEPAGE), its window as long as the host's memory. With --stop-slice, the
 slice is stopped after each read, as its user may stop it, which ends the spawner and warm
-microVMs each daemon keeps there: what the runs after it meet.
+microVMs each daemon keeps there: what the runs after it meet. Each --fuse NAME=SHARDS is
+an arm of another build of shards, through FUSE (no window); --arms picks the arms run, by
+name. With --guest-mib, the reader's run is held to that many MiB in its guest
+(`--memory`, no swap, `--oom-kill-disable`: its memory.high), its budget its own.
 
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
 anon and reclaim counters, memory.events, memory.pressure), its VM process's vCPU threads'
 states and CPU times, and KVM's counters of its VM where `sudo -n` reads debugfs; with
 --perf, a profile of the whole host 5 to 15 s into each read (`sudo -n perf`).
+
+Into OUT/<case>.vms, what each VM process in the slice holds as the reader starts and once
+its read is done, mapping by mapping, and what its guest says of its own memory.
 
 Linux, with KVM and a user's systemd manager (XDG_RUNTIME_DIR's bus). Each arm has a home
 of its own, which pulls alpine once, and an empty DOCKER_CONFIG; all of it is removed, and
@@ -36,6 +43,9 @@ p.add_argument("--highs", default="384M,infinity")
 p.add_argument("--size-mib", type=int, default=1024)
 p.add_argument("--perf", action="store_true")
 p.add_argument("--huge")
+p.add_argument("--fuse", action="append", default=[], metavar="NAME=SHARDS")
+p.add_argument("--arms")
+p.add_argument("--guest-mib", type=int)
 p.add_argument("--stop-slice", action="store_true")
 a = p.parse_args()
 
@@ -57,6 +67,11 @@ WINDOW = {"SHARDS_SHARE_WINDOW_MIB": str(HOST_MIB)}
 ARMS = {"window": (shards, WINDOW), "none": (shards, {"SHARDS_SHARE_WINDOW_MIB": "0"})}
 if a.huge:
     ARMS["huge"] = (os.path.realpath(a.huge), WINDOW)
+for given in a.fuse:
+    arm, _, build = given.partition("=")
+    ARMS[arm] = (os.path.realpath(build), {"SHARDS_SHARE_WINDOW_MIB": "0"})
+if a.arms:
+    ARMS = {arm: ARMS[arm] for arm in a.arms.split(",")}
 FILES = ("sparse", "written")
 homes = {arm: os.path.join(work, f"home-{arm}") for arm in ARMS}
 
@@ -144,6 +159,46 @@ def kvm(pid):
     return done.stdout.strip()
 
 
+def held(f, when, arm):
+    """What each VM process in the slice holds, mapping by mapping (/proc/PID/smaps: each
+    with a MiB or more resident, its Rss, Anonymous, Private_Dirty, Shared_Clean and
+    Private_Clean in KiB), with its status's RssAnon, RssFile and RssShmem; and the reader's
+    guest's view of its memory (/proc/meminfo, its run's memory.stat)."""
+    f.write(f"== {when} {time.time():.3f}\n")
+    for pid in vm_pids():
+        try:
+            with open(f"/proc/{pid}/status") as s:
+                rss = " ".join(l.replace("\t", "").replace(" kB", "").replace(":", "").strip()
+                               for l in s if l.startswith(("RssAnon", "RssFile", "RssShmem")))
+            f.write(f"vm {pid} {rss}\n")
+            with open(f"/proc/{pid}/smaps") as s:
+                head, fields = None, {}
+                for line in list(s) + ["0-0 end\n"]:
+                    words = line.split()
+                    if not words:
+                        continue
+                    if "-" in words[0] and not words[0].endswith(":"):
+                        if head and int(fields.get("Rss", 0)) >= 1024:
+                            f.write("  " + head + " " + " ".join(
+                                f"{k} {fields.get(k, 0)}" for k in
+                                ("Rss", "Anonymous", "Private_Dirty", "Shared_Clean", "Private_Clean")) + "\n")
+                        start, end = (int(x, 16) for x in words[0].split("-"))
+                        name = words[5] if len(words) > 5 else "[anon]"
+                        head, fields = f"{words[0]} {(end - start) >> 20}MiB {words[1]} {name}", {}
+                    elif words[0].endswith(":") and len(words) > 1:
+                        fields[words[0][:-1]] = words[1]
+        except OSError as e:
+            f.write(f"vm {pid} {e}\n")
+    try:
+        guest = run(arm, "exec", "reader", "sh", "-c",
+                    "grep -E '^(MemTotal|MemFree|MemAvailable|Cached|AnonPages|Shmem|Slab):' /proc/meminfo; "
+                    "grep -E '^(anon|file|kernel|slab) ' /sys/fs/cgroup/memory.stat", check=False, timeout=60)
+        f.write("guest " + " ".join(guest.stdout.split()) + "\n")
+    except subprocess.TimeoutExpired:
+        f.write("guest: no answer in 60 s\n")
+    f.flush()
+
+
 STAT = ("anon", "file", "file_mapped", "shmem", "pagetables", "sec_pagetables", "pgscan", "pgsteal", "pgfault",
         "pgmajfault", "workingset_refault_file", "workingset_activate_file", "active_file", "inactive_file")
 
@@ -192,8 +247,13 @@ def one(arm, file, high, name):
     """One read's seconds: a microVM started in the slice, its budget set, the file read."""
     if not os.path.isdir(homes[arm]):
         run(arm, "pull", "-q", "alpine")
-    run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol", "alpine",
+    held_to = []
+    if a.guest_mib:
+        held_to = ["--memory", f"{a.guest_mib}m", "--memory-swap", f"{a.guest_mib}m", "--oom-kill-disable"]
+    run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, *held_to, "-v", f"{vol}:/vol", "alpine",
         "sleep", "100000")
+    vms = open(os.path.join(out, f"{name}.vms"), "w")
+    held(vms, "started", arm)
     set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={high}", "MemorySwapMax=0")
     if set_.returncode != 0:
         raise SystemExit(f"the slice's budget: {set_.stderr}")
@@ -211,6 +271,8 @@ def one(arm, file, high, name):
     stop.set()
     for w in watchers:
         w.join()
+    held(vms, "read", arm)
+    vms.close()
     # The slice stays, its budget taken off, unless asked: stopping it ends the warm
     # microVMs the daemons keep in it for their next runs.
     run(arm, "rm", "-f", "reader", check=False)
