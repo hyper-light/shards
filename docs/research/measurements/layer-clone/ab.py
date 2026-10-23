@@ -16,7 +16,7 @@ with host, OS and revision; with --raw, each round's times too, on stderr. Each 
 `shards` runs with its own SHARDS_HOME (beside this script's temporary directory, or the
 homes --homes names, which hold IMAGE already and are not pulled into again: a registry
 limits the pulls it serves) and an empty DOCKER_CONFIG."""
-import argparse, os, platform, subprocess, sys, tempfile, time
+import argparse, atexit, os, platform, shutil, subprocess, sys, tempfile, time
 
 p = argparse.ArgumentParser()
 p.add_argument("old")
@@ -33,6 +33,16 @@ config = os.path.join(work, "docker-config")
 os.makedirs(config)
 homes = a.homes.split(",") if a.homes else [os.path.join(work, "old"), os.path.join(work, "new")]
 builds = {name: (binary, home) for (name, binary), home in zip((("old", a.old), ("new", a.new)), homes)}
+
+
+@atexit.register
+def clean():
+    """However the run ends, a failed step's exit included: each build's daemon stopped,
+    its runs with it, and this run's own files removed; homes given with --homes are kept."""
+    for binary, home in builds.values():
+        subprocess.run([binary, "daemon", "stop"], env=dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config),
+                       capture_output=True)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def shards(build, *args, check=True):
@@ -93,5 +103,3 @@ for size in [int(s) for s in a.sizes.split(",")]:
     for (build, step), xs in times.items():
         print(f"size {size:>9} {build} {step:<7} n {len(xs)} p50 {pct(xs, .5):8.2f} p90 {pct(xs, .9):8.2f} "
               f"p99 {pct(xs, .99):8.2f} max {max(xs):8.2f} ms")
-for build in builds:
-    shards(build, "daemon", "stop", check=False)

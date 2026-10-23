@@ -629,6 +629,12 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Gives back blocks of `file` that hold zeros, where a file system fills its holes
+/// (unix.rs): no snapshot is written on Windows.
+pub fn punch_hole(_file: &File, _offset: u64, _len: u64) -> io::Result<()> {
+    Ok(())
+}
+
 /// The volume holding `path`: the bytes this user may still write there, and its size
 /// (GetDiskFreeSpaceExW's counts for the caller, which honor quotas).
 pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {

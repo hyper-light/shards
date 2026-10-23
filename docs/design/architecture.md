@@ -1882,6 +1882,14 @@ audit's "Security and test coverage").
     only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
     huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
+  - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
+    first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
+    is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes
+    as its host reclaims memory, and Landlock holds a rule's inode, not its dentry. So the
+    rule stopped meeting the path, and a template's save, which reads
+    `/proc/self/pagemap`, was refused on a busy host: its image's pool never filled (6 of
+    55 rounds of the daemon tests on Fedora; every round with the test unit's memory
+    reclaimed twice a second, and none with the descriptor held).
   - It fails closed: a kernel without Landlock, or whose ABI is older than v5 (Linux 6.10,
     the first to govern device ioctls), starts no VM, as does a path it must allow that is
     not there. rootless-security.md R7 forbids weakening a policy silently; Landlock's
@@ -5675,14 +5683,17 @@ working set shrinks, all but 12 to 20 MiB of a gigabyte the guest plugged, used 
 on both.
 
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
-runs. E2E on Linux (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`):
-a microVM under a slice held to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte through
-to its end, the daemon's log saying it gave back files and what it asked to unplug: none
-there, the run's peak since the pass before being the read's own page cache at its budget,
-which a pass keeps (M275); the cold files' pages are the host's again as they are reported
-free. Not on macOS, whose pressure is the whole system's, which no test may raise for every
-program on its host. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle
-daemon's threads still.
+runs. E2E on Linux (tests/containers.rs
+`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a microVM under a slice held
+to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte to its end, in files of a MiB, which
+its guest reads through FUSE into its page cache (a file of a window's range or more is
+the host's page cache, mapped into it: D189), the daemon's log saying it gave back files
+and what it asked to unplug: none there, the run's peak since the pass before being the
+read's own page cache at its budget, which a pass keeps (M275); the cold files' pages are
+the host's again as they are reported free. Not on macOS, whose pressure is the whole
+system's, which no test may raise for every program on its host.
+`an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle daemon's threads
+still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
 and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB
@@ -5696,7 +5707,7 @@ MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its 
 leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
 D188's file pages. M268 at larger sizes.
 
-### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (in progress: mappings built, opt-in)
+### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory, but on a virtual machine on an AMD CPU)
 
 **Found.** The user's plan, item 5. A volume's file the guest reads is in the host's page
 cache and again in the guest's (944 MiB of a 1 GiB file, PM M267), and every read and write
@@ -5712,8 +5723,8 @@ stores.
   (`MachineConfig::share_window_mib`, snapshot format 22): virtio-fs's cache, shared memory
   region 0 (VIRTIO_FS_SHMCAP_ID_CACHE), at a GiB boundary past the swap window, whole 2 MiB
   ranges as the guest maps files in them, within the addresses the guest's CPU has. The
-  daemon gives every microVM's shares one of `SHARDS_SHARE_WINDOW_MIB` (default none), and
-  keys its templates by it.
+  daemon gives every microVM's shares one, as long as its host's memory unless
+  `SHARDS_SHARE_WINDOW_MIB` says another length (below), and keys its templates by it.
 - The VM process answers FUSE_SETUPMAPPING and FUSE_REMOVEMAPPING itself
   (devices/virtio/fs/window.rs). Linux names a mapping's file by its node alone, its handle
   -1 (fs/fuse/dax.c, `fuse_setup_one_mapping`), so the VM process asks its share process
@@ -5801,7 +5812,7 @@ stores.
   linear alias never does: shards' kernel patch 0010 maps a file system DAX device's memory
   in blocks, but where debug_pagealloc or a realm needs base pages, and an arm64 window
   takes none of its guest's memory either (0.0 to 0.1 MiB at every length to 4 GiB, n 12,
-  M300). The pinned kernel (kernel-6.18.48-8df0015cca35) carries both; held by
+  M300). The pinned kernel carries both (since kernel-6.18.48-8df0015cca35); held by
   `a_dax_windows_page_structures_take_none_of_its_guests_memory`, its bound the spread of
   boots alone.
 - **Whole pages a host does not hold written as FUSE_WRITEs** (PM M301). A store into a
@@ -5887,6 +5898,95 @@ stores.
   `a_frame_from_device_memory_is_sent_and_one_whose_page_is_gone_dropped`,
   `a_checked_copy_fails_where_its_pages_are_gone` and
   `a_fault_outside_a_checked_copy_still_ends_its_process`.
+- **What a window's guest makes of it, made as its guest uses it** (PM M306). A window's
+  length cost its microVM what its guest's kernel made of the window at once, whatever it
+  went on to map: its page structures, a 64th of it, written into its head as the guest
+  probed the device (for 64 GiB, 1,044 MiB of its VM process's memory on the Mac and on
+  Fedora, and 1.4 s of Fedora's boot), every one of which a template's save then read;
+  the structures of its head's own pages, a 4,096th of it, each its own (each lists
+  itself), so that every template kept them (18 MiB for 64 GiB); and FUSE DAX's mapping of
+  each 2 MiB range, 128 bytes, made at every mount and freed at every unmount (a 64 GiB
+  window's run in its microVM set up 3.0 ms slower and ran 4.2 ms longer at p50 on Fedora
+  than with 0012 and 0013, n 40). shards' kernel makes each as its guest uses it: patch
+  0011 a range's page structures as FUSE first sets the range up (`PGMAP_LAZY_MEMMAP`),
+  0012 none of the head's own pages', its metadata, which no pfn of it hands out, and 0013
+  a range's mapping as the range is first wanted. A head's save reads none of the blocks of its own memory its guest never touched
+  (`Head::untouched`, by `platform::untouched`), where reading them gave each of their pages
+  memory on macOS, and a block mapped from a snapshot's copy is read whole, its untouched
+  pages the copy's; one its guest wrote zeros over is mapped back as fresh memory, where a
+  discard (MADV_DONTNEED) brought the copy's bytes back on Linux. A 64 GiB window costs a
+  boot 2.1 MiB of its VM process's memory on the Mac and 2.8 on Fedora, a template what one
+  of 4 GiB costs, and a run with a volume nothing measured (Fedora, n 40: setup 2.69 ms at
+  p50 against 2.84 with no window, 5.66 before 0013). The pinned kernel carries the three
+  (since kernel-6.18.48-e39058b2b627). Held by
+  `a_long_dax_window_costs_its_boot_next_to_nothing` (a 4,096th of the window, what the
+  structures of the head's own pages take: 0011 alone took 20,544 KiB, the kernel before it
+  1,069,184, an x86_64 CI runner 8,392 with all three while each boot wrote its whole held
+  record, M307),
+  `a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range` (768 kmalloc-128
+  objects in use with no window, 33,440 with a 64 GiB one before 0013), and vmm's
+  `a_heads_save_reads_no_block_its_guest_never_touched` and
+  `a_heads_blocks_from_its_copy_are_saved_whole_and_zeroed_ones_mapped_back_fresh`
+  (mutation-checked on Linux and the Mac; the two above on the Mac).
+- **Every share's window as long as its host's memory, by default** (PM M307). A window
+  maps what its guest reads and writes of a volume's files from the host's page cache,
+  which holds no more of them at once than the host has memory, and one shorter than what
+  its guest maps churns its mappings (M276: 1 GiB under a 2 GiB file read slower than 4
+  GiB). Its length now costs what its guest maps of it (above), so the daemon gives every
+  share, the join share's too, a window as long as its host's memory, as it gives a run a
+  swap window that long (D159); `SHARDS_SHARE_WINDOW_MIB` another length, 0 none. Where its
+  guest's addresses cannot hold so many that long past its RAM, the memory it may plug and
+  its swap window (each the host's memory too), its VM gives each the most whole ranges
+  that fit and says so, as its swap window takes what the addresses leave
+  (`share_windows`), and records the length its machine has: a restore, its heads kept for
+  that length, has it or is refused. Eight volumes and the join share took 83,538 MiB each
+  on the Mac (40-bit addresses, 128 GiB) and 41,202 on Fedora (39-bit, 62.5 GiB). APFS
+  fills the holes a small file's writes leave as the file is synced, so a head's copy
+  punches them (`platform::punch_hole`, F_PUNCHHOLE; ext4 keeps them): a window's heads
+  file takes 12 KiB where 4 MiB, and a writable layer's head 6.5 MiB where 12. A device's
+  reset, which every boot's driver makes, unmaps its whole window, and cleared the whole of
+  its held record with it, writing every page of it (2 MiB for 64 GiB); it clears the
+  record of the ranges it unmaps alone, the only ones whose bits are set. On the Mac, with
+  a window of its host's 128 GiB, a template's boot takes 0.2 MiB more of its VM process's
+  memory (4.2 before), its template is the size of one without (70 MB), its restored VMs'
+  footprint is the same (19.2 MiB against 19.5), and a run with a volume sets up as fast
+  (1.44 ms at p50 against 1.75, n 40); on Fedora a 64 GiB window's boot takes 0.3 MiB. A
+  booted window's head is on the host's base pages, as a restored one is: where THP is
+  always (x86_64 CI runners) its one page structure written at boot took a 2 MiB huge page
+  (afa9b355), and with base pages the window's boot is within a huge page of guest RAM of
+  none's (-1.9 to +2.1 MiB). Its held record is on base pages too: there the first range's
+  words took a huge page, all 512 pages of a 64 GiB window's record (e1df33d4). A
+  template's map-back gives a head's run of zero blocks back in one call (5.4 ms for nine
+  83 GiB windows on the Mac, where 6.5; 187 µs on Fedora). Held by
+  `a_volumes_large_files_go_through_a_dax_window_by_default` (a 4 MiB file mapped by
+  default, through FUSE with 0), vmm's `share_windows_go_one_after_another` (fitted, none,
+  a kept length refused), `a_kept_blocks_pages_of_zeros_are_holes_in_its_copy` (synced as
+  a commit syncs it), `a_head_mapped_back_gives_back_its_blocks_of_zeros` and
+  `a_cleared_window_leaves_the_record_of_ranges_it_never_mapped_untouched`, each
+  mutation-checked on the Mac.
+- **None by default on a virtual machine on an AMD CPU** (PM M308). There a guest's first
+  touch of each 4 KiB page a window gives it is mapped twice, by the host's KVM and by the
+  hypervisor beneath, which shadows the host's nested paging: on CI's x86_64 runners,
+  Azure virtual machines, a 1 GiB read through a window took 41.2 to 138.4 s at p50 on AMD
+  EPYC 7763 and 9V74 runners (139.9 to 178.9 s written out) where FUSE took 3.0 to 6.4,
+  its pages landing in guest RAM already mapped on the host's 2 MiB pages; and under a 384
+  MiB budget 23.2 to 134.0 s. The host's KVM took 1.4 exits a page, its vCPU threads busy
+  half the run in guest mode, which is the hypervisor beneath's own time; Hyper-V's
+  enlightened NPT TLB flush was in use, so no flush was the cost. Each range advised onto
+  huge pages (`huge.patch`: 2 MiB folios, mapped whole, 58 times fewer faults and KVM's
+  own 2 MiB entries) read no faster, and three times slower on the 9V74s (123.3 and 129.1
+  s against 41.2 and 42.4): the hypervisor beneath shadows 4 KiB at a time whatever the
+  host maps. So the daemon gives a share no window there unless `SHARDS_SHARE_WINDOW_MIB`
+  asks for one, and says so as it starts (`share_window_default`, from `/proc/cpuinfo`'s
+  vendor and `hypervisor` flag); an Intel runner there read 1 GiB through a window in 2.0
+  s (3.5 written) against FUSE's 2.6 (2.9), 14 µs a fault, and under the budget in 2.6 s
+  against 6.1, and Fedora's bare metal in 1.37 against 1.23, both with windows as before;
+  there 2 MiB folios read five times faster sparse (0.39 s), which random reads' cost
+  decides (Next). Held by daemon's `a_shares_window_by_default_follows_its_host`,
+  containers' `a_volumes_large_files_go_through_a_dax_window_by_default` (the host's
+  default, none with 0, one given on any host) and
+  `a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end` (512 MiB
+  past a 384 MiB `MemoryHigh` through a window given, the budget met, to its end).
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5895,7 +5995,13 @@ it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 Gi
 template pays it once; what its restores pay is to be measured with mappings.
 
 **Next.**
-- How long a window, and from what size a file is mapped. Measured against FUSE (PM
+- A window's ranges on 2 MiB folios where the host pays per fault (PM M308): an Intel
+  runner read 1 GiB five times faster sparse through them (0.39 s against 2.03) and a
+  third faster written (2.36 against 3.52), an AMD virtual machine no faster; what each
+  first touch of a range costs random 4 KiB reads (a 2 MiB read where 4 KiB, a 2 MiB folio
+  held) is measured before they are taken.
+- From what size a file is mapped: a range, 2 MiB, not measured below it. How long a
+  window was decided (above, PM M306), after this. Measured against FUSE (PM
   M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
   reads through it (4 GiB under fio's 2 GiB file) reads 17 to 62 times as fast and writes
   whole MiBs 2 to 2.8 times as fast, the guest holding 28 MiB of memory where 2.1 GiB
@@ -5920,9 +6026,9 @@ template pays it once; what its restores pay is to be measured with mappings.
   a range not yet mapped pays before it writes was measured part by part (M302): a cold
   file's 1 MiB writes into ranges not yet mapped cost 6% more than FUSE's, on Fedora's
   performance cores and on its efficient cores alike, their rounds' spread the cores the
-  scheduler put a run on (M302). Windows stay asked for, none by default, until the
-  default is decided. A window takes none of its guest's memory on either architecture
-  (above: its page structures its head's, and arm64's linear map of it in blocks).
+  scheduler put a run on (M302). A window takes none of its guest's memory on either
+  architecture (above: its page structures its head's, and arm64's linear map of it in
+  blocks).
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
@@ -6383,8 +6489,8 @@ the guest keeps their metadata alone.
   MiB of a guest's memory for a 64 GiB layer (M277). 0010 maps a file system DAX device's
   memory in blocks, but where debug_pagealloc or a realm needs base pages: a layer of 4 to
   64 GiB takes none of its guest's memory (-0.7 to 0.3 MiB at p50), and its probe is done
-  11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel (kernel-6.18.48-8df0015cca35)
-  carries it.
+  11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel carries it (since
+  kernel-6.18.48-8df0015cca35).
 
 **Next** (the slices after these).
 - A restart that goes on over the kept file itself: today its files are put back, packed
@@ -8253,6 +8359,10 @@ inside the microVM the other runs in (D119).
   `inspect`'s `ShmSize` says them, held to what the guest's statfs says. A run's
   memory limit still holds what it writes there, as memory. A run wrote 128 MiB there,
   where 64 MiB refused it (`a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`).
+  Each of an image's agents (D139) has a /dev/shm of its own, mode 0700, as large as its
+  run's (`domains::shm_of`, the run's `shm=` entry): it kept Docker's 64 MiB, which a
+  browser an agent drives outgrows (`agents_run_in_their_domains`: past 64 MiB, which the
+  64 MiB mount fails).
   - `--ipc private` (the default) and `shareable`: its own; another run may share a
     `shareable` run's alone, as Docker's daemon allows (moby
     daemon/container_operations_unix.go, getIPCContainer). `--shm-size` sizes its own.

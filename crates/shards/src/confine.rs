@@ -374,6 +374,26 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
         }
     }
     allow(std::path::Path::new("/dev/null"), write)?;
+    // This process's /proc directory stays looked up while it lives, its rule's inode with
+    // it: procfs makes a new inode for /proc/PID each time its dentry is made afresh
+    // (fs/proc/base.c, proc_pid_lookup → proc_pid_make_inode, "We need a new inode"), a
+    // live process's dentry unused goes as the host reclaims memory (pid_delete_dentry),
+    // and Landlock holds a rule's inode, not its dentry (security/landlock/fs.c,
+    // get_inode_object). So a rule made on the first inode no longer met the path: a
+    // template's save, reading /proc/self/pagemap, was refused (EACCES) on a busy host, and
+    // its pool never filled (Fedora, 6 of 55 rounds of the daemon tests). A descriptor of
+    // it held for the process's life holds its dentry, from the first layer on.
+    static PROC_SELF: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
+    if PROC_SELF.get().is_none() {
+        let name = c"/proc/self";
+        // SAFETY: open(2) of a NUL-terminated path, for a handle on its inode alone.
+        let fd = unsafe { libc::open(name.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(format!("/proc/self: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let _ = PROC_SELF.set(unsafe { OwnedFd::from_raw_fd(fd) });
+    }
     allow(std::path::Path::new("/proc/self"), read_dir)?;
     for f in &paths.read {
         allow(f, read)?;

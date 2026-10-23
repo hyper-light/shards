@@ -1,0 +1,35 @@
+mm: a lazy pagemap's metadata pages' structures left unmade
+
+A pagemap whose pages' structures lie in its own memory (an altmap) has the structures of
+that memory's pages made too, as its range moves to ZONE_DEVICE (memmap_init_range()): a
+4,096th of the device, each structure its own (each lists itself), so a snapshot keeps
+every one. For a 64 GiB virtio-fs DAX window that is 18 MiB its guest's boot writes and
+each template of it keeps (shards' PM M306), where the window's own pages' structures are
+made as its ranges are first mapped (0011). Those pages are the pagemap's metadata: no pfn
+of it hands them out (pfn_first(), pgmap_pfn_valid()), memory failure leaves them be
+("device metadata space is not recoverable"), and x86's and arm64's vmemmap give them back
+by the altmap without reading their structures. Where the pagemap's owner makes its pages'
+structures (PGMAP_LAZY_MEMMAP), they are left unmade.
+
+--- a/mm/memremap.c
++++ b/mm/memremap.c
+@@ -227,8 +227,18 @@ static int pagemap_range(struct dev_pagemap *pgmap, struct mhp_params *params,
+ 		struct zone *zone;
+ 
+ 		zone = &NODE_DATA(nid)->node_zones[ZONE_DEVICE];
++		/*
++		 * shards: the structures of the pages that hold the pages' structures (the
++		 * altmap's) are left unmade where the pgmap's owner makes its pages' own
++		 * (PGMAP_LAZY_MEMMAP): those pages are its metadata, which no pfn of it hands out
++		 * (pfn_first(), pgmap_pfn_valid()), no memory failure reads ("device metadata
++		 * space") and its vmemmap gives back by its altmap; made, they took a 4,096th of
++		 * the device, each page's its own.
++		 */
+ 		move_pfn_range_to_zone(zone, PHYS_PFN(range->start),
+-				PHYS_PFN(range_len(range)), params->altmap,
++				PHYS_PFN(range_len(range)),
++				(pgmap->flags & PGMAP_LAZY_MEMMAP) ? NULL :
++								     params->altmap,
+ 				MIGRATE_MOVABLE, false);
+ 	}
+ 

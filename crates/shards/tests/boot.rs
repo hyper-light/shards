@@ -117,6 +117,61 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
     );
 }
 
+/// A DAX window costs its boot what its guest maps of it (D189, shards' kernel patches
+/// 0011 and 0012, PM M306): its page structures are made as each range is first mapped,
+/// and its head's own pages' never, so a 64 GiB window takes its VM process less than a
+/// 4,096th of the window (16 MiB), what its head's own pages' structures alone would,
+/// more memory than none: where its page structures took a 64th of it (1,044 MiB on the
+/// Mac and on Fedora), and with them made but its head's own pages' 20 MiB; with neither,
+/// 0.1 MiB on the Mac and 0.3 on Fedora (2.1, 2.8 and 8.2 on an x86_64 CI runner while
+/// a device's reset wrote its window's whole held record, PM M307). Each the least of
+/// three boots' peaks.
+// Shared directories, and so DAX windows, are Unix hosts' alone.
+#[cfg(unix)]
+#[test]
+fn a_long_dax_window_costs_its_boot_next_to_nothing() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (k, guest) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
+    let least_peak = |window: &str| -> u128 {
+        (0..3)
+            .map(|_| {
+                let r = common::run_shards_env(
+                    &["run"],
+                    &[
+                        "--kernel",
+                        k,
+                        "--init",
+                        guest,
+                        "--memory",
+                        "512",
+                        "--shares",
+                        "1",
+                        "--share-window",
+                        window,
+                        "--cmdline",
+                        "console=ttyS0 panic=-1 shards_test=memory",
+                    ],
+                    &[("SHARDS_TIMING", std::ffi::OsStr::new("1"))],
+                    TIMEOUT,
+                );
+                assert_eq!(r.status, Some(0), "{r}");
+                r.rss_kib().unwrap_or_else(|| panic!("no peak said: {r}"))
+            })
+            .min()
+            .unwrap()
+    };
+    let none = least_peak("0");
+    let long = least_peak("65536");
+    let bound = ((64u128 << 30) / 4096) >> 10;
+    let more = long.saturating_sub(none);
+    assert!(
+        more < bound,
+        "a 64 GiB window's boot took {more} KiB of its VM process's memory more than none's, past {bound} KiB"
+    );
+}
+
 /// A PCI bus (D153): the guest's pci-host-generic finds the test function, QEMU edu's IDs
 /// at 00:01.0, and the test guest reaches its BAR's registers, mapped from sysfs.
 #[test]

@@ -8869,7 +8869,8 @@ fn an_agentfiles_manifest_says_what_it_holds() {
 /// domain: its own uid and no capability, PID 1 of its own PID namespace, its own host
 /// name and only a loopback, the system and its own directory read-only, every other
 /// domain's hidden, with the skills and MCP servers `FOR` gives another, while those given
-/// every agent are in its view, a scratch `/tmp` of its own, a `/dev` of six nodes; under Landlock, no
+/// every agent are in its view, a scratch `/tmp` of its own, a `/dev` of six nodes, a
+/// `/dev/shm` as large as its run's (D156); under Landlock, no
 /// write but to its scratch and `/dev`, and no TCP; under seccomp, no vsock, netlink,
 /// io_uring, keys or userfaultfd; its output on the
 /// run's stderr, each line prefixed with it. An agent whose config says nothing of how it
@@ -8895,7 +8896,7 @@ fn agents_run_in_their_domains() {
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
     std::fs::write(
         dir.join("agent.json"),
-        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","/agents/main.d/skills","/agents/other.d","/skills","/mcp","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","fork","thread","vfork","clone","clone3","spawn","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd","follow","/tmp/l=/agents/other/secret","hardlink","/tmp/h=/agents/other/secret","/tmp/h2=/bin/testguest","exec","/usr/local/bin/suid","nosuid","/usr/local/bin"]}}"#,
+        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","/agents/main.d/skills","/agents/other.d","/skills","/mcp","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","fork","thread","vfork","clone","clone3","spawn","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd","follow","/tmp/l=/agents/other/secret","hardlink","/tmp/h=/agents/other/secret","/tmp/h2=/bin/testguest","exec","/usr/local/bin/suid","nosuid","/usr/local/bin","size","/dev/shm"]}}"#,
     )
     .unwrap();
     let name = format!("127.0.0.1:{port}/team/confined:1");
@@ -9024,6 +9025,14 @@ fn agents_run_in_their_domains() {
     ] {
         assert!(said.contains(&want), "no {want:?} in:\n{}", ran.stderr);
     }
+    // Its /dev/shm as large as its run's, half the memory the microVM may have (D156),
+    // where a browser's renderers outgrew Docker's 64 MiB.
+    let shm: u64 = said
+        .iter()
+        .find_map(|l| l.strip_prefix("confined size /dev/shm: "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no size of /dev/shm in:\n{}", ran.stderr));
+    assert!(shm > 64 << 20, "an agent's /dev/shm of {shm} bytes");
     // `--processes=none`: threads, and no process.
     let solo: Vec<&str> = ran
         .stderr

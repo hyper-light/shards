@@ -19,7 +19,7 @@ build's first VM process waits for its host to assess a binary it has not run be
 M166). Prints n, p50, p90, p99 and max of each, with host, OS
 and revision; with --raw, each round's, on stderr. Each build's `shards` runs with an empty
 DOCKER_CONFIG."""
-import argparse, ctypes, os, platform, re, shutil, subprocess, sys, tempfile, time
+import argparse, atexit, ctypes, os, platform, re, shutil, subprocess, sys, tempfile, time
 
 p = argparse.ArgumentParser()
 p.add_argument("old")
@@ -36,6 +36,16 @@ config = os.path.join(work, "docker-config")
 os.makedirs(config)
 homes = [os.path.realpath(h) for h in a.homes.split(",")]
 builds = {name: (binary, home) for (name, binary), home in zip((("old", a.old), ("new", a.new)), homes)}
+
+
+@atexit.register
+def clean():
+    """However the run ends, a failed step's exit included: each build's daemon stopped,
+    its runs with it, and this run's own files removed; homes given with --homes are kept."""
+    for binary, home in builds.values():
+        subprocess.run([binary, "daemon", "stop"], env=dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config),
+                       capture_output=True)
+    shutil.rmtree(work, ignore_errors=True)
 MACOS = platform.system() == "Darwin"
 
 
@@ -190,5 +200,3 @@ for build in builds:
     for key, xs in results[build].items():
         print(f"{build} {key:<26} n {len(xs):>3} p50 {pct(xs, .5):9.2f} p90 {pct(xs, .9):9.2f} "
               f"p99 {pct(xs, .99):9.2f} max {max(xs):9.2f}")
-for build in builds:
-    shards(build, "daemon", "stop", check=False)

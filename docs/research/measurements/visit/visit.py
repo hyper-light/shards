@@ -6,16 +6,28 @@ one, interleaved, each timed from the client's start to its exit.
     visit.py SHARDS IMAGE [N]
 
 SHARDS_HOME is a fresh directory of this script's, into which it pulls IMAGE
-first. Prints n, p50, p90, p99 and max in ms for each.
+first, with an empty DOCKER_CONFIG; both are removed as it ends. Prints n, p50, p90, p99
+and max in ms for each.
 """
-import os, subprocess, sys, tempfile, time
+import atexit, os, shutil, subprocess, sys, tempfile, time
 
 def main():
     shards, image = sys.argv[1], sys.argv[2]
     n = int(sys.argv[3]) if len(sys.argv) > 3 else 100
-    home = tempfile.mkdtemp(prefix="shards-visit-")
-    env = dict(os.environ, SHARDS_HOME=home)
+    work = tempfile.mkdtemp(prefix="shards-visit-")
+    home, config = os.path.join(work, "home"), os.path.join(work, "docker-config")
+    os.makedirs(home)
+    os.makedirs(config)
+    env = dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config)
     run = lambda *a, **k: subprocess.run([shards, *a], env=env, capture_output=True, **k)
+
+    @atexit.register
+    def clean():
+        """However it ends, a failed diff's exit included: its daemon stopped, its runs
+        with it, and its files removed."""
+        run("daemon", "stop")
+        shutil.rmtree(work, ignore_errors=True)
+
     run("pull", "-q", image, check=True)
     run("run", "--name", "stopped", image, "true", check=True)
     run("run", "-d", "--name", "running", image, "sleep", "100000", check=True)
@@ -29,8 +41,6 @@ def main():
                 sys.exit(f"{name}: {r.stderr.decode()}")
             if i >= 5:  # warm-up
                 times[name].append(dt)
-    run("rm", "-f", "running", "stopped")
-    run("daemon", "stop")
     for name, ts in times.items():
         ts.sort()
         q = lambda p: ts[min(len(ts) - 1, int(p * len(ts)))]

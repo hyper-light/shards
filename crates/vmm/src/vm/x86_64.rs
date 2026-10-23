@@ -330,6 +330,8 @@ struct Assembled {
     virtio: Vec<acpi::MmioDevice>,
     /// Its PCI host bridge, where it has a PCI bus (D153).
     pci: Option<acpi::PciBridge>,
+    /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
+    share_window_mib: u64,
 }
 
 /// Where the memory to plug starts (D133): above 4 GiB, at the first GiB boundary after
@@ -410,7 +412,8 @@ fn assemble(
     // past it (D189).
     let reach = 1u64.checked_shl(bits).unwrap_or(u64::MAX);
     let (swap_at, top) = super::swap_layout(config, top, reach)?;
-    let (windows, top) = super::share_windows(config, top, reach)?;
+    let (windows, top, share_window_mib) =
+        super::share_windows(config, top, reach, hosts.window_heads.is_some())?;
     let window_heads = super::window_heads(&windows, hosts.window_heads)?;
     if top > 1 << bits {
         return Err(format!(
@@ -582,6 +585,7 @@ fn assemble(
         vmgenid,
         virtio,
         pci,
+        share_window_mib,
     })
 }
 
@@ -659,6 +663,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     })?;
     super::huge_pages_when_init_runs(&a.control, &memory);
     debug!("kernel and initrd copied");
+    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
+    config.share_window_mib = a.share_window_mib;
     let cmdline = match &a.pci {
         Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
         None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),

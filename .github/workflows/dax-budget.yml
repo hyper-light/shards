@@ -1,0 +1,81 @@
+name: DAX budget
+
+# What a microVM held to a budget pays to read a file through its volume's DAX window, on
+# CI's runners (D188, D189): docs/research/measurements/dax-budget/measure.py, its samples
+# and profiles kept as the run's artifact; x86_64 alone, as hosted arm64 runners have no
+# /dev/kvm. Runs when the experiment changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/dax-budget/**
+      - .github/workflows/dax-budget.yml
+  workflow_dispatch:
+    inputs:
+      args:
+        description: measure.py's arguments, after its build and output directory
+        default: --rounds 2
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  measure:
+    name: measure (${{ matrix.arch }} ${{ matrix.copy }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, copy: a }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: b }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: c }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: d }
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target ${{ matrix.arch }}-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: User manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      - name: perf
+        run: scripts/retry 3 30 sudo apt-get install -y "linux-tools-$(uname -r)" || echo "no perf for $(uname -r)"
+      # The tree's shards, and the tree's with each window range on huge pages
+      # (docs/research/measurements/dax-budget/huge.patch), each kept apart.
+      - name: Build
+        run: |
+          cargo build --locked -p shards --release
+          cp target/release/shards "$RUNNER_TEMP/shards"
+          git apply docs/research/measurements/dax-budget/huge.patch
+          cargo build --locked -p shards --release
+          cp target/release/shards "$RUNNER_TEMP/shards-huge"
+          git checkout -- crates
+      - name: Measure
+        run: |
+          lscpu | grep -E 'Model name' || true
+          free -m
+          # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
+          sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
+          perf=""
+          command -v perf > /dev/null && sudo -n perf --version && perf=--perf
+          # Pushed: two rounds; asked for: the arguments asked with.
+          args="${{ github.event.inputs.args }}"
+          python3 -I docs/research/measurements/dax-budget/measure.py "$RUNNER_TEMP/shards" dax-budget \
+            --huge "$RUNNER_TEMP/shards-huge" ${args:---rounds 2} $perf
+          python3 -I docs/research/measurements/dax-budget/samples.py dax-budget
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: dax-budget-${{ matrix.arch }}-${{ matrix.copy }}
+          path: dax-budget

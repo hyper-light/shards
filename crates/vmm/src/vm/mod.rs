@@ -476,18 +476,23 @@ struct WindowAt {
 }
 
 /// Each shared directory's DAX window (D189), its share's first and the join share's last,
-/// each at a GiB boundary from `top` on, its head first, within `limit`; and where the last
-/// ends. None where `config` gives no window.
+/// each at a GiB boundary from `top` on, its head first, within `limit`; where the last
+/// ends; and their length in MiB. Each as long as `config` asks where all of them fit
+/// within `limit`, else, unless they are `kept` (a snapshot's, its heads kept for that
+/// length), as long as all of them fit, whole 2 MiB ranges, as the swap window takes what
+/// the guest's addresses leave it (`swap_layout`); none where not one range each fits.
+/// None where `config` gives no window.
 #[cfg(hv)]
 fn share_windows(
     config: &crate::snapshot::MachineConfig,
     top: u64,
     limit: u64,
-) -> Result<(Vec<WindowAt>, u64), String> {
+    kept: bool,
+) -> Result<(Vec<WindowAt>, u64, u64), String> {
     const GIB: u64 = 1 << 30;
     let count = config.shares as usize + usize::from(config.join_share);
     if config.share_window_mib == 0 || count == 0 {
-        return Ok((Vec::new(), top));
+        return Ok((Vec::new(), top, 0));
     }
     let overflow = || {
         format!(
@@ -509,25 +514,62 @@ fn share_windows(
             pmem::ALIGN >> 20
         ));
     }
-    let head = head::window_head_len(len)?;
-    let held = head::window_held_len(len)?;
-    let mut windows = Vec::with_capacity(count);
-    let mut next = top;
-    for _ in 0..count {
-        let at = next.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
-        let window = at.checked_add(head).ok_or_else(overflow)?;
-        let record = window.checked_add(len).ok_or_else(overflow)?;
-        next = record.checked_add(held).ok_or_else(overflow)?;
-        windows.push(WindowAt {
-            head: (at, head),
-            window: (window, len),
-            held: (record, held),
-        });
+    // `count` windows of `len` bytes each, and where the last ends, where they fit.
+    let place = |len: u64| -> Result<Option<(Vec<WindowAt>, u64)>, String> {
+        let head = head::window_head_len(len)?;
+        let held = head::window_held_len(len)?;
+        let mut windows = Vec::with_capacity(count);
+        let mut next = top;
+        for _ in 0..count {
+            let Some((at, window, record, end)) = next.checked_next_multiple_of(GIB).and_then(|at| {
+                let window = at.checked_add(head)?;
+                let record = window.checked_add(len)?;
+                Some((at, window, record, record.checked_add(held)?))
+            }) else {
+                return Ok(None);
+            };
+            windows.push(WindowAt {
+                head: (at, head),
+                window: (window, len),
+                held: (record, held),
+            });
+            next = end;
+        }
+        Ok((next <= limit).then_some((windows, next)))
+    };
+    if let Some((windows, end)) = place(len)? {
+        return Ok((windows, end, config.share_window_mib));
     }
-    if next > limit {
+    if kept {
         return Err(overflow());
     }
-    Ok((windows, next))
+    // The most whole ranges each that fit, `fits` (0, none) to `over`, which do not: where
+    // the windows end only grows with their length (head and window whole sections, the
+    // held record whole ranges, each at its GiB).
+    let (mut fits, mut over) = (0, len / pmem::ALIGN);
+    while over - fits > 1 {
+        let mid = fits + (over - fits) / 2;
+        match place(mid * pmem::ALIGN)? {
+            Some(_) => fits = mid,
+            None => over = mid,
+        }
+    }
+    let fitted = match fits {
+        0 => None,
+        n => place(n * pmem::ALIGN)?.map(|(windows, end)| (windows, end, n * pmem::ALIGN)),
+    };
+    let Some((windows, end, fitted)) = fitted else {
+        crate::warn!(
+            "no DAX window for its {count} shared directories: the guest's addresses leave none a 2 MiB range"
+        );
+        return Ok((Vec::new(), top, 0));
+    };
+    crate::warn!(
+        "{count} DAX windows of {} MiB each where {} MiB were asked: the guest's addresses leave no more",
+        fitted >> 20,
+        config.share_window_mib
+    );
+    Ok((windows, end, fitted >> 20))
 }
 
 /// The heads of `windows` (D189), one after another in one head: a snapshot's, `kept`,
@@ -547,7 +589,13 @@ fn window_heads(
         .ok_or_else(|| at(format!("{} heads of {each} bytes", windows.len())))?;
     let head = match kept {
         Some(kept) => head::Head::restore(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
-        None => head::Head::new(len),
+        None => head::Head::new(len).inspect(|head| {
+            // On the host's base pages, as a restored head is: its guest writes a range's
+            // page structures as it first maps the range (shards' kernel patch 0011), 32 KiB
+            // of a 2 MiB block, which a huge page would hold whole (2 MiB for the one page
+            // structure a boot writes, on an x86_64 CI runner with THP always; PM M307).
+            crate::platform::small_pages(head.host(), head.len());
+        }),
     }
     .map_err(at)?;
     let heads = head::WindowHeads::new(head, windows.iter().map(|w| w.head.0).collect(), each).map_err(at)?;
@@ -2076,26 +2124,28 @@ mod tests {
         assert!(e.contains("its own network process"), "{e}");
     }
 
-    /// pmem regions go from the first address, each right after the one before; none
-    /// leaves the first address their end; one past the address space is refused.
     /// Each share's DAX window and the join share's (D189), at GiB boundaries from where
-    /// the machine's addresses end, whole 2 MiB ranges, within its address limit.
+    /// the machine's addresses end, whole 2 MiB ranges, within its address limit: as long
+    /// as asked where they fit, else as long as all of them fit, and none where not one
+    /// range each does; a snapshot's, whose heads are kept for their length, that long or
+    /// refused.
     #[test]
     fn share_windows_go_one_after_another() {
         const GIB: u64 = 1 << 30;
         let mut config = machine(false, None);
         assert_eq!(
-            share_windows(&config, 5 * GIB, u64::MAX).unwrap(),
-            (Vec::new(), 5 * GIB)
+            share_windows(&config, 5 * GIB, u64::MAX, false).unwrap(),
+            (Vec::new(), 5 * GIB, 0)
         );
         config.shares = 2;
         config.join_share = true;
         assert_eq!(
-            share_windows(&config, 5 * GIB, u64::MAX).unwrap(),
-            (Vec::new(), 5 * GIB)
+            share_windows(&config, 5 * GIB, u64::MAX, false).unwrap(),
+            (Vec::new(), 5 * GIB, 0)
         );
         config.share_window_mib = 1536;
-        let (windows, end) = share_windows(&config, 5 * GIB + 1, u64::MAX).unwrap();
+        let (windows, end, mib) = share_windows(&config, 5 * GIB + 1, u64::MAX, false).unwrap();
+        assert_eq!(mib, 1536);
         // Each window's head at its GiB, a section's start, its 13 sections' page
         // structures in one section, and the window right after it.
         let head = head::window_head_len(1536 << 20).unwrap();
@@ -2110,10 +2160,25 @@ mod tests {
         };
         assert_eq!(windows, [at(6), at(8), at(10)]);
         assert_eq!(end, 10 * GIB + head + (1536 << 20) + held);
-        assert!(share_windows(&config, 5 * GIB + 1, end - 1).is_err());
-        assert!(share_windows(&config, 5 * GIB + 1, end).is_ok());
+        assert_eq!(share_windows(&config, 5 * GIB + 1, end, true).unwrap().2, 1536);
+        // A byte short: each the most whole ranges that fit, ending within the limit, one
+        // range more past it.
+        let (fitted, short, mib) = share_windows(&config, 5 * GIB + 1, end - 1, false).unwrap();
+        assert_eq!(fitted.len(), 3);
+        assert!(mib < 1536 && mib % 2 == 0, "{mib}");
+        assert!(short < end, "{short:#x}");
+        let mut longer = config.clone();
+        longer.share_window_mib = mib + 2;
+        assert!(share_windows(&longer, 5 * GIB + 1, end - 1, true).is_err());
+        // Kept, their heads a snapshot's: that long, or refused.
+        assert!(share_windows(&config, 5 * GIB + 1, end - 1, true).is_err());
+        // No room for a range each: none.
+        assert_eq!(
+            share_windows(&config, 5 * GIB + 1, 6 * GIB, false).unwrap(),
+            (Vec::new(), 5 * GIB + 1, 0)
+        );
         config.share_window_mib = 3;
-        assert!(share_windows(&config, 5 * GIB, u64::MAX).is_err());
+        assert!(share_windows(&config, 5 * GIB, u64::MAX, false).is_err());
     }
 
     #[test]

@@ -1967,6 +1967,129 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
 }
 
+/// A volume's large files go through a DAX window by default, one as long as its host's
+/// memory (D189, PM M306), but where the host is itself a virtual machine on an AMD CPU,
+/// whose hypervisor maps each page a window gives anew (PM M308); through FUSE where
+/// `SHARDS_SHARE_WINDOW_MIB` is 0; and through one where it gives one, on any host.
+#[test]
+fn a_volumes_large_files_go_through_a_dax_window_by_default() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (kernel, init) = (kernel(), guest_init());
+    let dir = TempDir::new("containers-daxdef-v");
+    std::fs::write(dir.join("big"), vec![7u8; 4 << 20]).unwrap();
+    let volume = format!("{}:/v", dir.display());
+    let default = if host_is_a_virtual_machine_on_amd() {
+        "no"
+    } else {
+        "yes"
+    };
+    for (window, dax) in [(None, default), (Some("0"), "no"), (Some("4096"), "yes")] {
+        let home = TempDir::new("containers-daxdef");
+        let mut env: Vec<(&str, &OsStr)> = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+        ];
+        if let Some(mib) = window {
+            env.push(("SHARDS_SHARE_WINDOW_MIB", mib.as_ref()));
+        }
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let pulled = shards(&["pull", "-q", &image]);
+        assert_eq!(pulled.status, Some(0), "{pulled}");
+        let r = shards(&[
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "-u",
+            "0",
+            "-v",
+            &volume,
+            &image,
+            "fs",
+            "dax:/v/big",
+        ]);
+        assert_eq!(r.stdout, format!("dax /v/big {dax}\n"), "{window:?}: {r}");
+        let _ = shards(&["stop", "daemon"]);
+    }
+}
+
+/// Whether this host is itself a virtual machine on an AMD CPU, as Linux describes its
+/// first processor (`/proc/cpuinfo`: AMD's vendor ID and the `hypervisor` flag): where a
+/// share has no DAX window by default (D189, PM M308).
+fn host_is_a_virtual_machine_on_amd() -> bool {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return false;
+    }
+    let info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let field = |key: &str| {
+        info.lines().find_map(|l| {
+            l.split_once(':')
+                .filter(|(k, _)| k.trim() == key)
+                .map(|(_, v)| v.trim().to_string())
+        })
+    };
+    field("vendor_id").as_deref() == Some("AuthenticAMD")
+        && field("flags").is_some_and(|f| f.split_whitespace().any(|f| f == "hypervisor"))
+}
+
+/// A volume's DAX window costs its guest the ranges it maps, not every range it could: its
+/// guest's FUSE makes a range's mapping (128 bytes, kmalloc-128) as it first wants the
+/// range, not one for each 2 MiB of the window as the volume is mounted (D189, shards'
+/// kernel patch 0013, PM M306). A microVM whose volume has a 64 GiB window holds, once its
+/// command runs, fewer than half the 32,768 such a mount made more of them than one whose
+/// volume has none.
+#[test]
+fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (kernel, init) = (kernel(), guest_init());
+    let dir = TempDir::new("containers-daxlong-v");
+    let volume = format!("{}:/v", dir.display());
+    let in_use = |window: &str| -> u64 {
+        let home = TempDir::new("containers-daxlong");
+        let env: [(&str, &OsStr); 4] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+            ("SHARDS_SHARE_WINDOW_MIB", window.as_ref()),
+        ];
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let pulled = shards(&["pull", "-q", &image]);
+        assert_eq!(pulled.status, Some(0), "{pulled}");
+        let r = shards(&[
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "-u",
+            "0",
+            "-v",
+            &volume,
+            &image,
+            "slab",
+            "kmalloc-128",
+        ]);
+        assert_eq!(r.status, Some(0), "{r}");
+        let _ = shards(&["stop", "daemon"]);
+        r.stdout
+            .strip_prefix("slab kmalloc-128 ")
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no kmalloc-128 said: {r}"))
+    };
+    let none = in_use("0");
+    let long = in_use("65536");
+    assert!(
+        long.saturating_sub(none) < 32_768 / 2,
+        "kmalloc-128: {none} objects in use with no window, {long} with a 64 GiB one"
+    );
+}
+
 /// A microVM's devices reach the pages of the files its guest maps, device memory, as they
 /// reach its RAM (D189): a write from a mapping of its image's root (pmem) or of a file a
 /// volume's DAX window maps, appended to a file the window maps, which its guest's kernel
@@ -2270,8 +2393,9 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 
 /// A microVM held to a budget gives back what it holds cold of its files as it reaches it
 /// (D188): under a slice of the user's manager whose `MemoryHigh` is past the microVM idle
-/// and short of a gigabyte it reads, its page cache grows until the budget slows it; the
-/// daemon, watching the scope it made there, has it reclaim what it holds cold and report
+/// and short of a gigabyte it reads, in files of a MiB, which it reads through FUSE (a file
+/// of a DAX window's range or more is its host's page cache, mapped into it: D189), its
+/// page cache grows until the budget slows it; the daemon, watching the scope it made there, has it reclaim what it holds cold and report
 /// it free at once, says what it asked to unplug (none while the run's peak since the pass
 /// before is the read's own page cache at the budget, which a pass keeps: M275), and it
 /// reads on to the end. Linux alone: macOS's memory pressure is the whole system's, which
@@ -2300,10 +2424,14 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         return;
     }
     let vol = TempDir::new("budget-vol");
-    std::fs::File::create(vol.join("big"))
-        .unwrap()
-        .set_len(1 << 30)
-        .unwrap();
+    let files: Vec<String> = (0..1024).map(|i| format!("/vol/f{i}")).collect();
+    for file in &files {
+        let name = file.trim_start_matches("/vol/");
+        std::fs::File::create(vol.join(name))
+            .unwrap()
+            .set_len(1 << 20)
+            .unwrap();
+    }
     let slice = format!("shardsbudget{}.slice", std::process::id());
     /// The slice's budget taken off and the slice stopped, however the test ends.
     struct Budget<'a>(&'a str);
@@ -2338,9 +2466,16 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         .output()
         .unwrap();
     assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
-    let read = shards(&["exec", "budget", "/bin/testguest", "read", "/vol/big"]);
+    let mut read = vec!["exec", "budget", "/bin/testguest", "read"];
+    read.extend(files.iter().map(String::as_str));
+    let read = shards(&read);
     assert_eq!(read.status, Some(0), "{read}\n{}", said());
-    assert!(read.stdout.contains("read /vol/big 1073741824"), "{read}");
+    for file in &files {
+        assert!(
+            read.stdout.contains(&format!("read {file} 1048576 ")),
+            "{file}: {read}"
+        );
+    }
     // What it gave back of its files, and what it asked to unplug of the memory it had
     // plugged to hold them.
     let log = said();
@@ -2357,6 +2492,104 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     assert!(mib_after("gave back ") > 0, "{gave}");
     let _said = mib_after("asked to unplug ");
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
+}
+
+/// A microVM held to a budget reads a file through its volume's DAX window to its end
+/// (D188, D189): under a slice of the user's manager whose `MemoryHigh` is past the microVM
+/// idle and short of the file, the file is mapped through the window, its pages its host's
+/// page cache charged to the slice, which the host reclaims itself as the read goes on (no
+/// guest's page cache to give back), and the read ends, the budget met on the way (the
+/// slice's `memory.events`, `high`). Its daemon is given a window, which a host that is
+/// itself a virtual machine on an AMD CPU gives none by default (PM M308), and the read up
+/// to 300 s: such a host reads through one at 7 to 25 MiB/s (PM M308). Linux alone, as the
+/// budget test before it.
+#[test]
+fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let Some((home, image)) = home("containers-budget-dax") else {
+        return;
+    };
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    // The daemon the pull started stopped, and one given a 4 GiB window started for the run.
+    assert_eq!(shards_in(&home, &["stop", "daemon"]).status, Some(0));
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "4096".as_ref()),
+    ];
+    let shards = |args: &[&str], within: Duration| run_shards_env(&[], args, &env, within);
+    let vol = TempDir::new("budget-dax-vol");
+    std::fs::File::create(vol.join("big"))
+        .unwrap()
+        .set_len(512 << 20)
+        .unwrap();
+    let slice = format!("shardsbudgetdax{}.slice", std::process::id());
+    /// The slice's budget taken off and the slice stopped, however the test ends.
+    struct Budget<'a>(&'a str);
+    impl Drop for Budget<'_> {
+        fn drop(&mut self) {
+            for verb in ["revert", "stop"] {
+                let _ = Command::new("systemctl").args(["--user", verb, self.0]).status();
+            }
+        }
+    }
+    let _budget = Budget(&slice);
+    let mount = format!("{}:/vol", vol.display());
+    let args = run_args(
+        &image,
+        &["-d", "--name", "budget", "--cgroup-parent", &slice, "-v", &mount],
+        &["sleep"],
+    );
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let started = shards(&args, TIMEOUT);
+    assert_eq!(started.status, Some(0), "{started}");
+    let set = Command::new("systemctl")
+        .args(["--user", "set-property", "--runtime", &slice])
+        .args(["MemoryHigh=384M", "MemorySwapMax=0"])
+        .output()
+        .unwrap();
+    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    let dax = shards(
+        &["exec", "budget", "/bin/testguest", "fs", "dax:/vol/big"],
+        TIMEOUT,
+    );
+    assert_eq!(dax.stdout, "dax /vol/big yes\n", "{dax}");
+    let read = shards(
+        &["exec", "budget", "/bin/testguest", "read", "/vol/big"],
+        Duration::from_secs(300),
+    );
+    assert_eq!(read.status, Some(0), "{read}");
+    assert!(read.stdout.starts_with("read /vol/big 536870912 "), "{read}");
+    // SAFETY: getuid(2) takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let events = std::fs::read_to_string(format!(
+        "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}/memory.events"
+    ))
+    .unwrap();
+    let high: u64 = events
+        .lines()
+        .find_map(|l| l.strip_prefix("high "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+    assert!(high > 0, "the slice's budget was never met: {events}");
+    assert_eq!(shards(&["kill", "budget"], TIMEOUT).status, Some(0));
 }
 
 #[test]
