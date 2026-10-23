@@ -3,11 +3,12 @@
 (D188, D189): under a slice of the user's systemd manager whose MemoryHigh is past the
 microVM idle and short of the file, `dd` of a 1 GiB file from a volume, its share's window
 as long as the host's memory (the default) and with none (SHARDS_SHARE_WINDOW_MIB=0: FUSE,
-through the guest's page cache), the file sparse and written out. Rounds interleave the
-four, each first in turn; the file's pages are out of the host's page cache before each
-read, so that the read's microVM brings them in and pays for them.
+through the guest's page cache), the file sparse and written out; and under no budget
+(MemoryHigh=infinity), what the window's reads cost the microVM by themselves. Rounds
+interleave the cases, each first in turn; the file's pages are out of the host's page cache
+before each read, so that the read's microVM brings them in and pays for them.
 
-    measure.py SHARDS OUT [--rounds N] [--high 384M] [--size-mib 1024] [--perf]
+    measure.py SHARDS OUT [--rounds N] [--highs 384M,infinity] [--size-mib 1024] [--perf]
 
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
@@ -25,7 +26,7 @@ p = argparse.ArgumentParser()
 p.add_argument("shards")
 p.add_argument("out")
 p.add_argument("--rounds", type=int, default=3)
-p.add_argument("--high", default="384M")
+p.add_argument("--highs", default="384M,infinity")
 p.add_argument("--size-mib", type=int, default=1024)
 p.add_argument("--perf", action="store_true")
 a = p.parse_args()
@@ -164,13 +165,13 @@ def profile(name, stop):
                         "--percent-limit", "0.5"], stdout=f, stderr=subprocess.DEVNULL)
 
 
-def one(arm, file, name):
-    """One read's seconds: a microVM started in the slice, the budget set, the file read."""
+def one(arm, file, high, name):
+    """One read's seconds: a microVM started in the slice, its budget set, the file read."""
     if not os.path.isdir(homes[arm]):
         run(arm, "pull", "-q", "alpine")
-    run(arm, "run", "-d", "--name", "r", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol", "alpine",
+    run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol", "alpine",
         "sleep", "100000")
-    set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={a.high}", "MemorySwapMax=0")
+    set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={high}", "MemorySwapMax=0")
     if set_.returncode != 0:
         raise SystemExit(f"the slice's budget: {set_.stderr}")
     drop(os.path.join(vol, file))
@@ -181,12 +182,12 @@ def one(arm, file, name):
     for w in watchers:
         w.start()
     start = time.perf_counter()
-    done = run(arm, "exec", "r", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M", check=False, timeout=1800)
+    done = run(arm, "exec", "reader", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M", check=False, timeout=1800)
     took = time.perf_counter() - start
     stop.set()
     for w in watchers:
         w.join()
-    run(arm, "rm", "-f", "r", check=False)
+    run(arm, "rm", "-f", "reader", check=False)
     systemctl("revert", SLICE)
     systemctl("stop", SLICE)
     if done.returncode != 0:
@@ -217,14 +218,14 @@ except OSError:
     thp = "none"
 print(f"host {platform.node()} {platform.machine()}, {platform.system()} {platform.release()}, THP {thp}, "
       f"{os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') >> 20} MiB, {os.cpu_count()} CPUs, "
-      f"revision {rev}; budget {a.high}, file {a.size_mib} MiB")
-cases = [(arm, file) for file in FILES for arm in ARMS]
+      f"revision {rev}; file {a.size_mib} MiB")
+cases = [(high, arm, file) for high in a.highs.split(",") for file in FILES for arm in ARMS]
 times = {case: [] for case in cases}
 for i in range(a.rounds):
-    for arm, file in cases[i % len(cases):] + cases[: i % len(cases)]:
-        took = one(arm, file, f"{arm}-{file}-{i + 1}")
-        times[(arm, file)].append(took)
-        print(f"round {i + 1} {arm} {file}: {took:.2f} s", file=sys.stderr, flush=True)
-for (arm, file), xs in times.items():
-    print(f"{arm:<6} {file:<7} n {len(xs)} p50 {pct(xs, .5):8.2f} p90 {pct(xs, .9):8.2f} "
+    for high, arm, file in cases[i % len(cases):] + cases[: i % len(cases)]:
+        took = one(arm, file, high, f"{high}-{arm}-{file}-{i + 1}")
+        times[(high, arm, file)].append(took)
+        print(f"round {i + 1} {high} {arm} {file}: {took:.2f} s", file=sys.stderr, flush=True)
+for (high, arm, file), xs in times.items():
+    print(f"high {high:<8} {arm:<6} {file:<7} n {len(xs)} p50 {pct(xs, .5):8.2f} p90 {pct(xs, .9):8.2f} "
           f"p99 {pct(xs, .99):8.2f} max {max(xs):8.2f} s")

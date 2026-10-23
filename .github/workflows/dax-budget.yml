@@ -2,7 +2,8 @@ name: DAX budget
 
 # What a microVM held to a budget pays to read a file through its volume's DAX window, on
 # CI's runners (D188, D189): docs/research/measurements/dax-budget/measure.py, its samples
-# and profiles kept as the run's artifact. Runs when the experiment changes, or when asked.
+# and profiles kept as the run's artifact; x86_64 alone, as hosted arm64 runners have no
+# /dev/kvm. Runs when the experiment changes, or when asked.
 on:
   push:
     paths:
@@ -27,7 +28,6 @@ jobs:
         include:
           - { arch: x86_64, runner: ubuntu-24.04, copy: a }
           - { arch: x86_64, runner: ubuntu-24.04, copy: b }
-          - { arch: aarch64, runner: ubuntu-24.04-arm, copy: a }
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
