@@ -1666,12 +1666,25 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         // SAFETY: getuid(2) takes nothing and cannot fail.
         uid = unsafe { libc::getuid() }
     ));
+    // What the slice holds but its page cache no process maps, which its kernel takes back
+    // first: the files' own, the host's of the volume's reads among it.
     let slice_holds = || -> u64 {
-        std::fs::read_to_string(cgroup.join("memory.current"))
+        let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
             .unwrap()
             .trim()
             .parse()
-            .unwrap()
+            .unwrap();
+        let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
+        let of = |key: &str| -> u64 {
+            stat.lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        current.saturating_sub(
+            of("file")
+                .saturating_sub(of("file_mapped"))
+                .saturating_sub(of("shmem")),
+        )
     };
     let budget = |high: &str| {
         let set = Command::new("systemctl")
@@ -1752,8 +1765,8 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         xs[xs.len() / 2]
     };
     let unbudgeted = median((0..3).map(|_| read("a read under no budget")).collect());
-    // A budget its idle microVMs leave 128 MiB of: short of the gigabyte the read caches,
-    // as of the guest page cache it takes with none.
+    // A budget its idle microVMs leave 128 MiB of: short of the gigabyte a read caches in
+    // its guest, as one takes with none.
     let held = slice_holds() + (128 << 20);
     budget(&held.to_string());
     let budgeted: Vec<u64> = (0..3).map(|_| read("a read under the budget")).collect();
