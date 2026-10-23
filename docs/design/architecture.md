@@ -5672,18 +5672,36 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   must take anything, as a container's kernel drops its page cache within its cgroup.
   Where the room is short, the budget's warm microVMs end first, which are speculation;
   then the microVM gives back what it holds cold (`RECLAIM`; idle, it raises no pressure
-  that would ask) and is told the room the budget has after: none past what it uses where
-  it is still short, until the budget has room again (its `memory.events`, a give-back's
-  end, another microVM's), when it is told so, and told again each window of the host's
-  pressure while it is held short, as a guest held at what it uses asks for nothing its
-  host hears. Its cap is the budget's alone: a give-back that held a run below it, at what
-  the run used, once room had come back starved it, a 1 GiB read crawling at 0.13 MiB/s
-  for 100 minutes (PM M309). A warm microVM restored under a budget copies none of its
-  template's written pages ahead of its run (64 MiB at most each, `hv::PREFETCH_PRIVATE`,
-  which every warm microVM spends of the budget before any run comes: 65 MiB of a 384 MiB
-  budget's anonymous memory for one such VM, 1 to 4 MiB for one without, PM M309; on the
-  Mac they bought no time, PM M62), and none is made ahead of the runs that wait where its
-  budget has no room.
+  that would ask) and is told the room the budget has after, until the budget has room
+  again (its `memory.events`, a give-back's end, another microVM's), when it is told so,
+  and told again each window of the host's pressure while it is held short, as a guest
+  held short asks for nothing its host hears. Its cap is the budget's alone: a give-back
+  that held a run below it, at what the run used, once room had come back starved it, a 1
+  GiB read crawling at 0.13 MiB/s for 100 minutes (PM M309). And never closer than the
+  least room a run goes on in to what the run uses, however short the budget: what its
+  kernel charges it ahead of the pages it takes, a batch of 64 pages for each CPU
+  (mm/memcontrol.c, `refill_stock`), which no reclaim takes back; two windows of a read's
+  read-ahead, 128 KiB each (`VM_READAHEAD_PAGES`); and a reader's block as large as a
+  share's request (`SHARE_MAX_PAGES`, 1 MiB), which with no swap no reclaim takes either:
+  2.25 MiB on 4 CPUs, 5.75 on 18. A run held at what it used could not take a page past
+  it: its reader slept in the kernel's throttle of a cgroup past its `memory.high`
+  (`__mem_cgroup_handle_over_high`, up to 2 s each return to user space), its reclaim
+  taking 3% of the pages it scanned, and read 32 MiB in 233 s where it read them in 0.28 s
+  with no budget; on CI, a gigabyte at 0.16 to 0.57 MiB/s for 190 to 672 s, each until its
+  budget's own pressure brought room back. Held within 1 MiB, 3.9 to 201 s; within 1.25
+  MiB on 4 CPUs, 0.8 to 7.6 s; within 1.5 MiB on 4 CPUs and 2 MiB on 18, as fast as with
+  none (PM M309). A room short of the least raises no hold past what the run was held at,
+  so that being told it again each window lets its run grow none, and lowers one its run
+  no longer fills. Init answers what it holds the run within, which the daemon's log says
+  where it is past the room the budget leaves. The cap is kept in whole pages, as the
+  kernel keeps `memory.high` (`page_counter_memparse`): one past a page boundary read back
+  short of itself, and the grower took a run held at it for one held short of it, writing
+  its hold again at each of its run's events. A warm microVM restored under a budget
+  copies none of its template's written pages ahead of its run (64 MiB at most each,
+  `hv::PREFETCH_PRIVATE`, which every warm microVM spends of the budget before any run
+  comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1 to 4 MiB for one
+  without, PM M309; on the Mac they bought no time, PM M62), and none is made ahead of the
+  runs that wait where its budget has no room.
 - **File pages alone.** A clean page of the page cache the guest drops is one the host
   could only have swapped out, written and read back; dropping it reads none of its data.
   Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
@@ -5746,24 +5764,30 @@ unmapped page cache counted as room and its shared memory not, none with no budg
 none at the root (`a_budgets_room_is_the_least_any_cgroup_over_a_microvm_leaves`); the
 files a budget's processes map held, past what its cgroup counts mapped, and the kernel's
 inactive buffer beside them; a give-back saying what it gave or why it gave nothing, one
-with no answer in time said so; and a microVM that does not answer its
-give-back keeping no other's from the host, nor asked again until it has ended
+with no answer in time said so; and a microVM that does not answer its give-back keeping
+no other's from the host, nor asked again until it has ended
 (`a_microvm_that_does_not_give_back_keeps_no_other_waiting`, which passes asking one after
-another hang on). Unit (init): a run held within its room; a microVM held to a budget
-plugging no more than its cap needs. E2E on Linux, real microVMs under a slice of the
-user's manager, no swap (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a
-microVM that read 512 MiB through FUSE into its guest's page cache (a file of a window's
-range or more is its host's page cache, mapped into it: D189) gives back what it holds
-cold once a `MemoryHigh` of 384 MiB short of it is set, idle as it is, the daemon's log
-saying what it gave back and that it holds it within its budget, in which it reads a
-gigabyte, in files of a MiB, to the end. tests/daemon.rs
+another hang on). Unit (init): a run held within its room, never closer to what it uses
+than the least room a run goes on in, which a room short of it raises no hold past
+(`a_run_is_held_within_its_budgets_room`), that room covering what a reader of 1 MiB
+blocks needed on 4 and 18 CPUs (`a_run_held_short_keeps_the_room_its_reads_need`); a
+microVM held to a budget plugging no more than its cap needs. E2E on Linux, real microVMs
+under a slice of the user's manager, no swap (tests/containers.rs
+`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a microVM that read 512 MiB
+through FUSE into its guest's page cache (a file of a window's range or more is its host's
+page cache, mapped into it: D189) gives back what it holds cold once a `MemoryHigh` of 384
+MiB short of it is set, idle as it is, the daemon's log saying what it gave back and that
+it holds it within its budget, in which it reads a gigabyte, in files of a MiB, to the
+end. tests/daemon.rs
 `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
-restored from their template, its warm microVMs in the slice, read a gigabyte through
-FUSE under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs
-under none took (medians of 3), and a run begun under no budget held to one set as it
-goes within it too. Not on macOS, which has no group of processes a budget holds.
-`an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle daemon's threads
-still.
+restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
+under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
+none took (medians of 3), a run begun under no budget held to one set as it goes within it
+too, and runs under a budget short of what its microVMs hold and their kernel's inactive
+buffer, by a mebibyte, held within the least room a run goes on in and reading within it
+too (where held at what they used they read 32 MiB in 233 s). Not on macOS, which has no
+group of processes a budget holds. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs)
+holds the idle daemon's threads still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
 and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB

@@ -12538,6 +12538,38 @@ revision before comparing a changed API/implementation.
       start a budget short by up to 577 MiB, holding 881 MiB where its slice held 265, the
       statistics still counting a microVM that had ended; held at what it used, its
       budget never met, nothing told it its room again.
+    - What is charged to the budget held no more than it holds, and a microVM held short
+      told its room again each window of its host's pressure (9e7ad372, 40004975961 and
+      40004987413, n 24 each case on eight runners): written p50 4.37 s, p90 5.36, max
+      6.95; sparse p50 4.02, but three reads 671.7, 671.4 and 190.0 s; with no budget 4.64
+      and 4.20 (p50), 4.85 and 4.62 (max). File refaults a read under the budget: p50 84,
+      p90 2,700, max 221,750 (n 48). Each slow read's microVM was told its budget short
+      and held at what it used: the two of 671 s at their start (short by 22 and 90 MiB,
+      the second's statistics a second after the reader before it ended still counting 1.1
+      GB of its anonymous memory), the third after a room of 12 MiB. Each guest sat idle
+      (83 to 119 VM exits a second, 8 of them MMIO), reading 0.16 to 0.57 MiB/s, its slice
+      273 to 382 MiB of its 384 and refaulting none, until the host's own page cache of
+      the file read, which grew as it read, met the budget: the host took back 67 MiB of
+      the template's mapped pages, the room came back (64 to 73 MiB), the guest's memory
+      grew by as much in 2 s, and the read was done in 4.
+  - What held at what it used is (the Mac, M5 Max, macOS 26.4.1, loaded by other builds;
+    guest Linux 6.18.48 arm64, 4 KiB pages; a build of 9e7ad372 whose daemon told a run a
+    room it was given before each exec, scratch, not kept): a run's `dd` of 1 MiB blocks
+    through FUSE, the sparse file, 32 MiB.
+    - Held at what it used: 233.5 s (140 KB/s), 0.28 s with no budget. The reader slept in
+      the kernel's throttle of a cgroup past its `memory.high`
+      (`__mem_cgroup_handle_over_high`, `schedule_timeout_killable` up to 2 s each return
+      to user space, mm/memcontrol.c) in 3 of 4 looks at its wchan; its cgroup's reclaim
+      took 9,326 of the 315,177 pages it scanned, and refaulted its own pages 3,350 times;
+      a shell started beside it got as far as 4 lines in 150 s.
+    - Held within a room past what it used (n per room): 1 MiB, 201.0 s on 18 vCPUs, 12.2
+      and 3.9 s on 4; 1.25 MiB on 4 vCPUs, 0.8, 7.6 and 3.0 s; 1.5 MiB on 4, 0.040 and
+      0.084 s; 2 MiB, 0.035 and 0.034 s on 4, 0.035 and 0.033 on 18; 3 and 4 MiB, 0.033 to
+      0.046 s. A room is no use short of what the reader's block takes, 1 MiB, and what
+      its kernel charges it ahead of its pages and reads ahead of it.
+    - A cap off a page boundary, which the kernel's `memory.high` rounds down (20 MiB and
+      1,233 B against 20 MiB, a gigabyte, n 6 interleaved on the loaded Mac): 1.3 to 6.6
+      s against 1.1 to 9.7, with no budget 4.4 to 6.4. No difference measured.
 - **Conclusion.** A budgeted microVM's guest must keep within its budget by its own kernel,
   as a container's kernel keeps a container within its cgroup: the host can take back
   only page cache from it with no swap, and its page cache is guest RAM. Held within the
@@ -12545,4 +12577,7 @@ revision before comparing a changed API/implementation.
   guest's own RAM, its template's file pages, stays: refaults a read fell from 16.5
   million to a few hundred. The room must count what the budget's processes map wherever
   it is charged, leave the kernel its inactive pages beside them, never take statistics
-  past the counter, bound what the guest plugs, and be told again while it is short.
+  past the counter, bound what the guest plugs, and be told again while it is short; and
+  a run is never held closer to what it uses than the room it needs to go on in, what its
+  kernel charges ahead, two read-ahead windows and a reader's block: held at what it
+  used, a run cannot take a page, and every read it makes sleeps in the kernel's throttle.

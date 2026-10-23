@@ -27,7 +27,7 @@ const ROOT: u64 = 1;
 /// `cache=auto` second, as the host may change the directory meanwhile.
 const VALID_S: u64 = 1;
 /// The most the guest writes or reads in one request: 256 pages.
-pub const MAX_PAGES: u16 = 256;
+pub const MAX_PAGES: u16 = shards_abi::SHARE_MAX_PAGES;
 pub const MAX_WRITE: u32 = MAX_PAGES as u32 * 4096;
 // `mode_t` is u16 on macOS and u32 on Linux: its values as the guest's u32.
 #[allow(clippy::unnecessary_cast)]

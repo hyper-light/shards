@@ -10,7 +10,7 @@ before each read, so that the read's microVM brings them in and pays for them.
 
     measure.py SHARDS OUT [--huge SHARDS] [--fuse NAME=SHARDS]... [--arms A,B]
                [--guest-mib N] [--rounds N] [--highs 384M,infinity] [--size-mib 1024]
-               [--perf] [--stop-slice]
+               [--perf] [--stop-slice] [--parent-slice NAME]
 
 With --huge, a third arm: that build of shards (huge.patch: each window range on huge
 pages, MADV_HUGEPAGE), its window as long as the host's memory. With --stop-slice, the
@@ -18,7 +18,9 @@ slice is stopped after each read, as its user may stop it, which ends the spawne
 microVMs each daemon keeps there: what the runs after it meet. Each --fuse NAME=SHARDS is
 an arm of another build of shards, through FUSE (no window); --arms picks the arms run, by
 name. With --guest-mib, the reader's run is held to that many MiB in its guest
-(`--memory`, no swap, `--oom-kill-disable`: its memory.high), its budget its own.
+(`--memory`, no swap, `--oom-kill-disable`: its memory.high), its budget its own. With
+--parent-slice NAME, the slice is made in NAME.slice, which a shared host may hold to a
+`MemoryMax` of its own: its reads under no budget of their own are then held to that one.
 
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
@@ -27,7 +29,11 @@ states and CPU times, and KVM's counters of its VM where `sudo -n` reads debugfs
 --perf, a profile of the whole host 5 to 15 s into each read (`sudo -n perf`).
 
 Into OUT/<case>.vms, what each VM process in the slice holds as the reader starts and once
-its read is done, mapping by mapping, and what its guest says of its own memory.
+its read is done, mapping by mapping, and what its guest says of its own memory; into
+OUT/<case>.guest, from within the reader's guest each second of its read, where its `dd`
+waits (five looks at its wchan), its run's memory and reclaim counters, its kernel's
+memory and its reclaim; into OUT/daemon-<arm>.timed.log, each line of the arm's daemon log
+with the time it was seen.
 
 Linux, with KVM and a user's systemd manager (XDG_RUNTIME_DIR's bus). Each arm has a home
 of its own, which pulls alpine once, and an empty DOCKER_CONFIG; all of it is removed, and
@@ -47,6 +53,7 @@ p.add_argument("--fuse", action="append", default=[], metavar="NAME=SHARDS")
 p.add_argument("--arms")
 p.add_argument("--guest-mib", type=int)
 p.add_argument("--stop-slice", action="store_true")
+p.add_argument("--parent-slice")
 a = p.parse_args()
 
 shards = os.path.realpath(a.shards)
@@ -56,9 +63,12 @@ work = tempfile.mkdtemp(prefix="dax-budget-")
 config, vol = os.path.join(work, "docker-config"), os.path.join(work, "vol")
 os.makedirs(config)
 os.makedirs(vol)
-SLICE = f"shardsdax{os.getpid()}.slice"
+# Under --parent-slice, the slice is its child (systemd.slice(5): a dash nests a slice in the
+# one its name begins with), which a shared host caps.
+PARENT = f"{a.parent_slice}.slice/" if a.parent_slice else ""
+SLICE = f"{a.parent_slice}-shardsdax{os.getpid()}.slice" if a.parent_slice else f"shardsdax{os.getpid()}.slice"
 uid = os.getuid()
-CGROUP = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{SLICE}"
+CGROUP = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{PARENT}{SLICE}"
 # Each arm's build of shards and what its daemon is given: the window arms a window as long
 # as the host's memory, given, as the daemon's default is none on a virtual machine on an
 # AMD CPU (D189, PM M308).
@@ -122,6 +132,58 @@ def drop(path):
         os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
     finally:
         os.close(fd)
+
+
+# What the reader's guest says of its read each second: where its dd waits, five looks a
+# fifth of a second apart, its state and what it has read; its workload's cgroup's memory,
+# events and reclaim; its kernel's memory; and its kernel's reclaim.
+GUEST = (
+    "while :; do t=$(cut -d' ' -f1 /proc/uptime); p=$(pidof dd); w=; "
+    "for _ in 1 2 3 4 5; do w=\"$w $(cat /proc/$p/wchan 2>/dev/null || echo -)\"; sleep 0.2; done; "
+    "echo \"$t dd$w $(sed -n 's/^State:[[:space:]]*\\([A-Z]\\).*/\\1/p' /proc/$p/status 2>/dev/null) "
+    "$(sed -n 's/^rchar: //p' /proc/$p/io 2>/dev/null) | current $(cat /sys/fs/cgroup/memory.current) "
+    "$(tr '\\n' ' ' < /sys/fs/cgroup/memory.events)$(grep -E '^(anon|file|kernel|pgscan|pgsteal|workingset_refault_file) ' "
+    "/sys/fs/cgroup/memory.stat | tr '\\n' ' ')| $(grep -E '^(MemTotal|MemFree|Cached):' /proc/meminfo | tr -s ' ' | tr '\\n' ' ')"
+    "| $(grep -E '^(pgscan_kswapd|pgscan_direct|pgsteal_kswapd|pgsteal_direct|workingset_refault_file|allocstall_movable) ' "
+    "/proc/vmstat | tr '\\n' ' ')\"; done"
+)
+
+
+def guest_sample(arm, path, stop):
+    """What the reader's guest says each second (GUEST) until `stop`, each line with the
+    host's time it came."""
+    with open(path, "w") as f:
+        p = subprocess.Popen([ARMS[arm][0], "exec", "reader", "sh", "-c", GUEST], env=env(arm),
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        stopper = threading.Thread(target=lambda: (stop.wait(), p.kill()))
+        stopper.start()
+        for line in p.stdout:
+            f.write(f"{time.time():.3f} {line}")
+            f.flush()
+        p.wait()
+        stopper.join()
+
+
+def timed_log(arm, stop):
+    """Each line of the arm's daemon log, with the host's time it was seen, into
+    OUT/daemon-<arm>.timed.log, until `stop`."""
+    log, seen = os.path.join(homes[arm], "daemon.log"), 0
+    with open(os.path.join(out, f"daemon-{arm}.timed.log"), "w") as f:
+        while not stop.wait(0.2):
+            try:
+                with open(log, "rb") as d:
+                    d.seek(seen)
+                    new = d.read()
+            except OSError:
+                continue
+            lines = new.split(b"\n")
+            whole = b"\n".join(lines[:-1])
+            if lines[:-1]:
+                now = time.time()
+                for line in lines[:-1]:
+                    f.write(f"{now:.3f} {line.decode(errors='replace')}\n")
+                f.flush()
+                seen += len(whole) + 1
 
 
 def vm_pids():
@@ -259,6 +321,11 @@ def one(arm, file, high, name):
         "sleep", "100000")
     vms = open(os.path.join(out, f"{name}.vms"), "w")
     held(vms, "started", arm)
+    # Started before its budget is set, so that what it holds is in what the guest uses as
+    # it is told its room.
+    guest_stop = threading.Event()
+    guest = threading.Thread(target=guest_sample, args=(arm, os.path.join(out, f"{name}.guest"), guest_stop))
+    guest.start()
     set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={high}", "MemorySwapMax=0")
     if set_.returncode != 0:
         raise SystemExit(f"the slice's budget: {set_.stderr}")
@@ -274,7 +341,8 @@ def one(arm, file, high, name):
     done = run(arm, "exec", "reader", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M", check=False, timeout=1800)
     took = time.perf_counter() - start
     stop.set()
-    for w in watchers:
+    guest_stop.set()
+    for w in watchers + [guest]:
         w.join()
     held(vms, "read", arm)
     vms.close()
@@ -315,6 +383,10 @@ except OSError:
 print(f"host {platform.node()} {platform.machine()}, {platform.system()} {platform.release()}, THP {thp}, "
       f"{os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') >> 20} MiB, {os.cpu_count()} CPUs, "
       f"revision {rev}; file {a.size_mib} MiB")
+logs_stop = threading.Event()
+logs = [threading.Thread(target=timed_log, args=(arm, logs_stop), daemon=True) for arm in ARMS]
+for t in logs:
+    t.start()
 cases = [(high, arm, file) for high in a.highs.split(",") for file in FILES for arm in ARMS]
 times = {case: [] for case in cases}
 for i in range(a.rounds):

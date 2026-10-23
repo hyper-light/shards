@@ -3345,7 +3345,8 @@ fn builtin(
                 .first()
                 .map(|a| room_of(a))
                 .transpose()
-                .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room)),
+                .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room))
+                .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),

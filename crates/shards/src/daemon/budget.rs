@@ -364,8 +364,8 @@ impl<D: Disk> Daemon<D> {
     fn watch_budgets<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         loop {
             // While a microVM is held short of its budget, its room is told it again each
-            // window: a guest held at what it uses asks for nothing its host can hear, and
-            // a budget it is held under is not met.
+            // window: a guest held within the least room a run goes on in asks for nothing
+            // its host can hear, and a budget it is held under is not met.
             let short: Vec<u32> = lock(&self.budgets.held)
                 .iter()
                 .filter(|(_, h)| h.short)
@@ -586,9 +586,9 @@ impl<D: Disk> Daemon<D> {
     /// VMs it holds go first, which are speculation; then the microVM gives back what it
     /// holds cold (`RECLAIM`), which an idle one over its budget, asking for nothing, never
     /// would at its host's pressure; and then it is told the room as the budget has it
-    /// after: none past what it uses where it is short still, which the next word to it
-    /// raises once the budget has room again. Nothing where it has no budget and was told of
-    /// none.
+    /// after: where it is short still, its run held within what it uses and the least room
+    /// a run goes on in, which the next word to it raises once the budget has room again.
+    /// Nothing where it has no budget and was told of none.
     fn tell_room_now(&self, pid: u32) {
         let Some(dir) = lock(&self.budgets.held).get(&pid).map(|h| h.dir.clone()) else {
             return;
@@ -626,8 +626,12 @@ impl<D: Disk> Daemon<D> {
             argv: told.map(|r| r.to_string().into_bytes()).into_iter().collect(),
             ..Default::default()
         };
-        match self.exec_quietly(&id, &spec, None, 1 << 12, TAKE_TIMEOUT) {
-            Ok(q) if q.status == Some(0) && !q.timed_out => {}
+        // What it is held within past what it uses, as its init answers (none with no
+        // budget): never less than the least room a run goes on in, however short.
+        let held = match self.exec_quietly(&id, &spec, None, 1 << 12, TAKE_TIMEOUT) {
+            Ok(q) if q.status == Some(0) && !q.timed_out => std::str::from_utf8(&q.output)
+                .ok()
+                .and_then(|o| o.trim().parse::<u64>().ok()),
             Ok(q) => {
                 log(format!(
                     "container {id}: telling its microVM its budget's room: {}",
@@ -642,7 +646,7 @@ impl<D: Disk> Daemon<D> {
                 ));
                 return;
             }
-        }
+        };
         let short = told.is_some_and(|r| r < 0);
         if let Some(h) = lock(&self.budgets.held).get_mut(&pid) {
             h.told = told;
@@ -663,16 +667,27 @@ impl<D: Disk> Daemon<D> {
                     )
                 })
         };
+        // Where the room its budget leaves is short of the least room a run goes on in,
+        // what it is held within past what it uses.
+        let least = |r: i64| match held {
+            Some(h) if h > r.max(0).unsigned_abs() => format!(
+                ": held within {} KiB past what it uses, the least room a run goes on in",
+                h >> 10
+            ),
+            _ => String::new(),
+        };
         match (had, told) {
             (None, Some(r)) if r >= 0 => log(format!(
-                "container {id}: its microVM held within its budget, {} MiB of room{}",
+                "container {id}: its microVM held within its budget, {} MiB of room{}{}",
                 r >> 20,
+                least(r),
                 parts()
             )),
             (_, Some(r)) if r < 0 && !was_short => log(format!(
-                "container {id}: its microVM's budget is short by {} MiB, past {ended} warm VMs ended and {} MiB it gave back: held at what it uses{}",
+                "container {id}: its microVM's budget is short by {} MiB, past {ended} warm VMs ended and {} MiB it gave back{}{}",
                 r.unsigned_abs() >> 20,
                 gave.map_or(0, |g| g.freed) >> 20,
+                least(r),
                 parts()
             )),
             (_, Some(r)) if r >= 0 && was_short => log(format!(

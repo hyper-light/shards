@@ -531,18 +531,49 @@ fn grown_hold(cgroup: &str) -> io::Result<u64> {
 }
 
 /// Holds the run in `cgroup` within what its host's budget leaves it (D188, the builtin
-/// `ROOM`): `room` bytes past what it uses now, none
-/// past it where the room is short (what it holds past the room is given back by the
-/// host's passes, `RECLAIM`, whose pages the kernel reports free together); or with no
-/// budget (`None`), as its memory alone holds it. What the hold leaves above it the kernel
-/// reclaims at once, which is then reported free (D151).
-pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<()> {
+/// `ROOM`): `room` bytes past what it uses now, and never less past it than the room a run
+/// needs to go on ([`working_room`]), which a room short of it raises no hold past (what
+/// it holds past the room is given back by the host's passes, `RECLAIM`, whose pages the
+/// kernel reports free together); or with no budget (`None`), as its memory alone holds
+/// it. What the hold leaves above it the kernel reclaims at once, which is then reported
+/// free (D151). The bytes it is held within past what it uses; `None` with no budget.
+pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
-    set_cap(room.map_or(u64::MAX, |r| within(used, r)));
+    set_cap(room.map_or(u64::MAX, |r| within(used, r, working_room(), cap())));
     set_high(cgroup, grown_hold(cgroup)?)?;
     crate::run::flush_page_reports();
-    Ok(())
+    Ok(room.map(|_| cap().saturating_sub(used)))
+}
+
+/// The least room a run is held within past what it uses, however short its budget (D188),
+/// in bytes: what its kernel charges it ahead of the pages it takes, a batch of 64 pages
+/// for each CPU (`MEMCG_CHARGE_BATCH`, mm/memcontrol.c `refill_stock`), which no reclaim
+/// takes back; the pages a read holds as its file is read ahead of it, two windows of 128
+/// KiB (`VM_READAHEAD_PAGES`, mm/readahead.c: the window read and the one read ahead of
+/// it, a share's own, as its server keeps the window the kernel offers); and a reader's
+/// block as large as one request of a share carries ([`shards_abi::SHARE_MAX_PAGES`]),
+/// which with no swap no reclaim takes either. Held within nothing past what it used, a
+/// run's `dd` of 1 MiB blocks through FUSE took 233 s for 32 MiB it read in 0.28 s with no
+/// budget, asleep in the kernel's throttle of a cgroup past its `memory.high`
+/// (`__mem_cgroup_handle_over_high`), its kernel's reclaim taking 3% of what it scanned;
+/// within 1 MiB, 3.9 to 201 s, and within 1.25 MiB on 4 vCPUs 0.8 to 7.6 s; within 1.5
+/// MiB on 4 vCPUs and 2 MiB on 18, as fast as with none (PM M309).
+fn working_room() -> u64 {
+    // SAFETY: sysconf(3) reads a value of the running kernel's.
+    let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1));
+    working_room_of(cpus, page_size())
+}
+
+/// [`working_room`] of a guest with `cpus` CPUs online and pages of `page` bytes.
+fn working_room_of(cpus: u64, page: u64) -> u64 {
+    const CHARGE_BATCH: u64 = 64;
+    const READ_AHEAD: u64 = 128 << 10;
+    CHARGE_BATCH
+        .saturating_mul(cpus)
+        .saturating_add(u64::from(shards_abi::SHARE_MAX_PAGES))
+        .saturating_mul(page)
+        .saturating_add(2 * READ_AHEAD)
 }
 
 /// The most a run's microVM may have plugged within what its host's budget leaves it
@@ -577,16 +608,36 @@ fn plug_for(boot: u64, most: u64, cap: u64, kernel: u64) -> u64 {
 }
 
 /// What a run that uses `used` bytes is held at within the `room` its host's budget leaves
-/// it: that room past what it uses, none past it where the room is short.
-fn within(used: u64, room: i64) -> u64 {
-    used.saturating_add(room.max(0).unsigned_abs())
+/// it: that room past what it uses, where it is `least` or more, the room a run needs to go
+/// on ([`working_room`]); else `least` past what it uses, but no higher than it was held
+/// (`was`), so that a budget short of room for it holds it within what it had, and each
+/// word of it, told again each window of the host's pressure while it is short, raises it
+/// by none.
+fn within(used: u64, room: i64, least: u64, was: u64) -> u64 {
+    let room = room.max(0).unsigned_abs();
+    if room >= least {
+        used.saturating_add(room)
+    } else {
+        used.saturating_add(least).min(was)
+    }
 }
 
-/// Sets [`CAP`], where it was made.
+/// Sets [`CAP`], where it was made, in whole pages, as the kernel keeps `memory.high`
+/// (mm/memcontrol.c, `page_counter_memparse`): a cap past a page boundary read back short
+/// of itself, and its grower took a run held at its cap for one held short of it, writing
+/// its hold again at each of its run's events, each a reclaim the kernel makes at once.
 fn set_cap(bytes: u64) {
     if let Some(cap) = CAP.get() {
-        cap.store(bytes, std::sync::atomic::Ordering::SeqCst);
+        cap.store(in_pages(bytes, page_size()), std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// `bytes` in whole pages of `page` bytes, rounded down: none for none.
+fn in_pages(bytes: u64, page: u64) -> u64 {
+    if bytes == u64::MAX {
+        return bytes;
+    }
+    bytes - bytes % page.max(1)
 }
 
 /// The run's `memory.peak`, opened by PID 1 as it holds the run ([`Plug::hold_run`]) and
@@ -1295,13 +1346,43 @@ mod tests {
     }
 
     /// A run is held within the room its host's budget leaves it (D188): that room past
-    /// what it uses, none past it where the room is short.
+    /// what it uses, and never less than the room it needs to go on; a room short of that
+    /// raises no hold it had, as its host tells it again while it is short, and lowers one
+    /// it no longer fills; in whole pages, as its kernel keeps the hold, none still none.
     #[test]
     fn a_run_is_held_within_its_budgets_room() {
-        assert_eq!(within(100 * MIB, 50 * MIB as i64), 150 * MIB);
-        assert_eq!(within(100 * MIB, 0), 100 * MIB);
-        assert_eq!(within(100 * MIB, -50 * MIB as i64), 100 * MIB);
-        assert_eq!(within(u64::MAX - 1, 10), u64::MAX);
+        let least = 2 * MIB;
+        assert_eq!(within(100 * MIB, 50 * MIB as i64, least, u64::MAX), 150 * MIB);
+        assert_eq!(within(100 * MIB, 0, least, u64::MAX), 102 * MIB);
+        assert_eq!(within(100 * MIB, -50 * MIB as i64, least, u64::MAX), 102 * MIB);
+        assert_eq!(within(100 * MIB, MIB as i64, least, u64::MAX), 102 * MIB);
+        // Held short at 102 MiB, its run grown to it: told short again, held there still.
+        assert_eq!(within(102 * MIB, -(MIB as i64), least, 102 * MIB), 102 * MIB);
+        // Its run since shrunk: held as close as the least room.
+        assert_eq!(within(60 * MIB, -(MIB as i64), least, 102 * MIB), 62 * MIB);
+        // Room again: past it.
+        assert_eq!(within(102 * MIB, 40 * MIB as i64, least, 102 * MIB), 142 * MIB);
+        assert_eq!(within(u64::MAX - 1, 10, least, u64::MAX), u64::MAX);
+        assert_eq!(in_pages(100 * MIB + 4097, 4096), 100 * MIB + 4096);
+        assert_eq!(in_pages(4095, 4096), 0);
+        assert_eq!(in_pages(u64::MAX, 4096), u64::MAX);
+    }
+
+    /// The least room a run is held within covers what its kernel charges it ahead on
+    /// each CPU, two read-ahead windows and a share's largest request: on 4 CPUs of 4 KiB
+    /// pages, 2.25 MiB, past the 1.5 MiB a reader of 1 MiB blocks needed, and on 18, 5.75
+    /// MiB, past the 2 MiB it needed there (PM M309); this guest's, by its own CPUs.
+    #[test]
+    fn a_run_held_short_keeps_the_room_its_reads_need() {
+        assert_eq!(working_room_of(4, 4096), 9 * MIB / 4);
+        assert!(working_room_of(4, 4096) >= 3 * MIB / 2);
+        assert_eq!(working_room_of(18, 4096), 23 * MIB / 4);
+        assert!(working_room_of(18, 4096) >= 2 * MIB);
+        // SAFETY: sysconf(3) reads a value of the running kernel's.
+        let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) })
+            .unwrap()
+            .max(1);
+        assert_eq!(working_room(), working_room_of(cpus, page_size()));
     }
 
     /// A run gives back what it holds plugged past twice what it uses, in whole blocks, as

@@ -632,9 +632,11 @@ pub mod builtin {
     pub const RECLAIM: u8 = 15;
     /// The bytes its host's budget leaves the microVM (D188), in signed decimal: its run
     /// held at what it uses and that much more, past which its own kernel drops its run's
-    /// page cache before its host must take memory its guest holds; none past what it uses
-    /// where the room is short. Without one, it has no budget, and is held only as its
-    /// memory is (D148).
+    /// page cache before its host must take memory its guest holds; never less past what
+    /// it uses than the room a run needs to go on, which a room short of it raises no hold
+    /// past. Answered with the bytes the run is held within past what it uses, in decimal.
+    /// Without one, it has no budget, is held only as its memory is (D148), and nothing is
+    /// answered.
     pub const ROOM: u8 = 16;
 }
 

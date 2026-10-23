@@ -24,6 +24,11 @@ pub const JOIN_DISK_SERIAL: &str = "shards-join";
 /// until a container joining its network brings volumes, which init mounts then.
 pub const JOIN_SHARE_TAG: &str = "shards-join-share";
 
+/// The most a share's server reads or writes in one FUSE request, in pages (its INIT
+/// reply's `max_pages`), which the guest's kernel sends no more than: 256, a mebibyte of
+/// 4 KiB pages.
+pub const SHARE_MAX_PAGES: u16 = 256;
+
 /// The MAC of a guest's gateway, made of its IPv4 address, as Docker made its own (02:42
 /// and the address's four bytes): what the guest's network process answers every ARP
 /// request and neighbor solicitation with, and what the guest's init gives its gateway's
