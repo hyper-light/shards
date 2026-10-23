@@ -160,13 +160,18 @@ impl<D: Disk> Daemon<D> {
             }
         }
         // Each one's room under its budget, where it has one, a short room shared among
-        // those the budget holds (D188).
+        // those the budget holds (D188): each cgroup's once, as the microVMs under one
+        // parent are made in one.
+        let mut of_dir: HashMap<std::path::PathBuf, Option<(i64, std::path::PathBuf)>> = HashMap::new();
         let rooms = budget::shares(
             &vms.values()
                 .map(|&(_, pid)| {
-                    let room = self
-                        .cgroup_of_vm(pid)
-                        .and_then(|dir| budget::room(&dir, std::path::Path::new(budget::ROOT)));
+                    let room = self.cgroup_of_vm(pid).and_then(|dir| {
+                        of_dir
+                            .entry(dir)
+                            .or_insert_with_key(|dir| budget::room(dir, std::path::Path::new(budget::ROOT)))
+                            .clone()
+                    });
                     (pid, room)
                 })
                 .collect(),

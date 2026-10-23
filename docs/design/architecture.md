@@ -5647,11 +5647,18 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   could, the guest's own RAM as a template's file pages, which the guest read back as it
   ran, 400 to 600 s for a gigabyte its run read in 3 to 5 s with no budget, on CI's AMD
   and Intel runners alike. So each microVM's guest is told the room its budget leaves it,
-  the least any cgroup over it may still take before its host must take back memory a
-  process maps or holds (its budget less all it holds but its page cache no process maps,
-  memory.stat's `file` less `file_mapped` and `shmem`): as its run begins, each time a
-  budget over it is set or changed (inotify on each cgroup's `memory.high` and
-  `memory.max`) or met (its `memory.events`), and as another microVM the budget held ends.
+  the least any cgroup over it may still take before its host must take back memory its
+  processes map or hold: its budget less their anonymous, shared and kernel memory
+  (memory.stat's `anon`, `shmem`, `kernel`, `sock`, `zswap`) and the file pages they map,
+  wherever those are charged (each process's `Pss_File`, a page shared among them counted
+  once), a restored guest's own RAM among them, which comes back charged to the budget as
+  the guest reads it again once evicted; and no less than its `memory.current` less its
+  page cache no process maps. A room of all its page cache no process mapped let one guest
+  fill the budget to its last file page and read its own RAM back for 2,100 s, until its job was ended; statistics
+  read just after the kernel reclaimed a gigabyte, still counting it, once gave a room of
+  all the budget (PM M309). It is told as its run begins, each time a budget over it is set
+  or changed (inotify on each cgroup's `memory.high` and `memory.max`) or met (its
+  `memory.events`), and as another microVM the budget held ends.
   Init holds its run within it (builtin `ROOM`): the run's `memory.high` never past what
   it uses and that room, and its grower lifting no hold past it, so that the guest's own
   kernel drops its run's page cache before its host must take anything, as a container's
@@ -5717,7 +5724,8 @@ on both.
 runs. Unit (daemon): a budget's room, the least any cgroup over a microVM leaves, its
 unmapped page cache counted as room and its shared memory not, none with no budget and
 none at the root (`a_budgets_room_is_the_least_any_cgroup_over_a_microvm_leaves`); a short
-room shared among the microVMs it holds; a give-back saying what it gave or why it gave
+room shared among the microVMs it holds; the files a budget's processes map held, past what
+its cgroup counts mapped; a give-back saying what it gave or why it gave
 nothing, one with no answer in time said so; and a microVM that does not answer its
 give-back keeping no other's from the host, nor asked again until it has ended
 (`a_microvm_that_does_not_give_back_keeps_no_other_waiting`, which passes asking one after

@@ -21,26 +21,61 @@ pub(super) const ROOT: &str = "/sys/fs/cgroup";
 
 /// What the budget over the cgroup `dir` leaves the microVMs made in it: of `dir` and each
 /// cgroup above it below `root` held to a budget (`memory.high` or `memory.max` short of
-/// `max`), the least one may still take before its host must take back memory a process
-/// maps or holds as its own: its budget less all it holds but its page cache no process
-/// maps, which its kernel takes first (memory.stat's `file` less its `file_mapped` and its
-/// `shmem`); and which cgroup that is. None where no cgroup it is in has a budget.
+/// `max`), the least one may still take before its host must take back memory its
+/// processes map or hold as their own ([`Holding::room`]), the file pages they map counted
+/// in wherever they are charged; and which cgroup that is. None where no cgroup it is in
+/// has a budget.
 pub(super) fn room(dir: &Path, root: &Path) -> Option<(i64, PathBuf)> {
     let mut least: Option<(i64, PathBuf)> = None;
     let mut at = dir;
     while at.starts_with(root) && at != root {
-        if let Some(room) = room_at(at)
-            && least.as_ref().is_none_or(|(l, _)| room < *l)
-        {
-            least = Some((room, at.to_path_buf()));
+        if let Some(held) = held_at(at) {
+            let room = held.room(files_mapped_under(at));
+            if least.as_ref().is_none_or(|(l, _)| room < *l) {
+                least = Some((room, at.to_path_buf()));
+            }
         }
         at = at.parent()?;
     }
     least
 }
 
-/// What the budget of the cgroup `dir` itself leaves ([`room`]): none where it has none.
-fn room_at(dir: &Path) -> Option<i64> {
+/// What a cgroup with a budget holds that its host may take back from its processes alone,
+/// which with no swap is from its microVMs' guests, by their own kernels (D188): all but its
+/// page cache no process maps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Holding {
+    /// Its budget: the least of its `memory.high` and `memory.max`.
+    pub budget: u64,
+    /// Its anonymous memory, its shared memory and its kernel's (memory.stat's `anon`,
+    /// `shmem`, `kernel`, `sock` and `zswap`), from one read of its statistics.
+    pub own: u64,
+    /// Its files' pages a process maps (its `file_mapped`), from that read.
+    pub mapped: u64,
+    /// What it holds in all (`memory.current`) less its page cache no process maps: no
+    /// less than it holds, for statistics a read may find behind its counter, which just
+    /// after the kernel reclaimed a gigabyte of a slice's page cache still counted it, and
+    /// a room of all its budget was told a microVM whose guest then filled it (PM M309).
+    pub floor: u64,
+}
+
+impl Holding {
+    /// What it holds that its host may take back from its processes alone, its processes
+    /// mapping `files` bytes of files wherever their pages are charged.
+    pub fn held(&self, files: u64) -> u64 {
+        self.own.saturating_add(self.mapped.max(files)).max(self.floor)
+    }
+
+    /// The bytes of its budget not [`held`](Self::held): short of none where it holds past
+    /// it.
+    pub fn room(&self, files: u64) -> i64 {
+        let signed = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
+        signed(self.budget).saturating_sub(signed(self.held(files)))
+    }
+}
+
+/// What the cgroup `dir` holds of its budget ([`Holding`]): none where it has no budget.
+pub(super) fn held_at(dir: &Path) -> Option<Holding> {
     let budget = ["memory.high", "memory.max"]
         .iter()
         .filter_map(|f| limit(&dir.join(f)))
@@ -54,14 +89,96 @@ fn room_at(dir: &Path) -> Option<i64> {
     let of = |key: &str| {
         stat.lines()
             .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse::<u64>().ok())
-            .unwrap_or(0)
     };
-    let unmapped = of("file")
-        .saturating_sub(of("file_mapped"))
-        .saturating_sub(of("shmem"));
-    let held = current.saturating_sub(unmapped);
-    let signed = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
-    Some(signed(budget).saturating_sub(signed(held)))
+    let get = |key: &str| of(key).unwrap_or(0);
+    // Its kernel's in all, where the kernel counts it so (Linux 5.18); else its parts.
+    let kernel = of("kernel").unwrap_or_else(|| {
+        [
+            "kernel_stack",
+            "pagetables",
+            "sec_pagetables",
+            "percpu",
+            "vmalloc",
+            "slab",
+        ]
+        .iter()
+        .map(|k| get(k))
+        .fold(0u64, u64::saturating_add)
+    });
+    let own = ["anon", "shmem", "sock", "zswap"]
+        .iter()
+        .map(|k| get(k))
+        .fold(kernel, u64::saturating_add);
+    let unmapped = get("file")
+        .saturating_sub(get("file_mapped"))
+        .saturating_sub(get("shmem"));
+    Some(Holding {
+        budget,
+        own,
+        mapped: get("file_mapped"),
+        floor: current.saturating_sub(unmapped),
+    })
+}
+
+/// The bytes of files the processes of cgroup `dir` and those below it map, each page once
+/// among them (/proc/PID/smaps_rollup's `Pss_File`, which shares a page's bytes among the
+/// processes that map it), wherever its page is charged: a restored guest's own RAM, its
+/// template's file pages, among them, which its budget must hold however they came to be
+/// charged elsewhere, as any evicted comes back charged to it as its guest reads it again
+/// (PM M309). A process whose entry says none counts its `RssFile`.
+pub(super) fn files_mapped_under(dir: &Path) -> u64 {
+    let mut pids = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        if let Ok(procs) = std::fs::read_to_string(d.join("cgroup.procs")) {
+            pids.extend(procs.split_whitespace().filter_map(|p| p.parse::<u32>().ok()));
+        }
+        if let Ok(entries) = std::fs::read_dir(&d) {
+            dirs.extend(
+                entries
+                    .flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.path()),
+            );
+        }
+    }
+    let kib = |text: &str, key: &str| {
+        text.lines().find_map(|l| {
+            l.strip_prefix(key)?
+                .trim()
+                .strip_suffix("kB")?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+    };
+    pids.into_iter()
+        .filter_map(|pid| {
+            let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
+            rollup.as_deref().and_then(|r| kib(r, "Pss_File:")).or_else(|| {
+                let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+                kib(&status, "RssFile:")
+            })
+        })
+        .map(|k| k.saturating_mul(1024))
+        .fold(0u64, u64::saturating_add)
+}
+
+/// Whether the cgroup `dir`, or one above it below `root`, holds its processes to a budget:
+/// its limits read alone.
+pub(super) fn budgeted(dir: &Path, root: &Path) -> bool {
+    let mut at = dir;
+    while at.starts_with(root) && at != root {
+        if ["memory.high", "memory.max"]
+            .iter()
+            .any(|f| limit(&at.join(f)).is_some())
+        {
+            return true;
+        }
+        let Some(up) = at.parent() else { return false };
+        at = up;
+    }
+    false
 }
 
 /// A cgroup's limit as its file says it: none for `max`.
@@ -319,11 +436,20 @@ impl<D: Disk> Daemon<D> {
                     if !met.iter().any(|l| h.dir.starts_with(l)) {
                         continue;
                     }
-                    match room(&h.dir, Path::new(ROOT)) {
-                        Some((r, _)) if r < 0 && !h.short => {
+                    // Read from the statistics alone, at as many events as the kernel
+                    // sends (one each 10 ms at most, cgroup_file_notify): what its
+                    // processes map but its cgroup is not charged for is counted as the
+                    // microVM is told.
+                    match met
+                        .iter()
+                        .filter(|l| h.dir.starts_with(l))
+                        .filter_map(|l| held_at(l).map(|held| held.room(0)))
+                        .min()
+                    {
+                        Some(r) if r < 0 && !h.short => {
                             tell.insert(pid);
                         }
-                        Some((r, _)) if r >= 0 => h.short = false,
+                        Some(r) if r >= 0 => h.short = false,
                         _ => {}
                     }
                 }
@@ -352,7 +478,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Watches the events of cgroup `dir`, once, where it has a budget.
     fn watch_events(&self, dir: &Path) {
-        if room_at(dir).is_some() && lock(&self.budgets.watched).events.insert(dir.to_path_buf()) {
+        if held_at(dir).is_some() && lock(&self.budgets.watched).events.insert(dir.to_path_buf()) {
             self.watch_file(dir, "memory.events", Watch::Events);
         }
     }
@@ -415,7 +541,7 @@ impl<D: Disk> Daemon<D> {
             let mut held = lock(&self.budgets.held);
             let Some(h) = held.get_mut(&pid) else { return };
             // One under no budget, never told one, has nothing to hear.
-            if h.told.is_none() && !h.telling && room(&h.dir, Path::new(ROOT)).is_none() {
+            if h.told.is_none() && !h.telling && !budgeted(&h.dir, Path::new(ROOT)) {
                 return;
             }
             if h.telling {
@@ -517,11 +643,25 @@ impl<D: Disk> Daemon<D> {
             h.short = told.is_some_and(|r| r < 0);
         }
         match (had, told) {
-            (None, Some(r)) => log(format!(
-                "container {id}: its microVM held within its budget, {}, {} MiB of room",
-                dir.display(),
-                r.max(0) >> 20
-            )),
+            (None, Some(r)) => {
+                let of = room
+                    .as_ref()
+                    .and_then(|(_, level)| held_at(level).map(|h| (level, h)));
+                let parts = of.map_or(String::new(), |(level, h)| {
+                    let files = files_mapped_under(level);
+                    format!(
+                        ": {}'s budget, {} MiB, holds {} MiB its host may take back from its processes alone, {} MiB of it files they map",
+                        level.display(),
+                        h.budget >> 20,
+                        h.held(files) >> 20,
+                        h.mapped.max(files) >> 20
+                    )
+                });
+                log(format!(
+                    "container {id}: its microVM held within its budget, {} MiB of room{parts}",
+                    r.max(0) >> 20
+                ));
+            }
             (Some(_), None) => log(format!("container {id}: its microVM held to no budget")),
             _ => {}
         }
@@ -532,7 +672,7 @@ impl<D: Disk> Daemon<D> {
 fn shares_a_budget(a: &Path, b: &Path) -> bool {
     let mut at = a;
     while at.starts_with(ROOT) && at != Path::new(ROOT) {
-        if b.starts_with(at) && room_at(at).is_some() {
+        if b.starts_with(at) && held_at(at).is_some() {
             return true;
         }
         let Some(up) = at.parent() else { return false };
@@ -606,6 +746,16 @@ mod tests {
         assert_eq!(room(&scope, &root), Some((-83 * MIB as i64, slice.clone())));
         cgroup(&scope, Some(250 * MIB), None, 383 * MIB, &stat(0, 0, 0));
         assert_eq!(room(&scope, &root), Some((-133 * MIB as i64, scope.clone())));
+        // Statistics read behind the counter, still counting a gigabyte of page cache the
+        // kernel has just taken back: what the processes hold is counted from them, never
+        // all the budget for room.
+        let stale = "anon 210000000\nfile 1100000000\nkernel 10000000\nfile_mapped 100000000\nshmem 0\n";
+        cgroup(&scope, None, None, 383 * MIB, stale);
+        cgroup(&slice, Some(384 * MIB), None, 383 * MIB, stale);
+        assert_eq!(
+            room(&scope, &root),
+            Some((384 * MIB as i64 - 320_000_000, slice.clone()))
+        );
         // None held to a budget: no room to tell.
         cgroup(&scope, None, None, 383 * MIB, &stat(0, 0, 0));
         cgroup(&slice, None, None, 383 * MIB, &stat(0, 0, 0));
@@ -613,6 +763,31 @@ mod tests {
         // The root itself holds nothing to a budget.
         cgroup(&root, Some(MIB), None, 900 * MIB, &stat(0, 0, 0));
         assert_eq!(room(&scope, &root), None);
+    }
+
+    /// The files a budget's processes map count as held, wherever their pages are charged:
+    /// more than the cgroup counts mapped, they take room from it; no more, none.
+    #[test]
+    fn the_files_a_budgets_processes_map_are_held() {
+        let held = Holding {
+            budget: 384 * MIB,
+            own: 145 * MIB,
+            mapped: 16 * MIB,
+            floor: 168 * MIB,
+        };
+        assert_eq!(held.held(0), 168 * MIB);
+        assert_eq!(held.held(83 * MIB), 228 * MIB);
+        assert_eq!(held.room(83 * MIB), 156 * MIB as i64);
+        assert_eq!(held.room(0), 216 * MIB as i64);
+        // A process of the cgroup's maps its own program at least: this test's, on a host
+        // whose processes have /proc entries.
+        if std::path::Path::new("/proc/self/smaps_rollup").exists() {
+            let tmp = shards_testdir::TempDir::new("budget-files").unwrap();
+            let scope = tmp.join("shards-1-0.scope");
+            std::fs::create_dir_all(&scope).unwrap();
+            std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
+            assert!(files_mapped_under(&tmp) > 0);
+        }
     }
 
     /// A room short of what its budget holds is shared among the microVMs it holds, so
