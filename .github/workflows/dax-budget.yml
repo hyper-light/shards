@@ -3,7 +3,10 @@ name: DAX budget
 # What a microVM held to a budget pays to read a file through its volume's DAX window, on
 # CI's runners (D188, D189): docs/research/measurements/dax-budget/measure.py, its samples
 # and profiles kept as the run's artifact; x86_64 alone, as hosted arm64 runners have no
-# /dev/kvm. Runs when the experiment changes, or when asked.
+# /dev/kvm. Runs when the experiment changes, or when asked. The experiment now: a run held
+# within the least room a run goes on in for its whole read (`short`, a pool of none), at
+# the tree's least room and at 2, 4, 8 and 16 times it (least-x*.patch), beside the same
+# reads with no budget.
 on:
   push:
     paths:
@@ -13,10 +16,10 @@ on:
     inputs:
       args:
         description: measure.py's arguments, after its build and output directory
-        default: --rounds 2
+        default: --rounds 3 --highs short,infinity --pool 0 --arms none,least-x2,least-x4,least-x8,least-x16
       fuse:
         description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
-        default: ""
+        default: least-x2 least-x4 least-x8 least-x16
 
 permissions:
   contents: read
@@ -59,7 +62,7 @@ jobs:
       # asked for, each kept apart.
       - name: Build
         env:
-          FUSE: ${{ github.event.inputs.fuse }}
+          FUSE: ${{ github.event.inputs.fuse || 'least-x2 least-x4 least-x8 least-x16' }}
         run: |
           cargo build --locked -p shards --release
           cp target/release/shards "$RUNNER_TEMP/shards"
@@ -71,20 +74,20 @@ jobs:
           done
       - name: Measure
         env:
-          ARGS: ${{ github.event.inputs.args }}
-          FUSE: ${{ github.event.inputs.fuse }}
+          ARGS: ${{ github.event.inputs.args || '--rounds 3 --highs short,infinity --pool 0 --arms none,least-x2,least-x4,least-x8,least-x16' }}
+          FUSE: ${{ github.event.inputs.fuse || 'least-x2 least-x4 least-x8 least-x16' }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m
           # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
           sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
-          perf=""
-          command -v perf > /dev/null && sudo -n perf --version && perf=--perf
-          # Pushed: two rounds; asked for: the arguments asked with.
+          # A profile only where asked (--perf in the arguments): it samples the whole host 5
+          # to 15 s into each read, which slows the slow reads it profiles.
+          # Pushed: the experiment above; asked for: the arguments asked with.
           fuse=""
           for patch in $FUSE; do fuse="$fuse --fuse $patch=$RUNNER_TEMP/shards-$patch"; done
           python3 -I docs/research/measurements/dax-budget/measure.py "$RUNNER_TEMP/shards" dax-budget \
-            --huge "$RUNNER_TEMP/shards-huge" $fuse ${ARGS:---rounds 2} $perf
+            --huge "$RUNNER_TEMP/shards-huge" $fuse $ARGS
           python3 -I docs/research/measurements/dax-budget/samples.py dax-budget
       - uses: actions/upload-artifact@v7.0.1
         if: always()

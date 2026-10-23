@@ -9,8 +9,8 @@ interleave the cases, each first in turn; the file's pages are out of the host's
 before each read, so that the read's microVM brings them in and pays for them.
 
     measure.py SHARDS OUT [--huge SHARDS] [--fuse NAME=SHARDS]... [--arms A,B]
-               [--guest-mib N] [--rounds N] [--highs 384M,infinity] [--size-mib 1024]
-               [--perf] [--stop-slice] [--parent-slice NAME]
+               [--guest-mib N] [--rounds N] [--highs 384M,short,infinity] [--size-mib 1024]
+               [--pool N] [--perf] [--stop-slice] [--parent-slice NAME]
 
 With --huge, a third arm: that build of shards (huge.patch: each window range on huge
 pages, MADV_HUGEPAGE), its window as long as the host's memory. With --stop-slice, the
@@ -21,6 +21,13 @@ name. With --guest-mib, the reader's run is held to that many MiB in its guest
 (`--memory`, no swap, `--oom-kill-disable`: its memory.high), its budget its own. With
 --parent-slice NAME, the slice is made in NAME.slice, which a shared host may hold to a
 `MemoryMax` of its own: its reads under no budget of their own are then held to that one.
+A budget of `short` is set as each read's run has started and the slice's statistics have
+caught up with its counter: a mebibyte short of what its microVMs hold and the inactive
+pages its kernel keeps beside their mapped ones (as the daemon counts a budget's room,
+daemon/budget.rs), so that the run is held within the least room a run goes on in; with
+`--pool 0`, no warm microVM is left to end for room, and it is held so for its whole read.
+Each read under it is said held short throughout, or not, by its daemon's log. With
+--pool N, each arm's daemon keeps a pool of N (SHARDS_POOL).
 
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
@@ -28,8 +35,10 @@ anon and reclaim counters, memory.events, memory.pressure), its VM process's vCP
 states and CPU times, and KVM's counters of its VM where `sudo -n` reads debugfs; with
 --perf, a profile of the whole host 5 to 15 s into each read (`sudo -n perf`).
 
-Into OUT/<case>.vms, what each VM process in the slice holds as the reader starts and once
-its read is done, mapping by mapping, and what its guest says of its own memory; into
+Into OUT/<case>.txt each second, too, each thread of each VM process in the slice, its
+state and, not running, where it waits (its wchan). Into OUT/<case>.vms, what each VM
+process in the slice holds as the reader starts and once its read is done, mapping by
+mapping, and what its guest says of its own memory; into
 OUT/<case>.guest, from within the reader's guest each second of its read, where its `dd`
 waits (five looks at its wchan), its run's memory and reclaim counters, its kernel's
 memory and its reclaim; into OUT/daemon-<arm>.timed.log, each line of the arm's daemon log
@@ -39,13 +48,14 @@ Linux, with KVM and a user's systemd manager (XDG_RUNTIME_DIR's bus). Each arm h
 of its own, which pulls alpine once, and an empty DOCKER_CONFIG; all of it is removed, and
 its daemons and the slice stopped, however the run ends.
 """
-import argparse, atexit, os, platform, shutil, signal, subprocess, sys, tempfile, threading, time
+import argparse, atexit, os, platform, re, shutil, signal, subprocess, sys, tempfile, threading, time
 
 p = argparse.ArgumentParser()
 p.add_argument("shards")
 p.add_argument("out")
 p.add_argument("--rounds", type=int, default=3)
 p.add_argument("--highs", default="384M,infinity")
+p.add_argument("--pool", type=int)
 p.add_argument("--size-mib", type=int, default=1024)
 p.add_argument("--perf", action="store_true")
 p.add_argument("--huge")
@@ -90,6 +100,8 @@ def env(arm):
     e = dict(os.environ, SHARDS_HOME=homes[arm], DOCKER_CONFIG=config)
     e.pop("SHARDS_SHARE_WINDOW_MIB", None)
     e.update(ARMS[arm][1])
+    if a.pool is not None:
+        e["SHARDS_POOL"] = str(a.pool)
     return e
 
 
@@ -218,6 +230,23 @@ def threads(pid):
     return " ".join(said)
 
 
+def every_thread(pid):
+    """Each thread's name, state and, not running, where it waits: name:state:wchan."""
+    said = []
+    for tid in sorted(os.listdir(f"/proc/{pid}/task")):
+        try:
+            with open(f"/proc/{pid}/task/{tid}/stat") as f:
+                stat = f.read()
+            with open(f"/proc/{pid}/task/{tid}/wchan") as f:
+                wchan = f.read().strip() or "-"
+        except OSError:
+            continue
+        name = stat[stat.index("(") + 1 : stat.rindex(")")].replace(" ", "_")
+        state = stat[stat.rindex(")") + 2 :].split()[0]
+        said.append(f"{name}:{state}:{wchan if state != 'R' else '-'}")
+    return " ".join(said)
+
+
 def kvm(pid):
     """KVM's counters of the VM of process `pid`, where `sudo -n` reads debugfs."""
     script = (f"for d in /sys/kernel/debug/kvm/{pid}-*; do for f in $d/*; do "
@@ -288,6 +317,7 @@ def sample(path, stop):
                 ]
                 for pid in vm_pids():
                     lines.append(f"vm {pid} {threads(pid)}")
+                    lines.append(f"threads {pid} {every_thread(pid)}")
                     lines.append(f"kvm {kvm(pid)}")
             except (OSError, ValueError, IndexError) as e:
                 lines = [f"== {time.time():.3f} {e}"]
@@ -310,6 +340,80 @@ def profile(name, stop):
     subprocess.run(["sudo", "-n", "chown", f"{os.getuid()}:{os.getgid()}", data], capture_output=True)
 
 
+def stat_of(pid):
+    """Process `pid`'s state and start time (proc_pid_stat(5) fields 3 and 22), or None
+    once it is gone."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        return fields[0], fields[19]
+    except (OSError, IndexError):
+        return None
+
+
+def ended(pid, started, timeout=60):
+    """Waits until process `pid`, started at `started`, has ended: gone, a zombie, or its
+    number another's."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        now = stat_of(pid)
+        if now is None or now[0] in ("Z", "X") or now[1] != started:
+            return
+        time.sleep(0.02)
+    raise SystemExit(f"VM process {pid} still runs {timeout} s after its run was removed")
+
+
+def short_budget():
+    """A mebibyte short of what the slice's microVMs hold and the inactive pages their
+    kernel keeps beside the mapped ones: all the slice holds but its page cache no process
+    maps, and as many as the mapped under a GiB of them (daemon/budget.rs, `lru_buffer`;
+    mm/vmscan.c, `inactive_is_low`); read once the slice's statistics have caught up with
+    its counter, which a microVM just ended leaves them behind (PM M309)."""
+    deadline = time.time() + 60
+    while True:
+        with open(os.path.join(CGROUP, "memory.current")) as f:
+            current = int(f.read())
+        with open(os.path.join(CGROUP, "memory.stat")) as f:
+            stat = dict((k, int(v)) for k, v in (line.split() for line in f))
+        if stat["anon"] + stat["file"] <= current:
+            break
+        if time.time() > deadline:
+            raise SystemExit(f"the slice's statistics still count more than it holds ({current}): {stat}")
+        time.sleep(0.1)
+    mapped = stat["file_mapped"]
+    unmapped = max(0, stat["file"] - mapped - stat["shmem"])
+    gb = (mapped * 2) >> 30
+    ratio = 1 if gb == 0 else max(1, int((gb * 10) ** 0.5))
+    return max(0, current - unmapped + mapped // ratio - (1 << 20))
+
+
+def held_short(arm, run_id):
+    """What the arm's daemon log says it told run `run_id` of its budget: whether it was
+    held within the least room a run goes on in from the first word of it on, and never
+    told room past that; with the holds it was told."""
+    try:
+        with open(os.path.join(homes[arm], "daemon.log"), errors="replace") as f:
+            said = [line for line in f if f"container {run_id}:" in line]
+    except OSError:
+        return "no daemon log"
+    least, holds, roomier = None, [], []
+    for line in said:
+        if "the least room a run goes on in" in line:
+            m = re.search(r"held within (\d+) KiB", line)
+            if m:
+                holds.append(int(m.group(1)))
+                least = max(least or 0, int(m.group(1)))
+        elif least is not None:
+            m = re.search(r"has room again, (\d+) MiB|held within its budget, (\d+) MiB of room", line)
+            if m:
+                roomier.append(int(m.group(1) or m.group(2)))
+    if least is None:
+        return "never held within the least room"
+    past = [r for r in roomier if r << 10 > least]
+    verdict = "held short throughout" if not past else f"given room past the least: {past} MiB"
+    return f"{verdict}; held within {holds} KiB"
+
+
 def one(arm, file, high, name):
     """One read's seconds: a microVM started in the slice, its budget set, the file read."""
     if not os.path.isdir(homes[arm]):
@@ -317,8 +421,10 @@ def one(arm, file, high, name):
     held_to = []
     if a.guest_mib:
         held_to = ["--memory", f"{a.guest_mib}m", "--memory-swap", f"{a.guest_mib}m", "--oom-kill-disable"]
-    run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, *held_to, "-v", f"{vol}:/vol", "alpine",
-        "sleep", "100000")
+    run_id = run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, *held_to, "-v", f"{vol}:/vol",
+                 "alpine", "sleep", "100000").stdout.strip()
+    pid = run(arm, "inspect", "-f", "{{.State.Pid}}", "reader").stdout.strip()
+    started = stat_of(pid)
     vms = open(os.path.join(out, f"{name}.vms"), "w")
     held(vms, "started", arm)
     # Started before its budget is set, so that what it holds is in what the guest uses as
@@ -326,7 +432,8 @@ def one(arm, file, high, name):
     guest_stop = threading.Event()
     guest = threading.Thread(target=guest_sample, args=(arm, os.path.join(out, f"{name}.guest"), guest_stop))
     guest.start()
-    set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={high}", "MemorySwapMax=0")
+    budget = str(short_budget()) if high == "short" else high
+    set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={budget}", "MemorySwapMax=0")
     if set_.returncode != 0:
         raise SystemExit(f"the slice's budget: {set_.stderr}")
     for each in FILES:
@@ -346,9 +453,15 @@ def one(arm, file, high, name):
         w.join()
     held(vms, "read", arm)
     vms.close()
+    if high == "short":
+        print(f"{name}: budget {int(budget) >> 10} KiB; {held_short(arm, run_id)}", file=sys.stderr, flush=True)
     # The slice stays, its budget taken off, unless asked: stopping it ends the warm
-    # microVMs the daemons keep in it for their next runs.
+    # microVMs the daemons keep in it for their next runs. The next read waits for this
+    # one's VM process to end, which `rm -f` leaves ending once its run has, its guest's
+    # memory still the slice's until then.
     run(arm, "rm", "-f", "reader", check=False)
+    if started:
+        ended(pid, started[1])
     if a.stop_slice:
         systemctl("revert", SLICE)
         systemctl("stop", SLICE)
