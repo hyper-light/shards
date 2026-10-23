@@ -5683,14 +5683,17 @@ working set shrinks, all but 12 to 20 MiB of a gigabyte the guest plugged, used 
 on both.
 
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
-runs. E2E on Linux (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`):
-a microVM under a slice held to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte through
-to its end, the daemon's log saying it gave back files and what it asked to unplug: none
-there, the run's peak since the pass before being the read's own page cache at its budget,
-which a pass keeps (M275); the cold files' pages are the host's again as they are reported
-free. Not on macOS, whose pressure is the whole system's, which no test may raise for every
-program on its host. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle
-daemon's threads still.
+runs. E2E on Linux (tests/containers.rs
+`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a microVM under a slice held
+to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte to its end, in files of a MiB, which
+its guest reads through FUSE into its page cache (a file of a window's range or more is
+the host's page cache, mapped into it: D189), the daemon's log saying it gave back files
+and what it asked to unplug: none there, the run's peak since the pass before being the
+read's own page cache at its budget, which a pass keeps (M275); the cold files' pages are
+the host's again as they are reported free. Not on macOS, whose pressure is the whole
+system's, which no test may raise for every program on its host.
+`an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle daemon's threads
+still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
 and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB

@@ -2367,8 +2367,9 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 
 /// A microVM held to a budget gives back what it holds cold of its files as it reaches it
 /// (D188): under a slice of the user's manager whose `MemoryHigh` is past the microVM idle
-/// and short of a gigabyte it reads, its page cache grows until the budget slows it; the
-/// daemon, watching the scope it made there, has it reclaim what it holds cold and report
+/// and short of a gigabyte it reads, in files of a MiB, which it reads through FUSE (a file
+/// of a DAX window's range or more is its host's page cache, mapped into it: D189), its
+/// page cache grows until the budget slows it; the daemon, watching the scope it made there, has it reclaim what it holds cold and report
 /// it free at once, says what it asked to unplug (none while the run's peak since the pass
 /// before is the read's own page cache at the budget, which a pass keeps: M275), and it
 /// reads on to the end. Linux alone: macOS's memory pressure is the whole system's, which
@@ -2397,10 +2398,14 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         return;
     }
     let vol = TempDir::new("budget-vol");
-    std::fs::File::create(vol.join("big"))
-        .unwrap()
-        .set_len(1 << 30)
-        .unwrap();
+    let files: Vec<String> = (0..1024).map(|i| format!("/vol/f{i}")).collect();
+    for file in &files {
+        let name = file.trim_start_matches("/vol/");
+        std::fs::File::create(vol.join(name))
+            .unwrap()
+            .set_len(1 << 20)
+            .unwrap();
+    }
     let slice = format!("shardsbudget{}.slice", std::process::id());
     /// The slice's budget taken off and the slice stopped, however the test ends.
     struct Budget<'a>(&'a str);
@@ -2435,9 +2440,16 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         .output()
         .unwrap();
     assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
-    let read = shards(&["exec", "budget", "/bin/testguest", "read", "/vol/big"]);
+    let mut read = vec!["exec", "budget", "/bin/testguest", "read"];
+    read.extend(files.iter().map(String::as_str));
+    let read = shards(&read);
     assert_eq!(read.status, Some(0), "{read}\n{}", said());
-    assert!(read.stdout.contains("read /vol/big 1073741824"), "{read}");
+    for file in &files {
+        assert!(
+            read.stdout.contains(&format!("read {file} 1048576 ")),
+            "{file}: {read}"
+        );
+    }
     // What it gave back of its files, and what it asked to unplug of the memory it had
     // plugged to hold them.
     let log = said();
