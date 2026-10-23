@@ -1154,6 +1154,56 @@ struct Settings {
     share_window_mib: u64,
 }
 
+/// What a host's CPU says of the host, for its shares' windows (D189, PM M308): whether
+/// the CPU is AMD's, and whether the host is itself a virtual machine (the CPU's
+/// hypervisor bit, Linux's `hypervisor` flag).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct HostCpu {
+    amd: bool,
+    virtual_machine: bool,
+}
+
+/// This host's CPU as Linux describes it (`/proc/cpuinfo`, its first processor); a
+/// CPU of neither kind where there is none to read (macOS, Windows, another architecture).
+fn host_cpu() -> HostCpu {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if let Ok(info) = std::fs::read_to_string("/proc/cpuinfo") {
+        return host_cpu_of(&info);
+    }
+    HostCpu::default()
+}
+
+/// [`host_cpu`] of `/proc/cpuinfo`'s text.
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")), allow(dead_code))]
+fn host_cpu_of(info: &str) -> HostCpu {
+    let field = |key: &str| {
+        info.lines().find_map(|l| {
+            l.split_once(':')
+                .filter(|(k, _)| k.trim() == key)
+                .map(|(_, v)| v.trim())
+        })
+    };
+    HostCpu {
+        amd: field("vendor_id") == Some("AuthenticAMD"),
+        virtual_machine: field("flags").is_some_and(|f| f.split_whitespace().any(|f| f == "hypervisor")),
+    }
+}
+
+/// How long each share's DAX window is by default, in MiB: as long as the host's memory,
+/// `host_mib`, but none where the host is itself a virtual machine on an AMD CPU. There the
+/// hypervisor beneath maps each page a window gives a guest afresh, nested: a guest's read
+/// of 1 GiB took 41.2 to 138.4 s through a window where FUSE, its pages landing in guest RAM
+/// already mapped, took 3.0 to 6.4 (CI's EPYC 7763 and 9V74 runners on Hyper-V, 2 MiB host
+/// mappings no better: PM M308); an Intel runner there (n 1) and bare metal read as fast
+/// through a window or faster.
+fn share_window_default(host_mib: u64, cpu: &HostCpu) -> u64 {
+    if cpu.amd && cpu.virtual_machine {
+        0
+    } else {
+        host_mib
+    }
+}
+
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
 /// (audit A14).
 fn settings() -> Result<Settings, String> {
@@ -1202,9 +1252,19 @@ fn settings() -> Result<Settings, String> {
     };
     // Each share's window as long as the host's memory, the most of its files the host's
     // page cache holds at once, as a run's swap window is (D159); its guest makes what it
-    // maps of it as it maps it (PM M306), and its VM fits it to its guest's addresses.
+    // maps of it as it maps it (PM M306), and its VM fits it to its guest's addresses. None
+    // where the host is itself a virtual machine on an AMD CPU (PM M308).
     let host_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
-    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", host_mib)?;
+    let cpu = host_cpu();
+    let window_default = share_window_default(host_mib, &cpu);
+    if window_default == 0 && host_mib > 0 && std::env::var_os("SHARDS_SHARE_WINDOW_MIB").is_none() {
+        log(
+            "volumes have no DAX window by default: this host is a virtual machine on an AMD CPU, \
+             whose hypervisor maps each page a window gives a guest afresh, reads through one 9 to 37 \
+             times slower than FUSE's (PM M308); SHARDS_SHARE_WINDOW_MIB gives one",
+        );
+    }
+    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", window_default)?;
     if !share_window_mib.is_multiple_of(2) {
         return Err(format!(
             "SHARDS_SHARE_WINDOW_MIB: {share_window_mib} MiB: a DAX window is whole 2 MiB ranges"
@@ -8857,6 +8917,24 @@ mod tests {
         say(&vm, kind::STARTED, &[]);
         drop(vm);
         assert!(matches!(taken(&daemon_end), Err(Untaken::Unknown(_))));
+    }
+
+    /// A share's window by default follows its host (D189, PM M308): none on a virtual
+    /// machine on an AMD CPU, whose hypervisor maps each page a window gives anew; as long
+    /// as the host's memory on an Intel one, on bare metal, and where Linux's description
+    /// of the CPU cannot be read.
+    #[test]
+    fn a_shares_window_by_default_follows_its_host() {
+        let amd_vm = "processor\t: 0\nvendor_id\t: AuthenticAMD\nflags\t\t: fpu vme hypervisor svm\n";
+        let amd_metal = "processor\t: 0\nvendor_id\t: AuthenticAMD\nflags\t\t: fpu vme svm\n";
+        let intel_vm = "processor\t: 0\nvendor_id\t: GenuineIntel\nflags\t\t: fpu vmx hypervisor\n";
+        assert_eq!(share_window_default(16384, &host_cpu_of(amd_vm)), 0);
+        assert_eq!(share_window_default(16384, &host_cpu_of(amd_metal)), 16384);
+        assert_eq!(share_window_default(16384, &host_cpu_of(intel_vm)), 16384);
+        assert_eq!(share_window_default(16384, &host_cpu_of("")), 16384);
+        // A flag that only begins with the word is another.
+        let other = "vendor_id\t: AuthenticAMD\nflags\t\t: hypervisorlike\n";
+        assert_eq!(share_window_default(16384, &host_cpu_of(other)), 16384);
     }
 
     /// A warm VM whose end closed with its run still unread surely never had it, whether

@@ -5707,7 +5707,7 @@ MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its 
 leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
 D188's file pages. M268 at larger sizes.
 
-### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory)
+### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory, but on a virtual machine on an AMD CPU)
 
 **Found.** The user's plan, item 5. A volume's file the guest reads is in the host's page
 cache and again in the guest's (944 MiB of a 1 GiB file, PM M267), and every read and write
@@ -5964,6 +5964,28 @@ stores.
   a commit syncs it), `a_head_mapped_back_gives_back_its_blocks_of_zeros` and
   `a_cleared_window_leaves_the_record_of_ranges_it_never_mapped_untouched`, each
   mutation-checked on the Mac.
+- **None by default on a virtual machine on an AMD CPU** (PM M308). There a guest's first
+  touch of each 4 KiB page a window gives it is mapped twice, by the host's KVM and by the
+  hypervisor beneath, which shadows the host's nested paging: on CI's x86_64 runners,
+  Azure virtual machines, a 1 GiB read through a window took 41.2 to 138.4 s at p50 on AMD
+  EPYC 7763 and 9V74 runners (139.9 to 178.9 s written out) where FUSE took 3.0 to 6.4,
+  its pages landing in guest RAM already mapped on the host's 2 MiB pages; and under a 384
+  MiB budget 23.2 to 134.0 s. The host's KVM took 1.4 exits a page, its vCPU threads busy
+  half the run in guest mode, which is the hypervisor beneath's own time; Hyper-V's
+  enlightened NPT TLB flush was in use, so no flush was the cost. Each range advised onto
+  huge pages (`huge.patch`: 2 MiB folios, mapped whole, 58 times fewer faults and KVM's
+  own 2 MiB entries) read no faster, and three times slower on the 9V74s (123.3 and 129.1
+  s against 41.2 and 42.4): the hypervisor beneath shadows 4 KiB at a time whatever the
+  host maps. So the daemon gives a share no window there unless `SHARDS_SHARE_WINDOW_MIB`
+  asks for one, and says so as it starts (`share_window_default`, from `/proc/cpuinfo`'s
+  vendor and `hypervisor` flag); an Intel runner there read 1 GiB under the budget in 2.6
+  s through a window against FUSE's 6.1, and Fedora's bare metal in 1.37 against 1.23,
+  both with windows as before. Held by daemon's
+  `a_shares_window_by_default_follows_its_host`, containers'
+  `a_volumes_large_files_go_through_a_dax_window_by_default` (the host's default, none
+  with 0, one given on any host) and
+  `a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end` (512 MiB
+  past a 384 MiB `MemoryHigh` through a window given, the budget met, to its end).
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of

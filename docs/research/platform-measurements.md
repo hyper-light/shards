@@ -12398,3 +12398,69 @@ revision before comparing a changed API/implementation.
   (`platform::punch_hole`); a map-back gives back each run of zero blocks at once; a
   window's unmap clears the record of the ranges it unmaps alone; a booted window's head is
   on the host's base pages.
+
+### M308. What a microVM pays to read through its DAX window on a host that is itself a virtual machine, under a budget and not (D188, D189)
+
+- **Question.** With every share's window on by default (M307), a volume's file of a range
+  or more is the host's page cache, mapped into the guest: what does reading it cost,
+  through the window and through FUSE, under a budget of its user's slice (`MemoryHigh`
+  past the microVM idle, short of the file) and under none? At afa9b355 the E2E test's 1 GiB
+  read under 384 MiB took over 60 s on an x86_64 runner (its reader running on one vCPU,
+  every virtio-fs worker idle).
+- **Method.** `docs/research/measurements/dax-budget/measure.py` (the DAX budget job,
+  `.github/workflows/dax-budget.yml`): under a slice with `MemoryHigh` 384 MiB and with none
+  (infinity), `MemorySwapMax=0`, `dd bs=1M` of a 1 GiB file from a volume in alpine, the
+  share's window as long as the host's memory, with none (`SHARDS_SHARE_WINDOW_MIB=0`, FUSE)
+  and, built with `huge.patch`, with each range advised `MADV_HUGEPAGE`; the file sparse and
+  written; both files' pages dropped from the host's page cache before each read
+  (`POSIX_FADV_DONTNEED`), rounds interleaved, each case first in turn. Each second: the
+  slice's memory.current, memory.stat, memory.events and memory.pressure, the VM process's
+  vCPU threads, KVM's debugfs counters of each VM; a host profile (`perf record -a -g`, 10 s)
+  read by thread and CPU mode from perf.data's records (`PERFILE2`). CI's x86_64 runners
+  are Azure virtual machines (Linux 6.17.0-1022-azure, THP `always`, 4 CPUs, 16 GiB): their
+  KVM runs nested on Hyper-V, which gave the AMD ones its enlightened NPT TLB flush and
+  direct TLB flush (`kvm_amd`'s own words in their logs). Commits dabf065d to bf72a17c,
+  2026-10-23.
+- **Results** (1 GiB, seconds at p50; n each runner's rounds).
+  - No budget. AMD EPYC 9V74 (n 3): window sparse 46.6, written 172.1; FUSE 3.9 and 4.4.
+    Another 9V74 (n 1): window 48.3 and 175.3; FUSE 4.2 and 4.7. AMD EPYC 7763 (n 2):
+    window 41.8 and 149.6; huge pages 48.2 and 145.7; FUSE 4.6 and 4.8. Another 7763 (n 2):
+    window 82.1 and 146.5; huge pages 75.2 and 144.9; FUSE 4.5 and 4.7. Two more 7763 (n 2
+    each): window 77.6 and 150.8, 138.4 and 139.9; huge pages sparse 104.3, 131.1; FUSE 4.3
+    and 4.8, 4.3 and 4.7. Two more 9V74 (n 2 each): window 41.2 and 178.9, 42.4 and 173.9;
+    huge pages sparse 129.1, 123.3; FUSE 3.1 and 5.6, 3.0 and 6.4.
+  - Under 384 MiB. 9V74 (n 3): window sparse 49.6, written 174.2; FUSE 521.7 and 427.8
+    (its first read, the template's own VM, 5.6). 7763 (n 2): window 36.0 and 150.6, huge
+    pages 42.3 and 145.9, FUSE 305.9 and 600.3; another 7763 (n 2): window 106.4 and
+    149.1, huge pages 58.5 and 158.5, FUSE 305.7 and 453.9; a third 7763 (n 1): window
+    134.0 and 148.5, huge pages 134.6 and 144.4, FUSE 6.5 and 602.1. AMD EPYC 9V45 (n 1):
+    window sparse 23.2, huge pages 20.3, FUSE 3.8; window written 153.9. Intel Xeon 8573C
+    (n 1): window sparse 2.6, FUSE 6.1. Fedora (bare metal, Intel i9-14900HX, 6.19,
+    Btrfs; 1 GiB written, n 4): window 1.37, FUSE 1.23.
+  - What a window's read did on an AMD runner. Unbudgeted (9V74): KVM counted 376,000
+    exits for its 262,144 pages, 1.43 a page, where FUSE's took 25,000. Under the budget
+    (9V45), the window's read took 252,953 page faults (KVM's `pf_taken`) and the huge
+    pages' 4,330, KVM mapping 104 of 2 MiB (`pages_2m`), for 20.3 s against 23.2. Before
+    the budget was reached (7763), the window read 8 MiB/s at 2,000 faults a second and
+    the huge pages 8 MiB/s at 35: the rate is not the host's faults'. Its profile by
+    thread: the VM's vCPU threads 52% of the samples, 51.5% of all in guest mode, the idle
+    task 38%: a nested guest's time in a host's profile is the hypervisor beneath's too. Its
+    vCPU threads took 18 to 22 s of CPU over the 9V45's reads of 20 and 23 s (dc947139's
+    message said 0.1 s: its sampler counted the first VM in the slice, a warm one); of the
+    huge pages' 73,120 exits, 57,603 were the host's interrupts.
+    Under the budget the slice reclaimed some 2,000 pages a second (7763) to 13,000 (9V45)
+    as it read.
+  - FUSE under the budget, its guest's page cache guest RAM: 653,000 major faults and
+    16.5 million file refaults in the slice over 520 s (9V74), 437 s of its tasks stalled;
+    the daemon gave back in 3 passes over 600 s (D188), a give-back that timed out said
+    with no reason.
+- **Conclusion.** On a host that is itself a virtual machine on an AMD CPU, each 4 KiB
+  page a window gives a guest for the first time costs the hypervisor beneath its nested
+  paging's shadow of it, 0.16 to 0.53 ms a page on these runners, which nothing the host
+  maps changes (2 MiB folios and KVM's 2 MiB entries read no faster, and on the 9V74s
+  three times slower): a window there reads a file 9 to 37 times slower than FUSE (sparse 9
+  to 32, written 27 to 37), whose data lands in guest RAM already mapped. An
+  Intel runner (n 1) and bare metal read as fast or faster through a window. So shares have
+  no window by default where `/proc/cpuinfo` says AMD and `hypervisor` (D189), one where
+  asked. FUSE under a budget on these runners is D188's to mend: its passes, and a
+  restored guest's own RAM, a template's file pages, evicted with the rest.
