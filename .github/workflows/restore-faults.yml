@@ -2,9 +2,12 @@ name: restore faults
 
 # Where a restore's time to its first beat goes on CI's runners, shards' and Firecracker's
 # alike: the Firecracker comparison (crates/shards/benches/firecracker.rs), whose restore
-# arm reads KVM's counters of each restored VM as its guest first beats, on eight runners
-# at once, each runner's CPU as it lands (docs/research/measurements/restore-faults). Runs
-# when the experiment changes, or when asked.
+# arm reads KVM's counters of each restored VM as its guest first beats, and traces 30
+# more restores of each VMM in KVM (`--traced`), on eight runners at once, each runner's
+# CPU as it lands (docs/research/measurements/restore-faults). Each runner also runs the
+# comparison reading nothing (SHARDS_BENCH_KVM=off), in turn first, so that each
+# envelope's verdicts read and unread are set side by side. Runs when the experiment
+# changes, or when asked.
 on:
   push:
     paths:
@@ -42,16 +45,29 @@ jobs:
           uname -r
           # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
           sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
-      - name: Compare
-        env:
-          SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
-        run: cargo bench --locked -p shards --bench firecracker -- --runs 30
+      - name: Compare, reading and reading nothing
+        run: |
+          reading() {
+            SHARDS_BENCH_SAMPLES="$PWD/target/bench-samples/read" \
+              cargo bench --locked -p shards --bench firecracker -- --runs 30 --traced 30
+          }
+          reading_nothing() {
+            SHARDS_BENCH_SAMPLES="$PWD/target/bench-samples/unread" SHARDS_BENCH_KVM=off \
+              cargo bench --locked -p shards --bench firecracker -- --runs 30
+          }
+          case "${{ matrix.copy }}" in
+            a|c|e|g) reading && reading_nothing ;;
+            *) reading_nothing && reading ;;
+          esac
       - name: Envelope
         if: always()
-        run: scripts/bench-envelope target/bench-samples
+        run: scripts/bench-envelope target/bench-samples/read
+      - name: Envelope, reading nothing
+        if: always()
+        run: scripts/bench-envelope target/bench-samples/unread
       - name: Faults
         if: always()
-        run: python3 -I docs/research/measurements/restore-faults/faults.py target/bench-samples
+        run: python3 -I docs/research/measurements/restore-faults/faults.py target/bench-samples/read
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
