@@ -5757,7 +5757,8 @@ to 5 s with no budget; held within its budget's room and never closer than the l
 a run goes on in to what it uses, 4.79 s at the median sparse and 4.99 written, 8.38 and
 9.14 at the most, where it took 4.65 and 4.95 with none (n 24 each, f0a68074): every read
 within twice the median of none, where runs held at what they used had crawled for 190 to
-672 s. Its guest's own RAM, its template's pages, stayed: a read refaulted 1,634 file
+672 s. On 12 more runners, each of those six CPUs among them, every read under the budget
+took within 1.59 times its CPU's median under none (n 36 each). Its guest's own RAM, its template's pages, stayed: a read refaulted 1,634 file
 pages at the median sparse and 3,016 written, where one read had refaulted 16.5 million;
 counting only the files charged to the budget, 20,586 written at the median and 273,132 at
 the most. On bare metal (an Intel Core i9-14900HX, Linux 6.19), 1.10 s sparse and 1.32

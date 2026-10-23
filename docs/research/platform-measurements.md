@@ -12588,6 +12588,26 @@ revision before comparing a changed API/implementation.
       of their own 1.25 and 1.42 (p50), 2.58 and 2.76 (max). 17 runs told their budget
       short were held within the least room a run goes on in; no read refaulted a file
       page.
+    - The same on each CPU CI's runners landed on (f0a68074's code, run at a98b3aa7,
+      40030089737, 40030101822 and 40030112727; 12 runners, n 3 each case a runner), its
+      budgeted reads' median against its reads' under none, and its slowest:
+
+      | CPU (runners) | sparse p50 | none | max | written p50 | none | max |
+      |---|---|---|---|---|---|---|
+      | EPYC 7763 (3) | 4.42 s | 4.57 | 5.61 | 4.77 | 4.89 | 5.40 |
+      | EPYC 9V45 (2) | 2.90 | 3.04 | 3.46 | 3.06 | 3.18 | 4.14 |
+      | EPYC 9V74 (2) | 2.97 | 3.38 | 3.51 | 5.84 | 4.28 | 6.81 |
+      | Xeon 8573C (3) | 3.64 | 3.68 | 4.56 | 4.78 | 5.15 | 7.36 |
+      | Xeon 8370C (1) | 3.76 | 3.74 | 3.87 | 3.90 | 3.83 | 4.60 |
+      | Xeon 6973P-C (1) | 3.15 | 3.19 | 3.34 | 3.65 | 3.59 | 5.68 |
+
+      The slowest read took 1.59 times its CPU's median under none (9V74, written). File
+      refaults a read under the budget: sparse p50 129, max 41,359; written p50 1,171, max
+      199,451, the most in each runner's first written read under it (5.68 to 7.36 s,
+      stalled 0.27 to 0.53 s). 28 times a run was told its budget short, by under 1 to 105
+      MiB: 20 times held within 2,304 KiB past what it used, 8 times within 1,136 to 2,156
+      KiB, a hold made before that it had grown into, which a room short of the least
+      raises no further.
 - **Conclusion.** A budgeted microVM's guest must keep within its budget by its own kernel,
   as a container's kernel keeps a container within its cgroup: the host can take back
   only page cache from it with no swap, and its page cache is guest RAM. Held within the
