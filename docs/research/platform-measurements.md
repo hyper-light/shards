@@ -12373,6 +12373,13 @@ revision before comparing a changed API/implementation.
     the default and 19.5 with none, their address space 384 GiB and 128 GiB.
   - A run's setup in its microVM (n 40): 1.44 ms at p50 with the default, 1.75 with none;
     its whole run 3.71 and 3.48.
+  - x86_64 CI runners (the DAX boot memory job, three ubuntu-24.04 runners each time, THP
+    always, Linux 6.17-azure; `smaps.sh`, three boots a side): at afa9b355 (AMD EPYC 9V74,
+    9V45, 7763) a 64 GiB window's boot took 69.4 to 71.6 MiB without and 71.6 to 73.7 with,
+    its head holding a 2 MiB huge page for the one page structure its boot writes, and at
+    times one more of guest RAM; with the head on base pages (e1df33d4; Intel Xeon 8370C,
+    AMD EPYC 7763 and 9V74), -1,984 to +2,192 KiB, its head among none of the mappings of
+    the most memory: the rest one huge page of guest RAM touched or not.
   - Eight volumes: nine windows of 83,538 MiB each where 131,072 were asked on the Mac
     (40-bit addresses), and of 41,202 where 64,018 on Fedora (39 bits); each run mounted
     its eight volumes and read through them. Its template's map-back of the heads: 6,473 µs
@@ -12389,4 +12396,5 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D189: every share's window is as long as its host's memory by default,
   fitted to its guest's addresses where they fall short; a head's copy punches its holes
   (`platform::punch_hole`); a map-back gives back each run of zero blocks at once; a
-  window's unmap clears the record of the ranges it unmaps alone.
+  window's unmap clears the record of the ranges it unmaps alone; a booted window's head is
+  on the host's base pages.

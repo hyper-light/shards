@@ -5948,8 +5948,11 @@ stores.
   memory (4.2 before), its template is the size of one without (70 MB), its restored VMs'
   footprint is the same (19.2 MiB against 19.5), and a run with a volume sets up as fast
   (1.44 ms at p50 against 1.75, n 40); on Fedora a 64 GiB window's boot takes 0.3 MiB. A
-  template's map-back gives a head's run of zero blocks back in one call (5.4 ms for nine
-  83 GiB windows on the Mac, where 6.5; 187 µs on Fedora). Held by `a_volumes_large_files_go_through_a_dax_window_by_default` (a 4 MiB
+  booted window's head is on the host's base pages, as a restored one is: where THP is
+  always (x86_64 CI runners) its one page structure written at boot took a 2 MiB huge page
+  (afa9b355), and with base pages the window's boot is within a huge page of guest RAM of
+  none's (-1.9 to +2.1 MiB). A template's map-back gives a head's run of zero blocks back
+  in one call (5.4 ms for nine 83 GiB windows on the Mac, where 6.5; 187 µs on Fedora). Held by `a_volumes_large_files_go_through_a_dax_window_by_default` (a 4 MiB
   file mapped by default, through FUSE with 0), vmm's `share_windows_go_one_after_another`
   (fitted, none, a kept length refused), `a_kept_blocks_pages_of_zeros_are_holes_in_its_copy`
   (synced as a commit syncs it), `a_head_mapped_back_gives_back_its_blocks_of_zeros` and
