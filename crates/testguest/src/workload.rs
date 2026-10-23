@@ -3730,9 +3730,8 @@ fn confined(args: &[String]) -> i32 {
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "reachrounds" | "udpask"
             | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
             | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" | "srv-modern"
-            | "hold-tell" | "make" | "srv-hand" | "follow" | "hardlink" | "exec" | "nosuid" | "hear" => {
-                mode = a.as_str()
-            }
+            | "hold-tell" | "make" | "srv-hand" | "follow" | "hardlink" | "exec" | "nosuid" | "hear"
+            | "size" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -4704,6 +4703,23 @@ fn confined(args: &[String]) -> i32 {
                     Err(e) => errno(&e),
                 };
                 out.push_str(&format!("confined owner {path}: {said}\n"));
+            }
+            // The bytes of the file system at `path`, as statvfs(3) says them.
+            path if mode == "size" => {
+                let said = match std::ffi::CString::new(path) {
+                    Ok(c) => {
+                        // SAFETY: a struct of plain integers, for statvfs to fill.
+                        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+                        // SAFETY: statvfs(3) of a NUL-terminated path into `st`.
+                        if unsafe { libc::statvfs(c.as_ptr(), &raw mut st) } == 0 {
+                            st.f_blocks.saturating_mul(st.f_frsize).to_string()
+                        } else {
+                            errno(&io::Error::last_os_error())
+                        }
+                    }
+                    Err(_) => "errno 22".to_string(),
+                };
+                out.push_str(&format!("confined size {path}: {said}\n"));
             }
             path if mode == "see" => {
                 let said = match std::fs::read_dir(path) {

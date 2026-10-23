@@ -8322,6 +8322,10 @@ inside the microVM the other runs in (D119).
   `inspect`'s `ShmSize` says them, held to what the guest's statfs says. A run's
   memory limit still holds what it writes there, as memory. A run wrote 128 MiB there,
   where 64 MiB refused it (`a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`).
+  Each of an image's agents (D139) has a /dev/shm of its own, mode 0700, as large as its
+  run's (`domains::shm_of`, the run's `shm=` entry): it kept Docker's 64 MiB, which a
+  browser an agent drives outgrows (`agents_run_in_their_domains`: past 64 MiB, which the
+  64 MiB mount fails).
   - `--ipc private` (the default) and `shareable`: its own; another run may share a
     `shareable` run's alone, as Docker's daemon allows (moby
     daemon/container_operations_unix.go, getIPCContainer). `--shm-size` sizes its own.

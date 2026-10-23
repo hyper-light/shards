@@ -632,6 +632,20 @@ struct Prepared {
     volumes: Vec<(RawFd, CString, bool)>,
     /// Its scratch, `/tmp`, a mount not yet attached, where the image has a `/tmp` (D139).
     scratch: Option<RawFd>,
+    /// Its /dev/shm's options ([`shm_of`]).
+    shm: CString,
+}
+
+/// The options of a domain's /dev/shm: its own, mode 0700, as large as its run's (the run's
+/// `shm=` setup entry), else as the microVM's (D156: every /dev/shm of a microVM half the
+/// memory it may have, where a browser's renderers and a data loader's workers share
+/// memory). It was Docker's 64 MiB, which those outgrow.
+fn shm_of(setup: &[Vec<u8>]) -> Result<CString, String> {
+    let options = match setup.iter().find_map(|e| e.strip_prefix(b"shm=")) {
+        Some(size) => format!("mode=700,size={}", String::from_utf8_lossy(size)),
+        None => crate::run::shm().replacen("mode=1777", "mode=700", 1),
+    };
+    CString::new(options).map_err(|_| "a domain's /dev/shm: a NUL in its options".to_string())
 }
 
 /// `open_tree`'s and `mount_setattr`'s (include/uapi/linux/mount.h).
@@ -1308,6 +1322,7 @@ pub fn start(
     if domains.is_empty() {
         return Ok(Vec::new());
     }
+    let shm = shm_of(setup)?;
     // The kernel's log holds what it says of the domains' processes (a fault, an OOM kill
     // naming each process of their cgroup): only for CAP_SYSLOG, which no run of an
     // Agentfile's image is given (D115), not for any process that calls syslog(2) or
@@ -1616,6 +1631,7 @@ pub fn start(
         };
         let root = image_root(skel_of, lower).map_err(|e| format!("{}: its root: {e}", d.label))?;
         let prepared = Prepared {
+            shm: shm.clone(),
             root: root.as_raw_fd(),
             sockets,
             volumes,
@@ -2181,7 +2197,7 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
         {
             fail(out, c"making its scratch");
         }
-        for (path, data) in [(c"/dev/shm", c"mode=700,size=65536k".as_ptr())] {
+        for (path, data) in [(c"/dev/shm", p.shm.as_ptr())] {
             let mut st: libc::stat = std::mem::zeroed();
             if libc::stat(path.as_ptr(), &raw mut st) != 0 {
                 continue;
