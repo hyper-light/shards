@@ -522,7 +522,7 @@ fn grown_hold(cgroup: &str) -> io::Result<u64> {
     let Some(&boot) = BOOT.get() else {
         return Ok(u64::MAX);
     };
-    let most = control_read64(control::HOTPLUG_SIZE)?;
+    let most = most_within(boot, control_read64(control::HOTPLUG_SIZE)?, cgroup);
     let plugged = mem_total()?.saturating_sub(boot);
     if plugged >= most {
         return Ok(u64::MAX);
@@ -543,6 +543,37 @@ pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<()> {
     set_high(cgroup, grown_hold(cgroup)?)?;
     crate::run::flush_page_reports();
     Ok(())
+}
+
+/// The most a run's microVM may have plugged within what its host's budget leaves it
+/// ([`CAP`]): what lets its run hold its cap beside what its kernel holds now and its
+/// [`SLACK`], with the page structures of what is plugged, a 64th of it, which the kernel
+/// takes from its own memory, in whole blocks; `most` with no budget. Its grower doubling
+/// what it asked for past this, as a give-back's hold below the cap reached it, plugged its
+/// 16 GiB, whose page structures alone took 256 MiB of a 384 MiB budget (PM M309).
+fn most_within(boot: u64, most: u64, cgroup: &str) -> u64 {
+    let cap = cap();
+    if cap == u64::MAX {
+        return most;
+    }
+    let Some(used) = number(&format!("{cgroup}/memory.current")) else {
+        return most;
+    };
+    let Ok((total, free)) = memory() else {
+        return most;
+    };
+    let kernel = total.saturating_sub(free).saturating_sub(used);
+    plug_for(boot, most, cap, kernel)
+}
+
+/// [`most_within`] of a run held at `cap` bytes, its kernel holding `kernel` beside it.
+fn plug_for(boot: u64, most: u64, cap: u64, kernel: u64) -> u64 {
+    let want = cap.saturating_add(kernel).saturating_add(SLACK);
+    want.saturating_add(want / 63)
+        .saturating_sub(boot)
+        .checked_next_multiple_of(ALIGN)
+        .unwrap_or(u64::MAX)
+        .min(most)
 }
 
 /// What a run that uses `used` bytes is held at within the `room` its host's budget leaves
@@ -644,7 +675,8 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     let Some(&boot) = BOOT.get() else {
         return Ok(0);
     };
-    let most = control_read64(control::HOTPLUG_SIZE)?;
+    // No more than its budget's room lets its run hold (D188).
+    let most = most_within(boot, control_read64(control::HOTPLUG_SIZE)?, cgroup);
     let plugged = mem_total()?.saturating_sub(boot);
     let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
     let used = number(&format!("{cgroup}/memory.current"))
@@ -668,7 +700,7 @@ pub fn rehold_run(cgroup: &'static str) -> io::Result<()> {
     let Some(&boot) = BOOT.get() else {
         return Ok(());
     };
-    let most = control_read64(control::HOTPLUG_SIZE)?;
+    let most = most_within(boot, control_read64(control::HOTPLUG_SIZE)?, cgroup);
     let plugged = mem_total()?.saturating_sub(boot);
     if plugged >= most {
         return Ok(());
@@ -1163,9 +1195,14 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             continue;
         };
         // The most it may have, read again: a run's microVM's is the run's own, which the
-        // host sets as the microVM takes its run (D148).
+        // host sets as the microVM takes its run (D148), and no more than its budget's
+        // room lets its run hold (D188).
         let plug = Plug {
-            most: control_read64(control::HOTPLUG_SIZE).unwrap_or(plug.most),
+            most: most_within(
+                plug.boot,
+                control_read64(control::HOTPLUG_SIZE).unwrap_or(plug.most),
+                cgroup,
+            ),
             ..plug
         };
         if current < high_now {
@@ -1267,6 +1304,21 @@ mod tests {
             said: Vec::new(),
             clock: Duration::ZERO,
         }
+    }
+
+    /// Under a budget a run's microVM plugs no more than lets its run hold its cap beside
+    /// its kernel's and the slack, with the page structures of what it plugs, in whole
+    /// blocks, never past its most; with a cap its boot holds, none.
+    #[test]
+    fn a_microvm_held_to_a_budget_plugs_no_more_than_its_cap_needs() {
+        let boot = 256 * MIB;
+        let most = 16 << 30;
+        // 96 MiB of room past 200 MiB used, 40 MiB its kernel's: 400 MiB with the slack,
+        // 406 with its page structures, 150 past boot, two blocks.
+        assert_eq!(plug_for(boot, most, 296 * MIB, 40 * MIB), 2 * ALIGN);
+        assert_eq!(plug_for(boot, most, 100 * MIB, 40 * MIB), 0);
+        assert_eq!(plug_for(boot, 128 * MIB, 4 << 30, 40 * MIB), 128 * MIB);
+        assert_eq!(plug_for(boot, most, u64::MAX - 1, 0), most);
     }
 
     /// A run is held within the room its host's budget leaves it (D188): that room past
