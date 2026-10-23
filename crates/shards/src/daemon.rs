@@ -6812,6 +6812,13 @@ fn taken(vm: &UnixStream) -> Result<(), Untaken> {
             m.kind
         ))),
         Ok(None) => Err(Untaken::Surely("it ended first".into())),
+        // Its end closed with the run still unread in it: Linux resets the peer of a
+        // stream socket released with data in its queue, and only then
+        // (net/unix/af_unix.c, unix_release_sock), and a TAKEN it had sent would be read
+        // before the reset. A pool's VM a stopped slice ended, before the pool saw it end.
+        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+            Err(Untaken::Surely(format!("it ended with the run unread: {e}")))
+        }
         Err(e) => Err(Untaken::Unknown(e.to_string())),
     }
 }
@@ -8850,6 +8857,19 @@ mod tests {
         say(&vm, kind::STARTED, &[]);
         drop(vm);
         assert!(matches!(taken(&daemon_end), Err(Untaken::Unknown(_))));
+    }
+
+    /// A warm VM whose end closed with its run still unread surely never had it, whether
+    /// its system says so with a reset (Linux) or an end (macOS): the run goes to another
+    /// VM, as it must where a stopped slice ended a pool's VM before the pool saw it end
+    /// (CI's DAX budget job, PM M308).
+    #[test]
+    fn a_vm_that_ended_with_its_run_unread_surely_never_took_it() {
+        let (daemon_end, vm) = UnixStream::pair().unwrap();
+        shards_ipc::send(&daemon_end, kind::RUN, b"run", &[]).unwrap();
+        drop(vm);
+        let e = taken(&daemon_end).unwrap_err();
+        assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
     /// A client that sends no request, or trickles one out, is let go once its time is up,
