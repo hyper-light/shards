@@ -1515,6 +1515,102 @@ fn home_with(name: &str) -> TempDir {
     home
 }
 
+/// A slice stopped under its microVMs takes no run after it with it (D183, D26): stopping
+/// it, as its user may, or its manager does of its own accord (systemd-oomd's
+/// `ManagedOOMMemoryPressure=kill`), ends the spawner the daemon placed there and the warm
+/// microVM its pool keeps there for the slice's next run; the next runs under it start all
+/// the same, and the pool is warm there again.
+#[test]
+fn runs_under_a_slice_start_after_it_was_stopped() {
+    if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    let (image, _) = served();
+    let home = home_with("daemon-slice-stopped");
+    let env: [(&str, &OsStr); 1] = [("SHARDS_HOME", home.as_os_str())];
+    let slice = format!("shardsstopped{}.slice", std::process::id());
+    /// The slice stopped, however the test ends.
+    struct Stopped<'a>(&'a str);
+    impl Drop for Stopped<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new("systemctl")
+                .args(["--user", "stop", self.0])
+                .status();
+        }
+    }
+    let _stopped = Stopped(&slice);
+    let said = || std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let run = |what: &str| {
+        let run = run_shards_env(
+            &["run"],
+            &["--rm", "--cgroup-parent", &slice, &image, "exit", "0"],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(
+            run.status,
+            Some(0),
+            "{what}: {run}\nthe daemon's log:\n{}",
+            said()
+        );
+    };
+    // The image's template saved under the slice, and its pool warm there: a warm VM of it
+    // made in the slice, for the slice's next run.
+    let templates = home.join("templates").to_string_lossy().into_owned();
+    let warm_in_slice = || {
+        processes_with(&templates).into_iter().any(|pid| {
+            std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+                .is_ok_and(|c| c.contains(&format!("/{slice}/")))
+        })
+    };
+    run("the first run");
+    let deadline = Instant::now() + TIMEOUT;
+    while !warm_in_slice() {
+        assert!(
+            Instant::now() < deadline,
+            "no warm VM in {slice}\nthe daemon's log:\n{}",
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stopped = Command::new("systemctl")
+        .args(["--user", "stop", &slice])
+        .output()
+        .unwrap();
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    run("the first run after the slice stopped");
+    run("the second run after the slice stopped");
+    let deadline = Instant::now() + TIMEOUT;
+    while !warm_in_slice() {
+        assert!(
+            Instant::now() < deadline,
+            "no warm VM in {slice} again\nthe daemon's log:\n{}",
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
 /// A pool of 0 keeps no VM warm, and every run restores its own: the second run of an
 /// image, from its template, is served at once, not after the 60 s a pool that never
 /// fills would take (audit A14, whose reproduction this is).
