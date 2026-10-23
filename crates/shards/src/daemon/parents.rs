@@ -114,6 +114,15 @@ impl Parents {
         made
     }
 
+    /// `slice`'s spawner, where it is placed already: none where it is not, or is being
+    /// placed.
+    pub(super) fn placed(&self, slice: &str) -> Option<Group> {
+        match lock(&self.by_slice).get(slice) {
+            Some(Entry::Placed(group)) => Some(*group),
+            _ => None,
+        }
+    }
+
     /// Forgets `slice`'s spawner `group`, which has gone (its slice stopped, say), and
     /// ends it: the next run under `slice` places another.
     pub(super) fn forget(&self, slice: &str, group: Group) {

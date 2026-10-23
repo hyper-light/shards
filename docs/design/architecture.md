@@ -5632,8 +5632,39 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
   6.11, 68cd9050d871; a kernel without the key takes the amount alone), then reports what
   that freed at once (`page_reporting.flush`, D151's patch 0005), so that the host has it
-  back before init answers. One microVM after another, each through one of its runs, its
-  own or else a joiner's (D119).
+  back before init answers. Each microVM through one of its runs, its own or else a
+  joiner's (D119), each on a thread of its own, and one still giving back since a pass
+  before asked nothing more until it has answered or been ended: passes that asked one
+  microVM after another, each waiting up to 10 s for an answer and then for its end,
+  waited on a guest whose own memory its host had taken for minutes, and gave back 3 times
+  in 600 s (PM M308). One with no answer within 10 s is said to have had none, and is
+  ended.
+- **Held within what its budget leaves it** (PM M309). Where the cgroup a microVM's VM
+  process is in, or one above it, holds it to a budget (`memory.high` or `memory.max`, a
+  slice's `MemoryHigh` or `MemoryMax`, D183), the host can take back only page cache from
+  it with no swap, and a guest's page cache is guest RAM, the host's anonymous memory: a
+  guest that read past its budget filled it, and the host took back the one thing it
+  could, the guest's own RAM as a template's file pages, which the guest read back as it
+  ran, 400 to 600 s for a gigabyte its run read in 3 to 5 s with no budget, on CI's AMD
+  and Intel runners alike. So each microVM's guest is told the room its budget leaves it,
+  the least any cgroup over it may still take before its host must take back memory a
+  process maps or holds (its budget less all it holds but its page cache no process maps,
+  memory.stat's `file` less `file_mapped` and `shmem`): as its run begins, each time a
+  budget over it is set or changed (inotify on each cgroup's `memory.high` and
+  `memory.max`) or met (its `memory.events`), and as another microVM the budget held ends.
+  Init holds its run within it (builtin `ROOM`): the run's `memory.high` never past what
+  it uses and that room, and its grower lifting no hold past it, so that the guest's own
+  kernel drops its run's page cache before its host must take anything, as a container's
+  kernel drops its page cache within its cgroup. Where the room is short, the budget's warm
+  microVMs end first, which are speculation, and then the microVM gives back what it holds
+  cold and is held within its share of what is short (`RECLAIM` with the room; idle, it
+  raises no pressure that would ask), the microVMs the budget holds sharing it so that
+  together they give back what it is short of and no more. A warm microVM restored under a
+  budget copies none of its template's written pages ahead of its run (64 MiB at most
+  each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of the budget before any
+  run comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1 to 4 MiB for
+  one without, PM M309; on the Mac they bought no time, PM M62), and none is made ahead of
+  the runs that wait where its budget has no room.
 - **File pages alone.** A clean page of the page cache the guest drops is one the host
   could only have swapped out, written and read back; dropping it reads none of its data.
   Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
@@ -5683,15 +5714,26 @@ working set shrinks, all but 12 to 20 MiB of a gigabyte the guest plugged, used 
 on both.
 
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
-runs. E2E on Linux (tests/containers.rs
-`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a microVM under a slice held
-to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte to its end, in files of a MiB, which
-its guest reads through FUSE into its page cache (a file of a window's range or more is
-the host's page cache, mapped into it: D189), the daemon's log saying it gave back files
-and what it asked to unplug: none there, the run's peak since the pass before being the
-read's own page cache at its budget, which a pass keeps (M275); the cold files' pages are
-the host's again as they are reported free. Not on macOS, whose pressure is the whole
-system's, which no test may raise for every program on its host.
+runs. Unit (daemon): a budget's room, the least any cgroup over a microVM leaves, its
+unmapped page cache counted as room and its shared memory not, none with no budget and
+none at the root (`a_budgets_room_is_the_least_any_cgroup_over_a_microvm_leaves`); a short
+room shared among the microVMs it holds; a give-back saying what it gave or why it gave
+nothing, one with no answer in time said so; and a microVM that does not answer its
+give-back keeping no other's from the host, nor asked again until it has ended
+(`a_microvm_that_does_not_give_back_keeps_no_other_waiting`, which passes asking one after
+another hang on). Unit (init): a run held within its room, and within what it used and
+gave back. E2E on Linux, real microVMs under a slice of the user's manager, no swap
+(tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a
+microVM that read 512 MiB through FUSE into its guest's page cache (a file of a window's
+range or more is its host's page cache, mapped into it: D189) gives back what it holds
+cold once a `MemoryHigh` of 384 MiB short of it is set, idle as it is, the daemon's log
+saying what it gave back and that it holds it within its budget, in which it reads a
+gigabyte, in files of a MiB, to the end. tests/daemon.rs
+`a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
+restored from their template, its warm microVMs in the slice, read a gigabyte through
+FUSE under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs
+under none took (medians of 3), and a run begun under no budget held to one set as it
+goes within it too. Not on macOS, which has no group of processes a budget holds.
 `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle daemon's threads
 still.
 

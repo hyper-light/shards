@@ -1611,6 +1611,206 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
+/// A microVM held to a budget reads through FUSE within twice the time one held to none
+/// takes (D188): under a slice of the user's manager whose `MemoryHigh` its idle microVMs
+/// leave 128 MiB of, with no swap, runs restored from its template read a gigabyte of a
+/// volume through FUSE (no DAX window), each held within the room the budget leaves it, so
+/// that its own kernel drops its page cache. Its guest's page cache had filled the slice,
+/// and its host took back the only memory it could, the guest's own RAM, its template's
+/// file pages: 400 to 600 s a read on CI's AMD runners, 3 to 5 s with none (PM M308, M309).
+/// A budget set as a run goes holds it too.
+#[test]
+fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one() {
+    if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    let (image, _) = served();
+    let home = home_with("daemon-budget-fuse");
+    let vol = TempDir::new("budget-fuse-vol");
+    std::fs::File::create(vol.join("big"))
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let env: [(&str, &OsStr); 2] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
+    ];
+    let slice = format!("shardsbudget{}.slice", std::process::id());
+    /// The slice's budget taken off and the slice stopped, however the test ends.
+    struct Stopped<'a>(&'a str);
+    impl Drop for Stopped<'_> {
+        fn drop(&mut self) {
+            for verb in ["revert", "stop"] {
+                let _ = Command::new("systemctl").args(["--user", verb, self.0]).status();
+            }
+        }
+    }
+    let _stopped = Stopped(&slice);
+    let said = || std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let cgroup = PathBuf::from(format!(
+        "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}",
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        uid = unsafe { libc::getuid() }
+    ));
+    let slice_holds = || -> u64 {
+        std::fs::read_to_string(cgroup.join("memory.current"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    let budget = |high: &str| {
+        let set = Command::new("systemctl")
+            .args(["--user", "set-property", "--runtime", &slice])
+            .arg(format!("MemoryHigh={high}"))
+            .arg("MemorySwapMax=0")
+            .output()
+            .unwrap();
+        assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    };
+    let mount = format!("{}:/vol", vol.display());
+    // Each read's milliseconds, as the test guest says them.
+    let took = |what: &str, out: &str| -> u64 {
+        out.lines()
+            .find_map(|l| {
+                l.strip_prefix("read /vol/big 1073741824 in ")?
+                    .strip_suffix(" ms")
+            })
+            .and_then(|ms| ms.parse().ok())
+            .unwrap_or_else(|| panic!("{what}: no whole read in {out:?}\nthe daemon's log:\n{}", said()))
+    };
+    let read = |what: &str| -> u64 {
+        let run = run_shards_env(
+            &["run"],
+            &[
+                "--rm",
+                "--cgroup-parent",
+                &slice,
+                "-v",
+                &mount,
+                &image,
+                "read",
+                "/vol/big",
+            ],
+            &env,
+            Duration::from_secs(600),
+        );
+        assert_eq!(
+            run.status,
+            Some(0),
+            "{what}: {run}\nthe daemon's log:\n{}",
+            said()
+        );
+        took(what, &run.stdout)
+    };
+    // The image's template saved under the slice, and its pool warm there.
+    let first = run_shards_env(
+        &["run"],
+        &[
+            "--rm",
+            "--cgroup-parent",
+            &slice,
+            "-v",
+            &mount,
+            &image,
+            "exit",
+            "0",
+        ],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(first.status, Some(0), "{first}\nthe daemon's log:\n{}", said());
+    let templates = home.join("templates").to_string_lossy().into_owned();
+    let deadline = Instant::now() + TIMEOUT;
+    while !processes_with(&templates).into_iter().any(|pid| {
+        std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .is_ok_and(|c| c.contains(&format!("/{slice}/")))
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "no warm VM in {slice}\nthe daemon's log:\n{}",
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let median = |mut xs: Vec<u64>| {
+        xs.sort_unstable();
+        xs[xs.len() / 2]
+    };
+    let unbudgeted = median((0..3).map(|_| read("a read under no budget")).collect());
+    // A budget its idle microVMs leave 128 MiB of: short of the gigabyte the read caches,
+    // as of the guest page cache it takes with none.
+    let held = slice_holds() + (128 << 20);
+    budget(&held.to_string());
+    let budgeted: Vec<u64> = (0..3).map(|_| read("a read under the budget")).collect();
+    assert!(
+        median(budgeted.clone()) <= 2 * unbudgeted,
+        "reads under a budget of {} MiB took {budgeted:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
+        held >> 20,
+        said()
+    );
+    assert!(
+        said().contains("held within its budget"),
+        "no microVM said to be held within its budget\nthe daemon's log:\n{}",
+        said()
+    );
+    // A run begun under no budget, held to one set as it goes.
+    budget("infinity");
+    let started = run_shards_env(
+        &["run"],
+        &[
+            "-d",
+            "--name",
+            "held",
+            "--cgroup-parent",
+            &slice,
+            "-v",
+            &mount,
+            &image,
+            "sleep",
+        ],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(
+        started.status,
+        Some(0),
+        "{started}\nthe daemon's log:\n{}",
+        said()
+    );
+    budget(&held.to_string());
+    let read = run_shards_env(
+        &["exec"],
+        &["held", "/bin/testguest", "read", "/vol/big"],
+        &env,
+        Duration::from_secs(600),
+    );
+    assert_eq!(read.status, Some(0), "{read}\nthe daemon's log:\n{}", said());
+    let late = took("a read under a budget set as its run went", &read.stdout);
+    assert!(
+        late <= 2 * unbudgeted,
+        "a read under a budget set as its run went took {late} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
+        said()
+    );
+    let _ = run_shards_env(&["rm"], &["-f", "held"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
 /// A pool of 0 keeps no VM warm, and every run restores its own: the second run of an
 /// image, from its template, is served at once, not after the 60 s a pool that never
 /// fills would take (audit A14, whose reproduction this is).

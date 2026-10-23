@@ -1724,6 +1724,11 @@ pub struct RestoreConfig {
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
+    /// The bytes the prefetch may copy of the pages the working set says the guest wrote,
+    /// ahead of its request, [`crate::hv::PREFETCH_PRIVATE`] at most: none for a VM its
+    /// host holds to a budget, of which every warm VM would spend that much before any
+    /// request came, and its runs have the less (D188).
+    pub prefetch_private: u64,
     /// Record a working set for the snapshot, where it has none and this backend records
     /// restores' ([`RESTORES_RECORD`]), until [`Handle::take_working_set`] takes it.
     pub record: bool,

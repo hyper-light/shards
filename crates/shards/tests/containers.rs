@@ -2391,15 +2391,15 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         .status();
 }
 
-/// A microVM held to a budget gives back what it holds cold of its files as it reaches it
-/// (D188): under a slice of the user's manager whose `MemoryHigh` is past the microVM idle
-/// and short of a gigabyte it reads, in files of a MiB, which it reads through FUSE (a file
-/// of a DAX window's range or more is its host's page cache, mapped into it: D189), its
-/// page cache grows until the budget slows it; the daemon, watching the scope it made there, has it reclaim what it holds cold and report
-/// it free at once, says what it asked to unplug (none while the run's peak since the pass
-/// before is the read's own page cache at the budget, which a pass keeps: M275), and it
-/// reads on to the end. Linux alone: macOS's memory pressure is the whole system's, which
-/// no test may raise for every program on its host.
+/// A microVM held to a budget short of what it holds gives back what it holds cold of its
+/// files, and reads on within it (D188): under a slice of the user's manager, a microVM
+/// that read 512 MiB through FUSE (a file of a DAX window's range or more is its host's
+/// page cache, mapped into it: D189) holds it in its guest's page cache; a `MemoryHigh` set
+/// short of it, the daemon, watching the slice's budget, has it reclaim what it holds cold
+/// and report it free at once, idle as it is, which raises no pressure, says what it gave
+/// back and what it asked to unplug, and holds it within the budget's room, in which it
+/// reads a gigabyte, in files of a MiB, to the end. Linux alone: macOS has no group of
+/// processes a budget holds.
 #[test]
 fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if !cfg!(target_os = "linux") {
@@ -2453,29 +2453,41 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     assert_eq!(started.status, Some(0), "{started}");
     let log = home.join("daemon.log");
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
-    if !said().contains("some task stalled on memory") {
-        eprintln!(
-            "SKIP: this host's kernel arms no memory pressure trigger of its user's (Linux 6.4); the daemon's log:\n{}",
-            said()
-        );
-        return;
-    }
+    let read = |files: &[String]| {
+        let mut read = vec!["exec", "budget", "/bin/testguest", "read"];
+        read.extend(files.iter().map(String::as_str));
+        let read = shards(&read);
+        assert_eq!(read.status, Some(0), "{read}\n{}", said());
+        for file in files {
+            assert!(
+                read.stdout.contains(&format!("read {file} 1048576 ")),
+                "{file}: {read}"
+            );
+        }
+    };
+    // Half of them read with no budget, held in its guest's page cache.
+    read(files.get(..512).unwrap());
     let set = Command::new("systemctl")
         .args(["--user", "set-property", "--runtime", &slice])
         .args(["MemoryHigh=384M", "MemorySwapMax=0"])
         .output()
         .unwrap();
     assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
-    let mut read = vec!["exec", "budget", "/bin/testguest", "read"];
-    read.extend(files.iter().map(String::as_str));
-    let read = shards(&read);
-    assert_eq!(read.status, Some(0), "{read}\n{}", said());
-    for file in &files {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !said().contains("its microVMs gave back") {
         assert!(
-            read.stdout.contains(&format!("read {file} 1048576 ")),
-            "{file}: {read}"
+            std::time::Instant::now() < deadline,
+            "nothing given back said:\n{}",
+            said()
         );
+        std::thread::sleep(Duration::from_millis(50));
     }
+    read(&files);
+    assert!(
+        said().contains("held within its budget"),
+        "not said to be held within its budget:\n{}",
+        said()
+    );
     // What it gave back of its files, and what it asked to unplug of the memory it had
     // plugged to hold them.
     let log = said();

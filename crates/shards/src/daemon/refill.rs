@@ -153,6 +153,14 @@ impl<D: Disk> Daemon<D> {
             };
             (for_runs, more)
         };
+        // Under a budget (D188), what its VMs copy ahead of a request is none, as every
+        // warm VM would spend it of the budget before any run came; and none is made ahead
+        // of the runs that wait where the budget has no room left.
+        let budget = self
+            .cgroup_of_parent(&key.parent)
+            .and_then(|d| super::budget::room(&d, Path::new(super::budget::ROOT)))
+            .map(|(room, _)| room);
+        let more = if budget.is_some_and(|r| r < 0) { 0 } else { more };
         let more = more.min(self.room(state, key, more));
         let count = for_runs + more;
         let pool = state.pools.get_mut(key)?;
@@ -162,6 +170,9 @@ impl<D: Disk> Daemon<D> {
         pool.starting += count;
         // It writes no file of the home: the daemon gives it its container's log (D30).
         let mut args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
+        if budget.is_some() {
+            args.extend(["--prefetch-private".into(), "0".into()]);
+        }
         if let Some(rootfs) = &pool.rootfs {
             let mut backing = rootfs.as_os_str().to_os_string();
             backing.push(":ro");

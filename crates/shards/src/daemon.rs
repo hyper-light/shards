@@ -45,6 +45,7 @@ pub(crate) const ENGINE_SOCKET: &str = engine::SOCKET;
 mod events;
 mod files;
 use crate::filters;
+mod budget;
 mod follow;
 mod health;
 mod hostnet;
@@ -988,6 +989,8 @@ struct Daemon<D: Disk = Real> {
     /// What the memory pressure watcher watches past the host and the daemon's own cgroup
     /// (D188).
     watching: reclaim::Watching,
+    /// The microVMs held to a budget, told what it leaves them (D188).
+    budgets: budget::Budgets,
     /// When each running container's health check is next due (health.rs).
     checks: health::Checks,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
@@ -1382,6 +1385,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.ship_left(threads);
         daemon.start_collector(threads);
         daemon.start_pressure(threads);
+        daemon.start_budgets(threads);
         daemon.restart_at_start(threads);
         daemon.serve_slots(threads, requests);
         daemon.listen(threads, api);
@@ -1605,6 +1609,7 @@ impl<D: Disk> Daemon<D> {
             refills: refill::Refills::default(),
             parents: parents::Parents::default(),
             watching: reclaim::Watching::default(),
+            budgets: budget::Budgets::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
@@ -4540,8 +4545,13 @@ impl<D: Disk> Daemon<D> {
             let _ = tracked.socket.send(kind::STOP_ORDER, &order, &[]);
         }
         // As the daemon stops, the stop thread, which this wakes, stops it.
+        let pid = tracked.vm.id();
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
         self.resolved.notify_all();
+        // Held within what its budget leaves it, where it has one (D188).
+        if !visit {
+            self.budget_ran(pid);
+        }
         inbox
     }
 
@@ -5154,6 +5164,8 @@ impl<D: Disk> Daemon<D> {
             lock(&self.runs).remove(id);
             lock(&self.health).remove(id);
             lock(&self.paused).remove(id);
+            // What it held of its budget the others it held are told is theirs (D188).
+            self.budget_left(pid);
             // Logged before anyone waiting hears of the end, as dockerd logs it in the
             // exit's handling (monitor.go), ahead of `stop`'s own event.
             if started {

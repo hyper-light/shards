@@ -467,6 +467,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut backing = Vec::new();
     let mut layer = None;
     let mut layer_cloned = None;
+    let mut prefetch_private = shards_vmm::hv::PREFETCH_PRIVATE;
     while let Some(arg) = args.next() {
         // The snapshot directory is a path, in whatever bytes; every option is text.
         let Some(flag) = arg.to_str().map(str::to_owned) else {
@@ -494,6 +495,13 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             }
             // Which generation's layer that file is a clone of.
             "--layer-cloned" => layer_cloned = Some(text(value("--layer-cloned")?)?),
+            // What its prefetch may copy ahead of its request: none under a budget (D188).
+            "--prefetch-private" => {
+                let bytes = text(value("--prefetch-private")?)?;
+                prefetch_private = bytes
+                    .parse()
+                    .map_err(|_| format!("--prefetch-private: {bytes:?} is not a number of bytes"))?;
+            }
             "--warm" => {
                 let fd = text(value("--warm")?)?;
                 warm = Some(
@@ -559,6 +567,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         io_limit: Some(&IO),
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
+        prefetch_private,
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR); a
         // run's snapshot is no template, which restores prefetch from.
         record: warm.is_some() && !resume,

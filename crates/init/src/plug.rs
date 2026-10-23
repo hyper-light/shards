@@ -466,6 +466,125 @@ impl Plug {
     }
 }
 
+/// The most a run's cgroup may hold that its host's budget leaves its microVM (D188), in
+/// bytes: no hold of its memory passes it ([`set_high`]), and its grower lifts none past
+/// it, so that its own kernel drops its run's page cache before its host must take memory
+/// the guest holds, which with no swap is its own RAM, a template's file pages (PM M309);
+/// `u64::MAX` where it has none. In a page shared by init, its grower and the forks its
+/// builtins run in (`MAP_SHARED`, made as init starts, [`make_cap`]),
+/// so that what the host says to a builtin holds the grower too; and in a template, which
+/// its restores resume with none.
+static CAP: std::sync::OnceLock<&'static std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+
+/// Makes [`CAP`], none yet: by PID 1 as it starts, before it forks anything, a grower or a
+/// builtin's fork, each of which shares it.
+pub fn make_cap() -> io::Result<()> {
+    if CAP.get().is_some() {
+        return Ok(());
+    }
+    let len = usize::try_from(page_size()).map_err(err)?;
+    // SAFETY: mmap(2) of a new shared anonymous mapping, which nothing references yet.
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if page == libc::MAP_FAILED {
+        return Err(err(format!(
+            "the run's budget's page: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: the page just mapped, zeroed, aligned to a page and never unmapped: an
+    // AtomicU64 at its start, a valid one in its zeroes, lives as long as the process,
+    // and every process forked from it shares it.
+    let cap = unsafe { &*page.cast::<std::sync::atomic::AtomicU64>() };
+    cap.store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    let _ = CAP.set(cap);
+    Ok(())
+}
+
+/// [`CAP`]'s bytes: `u64::MAX` where it has none.
+fn cap() -> u64 {
+    CAP.get()
+        .map_or(u64::MAX, |cap| cap.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// The run's `memory.high` as its grower holds it ([`Plug::hold_run`]), what it uses and
+/// what is free, less the page structures of what may still be plugged, with no budget:
+/// none (`u64::MAX`) where all it may have is plugged, or it plugs none.
+fn grown_hold(cgroup: &str) -> io::Result<u64> {
+    let Some(&boot) = BOOT.get() else {
+        return Ok(u64::MAX);
+    };
+    let most = control_read64(control::HOTPLUG_SIZE)?;
+    let plugged = mem_total()?.saturating_sub(boot);
+    if plugged >= most {
+        return Ok(u64::MAX);
+    }
+    high(cgroup, most, plugged)
+}
+
+/// Holds the run in `cgroup` within what its host's budget leaves it (D188, the builtin
+/// `ROOM`): `room` bytes past what it uses now, none
+/// past it where the room is short (what it holds past the room is given back by the
+/// host's passes, `RECLAIM`, whose pages the kernel reports free together); or with no
+/// budget (`None`), as its memory alone holds it. What the hold leaves above it the kernel
+/// reclaims at once, which is then reported free (D151).
+pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<()> {
+    let used = number(&format!("{cgroup}/memory.current"))
+        .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
+    set_cap(room.map_or(u64::MAX, |r| within(used, r)));
+    set_high(cgroup, grown_hold(cgroup)?)?;
+    crate::run::flush_page_reports();
+    Ok(())
+}
+
+/// What a run that uses `used` bytes is held at within the `room` its host's budget leaves
+/// it: that room past what it uses, none past it where the room is short.
+fn within(used: u64, room: i64) -> u64 {
+    used.saturating_add(room.max(0).unsigned_abs())
+}
+
+/// What a run that used `used` bytes and gave back `freed` of them is held at within the
+/// `room` its host's budget left it before: that room past what it used, or where the room
+/// is short, less as much of it as it gave back, and never less than it uses now.
+fn within_after(used: u64, room: i64, freed: u64) -> u64 {
+    let kept = room.max(i64::try_from(freed).map_or(i64::MIN, |f| -f));
+    if kept >= 0 {
+        used.saturating_add(kept.unsigned_abs())
+    } else {
+        used.saturating_sub(kept.unsigned_abs())
+    }
+}
+
+/// Holds the run in `cgroup` within what its host's budget leaves it as it gives back
+/// what it holds cold (D188, `RECLAIM` with a room): what it used before (`used`), and the
+/// `room` its host's budget left it then, or less the bytes it gave back (`freed`) where
+/// the room is short, so that what it gave back goes to the room and no more than it is
+/// held from; never raised past the hold its giving back left it at.
+pub fn hold_after_reclaim(cgroup: &str, used: u64, room: i64, freed: u64) -> io::Result<()> {
+    set_cap(within_after(used, room, freed));
+    let now = std::fs::read_to_string(format!("{cgroup}/memory.high"))
+        .map_err(|e| err(format!("{cgroup}/memory.high: {e}")))?;
+    match now.trim().parse::<u64>() {
+        Ok(held) if held <= cap() => Ok(()),
+        _ => set_high(cgroup, cap()),
+    }
+}
+
+/// Sets [`CAP`], where it was made.
+fn set_cap(bytes: u64) {
+    if let Some(cap) = CAP.get() {
+        cap.store(bytes, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// The run's `memory.peak`, opened by PID 1 as it holds the run ([`Plug::hold_run`]) and
 /// shared by its builtins' forks: written, the kernel counts its peak afresh for this open
 /// file alone (Linux 6.12, c6f53ed8f213), so that each giving back reads the run's peak
@@ -665,8 +784,16 @@ fn high(cgroup: &str, most: u64, plugged: u64) -> io::Result<u64> {
         .saturating_sub(reserve(total, most.saturating_sub(plugged))))
 }
 
+/// Sets `cgroup`'s `memory.high` to `high`, never past what its host's budget leaves it
+/// ([`CAP`]): `max` for no hold at all.
 fn set_high(cgroup: &str, high: u64) -> io::Result<()> {
-    std::fs::write(format!("{cgroup}/memory.high"), high.to_string())
+    let high = high.min(cap());
+    let text = if high == u64::MAX {
+        "max".to_string()
+    } else {
+        high.to_string()
+    };
+    std::fs::write(format!("{cgroup}/memory.high"), text)
         .map_err(|e| err(format!("{cgroup}/memory.high: {e}")))
 }
 
@@ -1005,9 +1132,10 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
     // SAFETY: fcntl(2) of a descriptor this process owns.
     unsafe { libc::fcntl(notes.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     let cgroup = plug.cgroup;
+    // No hold but what its host's budget leaves it (D188).
     let lift = || {
-        if let Err(e) = std::fs::write(format!("{cgroup}/memory.high"), "max") {
-            say(notes, plug.whose, &format!("{cgroup}/memory.high: {e}"));
+        if let Err(e) = set_high(cgroup, u64::MAX) {
+            say(notes, plug.whose, &e.to_string());
         }
     };
     let mut asked = 0u64;
@@ -1041,6 +1169,10 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             ..plug
         };
         if current < high_now {
+            continue;
+        }
+        // Held where its host's budget holds it (D188): no memory plugged would be its.
+        if high_now >= cap() {
             continue;
         }
         let Ok(total) = mem_total() else { continue };
@@ -1135,6 +1267,23 @@ mod tests {
             said: Vec::new(),
             clock: Duration::ZERO,
         }
+    }
+
+    /// A run is held within the room its host's budget leaves it (D188): that room past
+    /// what it uses, none past it where the room is short; and as it gives back, within
+    /// what it used before and the room then, a room short by more than it gave back
+    /// holding it at what it uses now, never less.
+    #[test]
+    fn a_run_is_held_within_its_budgets_room() {
+        assert_eq!(within(100 * MIB, 50 * MIB as i64), 150 * MIB);
+        assert_eq!(within(100 * MIB, 0), 100 * MIB);
+        assert_eq!(within(100 * MIB, -50 * MIB as i64), 100 * MIB);
+        assert_eq!(within(u64::MAX - 1, 10), u64::MAX);
+        assert_eq!(within_after(100 * MIB, 50 * MIB as i64, 30 * MIB), 150 * MIB);
+        assert_eq!(within_after(100 * MIB, -20 * MIB as i64, 30 * MIB), 80 * MIB);
+        assert_eq!(within_after(100 * MIB, -50 * MIB as i64, 30 * MIB), 70 * MIB);
+        assert_eq!(within_after(100 * MIB, -50 * MIB as i64, 0), 100 * MIB);
+        assert_eq!(within_after(100 * MIB, i64::MIN, u64::MAX), 0);
     }
 
     /// A run gives back what it holds plugged past twice what it uses, in whole blocks, as
