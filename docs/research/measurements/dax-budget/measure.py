@@ -67,9 +67,14 @@ def systemctl(*args):
 @atexit.register
 def clean():
     """However the run ends, a failed step's exit included: each arm's daemon stopped, its
-    runs with it, the slice stopped, and this run's own files removed."""
+    runs with it, and its log kept in OUT; the slice stopped; this run's own files removed."""
     for arm in ARMS:
         subprocess.run([shards, "daemon", "stop"], env=env(arm), capture_output=True)
+        try:
+            shutil.copy(os.path.join(homes[arm], "daemon.log"), os.path.join(out, f"daemon-{arm}.log"))
+        except OSError:
+            pass
+    systemctl("revert", SLICE)
     systemctl("stop", SLICE)
     shutil.rmtree(work, ignore_errors=True)
 
@@ -160,6 +165,8 @@ def profile(name, stop):
     data = os.path.join(out, f"{name}.perf")
     subprocess.run(["sudo", "-n", "perf", "record", "-a", "-g", "-o", data, "--", "sleep", "10"],
                    capture_output=True)
+    # perf writes its data as root, readable by root alone: kept as the run's.
+    subprocess.run(["sudo", "-n", "chown", f"{os.getuid()}:{os.getgid()}", data], capture_output=True)
     with open(os.path.join(out, f"{name}.perf.txt"), "w") as f:
         subprocess.run(["sudo", "-n", "perf", "report", "-i", data, "--stdio", "--no-children",
                         "--percent-limit", "0.5"], stdout=f, stderr=subprocess.DEVNULL)
@@ -174,7 +181,8 @@ def one(arm, file, high, name):
     set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={high}", "MemorySwapMax=0")
     if set_.returncode != 0:
         raise SystemExit(f"the slice's budget: {set_.stderr}")
-    drop(os.path.join(vol, file))
+    for each in FILES:
+        drop(os.path.join(vol, each))
     stop = threading.Event()
     watchers = [threading.Thread(target=sample, args=(os.path.join(out, f"{name}.txt"), stop))]
     if a.perf:
@@ -187,9 +195,10 @@ def one(arm, file, high, name):
     stop.set()
     for w in watchers:
         w.join()
+    # The slice stays, its budget taken off: stopping it would end the warm microVMs the
+    # daemon keeps in it for the next run.
     run(arm, "rm", "-f", "reader", check=False)
-    systemctl("revert", SLICE)
-    systemctl("stop", SLICE)
+    systemctl("set-property", "--runtime", SLICE, "MemoryHigh=infinity")
     if done.returncode != 0:
         raise SystemExit(f"{name}: exit {done.returncode}\n{done.stdout}{done.stderr}")
     return took

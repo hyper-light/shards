@@ -28,6 +28,8 @@ jobs:
         include:
           - { arch: x86_64, runner: ubuntu-24.04, copy: a }
           - { arch: x86_64, runner: ubuntu-24.04, copy: b }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: c }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: d }
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
