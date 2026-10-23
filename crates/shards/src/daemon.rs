@@ -9204,6 +9204,64 @@ mod tests {
         });
     }
 
+    /// Answers the exec `m` asks a VM for as its VM does: `output` on its stdout, then its
+    /// exit `code` on its connection.
+    fn answer_exec(m: &shards_ipc::Message, output: &[u8], code: u8) {
+        let [conn, _, stdout, _] = &m.fds[..] else {
+            panic!("an exec with {} descriptors", m.fds.len())
+        };
+        File::from(stdout.try_clone().unwrap()).write_all(output).unwrap();
+        let conn = UnixStream::from(conn.try_clone().unwrap());
+        shards_ipc::send(&conn, kind::EXIT, &[code], &[]).unwrap();
+    }
+
+    /// A microVM that does not answer its give-back keeps no other's from the host, and is
+    /// asked nothing more until its give-back has ended, which its time does (PM M308: a
+    /// pass that waited on each microVM in turn gave back 3 times in 600 s).
+    #[test]
+    fn a_microvm_that_does_not_give_back_keeps_no_other_waiting() {
+        let t = Test::new("give-back");
+        t.run(|t| {
+            let (stalled, _stalled, vm) = running(t, "stalled");
+            let (answers, _answers, other) = running(t, "answers");
+            let t0 = Instant::now();
+            t.t.daemon.give_back_cold(t.threads);
+            let held = heard_whole(&vm);
+            assert_eq!(held.kind, kind::EXEC_RUN);
+            for pass in 0..2 {
+                if pass > 0 {
+                    t.t.daemon.give_back_cold(t.threads);
+                }
+                let asked = heard_whole(&other);
+                assert_eq!(asked.kind, kind::EXEC_RUN);
+                answer_exec(&asked, b"1048576 0", 0);
+                drop(asked);
+                t.until("its answer taken", |d| !d.watching.giving(&answers));
+            }
+            assert!(t0.elapsed() < TAKE_TIMEOUT, "{:?}", t0.elapsed());
+            // The one still asked is asked nothing more meanwhile.
+            assert!(t.t.daemon.watching.giving(&stalled));
+            vm.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            loop {
+                match shards_ipc::recv(&vm) {
+                    Ok(Some(m)) if m.kind == kind::STOP_ORDER => {}
+                    Ok(m) => panic!("asked again while still asked: {:?}", m.map(|m| m.kind)),
+                    Err(_) => break,
+                }
+            }
+            // Its time up, its give-back is ended on its exec's connection, as its VM says
+            // once it has ended it; then it may be asked again.
+            let conn = UnixStream::from(held.fds[0].try_clone().unwrap());
+            conn.set_read_timeout(Some(PATIENCE)).unwrap();
+            let ended = shards_ipc::recv(&conn).unwrap().unwrap();
+            assert_eq!((ended.kind, ended.payload), signal(9));
+            assert!(t0.elapsed() >= TAKE_TIMEOUT, "{:?}", t0.elapsed());
+            shards_ipc::send(&conn, kind::EXIT, &[137], &[]).unwrap();
+            drop((conn, held));
+            t.until("its give-back ended", |d| !d.watching.giving(&stalled));
+        });
+    }
+
     /// How many messages the daemon sends a warm VM before it lets go of its socket.
     fn heard_nothing(vm: &UnixStream) -> usize {
         let mut n = 0;
