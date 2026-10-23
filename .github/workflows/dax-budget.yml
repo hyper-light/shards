@@ -10,6 +10,10 @@ on:
       - docs/research/measurements/dax-budget/**
       - .github/workflows/dax-budget.yml
   workflow_dispatch:
+    inputs:
+      args:
+        description: measure.py's arguments, after its build and output directory
+        default: --rounds 2
 
 permissions:
   contents: read
@@ -65,8 +69,10 @@ jobs:
           sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
           perf=""
           command -v perf > /dev/null && sudo -n perf --version && perf=--perf
+          # Pushed: two rounds; asked for: the arguments asked with.
+          args="${{ github.event.inputs.args }}"
           python3 -I docs/research/measurements/dax-budget/measure.py "$RUNNER_TEMP/shards" dax-budget \
-            --huge "$RUNNER_TEMP/shards-huge" --rounds 2 $perf
+            --huge "$RUNNER_TEMP/shards-huge" ${args:---rounds 2} $perf
           python3 -I docs/research/measurements/dax-budget/samples.py dax-budget
       - uses: actions/upload-artifact@v7.0.1
         if: always()

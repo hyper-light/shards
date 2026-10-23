@@ -12,7 +12,9 @@ before each read, so that the read's microVM brings them in and pays for them.
                [--size-mib 1024] [--perf]
 
 With --huge, a third arm: that build of shards (huge.patch: each window range on huge
-pages, MADV_HUGEPAGE), its window as long as the host's memory.
+pages, MADV_HUGEPAGE), its window as long as the host's memory. With --stop-slice, the
+slice is stopped after each read, as its user may stop it, which ends the spawner and warm
+microVMs each daemon keeps there: what the runs after it meet.
 
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
@@ -34,6 +36,7 @@ p.add_argument("--highs", default="384M,infinity")
 p.add_argument("--size-mib", type=int, default=1024)
 p.add_argument("--perf", action="store_true")
 p.add_argument("--huge")
+p.add_argument("--stop-slice", action="store_true")
 a = p.parse_args()
 
 shards = os.path.realpath(a.shards)
@@ -204,10 +207,14 @@ def one(arm, file, high, name):
     stop.set()
     for w in watchers:
         w.join()
-    # The slice stays, its budget taken off: stopping it would end the warm microVMs the
-    # daemon keeps in it for the next run.
+    # The slice stays, its budget taken off, unless asked: stopping it ends the warm
+    # microVMs the daemons keep in it for their next runs.
     run(arm, "rm", "-f", "reader", check=False)
-    systemctl("set-property", "--runtime", SLICE, "MemoryHigh=infinity")
+    if a.stop_slice:
+        systemctl("revert", SLICE)
+        systemctl("stop", SLICE)
+    else:
+        systemctl("set-property", "--runtime", SLICE, "MemoryHigh=infinity")
     if done.returncode != 0:
         raise SystemExit(f"{name}: exit {done.returncode}\n{done.stdout}{done.stderr}")
     return took
