@@ -8,7 +8,11 @@ through the guest's page cache), the file sparse and written out; and under no b
 interleave the cases, each first in turn; the file's pages are out of the host's page cache
 before each read, so that the read's microVM brings them in and pays for them.
 
-    measure.py SHARDS OUT [--rounds N] [--highs 384M,infinity] [--size-mib 1024] [--perf]
+    measure.py SHARDS OUT [--huge SHARDS] [--rounds N] [--highs 384M,infinity]
+               [--size-mib 1024] [--perf]
+
+With --huge, a third arm: that build of shards (huge.patch: each window range on huge
+pages, MADV_HUGEPAGE), its window as long as the host's memory.
 
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
@@ -29,6 +33,7 @@ p.add_argument("--rounds", type=int, default=3)
 p.add_argument("--highs", default="384M,infinity")
 p.add_argument("--size-mib", type=int, default=1024)
 p.add_argument("--perf", action="store_true")
+p.add_argument("--huge")
 a = p.parse_args()
 
 shards = os.path.realpath(a.shards)
@@ -41,7 +46,10 @@ os.makedirs(vol)
 SLICE = f"shardsdax{os.getpid()}.slice"
 uid = os.getuid()
 CGROUP = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{SLICE}"
-ARMS = {"window": {}, "none": {"SHARDS_SHARE_WINDOW_MIB": "0"}}
+# Each arm's build of shards and what its daemon is given.
+ARMS = {"window": (shards, {}), "none": (shards, {"SHARDS_SHARE_WINDOW_MIB": "0"})}
+if a.huge:
+    ARMS["huge"] = (os.path.realpath(a.huge), {})
 FILES = ("sparse", "written")
 homes = {arm: os.path.join(work, f"home-{arm}") for arm in ARMS}
 
@@ -49,12 +57,12 @@ homes = {arm: os.path.join(work, f"home-{arm}") for arm in ARMS}
 def env(arm):
     e = dict(os.environ, SHARDS_HOME=homes[arm], DOCKER_CONFIG=config)
     e.pop("SHARDS_SHARE_WINDOW_MIB", None)
-    e.update(ARMS[arm])
+    e.update(ARMS[arm][1])
     return e
 
 
 def run(arm, *args, check=True, timeout=None):
-    done = subprocess.run([shards, *args], env=env(arm), capture_output=True, text=True, timeout=timeout)
+    done = subprocess.run([ARMS[arm][0], *args], env=env(arm), capture_output=True, text=True, timeout=timeout)
     if check and done.returncode != 0:
         raise SystemExit(f"{arm}: shards {' '.join(args)}: exit {done.returncode}\n{done.stdout}{done.stderr}")
     return done
@@ -69,7 +77,7 @@ def clean():
     """However the run ends, a failed step's exit included: each arm's daemon stopped, its
     runs with it, and its log kept in OUT; the slice stopped; this run's own files removed."""
     for arm in ARMS:
-        subprocess.run([shards, "daemon", "stop"], env=env(arm), capture_output=True)
+        subprocess.run([ARMS[arm][0], "daemon", "stop"], env=env(arm), capture_output=True)
         try:
             shutil.copy(os.path.join(homes[arm], "daemon.log"), os.path.join(out, f"daemon-{arm}.log"))
         except OSError:
@@ -165,11 +173,12 @@ def profile(name, stop):
     data = os.path.join(out, f"{name}.perf")
     subprocess.run(["sudo", "-n", "perf", "record", "-a", "-g", "-o", data, "--", "sleep", "10"],
                    capture_output=True)
-    # perf writes its data as root, readable by root alone: kept as the run's.
-    subprocess.run(["sudo", "-n", "chown", f"{os.getuid()}:{os.getgid()}", data], capture_output=True)
+    # Reported as root while root owns its data, which perf reads of no other owner; then
+    # the data kept as the run's.
     with open(os.path.join(out, f"{name}.perf.txt"), "w") as f:
         subprocess.run(["sudo", "-n", "perf", "report", "-i", data, "--stdio", "--no-children",
                         "--percent-limit", "0.5"], stdout=f, stderr=subprocess.DEVNULL)
+    subprocess.run(["sudo", "-n", "chown", f"{os.getuid()}:{os.getgid()}", data], capture_output=True)
 
 
 def one(arm, file, high, name):

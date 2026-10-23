@@ -2,6 +2,19 @@ name: CI
 
 on:
   push:
+    # Every change but a measurement's own scripts, patches, notes and data, and the
+    # workflows that run them alone, which no build or test reads: those run their own
+    # jobs. A measurement's Rust (tests/fleet.rs and commit.rs take theirs by #[path]) is
+    # built here.
+    paths:
+      - "**"
+      - "!docs/research/measurements/**/*.py"
+      - "!docs/research/measurements/**/*.sh"
+      - "!docs/research/measurements/**/*.patch"
+      - "!docs/research/measurements/**/*.md"
+      - "!docs/research/measurements/**/*.json"
+      - "!.github/workflows/dax-budget.yml"
+      - "!.github/workflows/dax-boot-memory.yml"
   pull_request:
 
 permissions:

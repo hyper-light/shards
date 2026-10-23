@@ -47,15 +47,27 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
       - name: perf
         run: scripts/retry 3 30 sudo apt-get install -y "linux-tools-$(uname -r)" || echo "no perf for $(uname -r)"
+      # The tree's shards, and the tree's with each window range on huge pages
+      # (docs/research/measurements/dax-budget/huge.patch), each kept apart.
       - name: Build
-        run: cargo build --locked -p shards --release
+        run: |
+          cargo build --locked -p shards --release
+          cp target/release/shards "$RUNNER_TEMP/shards"
+          git apply docs/research/measurements/dax-budget/huge.patch
+          cargo build --locked -p shards --release
+          cp target/release/shards "$RUNNER_TEMP/shards-huge"
+          git checkout -- crates
       - name: Measure
         run: |
           lscpu | grep -E 'Model name' || true
           free -m
+          # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
+          sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
           perf=""
           command -v perf > /dev/null && sudo -n perf --version && perf=--perf
-          python3 -I docs/research/measurements/dax-budget/measure.py target/release/shards dax-budget $perf
+          python3 -I docs/research/measurements/dax-budget/measure.py "$RUNNER_TEMP/shards" dax-budget \
+            --huge "$RUNNER_TEMP/shards-huge" --rounds 2 $perf
+          python3 -I docs/research/measurements/dax-budget/samples.py dax-budget
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
