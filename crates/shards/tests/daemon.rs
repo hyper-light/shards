@@ -1820,7 +1820,38 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         "a read under a budget set as its run went took {late} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
         said()
     );
+    // Its VM process, which `rm -f` leaves ending once its run has: until it has, the
+    // slice still holds its guest's page cache of the read, as its own memory.
+    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "held"], &env, TIMEOUT);
+    let pid: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+    // Its state and start (proc_pid_stat(5) fields 3 and 22), past its name's parentheses.
+    let stat_of_pid = || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| {
+                let fields: Vec<String> = s
+                    .rsplit_once(')')?
+                    .1
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect();
+                Some((fields.first()?.clone(), fields.get(19)?.clone()))
+            })
+    };
+    let (_, started) = stat_of_pid().unwrap_or_else(|| panic!("held's VM process {pid} is not running"));
     let _ = run_shards_env(&["rm"], &["-f", "held"], &env, TIMEOUT);
+    let deadline = Instant::now() + TIMEOUT;
+    while let Some((state, start)) = stat_of_pid()
+        && !matches!(state.as_str(), "Z" | "X")
+        && start == started
+    {
+        assert!(
+            Instant::now() < deadline,
+            "held's VM process {pid} still runs\nthe daemon's log:\n{}",
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     // A budget short of what its microVMs hold and the inactive page cache their kernel
     // keeps beside the files they map (memory.stat's `file_mapped`, as many as the mapped
     // under a GiB of them, mm/vmscan.c `inactive_is_low`), by a mebibyte: each run held
