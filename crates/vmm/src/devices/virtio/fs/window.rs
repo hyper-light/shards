@@ -366,6 +366,11 @@ impl Window {
             len: held_size,
         };
         zeros(held_at, held_size, true).map_err(|e| format!("a DAX window's record: {e}"))?;
+        // On the host's base pages: this process and its guest touch a few words of it for
+        // each range mapped, where one huge page held 2 MiB resident for them (THP always).
+        if let Some(at) = std::ptr::NonNull::new(held_at) {
+            crate::platform::small_pages(at, held_size);
+        }
         let stage2 = stage2(at)?;
         Ok(Window {
             gpa,
@@ -1075,8 +1080,9 @@ mod tests {
 
     /// A window cleared, as its device's reset clears it, clears the record of the ranges
     /// it mapped alone: the rest of the record, whose bits no range has set, is left
-    /// untouched, where clearing it whole wrote every page of it at every boot (D189, PM
-    /// M307).
+    /// untouched, where clearing it whole wrote every page of it at every boot, and on the
+    /// host's base pages, where under THP always the first range's words took a huge page,
+    /// all 512 of the record's pages (CI's x86_64 runners; D189, PM M307).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_cleared_window_leaves_the_record_of_ranges_it_never_mapped_untouched() {
