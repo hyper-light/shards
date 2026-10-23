@@ -12619,3 +12619,126 @@ revision before comparing a changed API/implementation.
   a run is never held closer to what it uses than the room it needs to go on in, what its
   kernel charges ahead, two read-ahead windows and a reader's block: held at what it
   used, a run cannot take a page, and every read it makes sleeps in the kernel's throttle.
+
+### M310. Where a restore's time to its guest's first beat goes on CI's runners, shards' and Firecracker's, in KVM (D25)
+
+- **Question.** The Firecracker comparison's restore arm found shards' first beat later than
+  Firecracker's on some AMD runners: CI's comparison job +205 µs on an EPYC 7763 once and
+  better six times, +488 on a 9V45 once and better four times, +351 on a 9V74; 7cf8c5b9's
+  restore-faults run +204 to +388 on three 7763s and +455 on a 9V74. Its vCPUs took 5.5 to
+  8.3 ms from ready to the guest's RESUMED marker. How many stage-2 faults does each VMM's
+  restore take to its first beat, what does each cost on each runner CPU, how many would a
+  working set recorded from another restore have mapped ahead, and where does the rest of
+  the time go?
+- **Method.** The comparison's restore arm (crates/shards/benches/firecracker.rs) on CI's
+  ubuntu-24.04 runners (4 CPUs, 16 GiB, Linux 6.17.0-1022-azure, KVM nested on Hyper-V), by
+  the restore-faults workflow, eight runners a run: 7cf8c5b9's (40031683567) and
+  2f95db48's (40038193466), 2026-10-23. A 1-vCPU, 128 MiB test guest beating every
+  millisecond; each run makes each VMM's snapshot of it, and restores each 30 times
+  paired, interleaved.
+  - KVM's counters of each restored VM (its debugfs directory, summed over its vCPUs),
+    read through `sudo -n` once the first beat has reached the bench, a few beats after
+    it; shards' phases from as many restores again with its VM process's log.
+  - In 2f95db48's run, 30 more restores of each VMM under KVM's trace (`--traced`:
+    kvm_entry, kvm_exit, kvm_page_fault, kvm_pio, kvm_mmio, kvm_userspace_exit, on the
+    host's monotonic clock), each from its vCPU's first entry into its guest, cut at the
+    guest's first `.` out of COM1 and, shards', at its RESUMED write
+    (docs/research/measurements/restore-faults/faults.py). A stage-2 fault on RAM is one
+    whose address lies below the 32-bit MMIO gap.
+  - In 2f95db48's run, each runner also ran the comparison reading nothing
+    (`SHARDS_BENCH_KVM=off`), the order alternating by copy: each envelope's verdicts
+    read and unread, side by side on one runner.
+  - Landings: EPYC 7763 7 runners, 9V45 3, 9V74 2, Xeon 8573C 2, 8370C 1, 6973P-C 1; traced,
+    7763 3, 9V45 2, 9V74, 8370C and 6973P-C 1 each.
+- **Results.**
+  - Stage-2 faults on RAM to the first beat, traced (p50, p90, p99, max):
+
+    | CPU (n restores a VMM) | shards | Firecracker | shards' to RESUMED |
+    |---|---|---|---|
+    | EPYC 7763 (90) | 558, 582, 583, 583 | 562, 664, 669, 669 | 400, 461, 469, 469 |
+    | EPYC 9V45 (60) | 578, 596, 596, 596 | 595, 597, 602, 602 | 402, 411, 411, 411 |
+    | EPYC 9V74 (30) | 571, 572, 572, 572 | 591, 597, 597, 597 | 453, 454, 461, 461 |
+    | Xeon 6973P-C (30) | 584, 606, 614, 614 | 591, 679, 682, 682 | 472, 472, 477, 477 |
+    | Xeon 8370C (30) | 581, 583, 584, 584 | 584, 586, 594, 594 | 397, 400, 471, 471 |
+
+    The same guest takes the same faults under either VMM; a snapshot can take a hundred
+    more than another (Firecracker's of one 7763 run, 664 at its median against the
+    run's shards snapshot's 552).
+  - KVM's counted faults (`pf_taken`, the first MMIO page's among them), read a few beats
+    after the beat (p50, p90, p99, max): shards 612, 619, 622, 622 on the 7763s (n 210),
+    635, 640, 640, 640 on the 9V45s (n 90), 620, 627, 627, 627 on the 9V74s (n 60), 621 to
+    628 at the median on the Intels (n 120); Firecracker 710 to 744 at the median, its
+    most 765. Firecracker's hundred more come after its beat: in the 1.6 to 1.9 ms traced
+    past it, its guest faulted 40 more pages at the median (most 127), shards' 30 (63).
+    The counters' exits, port I/O and halts, read that late, are mostly beats after it:
+    they count about 200 port I/O exits and 15 halts, where to the beat every traced
+    restore made 5 (shards) or 3 (Firecracker) and halted only in shards' leg from RESUMED
+    (below).
+  - What each fault costs, untraced: shards' vCPUs ready to RESUMED (its log, p50) over
+    its faults to RESUMED (traced, p50): 7,913 µs over 400 on the 7763s (n 210), 19.8 µs
+    a fault; 8,203 over 453 on the 9V74s (n 60), 18.1; 5,920 over 402 on the 9V45s (n 90),
+    14.7; 6,006 over 472 on the 6973P-C (n 30), 12.7; 4,719 over 397 on the 8370C (n 30),
+    11.9. Traced, a fault is KVM's own time, from its exit to the vCPU's next entry, and
+    the guest's time before it, from the entry before to the exit, which carries the
+    outer hypervisor's round trip of each exit and whatever it handles itself, none of
+    which KVM's trace shows. KVM's, each restore's mean (p50): 4.9 to 5.3 µs on the 7763s
+    and 9V74, 4.3 to 4.5 on the 9V45s, 3.4 to 3.7 on the 8370C, 2.6 to 2.7 on the
+    6973P-C, alike for both VMMs. The guest's before each, each restore's median: 8 to 10
+    µs on the AMDs, 5 to 7 on the Intels; its 10th percentile, 7 to 8 and 4 to 6, bounds
+    what a round trip costs from above. With the trace's own cost in them: traced
+    restores reached their beat 0.06 to 1.5 ms later than the run's paired ones at the
+    median (shards on the 9V45s 11,645 µs against 10,144; Firecracker 12,079 against
+    10,668).
+  - Where the time goes, traced, from the vCPU's first entry: to shards' RESUMED (p50),
+    on the 7763s 8,658 µs, of it KVM's fault handling 2,131 and the guest's time ending
+    in a fault 6,189, the guest's other time 229; on the 9V45s 6,802 (1,811, 4,764, 140);
+    the 9V74 8,736 (2,327, 6,119, 215); the 6973P-C 6,232 (1,289, 4,707, 163); the 8370C
+    4,975 (1,450, 3,387, 84). KVM's handling and the guest's time ending in a fault are
+    95.9 to 97.3% of each restore's time to RESUMED at the median, 90.7% at the least;
+    the guest's other time 2 to 3%, and every other exit (host interrupts, MSRs, the
+    RESUMED write, an interrupt window) about 1%. To the beat, the same for Firecracker
+    (95.9 to 96.5%); for shards 85.0 to 95.7%, the rest its RESUMED-to-beat leg's halt.
+  - From RESUMED to the beat, shards (p50): 3,014 µs on the 7763s with 155 faults; 2,677
+    on the 9V45s, 171; 2,752 on the 9V74, 118, of it 673 halted; 2,243 on the 6973P-C,
+    112, of it 873 halted; 2,362 on the 8370C, 184 (halted 878 at the most). The guest
+    asks for its snapshot right after a beat (testguest `beat`), so a restored shards
+    guest writes RESUMED and then sleeps a whole beat period, 1 ms, before its first beat:
+    where the work after RESUMED is shorter, its vCPU halts. Firecracker's guest is paused
+    from the host at whatever point its sleep has reached (its first entry's rip is its
+    kernel's, shards' the test guest's own, past its snapshot write), and beats as its
+    restore's work ends: none of its 240 traced restores halted before its beat.
+  - From spawn to the vCPU's first entry (p50): shards 1,808 µs against Firecracker's
+    2,911 on the 7763s, 1,670 against 2,489 on the 9V45s, 1,879 against 2,827 on the 9V74,
+    1,136 against 2,217 on the 6973P-C, 1,480 against 2,794 on the 8370C. From there to the
+    beat: shards 11,457 against 12,017, 9,978 against 9,622, 11,522 against 11,206, 8,477
+    against 7,621, 7,378 against 7,298.
+  - A working set recorded from one restore: of each restore's faulted pages, the share
+    the restore before it of the same snapshot faulted too was 1.000 for shards at the
+    median, p90 and most on every CPU (n 29 to 87), and for Firecracker 0.998 at the median
+    on the 7763s and 1.000 elsewhere: every page a restore faults before its first beat, a
+    working set recorded by the one before holds.
+  - The reading's A/B (2f95db48, eight runners): 137 of 144 envelope verdicts were the
+    same read and unread, every memory verdict of the restore's among them. Of the 7 that
+    differed, 2 were boot's `to_ready` and 2 density's `fleet_pte`, which the reading never
+    touches, and 3 the restore's `to_beat`, both ways: on a 9V74 −321 µs [−460, −132]
+    read against +257 [+174, +450] unread, on a 9V45 −474 [−892, −252] against +388
+    [+166, +600], on a 7763 +28 [−559, +644] against −568 [−729, −438]. Read less
+    unread, the eight runners' median differences ran from −862 to +785 µs, 3 below zero
+    and 5 above. Between the two passes on one runner, each with its own snapshots, a VMM's
+    median moved by as much as 2.4 ms (shards on a 7763, 14,150 µs against 11,748;
+    Firecracker 13,709 against 12,349).
+- **Conclusion.** On CI's runners, whose KVM is nested in Hyper-V, a restored guest's time
+  to RESUMED and to its first beat is its stage-2 faults: 400 to 600 of them, the same
+  under either VMM, each 12 to 20 µs untraced, KVM's handling and the outer hypervisor's
+  round trip together, 96 to 97% of the time to RESUMED at the median. That is 8 to 44
+  times less than a DAX window's first touch of a page paid on the same runners (M308,
+  0.16 to 0.53 ms), though those restores' pages are their guests' first touches too:
+  M308's account of its cost, the outer hypervisor's shadow of each page, is not the
+  whole of it. A working set recorded from the restore before holds every one of the
+  restore's faults. shards' VM process has its guest running about 1 ms sooner than
+  Firecracker on every CPU; what it loses back on Intel and some AMD runners is the
+  bench's own sleep, a whole beat period after RESUMED that Firecracker's guest, paused
+  mid-sleep, never waits. And one pass's paired verdict is not the next's on the same
+  runner: each pass's own snapshots, a hundred faults apart, and its runner move each
+  VMM's median by up to 2.4 ms. The counters' reading moved no verdict either way
+  consistently.
