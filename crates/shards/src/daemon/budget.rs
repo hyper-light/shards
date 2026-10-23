@@ -66,12 +66,28 @@ impl Holding {
         self.own.saturating_add(self.mapped.max(files)).max(self.floor)
     }
 
-    /// The bytes of its budget not [`held`](Self::held): short of none where it holds past
-    /// it.
+    /// The bytes of its budget not [`held`](Self::held), less the inactive pages its kernel
+    /// keeps beside the mapped ones charged to it ([`lru_buffer`]): short of none where it
+    /// holds past it.
     pub fn room(&self, files: u64) -> i64 {
         let signed = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
-        signed(self.budget).saturating_sub(signed(self.held(files)))
+        signed(self.budget)
+            .saturating_sub(signed(self.held(files)))
+            .saturating_sub(signed(lru_buffer(self.mapped)))
     }
+}
+
+/// The page cache a cgroup's kernel keeps inactive beside `mapped` bytes of its files that
+/// processes map, its working set, before it takes the working set itself: its reclaim
+/// deactivates active pages once the inactive are fewer than the active by its ratio, 1
+/// under a GiB of them and the square root of ten times their GiB past it (mm/vmscan.c,
+/// `inactive_is_low`). A room that let a guest fill its budget to its mapped pages had it
+/// read its own RAM back, 596,000 file refaults in a 9.5 s read where one with them beside
+/// it refaulted 300 (PM M309).
+pub(super) fn lru_buffer(mapped: u64) -> u64 {
+    let gb = mapped.saturating_mul(2) >> 30;
+    let ratio = if gb == 0 { 1 } else { gb.saturating_mul(10).isqrt() };
+    mapped / ratio.max(1)
 }
 
 /// What the cgroup `dir` holds of its budget ([`Holding`]): none where it has no budget.
@@ -718,10 +734,11 @@ mod tests {
             &stat(149 * MIB, 117 * MIB, 0),
         );
         cgroup(&scope, None, None, 383 * MIB, &stat(149 * MIB, 117 * MIB, 0));
-        // 384 MiB less what it holds but its 32 MiB of page cache no process maps.
+        // 384 MiB less what it holds but its 32 MiB of page cache no process maps, and less
+        // the inactive pages its kernel keeps beside the 117 MiB processes map: short.
         assert_eq!(
             room(&scope, &root),
-            Some(((384 - (383 - 32)) as i64 * MIB as i64, slice.clone()))
+            Some(((384 - (383 - 32) - 117) as i64 * MIB as i64, slice.clone()))
         );
         // Its shared memory is not page cache its kernel may drop.
         cgroup(
@@ -731,7 +748,7 @@ mod tests {
             383 * MIB,
             &stat(149 * MIB, 117 * MIB, 32 * MIB),
         );
-        assert_eq!(room(&scope, &root), Some((MIB as i64, slice.clone())));
+        assert_eq!(room(&scope, &root), Some(((1 - 117) * MIB as i64, slice.clone())));
         // A hard limit under the high counts, and short is below none.
         cgroup(
             &slice,
@@ -754,7 +771,7 @@ mod tests {
         cgroup(&slice, Some(384 * MIB), None, 383 * MIB, stale);
         assert_eq!(
             room(&scope, &root),
-            Some((384 * MIB as i64 - 320_000_000, slice.clone()))
+            Some((384 * MIB as i64 - 320_000_000 - 100_000_000, slice.clone()))
         );
         // None held to a budget: no room to tell.
         cgroup(&scope, None, None, 383 * MIB, &stat(0, 0, 0));
@@ -777,8 +794,13 @@ mod tests {
         };
         assert_eq!(held.held(0), 168 * MIB);
         assert_eq!(held.held(83 * MIB), 228 * MIB);
-        assert_eq!(held.room(83 * MIB), 156 * MIB as i64);
-        assert_eq!(held.room(0), 216 * MIB as i64);
+        // Less the 16 MiB of inactive pages beside its 16 MiB mapped.
+        assert_eq!(held.room(83 * MIB), 140 * MIB as i64);
+        assert_eq!(held.room(0), 200 * MIB as i64);
+        assert_eq!(lru_buffer(16 * MIB), 16 * MIB);
+        // A GiB and more of them: the square root of ten times their GiB.
+        assert_eq!(lru_buffer(1 << 30), (1 << 30) / 4);
+        assert_eq!(lru_buffer(8 << 30), (8 << 30) / 12);
         // A process of the cgroup's maps its own program at least: this test's, on a host
         // whose processes have /proc entries.
         if std::path::Path::new("/proc/self/smaps_rollup").exists() {
