@@ -1,0 +1,61 @@
+name: DAX budget
+
+# What a microVM held to a budget pays to read a file through its volume's DAX window, on
+# CI's runners (D188, D189): docs/research/measurements/dax-budget/measure.py, its samples
+# and profiles kept as the run's artifact. Runs when the experiment changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/dax-budget/**
+      - .github/workflows/dax-budget.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  measure:
+    name: measure (${{ matrix.arch }} ${{ matrix.copy }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, copy: a }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: b }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, copy: a }
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target ${{ matrix.arch }}-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: User manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      - name: perf
+        run: scripts/retry 3 30 sudo apt-get install -y "linux-tools-$(uname -r)" || echo "no perf for $(uname -r)"
+      - name: Build
+        run: cargo build --locked -p shards --release
+      - name: Measure
+        run: |
+          lscpu | grep -E 'Model name' || true
+          free -m
+          perf=""
+          command -v perf > /dev/null && sudo -n perf --version && perf=--perf
+          python3 -I docs/research/measurements/dax-budget/measure.py target/release/shards dax-budget $perf
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: dax-budget-${{ matrix.arch }}-${{ matrix.copy }}
+          path: dax-budget
