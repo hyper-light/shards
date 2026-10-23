@@ -10,7 +10,7 @@ start, the command's run, and from its exit to its answer.
 OLD and NEW are `shards` binaries; each home holds IMAGE, which is not pulled again. Three
 runs of each first are not counted. Prints n, p50 and p90 in milliseconds, with host, OS,
 load and revision. Each build's `shards` runs with an empty DOCKER_CONFIG."""
-import argparse, json, os, platform, statistics, subprocess, tempfile, time
+import argparse, atexit, json, os, platform, shutil, statistics, subprocess, tempfile, time
 
 p = argparse.ArgumentParser()
 p.add_argument("old")
@@ -21,10 +21,22 @@ p.add_argument("--image", default="alpine")
 p.add_argument("flags", nargs="*")
 a = p.parse_args()
 
-config = os.path.join(tempfile.mkdtemp(prefix="cpu-paced-"), "docker-config")
+work = tempfile.mkdtemp(prefix="cpu-paced-")
+config = os.path.join(work, "docker-config")
 os.makedirs(config)
 homes = [os.path.realpath(h) for h in a.homes.split(",")]
 builds = {name: (binary, home) for (name, binary), home in zip((("old", a.old), ("new", a.new)), homes)}
+
+
+@atexit.register
+def clean():
+    """However the run ends, a failed step's exit included: each build's daemon stopped,
+    its runs with it, and this run's own files removed; homes given with --homes are kept."""
+    for binary, home in builds.values():
+        subprocess.run([binary, "daemon", "stop"], env=dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config),
+                       capture_output=True)
+    shutil.rmtree(work, ignore_errors=True)
+
 # shards_abi::marker: the workload's command executing, and its main process exited.
 STARTED, EXITED = 4, 5
 

@@ -27,7 +27,7 @@ assessed by macOS (PM M166), and are not counted. Reports n, p50, p90, p99 and m
 and Dockerfile, and the median of the paired differences, new less old, with a bootstrap 95%
 interval.
 """
-import json, os, random, statistics, subprocess, sys, tempfile, time
+import atexit, json, os, random, shutil, statistics, subprocess, sys, tempfile, time
 
 old_dir, new_dir, home, n = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 DOCKERFILES = {
@@ -40,6 +40,7 @@ DOCKERFILES = {
     "grow": "FROM alpine:3.22\nRUN dd if=/dev/zero of=/big bs=1M count=4096 && rm /big\n",
 }
 scratch = tempfile.mkdtemp(prefix="builder-memory-")
+atexit.register(shutil.rmtree, scratch, ignore_errors=True)
 contexts = {}
 for name, dockerfile in DOCKERFILES.items():
     ctx = os.path.join(scratch, name)

@@ -13,7 +13,7 @@ OLD and NEW are `shards` binaries. Prints n, p50, p90, p99 and max of each, in m
 with host, OS and revision; with --raw, each round's times too, on stderr. Each build's
 `shards` runs with its own SHARDS_HOME (beside this script's temporary directory) and an
 empty DOCKER_CONFIG."""
-import argparse, os, platform, subprocess, sys, tempfile, time
+import argparse, atexit, os, platform, shutil, subprocess, sys, tempfile, time
 
 p = argparse.ArgumentParser()
 p.add_argument("old")
@@ -35,6 +35,16 @@ def env(home):
 
 
 builds = {name: (binary, os.path.join(work, name)) for name, binary in (("old", a.old), ("new", a.new))}
+
+
+@atexit.register
+def clean():
+    """However the run ends, a failed step's exit included: each build's daemon stopped,
+    its runs with it, and this run's own files removed."""
+    for binary, home in builds.values():
+        subprocess.run([binary, "daemon", "stop"], env=dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config),
+                       capture_output=True)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def shards(build, *args, check=True):
@@ -81,5 +91,3 @@ for size in [int(s) for s in a.sizes.split(",")]:
     for (build, step), xs in times.items():
         print(f"size {size:>9} {build} {step:<6} n {len(xs)} p50 {pct(xs, .5):8.2f} p90 {pct(xs, .9):8.2f} "
               f"p99 {pct(xs, .99):8.2f} max {max(xs):8.2f} ms")
-for build in builds:
-    shards(build, "daemon", "stop", check=False)
