@@ -12570,6 +12570,24 @@ revision before comparing a changed API/implementation.
     - A cap off a page boundary, which the kernel's `memory.high` rounds down (20 MiB and
       1,233 B against 20 MiB, a gigabyte, n 6 interleaved on the loaded Mac): 1.3 to 6.6
       s against 1.1 to 9.7, with no budget 4.4 to 6.4. No difference measured.
+    - Held never closer than the least room a run goes on in to what it uses (f0a68074,
+      40019604161 and 40019618201, n 24 each case on eight runners, six EPYC 7763 and two
+      9V74): sparse p50 4.79 s, p90 6.87, max 8.38; written p50 4.99, p90 8.81, max 9.14;
+      with no budget 4.65 and 4.95 (p50), 4.81 and 5.11 (max): every read within twice the
+      median of none, none crawling. Runs told their budget short by 5 to 127 MiB were
+      held within 2,304 KiB past what they used, 4 CPUs' least room, and read in 2.9 to
+      6.4 s. File refaults a read: sparse p50 1,634, max 4,714; written p50 3,016, max
+      47,431. Counting only what is charged to the budget (`charged-only.patch`, the files
+      its processes map elsewhere not held), in the same jobs: sparse p50 4.24 s, max
+      7.38; written p50 4.98, max 6.36; but refaults sparse max 249,360 and written p50
+      20,586, max 273,132: the files mapped where they are charged elsewhere are held.
+    - The same on bare metal (Fedora, Intel Core i9-14900HX, 32 CPUs, 64 GiB, Linux
+      6.19.10-300.fc44, THP madvise; f0a68074, n 12 each, `--parent-slice` in a slice held
+      to 16 GiB, which its reads under no budget of their own were then held to): sparse
+      p50 1.10 s, p90 1.70, max 2.13; written p50 1.32, p90 2.15, max 2.59; with no budget
+      of their own 1.25 and 1.42 (p50), 2.58 and 2.76 (max). 17 runs told their budget
+      short were held within the least room a run goes on in; no read refaulted a file
+      page.
 - **Conclusion.** A budgeted microVM's guest must keep within its budget by its own kernel,
   as a container's kernel keeps a container within its cgroup: the host can take back
   only page cache from it with no swap, and its page cache is guest RAM. Held within the

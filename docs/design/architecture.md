@@ -5753,10 +5753,16 @@ on both.
 **Measured (PM M309).** On CI's x86_64 runners (AMD EPYC 7763, 9V45 and 9V74, Intel Xeon
 8370C, 8573C and 6973P, each a virtual machine its KVM is nested in), a gigabyte read
 through FUSE under a slice held to 384 MiB with no swap took 355 to 604 s where it took 3
-to 5 s with no budget; held within its budget's room, 3.85 s at the median sparse and 4.95
-written, where it took 4.26 and 4.73 with none (n 42), and its guest's own RAM, its
-template's pages, stayed: a read refaulted 175 file pages at the median, where one read
-had refaulted 16.5 million.
+to 5 s with no budget; held within its budget's room and never closer than the least room
+a run goes on in to what it uses, 4.79 s at the median sparse and 4.99 written, 8.38 and
+9.14 at the most, where it took 4.65 and 4.95 with none (n 24 each, f0a68074): every read
+within twice the median of none, where runs held at what they used had crawled for 190 to
+672 s. Its guest's own RAM, its template's pages, stayed: a read refaulted 1,634 file
+pages at the median sparse and 3,016 written, where one read had refaulted 16.5 million;
+counting only the files charged to the budget, 20,586 written at the median and 273,132 at
+the most. On bare metal (an Intel Core i9-14900HX, Linux 6.19), 1.10 s sparse and 1.32
+written at the median, 2.13 and 2.59 at the most, where it took 1.25 and 1.42 with none
+(n 12 each), and no read refaulted a page.
 
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
 runs. Unit (daemon): a budget's room, the least any cgroup over a microVM leaves, its
