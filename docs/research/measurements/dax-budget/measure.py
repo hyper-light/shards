@@ -2,7 +2,7 @@
 """What a microVM held to a budget pays to read a file through its volume's DAX window
 (D188, D189): under a slice of the user's systemd manager whose MemoryHigh is past the
 microVM idle and short of the file, `dd` of a 1 GiB file from a volume, its share's window
-as long as the host's memory (the default) and with none (SHARDS_SHARE_WINDOW_MIB=0: FUSE,
+as long as the host's memory (given) and with none (SHARDS_SHARE_WINDOW_MIB=0: FUSE,
 through the guest's page cache), the file sparse and written out; and under no budget
 (MemoryHigh=infinity), what the window's reads cost the microVM by themselves. Rounds
 interleave the cases, each first in turn; the file's pages are out of the host's page cache
@@ -49,10 +49,14 @@ os.makedirs(vol)
 SLICE = f"shardsdax{os.getpid()}.slice"
 uid = os.getuid()
 CGROUP = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{SLICE}"
-# Each arm's build of shards and what its daemon is given.
-ARMS = {"window": (shards, {}), "none": (shards, {"SHARDS_SHARE_WINDOW_MIB": "0"})}
+# Each arm's build of shards and what its daemon is given: the window arms a window as long
+# as the host's memory, given, as the daemon's default is none on a virtual machine on an
+# AMD CPU (D189, PM M308).
+HOST_MIB = (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >> 20) & ~1
+WINDOW = {"SHARDS_SHARE_WINDOW_MIB": str(HOST_MIB)}
+ARMS = {"window": (shards, WINDOW), "none": (shards, {"SHARDS_SHARE_WINDOW_MIB": "0"})}
 if a.huge:
-    ARMS["huge"] = (os.path.realpath(a.huge), {})
+    ARMS["huge"] = (os.path.realpath(a.huge), WINDOW)
 FILES = ("sparse", "written")
 homes = {arm: os.path.join(work, f"home-{arm}") for arm in ARMS}
 
