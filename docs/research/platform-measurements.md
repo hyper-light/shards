@@ -12428,7 +12428,9 @@ revision before comparing a changed API/implementation.
     window 82.1 and 146.5; huge pages 75.2 and 144.9; FUSE 4.5 and 4.7. Two more 7763 (n 2
     each): window 77.6 and 150.8, 138.4 and 139.9; huge pages sparse 104.3, 131.1; FUSE 4.3
     and 4.8, 4.3 and 4.7. Two more 9V74 (n 2 each): window 41.2 and 178.9, 42.4 and 173.9;
-    huge pages sparse 129.1, 123.3; FUSE 3.1 and 5.6, 3.0 and 6.4.
+    huge pages sparse 129.1, 123.3; FUSE 3.1 and 5.6, 3.0 and 6.4. Intel Xeon 8573C (n 1;
+    Hyper-V's enlightened VMCS, `kvm_intel`'s words): window 2.03 and 3.52; huge pages 0.39
+    and 2.36; FUSE 2.55 and 2.90, the written read 247,813 faults in 3.5 s, 14 µs each.
   - Under 384 MiB. 9V74 (n 3): window sparse 49.6, written 174.2; FUSE 521.7 and 427.8
     (its first read, the template's own VM, 5.6). 7763 (n 2): window 36.0 and 150.6, huge
     pages 42.3 and 145.9, FUSE 305.9 and 600.3; another 7763 (n 2): window 106.4 and
@@ -12458,9 +12460,13 @@ revision before comparing a changed API/implementation.
   page a window gives a guest for the first time costs the hypervisor beneath its nested
   paging's shadow of it, 0.16 to 0.53 ms a page on these runners, which nothing the host
   maps changes (2 MiB folios and KVM's 2 MiB entries read no faster, and on the 9V74s
-  three times slower): a window there reads a file 9 to 37 times slower than FUSE (sparse 9
-  to 32, written 27 to 37), whose data lands in guest RAM already mapped. An
-  Intel runner (n 1) and bare metal read as fast or faster through a window. So shares have
-  no window by default where `/proc/cpuinfo` says AMD and `hypervisor` (D189), one where
-  asked. FUSE under a budget on these runners is D188's to mend: its passes, and a
-  restored guest's own RAM, a template's file pages, evicted with the rest.
+  three times slower): a window there reads a file 9 to 37 times slower than FUSE (sparse
+  9 to 32, written 27 to 37), whose data lands in guest RAM already mapped. An Intel
+  runner read through a window as fast as through FUSE (14 µs a fault), and through 2 MiB
+  folios five times faster sparse (0.39 s against 2.03) and a third faster written (2.36
+  against 3.52): what they cost random reads, each first touch of a range a 2 MiB read, is
+  to be measured before they are taken. Bare metal read as fast through a window as
+  through FUSE. So shares have no window by default where `/proc/cpuinfo` says AMD and
+  `hypervisor` (D189), one where asked. FUSE under a budget on these runners is D188's to
+  mend: its passes, and a restored guest's own RAM, a template's file pages, evicted with
+  the rest.

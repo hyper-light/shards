@@ -5978,12 +5978,13 @@ stores.
   s against 41.2 and 42.4): the hypervisor beneath shadows 4 KiB at a time whatever the
   host maps. So the daemon gives a share no window there unless `SHARDS_SHARE_WINDOW_MIB`
   asks for one, and says so as it starts (`share_window_default`, from `/proc/cpuinfo`'s
-  vendor and `hypervisor` flag); an Intel runner there read 1 GiB under the budget in 2.6
-  s through a window against FUSE's 6.1, and Fedora's bare metal in 1.37 against 1.23,
-  both with windows as before. Held by daemon's
-  `a_shares_window_by_default_follows_its_host`, containers'
-  `a_volumes_large_files_go_through_a_dax_window_by_default` (the host's default, none
-  with 0, one given on any host) and
+  vendor and `hypervisor` flag); an Intel runner there read 1 GiB through a window in 2.0
+  s (3.5 written) against FUSE's 2.6 (2.9), 14 µs a fault, and under the budget in 2.6 s
+  against 6.1, and Fedora's bare metal in 1.37 against 1.23, both with windows as before;
+  there 2 MiB folios read five times faster sparse (0.39 s), which random reads' cost
+  decides (Next). Held by daemon's `a_shares_window_by_default_follows_its_host`,
+  containers' `a_volumes_large_files_go_through_a_dax_window_by_default` (the host's
+  default, none with 0, one given on any host) and
   `a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end` (512 MiB
   past a 384 MiB `MemoryHigh` through a window given, the budget met, to its end).
 
@@ -5994,6 +5995,11 @@ it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 Gi
 template pays it once; what its restores pay is to be measured with mappings.
 
 **Next.**
+- A window's ranges on 2 MiB folios where the host pays per fault (PM M308): an Intel
+  runner read 1 GiB five times faster sparse through them (0.39 s against 2.03) and a
+  third faster written (2.36 against 3.52), an AMD virtual machine no faster; what each
+  first touch of a range costs random 4 KiB reads (a 2 MiB read where 4 KiB, a 2 MiB folio
+  held) is measured before they are taken.
 - From what size a file is mapped: a range, 2 MiB, not measured below it. How long a
   window was decided (above, PM M306), after this. Measured against FUSE (PM
   M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
