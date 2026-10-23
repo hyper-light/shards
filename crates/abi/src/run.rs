@@ -628,9 +628,7 @@ pub mod builtin {
     /// memory pressure (D188): its run's inactive file pages reclaimed, then reported free
     /// at once (D151); then what it holds plugged past twice what it uses asked to be
     /// unplugged (D148). Answered with the bytes its run's cgroup holds less and the bytes
-    /// asked to be unplugged, in decimal, a space between. With an argument, the room its
-    /// host's budget leaves it as [`ROOM`]'s: its run held then at what it used before it
-    /// gave back, and that room, or as much of it as it gave back where the room is short.
+    /// asked to be unplugged, in decimal, a space between.
     pub const RECLAIM: u8 = 15;
     /// The bytes its host's budget leaves the microVM (D188), in signed decimal: its run
     /// held at what it uses and that much more, past which its own kernel drops its run's

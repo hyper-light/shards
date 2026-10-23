@@ -582,33 +582,6 @@ fn within(used: u64, room: i64) -> u64 {
     used.saturating_add(room.max(0).unsigned_abs())
 }
 
-/// What a run that used `used` bytes and gave back `freed` of them is held at within the
-/// `room` its host's budget left it before: that room past what it used, or where the room
-/// is short, less as much of it as it gave back, and never less than it uses now.
-fn within_after(used: u64, room: i64, freed: u64) -> u64 {
-    let kept = room.max(i64::try_from(freed).map_or(i64::MIN, |f| -f));
-    if kept >= 0 {
-        used.saturating_add(kept.unsigned_abs())
-    } else {
-        used.saturating_sub(kept.unsigned_abs())
-    }
-}
-
-/// Holds the run in `cgroup` within what its host's budget leaves it as it gives back
-/// what it holds cold (D188, `RECLAIM` with a room): what it used before (`used`), and the
-/// `room` its host's budget left it then, or less the bytes it gave back (`freed`) where
-/// the room is short, so that what it gave back goes to the room and no more than it is
-/// held from; never raised past the hold its giving back left it at.
-pub fn hold_after_reclaim(cgroup: &str, used: u64, room: i64, freed: u64) -> io::Result<()> {
-    set_cap(within_after(used, room, freed));
-    let now = std::fs::read_to_string(format!("{cgroup}/memory.high"))
-        .map_err(|e| err(format!("{cgroup}/memory.high: {e}")))?;
-    match now.trim().parse::<u64>() {
-        Ok(held) if held <= cap() => Ok(()),
-        _ => set_high(cgroup, cap()),
-    }
-}
-
 /// Sets [`CAP`], where it was made.
 fn set_cap(bytes: u64) {
     if let Some(cap) = CAP.get() {
@@ -1322,20 +1295,13 @@ mod tests {
     }
 
     /// A run is held within the room its host's budget leaves it (D188): that room past
-    /// what it uses, none past it where the room is short; and as it gives back, within
-    /// what it used before and the room then, a room short by more than it gave back
-    /// holding it at what it uses now, never less.
+    /// what it uses, none past it where the room is short.
     #[test]
     fn a_run_is_held_within_its_budgets_room() {
         assert_eq!(within(100 * MIB, 50 * MIB as i64), 150 * MIB);
         assert_eq!(within(100 * MIB, 0), 100 * MIB);
         assert_eq!(within(100 * MIB, -50 * MIB as i64), 100 * MIB);
         assert_eq!(within(u64::MAX - 1, 10), u64::MAX);
-        assert_eq!(within_after(100 * MIB, 50 * MIB as i64, 30 * MIB), 150 * MIB);
-        assert_eq!(within_after(100 * MIB, -20 * MIB as i64, 30 * MIB), 80 * MIB);
-        assert_eq!(within_after(100 * MIB, -50 * MIB as i64, 30 * MIB), 70 * MIB);
-        assert_eq!(within_after(100 * MIB, -50 * MIB as i64, 0), 100 * MIB);
-        assert_eq!(within_after(100 * MIB, i64::MIN, u64::MAX), 0);
     }
 
     /// A run gives back what it holds plugged past twice what it uses, in whole blocks, as

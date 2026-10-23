@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use shards_vmm::platform::{MemoryPressure, PressureWatches};
 
 use super::health::Quiet;
-use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, budget, lock, log};
+use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
 use crate::containers::Disk;
 
 /// What the daemon's memory pressure watcher watches besides the host and its own cgroup:
@@ -159,23 +159,6 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
-        // Each one's room under its budget, where it has one, a short room shared among
-        // those the budget holds (D188): each cgroup's once, as the microVMs under one
-        // parent are made in one.
-        let mut of_dir: HashMap<std::path::PathBuf, Option<(i64, std::path::PathBuf)>> = HashMap::new();
-        let rooms = budget::shares(
-            &vms.values()
-                .map(|&(_, pid)| {
-                    let room = self.cgroup_of_vm(pid).and_then(|dir| {
-                        of_dir
-                            .entry(dir)
-                            .or_insert_with_key(|dir| budget::room(dir, std::path::Path::new(budget::ROOT)))
-                            .clone()
-                    });
-                    (pid, room)
-                })
-                .collect(),
-        );
         let mut asked = false;
         for (vm, (id, pid)) in vms {
             if self.closed.load(Ordering::SeqCst) {
@@ -186,16 +169,17 @@ impl<D: Disk> Daemon<D> {
             }
             asked = true;
             let gone = vm.clone();
-            let room = rooms.get(&pid).copied();
             let spawned =
                 std::thread::Builder::new()
                     .name("give-back".into())
                     .spawn_scoped(threads, move || {
-                        let gave = self.give_back_of(&id, room);
+                        let gave = self.give_back_of(&id);
                         lock(&self.watching.giving).remove(&vm);
                         if let Some(gave) = gave {
                             self.gave(gave);
                         }
+                        // What it gave back its budget may let it have again (D188).
+                        self.tell_room(threads, pid);
                     });
             if let Err(e) = spawned {
                 lock(&self.watching.giving).remove(&gone);
@@ -212,13 +196,11 @@ impl<D: Disk> Daemon<D> {
         self.say_given();
     }
 
-    /// What container `id`'s microVM gave back of what it holds cold, asked through it,
-    /// held within the `room` its budget leaves it, where it has one; none where it gave
-    /// nothing back, and why said.
-    pub(super) fn give_back_of(&self, id: &str, room: Option<i64>) -> Option<Gave> {
+    /// What container `id`'s microVM gave back of what it holds cold, asked through it;
+    /// none where it gave nothing back, and why said.
+    pub(super) fn give_back_of(&self, id: &str) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::RECLAIM,
-            argv: room.map(|r| r.to_string().into_bytes()).into_iter().collect(),
             ..Default::default()
         };
         match self.exec_quietly(id, &spec, None, 64, TAKE_TIMEOUT) {
@@ -306,8 +288,8 @@ pub(super) fn said_of(q: &Quiet) -> String {
 /// of memory plugged they asked to be unplugged.
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct Gave {
-    freed: u64,
-    unplugging: u64,
+    pub freed: u64,
+    pub unplugging: u64,
 }
 
 impl Gave {

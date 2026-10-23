@@ -33,7 +33,7 @@ Linux, with KVM and a user's systemd manager (XDG_RUNTIME_DIR's bus). Each arm h
 of its own, which pulls alpine once, and an empty DOCKER_CONFIG; all of it is removed, and
 its daemons and the slice stopped, however the run ends.
 """
-import argparse, atexit, os, platform, shutil, subprocess, sys, tempfile, threading, time
+import argparse, atexit, os, platform, shutil, signal, subprocess, sys, tempfile, threading, time
 
 p = argparse.ArgumentParser()
 p.add_argument("shards")
@@ -107,6 +107,11 @@ def clean():
     systemctl("revert", SLICE)
     systemctl("stop", SLICE)
     shutil.rmtree(work, ignore_errors=True)
+
+
+# Ended from outside (a CI job cancelled at its time limit): ended as from within, so that
+# `clean` keeps the daemons' logs.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
 
 
 def drop(path):

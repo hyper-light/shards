@@ -3337,22 +3337,10 @@ fn builtin(
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
-            // With the room its host's budget leaves it, held within it as it gives back
-            // (D188): what it used before, and that room, or what it gave back of it.
-            run::builtin::RECLAIM => {
-                let room = args.first().map(|a| room_of(a)).transpose();
-                let used = std::fs::read_to_string(format!("{RUN_CGROUP}/memory.current"))
-                    .ok()
-                    .and_then(|u| u.trim().parse::<u64>().ok());
-                room.and_then(|room| {
-                    let freed = reclaim_cold(RUN_CGROUP)?;
-                    let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
-                    if let (Some(room), Some(used)) = (room, used) {
-                        crate::plug::hold_after_reclaim(RUN_CGROUP, used, room, freed)?;
-                    }
-                    write!(out, "{freed} {unplugging}")
-                })
-            }
+            run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
+                let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
+                write!(out, "{freed} {unplugging}")
+            }),
             run::builtin::ROOM => args
                 .first()
                 .map(|a| room_of(a))

@@ -209,25 +209,6 @@ pub(super) fn cgroup_of(pid: u32) -> Option<PathBuf> {
     Some(Path::new(ROOT).join(path.trim_start_matches('/')))
 }
 
-/// Of each microVM the rooms of the cgroups that hold it to a budget: `room` of each, its
-/// short room shared with the others held by the same budget, so that what all of them
-/// are asked to give back is what that budget is short of (D188): by its VM process's ID.
-pub(super) fn shares(rooms: &HashMap<u32, Option<(i64, PathBuf)>>) -> HashMap<u32, i64> {
-    let mut under: HashMap<&Path, i64> = HashMap::new();
-    for (_, by) in rooms.values().flatten() {
-        let n = under.entry(by.as_path()).or_default();
-        *n = n.saturating_add(1);
-    }
-    rooms
-        .iter()
-        .filter_map(|(&pid, r)| {
-            let (room, by) = r.as_ref()?;
-            let n = under.get(by.as_path()).copied().unwrap_or(1).max(1);
-            Some((pid, if *room < 0 { room / n } else { *room }))
-        })
-        .collect()
-}
-
 /// The microVMs held to a budget the daemon tells of the room it leaves them, and the
 /// cgroups it watches for their budgets: on Linux, where its thread runs
 /// ([`Daemon::start_budgets`]); none in a daemon's unit tests, whose VMs a test plays.
@@ -366,15 +347,6 @@ impl<D: Disk> Daemon<D> {
         ended
     }
 
-    /// The cgroup VM process `pid` is in, as it was found as it began its run; else as
-    /// its /proc entry says now.
-    pub(super) fn cgroup_of_vm(&self, pid: u32) -> Option<PathBuf> {
-        lock(&self.budgets.held)
-            .get(&pid)
-            .map(|h| h.dir.clone())
-            .or_else(|| cgroup_of(pid))
-    }
-
     /// Tells each microVM what its budget leaves it as something changes it: a run begun,
     /// a budget set or changed, or met, a microVM held to it gone.
     fn watch_budgets<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
@@ -462,10 +434,10 @@ impl<D: Disk> Daemon<D> {
                         .filter_map(|l| held_at(l).map(|held| held.room(0)))
                         .min()
                     {
-                        Some(r) if r < 0 && !h.short => {
+                        // Fallen short, or with room again: told either way.
+                        Some(r) if (r < 0) != h.short => {
                             tell.insert(pid);
                         }
-                        Some(r) if r >= 0 => h.short = false,
                         _ => {}
                     }
                 }
@@ -541,18 +513,9 @@ impl<D: Disk> Daemon<D> {
         of(true).or_else(|| of(false))
     }
 
-    /// How many microVMs followed the budget of cgroup `level` holds.
-    fn held_under(&self, level: &Path) -> i64 {
-        let n = lock(&self.budgets.held)
-            .values()
-            .filter(|h| h.dir.starts_with(level))
-            .count();
-        i64::try_from(n).unwrap_or(i64::MAX)
-    }
-
     /// Tells microVM `pid` the room its budget leaves it now, on a thread of its own; once
     /// more after a word under way, which another change came during.
-    fn tell_room<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, pid: u32) {
+    pub(super) fn tell_room<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, pid: u32) {
         {
             let mut held = lock(&self.budgets.held);
             let Some(h) = held.get_mut(&pid) else { return };
@@ -589,11 +552,13 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Tells microVM `pid` the room its budget leaves it now, through one of its runs
-    /// (init's `ROOM`). Where the budget is short, the warm VMs it holds go first, which are
-    /// speculation; and then it gives back what it holds cold and is held within its share of
-    /// what is short (`RECLAIM`), as at its host's pressure, which an idle microVM over its
-    /// budget, asking for nothing, never raises. Nothing where it has no budget and was told
-    /// of none.
+    /// (init's `ROOM`), which holds its run within it. Where the budget is short, the warm
+    /// VMs it holds go first, which are speculation; then the microVM gives back what it
+    /// holds cold (`RECLAIM`), which an idle one over its budget, asking for nothing, never
+    /// would at its host's pressure; and then it is told the room as the budget has it
+    /// after: none past what it uses where it is short still, which the next word to it
+    /// raises once the budget has room again. Nothing where it has no budget and was told of
+    /// none.
     fn tell_room_now(&self, pid: u32) {
         let Some(dir) = lock(&self.budgets.held).get(&pid).map(|h| h.dir.clone()) else {
             return;
@@ -601,69 +566,63 @@ impl<D: Disk> Daemon<D> {
         let Some((id, vm)) = self.run_of_vm(pid) else {
             return;
         };
+        let (had, was_short) = lock(&self.budgets.held)
+            .get(&pid)
+            .map_or((None, false), |h| (h.told, h.short));
         let mut room = room(&dir, Path::new(ROOT));
-        if let Some((r, level)) = &room
-            && *r < 0
-            && self.end_warm_under(level) > 0
+        let (mut ended, mut gave) = (0, None);
+        if let Some((r, level)) = room.clone()
+            && r < 0
         {
-            room = self::room(&dir, Path::new(ROOT));
+            ended = self.end_warm_under(&level);
+            if ended > 0 {
+                room = self::room(&dir, Path::new(ROOT));
+            }
+            if room.as_ref().is_some_and(|(r, _)| *r < 0) && lock(self.watching_giving()).insert(vm.clone()) {
+                gave = self.give_back_of(&id);
+                lock(self.watching_giving()).remove(&vm);
+                if let Some(g) = gave {
+                    self.gave(g);
+                }
+                room = self::room(&dir, Path::new(ROOT));
+            }
         }
-        let had = lock(&self.budgets.held).get(&pid).and_then(|h| h.told);
         if room.is_none() && had.is_none() {
             return;
         }
-        let told = match &room {
-            Some((r, level)) if *r < 0 => {
-                // Its share of what the budget is short of, so that all it holds give back
-                // that, no more; none where it gives back already.
-                let share = r / self.held_under(level).max(1);
-                if !lock(self.watching_giving()).insert(vm.clone()) {
-                    return;
-                }
-                let gave = self.give_back_of(&id, Some(share));
-                lock(self.watching_giving()).remove(&vm);
-                match gave {
-                    Some(gave) => self.gave(gave),
-                    None => return,
-                }
-                Some(share)
-            }
-            room => {
-                let room = room.as_ref().map(|(r, _)| *r);
-                let spec = shards_abi::run::Spec {
-                    builtin: shards_abi::run::builtin::ROOM,
-                    argv: room.map(|r| r.to_string().into_bytes()).into_iter().collect(),
-                    ..Default::default()
-                };
-                match self.exec_quietly(&id, &spec, None, 1 << 12, TAKE_TIMEOUT) {
-                    Ok(q) if q.status == Some(0) && !q.timed_out => room,
-                    Ok(q) => {
-                        log(format!(
-                            "container {id}: telling its microVM its budget's room: {}",
-                            super::reclaim::said_of(&q)
-                        ));
-                        return;
-                    }
-                    Err(_) if !self.running(&id) => return,
-                    Err(e) => {
-                        log(format!(
-                            "container {id}: telling its microVM its budget's room: {e}"
-                        ));
-                        return;
-                    }
-                }
-            }
+        let told = room.as_ref().map(|(r, _)| *r);
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::ROOM,
+            argv: told.map(|r| r.to_string().into_bytes()).into_iter().collect(),
+            ..Default::default()
         };
+        match self.exec_quietly(&id, &spec, None, 1 << 12, TAKE_TIMEOUT) {
+            Ok(q) if q.status == Some(0) && !q.timed_out => {}
+            Ok(q) => {
+                log(format!(
+                    "container {id}: telling its microVM its budget's room: {}",
+                    super::reclaim::said_of(&q)
+                ));
+                return;
+            }
+            Err(_) if !self.running(&id) => return,
+            Err(e) => {
+                log(format!(
+                    "container {id}: telling its microVM its budget's room: {e}"
+                ));
+                return;
+            }
+        }
+        let short = told.is_some_and(|r| r < 0);
         if let Some(h) = lock(&self.budgets.held).get_mut(&pid) {
             h.told = told;
-            h.short = told.is_some_and(|r| r < 0);
+            h.short = short;
         }
-        match (had, told) {
-            (None, Some(r)) => {
-                let of = room
-                    .as_ref()
-                    .and_then(|(_, level)| held_at(level).map(|h| (level, h)));
-                let parts = of.map_or(String::new(), |(level, h)| {
+        // Said as it is first held, as its budget falls short and as it has room again.
+        let parts = || {
+            room.as_ref()
+                .and_then(|(_, level)| held_at(level).map(|h| (level, h)))
+                .map_or(String::new(), |(level, h)| {
                     let files = files_mapped_under(level);
                     format!(
                         ": {}'s budget, {} MiB, holds {} MiB its host may take back from its processes alone, {} MiB of it files they map",
@@ -672,12 +631,25 @@ impl<D: Disk> Daemon<D> {
                         h.held(files) >> 20,
                         h.mapped.max(files) >> 20
                     )
-                });
-                log(format!(
-                    "container {id}: its microVM held within its budget, {} MiB of room{parts}",
-                    r.max(0) >> 20
-                ));
-            }
+                })
+        };
+        match (had, told) {
+            (None, Some(r)) if r >= 0 => log(format!(
+                "container {id}: its microVM held within its budget, {} MiB of room{}",
+                r >> 20,
+                parts()
+            )),
+            (_, Some(r)) if r < 0 && !was_short => log(format!(
+                "container {id}: its microVM's budget is short by {} MiB, past {ended} warm VMs ended and {} MiB it gave back: held at what it uses{}",
+                r.unsigned_abs() >> 20,
+                gave.map_or(0, |g| g.freed) >> 20,
+                parts()
+            )),
+            (_, Some(r)) if r >= 0 && was_short => log(format!(
+                "container {id}: its microVM's budget has room again, {} MiB{}",
+                r >> 20,
+                parts()
+            )),
             (Some(_), None) => log(format!("container {id}: its microVM held to no budget")),
             _ => {}
         }
@@ -810,25 +782,5 @@ mod tests {
             std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
             assert!(files_mapped_under(&tmp) > 0);
         }
-    }
-
-    /// A room short of what its budget holds is shared among the microVMs it holds, so
-    /// that they give back what it is short of, no more; a room to spare is each's whole.
-    #[test]
-    fn a_short_room_is_shared_among_the_microvms_its_budget_holds() {
-        let a = PathBuf::from("/sys/fs/cgroup/a.slice");
-        let b = PathBuf::from("/sys/fs/cgroup/b.slice");
-        let rooms = HashMap::from([
-            (1, Some((-90, a.clone()))),
-            (2, Some((-90, a.clone()))),
-            (3, Some((-90, a))),
-            (4, Some((50, b))),
-            (5, None),
-        ]);
-        let shared = shares(&rooms);
-        assert_eq!(shared.get(&1), Some(&-30));
-        assert_eq!(shared.get(&3), Some(&-30));
-        assert_eq!(shared.get(&4), Some(&50));
-        assert_eq!(shared.get(&5), None);
     }
 }
