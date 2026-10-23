@@ -12470,3 +12470,79 @@ revision before comparing a changed API/implementation.
   `hypervisor` (D189), one where asked. FUSE under a budget on these runners is D188's to
   mend: its passes, and a restored guest's own RAM, a template's file pages, evicted with
   the rest.
+
+### M309. What a microVM held to a budget pays to read through FUSE, and its guest held within its budget's room (D188)
+
+- **Question.** M308's FUSE arm, under a slice held to 384 MiB with no swap, took 300 to
+  600 s for a gigabyte its run read in 3 to 5 s with no budget, and the daemon gave back
+  3 times in 600 s. Why, and what holds a run within a budget at its unbudgeted speed?
+- **Method.** The DAX budget job (docs/research/measurements/dax-budget, M308's) through
+  FUSE alone (`SHARDS_SHARE_WINDOW_MIB=0`): each read a reader started under no budget,
+  the slice's `MemoryHigh` then set, its warm microVMs in the slice, the slice kept
+  between reads; with what each VM process in the slice holds, mapping by mapping, and
+  what its guest says of its memory, as the reader starts and once it has read (`.vms`),
+  the slice's statistics each second, and the daemon's log. Arms: the tree as each fix
+  went in; built with `no-private.patch`, which copies none of a template's written pages
+  ahead (M62); and the reader held in its guest to 128, 32 and 8 MiB (`--guest-mib`:
+  `--memory`, no swap, `--oom-kill-disable`). CI's x86_64 runners (Azure virtual machines,
+  Linux 6.17.0-1022-azure, 4 CPUs, 16 GiB, KVM nested on Hyper-V), 2026-10-23; 1 GiB,
+  sparse and written; rounds interleaved, each case first in turn.
+- **Results.**
+  - Before (b550e14c, n 2 each): EPYC 7763, sparse 354.9 s and written 455.7 (no budget
+    4.8, 4.9); another 7763, 460.4 and 600.5 (4.6, 4.8); Intel Xeon 8573C, 600.3 and 604.1
+    (3.8, 5.0). Dev 92ebbae5 on an EPYC 9V45: 449.6 and 415.9 to 599.8 (3.0, 3.3), its
+    first read, from the VM that made the template, its RAM its own, 4.4.
+  - Why. As a read began, the slice's three microVMs, the reader and two warm, held 223
+    MiB of anonymous memory and 149 MiB of files, 117 of them mapped, the template's pages
+    the VMs map; a warm VM that had copied its template's written pages ahead held 65 MiB
+    of anonymous memory, one that copied none 1 to 4. Within 2 s of the read's start the
+    slice held no file pages, and held none for the rest of it: the guest's page cache,
+    the host's anonymous memory, filled the budget, and the host took back the one thing
+    it could, the guest's own RAM, its template's pages, which the guest read back as it
+    ran: 16.5 million file refaults, 653,000 major faults and 437 s of its tasks stalled
+    in 520 s (EPYC 9V74). Each pass of the daemon's waited 10 s on that guest, and then
+    for its end.
+  - Copying none ahead alone (n 3, 9V74): no help, 576 to 615 s under the budget; with no
+    budget, sparse 3.8 s against 3.3, written 4.5 against 5.7.
+  - The reader held in its guest (n 3 each on four runners, 7763, 9V45, 9V74, Intel
+    8370C): at 128 MiB, 2.4 to 4.8 s, copying ahead or not; at 32 MiB, 2.2 to 4.6 s, one
+    written read 10.5 s whose slice stalled 0.0 s on memory and refaulted 32 pages, its
+    file read from the runner's disk; at 8 MiB, 2.2 to 4.7 s. The guest's own kernel
+    dropping its page cache within a hold read as fast as with none.
+  - The guest held within the room its budget leaves it, as each fix went in (n per
+    stage in reads under the budget):
+    - Room as the budget less all it holds but its page cache no process maps (d306e260,
+      n 34): 31 reads 3.7 to 8.9 s; 3 read their own RAM back for 600 to 2,100 s. Two were
+      told a room of all the budget, statistics read just after the kernel reclaimed a
+      gigabyte of the slice's page cache still counting it; one a room of all the page
+      cache no process mapped, 215 MiB, which its guest filled to the last file page.
+    - Room counted from the statistics' parts and the files the slice's processes map
+      (6648e04f): worse, three of eight copies stuck past their job's 2 h. A give-back
+      held a run below its cap, and its grower, hearing it held, doubled what it asked
+      for up to its most, the host's 16 GiB: give-backs asked to unplug 22 and 35 GiB, and
+      a guest's free memory fell by 260 MiB no process or cache held, the page structures
+      of what it plugged.
+    - Plugging no more than the cap needs (b83f1ea3, n 37 on eight runners): sparse p50
+      4.44 s, p90 4.84, max 37.6; written p50 4.73, p90 8.97, max 9.50; with no budget 4.35
+      and 4.55 (p50). File refaults a read: p50 820, p90 215,200, max 596,531, the most
+      in reads told rooms of 285 to 308 MiB beside 58 MiB of mapped files, the fewest in
+      reads told 23 to 104. One read crawled at 0.13 MiB/s for 100 minutes, its slice
+      stalling no time on memory: its guest held at what it used.
+    - Leaving the kernel its inactive pages beside the mapped (d745938e, n 18): sparse p50
+      3.46 s, written 6.12; one read 1,772 s, its guest held at what it used after a
+      give-back, with nothing to raise it.
+    - The cap the budget's alone, told again after each give-back and as the budget has
+      room again (04560dcc, n 42 on eight runners): sparse p50 3.85 s, p90 6.22, written
+      p50 4.95, p90 18.34; with no budget 4.26 and 4.73. File refaults a read: p50 175, p90
+      49,341, max 639,444. Three reads crawled for 282 to 718 s: each was told at its
+      start a budget short by up to 577 MiB, holding 881 MiB where its slice held 265, the
+      statistics still counting a microVM that had ended; held at what it used, its
+      budget never met, nothing told it its room again.
+- **Conclusion.** A budgeted microVM's guest must keep within its budget by its own kernel,
+  as a container's kernel keeps a container within its cgroup: the host can take back
+  only page cache from it with no swap, and its page cache is guest RAM. Held within the
+  room the budget leaves, a run reads at about its unbudgeted speed at the median, and its
+  guest's own RAM, its template's file pages, stays: refaults a read fell from 16.5
+  million to a few hundred. The room must count what the budget's processes map wherever
+  it is charged, leave the kernel its inactive pages beside them, never take statistics
+  past the counter, bound what the guest plugs, and be told again while it is short.

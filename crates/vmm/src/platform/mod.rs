@@ -70,7 +70,7 @@ mod macos_thread;
 #[cfg(unix)]
 mod pressure;
 #[cfg(unix)]
-pub use pressure::{MemoryPressure, PressureWatches};
+pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
 
 mod granted;
 #[cfg(unix)]

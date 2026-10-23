@@ -52,18 +52,29 @@ pub(super) struct Holding {
     pub own: u64,
     /// Its files' pages a process maps (its `file_mapped`), from that read.
     pub mapped: u64,
-    /// What it holds in all (`memory.current`) less its page cache no process maps: no
-    /// less than it holds, for statistics a read may find behind its counter, which just
-    /// after the kernel reclaimed a gigabyte of a slice's page cache still counted it, and
-    /// a room of all its budget was told a microVM whose guest then filled it (PM M309).
+    /// What it holds in all (`memory.current`), which its kernel counts at once, where its
+    /// statistics may be behind it either way (PM M309): just after the kernel reclaimed a
+    /// gigabyte of a slice's page cache they still counted it, a room of all its budget told
+    /// a microVM whose guest then filled it; just after a microVM ended they still counted
+    /// its memory, a budget short by 577 MiB told the next, which then read a gigabyte at
+    /// 1.4 MiB/s.
+    pub current: u64,
+    /// What it holds less its page cache no process maps.
     pub floor: u64,
 }
 
 impl Holding {
     /// What it holds that its host may take back from its processes alone, its processes
-    /// mapping `files` bytes of files wherever their pages are charged.
+    /// mapping `files` bytes of files wherever their pages are charged: no less than all
+    /// it holds but its page cache no process maps, and of what is charged to it no more
+    /// than it holds, with what its processes map past what is charged to it.
     pub fn held(&self, files: u64) -> u64 {
-        self.own.saturating_add(self.mapped.max(files)).max(self.floor)
+        let charged = self
+            .own
+            .saturating_add(self.mapped)
+            .max(self.floor)
+            .min(self.current);
+        charged.saturating_add(files.saturating_sub(self.mapped))
     }
 
     /// The bytes of its budget not [`held`](Self::held), less the inactive pages its kernel
@@ -132,6 +143,7 @@ pub(super) fn held_at(dir: &Path) -> Option<Holding> {
         budget,
         own,
         mapped: get("file_mapped"),
+        current,
         floor: current.saturating_sub(unmapped),
     })
 }
@@ -351,17 +363,35 @@ impl<D: Disk> Daemon<D> {
     /// a budget set or changed, or met, a microVM held to it gone.
     fn watch_budgets<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         loop {
+            // While a microVM is held short of its budget, its room is told it again each
+            // window: a guest held at what it uses asks for nothing its host can hear, and
+            // a budget it is held under is not met.
+            let short: Vec<u32> = lock(&self.budgets.held)
+                .iter()
+                .filter(|(_, h)| h.short)
+                .map(|(&pid, _)| pid)
+                .collect();
             let woke = {
                 let mut woke = lock(&WOKE);
                 while woke.fired.is_empty() && woke.ran.is_empty() && woke.left.is_empty() {
-                    woke = WAKE.wait(woke).unwrap_or_else(PoisonError::into_inner);
+                    if short.is_empty() {
+                        woke = WAKE.wait(woke).unwrap_or_else(PoisonError::into_inner);
+                    } else {
+                        let (w, waited) = WAKE
+                            .wait_timeout(woke, shards_vmm::platform::PRESSURE_WINDOW)
+                            .unwrap_or_else(PoisonError::into_inner);
+                        woke = w;
+                        if waited.timed_out() {
+                            break;
+                        }
+                    }
                 }
                 std::mem::take(&mut *woke)
             };
             if self.closed.load(Ordering::SeqCst) {
                 return;
             }
-            let mut tell: HashSet<u32> = HashSet::new();
+            let mut tell: HashSet<u32> = short.into_iter().collect();
             for pid in woke.ran {
                 if let Some(dir) = cgroup_of(pid) {
                     self.watch_chain(&dir);
@@ -762,13 +792,24 @@ mod tests {
             budget: 384 * MIB,
             own: 145 * MIB,
             mapped: 16 * MIB,
+            current: 383 * MIB,
             floor: 168 * MIB,
         };
         assert_eq!(held.held(0), 168 * MIB);
-        assert_eq!(held.held(83 * MIB), 228 * MIB);
+        assert_eq!(held.held(83 * MIB), 235 * MIB);
         // Less the 16 MiB of inactive pages beside its 16 MiB mapped.
-        assert_eq!(held.room(83 * MIB), 140 * MIB as i64);
+        assert_eq!(held.room(83 * MIB), 133 * MIB as i64);
         assert_eq!(held.room(0), 200 * MIB as i64);
+        // Statistics behind its counter, still counting a microVM that has ended: no more
+        // held of what is charged than it holds.
+        let ended = Holding {
+            budget: 384 * MIB,
+            own: 881 * MIB,
+            mapped: 107 * MIB,
+            current: 265 * MIB,
+            floor: 179 * MIB,
+        };
+        assert_eq!(ended.held(136 * MIB), 294 * MIB);
         assert_eq!(lru_buffer(16 * MIB), 16 * MIB);
         // A GiB and more of them: the square root of ten times their GiB.
         assert_eq!(lru_buffer(1 << 30), (1 << 30) / 4);
