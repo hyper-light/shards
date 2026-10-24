@@ -519,12 +519,14 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
         run(arm, "rm", "-f", "warm", check=False)
         if started:
             ended(pid, started[1])
-        # And restored once, which records the working set each later restore maps ahead: a
-        # template's first restore maps none, so a budget worked out a mebibyte short of what
-        # its run held came to 35 MiB, and its read did not end in 1,800 s (DAX budget run
-        # 40118424391's first reads).
+        # And restored once, reading as its readers do, which records the working set each
+        # later restore maps ahead, a template's first restore's alone: one that maps none
+        # left a budget worked out a mebibyte short of what its run held at 35 MiB, its read
+        # not ending in 1,800 s (DAX budget run 40118424391's first reads), and a run of
+        # `true` recorded 5,385 pages where a reader's was 44,088, every later budget worked
+        # out so as short (40121550959).
         run(arm, "run", "--rm", "--cgroup-parent", SLICE, *held_to, "-v", f"{vol}:/vol", "--pull", "never",
-            "alpine", "true")
+            "alpine", "dd", f"if=/vol/{FILES[0]}", "of=/dev/null", "bs=1M")
     run_id = run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, *held_to, "-v", f"{vol}:/vol",
                  "alpine", "sleep", "100000").stdout.strip()
     pid = run(arm, "inspect", "-f", "{{.State.Pid}}", "reader").stdout.strip()

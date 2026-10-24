@@ -13262,9 +13262,11 @@ revision before comparing a changed API/implementation.
     cold one. The harness now makes each arm's template before its first read, unbudgeted,
     by a run of its readers' shape (a template's key holds its run's shares, run.rs
     `template`: 40093677719's warm-up, with no volume, left its first reads booting cold),
-    and restores it once, which records the working set later restores map ahead: a
-    template's first restore maps none, and a budget worked out a mebibyte short of what
-    its run held came to 35 MiB, its read not ending in 1,800 s (40118424391).
+    and restores it once, reading as its readers do, which records the working set later
+    restores map ahead, a template's first restore's alone: one that maps none left a
+    budget worked out a mebibyte short of what its run held at 35 MiB, its read not
+    ending in 1,800 s (40118424391), and a run of `true` recorded 5,385 pages where a
+    reader's was 44,088, every later budget worked out so as short (40121550959).
   - M314's regime, on the tree: a lone run held short, its reads run away. Of the tree's
     144 lone reads in 40105729007, 31 ran away, two until their 1,800 s ran out; the
     tree's first pool-0 read held short ran away on all 8 of 40102145014's runners, the
