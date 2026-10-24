@@ -121,6 +121,14 @@ pub fn confine() -> Result<(), String> {
     // VFIO's, for a passed-through PCI function (D154): only Landlock's rules give a
     // process a VFIO descriptor to make them of.
     requests.extend(shards_vmm::devices::pci::vfio::IOCTLS.iter().map(|&r| r as u32));
+    // A userfaultfd's handshake and its ranges' registration, which hold the host's
+    // fault-around off over a restored guest's memory for its machine's life, as it
+    // records its working set and maps one ahead (platform::FaultAroundOff); none of its
+    // faults is the userfaultfd's.
+    requests.extend([
+        shards_vmm::platform::uffd::IOCTL_API,
+        shards_vmm::platform::uffd::IOCTL_REGISTER,
+    ]);
     // What a terminal is asked: whether it is one, its settings, and its settings set
     // (raw mode, terminal.rs). `isatty` asks TIOCGWINSZ in musl, TCGETS in older glibc and
     // TCGETS2 in glibc 2.43, whose tcgetattr asks TCGETS2 and tcsetattr sets with TCSETS2
@@ -150,6 +158,13 @@ pub fn confine() -> Result<(), String> {
     // A pidfd of this process alone: what a run's client waits on for its VM process's end
     // where the VM holds a host's devices (warm.rs, `finish`).
     rules.push(Rule::with(libc::SYS_pidfd_open, 0, &[pid as u32]));
+    // That userfaultfd, of user faults alone (UFFD_USER_MODE_ONLY), which takes no
+    // privilege.
+    rules.push(Rule::with(
+        libc::SYS_userfaultfd,
+        0,
+        &[shards_vmm::platform::uffd::FLAGS as u32],
+    ));
     rules.push(Rule::with(libc::SYS_socket, 0, &[libc::AF_UNIX as u32]));
     rules.push(Rule::with(libc::SYS_socketpair, 0, &[libc::AF_UNIX as u32]));
     // Naming threads; and no_new_privs, which Landlock needs set and which only takes

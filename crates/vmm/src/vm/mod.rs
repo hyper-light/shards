@@ -46,16 +46,16 @@ mod hold;
 mod runtime;
 #[cfg(hv)]
 pub use runtime::{
-    Handle, Running, Saved, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
-    working_set_limit,
+    Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
+    restore_from, start, working_set_limit,
 };
 
 #[cfg(not(hv))]
 mod unsupported;
 #[cfg(not(hv))]
 pub use unsupported::{
-    Handle, Running, Saved, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
-    working_set_limit,
+    Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
+    restore_from, start, working_set_limit,
 };
 
 /// The host sides of a VM's devices that live outside it.
@@ -1724,6 +1724,11 @@ pub struct RestoreConfig {
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
+    /// The bytes the prefetch may copy of the pages the working set says the guest wrote,
+    /// ahead of its request, [`crate::hv::PREFETCH_PRIVATE`] at most: none for a VM its
+    /// host holds to a budget, of which every warm VM would spend that much before any
+    /// request came, and its runs have the less (D188).
+    pub prefetch_private: u64,
     /// Record a working set for the snapshot, where it has none and this backend records
     /// restores' ([`RESTORES_RECORD`]), until [`Handle::take_working_set`] takes it.
     pub record: bool,

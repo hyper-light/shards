@@ -195,6 +195,49 @@ pub struct Pinned {
     pub name: String,
 }
 
+/// The files a restore of a generation maps, held open by its restorer between restores
+/// ([`hold`]): its memory, its writable layer's and DAX windows' heads where it has them,
+/// and the files its guest only reads, its root filesystem's among them. A file no process
+/// holds open gives up its vnode, and the pages its host had cached of it with them, to the
+/// next file its host looks at once the host's vnode table is full; a Mac's of 128 GiB held
+/// 263,168, recycling thousands a second, and a restore then read its whole working set
+/// back from the disk a page at a time, and its guest its programs (PM M315).
+#[derive(Debug)]
+pub struct Held {
+    generation: String,
+    _files: Vec<File>,
+}
+
+impl Held {
+    /// Whether it holds the generation `dir` points at now.
+    pub fn is_current(&self, dir: &Path) -> bool {
+        current(dir).is_ok_and(|name| name == self.generation)
+    }
+}
+
+/// Holds the files of the generation `dir` points at open ([`Held`]).
+pub fn hold(dir: &Path) -> Result<Held, String> {
+    let pinned = read(dir)?;
+    let mut files = Vec::new();
+    for name in [LAYER_HEAD, WINDOW_HEADS] {
+        match platform::open_beneath_input(dir, &[&pinned.name, name]) {
+            Ok(file) => files.push(file),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", pinned.path.join(name).display())),
+        }
+    }
+    for (path, read_only) in backing(&pinned.snapshot.config) {
+        if read_only {
+            files.push(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
+        }
+    }
+    files.push(pinned.memory);
+    Ok(Held {
+        generation: pinned.name,
+        _files: files,
+    })
+}
+
 /// Enough of a backing file's identity to refuse a restore against another file without
 /// reading it: which file it is and, for one the guest only reads, that it is unchanged
 /// (audit A18).
@@ -1071,18 +1114,34 @@ fn decode_working_set(bytes: &[u8], page: u64, max_pages: usize) -> codec::Resul
         })
     })?;
     r.finish()?;
-    let aligned = pages.iter().all(|t| page.is_power_of_two() && t.gpa % page == 0);
+    let misaligned = pages
+        .iter()
+        .filter(|t| !page.is_power_of_two() || t.gpa % page != 0)
+        .count();
     // Reserved as the entries were: a set the host cannot hold is refused, not an abort.
     let mut gpas: Vec<u64> = Vec::new();
     gpas.try_reserve_exact(pages.len())
         .map_err(|e| DecodeError(format!("a working set of {} pages: {e}", pages.len())))?;
     gpas.extend(pages.iter().map(|t| t.gpa));
     gpas.sort_unstable();
-    let distinct = gpas.windows(2).all(|w| matches!(w, [a, b] if a != b));
-    if !aligned || !distinct {
-        return Err(DecodeError(
-            "a working set whose pages are not aligned and distinct".into(),
-        ));
+    let twice: Vec<u64> = gpas
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] if a == b => Some(*a),
+            _ => None,
+        })
+        .collect();
+    if misaligned > 0 || !twice.is_empty() {
+        // Said whole, as a set refused is not kept: which of its pages broke it.
+        return Err(DecodeError(format!(
+            "a working set whose pages are not aligned and distinct: of {} pages, {misaligned} not on a page of {page} bytes and {} recorded twice{}",
+            pages.len(),
+            twice.len(),
+            match (twice.first(), twice.last()) {
+                (Some(first), Some(last)) => format!(", from {first:#x} to {last:#x}"),
+                _ => String::new(),
+            }
+        )));
     }
     Ok(Some(pages))
 }
@@ -1127,6 +1186,26 @@ pub fn accept_working_set(
         .map_err(|e| format!("{}: {e}", pinned.path.display()))?;
     write_working_set(&generation, &pages, page)?;
     Ok(pages.len())
+}
+
+/// Whether the generation the snapshot in `dir` is at has a working set saved: one a
+/// restore of it maps ahead, and records none of.
+pub fn has_working_set(dir: &Path) -> bool {
+    generation(dir).is_ok_and(|g| g.join(WORKING_SET).is_file())
+}
+
+/// A working set as a restore hands it to its spawner (`--working-set FD`): the name of the
+/// generation it was recorded from, a newline, then the working set
+/// ([`encode_working_set`]); its spawner keeps it as the daemon keeps a warm VM's
+/// ([`accept_working_set`]).
+pub fn split_handed(handed: &[u8]) -> Result<(&str, &[u8]), String> {
+    let at = handed
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or("a handed working set names no generation")?;
+    let (name, rest) = handed.split_at(at);
+    let name = std::str::from_utf8(name).map_err(|_| "a handed working set's generation is not text")?;
+    Ok((name, rest.get(1..).unwrap_or_default()))
 }
 
 /// The working set saved in generation directory `generation`, if it has one recorded at
@@ -1337,6 +1416,16 @@ mod tests {
             let bytes = encode_working_set(&touches(bad), 16384);
             assert!(decode_working_set(&bytes, 16384, 8).is_err(), "{bad:x?}");
         }
+        // A set refused says which of its pages broke it, as it is not kept.
+        let bytes = encode_working_set(
+            &touches(&[0x8000_4000, 0xc000_0000, 0x8000_4000, 0x9000_0002]),
+            16384,
+        );
+        let said = decode_working_set(&bytes, 16384, 8).unwrap_err().0;
+        assert!(
+            said.ends_with("of 4 pages, 1 not on a page of 16384 bytes and 1 recorded twice, from 0x80004000 to 0x80004000"),
+            "{said}"
+        );
     }
 
     /// A few bytes claiming 2^26 pages fail before anything is allocated for them (audit
@@ -1462,6 +1551,38 @@ mod tests {
                 }
             }
             assert_eq!(generations(&dir).len(), 2, "{:?}", generations(&dir));
+        }
+
+        /// A generation held holds what its restores map: its memory and the files its
+        /// guest only reads, and not those it writes; a newer generation is not the one
+        /// held, whose memory it keeps (PM M315).
+        #[test]
+        fn a_generation_held_holds_the_files_its_restores_map() {
+            use std::os::unix::fs::MetadataExt as _;
+            let s = Scratch::new("held");
+            let dir = s.0.join("snap");
+            write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
+            let held = hold(&dir).unwrap();
+            assert!(held.is_current(&dir));
+            let id = |f: &File| {
+                let m = f.metadata().unwrap();
+                (m.dev(), m.ino())
+            };
+            let ids: Vec<_> = held._files.iter().map(id).collect();
+            let p = read(&dir).unwrap();
+            assert!(ids.contains(&id(&p.memory)), "its memory");
+            for (path, read_only) in backing(&p.snapshot.config) {
+                let file = File::open(path).unwrap();
+                assert_eq!(ids.contains(&id(&file)), read_only, "{}", path.display());
+            }
+            write(&dir, &sample(&s.0, 2), &ram(2)).unwrap();
+            assert!(!held.is_current(&dir));
+            assert!(hold(&dir).unwrap().is_current(&dir));
+            // The memory it holds is still the generation's it held.
+            let memory = held._files.iter().find(|f| id(f) == id(&p.memory)).unwrap();
+            let mut first = [0u8; 1];
+            platform::read_exact_at(memory, &mut first, 0).unwrap();
+            assert_eq!(first, [1]);
         }
 
         /// One dropped before its commit, a save that failed, leaves nothing behind; and a
@@ -1767,6 +1888,41 @@ mod tests {
             // The set that fits: written, and read back as sent.
             assert_eq!(accept_working_set(&dir, &name, &bytes, page, |_| max), Ok(3));
             assert_eq!(stored(), Some(set));
+        }
+
+        /// A working set a restore hands its spawner is kept in the generation it names,
+        /// and in no other; a newer generation starts without one.
+        #[test]
+        fn a_handed_working_set_is_kept_in_its_generation_and_no_other() {
+            let s = Scratch::new("handed");
+            let dir = s.0.join("snap");
+            write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
+            let name = read(&dir).unwrap().name;
+            let (page, max) = (0x4000, 64);
+            let set = touches(&[0x8000_0000, 0x8000_4000]);
+            let handed = |name: &str| [name.as_bytes(), b"\n", &encode_working_set(&set, page)].concat();
+            let keep = |h: &[u8]| {
+                let (name, bytes) = split_handed(h)?;
+                accept_working_set(&dir, name, bytes, page, |_| max)
+            };
+            assert!(!has_working_set(&dir));
+            // Naming no generation, or another one: nothing kept.
+            assert!(split_handed(b"g-0001").is_err());
+            assert!(split_handed(b"\xff\n").is_err());
+            assert_eq!(keep(&handed("g-not-this")), Ok(0));
+            assert!(!has_working_set(&dir));
+            // Its own generation's: kept there, and read back as handed.
+            assert_eq!(keep(&handed(&name)), Ok(2));
+            assert!(has_working_set(&dir));
+            assert_eq!(
+                read_working_set(&read(&dir).unwrap().path, page, max).unwrap(),
+                Some(set.clone())
+            );
+            // A newer generation has none, and the older one's is not taken for it.
+            write(&dir, &sample(&s.0, 2), &ram(2)).unwrap();
+            assert!(!has_working_set(&dir));
+            assert_eq!(keep(&handed(&name)), Ok(0));
+            assert!(!has_working_set(&dir));
         }
 
         #[test]

@@ -989,12 +989,17 @@ fn stop_socket(home: &Path) -> ExitCode {
 }
 
 /// The VM's timing line, a JSON object, with this client's own peak RSS in KiB as its
-/// first field, `client_rss_kib`, for benchmarks.
+/// first field, `client_rss_kib`, and its microseconds from its `main` to now,
+/// `client_us`, for benchmarks: a run timed from its client's spawn, less those, is its
+/// client's launch, which its host may hold back (PM M166).
 fn with_client_rss(timing: &str) -> String {
     let kib = shards_ipc::peak_rss_kib();
+    let us = shards_vmm::log::uptime_us();
     match timing.strip_prefix('{') {
-        Some(rest) if rest.trim_start().starts_with('}') => format!("{{\"client_rss_kib\":{kib}{rest}"),
-        Some(rest) => format!("{{\"client_rss_kib\":{kib},{rest}"),
+        Some(rest) if rest.trim_start().starts_with('}') => {
+            format!("{{\"client_rss_kib\":{kib},\"client_us\":{us}{rest}")
+        }
+        Some(rest) => format!("{{\"client_rss_kib\":{kib},\"client_us\":{us},{rest}"),
         None => timing.to_string(),
     }
 }
@@ -1289,4 +1294,28 @@ fn forward(signals: Option<Signals>, current: &'static Mutex<Option<Says>>) -> R
         })
         .map_err(|e| format!("signal thread: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The client's own fields go first in the VM's timing line, an empty one too, and a
+    /// line that is no object stays as it came.
+    #[test]
+    fn the_timing_line_leads_with_the_clients_own_fields() {
+        let line = with_client_rss(r#"{"released_us":5}"#);
+        let fields: Vec<&str> = line
+            .trim_matches(|c| c == '{' || c == '}')
+            .split(',')
+            .map(|f| f.split(':').next().unwrap())
+            .collect();
+        assert_eq!(
+            fields,
+            [r#""client_rss_kib""#, r#""client_us""#, r#""released_us""#]
+        );
+        assert!(with_client_rss("{}").ends_with('}'));
+        assert!(!with_client_rss("{}").contains(",}"));
+        assert_eq!(with_client_rss("not json"), "not json");
+    }
 }

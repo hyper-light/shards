@@ -630,6 +630,14 @@ pub mod builtin {
     /// unplugged (D148). Answered with the bytes its run's cgroup holds less and the bytes
     /// asked to be unplugged, in decimal, a space between.
     pub const RECLAIM: u8 = 15;
+    /// The bytes its host's budget leaves the microVM (D188), in signed decimal: its run
+    /// held at what it uses and that much more, past which its own kernel drops its run's
+    /// page cache before its host must take memory its guest holds; never less past what
+    /// it uses than the room a run needs to go on, which a room short of it raises no hold
+    /// past. Answered with the bytes the run is held within past what it uses, in decimal.
+    /// Without one, it has no budget, is held only as its memory is (D148), and nothing is
+    /// answered.
+    pub const ROOM: u8 = 16;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

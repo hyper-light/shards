@@ -1286,9 +1286,9 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
    - Timer lateness drops from ~26% of the interval to 5–19 µs (M10).
    - Kick latency drops to 0.9 µs busy / 4.5 µs idle (M9).
    - Interrupt p99 drops to ≤11 µs (M8).
-   - Open risk: XNU's real-time fail-safe demotion under CPU-bound guests, and
-     fairness across many VMs. Must be measured before committing (see open
-     questions).
+   - XNU's real-time fail-safe under CPU-bound guests, and fairness across many VMs:
+     measured in M317. A thread at the policy that runs a second without blocking is
+     depressed to priority 0; a governor moves one that runs long to timeshare first.
 4. **Keep the 16 KiB IPA granule for RAM.**
    - First-touch costs ~1.1–1.4 µs per 16 KiB page, about 4× cheaper per byte than
      4 KiB (M5).
@@ -1323,8 +1323,9 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 
 ## Open questions (to measure)
 
-- Behaviour of real-time vCPU threads under sustained CPU-bound guests:
-  - demotion, throughput, and host responsiveness with N ≫ cores VMs.
+- ~~Behaviour of real-time vCPU threads under sustained CPU-bound guests~~.
+  - Answered by M317: demotion, throughput, and host responsiveness with 54 busy vCPUs
+    on 18 cores.
 - ~~Whether GIC plus vCPU state restore fits in <100 µs~~.
   - Answered by M14: the blob path does not fit (1.2 ms).
   - The register-level path does: ~20 µs for the distributor plus ~0.5 µs per vCPU.
@@ -12470,3 +12471,951 @@ revision before comparing a changed API/implementation.
   `hypervisor` (D189), one where asked. FUSE under a budget on these runners is D188's to
   mend: its passes, and a restored guest's own RAM, a template's file pages, evicted with
   the rest.
+
+### M309. What a microVM held to a budget pays to read through FUSE, and its guest held within its budget's room (D188)
+
+- **Question.** M308's FUSE arm, under a slice held to 384 MiB with no swap, took 300 to
+  600 s for a gigabyte its run read in 3 to 5 s with no budget, and the daemon gave back
+  3 times in 600 s. Why, and what holds a run within a budget at its unbudgeted speed?
+- **Method.** The DAX budget job (docs/research/measurements/dax-budget, M308's) through
+  FUSE alone (`SHARDS_SHARE_WINDOW_MIB=0`): each read a reader started under no budget,
+  the slice's `MemoryHigh` then set, its warm microVMs in the slice, the slice kept
+  between reads; with what each VM process in the slice holds, mapping by mapping, and
+  what its guest says of its memory, as the reader starts and once it has read (`.vms`),
+  the slice's statistics each second, and the daemon's log. Arms: the tree as each fix
+  went in; built with `no-private.patch`, which copies none of a template's written pages
+  ahead (M62); and the reader held in its guest to 128, 32 and 8 MiB (`--guest-mib`:
+  `--memory`, no swap, `--oom-kill-disable`). CI's x86_64 runners (Azure virtual machines,
+  Linux 6.17.0-1022-azure, 4 CPUs, 16 GiB, KVM nested on Hyper-V), 2026-10-23; 1 GiB,
+  sparse and written; rounds interleaved, each case first in turn.
+- **Results.**
+  - Before (b550e14c, n 2 each): EPYC 7763, sparse 354.9 s and written 455.7 (no budget
+    4.8, 4.9); another 7763, 460.4 and 600.5 (4.6, 4.8); Intel Xeon 8573C, 600.3 and 604.1
+    (3.8, 5.0). Dev 92ebbae5 on an EPYC 9V45: 449.6 and 415.9 to 599.8 (3.0, 3.3), its
+    first read, from the VM that made the template, its RAM its own, 4.4.
+  - Why. As a read began, the slice's three microVMs, the reader and two warm, held 223
+    MiB of anonymous memory and 149 MiB of files, 117 of them mapped, the template's pages
+    the VMs map; a warm VM that had copied its template's written pages ahead held 65 MiB
+    of anonymous memory, one that copied none 1 to 4. Within 2 s of the read's start the
+    slice held no file pages, and held none for the rest of it: the guest's page cache,
+    the host's anonymous memory, filled the budget, and the host took back the one thing
+    it could, the guest's own RAM, its template's pages, which the guest read back as it
+    ran: 16.5 million file refaults, 653,000 major faults and 437 s of its tasks stalled
+    in 520 s (EPYC 9V74). Each pass of the daemon's waited 10 s on that guest, and then
+    for its end.
+  - Copying none ahead alone (n 3, 9V74): no help, 576 to 615 s under the budget; with no
+    budget, sparse 3.8 s against 3.3, written 4.5 against 5.7.
+  - The reader held in its guest (n 3 each on four runners, 7763, 9V45, 9V74, Intel
+    8370C): at 128 MiB, 2.4 to 4.8 s, copying ahead or not; at 32 MiB, 2.2 to 4.6 s, one
+    written read 10.5 s whose slice stalled 0.0 s on memory and refaulted 32 pages, its
+    file read from the runner's disk; at 8 MiB, 2.2 to 4.7 s. The guest's own kernel
+    dropping its page cache within a hold read as fast as with none.
+  - The guest held within the room its budget leaves it, as each fix went in (n per
+    stage in reads under the budget):
+    - Room as the budget less all it holds but its page cache no process maps (d306e260,
+      n 34): 31 reads 3.7 to 8.9 s; 3 read their own RAM back for 600 to 2,100 s. Two were
+      told a room of all the budget, statistics read just after the kernel reclaimed a
+      gigabyte of the slice's page cache still counting it; one a room of all the page
+      cache no process mapped, 215 MiB, which its guest filled to the last file page.
+    - Room counted from the statistics' parts and the files the slice's processes map
+      (6648e04f): worse, three of eight copies stuck past their job's 2 h. A give-back
+      held a run below its cap, and its grower, hearing it held, doubled what it asked
+      for up to its most, the host's 16 GiB: give-backs asked to unplug 22 and 35 GiB, and
+      a guest's free memory fell by 260 MiB no process or cache held, the page structures
+      of what it plugged.
+    - Plugging no more than the cap needs (b83f1ea3, n 37 on eight runners): sparse p50
+      4.44 s, p90 4.84, max 37.6; written p50 4.73, p90 8.97, max 9.50; with no budget 4.35
+      and 4.55 (p50). File refaults a read: p50 820, p90 215,200, max 596,531, the most
+      in reads told rooms of 285 to 308 MiB beside 58 MiB of mapped files, the fewest in
+      reads told 23 to 104. One read crawled at 0.13 MiB/s for 100 minutes, its slice
+      stalling no time on memory: its guest held at what it used.
+    - Leaving the kernel its inactive pages beside the mapped (d745938e, n 18): sparse p50
+      3.46 s, written 6.12; one read 1,772 s, its guest held at what it used after a
+      give-back, with nothing to raise it.
+    - The cap the budget's alone, told again after each give-back and as the budget has
+      room again (04560dcc, n 42 on eight runners): sparse p50 3.85 s, p90 6.22, written
+      p50 4.95, p90 18.34; with no budget 4.26 and 4.73. File refaults a read: p50 175, p90
+      49,341, max 639,444. Three reads crawled for 282 to 718 s: each was told at its
+      start a budget short by up to 577 MiB, holding 881 MiB where its slice held 265, the
+      statistics still counting a microVM that had ended; held at what it used, its
+      budget never met, nothing told it its room again.
+    - What is charged to the budget held no more than it holds, and a microVM held short
+      told its room again each window of its host's pressure (9e7ad372, 40004975961 and
+      40004987413, n 24 each case on eight runners): written p50 4.37 s, p90 5.36, max
+      6.95; sparse p50 4.02, but three reads 671.7, 671.4 and 190.0 s; with no budget 4.64
+      and 4.20 (p50), 4.85 and 4.62 (max). File refaults a read under the budget: p50 84,
+      p90 2,700, max 221,750 (n 48). Each slow read's microVM was told its budget short
+      and held at what it used: the two of 671 s at their start (short by 22 and 90 MiB,
+      the second's statistics a second after the reader before it ended still counting 1.1
+      GB of its anonymous memory), the third after a room of 12 MiB. Each guest sat idle
+      (83 to 119 VM exits a second, 8 of them MMIO), reading 0.16 to 0.57 MiB/s, its slice
+      273 to 382 MiB of its 384 and refaulting none, until the host's own page cache of
+      the file read, which grew as it read, met the budget: the host took back 67 MiB of
+      the template's mapped pages, the room came back (64 to 73 MiB), the guest's memory
+      grew by as much in 2 s, and the read was done in 4.
+  - What held at what it used is (the Mac, M5 Max, macOS 26.4.1, loaded by other builds;
+    guest Linux 6.18.48 arm64, 4 KiB pages; a build of 9e7ad372 whose daemon told a run a
+    room it was given before each exec, scratch, not kept): a run's `dd` of 1 MiB blocks
+    through FUSE, the sparse file, 32 MiB.
+    - Held at what it used: 233.5 s (140 KB/s), 0.28 s with no budget. The reader slept in
+      the kernel's throttle of a cgroup past its `memory.high`
+      (`__mem_cgroup_handle_over_high`, `schedule_timeout_killable` up to 2 s each return
+      to user space, mm/memcontrol.c) in 3 of 4 looks at its wchan; its cgroup's reclaim
+      took 9,326 of the 315,177 pages it scanned, and refaulted its own pages 3,350 times;
+      a shell started beside it got as far as 4 lines in 150 s.
+    - Held within a room past what it used (n per room): 1 MiB, 201.0 s on 18 vCPUs, 12.2
+      and 3.9 s on 4; 1.25 MiB on 4 vCPUs, 0.8, 7.6 and 3.0 s; 1.5 MiB on 4, 0.040 and
+      0.084 s; 2 MiB, 0.035 and 0.034 s on 4, 0.035 and 0.033 on 18; 3 and 4 MiB, 0.033 to
+      0.046 s. A room is no use short of what the reader's block takes, 1 MiB, and what
+      its kernel charges it ahead of its pages and reads ahead of it.
+    - A cap off a page boundary, which the kernel's `memory.high` rounds down (20 MiB and
+      1,233 B against 20 MiB, a gigabyte, n 6 interleaved on the loaded Mac): 1.3 to 6.6
+      s against 1.1 to 9.7, with no budget 4.4 to 6.4. No difference measured.
+    - Held never closer than the least room a run goes on in to what it uses (f0a68074,
+      40019604161 and 40019618201, n 24 each case on eight runners, six EPYC 7763 and two
+      9V74): sparse p50 4.79 s, p90 6.87, max 8.38; written p50 4.99, p90 8.81, max 9.14;
+      with no budget 4.65 and 4.95 (p50), 4.81 and 5.11 (max): every read within twice the
+      median of none, none crawling. Runs told their budget short by 5 to 127 MiB were
+      held within 2,304 KiB past what they used, 4 CPUs' least room, and read in 2.9 to
+      6.4 s. File refaults a read: sparse p50 1,634, max 4,714; written p50 3,016, max
+      47,431. Counting only what is charged to the budget (`charged-only.patch`, the files
+      its processes map elsewhere not held), in the same jobs: sparse p50 4.24 s, max
+      7.38; written p50 4.98, max 6.36; but refaults sparse max 249,360 and written p50
+      20,586, max 273,132: the files mapped where they are charged elsewhere are held.
+    - The same on bare metal (Fedora, Intel Core i9-14900HX, 32 CPUs, 64 GiB, Linux
+      6.19.10-300.fc44, THP madvise; f0a68074, n 12 each, `--parent-slice` in a slice held
+      to 16 GiB, which its reads under no budget of their own were then held to): sparse
+      p50 1.10 s, p90 1.70, max 2.13; written p50 1.32, p90 2.15, max 2.59; with no budget
+      of their own 1.25 and 1.42 (p50), 2.58 and 2.76 (max). 17 runs told their budget
+      short were held within the least room a run goes on in; no read refaulted a file
+      page.
+    - The same on each CPU CI's runners landed on (f0a68074's code, run at a98b3aa7,
+      40030089737, 40030101822 and 40030112727; 12 runners, n 3 each case a runner), its
+      budgeted reads' median against its reads' under none, and its slowest:
+
+      | CPU (runners) | sparse p50 | none | max | written p50 | none | max |
+      |---|---|---|---|---|---|---|
+      | EPYC 7763 (3) | 4.42 s | 4.57 | 5.61 | 4.77 | 4.89 | 5.40 |
+      | EPYC 9V45 (2) | 2.90 | 3.04 | 3.46 | 3.06 | 3.18 | 4.14 |
+      | EPYC 9V74 (2) | 2.97 | 3.38 | 3.51 | 5.84 | 4.28 | 6.81 |
+      | Xeon 8573C (3) | 3.64 | 3.68 | 4.56 | 4.78 | 5.15 | 7.36 |
+      | Xeon 8370C (1) | 3.76 | 3.74 | 3.87 | 3.90 | 3.83 | 4.60 |
+      | Xeon 6973P-C (1) | 3.15 | 3.19 | 3.34 | 3.65 | 3.59 | 5.68 |
+
+      The slowest read took 1.59 times its CPU's median under none (9V74, written). File
+      refaults a read under the budget: sparse p50 129, max 41,359; written p50 1,171, max
+      199,451, the most in each runner's first written read under it (5.68 to 7.36 s,
+      stalled 0.27 to 0.53 s). 28 times a run was told its budget short, by under 1 to 105
+      MiB: 20 times held within 2,304 KiB past what it used, 8 times within 1,136 to 2,156
+      KiB, a hold made before that it had grown into, which a room short of the least
+      raises no further.
+- **Conclusion.** A budgeted microVM's guest must keep within its budget by its own kernel,
+  as a container's kernel keeps a container within its cgroup: the host can take back
+  only page cache from it with no swap, and its page cache is guest RAM. Held within the
+  room the budget leaves, a run reads at about its unbudgeted speed at the median, and its
+  guest's own RAM, its template's file pages, stays: refaults a read fell from 16.5
+  million to a few hundred. The room must count what the budget's processes map wherever
+  it is charged, leave the kernel its inactive pages beside them, never take statistics
+  past the counter, bound what the guest plugs, and be told again while it is short; and
+  a run is never held closer to what it uses than the room it needs to go on in, what its
+  kernel charges ahead, two read-ahead windows and a reader's block: held at what it
+  used, a run cannot take a page, and every read it makes sleeps in the kernel's throttle.
+
+### M310. Where a restore's time to its guest's first beat goes on CI's runners, shards' and Firecracker's, in KVM (D25)
+
+- **Question.** The Firecracker comparison's restore arm found shards' first beat later than
+  Firecracker's on some AMD runners: CI's comparison job +205 µs on an EPYC 7763 once and
+  better six times, +488 on a 9V45 once and better four times, +351 on a 9V74; 7cf8c5b9's
+  restore-faults run +204 to +388 on three 7763s and +455 on a 9V74. Its vCPUs took 5.5 to
+  8.3 ms from ready to the guest's RESUMED marker. How many stage-2 faults does each VMM's
+  restore take to its first beat, what does each cost on each runner CPU, how many would a
+  working set recorded from another restore have mapped ahead, and where does the rest of
+  the time go?
+- **Method.** The comparison's restore arm (crates/shards/benches/firecracker.rs) on CI's
+  ubuntu-24.04 runners (4 CPUs, 16 GiB, Linux 6.17.0-1022-azure, KVM nested on Hyper-V), by
+  the restore-faults workflow, eight runners a run: 7cf8c5b9's (40031683567) and
+  2f95db48's (40038193466), 2026-10-23. A 1-vCPU, 128 MiB test guest beating every
+  millisecond; each run makes each VMM's snapshot of it, and restores each 30 times
+  paired, interleaved.
+  - KVM's counters of each restored VM (its debugfs directory, summed over its vCPUs),
+    read through `sudo -n` once the first beat has reached the bench, a few beats after
+    it; shards' phases from as many restores again with its VM process's log.
+  - In 2f95db48's run, 30 more restores of each VMM under KVM's trace (`--traced`:
+    kvm_entry, kvm_exit, kvm_page_fault, kvm_pio, kvm_mmio, kvm_userspace_exit, on the
+    host's monotonic clock), each from its vCPU's first entry into its guest, cut at the
+    guest's first `.` out of COM1 and, shards', at its RESUMED write
+    (docs/research/measurements/restore-faults/faults.py). A stage-2 fault on RAM is one
+    whose address lies below the 32-bit MMIO gap.
+  - In 2f95db48's run, each runner also ran the comparison reading nothing
+    (`SHARDS_BENCH_KVM=off`), the order alternating by copy: each envelope's verdicts
+    read and unread, side by side on one runner.
+  - Landings: EPYC 7763 7 runners, 9V45 3, 9V74 2, Xeon 8573C 2, 8370C 1, 6973P-C 1; traced,
+    7763 3, 9V45 2, 9V74, 8370C and 6973P-C 1 each.
+- **Results.**
+  - Stage-2 faults on RAM to the first beat, traced (p50, p90, p99, max):
+
+    | CPU (n restores a VMM) | shards | Firecracker | shards' to RESUMED |
+    |---|---|---|---|
+    | EPYC 7763 (90) | 558, 582, 583, 583 | 562, 664, 669, 669 | 400, 461, 469, 469 |
+    | EPYC 9V45 (60) | 578, 596, 596, 596 | 595, 597, 602, 602 | 402, 411, 411, 411 |
+    | EPYC 9V74 (30) | 571, 572, 572, 572 | 591, 597, 597, 597 | 453, 454, 461, 461 |
+    | Xeon 6973P-C (30) | 584, 606, 614, 614 | 591, 679, 682, 682 | 472, 472, 477, 477 |
+    | Xeon 8370C (30) | 581, 583, 584, 584 | 584, 586, 594, 594 | 397, 400, 471, 471 |
+
+    The same guest takes the same faults under either VMM; a snapshot can take a hundred
+    more than another (Firecracker's of one 7763 run, 664 at its median against the
+    run's shards snapshot's 552).
+  - KVM's counted faults (`pf_taken`, the first MMIO page's among them), read a few beats
+    after the beat (p50, p90, p99, max): shards 612, 619, 622, 622 on the 7763s (n 210),
+    635, 640, 640, 640 on the 9V45s (n 90), 620, 627, 627, 627 on the 9V74s (n 60), 621 to
+    628 at the median on the Intels (n 120); Firecracker 710 to 744 at the median, its
+    most 765. Firecracker's hundred more come after its beat: in the 1.6 to 1.9 ms traced
+    past it, its guest faulted 40 more pages at the median (most 127), shards' 30 (63).
+    The counters' exits, port I/O and halts, read that late, are mostly beats after it:
+    they count about 200 port I/O exits and 15 halts, where to the beat every traced
+    restore made 5 (shards) or 3 (Firecracker) and halted only in shards' leg from RESUMED
+    (below).
+  - What each fault costs, untraced: shards' vCPUs ready to RESUMED (its log, p50) over
+    its faults to RESUMED (traced, p50): 7,913 µs over 400 on the 7763s (n 210), 19.8 µs
+    a fault; 8,203 over 453 on the 9V74s (n 60), 18.1; 5,920 over 402 on the 9V45s (n 90),
+    14.7; 6,006 over 472 on the 6973P-C (n 30), 12.7; 4,719 over 397 on the 8370C (n 30),
+    11.9. Traced, a fault is KVM's own time, from its exit to the vCPU's next entry, and
+    the guest's time before it, from the entry before to the exit, which carries the
+    outer hypervisor's round trip of each exit and whatever it handles itself, none of
+    which KVM's trace shows. KVM's, each restore's mean (p50): 4.9 to 5.3 µs on the 7763s
+    and 9V74, 4.3 to 4.5 on the 9V45s, 3.4 to 3.7 on the 8370C, 2.6 to 2.7 on the
+    6973P-C, alike for both VMMs. The guest's before each, each restore's median: 8 to 10
+    µs on the AMDs, 5 to 7 on the Intels; its 10th percentile, 7 to 8 and 4 to 6, bounds
+    what a round trip costs from above. With the trace's own cost in them: traced
+    restores reached their beat 0.06 to 1.5 ms later than the run's paired ones at the
+    median (shards on the 9V45s 11,645 µs against 10,144; Firecracker 12,079 against
+    10,668).
+  - Where the time goes, traced, from the vCPU's first entry: to shards' RESUMED (p50),
+    on the 7763s 8,658 µs, of it KVM's fault handling 2,131 and the guest's time ending
+    in a fault 6,189, the guest's other time 229; on the 9V45s 6,802 (1,811, 4,764, 140);
+    the 9V74 8,736 (2,327, 6,119, 215); the 6973P-C 6,232 (1,289, 4,707, 163); the 8370C
+    4,975 (1,450, 3,387, 84). KVM's handling and the guest's time ending in a fault are
+    95.9 to 97.3% of each restore's time to RESUMED at the median, 90.7% at the least;
+    the guest's other time 2 to 3%, and every other exit (host interrupts, MSRs, the
+    RESUMED write, an interrupt window) about 1%. To the beat, the same for Firecracker
+    (95.9 to 96.5%); for shards 85.0 to 95.7%, the rest its RESUMED-to-beat leg's halt.
+  - From RESUMED to the beat, shards (p50): 3,014 µs on the 7763s with 155 faults; 2,677
+    on the 9V45s, 171; 2,752 on the 9V74, 118, of it 673 halted; 2,243 on the 6973P-C,
+    112, of it 873 halted; 2,362 on the 8370C, 184 (halted 878 at the most). The guest
+    asks for its snapshot right after a beat (testguest `beat`), so a restored shards
+    guest writes RESUMED and then sleeps a whole beat period, 1 ms, before its first beat:
+    where the work after RESUMED is shorter, its vCPU halts. Firecracker's guest is paused
+    from the host at whatever point its sleep has reached (its first entry's rip is its
+    kernel's, shards' the test guest's own, past its snapshot write), and beats as its
+    restore's work ends: none of its 240 traced restores halted before its beat.
+  - From spawn to the vCPU's first entry (p50): shards 1,808 µs against Firecracker's
+    2,911 on the 7763s, 1,670 against 2,489 on the 9V45s, 1,879 against 2,827 on the 9V74,
+    1,136 against 2,217 on the 6973P-C, 1,480 against 2,794 on the 8370C. From there to the
+    beat: shards 11,457 against 12,017, 9,978 against 9,622, 11,522 against 11,206, 8,477
+    against 7,621, 7,378 against 7,298.
+  - A working set recorded from one restore: of each restore's faulted pages, the share
+    the restore before it of the same snapshot faulted too was 1.000 for shards at the
+    median, p90 and most on every CPU (n 29 to 87), and for Firecracker 0.998 at the median
+    on the 7763s and 1.000 elsewhere: every page a restore faults before its first beat, a
+    working set recorded by the one before holds.
+  - The reading's A/B (2f95db48, eight runners): 137 of 144 envelope verdicts were the
+    same read and unread, every memory verdict of the restore's among them. Of the 7 that
+    differed, 2 were boot's `to_ready` and 2 density's `fleet_pte`, which the reading never
+    touches, and 3 the restore's `to_beat`, both ways: on a 9V74 −321 µs [−460, −132]
+    read against +257 [+174, +450] unread, on a 9V45 −474 [−892, −252] against +388
+    [+166, +600], on a 7763 +28 [−559, +644] against −568 [−729, −438]. Read less
+    unread, the eight runners' median differences ran from −862 to +785 µs, 3 below zero
+    and 5 above. Between the two passes on one runner, each with its own snapshots, a VMM's
+    median moved by as much as 2.4 ms (shards on a 7763, 14,150 µs against 11,748;
+    Firecracker 13,709 against 12,349).
+- **Conclusion.** On CI's runners, whose KVM is nested in Hyper-V, a restored guest's time
+  to RESUMED and to its first beat is its stage-2 faults: 400 to 600 of them, the same
+  under either VMM, each 12 to 20 µs untraced, KVM's handling and the outer hypervisor's
+  round trip together, 96 to 97% of the time to RESUMED at the median. That is 8 to 44
+  times less than a DAX window's first touch of a page paid on the same runners (M308,
+  0.16 to 0.53 ms), though those restores' pages are their guests' first touches too:
+  M308's account of its cost, the outer hypervisor's shadow of each page, is not the
+  whole of it. A working set recorded from the restore before holds every one of the
+  restore's faults. shards' VM process has its guest running about 1 ms sooner than
+  Firecracker on every CPU; what it loses back on Intel and some AMD runners is the
+  bench's own sleep, a whole beat period after RESUMED that Firecracker's guest, paused
+  mid-sleep, never waits. And one pass's paired verdict is not the next's on the same
+  runner: each pass's own snapshots, a hundred faults apart, and its runner move each
+  VMM's median by up to 2.4 ms. The counters' reading moved no verdict either way
+  consistently.
+
+### M311. Where a template's map-back of its DAX windows' heads goes on the Mac, and what is left of it (D189)
+
+- **Question.** M307 left a template's map-back of nine windows' heads at 5.4 ms on the
+  Mac, where Fedora's took 0.19: where does it go, phase by phase, and what of it can go?
+- **Method.** `docs/research/measurements/dax-window/mapback.sh`: fresh homes, each given a
+  seed's image store and guest kernel by clone, each saving a template of alpine with
+  eight volumes (nine windows of 83,538 MiB with the join share's, the guest's 40-bit
+  addresses), `SHARDS_LOG=info`, the daemon log's line for the map-back read back: its
+  whole, its heads taken from the guest at stage 2 (`hv_vm_unmap`), mapped back from the
+  copy, and given back (`hv_vm_map`), with the copy's blocks mapped (MAP_FIXED of the
+  copy, private), the blocks made fresh, the runs of zero blocks given back, and, split
+  out, the copy's index read and its blocks' mapping. `mapback-ab.sh`: two builds
+  interleaved round by round, each round's first in turn, n 30 a build. Builds of gpu
+  e21790a5's tree: A, its map-back with the phases logged; B, its save's index and
+  untouched blocks kept for the map-back after it, which reads nothing back from the copy
+  and gives back no block the save found untouched; C, B with only the blocks the
+  map-back changes taken from the guest and given back. The Mac (Apple M5 Max, 18 CPUs,
+  128 GiB, macOS 26.4.1), load 8.6 to 14.4 from other projects' builds. 2026-10-23.
+- **Results.**
+  - A alone, three passes (n 20 each): the whole 576, 3,132 and 5,495 µs at the median,
+    4,714, 22,447 and 21,913 at the most. Taken 172 µs (p90 189) and given back 66 (p90
+    74) in every pass; the rest, mapped back, 328 µs at the median in the first pass and
+    3,015 to 4,563 in the others, 21,826 at the most. Split: the copy's index, read back
+    from the copy the save had just written, 2,782 µs at the median, p90 21,331, at most
+    22,125; its nine blocks mapped 100 µs (p90 164). The zero blocks' runs, ten calls
+    MAP_FIXED over runs as long as a window's head, gone with B's untouched blocks: 0
+    runs; in the rounds where neither build's index read stalled (A against B's untouched
+    blocks alone, the index still read, rounds 1 to 4), mapped back in 355 to 482 µs
+    against 167 to 246.
+  - A against B (n 30 each): the whole, A 2,319 µs at the median, p90 21,532, p99 and
+    most 25,254; B 418, p90 531, p99 and most 613. Mapped back, A 1,841 (p90 20,829), B
+    129 (p90 196), its index read 0 µs. Taken, A 222 and B 221; given back, A 73 and B 64.
+  - B against C (n 30 each): the whole, B 387 µs at the median, p90 448, at most 449; C
+    212, p90 299, at most 350. Taken, B 204 (p90 243) and C 66 (p90 126), nine parts of a
+    block each where B took nine heads whole; given back, B 63 and C 12 (p90 13). Mapped
+    back, B 107 and C 124, its nine blocks of the copy mapped in 102 and 121.
+- **Reading.** Most of the Mac's map-back, and all of its tail, was the read of the copy's
+  index the save had just written, at times tens of milliseconds while APFS had the file's
+  pages in hand: the save knows the index it wrote, and the map-back after it reads
+  nothing. Of what is left, stage 2 was the most: taking every head whole from the guest
+  and giving it back, where the map-back changes one block of each, the rest of a head its
+  guest's untouched memory. Taking and giving back those blocks alone, the map-back is
+  0.21 ms at the median and 0.35 at the most, about Fedora's 0.19 (M307), most of it now
+  the nine blocks' mappings of the copy (12 to 14 µs each), which KVM's host needs too.
+- **Consequence.** D189: a head's save keeps its index and the blocks it found untouched
+  for the map-back after it, which reads nothing back from the copy and leaves untouched
+  blocks as they are; a map-back takes from the guest, and gives back, only the blocks it
+  changes (`Head::changing`), on HVF the only backend whose stage 2 it touches. Measured
+  on the Mac alone: a Linux host's map-back reads no index now either, unmeasured since.
+
+### M312. What a restore's working set holds of its guest's pages on CI's runners, and the host's fault-around (D25)
+
+- **Question.** e21790a5 has `shards restore DIR` record its working set and the next
+  restore map it ahead (PM M310's faults): with it the comparison's restores reached
+  their first beat 2.8 to 6.0 ms before Firecracker's, but their memory file held more
+  than Firecracker's on Linux 6.17. What does the working set hold, against the 558 to
+  595 pages its guest faults to its first beat (M310)?
+- **Method.** The restore-faults job (`.github/workflows/restore-faults.yml`), eight
+  runners, each the comparison twice (its snapshots read into the page cache first and
+  not), n 30 restores a VMM a pass, its restore arm's `logged_prefetched_pages` (the
+  pages the restore mapped ahead, from its VM's log) and each VMM's `rss_file`: at
+  9b99d0be (no working set) run 40048168045, at e21790a5 run 40050382599, ubuntu-24.04
+  runners on Linux 6.17.0-1022-azure and ubuntu-26.04 ones on 7.0.0-1017-azure. The
+  recorder's account of a page touched is its host's (/proc/self/pagemap's present bit,
+  `platform::mapped_pages`); the kernel's read fault on a file's page maps the pages
+  around it its page cache holds too, 16 at the default `fault_around_bytes`
+  (mm/memory.c, `do_read_fault`, `should_fault_around`), unless the range is registered
+  with a userfaultfd for write-protection or minor faults (`uffd_disable_fault_around`),
+  which an asynchronous write-protecting one may be over any memory with no privilege
+  (mm/userfaultfd.c, `vma_can_userfault`: `wp_async`; Linux 6.7).
+- **Results.**
+  - The working set mapped ahead: 2,753 to 2,902 pages at the median, every runner, both
+    kernels: 4.6 to 5.2 times the pages its guest faults to its first beat.
+  - Restore `rss_file`, shards: 9.0 to 9.6 MiB at 9b99d0be on every runner and kernel,
+    11.6 to 12.3 at e21790a5; Firecracker's 11.3 to 12.1 on 6.17 and 13.5 to 14.3 on
+    7.0. On 6.17 the working set took shards from 2.0 to 3.0 MiB under Firecracker to 0.1
+    to 0.6 over it in seven of eight passes (tied in one).
+  - Restore `to_beat`, shards against Firecracker, the envelope's paired median
+    differences: at 9b99d0be from 1.25 ms worse to 1.08 better, worse in 4 passes of 16;
+    at e21790a5 from 2.8 to 6.0 ms better in all 16 (the 9V45s on 6.17 at 5,575 to 5,746 µs
+    at the median against Firecracker's 8,535 to 9,619).
+  - Fault-around held off while a restore records its working set and while it maps
+    one ahead, let go after (a25303a1, run 40055793466, eight runners: 7763 ×4, 9V45
+    ×2, 9V74, Xeon Platinum 8573C): the working set 735 to 778 pages at the median; restore
+    `rss_file` 3.7 to 3.9 MiB on every runner and kernel, Firecracker's 11.4 to 14.1;
+    `to_beat` better in 15 passes of 16 by 1.6 to 5.5 ms, tied in one (a 9V74 on 7.0,
+    −286 µs [−663, +294]). But KVM counted 707 to 730 stage-2 faults to the first beat
+    (Firecracker 708 to 750), where e21790a5's restores took 1: the pages mapped ahead
+    were faulted in again. A userfaultfd registered for write-protection, let go, resets
+    its ranges' page tables (mm/userfaultfd.c, `userfaultfd_clear_vma`: `uffd_wp_range`,
+    `change_protection`), and KVM's MMU notifier takes the reset for its stage 2 gone.
+  - Held off for the machine's life (86174523; runs 40059820497, 40061112552, 40061117451
+    at 295d03ab, 24 runners: 7763 ×6, 9V45 ×5, 9V74 ×8, Xeon 8573C ×2 and others): KVM
+    counted 1 stage-2 fault to the first beat at the median, Firecracker 711 to 739; the
+    working set 738 to 762 pages; restore `rss_file` 3.7 to 3.9 MiB, Firecracker's 11.4 to
+    14.3; `to_beat` better in every pass, by 3.8 to 9.1 ms (the 9V45s 4.1 to 4.5 ms against
+    9.6 to 10.6; the 8573C 6.2 ms on 6.17 where it took 9.1 to 9.6 at 7cf8c5b9, and 5.3 to
+    5.6 on 7.0). One pass of 48 failed its envelope, on boot's `rss_anon` (a 9V74 on 7.0,
+    +0.4 MiB [+0.1, +0.6], the other pass −0.1): on 7.0 the two VMMs' booted guests hold
+    the same anonymous memory within 0.6 MiB, where on 6.17 shards' held 2 to 4 MiB less.
+- **Reading.** A working set recorded by the host's page tables holds the pages the
+  host's fault-around mapped beside each the guest touched, four to five times as many,
+  and a restore that maps it ahead holds all of them, which the restore without it never
+  touches by its first beat. Recorded with fault-around held off, the host maps what the
+  guest touched alone, and the memory file holds a third of what it did; but held off
+  for the mapping ahead alone, letting it go undoes the mapping, and the guest faults
+  every page in as before. Held for the machine's life, nothing is let go while the guest
+  runs.
+- **Consequence.** D25: a restored machine holds the host's fault-around off over its
+  guest's memory and pmem for its life (`platform::FaultAroundOff`, a userfaultfd
+  registered for asynchronous write-protection that never write-protects; seccomp allows
+  its handshake and registration), on Linux 6.7 and later; before 6.7, or where a
+  container's filter refuses userfaultfd, it goes on as before. Held by
+  `fault_around_held_off_maps_the_touched_page_alone`.
+
+### M313. A cold run's time on a loaded Mac, and where its outliers go (D2, D26)
+
+- **Question.** kiln's sandbox_launch on this Mac (its run 4, shards a9133de9) had 3 of 20
+  cold runs (a pool of none) at 2.3, 6.1 and 6.8 s where their median was 218 ms. What do
+  cold runs pay on a loaded host, and where does an outlier's time go?
+- **Method.** `docs/research/measurements/cold-start/cold.py`: N runs of an image with
+  `SHARDS_POOL=0`, each restoring a microVM of its own from the image's template, timed by
+  its client, with its timing line (`client_us`, the client's own time, from this entry
+  on, so that a run less it is its client's launch) and its daemon's log, at debug its VM's
+  phases (`VM created`, `GIC created`, restored, each vCPU's setup, the start's finish,
+  ready, the guest's markers) and the daemon's account of each VM's spawn to its first
+  request answered. Builds interleaved run by run, or in blocks of 50 or 100 runs each
+  turn. Load: the host's own (other projects' builds, 4 to 28), new executables launched
+  8 a second or 64 at once every 5 s (macOS assesses each, PM M166), or 18 processes
+  spinning (`--burn`). Images: alpine `true`, and kiln's harness image
+  (kiln-harness/claude:2.1.302, 959 MB) running `claude --version`. The Mac (Apple M5 Max,
+  18 CPUs, 128 GiB, macOS 26.4.1), gpu 295d03ab with the instrumentation, and kiln's own
+  build of e076065f. 2026-10-23.
+- **Results** (ms: n, p50 / p90 / p99 / max).
+  - alpine, new executables 8 a second, debug, load 5.3 to 7.9: 1,000 runs, 82.1 / 493.1 /
+    983.4 / 1,226.2. In the slowest the VM's own clock was at 481 ms as its command ran
+    and its spawn to its first request 7.4 ms: the rest, 745 ms, outside the VM's clock,
+    not split here.
+  - The writable layer's flush at a run's end, F_FULLFSYNC on macOS (100 to 614 ms each on
+    the loaded host): answered at once for a `--rm` run against the tree, in blocks of
+    100, log level unset, load 6.1 to 11.4, 1,000 runs each: tree 31.0 / 74.0 / 123.1 /
+    1,054.6, no flush 35.7 / 85.3 / 127.5 / 750.6; both arms' outliers in the same block.
+    Interleaved run by run (300 each): 85.0 / 131.6 / 404.6 / 1,112.7 against 76.3 /
+    106.9 / 176.6 / 1,103.9.
+  - kiln's image, new executables 8 a second, debug, load 8.7 to 11.5: 500 runs, 38.6 /
+    53.6 / 121.2 / 1,056.0. vCPU 0's setup, which maps the working set ahead by a guest loop
+    on HVF, the slowest vCPU's in all 500: 7.2 / 23.8 / 27.5 / 1,019.3; the 1,056 ms run was
+    that setup's 1,018.6.
+  - vCPU threads given the real-time policy after their setup rather than before, kiln's
+    image, blocks of 50, 300 each: load 4.1 to 4.7, 37.6 / 50.0 / 95.7 / 196.3 against 39.1 /
+    51.5 / 90.8 / 114.2, vCPU 0's setup 6.2 at p50 against 8.4; 18 spinning, 200 each,
+    141.4 / 519.9 / 735.0 / 1,267.5 against 141.2 / 447.4 / 775.4 / 1,066.4.
+  - 18 spinning: every phase stretched, the VM process's spawn to its first request 538
+    and 868 ms in the two slowest runs, its restore to ready 177 to 440 ms.
+  - kiln's image, 64 new executables at once every 5 s, load 9.5 to 12.3: 300 runs, 61.0 /
+    112.7 / 179.1 / 197.6; the VM's spawn to its first request 5.5 / 6.8 / 20.3 / 25.4; the
+    client's launch 4.1 / 10.9 / 31.2 / 31.6.
+  - kiln's build of e076065f against gpu, kiln's image, blocks of 50, load 8.0 to 16.6,
+    300 each: 57.3 / 144.0 / 249.2 / 1,892.9 against 73.1 / 144.1 / 1,058.8 / 1,555.2, both
+    arms' outliers in the same blocks.
+- **Reading.** None of kiln's 2 to 7 s outliers came back: the longest cold runs here were
+  1.9 s with kiln's build and 1.6 s with gpu, side by side under the same load, and below
+  saturation runs stayed under 0.2 s. A cold run's VM process carries what a loaded host
+  does to a new process, its launch and its restore stretched alike under saturation, as
+  D2 has it of a per-request process (PM M22); neither the layer's flush at its end nor the
+  order of its vCPU threads' real-time policy moved its tail. macOS's assessment of new
+  executables held up no VM process's launch here (M166's stalls behind 192 new copies, 64
+  at once, did not recur behind 64). One outlier was vCPU 0's working-set prefetch, 1.0 s
+  where it takes 7 ms, unexplained. kiln's own command and conditions are what is left.
+- **Consequence.** No change to how shards starts a cold run. A run's timing line says its
+  client's own time (`client_us`), so that a harness tells a client's launch apart.
+
+### M314. A read held short of its budget through FUSE: the least room, and the share's buffers (D188)
+
+- **Question.** On 7cf8c5b9's CI the FUSE budget E2E's last phase read a gigabyte in 11.1
+  to 13.1 s against 5.3 s with no budget, each run held within the least room a run goes on
+  in (M309) for its whole read. Is that room too small, and what holds such a read within
+  twice its unbudgeted time?
+- **Method.** The DAX budget job (docs/research/measurements/dax-budget, measure.py
+  `--as-e2e`: the E2E's phases in its order, each in a home and slice of its own, 3 rounds
+  of a sparse 1 GiB file through FUSE, `SHARDS_SHARE_WINDOW_MIB=0`; `rooms.py` and the
+  daemon's word for each read, held short throughout or not), on CI's ubuntu-24.04 runners
+  (Linux 6.17.0-1022-azure, 4 CPUs, KVM nested on Hyper-V). Arms: the tree; builds whose
+  least room is 2, 4, 8 and 16 times it (`least-x*.patch`); one whose pool maps ahead none
+  of its working set's written pages under a budget (`ws-reads.patch`); and one whose share
+  reads each request into, and builds each reply in, buffers kept from request to request,
+  in the share process and in the VM process's queue workers (`fuse-buffers.patch`), where
+  a 1 MiB READ had made its server's buffer, its reply, its frame and the frame's copy
+  anew, and the worker its request and the reply's frame. Runs 40059820620 (295d03ab),
+  40063613556 (0e764f28), and 40066973123, 40066974883, 40072181887, 40072183563,
+  40075910855 and 40075912701 (9452af32), 2026-10-24.
+- **Results** (s; reads held short throughout, against the same CPU's reads under no
+  budget, n, p50, p90, max).
+  - The least room, 1 to 16 times (EPYC 7763, three to six runners an arm): the tree n 9
+    p50 13.42, p90 13.97, max 13.97, against 4.31 with none, 3.1 times; 2 times n 16, 12.54,
+    13.72, 14.59 (2.95); 4 times n 12, 12.26, 12.86, 13.36 (2.86); 8 times n 16, 12.69,
+    13.32, 13.35 (2.99); 16 times n 14, 11.17, 13.05, 13.12 (2.57). On an EPYC 9V74, 2, 4
+    and 8 times: 2.64, 2.59 and 2.29 times its none (n 2, 5, 7); on a Xeon Platinum, 1, 4, 8
+    and 16 times: 2.34 to 2.45 (n 3 to 5). No room within twice; the guest's reclaim, 259 to
+    277 pages taken a MiB read, and the slice's refaults of file pages, 202,911 to 236,300 a
+    read at the median, the same at every room.
+  - The same, 9452af32's six runs pooled (47 runners, `rooms.py 40066973123 40066974883
+    40072181887 40072183563 40075910855 40075912701`), reads held short throughout, s, with
+    the share's buffers kept (fuse-buffers) in the same runs:
+
+    | CPU (runners) | room | n | p50 | p90 | p99 | max | none: n, p50 | ratio | guest's pages taken a MiB, p50 | slice's refaults a read, p50 |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | EPYC 7763 (30) | 1 | 74 | 12.37 | 13.13 | 14.21 | 14.21 | 257, 4.27 | 2.90 | 274 | 214,860 |
+    | | 2 | 48 | 12.25 | 13.04 | 13.64 | 13.64 | 135, 4.28 | 2.86 | 270 | 214,187 |
+    | | 4 | 36 | 12.28 | 13.00 | 351.08 | 351.08 | 141, 4.30 | 2.86 | 265 | 213,085 |
+    | | 8 | 43 | 12.26 | 12.88 | 13.45 | 13.45 | 138, 4.28 | 2.86 | 270 | 211,980 |
+    | | 16 | 58 | 12.05 | 12.72 | 204.28 | 204.28 | 126, 4.27 | 2.82 | 267 | 212,925 |
+    | | buffers | 8 | 2.75 | 41.02 | 41.02 | 41.02 | 69, 2.15 | 1.28 | 198 | 100,407 |
+    | EPYC 9V45 (7) | 1 | 39 | 6.95 | 8.43 | 9.47 | 9.47 | 59, 2.60 | 2.67 | 253 | 195,934 |
+    | | 2 | 18 | 6.87 | 7.91 | 8.11 | 8.11 | 21, 2.51 | 2.74 | 248 | 203,348 |
+    | | 4 | 20 | 6.46 | 9.26 | 9.43 | 9.43 | 21, 2.55 | 2.53 | 244 | 178,776 |
+    | | 8 | 9 | 5.79 | 7.95 | 7.95 | 7.95 | 9, 2.50 | 2.32 | 235 | 187,112 |
+    | | 16 | 31 | 7.21 | 8.31 | 9.03 | 9.03 | 42, 2.65 | 2.72 | 248 | 198,496 |
+    | | buffers | 14 | 1.78 | 1.90 | 2.65 | 2.65 | 39, 1.49 | 1.19 | 146 | 0 |
+    | EPYC 9V74 (8) | 1 | 33 | 7.00 | 8.53 | 10.39 | 10.39 | 69, 3.12 | 2.24 | 251 | 172,300 |
+    | | 2 | 21 | 7.61 | 9.79 | 11.04 | 11.04 | 51, 3.09 | 2.46 | 260 | 205,390 |
+    | | 4 | 27 | 7.26 | 9.07 | 10.30 | 10.30 | 54, 3.09 | 2.35 | 251 | 200,863 |
+    | | 8 | 16 | 7.01 | 7.99 | 8.19 | 8.19 | 27, 3.17 | 2.21 | 240 | 190,976 |
+    | | 16 | 9 | 7.80 | 11.10 | 11.10 | 11.10 | 18, 3.16 | 2.47 | 252 | 218,584 |
+    | | buffers | 12 | 2.00 | 2.11 | 2.13 | 2.13 | 18, 1.56 | 1.28 | 125 | 0 |
+    | Xeon 8573C (2) | 1 | 7 | 8.28 | 9.35 | 9.35 | 9.35 | 12, 3.32 | 2.49 | 270 | 213,254 |
+    | | 8 | 3 | 3.73 | 3.75 | 3.75 | 3.75 | 6, 3.48 | 1.07 | 210 | 160,695 |
+    | | 16 | 12 | 8.23 | 9.93 | 10.05 | 10.05 | 12, 3.53 | 2.33 | 254 | 219,492 |
+    | | buffers | 6 | 3.83 | 3.91 | 3.91 | 3.91 | 9, 2.06 | 1.86 | 217 | 219,425 |
+
+    No Xeon read landed at 2 or 4 times. Within twice at no room but a Xeon's three reads at
+    8 times. The 7763's slowest at 4 and 16 times, 351 and 204 s, refaulted 33.1 and 22.0
+    million pages each, its guest reading back its RAM as its host took it: M318's regime.
+  - The share's buffers kept (fuse-buffers): EPYC 7763 n 14, p50 2.74, p90 2.92, max 41.02
+    against 2.15 with none, 1.27 times (the tree's in the same runs: 12.25 against 4.31,
+    2.84); EPYC 9V45 n 10, 1.79, 2.65, 2.65 against 1.43, 1.25 times (the tree's 6.67
+    against 2.60, 2.57); EPYC 9V74 n 6, 2.06, 2.13, 2.13 against 1.57, 1.31 times (7.09
+    against 3.09, 2.29). With no budget it read in half the tree's time on every CPU. The
+    slice's refaults a read held short, at the median: 106,868 on the 7763s against the
+    tree's 219,026, none on the 9V45s against 183,080, 197,680 on the 9V74 against 199,722.
+    In the samples of these runs' short reads, the tree's VM processes' threads were found
+    waiting in mmap or munmap (`vm_mmap_pgoff`, `__vm_munmap`) 136 times, the buffers' 2.
+  - Not mapping written pages ahead (ws-reads): 3.0 and 2.6 times on the 7763 and 9V45
+    (n 3, 1); with the share's buffers too, reads of 183.7 and 263.4 s, 3.4 and 3.1 million
+    refaults.
+  - The 41.02 s read: its round's budget, a mebibyte short of what the slice's microVMs
+    held, was 95 MiB, the slice holding the reader's microVM alone, where in that copy's
+    other rounds it was 754 and 810 MiB beside warm ones. Through the read the slice held 89
+    to 90 MiB of anonymous memory and no file page for more than a second, the host taking
+    back the guest's own RAM, its template's pages, as fast as the guest read them back:
+    47,000 to 173,000 refaults a second, 4.3 million. Reads of the tree's other builds in
+    such rounds (4 and 8 times its room, and ws-reads), budgets of 32 to 83 MiB, ran until
+    their jobs' 3 hours ended (40059820620's five copies that did not finish).
+  - The FUSE budget E2E, alone on eight runners (budget E2E run 40074043197, 8ae7bcc8): 3
+    passed, 5 failed one assertion, no run held within the least room. Its short budget,
+    set once for its three reads, 815 MiB in one, met a first read that its daemon counted
+    as holding 331 MiB, room of 451 MiB, and the warm microVM ended for room gave the next
+    reads 414 and 370. A budget a mebibyte short of what a slice holds with warm microVMs in
+    it ends them, which gives every run room again.
+- **Reading.** The room past what a held run uses was not what held its reads: at every
+  room from 1 to 16 times, held short throughout, they read in 2.2 to 3.1 times their
+  unbudgeted time on every CPU, but for a Xeon's three reads at 8 times. A MiB read through the share had made 5 MiB of fresh memory, freed as
+  its reply went: four in the share process (the read's buffer, its reply, the reply with
+  its header, the frame it went in) and one in the VM process (the frame read), processes
+  whose memory the run's budget holds, and their threads waited in mmap and munmap; with
+  each request read into, and each reply built in, buffers
+  kept, the EPYCs' held reads came within 1.19 to 1.31 times and a Xeon 8573C's within 1.86
+  (n 6, refaulting as the tree's did), and their unbudgeted reads took 0.50 to 0.62 times
+  as long. Below what its one microVM's guest needs resident, a budget leaves its host
+  only that guest's RAM to take back, and its reads crawl as M309's did.
+- **Consequence.** D188: the share's buffers are kept from request to request
+  (`Server::handle_into`, fs/mod.rs `Buffers`), held by
+  `reads_are_answered_into_the_buffer_their_asker_keeps`; the least room stays the charge
+  batches, read-ahead and a share's request. A budget below a lone microVM's resident needs
+  is D188's next item.
+
+### M315. Where a cold run's seconds went on a loaded Mac: its template's pages, gone with their files' vnodes (D25, D26)
+
+- **Question.** kiln's sandbox_launch bench had 2 or 3 of 20 cold runs (a pool of none) at
+  6.1 to 8.2 s where their median was 218 to 457 ms (its runs 4 to 6, shards a9133de9 and
+  e076065f), and M313's harness, its runs back to back, found none past 1.9 s. Where does
+  such a run's time go?
+- **Method.** kiln's own bench (its build of 2026-10-22; `--phases cold --max-load 2.0
+  --settle-s 20`, as its run 6: Claude Code launched as kiln launches it, `--network host`
+  and kiln's resolver flags included, timed to its answer to `initialize`, each run 20 s or
+  more after the last), each Shards call through
+  `docs/research/measurements/cold-start/kiln-bench.sh`'s `wrap`, which keeps the call and
+  its stderr (its `SHARDS_TIMING` line) and gives each run's Claude Code a debug file; the
+  daemon at `SHARDS_LOG=debug`. Builds: kiln's e076065f; gpu 0e764f28 with the share's
+  buffers kept (M314) and vCPU 0's setup timed in parts (its creation, the working set's
+  prefetch, its state); then the prefetch's loop timed too, with its thread's CPU time
+  (`platform::ThreadClock`, a vCPU's time in its guest included, M288) and the process's
+  faults, page-ins, copy-on-write faults and context switches over it
+  (`platform::task_events`, task_info(TASK_EVENTS_INFO)). Then two A/Bs (`vnode.sh`): a
+  restore, 300,000 files of a directory of its own looked at (`churn.py`, a `stat` of each:
+  what a build's files take of the host's vnodes), and a restore, 4 trials an arm, in turn.
+  The first with the template's memory and heads held open by another process or not; the
+  second two builds of that tree, each with a home, daemon and template of its own, with the
+  daemon holding its templates' files (below) and without. The Mac: Apple M5 Max, 18 CPUs,
+  128 GiB, macOS 26.4.1, its load from the user's other projects 3 to 15; 2026-10-24.
+- **Results** (ms unless said).
+  - kiln's bench, e076065f, load 8 to 14: 3 of 24 runs' VMs took 110, 863 and 1,495 from
+    their restore to their vCPUs ready, where the rest took 6 to 14, and Claude Code's first
+    line came 971 and 2,313 after its client's spawn in the two slowest, 93 to 150 in the
+    rest: the time was the VM's, before Claude Code began.
+  - gpu, the setup in parts, 10 restores, load 3 to 8: in the one slow restore vCPU 0's
+    prefetch of its working set, a loop in its guest touching 1,346 pages, took 1,393, where
+    it took 3.8 to 15.9. With the loop's account, 18 restores: the one slow one's took 1,826
+    wall, 16.7 of it on its CPU, with 1,524 page-ins for its 1,524 pages and 799 context
+    switches; the rest 3.7 to 24.6, 2 page-ins and 1 to 5 switches. Its whole working set
+    came back from the disk, a page a fault.
+  - The host's vnodes: `kern.maxvnodes` 263,168 and `kern.num_vnodes` 263,168, the table
+    full; 912,744,233 recycled in 17 days of uptime, 620 a second on average, and 28,070 in
+    10 s as measured (2,807 a second), from about 221,000 on its free list: a vnode put on
+    it was taken again within about 80 s. A file no process holds open keeps its vnode on
+    that list, and XNU's recycling of a vnode tears down its file's memory object, the pages
+    cached of it with it (bsd/vfs/vfs_subr.c, `vclean`: `ubc_destroy_named`). Between two
+    cold runs nothing held the template's files open.
+  - The first A/B, each restore after 334,000 to 599,000 vnodes were recycled: with nothing
+    held, the prefetch took 1,517 to 2,170 (p50 2,065), 1,524 page-ins every time, and the
+    run 8.0 to 9.5 s (p50 9.3); with the template's memory and heads held, 17.6 to 486 (p50
+    299), 161 page-ins, the pages its working set names of the root filesystem, and the run
+    5.5 to 7.2 s (p50 6.1), its guest reading its programs from the root filesystem again.
+    Warm, either way, the prefetch took 8 to 27 and the run 0.2 to 0.6 s.
+  - The second A/B, each restore after 366,000 to 558,000 vnodes were recycled: the tree,
+    runs 7.9 to 11.0 s (p50 10.4), its prefetch 125 to 2,184 (p50 2,141) with 1,346 page-ins
+    of 1,346 every time, and two of its runs between churns, after the other arm's, 8.5 and
+    10.5 s; with the template's files held, runs 464 to 963 (p50 664), the prefetch 7.8 to
+    102 (p50 47), 8 page-ins of 1,419. Warm, held: 171 to 589.
+  - kiln's bench again, its cold phase on the held build (64f0d399), n 60, the Mac's load 10
+    to 23: p50 288, p90 1,372, p99 and max 3,535, where its runs 4 to 6 had 2 or 3 of 20
+    at 2.3 to 8.2 s (p50 218 to 457); every prefetch but the first paged in 2 pages. The 7
+    runs past 1 s came as the load rose past 14, their VMs ready 283 to 506 after their
+    clients' spawns (27.7 at the median), the rest of their time Claude Code's own on a
+    contended host, as its host phase's p90 was 990 at load 20 (kiln's run 6).
+- **Reading.** A cold run's seconds were its template's pages read back from the disk. On a
+  Mac whose vnode table is full and recycling thousands a second, a template's files, open
+  only while a VM restores from them, give up their vnodes and their cached pages between
+  runs; the restore's prefetch then reads its working set a fault at a time, and its guest
+  its programs from the root filesystem it maps, seconds of it on a loaded host. M313's runs,
+  back to back, never left the files long enough to lose them; kiln's, 20 s or more apart,
+  and a user's, minutes or hours apart, do.
+- **Consequence.** D25: the daemon holds each template's files open from its first restore
+  until the template is removed or replaced (`snapshot::hold`, `Daemon::hold_template`): its
+  memory, its writable layer's and windows' heads, and the files its guest only reads, its
+  root filesystem among them. Held by `a_generation_held_holds_the_files_its_restores_map`
+  and `a_pool_of_none_serves_every_run` (the daemon's open files).
+
+### M316. The Firecracker comparison's envelope in 20 runs across CI's runner CPUs (D25)
+
+- **Question.** With a restore's working set recorded and mapped ahead (M310), its host's
+  fault-around held off for the machine's life (M312), and its restore's memory measured on
+  Linux 7.0 (M312), does shards stay at or under Firecracker on every metric of the
+  comparison, boot and restore, time and memory, run after run, on every runner CPU?
+- **Method.** The envelope job (`.github/workflows/envelope.yml`): CI's comparison
+  (crates/shards/benches/firecracker.rs, `--runs 30`, Firecracker v1.17.0, the guest kernel
+  6.18.48, 1 vCPU, 128 MiB) and its envelope (`scripts/bench-envelope`: each metric's
+  paired median difference, shards less Firecracker, and its bootstrap 95% interval; worse
+  where the interval lies wholly above zero), ten copies at once on ubuntu-24.04 runners,
+  each with its lscpu model and kernel. Two dispatches at 9452af32: runs 40066020010 and
+  40067708482, 2026-10-24, Linux 6.17.0-1022-azure on every runner.
+- **Results.** 20 runs of 20 passed their envelope: of 360 verdicts, 349 better, 11 tied,
+  none worse. The runners: EPYC 7763 9, 9V45 6, 9V74 3, Xeon Platinum 8573C 2. Paired median
+  differences, shards less Firecracker, run by run (lowest to highest of each CPU's runs):
+  - boot, spawn to ready: 7763 −1.5 to −4.5 ms (shards 120.4 to 123.0 at the median,
+    Firecracker 122.3 to 126.2); 9V45 −1.2 to −3.2; 9V74 −1.8 to −3.7; 8573C −4.4 to −4.6;
+  - restore, spawn to the guest's first beat: 7763 −6.5 to −8.2 ms (shards 5.2 to 6.0,
+    Firecracker 12.2 to 13.8); 9V45 −5.0 to −6.6 (3.9 to 4.9 against 9.9 to 11.0); 9V74
+    −5.7 to −6.3; 8573C −5.1 to −7.1;
+  - boot `rss_anon` −4.0 MiB in every run; restore `rss_file` −7.7 to −8.2 MiB (shards 3.7
+    to 3.8, Firecracker 11.5 to 12.0); restore PSS −11.7 to −12.3 MiB; the 16-VM fleet's
+    PSS a VM −4.4 to −4.6 MiB.
+- **Reading.** On every runner CPU CI's ubuntu-24.04 runners land on, shards starts sooner
+  and holds less than Firecracker on every axis the comparison measures, booted or
+  restored, in every run, where 5 of the 57 comparison jobs before M310 failed their restore
+  time on AMD runners.
+- **Consequence.** D25: the restore's working set mapped ahead, with fault-around held off
+  for the machine's life, is the restore; the comparison's envelope holds across runner
+  CPUs.
+
+### M317. A busy microVM's threads under XNU's real-time fail-safe, and its device workers on a busy host (D4)
+
+- **Question.** A microVM's vCPU threads run at Mach's time-constraint policy (D4, M8, M10),
+  and D4 left open what XNU does to them when a guest keeps them busy. A gate's block
+  stress test once verified 104 reads where alone it verified 250,000, its device workers
+  at the default policy. What does the fail-safe do to a busy run's vCPUs and to its host,
+  and at which policy do device workers keep their throughput on a busy host?
+- **Method.** `docs/research/measurements/macos-sched/`, every program started as a launchd
+  job of the user's session (`launchd-run.sh`, ProcessType Interactive), as a user's
+  terminal starts one: an agent's own session runs under a utility QoS clamp, every thread
+  at priority 20 or below and QoS requests above it clamped to it (`qos.py` there, spinning
+  threads as `ps -M` shows them: user-interactive, initiated, default and utility at 15,
+  11, 12 and 16; under launchd 37, 37, 31 and 20).
+  The 2026-10-22 policy A/B (block stress under 18 busy loops: default 63–76k verified
+  reads, user-interactive 61–95k, time-constraint 246–265k, n 5 each) ran under the clamp,
+  so its user-interactive arm was the clamp's utility.
+  - XNU's source, apple-oss-distributions/xnu main (xnu-12377.121.6): osfmk/kern/priority.c
+    `thread_quantum_expire` (the fail-safe), sched_prim.c (`MAX_UNSAFE_RT_QUANTA` 100,
+    `SAFE_RT_MULTIPLIER` 2, the 10 ms quantum, `computation_metered`), thread_policy.c
+    (DEPRESSPRI for a real-time thread the fail-safe demoted; `thread_policy_set` removes a
+    thread's QoS as it sets another policy; QoS settable only by the thread itself),
+    sched.h (`SCHED_TICK_SHIFT` 3, a 125 ms tick).
+  - `spin.c`: 18, 12 and 6 threads spinning 5 s at the vCPUs' policy, at QoS
+    user-interactive and at the default, the CPU time each got, 2 rounds;
+    `spin-timeline.c`: four at the vCPUs' policy, their policy and CPU every 50 ms, read by
+    a thread at a tighter constraint (0.1 ms in 0.2).
+  - `failsafe.sh`: runs of busy loops for 15 s (`alpine`, `timeout 15 sh -c 'while :; do
+    :; done'`): one run of 4, one of 18, three of 18 at once (54 busy vCPUs on 18 CPUs,
+    every run with the host's CPUs as vCPUs, D191); every VM process's threads looked at
+    every 20 ms by `threads.py` (proc_pidinfo, itself at the time-constraint policy), a
+    host thread's 1 ms sleeps at the default priority (`probe.py`); `timeline.py` and
+    `summary.py` tabulate. The tree (64f0d399's build) and the governor's, in turn, tree,
+    governor, governor, tree, twice.
+  - `workers.sh`: the block stress test (tests/block.rs concurrent_readers: a guest's
+    readers of a virtio-blk disk, its reads verified in 3 s), 6 rounds of each arm in turn,
+    the order turned each round, with the host as it was and with 18 busy loops at the
+    default priority, as a user's build would have it. Arms by `SHARDS_VM_BINARY`: a
+    scratch build whose device workers take `SHARDS_WORKER_POLICY` (default,
+    user-interactive, time-constraint), and the governor's build.
+  - Apple M5 Max (6 Super, 12 Performance cores), macOS 26.4.1, 23a66853 and it with the
+    governor, 2026-10-24; the host's load average 31 to 134 throughout, other projects'
+    work at utility QoS.
+- **Results.**
+  - The fail-safe, from the source. A thread at the time-constraint policy that runs 100
+    quanta, a second, without blocking is demoted to timeshare for 200 quanta at priority
+    0, below every thread of its host. Its count is its CPU time since it last woke from a
+    block, preemptions and other policies included, and its release is looked for only as
+    the thread runs. Setting the policy takes a thread's QoS class off: user-interactive
+    asked before it, none after, and none at timeshare (`policy-qos.c`), as M8 and M10's
+    `--qos=ui --rt` threads had it too.
+  - Measured on spinners. Four at the vCPUs' policy ran 50 ms of every 50 for 1.0 s, then
+    0 to 4 ms of every 50 for the 7 s that followed, never released. 18, 12 and 6 got 0.18
+    to 0.20 of a CPU each over 5 s (3.2 to 3.3, 2.35 and 1.2 CPUs together), where at
+    user-interactive they got 0.93 to 1.00 (16.8 to 17.0, 11.6, 6.0) and at the default
+    0.85 to 1.00 (15.6 to 16.3, 11.4 to 11.6, 6.0).
+  - Runs of busy loops, tree against the governor, four rounds each in turn (`summary.py`
+    over the loops' seconds 3 to 16; the busy vCPUs' CPUs together, the share of their
+    looks at priority 0, the host thread's longest wait):
+
+    | Load | Tree: CPUs | depressed | host waited | Governor: CPUs | depressed | host waited |
+    |---|---|---|---|---|---|---|
+    | 1 run, 4 loops | 0.97, 3.25, 1.94, 1.32 | 41, 17, 30, 70% | ≤ 5 ms | 3.99, 3.99, 4.00, 3.99 | 0% | ≤ 5 ms |
+    | 1 run, 18 loops | 11.9, 11.8, 11.1, 9.6 | 0% | 8.7, 7.3, 7.4, 30.1 ms | 16.0, 16.1, 16.2, 16.3 | 0% | 13.9, 9.2, 12.9, 32.5 ms |
+    | 3 runs, 18 loops each | 11.9, 10.0, 11.2, 9.2 | 0 to 10% | 961, 1,453, 5, 6,424 ms | 16.1, 16.3, 16.2, 16.1 | 0% | 5.1, 7.0, 11.1, 13.7 ms |
+
+    The first two governor rounds are the first governor's (below), the last two the
+    governor's as built; the host's load average 35 to 134. On the tree a busy vCPU that
+    never idled was depressed within 1 to 5 s of its loop's start and stayed so 2 to 13 s
+    at a time (one: a second's CPU by 8.3 s, 3 ms in the 3 s after); with 18 loops each
+    vCPU idled in HVF's in-kernel WFI often enough to start its count again, and none was.
+    The governor's vCPUs were at timeshare within 0.2 s of their loops' start, the host's
+    thread then waiting on them as on its other programs: more than 5 ms late 67 to 121
+    times in 14 s with 18 loops, against 1 to 3 on the tree, where only 9.6 to 11.9 of 18
+    CPUs went to the guest.
+  - Device workers, verified reads in 3 s, n 6 each, p50 (min to max). The host as it was:
+    default 270k, user-interactive 266k, time-constraint 274k. With 18 busy loops: default
+    156k (124 to 184k), user-interactive 210k (192 to 248k), time-constraint 238k (192 to
+    249k); in each round time-constraint at or above user-interactive, and
+    user-interactive 35 to 55% above the default. A first governor, which moved a thread at
+    the first look to find it a tick past its last seen wait, verified 123k (112 to 135k)
+    with 18 busy loops, against the tree's 136k (123 to 169k) and unguarded
+    time-constraint's 213k (196 to 244k), n 6 each, interleaved (261k, 267k and 280k with
+    the host as it was): the stress's four vCPUs, each using half a CPU and waiting on the
+    device's answers the rest, were found at timeshare in 33 to 84% of looks, a thread at
+    timeshare on a busy host seldom found waiting rather than runnable, so seldom moved
+    back. The governor as built, which moves a thread only once a tick of millisecond looks
+    has found it running at every one, n 6 each, interleaved with both: 240.7k (186 to
+    246k) with 18 busy loops, unguarded time-constraint 223.9k (191 to 254k), the tree
+    143.9k (113 to 157k); with the host as it was 265.1k, 276.8k and 264.1k.
+  - The block stress beside two other microVMs, each with 18 busy loops, as a gate's other
+    tests' microVMs keep their vCPUs busy (`busy-neighbours.sh`, n 5 each, in turn, the
+    host's load average 82 to 151): the tree 244k at p50 (130 to 252k), the governor 247k
+    (169 to 279k). Neither came near the 104 a gate once verified, which busy neighbours do
+    not explain.
+  - The governor's cost: a look, `thread_info`, 0.52 µs, and a policy set 0.47 to 0.51 µs:
+    for a VM process's 18 vCPUs and 10 workers, 8 looks a second, about 120 µs of CPU a
+    second, and for a thread suspected, a look a millisecond for a tick. A run's start, `build-ab/ab.py`, 300 pooled `run --rm alpine true` through each
+    build in turn, both restoring the tree's template, the host's load average 40 to 69:
+    wall clock tree p50 9,391 µs (p90 11,140, p99 25,969, max 31,062), governor 9,245 (10,991,
+    32,367, 74,274), paired median −54 µs, 95% [−134, +34]; the command's time in the guest
+    −64 µs [−70, −55]; the rest +22 µs [−55, +86].
+- **Consequence (D4).** Every vCPU and device worker thread runs at the time-constraint
+  policy while it waits between runs, which is where M8 and M10 measured what the policy
+  gives a guest. A governor looks at each once a scheduler tick; one that has run a tick
+  since it was last seen waiting is looked at every millisecond for a tick more, and goes
+  to timeshare, as any program's thread, only if no look finds it waiting, three ticks at
+  most into the fail-safe's second; it is real-time again once seen waiting. A busy guest
+  shares its host's CPUs as its host's programs do; one waiting on its devices, and an
+  idle one, keep the policy.
+
+### M318. Reads held short through FUSE: a cold boot's budget, the share's copy of what its guest reads, and a guest's RAM counted as room (D188)
+
+- **Question.** With the share keeping its buffers from request to request (ff8d72b4,
+  M314), does a 1 GiB read through FUSE held within the least room for its whole read come
+  within twice its unbudgeted time on every runner CPU CI lands on, in the FUSE budget
+  E2E's regime and with its run alone in its slice? What were the DAX budget job's reads of
+  761 to 1,729 s? And what is the regime M314 found past the least room, where a lone
+  microVM's read took 41 s and others did not end?
+- **Method.** The DAX budget job (docs/research/measurements/dax-budget/measure.py) on CI's
+  ubuntu-24.04 runners, Linux 6.17.0-1022-azure, 4 CPUs, KVM nested on Hyper-V, 8 runners a
+  run, 2026-10-24:
+  - `--as-e2e`, the E2E's phases in its order, each round in a home and slice of its own,
+    its last a lone run alone in the slice under a budget a mebibyte short of what it holds,
+    read three times once its daemon says it is held within the least room. At 23a66853:
+    runs 40082480910 and 40084026167. With the share's policies as arms (below):
+    40102157076 (beed1833, 3 rounds), 40105729007 (1fc68ddb, 6 rounds, its guest sampled
+    from within), 40113636061 (269d6589, 6 rounds).
+  - `--pool 0 --highs short,infinity`, each read a run of its own, its budget set as it
+    starts: runs 40082475577 (23a66853), 40093677719 (ed182512), 40102145014 (beed1833) and
+    40113625738 (269d6589).
+  - `--again --files written --highs 4G --pool 0`: each arm's own written gigabyte, out of
+    the host's page cache before its first read alone, each later read a run of its own
+    under a budget with room for every arm's copy: run 40102159064 (beed1833).
+  - The arms, each a patch of the tree's: the share dropping its copy of each range its
+    guest reads (share-dontneed.patch); dropping only what its budgets have no room left
+    for (share-headroom.patch); dropping it under any budget, keeping it under none
+    (share-budgeted.patch); keeping it only while its budgets leave room past it for its
+    own reads (share-margin.patch); the daemon holding each microVM's file pages at the
+    most its VM process has held resident, less what it gave back (room.patch); and both
+    (share-margin-room.patch). The adopted code is share-margin-room.patch's but for two
+    changes made after these runs: a give-back lowers its count by the files let go as it
+    gave back, where the patch lowered it by all a give-back said it freed; and the count is
+    read first as a run begins, where the patch read it first at its microVM's first word
+    of a budget.
+  - `rooms.py`: per runner CPU, n, p50, p90, p99 and max of the reads, held short
+    throughout or not, beside the unbudgeted; the slice's refaults a read; in the slice's
+    looks each second during a short read, what its budget had left below it, its mapped
+    files and its anonymous memory; and the reads that ran away, two looks or more finding
+    its mapped files under 5 MiB and its anonymous memory within 16 MiB of its budget.
+- **Results.**
+  - Held short throughout, the E2E's regime at 23a66853 (runs 40082480910 and
+    40084026167), against the same CPU's unbudgeted reads, s:
+
+    | CPU | n | p50 | p90 | max | unbudgeted n, p50 | ratio | refaults a read, p50 |
+    |---|---|---|---|---|---|---|---|
+    | EPYC 7763 | 21 | 2.59 | 2.70 | 2.76 | 120, 2.10 | 1.23 | 116,520 |
+    | EPYC 9V45 | 7 | 1.70 | 1.84 | 1.84 | 36, 1.49 | 1.14 | 0 |
+    | EPYC 9V74 | 15 | 2.04 | 2.11 | 2.17 | 24, 1.60 | 1.27 | 0 |
+
+  - A cold boot. With a pool of none each arm's first read was its image's first run, which
+    boots cold and saves the template: 761 to 1,729 s on every runner, where every later
+    read, restoring the template, took 1.2 to 5.9 s. Its slice held 75 to 79 MiB for the
+    whole read against its 73 MiB budget, 71 to 73 MiB of it anonymous and 4 to 16 KiB of
+    files: the VM process's guest RAM, 68 to 70 MiB resident of its 260 MiB mapping, where
+    its guest used 22 MB (Slab 12.5 MB, Cached 2 MB) and the rest was its kernel's own;
+    with no swap nothing of it could be taken back, and memory.high throttled the slice
+    throughout (919 `high` events a second). A restored microVM holds about as much
+    anonymous memory (65 MiB) beside 111 MiB of its template's clean pages, which its host
+    may take back: a budget a mebibyte short of what its slice holds cannot be met by a
+    cold one. The harness now makes each arm's template before its first read, unbudgeted,
+    by a run of its readers' shape (a template's key holds its run's shares, run.rs
+    `template`: 40093677719's warm-up, with no volume, left its first reads booting cold),
+    and restores it once, reading as its readers do, which records the working set later
+    restores map ahead, a template's first restore's alone: one that maps none left a
+    budget worked out a mebibyte short of what its run held at 35 MiB, its read not
+    ending in 1,800 s (40118424391), and a run of `true` recorded 5,385 pages where a
+    reader's was 44,088, every later budget worked out so as short (40121550959).
+  - M314's regime, on the tree: a lone run held short, its reads run away. Of the tree's
+    144 lone reads in 40105729007, 31 ran away, two until their 1,800 s ran out; the
+    tree's first pool-0 read held short ran away on all 8 of 40102145014's runners, the
+    longest for two hours. On a 9V74 (40093677719's h) none of its 5 pool-0 reads was held
+    within the least room: 3.71 s at p50 (5.85 at most) against 1.91 with none, its slice
+    past its budget (948 KiB at p50), its mapped files 0.1 MiB and its anonymous memory 265
+    MiB, its whole budget, 201,127 refaults a read at p50. In order, from the daemon's log
+    and the guest's own samples of one such read (40105729007's f, share-margin.patch):
+    held short, the slice holding 198 MiB, 123 MiB of it files its processes map; its host
+    took back 71 MiB of its template's pages, its guest's RAM, and its daemon, counting
+    what its processes held resident and the inactive pages kept beside them, found 111
+    MiB of room, which it told the guest ("has room again"); the guest, 15,926 of its
+    15,958 MiB free, filled 141 MiB of page cache in 3 s, its run's own `memory.high`
+    never met; its host took back all of its RAM it could, and its vCPUs were throttled 68
+    s as it read it back. Each give-back of a host pressure pass, which a slice's own
+    throttling raises, told the guest its room again. The share's copy of what the guest
+    read, as it filled the slice, took the template's pages first: on a 7763 (budget E2E
+    40088882919's c) the slice's mapped files fell from 67 MiB to 15 while it held 213 MiB
+    of the copy.
+  - The share's copy, lone reads held a mebibyte short, s, p50 (max), and the reads that
+    ran away (40102157076, 69 reads an arm on 8 runners):
+
+    | CPU | unbudgeted | tree | dropped | dropped under any budget | kept within the room its reads need |
+    |---|---|---|---|---|---|
+    | EPYC 7763 (3) | 2.15 | 1.82 (4.97) | 1.70 (1.98) | 1.70 (2.17) | 1.75 (21.90) |
+    | EPYC 9V74 (3) | 1.57 | 1.68 (4.24) | 1.21 (1.29) | 1.22 (3.66) | 1.24 (2.22) |
+    | Xeon 8370C | 2.01 | 1.86 (4.59) | 1.51 (1.60) | 1.58 (2.07) | 1.58 (1.87) |
+    | ran away | | 5 | 0 | 1 | 1 |
+
+    Kept until its budgets had no room left (share-headroom.patch, 40093677719), the copy
+    held the slice within half a mebibyte of its budget in every look (228 and 288 KiB at
+    p50), its template's mapped pages taken to 4.5 MiB in 2 of a 9V74's 5 reads: 1.01 and
+    1.02 times its time with none, where dropped it read in 0.81. Under a budget with room
+    for it, a run's later reads of a written gigabyte (40102159064, rounds 2 to 6, n 10 to
+    15 a CPU) took, at p50, 2.39, 1.74 and 1.85 s on the 7763, 9V45 and 9V74 with the tree,
+    2.45, 1.74 and 1.80 with the copy kept within the room its reads need, and 3.20, 2.91
+    and 3.94 with it dropped under any budget, each read from the host's disk. With none,
+    every arm alike.
+  - The room. Lone reads held a mebibyte short, both arms on each runner (40113636061, 6
+    rounds, 7 runners), the share keeping its copy within its reads' room with and without
+    the daemon holding its microVMs' file pages at their most:
+
+    | CPU | n | unbudgeted p50 | without: p50 (max), ran away | with: p50, p90, max | held throughout | refaults a read, p50 (max) |
+    |---|---|---|---|---|---|---|
+    | EPYC 7763 (2) | 36 | 2.14 | 1.84 (2.59), 0 | 1.85, 2.32, 3.95 | 33 | 0 (637) |
+    | EPYC 9V45 | 18 | 1.48 | 1.16 (28.31), 2 | 1.29, 1.79, 2.18 | 18 | 0 (7) |
+    | EPYC 9V74 (2) | 36 | 1.59 | 1.40 (9.72), 4 | 1.43, 1.66, 2.88 | 36 | 0 (66) |
+    | Xeon 8573C | 18 | 1.98 | 1.66 (2.39), 0 | 1.71, 2.21, 2.48 | 18 | 0 (688) |
+    | Xeon 6973P-C | 18 | 2.03 | 1.52 (3.64), 1 | 1.50, 2.34, 2.55 | 18 | 0 (477) |
+
+    With it, none of the 126 ran away, against 7 without. The daemon's holding alone, the
+    tree's copy kept, let 1 run away for 315 s (40113636061's d): its daemon found its lone
+    run 94 MiB of room from its first word, never short, and two pressure passes'
+    give-backs of 76 and 144 MiB, its guest's page cache, its host's anonymous memory, were
+    taken off what it counted taken back, which the adopted code does no more. Its
+    other phases, with and without, alike (under the budget its idle microVMs leave 128
+    MiB of, 1.73 to 2.85 s at p50 against 1.99 to 2.54). In pool-0, where each read begins
+    as its budget is set, the share's copy kept within its reads' room without the
+    daemon's holding ran away on all 8 of 40113625738's runners. A read of 40113636061's,
+    with neither patch's code in its VM process, ended 255 though its `dd` read the whole
+    file, its VM ended before it said so after the daemon refused the working set it
+    recorded ("not aligned and distinct"): open.
+  - The final tree (8d3f7c56: both, its count read first as a run begins and lowered by the
+    files a give-back let go), lone reads held a mebibyte short, s, in the E2E's phases
+    (40121565734, 40127123235, 16 runners) and each read a run of its own as its budget is
+    set (pool-0, 40127114245, 8 runners):
+
+    | CPU | n | held throughout | p50 | p90 | p99 | max | unbudgeted n, p50 | ratio at p50 | refaults a read, p50 (max) |
+    |---|---|---|---|---|---|---|---|---|---|
+    | EPYC 7763 (14) | 204 | 202 | 1.92 | 2.43 | 3.04 | 3.26 | 204, 2.17 | 0.88 | 0 (29,821) |
+    | EPYC 9V45 (3) | 42 | 42 | 1.25 | 1.81 | 2.74 | 2.74 | 42, 1.46 | 0.86 | 0 (112) |
+    | EPYC 9V74 (3) | 30 | 28 | 1.50 | 2.48 | 3.88 | 3.88 | 30, 1.87 | 0.80 | 0 (1,131) |
+    | Xeon 8573C (3) | 54 | 54 | 1.58 | 2.15 | 2.62 | 2.62 | 54, 1.91 | 0.83 | 0 (4,441) |
+    | Xeon 8370C | 6 | 6 | 1.96 | 2.30 | 2.30 | 2.30 | 6, 2.40 | 0.82 | 0 (3,924) |
+
+    None of its 336 ran away; at most 2.07 times its CPU's time with none (a 9V74's 3.88
+    s). Its other phases on the 7763s: under the budget its idle microVMs leave 128 MiB
+    of, 2.95 s at p50 (n 180) against 2.17 with none; one such read took 9.81 s, its
+    guest's reader asleep in its own kernel's `throttle_direct_reclaim` as its run was
+    held within its room, its host's vCPUs running: open. The FUSE budget E2E at 8d3f7c56:
+    16 of 16 copies passed (40121567553, 40121574774: EPYC 7763 ×8, 9V74 ×7, 9V45 ×1),
+    and 16 of 16 at 4fc9cb98 (40128478144, 40128486439: EPYC 9V45 ×7, 7763 ×5, 9V74 ×2,
+    Xeon 8573C ×2), 32 of 32. Each copy's three reads held within the least room took
+    0.77 to 0.98 times its reads under none at their median, each read within 1.10 times
+    but one, a 9V74's 2,976 ms against 1,417, its copy's other two 1,389 and 1,240: open.
+  - The FUSE budget E2E, dispatched alone (budget-e2e.yml): 23 of 24 copies passed at
+    23a66853 (40078541414, 40079524601) and 7 of 8 at 25cce71a (40088882919). One, on a
+    9V45 (40079524601's d), stalled in its short phase: a read held within the least room
+    did not end in 600 s, the run given room again (62 MiB) during it, a pass of the host's
+    pressure taking 60 s, its guest answering nothing. One, on a 7763 (40088882919's c),
+    read 2.3 times its time with none, its run held short and given room by turns. In gpu
+    CI's x86_64 Linux job, beside the whole suite, the E2E failed in 8 of the 10 failed runs
+    from 2026-10-23 to 23a66853, and at 25cce71a in its phase whose budget is set as its run
+    goes, one read 4,244 ms against 2,035. Both stalled copies bore the regime's marks: room
+    told again as the read ran, then a guest that answered nothing.
+  - At b12ec23d, whose count was first read at a budget's word and started afresh at each
+    budget's change, the E2E's phases (40118447196, 8 runners: EPYC 7763 ×4, 9V45, Xeon
+    8573C, 6973P-C and 8370C): every one of its 144 lone reads held short throughout, at
+    p50 0.86, 0.89, 0.77, 0.78 and 0.78 times its CPU's time with none (1.83 against 2.13
+    s on the 7763s), 2.21 times at most (a Xeon 8573C's 4.36 s against 1.97), its slice
+    refaulting none at p50, none running away.
+  - The count read first at a budget's word, and started afresh at each budget's change
+    (b12ec23d, budget E2E 40118449097 and 40118457230): 15 of 16 copies passed. The one
+    that failed, on a Xeon 8370C (40118457230's e), was told 87 MiB of room under a budget
+    a mebibyte short of what its lone run held, its slice holding 146 MiB, 71 MiB of it
+    files, where the test had counted 277: a budget set below what a cgroup holds is
+    reclaimed as it is written, by its writer (mm/memcontrol.c, `memory_high_write`), the
+    template's pages taken with what else it held, before the daemon heard of it, and a
+    count first read after found them gone. Read as the run begins, the count holds them.
+- **Consequence (D188).** A microVM's file pages are held at the most its VM process has
+  held resident since its run began, read first as it began, less those it let go as it
+  gave back: its host's taking back its guest's RAM makes no room. A share drops its copy
+  of each range its guest reads once keeping it would leave its budgets less room than its
+  own reads need, and keeps it within that, so that a run's next read under a budget with
+  room comes from its host's page cache, as with none. Held a mebibyte short, alone in its
+  slice, a gigabyte's read takes 0.80 to 0.88 times its time with none at p50 on every
+  runner CPU, none of 336 running away. Not yet: a budget below what a cold-booted
+  microVM holds.

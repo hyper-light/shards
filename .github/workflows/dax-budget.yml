@@ -3,7 +3,17 @@ name: DAX budget
 # What a microVM held to a budget pays to read a file through its volume's DAX window, on
 # CI's runners (D188, D189): docs/research/measurements/dax-budget/measure.py, its samples
 # and profiles kept as the run's artifact; x86_64 alone, as hosted arm64 runners have no
-# /dev/kvm. Runs when the experiment changes, or when asked.
+# /dev/kvm. Runs when the experiment changes, or when asked. The experiment now: the tree,
+# its daemon holding what its microVMs held resident at most of their files as held and its
+# share keeping its copy of what its guest reads only within its budgets' room (PM M318), a
+# run alone in its slice (a pool of none) under a budget a mebibyte short of what it holds
+# (`short`) and under none, on eight runners at once. Each patch here is an arm of the tree
+# it was measured on (PM M314, M318, whose runs say which), given by name where asked: the
+# share's and the room's arms (share-*.patch, room.patch) of the tree before both were
+# taken, pcp-small.patch holds each CPU's lists of free pages in its guest to their least,
+# least-x*.patch give the least room 2 to 16 times over, ws-reads.patch a pool under a
+# budget mapping ahead none of the pages its working set's guest wrote; and --as-e2e runs
+# the FUSE budget E2E's phases.
 on:
   push:
     paths:
@@ -13,7 +23,14 @@ on:
     inputs:
       args:
         description: measure.py's arguments, after its build and output directory
-        default: --rounds 2
+        default: --files sparse --rounds 6 --pool 0 --highs short,infinity --arms none
+      fuse:
+        description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
+        default: ''
+      huge:
+        description: build the arm whose window ranges are on huge pages (huge.patch), for --arms huge
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,7 +42,7 @@ jobs:
   measure:
     name: measure (${{ matrix.arch }} ${{ matrix.copy }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +51,10 @@ jobs:
           - { arch: x86_64, runner: ubuntu-24.04, copy: b }
           - { arch: x86_64, runner: ubuntu-24.04, copy: c }
           - { arch: x86_64, runner: ubuntu-24.04, copy: d }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: e }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: f }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: g }
+          - { arch: x86_64, runner: ubuntu-24.04, copy: h }
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -51,28 +72,46 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
       - name: perf
         run: scripts/retry 3 30 sudo apt-get install -y "linux-tools-$(uname -r)" || echo "no perf for $(uname -r)"
-      # The tree's shards, and the tree's with each window range on huge pages
-      # (docs/research/measurements/dax-budget/huge.patch), each kept apart.
+      # The tree's shards, the tree's with each window range on huge pages where asked
+      # (docs/research/measurements/dax-budget/huge.patch), and the tree's with each patch
+      # asked for, each kept apart: the tree made again after each, the files a patch adds
+      # removed too, as two that add one file would not both apply.
       - name: Build
+        env:
+          FUSE: ${{ github.event.inputs.fuse || '' }}
+          HUGE: ${{ github.event.inputs.huge == 'true' && 'huge' || '' }}
         run: |
           cargo build --locked -p shards --release
           cp target/release/shards "$RUNNER_TEMP/shards"
-          git apply docs/research/measurements/dax-budget/huge.patch
-          cargo build --locked -p shards --release
-          cp target/release/shards "$RUNNER_TEMP/shards-huge"
-          git checkout -- crates
+          for patch in $HUGE $FUSE; do
+            git apply "docs/research/measurements/dax-budget/$patch.patch"
+            cargo build --locked -p shards --release
+            cp target/release/shards "$RUNNER_TEMP/shards-$patch"
+            git checkout -- crates
+            git clean -fdq -- crates
+          done
       - name: Measure
+        env:
+          ARGS: ${{ github.event.inputs.args || '--files sparse --rounds 6 --pool 0 --highs short,infinity --arms none' }}
+          FUSE: ${{ github.event.inputs.fuse || '' }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m
           # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
           sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
-          perf=""
-          command -v perf > /dev/null && sudo -n perf --version && perf=--perf
-          # Pushed: two rounds; asked for: the arguments asked with.
-          args="${{ github.event.inputs.args }}"
+          # How this host's kernel reclaims a slice's pages: the multi-gen LRU or the two
+          # lists, and the config it was built with (PM M318).
+          echo "lru_gen enabled: $(cat /sys/kernel/mm/lru_gen/enabled 2>/dev/null || echo none)"
+          grep -E '^CONFIG_(LRU_GEN|LRU_GEN_ENABLED|LRU_GEN_WALKS_MMU)=' "/boot/config-$(uname -r)" || true
+          # A profile only where asked (--perf in the arguments): it samples the whole host 5
+          # to 15 s into each read, which slows the slow reads it profiles.
+          # Pushed: the experiment above; asked for: the arguments asked with.
+          fuse=""
+          for patch in $FUSE; do fuse="$fuse --fuse $patch=$RUNNER_TEMP/shards-$patch"; done
+          huge=""
+          [ -x "$RUNNER_TEMP/shards-huge" ] && huge="--huge $RUNNER_TEMP/shards-huge"
           python3 -I docs/research/measurements/dax-budget/measure.py "$RUNNER_TEMP/shards" dax-budget \
-            --huge "$RUNNER_TEMP/shards-huge" ${args:---rounds 2} $perf
+            $huge $fuse $ARGS
           python3 -I docs/research/measurements/dax-budget/samples.py dax-budget
       - uses: actions/upload-artifact@v7.0.1
         if: always()

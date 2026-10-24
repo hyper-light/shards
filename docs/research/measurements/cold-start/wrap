@@ -1,0 +1,20 @@
+#!/bin/zsh
+# kiln's bench's Shards (KILN_SHARDS), each call's arguments and stderr kept in $CALLS (each
+# run's SHARDS_TIMING line), and each run's Claude Code given a debug file in its home
+# (`--debug-file`), then the build in $REAL_SHARDS run as it (PM M315).
+zmodload zsh/datetime
+n=$EPOCHREALTIME
+args=("$@")
+if [[ $1 == run ]]; then
+  home=""
+  for ((i = 1; i <= $#args; i++)); do
+    [[ ${args[i]} == HOME=* ]] && home=${args[i]#HOME=}
+    if [[ ${args[i]} == claude && -n $home ]]; then
+      mkdir -p "$home/.kdebug"
+      args=("${(@)args[1,i]}" --debug-file "$home/.kdebug/$n.log" "${(@)args[i+1,-1]}")
+      break
+    fi
+  done
+fi
+print -r -- "${(j: :)${(q)args}}" > "$CALLS/$n.argv"
+exec "$REAL_SHARDS" "${args[@]}" 2>"$CALLS/$n.err"

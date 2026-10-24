@@ -1,0 +1,54 @@
+name: envelope
+
+# The Firecracker comparison as CI's comparison job runs it (crates/shards/benches/
+# firecracker.rs, --runs 30), and its envelope (scripts/bench-envelope,
+# docs/benchmarks-envelope.toml), on ten ubuntu-24.04 runners at once, each runner's CPU and
+# kernel as it lands: whether shards stays at or under Firecracker on boot and restore, time
+# and memory, run after run across runner CPUs (D25). Runs when the workflow changes, or
+# when asked.
+on:
+  push:
+    paths:
+      - .github/workflows/envelope.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  compare:
+    name: compare (${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c, d, e, f, g, h, i, j]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          uname -r
+          grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
+      - name: Compare
+        env:
+          SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
+        run: cargo bench --locked -p shards --bench firecracker -- --runs 30
+      - name: Envelope
+        run: scripts/bench-envelope target/bench-samples
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: envelope-${{ matrix.copy }}
+          path: target/bench-samples/

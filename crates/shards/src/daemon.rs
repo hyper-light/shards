@@ -45,6 +45,7 @@ pub(crate) const ENGINE_SOCKET: &str = engine::SOCKET;
 mod events;
 mod files;
 use crate::filters;
+mod budget;
 mod follow;
 mod health;
 mod hostnet;
@@ -960,6 +961,10 @@ struct Daemon<D: Disk = Real> {
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
+    /// Each template's generation's files, held open from its first restore here until
+    /// it is removed or replaced, so that its host keeps their pages cached between its
+    /// restores ([`shards_vmm::snapshot::Held`], PM M315).
+    held: Mutex<HashMap<PathBuf, shards_vmm::snapshot::Held>>,
     /// Collections, run by the collector's thread: one due at start, and once a pull has
     /// moved a reference (audit A13).
     collecting: Collecting,
@@ -988,6 +993,8 @@ struct Daemon<D: Disk = Real> {
     /// What the memory pressure watcher watches past the host and the daemon's own cgroup
     /// (D188).
     watching: reclaim::Watching,
+    /// The microVMs held to a budget, told what it leaves them (D188).
+    budgets: budget::Budgets,
     /// When each running container's health check is next due (health.rs).
     checks: health::Checks,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
@@ -1382,6 +1389,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.ship_left(threads);
         daemon.start_collector(threads);
         daemon.start_pressure(threads);
+        daemon.start_budgets(threads);
         daemon.restart_at_start(threads);
         daemon.serve_slots(threads, requests);
         daemon.listen(threads, api);
@@ -1590,6 +1598,7 @@ impl<D: Disk> Daemon<D> {
             visited: Condvar::new(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
+            held: Mutex::default(),
             collecting: Collecting {
                 due: Mutex::new(true),
                 ..Collecting::default()
@@ -1605,6 +1614,7 @@ impl<D: Disk> Daemon<D> {
             refills: refill::Refills::default(),
             parents: parents::Parents::default(),
             watching: reclaim::Watching::default(),
+            budgets: budget::Budgets::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
@@ -4540,8 +4550,13 @@ impl<D: Disk> Daemon<D> {
             let _ = tracked.socket.send(kind::STOP_ORDER, &order, &[]);
         }
         // As the daemon stops, the stop thread, which this wakes, stops it.
+        let pid = tracked.vm.id();
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
         self.resolved.notify_all();
+        // Held within what its budget leaves it, where it has one (D188).
+        if !visit {
+            self.budget_ran(pid);
+        }
         inbox
     }
 
@@ -5154,6 +5169,8 @@ impl<D: Disk> Daemon<D> {
             lock(&self.runs).remove(id);
             lock(&self.health).remove(id);
             lock(&self.paused).remove(id);
+            // What it held of its budget the others it held are told is theirs (D188).
+            self.budget_left(pid);
             // Logged before anyone waiting hears of the end, as dockerd logs it in the
             // exit's handling (monitor.go), ahead of `stop`'s own event.
             if started {
@@ -6062,6 +6079,7 @@ impl<D: Disk> Daemon<D> {
                         "shards: template {} does not restore; booting instead",
                         dir.display()
                     ));
+                    self.let_go_template(&dir);
                     let _ = std::fs::remove_dir_all(&dir);
                 }
             }
@@ -6094,6 +6112,7 @@ impl<D: Disk> Daemon<D> {
         if let Ok(r) = &mut ready
             && shards_vmm::snapshot::exists(&dir)
         {
+            self.hold_template(&dir);
             // What its run touches is the template's working set, which the daemon writes
             // once its last part has come, within what the template's guest can hold: read
             // here, where a boot is waited for anyway, and kept for the pool's VMs.
@@ -6324,6 +6343,7 @@ impl<D: Disk> Daemon<D> {
                     let _ = ready.vm.kill(libc::SIGKILL);
                 }
             }
+            self.let_go_template(&dir);
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {
                     if let Some(origin) = crate::run::Origin::path(&dir) {
@@ -7094,7 +7114,16 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Gra
     // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
     let unstarted = || shards_vmm::platform::launched(pid) == Some(false);
     let mut sampled: Option<String> = None;
+    // Its spawn to its first request answered, its launch and the host's admission of it
+    // among it, for a run that waits for it (cold, D25): said at debug.
+    let spawned = Instant::now();
     let served = crate::grant_answer::serve_waiting(link, template, &mut |sent| {
+        if sent == 1 {
+            shards_vmm::debug!(
+                "VM {pid}: its first request for access answered {} us after its spawn",
+                spawned.elapsed().as_micros()
+            );
+        }
         if sampled.is_some() {
             return;
         }
@@ -9201,6 +9230,64 @@ mod tests {
             drop(shards_ipc::recv(&theirs));
             drop(theirs);
             assert_eq!(joined(asking), 1, "undelivered logs answered as delivered");
+        });
+    }
+
+    /// Answers the exec `m` asks a VM for as its VM does: `output` on its stdout, then its
+    /// exit `code` on its connection.
+    fn answer_exec(m: &shards_ipc::Message, output: &[u8], code: u8) {
+        let [conn, _, stdout, _] = &m.fds[..] else {
+            panic!("an exec with {} descriptors", m.fds.len())
+        };
+        File::from(stdout.try_clone().unwrap()).write_all(output).unwrap();
+        let conn = UnixStream::from(conn.try_clone().unwrap());
+        shards_ipc::send(&conn, kind::EXIT, &[code], &[]).unwrap();
+    }
+
+    /// A microVM that does not answer its give-back keeps no other's from the host, and is
+    /// asked nothing more until its give-back has ended, which its time does (PM M308: a
+    /// pass that waited on each microVM in turn gave back 3 times in 600 s).
+    #[test]
+    fn a_microvm_that_does_not_give_back_keeps_no_other_waiting() {
+        let t = Test::new("give-back");
+        t.run(|t| {
+            let (stalled, _stalled, vm) = running(t, "stalled");
+            let (answers, _answers, other) = running(t, "answers");
+            let t0 = Instant::now();
+            t.t.daemon.give_back_cold(t.threads);
+            let held = heard_whole(&vm);
+            assert_eq!(held.kind, kind::EXEC_RUN);
+            for pass in 0..2 {
+                if pass > 0 {
+                    t.t.daemon.give_back_cold(t.threads);
+                }
+                let asked = heard_whole(&other);
+                assert_eq!(asked.kind, kind::EXEC_RUN);
+                answer_exec(&asked, b"1048576 0", 0);
+                drop(asked);
+                t.until("its answer taken", |d| !d.watching.giving(&answers));
+            }
+            assert!(t0.elapsed() < TAKE_TIMEOUT, "{:?}", t0.elapsed());
+            // The one still asked is asked nothing more meanwhile.
+            assert!(t.t.daemon.watching.giving(&stalled));
+            vm.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            loop {
+                match shards_ipc::recv(&vm) {
+                    Ok(Some(m)) if m.kind == kind::STOP_ORDER => {}
+                    Ok(m) => panic!("asked again while still asked: {:?}", m.map(|m| m.kind)),
+                    Err(_) => break,
+                }
+            }
+            // Its time up, its give-back is ended on its exec's connection, as its VM says
+            // once it has ended it; then it may be asked again.
+            let conn = UnixStream::from(held.fds[0].try_clone().unwrap());
+            conn.set_read_timeout(Some(PATIENCE)).unwrap();
+            let ended = shards_ipc::recv(&conn).unwrap().unwrap();
+            assert_eq!((ended.kind, ended.payload), signal(9));
+            assert!(t0.elapsed() >= TAKE_TIMEOUT, "{:?}", t0.elapsed());
+            shards_ipc::send(&conn, kind::EXIT, &[137], &[]).unwrap();
+            drop((conn, held));
+            t.until("its give-back ended", |d| !d.watching.giving(&stalled));
         });
     }
 

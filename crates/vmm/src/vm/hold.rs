@@ -135,9 +135,13 @@ impl Hold {
         // It runs as it wakes, its waits ending on time, as a vCPU's timers do (PM M8,
         // M10, M294): one that runs late lets the vCPUs overrun, or holds them past their
         // period.
-        if let Err(e) = crate::platform::prioritize_governor_thread() {
-            crate::debug!("the hold's governor runs at its vCPUs' priority: {e}");
-        }
+        let _prioritized = match crate::platform::prioritize_governor_thread() {
+            Ok(prioritized) => Some(prioritized),
+            Err(e) => {
+                crate::debug!("the hold's governor runs at its vCPUs' priority: {e}");
+                None
+            }
+        };
         let vcpus = u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1);
         let period = u64::try_from(PERIOD.as_nanos()).unwrap_or(u64::MAX);
         let mut debt = 0u64;

@@ -321,6 +321,10 @@ struct ControlPage {
     regs: *mut u32,
 }
 
+// SAFETY: `regs` is a page of the control device mapped shared for the whole process, whose
+// volatile writes need no thread of their own.
+unsafe impl Send for ControlPage {}
+
 impl ControlPage {
     const LEN: usize = 4096;
 
@@ -2400,6 +2404,12 @@ fn limits() -> Result<(), String> {
 /// prints is the guest running again. It uses nothing shards-specific but, with
 /// `shards_snapshot=N`, the control page, to ask shards for a snapshot after N beats, as
 /// init asks for a template's; other VMMs snapshot it from the host.
+///
+/// It asks from a thread of its own, at a point within the beat after the Nth that its
+/// clock picks, as a host pausing a VMM catches its guest wherever its beat's sleep has
+/// reached: asked right after a beat, every restore slept a whole beat after RESUMED that
+/// Firecracker's, paused mid-sleep, never waited, 673 to 873 µs halted on some runners
+/// (PM M310).
 fn beat() -> Result<(), String> {
     let snapshot_after: Option<u64> = std::env::var("shards_snapshot")
         .ok()
@@ -2412,19 +2422,35 @@ fn beat() -> Result<(), String> {
     // restore (docs/research/platform-measurements.md M21, M38).
     await_crypto_selftests()?;
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    let (beaten, nth) = std::sync::mpsc::channel::<()>();
+    if let Some(control) = control {
+        thread::Builder::new()
+            .name("snapshot".into())
+            .spawn(move || {
+                if nth.recv().is_err() {
+                    return;
+                }
+                // Within the beat: the clock's nanoseconds, a millisecond's worth.
+                let within = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |t| t.subsec_nanos() % 1_000_000);
+                thread::sleep(Duration::from_nanos(u64::from(within)));
+                control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+                // A restore of it goes on from here: said by the VMM's clock (its log's
+                // guest marker), where the Firecracker comparison looks for its restores'
+                // `resumed`.
+                control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+            })
+            .map_err(|e| format!("the snapshot's thread: {e}"))?;
+    }
     let mut beats = 0u64;
     loop {
         thread::sleep(Duration::from_millis(1));
         let mut out = io::stdout().lock();
         let _ = out.write_all(b".").and_then(|()| out.flush());
         beats += 1;
-        if let (Some(control), Some(after)) = (&control, snapshot_after)
-            && beats == after
-        {
-            control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
-            // A restore of it goes on from here: said by the VMM's clock (its log's guest
-            // marker), where the Firecracker comparison looks for its restores' `resumed`.
-            control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+        if snapshot_after == Some(beats) {
+            let _ = beaten.send(());
         }
     }
 }

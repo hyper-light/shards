@@ -892,7 +892,7 @@ pub struct Kept {
 }
 
 /// What the start leaves the running machine, once every vCPU is set up.
-pub fn keep(rest: Option<&Remainder>, first: &SetUp) -> Kept {
+pub fn keep(rest: Option<&mut Remainder>, first: &SetUp) -> Kept {
     Kept {
         counter: rest.map(|r| r.counter),
         prefetched: first.prefetched,
@@ -1004,7 +1004,10 @@ pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, rest: Option<&Remai
 /// PSCI CPU_ON, or its restored state.
 pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vcpu, SetUp), String> {
     let e = |e: hv::Error| e.to_string();
+    // Where a restored vCPU's setup goes (vCPU 0's holds the prefetch).
+    let began = crate::log::uptime_us();
     let mut vcpu = vm.create_vcpu(index).map_err(e)?;
+    let created = crate::log::uptime_us();
     let mut set_up = SetUp::default();
     match start {
         VcpuStart::Boot(entry) => {
@@ -1013,6 +1016,7 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
             }
         }
         VcpuStart::Restore { state, first } => {
+            let mut prefetched = created;
             if let Some(First { cpu_id, working_set }) = first {
                 let here = vcpu.cpu_id().map_err(e)?;
                 if here != cpu_id {
@@ -1027,8 +1031,18 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                         .prefetch(vm, &working_set)
                         .map_err(|e| format!("prefetching the working set: {e}"))?;
                 }
+                prefetched = crate::log::uptime_us();
             }
             vcpu.restore_state(&state).map_err(e)?;
+            let restored = crate::log::uptime_us();
+            debug!(
+                "vCPU {index}: created in {} us, {} pages of its working set prefetched in {} \
+                 us, its state restored in {} us",
+                created.saturating_sub(began),
+                set_up.prefetched,
+                prefetched.saturating_sub(created),
+                restored.saturating_sub(prefetched)
+            );
         }
     }
     Ok((vcpu, set_up))

@@ -970,18 +970,44 @@ impl Vcpu {
             PAGE as usize,
             &list.iter().flat_map(|e| e.to_le_bytes()).collect::<Vec<u8>>(),
         );
+        let began = crate::log::uptime_us();
         // SAFETY: `scratch` stays mapped until after the unmap below.
         unsafe { vm.sys.map(scratch.host, layout::PREFETCH, size, sys::Perms::RX) }?;
+        let mapped = crate::log::uptime_us();
+        // What the loop takes from its host: its thread's CPU time, the guest's included
+        // (PM M288), and the process's faults, page-ins and context switches.
+        let clock = crate::platform::ThreadClock::current().ok();
+        let (cpu, events) = (clock.and_then(|c| c.read().ok()), crate::platform::task_events());
         let ran = self.run_prefetch(
             layout::PREFETCH + TABLE as u64,
             layout::PREFETCH + PAGE,
             list.len(),
         );
+        let looped = crate::log::uptime_us();
+        let cpu = cpu
+            .zip(clock.and_then(|c| c.read().ok()))
+            .map(|(a, b)| b.saturating_sub(a) / 1000);
+        // Each a 32-bit counter, which may have wrapped between the two.
+        let events = events.zip(crate::platform::task_events()).map(|(a, b)| {
+            a.iter()
+                .zip(b)
+                .map(|(a, b)| b.wrapping_sub(*a) & u64::from(u32::MAX))
+                .collect::<Vec<_>>()
+        });
         if let Err(e) = vm.sys.unmap(layout::PREFETCH, size) {
             // The guest still maps it: it must outlive the VM.
             std::mem::forget(scratch);
             return Err(e.into());
         }
+        debug!(
+            "the prefetch's loop mapped in {} us, ran over {} pages in {} us ({cpu:?} us of it \
+             on its CPU; the process's faults, page-ins, copy-on-write faults and context \
+             switches meanwhile {events:?}), unmapped in {} us",
+            mapped.saturating_sub(began),
+            list.len(),
+            looped.saturating_sub(mapped),
+            crate::log::uptime_us().saturating_sub(looped)
+        );
         ran.map(|()| list.len())
     }
 

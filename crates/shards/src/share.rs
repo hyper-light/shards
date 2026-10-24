@@ -24,7 +24,7 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::sync::Mutex;
 
-use shards_vmm::devices::virtio::fs::{answer, server::Server};
+use shards_vmm::devices::virtio::fs::{answer, headroom::Headroom, server::Server};
 
 /// A share: its mode and its one name, if it is a file alone.
 struct Given {
@@ -127,12 +127,31 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         conns.push(ours);
         theirs.push(vms);
     }
+    // The budgets over this process's cgroups, which each share drops its host's copy of
+    // what its guest reads past (D188): opened before the limit on descriptors is reckoned,
+    // as all it holds besides its servers' is.
+    let mut headrooms: Vec<Option<Headroom>> = Vec::with_capacity(dirs.len());
+    for _ in &dirs {
+        match Headroom::of_this_process() {
+            Ok(headroom) => headrooms.push(Some(headroom)),
+            Err(e) => {
+                #[cfg(target_os = "linux")]
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: share: its host keeps its copy of every read: {e}"
+                );
+                #[cfg(not(target_os = "linux"))]
+                let _ = e;
+                headrooms.push(None);
+            }
+        }
+    }
     let Some(limits) = shards_vmm::devices::virtio::fs::server::Limits::now() else {
         return failed("share: this process's limit on descriptors is unknown");
     };
     let budget = limits.budget(u64::try_from(dirs.len()).unwrap_or(u64::MAX));
     let mut servers = Vec::with_capacity(dirs.len());
-    for (i, (dir, g)) in dirs.into_iter().enumerate() {
+    for (i, ((dir, g), headroom)) in dirs.into_iter().zip(headrooms).enumerate() {
         let kept = match ghosts.try_clone() {
             Ok(kept) => kept,
             Err(e) => return failed(&format!("share {i}: the home's private directory: {e}")),
@@ -140,6 +159,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         match Server::with_budget(dir, g.read_only, g.only, budget) {
             Ok(server) => {
                 server.keep_ghosts_in(kept);
+                if let Some(headroom) = headroom {
+                    server.drop_reads_past(headroom);
+                }
                 servers.push(server);
             }
             Err(e) => return failed(&format!("share {i}: {e}")),
@@ -208,6 +230,10 @@ fn join() -> ExitCode {
             "shards: share --join: raising the descriptor limit: {e}"
         );
     }
+    // The budgets over this process's cgroups, which it drops its host's copy of what its
+    // guest reads past, as a share does (D188): opened before the limit on descriptors is
+    // reckoned, as all it holds besides its server's is.
+    let headroom = Headroom::of_this_process();
     let Some(limits) = shards_vmm::devices::virtio::fs::server::Limits::now() else {
         return failed("this process's limit on descriptors is unknown");
     };
@@ -216,6 +242,18 @@ fn join() -> ExitCode {
         Err(e) => return failed(&e),
     };
     server.keep_ghosts_in(ghosts);
+    match headroom {
+        Ok(headroom) => server.drop_reads_past(headroom),
+        Err(e) => {
+            #[cfg(target_os = "linux")]
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards: share --join: its host keeps its copy of every read: {e}"
+            );
+            #[cfg(not(target_os = "linux"))]
+            let _ = e;
+        }
+    }
     // Each joiner's link while it is served, by number: shut as the VM goes.
     let links: Mutex<HashMap<u64, UnixStream>> = Mutex::new(HashMap::new());
     std::thread::scope(|scope| {

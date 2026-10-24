@@ -17,8 +17,12 @@ use std::time::Duration;
 /// The stall that is pressure, and the window it is measured over.
 #[cfg(target_os = "linux")]
 const STALL_US: u64 = 140_000;
-#[cfg(target_os = "linux")]
 const WINDOW_US: u64 = 2_000_000;
+
+/// The window the host's memory pressure is measured over (D188), as long as a pressure
+/// that goes on waits between triggers: as often as a microVM held short of its budget is
+/// told its room again, which nothing else says while it is held (its budget not met).
+pub const PRESSURE_WINDOW: Duration = Duration::from_micros(WINDOW_US);
 /// Where no trigger is armed: the share of the last ten seconds stalled that is pressure,
 /// the same 7%, and how often it is read.
 #[cfg(target_os = "linux")]

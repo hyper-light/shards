@@ -113,12 +113,21 @@ fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
     Ok(before.saturating_sub(current()?))
 }
 
+/// The bytes of room a host's word says its budget leaves the microVM (D188): signed
+/// decimal.
+fn room_of(said: &[u8]) -> io::Result<i64> {
+    std::str::from_utf8(said)
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .ok_or_else(|| io::Error::other("a room that is no number of bytes"))
+}
+
 /// Reports at once the memory the guest holds free that waits to be reported to its
 /// microVM, which gives it back to the host (D151), and waits for it: a template is saved
 /// with none waiting, else each copy reports, two seconds into its life, what the
 /// template's boot freed, and its runs paid for it. Where the kernel has no
 /// `page_reporting.flush`, or the VM no device to report to, nothing.
-fn flush_page_reports() {
+pub(crate) fn flush_page_reports() {
     use std::os::unix::fs::FileExt as _;
     if let Some(file) = FLUSH.get() {
         let _ = file.write_at(b"1", 0);
@@ -129,6 +138,10 @@ fn flush_page_reports() {
 /// template (`template`), it asks for a snapshot once the image is mounted: every VM
 /// restored from it continues from there, and dials the host for its own workload.
 pub fn main(device: &str, template: bool) -> ! {
+    // What its host's budget leaves it (D188), shared by every process init forks.
+    if let Err(e) = crate::plug::make_cap() {
+        let _ = writeln!(io::stderr(), "shards-init: {e}; its runs are held to no budget");
+    }
     // Its swap window shown (D159), before anything mounts sysfs read-only: what a run's
     // swap is made on.
     if let Err(e) = crate::swap::show_window() {
@@ -3328,6 +3341,12 @@ fn builtin(
                 let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
                 write!(out, "{freed} {unplugging}")
             }),
+            run::builtin::ROOM => args
+                .first()
+                .map(|a| room_of(a))
+                .transpose()
+                .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room))
+                .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),

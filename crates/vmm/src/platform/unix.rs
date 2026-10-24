@@ -839,6 +839,114 @@ pub fn mapped_pages(ptr: *const u8, len: usize) -> io::Result<Vec<(usize, bool)>
     Ok(mapped)
 }
 
+/// Holds the host's fault-around off over ranges of this process's memory while it lives
+/// (Linux 6.7 and later): each range registered with a userfaultfd in asynchronous
+/// write-protect mode (UFFD_FEATURE_WP_ASYNC, which any memory may be), which nothing ever
+/// write-protects, so that a fault maps the page it faulted on and none of those around it
+/// its page cache holds (mm/memory.c, `should_fault_around`: `uffd_disable_fault_around`).
+/// What the host then maps of a restored guest's memory is what its guest touched: a
+/// working set recorded with fault-around on held four times the pages its guest faulted
+/// on CI's runners, which the next restore mapped ahead (PM M312). No fault is ever the
+/// userfaultfd's to handle, so it takes user faults alone (UFFD_USER_MODE_ONLY), which needs
+/// no privilege. Dropped, its descriptor closes, which lets the ranges go
+/// (mm/userfaultfd.c, `userfaultfd_release`), and resets their page tables
+/// (`userfaultfd_clear_vma`: `uffd_wp_range`), which a hypervisor following them through
+/// MMU notifiers (KVM) takes for its stage 2 gone: held for as long as its guest runs.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct FaultAroundOff {
+    /// The userfaultfd, which holds the ranges until it closes.
+    _fd: std::os::fd::OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+impl FaultAroundOff {
+    /// Over `ranges`, each page-aligned; None where the host cannot hold it off: no
+    /// userfaultfd, a kernel before 6.7, or a range it refuses (then over none of them).
+    pub fn over(ranges: &[(*mut u8, usize)]) -> Option<FaultAroundOff> {
+        match Self::try_over(ranges) {
+            Ok(off) => Some(off),
+            Err(e) => {
+                crate::debug!("the host's fault-around stays on: {e}");
+                None
+            }
+        }
+    }
+
+    fn try_over(ranges: &[(*mut u8, usize)]) -> io::Result<FaultAroundOff> {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: userfaultfd(2) takes its flags alone.
+        let fd = unsafe { libc::syscall(libc::SYS_userfaultfd, uffd::FLAGS) };
+        let fd = i32::try_from(fd).map_err(|_| io::Error::other("userfaultfd(2): no descriptor"))?;
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the descriptor the call just made, owned here alone.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        let mut api = uffd::Api {
+            api: uffd::API,
+            features: uffd::FEATURE_WP_ASYNC,
+            ioctls: 0,
+        };
+        // SAFETY: UFFDIO_API, with the struct it reads and writes.
+        if unsafe { libc::ioctl(fd.as_raw_fd(), uffd::IOCTL_API as libc::Ioctl, &mut api) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        for &(start, len) in ranges {
+            let mut register = uffd::Register {
+                start: start as u64,
+                len: len as u64,
+                mode: uffd::REGISTER_MODE_WP,
+                ioctls: 0,
+            };
+            // SAFETY: UFFDIO_REGISTER, with the struct it reads and writes, over memory of
+            // this process's own: it changes no page of it.
+            if unsafe { libc::ioctl(fd.as_raw_fd(), uffd::IOCTL_REGISTER as libc::Ioctl, &mut register) } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(FaultAroundOff { _fd: fd })
+    }
+}
+
+/// userfaultfd(2)'s interface as include/uapi/linux/userfaultfd.h has it, for
+/// [`FaultAroundOff`] and the VM process's seccomp filter, which allows it.
+#[cfg(target_os = "linux")]
+pub mod uffd {
+    /// O_CLOEXEC, and UFFD_USER_MODE_ONLY.
+    pub const FLAGS: libc::c_long = libc::O_CLOEXEC as libc::c_long | 1;
+    pub const API: u64 = 0xAA;
+    pub const FEATURE_WP_ASYNC: u64 = 1 << 15;
+    pub const REGISTER_MODE_WP: u64 = 1 << 1;
+    /// _IOWR(0xAA, 0x3F, struct uffdio_api).
+    pub const IOCTL_API: u32 = 0xC018_AA3F;
+    /// _IOWR(0xAA, 0x00, struct uffdio_register).
+    pub const IOCTL_REGISTER: u32 = 0xC020_AA00;
+
+    /// struct uffdio_api.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub struct Api {
+        pub api: u64,
+        pub features: u64,
+        pub ioctls: u64,
+    }
+
+    /// struct uffdio_register: its range, then its mode and the ioctls it allows.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub struct Register {
+        pub start: u64,
+        pub len: u64,
+        pub mode: u64,
+        pub ioctls: u64,
+    }
+
+    // The sizes the requests carry.
+    const _: () = assert!(size_of::<Api>() == 24 && size_of::<Register>() == 32);
+}
+
 /// Writes back `len` bytes at `ptr` from the data cache to memory, so a guest that maps
 /// them as a device (non-cacheable) reads what the VMM wrote. On macOS: sys_dcache_flush
 /// (libkern/OSCacheControl.h). Whether HVF's stage 2 already makes such accesses coherent
@@ -2269,6 +2377,37 @@ impl ThreadClock {
     }
 }
 
+/// This process's page faults, page-ins from files, copy-on-write faults and context
+/// switches so far, every thread's (task_info(TASK_EVENTS_INFO), mach/task_info.h), each
+/// a counter that wraps: what a stretch of a thread's work took from its host, told
+/// apart, the disk, the faults themselves, or waits.
+#[cfg(target_os = "macos")]
+pub fn task_events() -> Option<[u64; 4]> {
+    unsafe extern "C" {
+        /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h).
+        static mach_task_self_: libc::mach_port_t;
+    }
+    /// `struct task_events_info` (mach/task_info.h), flavor TASK_EVENTS_INFO (2).
+    #[repr(C)]
+    #[derive(Default)]
+    struct EventsInfo {
+        faults: i32,
+        pageins: i32,
+        cow_faults: i32,
+        messages_sent: i32,
+        messages_received: i32,
+        syscalls_mach: i32,
+        syscalls_unix: i32,
+        csw: i32,
+    }
+    let mut info = EventsInfo::default();
+    let mut count = (std::mem::size_of::<EventsInfo>() / 4) as libc::mach_msg_type_number_t;
+    // SAFETY: task_info(2) of our own task filling `info`, `count` words long.
+    let kr = unsafe { libc::task_info(mach_task_self_, 2, (&raw mut info).cast(), &mut count) };
+    let n = |v: i32| u64::from(v.cast_unsigned());
+    (kr == libc::KERN_SUCCESS).then(|| [n(info.faults), n(info.pageins), n(info.cow_faults), n(info.csw)])
+}
+
 #[cfg(test)]
 mod usage_tests {
     use super::*;
@@ -2533,5 +2672,83 @@ mod beneath_tests {
         println!("by path:  {:?}", stats(&mut by_path));
         println!("beneath:  {:?}", stats(&mut beneath));
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod fault_around_tests {
+    use std::os::unix::fs::FileExt as _;
+
+    use super::*;
+
+    /// The kernel's version, major and minor, as uname(2) gives its release.
+    fn kernel() -> (u32, u32) {
+        // SAFETY: uname(2) fills the struct it is given.
+        let mut name: libc::utsname = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::uname(&mut name) }, 0);
+        // SAFETY: uname(2) leaves the release NUL-terminated.
+        let release = unsafe { std::ffi::CStr::from_ptr(name.release.as_ptr()) }.to_string_lossy();
+        let mut parts = release
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|p| p.parse().ok());
+        (parts.next().unwrap(), parts.next().unwrap())
+    }
+
+    /// Held off, the host's fault-around maps the page of a file a read touches alone,
+    /// where on it maps those around it its page cache holds; let go, it maps them again
+    /// (PM M312). A host that cannot hold it off is one before 6.7, or one whose process
+    /// is filtered already (a container's seccomp profile refuses userfaultfd).
+    #[test]
+    fn fault_around_held_off_maps_the_touched_page_alone() {
+        let dir = shards_testdir::TempDir::new("fault-around").unwrap();
+        let page = page_size().unwrap();
+        let len = 64 * page;
+        let path = dir.join("file");
+        std::fs::write(&path, vec![0x5a; len]).unwrap();
+        let file = File::open(&path).unwrap();
+        // Its pages in the page cache, as a snapshot's just written are.
+        file.read_exact_at(&mut vec![0; len], 0).unwrap();
+        // SAFETY: a fresh private mapping of the file, read here alone.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        let host = host.cast::<u8>();
+        let mapped = || mapped_pages(host, len).unwrap().len();
+        // SAFETY: within the mapping.
+        let touch = |n: usize| unsafe { std::ptr::read_volatile(host.add(n * page)) };
+        let Some(off) = FaultAroundOff::over(&[(host, len)]) else {
+            let filtered = std::fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .any(|l| l.starts_with("Seccomp:") && l.trim_end() != "Seccomp:\t0");
+            assert!(
+                kernel() < (6, 7) || filtered,
+                "Linux {:?} with no filter of its own would not hold fault-around off",
+                kernel()
+            );
+            eprintln!("SKIP: this host cannot hold its fault-around off");
+            return;
+        };
+        let before = mapped();
+        assert_eq!(touch(40), 0x5a);
+        assert_eq!(mapped(), before + 1, "held off, a read mapped more than its page");
+        drop(off);
+        let before = mapped();
+        assert_eq!(touch(8), 0x5a);
+        let on = mapped() - before;
+        // SAFETY: the mapping made above, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(host.cast(), len) }, 0);
+        eprintln!("fault-around on again mapped {on} pages for one read");
+        assert!(on >= 1);
     }
 }

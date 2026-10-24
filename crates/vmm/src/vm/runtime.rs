@@ -675,7 +675,8 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         None
     };
     if let Some(ws) = &mut working_set {
-        let cleared = hv::budget_writes(ws, machine::PAGE, hv::PREFETCH_PRIVATE);
+        let private = cfg.prefetch_private.min(hv::PREFETCH_PRIVATE);
+        let cleared = hv::budget_writes(ws, machine::PAGE, private);
         if cleared > 0 {
             debug!("{cleared} written pages past the prefetch's private budget are read instead");
         }
@@ -802,6 +803,15 @@ pub fn accept_working_set(dir: &Path, name: &str, bytes: &[u8]) -> Result<usize,
     snapshot::accept_working_set(dir, name, bytes, machine::PAGE, guest_pages)
 }
 
+/// Keeps the working set a restore handed its spawner (`--working-set FD`) beside the
+/// generation of the snapshot in `dir` it names, as [`accept_working_set`] keeps a warm
+/// VM's (`snapshot::split_handed`): the pages kept, 0 where that generation is no longer
+/// the snapshot's.
+pub fn keep_working_set(dir: &Path, handed: &[u8]) -> Result<usize, String> {
+    let (name, bytes) = snapshot::split_handed(handed)?;
+    accept_working_set(dir, name, bytes)
+}
+
 /// Starts the machine's vCPUs; with `hold`, they wait for [`Handle::release`].
 fn launch(
     m: Machine,
@@ -824,7 +834,7 @@ fn launch(
     // Each vCPU is moved its own part of the start, and the machine keeps the rest: none
     // of it is shared, and each part goes as soon as its owner is done with it.
     let start_bytes = machine::start_bytes(&start);
-    let (starts, rest) = machine::split(start, vcpus as usize)?;
+    let (starts, mut rest) = machine::split(start, vcpus as usize)?;
     // The bus before the VM, so that an early return drops the VM first: the hypervisor
     // maps the bus's device memory until the VM is destroyed (Machine's own order).
     let bus = Arc::new(bus);
@@ -877,7 +887,10 @@ fn launch(
 
     // vCPUs are created strictly in index order (D5).
     let mut first = None;
+    // Each one's setup, its thread's spawn to its answer: where a slow start's time goes.
+    let (setups, mut slowest) = (crate::log::uptime_us(), (0, 0u128));
     for (index, start) in starts.into_iter().enumerate() {
+        let began = crate::log::uptime_us();
         let (created_tx, created_rx) = mpsc::channel();
         let (vm, sh, bus) = (vm.clone(), shared.clone(), bus.clone());
         let spawned = std::thread::Builder::new()
@@ -895,6 +908,10 @@ fn launch(
                 if index == 0 {
                     first = Some(set_up);
                 }
+                let took = crate::log::uptime_us().saturating_sub(began);
+                if took > slowest.1 {
+                    slowest = (index, took);
+                }
             }
             Ok(Err(e)) => {
                 shared.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
@@ -909,10 +926,21 @@ fn launch(
         }
     }
     if !shared.exiting() {
+        let finishing = crate::log::uptime_us();
+        debug!(
+            "vCPUs set up in {} us, the slowest vCPU {} in {} us",
+            finishing.saturating_sub(setups),
+            slowest.0,
+            slowest.1
+        );
         let finished = machine::finish(&vm, &bus, &finish, rest.as_ref());
+        debug!(
+            "the machine's start finished in {} us",
+            crate::log::uptime_us().saturating_sub(finishing)
+        );
         let _ = shared
             .kept
-            .set(machine::keep(rest.as_ref(), &first.unwrap_or_default()));
+            .set(machine::keep(rest.as_mut(), &first.unwrap_or_default()));
         // The vCPUs dropped theirs once set up: the snapshot's device state goes now, where
         // a warm VM held it for its whole life.
         drop(rest);
@@ -960,11 +988,16 @@ fn vcpu_thread(
     start: machine::VcpuStart,
     created: &mpsc::Sender<Result<machine::SetUp, String>>,
 ) {
-    if let Err(e) = platform::prioritize_vcpu_thread()
-        && index == 0
-    {
-        warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
-    }
+    // Held while the vCPU runs.
+    let _prioritized = match platform::prioritize_vcpu_thread() {
+        Ok(prioritized) => Some(prioritized),
+        Err(e) => {
+            if index == 0 {
+                warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
+            }
+            None
+        }
+    };
     // Its part of the start goes with its setup.
     let (mut vcpu, set_up) = match machine::setup_vcpu(vm, index, start) {
         Ok(v) => v,
@@ -1145,8 +1178,8 @@ impl Coordinator {
         // SAFETY: every vCPU is parked and the devices quiet since the heads were saved
         // into `kept`.
         match unsafe { heads.remap(kept) } {
-            Ok(()) => info!(
-                "its DAX windows' heads mapped back from its snapshot in {} us",
+            Ok(parts) => info!(
+                "its DAX windows' heads mapped back from its snapshot in {} us: {parts}",
                 crate::log::uptime_us().saturating_sub(t0)
             ),
             Err(e) if heads.lost() => return Err(format!("its DAX windows' heads: {e}")),

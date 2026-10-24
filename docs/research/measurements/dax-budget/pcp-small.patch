@@ -1,0 +1,16 @@
+diff --git a/crates/init/src/run.rs b/crates/init/src/run.rs
+index 61be079e..2a968c8e 100644
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -502,6 +502,11 @@ fn mount_root(device: &str) -> Result<(), Failure> {
+             .map_err(|e| setup_failed(format!("holding the microVM's memory: {e}")))?;
+         plug.raise_limits()
+             .map_err(|e| setup_failed(format!("the kernel's limits: {e}")))?;
++        // The experiment (pcp-small.patch): each CPU's lists of free pages held to their
++        // least (mm/page_alloc.c `zone_highsize`: four batches), so that the pages a held
++        // run frees are the ones it takes again, not more of its guest's RAM first touched.
++        std::fs::write("/proc/sys/vm/percpu_pagelist_high_fraction", "1000000")
++            .map_err(|e| setup_failed(format!("vm.percpu_pagelist_high_fraction: {e}")))?;
+     }
+     // Docker's device rules, before any snapshot: a run with them does nothing more.
+     crate::devices::confine_by_default(WORKLOAD_CGROUP).map_err(setup_failed)?;

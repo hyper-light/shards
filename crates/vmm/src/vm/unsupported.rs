@@ -34,6 +34,10 @@ pub fn accept_working_set(_dir: &std::path::Path, _name: &str, _bytes: &[u8]) ->
     Err(no_backend())
 }
 
+pub fn keep_working_set(_dir: &std::path::Path, _handed: &[u8]) -> Result<usize, String> {
+    Err(no_backend())
+}
+
 pub fn working_set_limit(_dir: &std::path::Path) -> Result<u64, String> {
     Err(no_backend())
 }

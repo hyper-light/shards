@@ -106,5 +106,7 @@ fn concurrent_readers_see_consistent_data() {
         .and_then(|l| l.split_whitespace().next())
         .and_then(|n| n.parse().ok())
         .unwrap_or(0);
+    // Its count, which docs/research/measurements/macos-sched/workers.sh reads.
+    eprintln!("verified reads in 3 s: {ops}");
     assert!(ops > 1000, "only {ops} verified reads in 3 s: {r}");
 }

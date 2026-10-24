@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/hv/mod.rs b/crates/vmm/src/hv/mod.rs
+index b7d6fb1c..2a7ce41b 100644
+--- a/crates/vmm/src/hv/mod.rs
++++ b/crates/vmm/src/hv/mod.rs
+@@ -60,7 +60,7 @@ pub struct Touch {
+ /// MiB is above the largest working set measured, 3,900 pages of 16 KiB (M33), were every
+ /// page of it written. Past it, written pages are prefetched as reads: the guest's first
+ /// write copies each, as it would without a working set.
+-pub const PREFETCH_PRIVATE: u64 = 64 << 20;
++pub const PREFETCH_PRIVATE: u64 = 0;
+ 
+ /// Keeps the written mark of `touches`, pages of `page` bytes, in their first-touch order,
+ /// until `budget` bytes of them are marked, and clears it past that. Returns how many

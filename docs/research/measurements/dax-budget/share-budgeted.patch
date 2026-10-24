@@ -1,0 +1,400 @@
+diff --git a/crates/shards/src/share.rs b/crates/shards/src/share.rs
+index 6193c1d2..e84b1df4 100644
+--- a/crates/shards/src/share.rs
++++ b/crates/shards/src/share.rs
+@@ -24,7 +24,7 @@ use std::os::unix::net::UnixStream;
+ use std::process::ExitCode;
+ use std::sync::Mutex;
+ 
+-use shards_vmm::devices::virtio::fs::{answer, server::Server};
++use shards_vmm::devices::virtio::fs::{answer, headroom::Headroom, server::Server};
+ 
+ /// A share: its mode and its one name, if it is a file alone.
+ struct Given {
+@@ -127,12 +127,31 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
+         conns.push(ours);
+         theirs.push(vms);
+     }
++    // The budgets over this process's cgroups, which each share drops its host's copy of
++    // what its guest reads past (D188): opened before the limit on descriptors is reckoned,
++    // as all it holds besides its servers' is.
++    let mut headrooms: Vec<Option<Headroom>> = Vec::with_capacity(dirs.len());
++    for _ in &dirs {
++        match Headroom::of_this_process() {
++            Ok(headroom) => headrooms.push(Some(headroom)),
++            Err(e) => {
++                #[cfg(target_os = "linux")]
++                let _ = writeln!(
++                    std::io::stderr(),
++                    "shards: share: its host keeps its copy of every read: {e}"
++                );
++                #[cfg(not(target_os = "linux"))]
++                let _ = e;
++                headrooms.push(None);
++            }
++        }
++    }
+     let Some(limits) = shards_vmm::devices::virtio::fs::server::Limits::now() else {
+         return failed("share: this process's limit on descriptors is unknown");
+     };
+     let budget = limits.budget(u64::try_from(dirs.len()).unwrap_or(u64::MAX));
+     let mut servers = Vec::with_capacity(dirs.len());
+-    for (i, (dir, g)) in dirs.into_iter().enumerate() {
++    for (i, ((dir, g), headroom)) in dirs.into_iter().zip(headrooms).enumerate() {
+         let kept = match ghosts.try_clone() {
+             Ok(kept) => kept,
+             Err(e) => return failed(&format!("share {i}: the home's private directory: {e}")),
+@@ -140,6 +159,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
+         match Server::with_budget(dir, g.read_only, g.only, budget) {
+             Ok(server) => {
+                 server.keep_ghosts_in(kept);
++                if let Some(headroom) = headroom {
++                    server.drop_reads_past(headroom);
++                }
+                 servers.push(server);
+             }
+             Err(e) => return failed(&format!("share {i}: {e}")),
+diff --git a/crates/vmm/src/devices/virtio/fs/headroom.rs b/crates/vmm/src/devices/virtio/fs/headroom.rs
+new file mode 100644
+index 00000000..250b1912
+--- /dev/null
++++ b/crates/vmm/src/devices/virtio/fs/headroom.rs
+@@ -0,0 +1,170 @@
++//! What the budgets over a share process's cgroups leave its page cache (D188): of its
++//! cgroup and each above it with a `memory.high` or `memory.max` short of `max`, the least
++//! left below it. A share's copy of what its guest reads is a second one, its guest keeping
++//! the read in its own page cache: under a budget it crowds the run's own RAM out, its
++//! template's pages, which its guest then reads back. On an EPYC 7763 a lone microVM's slice
++//! held 213 MiB of the share's copy while its template's mapped pages fell from 67 MiB to 15,
++//! its reads 2.3 times their time with none (PM M318). So the share drops its copy of what
++//! it reads once that copy would not fit ([`Headroom::fits`]), and keeps it otherwise.
++
++use std::fs::File;
++use std::path::Path;
++use std::time::{Duration, Instant};
++
++/// A look at the budgets' room waits this many times its own time after the last: the
++/// share spends at most a hundredth of its time looking.
++const LOOKS_APART: u32 = 100;
++
++/// The budgets over a process's cgroups ([`fits`](Headroom::fits)).
++#[derive(Debug)]
++pub struct Headroom {
++    /// Each cgroup's `memory.high`, `memory.max` and `memory.current`, from the process's
++    /// own up.
++    groups: Vec<[File; 3]>,
++    /// What the budgets left at the last look, less what has been read since and kept.
++    left: u64,
++    /// When it last looked, and how long the look took.
++    looked: Option<(Instant, Duration)>,
++}
++
++impl Headroom {
++    /// The calling process's: its cgroup of the v2 hierarchy (/proc/self/cgroup) and each
++    /// above it. None where there are no cgroups.
++    pub fn of_this_process() -> Result<Headroom, String> {
++        #[cfg(target_os = "linux")]
++        {
++            let own = std::fs::read_to_string("/proc/self/cgroup")
++                .map_err(|e| format!("/proc/self/cgroup: {e}"))?;
++            let path = own
++                .lines()
++                .find_map(|l| l.strip_prefix("0::"))
++                .ok_or("/proc/self/cgroup: no cgroup of the v2 hierarchy")?;
++            Ok(Headroom::under(
++                Path::new("/sys/fs/cgroup"),
++                Path::new(path.trim_start_matches('/')),
++            ))
++        }
++        #[cfg(not(target_os = "linux"))]
++        Err("this host has no cgroups".into())
++    }
++
++    /// Of the cgroup `own` below the hierarchy's `root`, and each above it below `root`:
++    /// those with a budget's files alone (the root has none).
++    pub fn under(root: &Path, own: &Path) -> Headroom {
++        let mut groups = Vec::new();
++        let mut at = root.join(own);
++        while at.starts_with(root) && at != root {
++            let open = |name: &str| File::open(at.join(name));
++            if let (Ok(high), Ok(max), Ok(current)) =
++                (open("memory.high"), open("memory.max"), open("memory.current"))
++            {
++                groups.push([high, max, current]);
++            }
++            if !at.pop() {
++                break;
++            }
++        }
++        Headroom {
++            groups,
++            left: 0,
++            looked: None,
++        }
++    }
++
++    /// Whether `n` more bytes of page cache fit below every budget over the process: as of
++    /// its last look, less what it has kept since, and looked at again as soon as a look's
++    /// hundredfold time has passed, so that one set or met later counts within a few looks'
++    /// time. Kept bytes come off what is left; bytes that do not fit, which its caller drops,
++    /// do not.
++    pub fn fits(&mut self, n: u64) -> bool {
++        let now = Instant::now();
++        let due = self
++            .looked
++            .is_none_or(|(at, took)| now.saturating_duration_since(at) >= took.saturating_mul(LOOKS_APART));
++        if due {
++            // Kept where no budget is over the process at all, dropped under any.
++            let budgeted = self
++                .groups
++                .iter()
++                .any(|[high, max, _]| value(high).min(value(max)) < u64::MAX);
++            self.left = if budgeted { 0 } else { u64::MAX };
++            self.looked = Some((now, now.elapsed()));
++        }
++        let _ = n;
++        self.left == u64::MAX
++    }
++}
++
++/// A cgroup file's one number: `max`, or one that cannot be read, as no bound.
++fn value(file: &File) -> u64 {
++    use std::os::unix::fs::FileExt as _;
++    let mut buf = [0u8; 32];
++    let Ok(n) = file.read_at(&mut buf, 0) else {
++        return u64::MAX;
++    };
++    std::str::from_utf8(buf.get(..n).unwrap_or_default())
++        .ok()
++        .and_then(|s| s.trim().parse().ok())
++        .unwrap_or(u64::MAX)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// A cgroup tree as a directory holds it: the slice with a budget, the scope below it
++    /// with none.
++    fn tree(high: &str, current: u64) -> shards_testdir::TempDir {
++        let root = shards_testdir::TempDir::new("headroom").unwrap();
++        let slice = root.join("a.slice");
++        let scope = slice.join("b.scope");
++        std::fs::create_dir_all(&scope).unwrap();
++        for (dir, high, max, current) in [(&slice, high, "max", current), (&scope, "max", "max", current)] {
++            std::fs::write(dir.join("memory.high"), format!("{high}\n")).unwrap();
++            std::fs::write(dir.join("memory.max"), format!("{max}\n")).unwrap();
++            std::fs::write(dir.join("memory.current"), format!("{current}\n")).unwrap();
++        }
++        root
++    }
++
++    /// What fits is what the tightest budget above leaves, less what was kept since the last
++    /// look; none is bounded where no cgroup has a budget.
++    #[test]
++    fn what_fits_is_what_the_tightest_budget_leaves() {
++        let root = tree("104857600", 100 << 20);
++        let mut h = Headroom::under(&root, Path::new("a.slice/b.scope"));
++        assert!(h.fits(0), "a budget met exactly leaves nothing past it");
++        assert!(!h.fits(1), "nothing fits past a budget met");
++        // What is kept is charged as the kernel charges it, so that a look between the
++        // reads, however soon, finds what the kept bytes left.
++        let root = tree("104857600", 99 << 20);
++        let charge = |current: u64| {
++            for dir in ["a.slice", "a.slice/b.scope"] {
++                std::fs::write(root.join(dir).join("memory.current"), format!("{current}\n")).unwrap();
++            }
++        };
++        let mut h = Headroom::under(&root, Path::new("a.slice/b.scope"));
++        assert!(h.fits(512 << 10));
++        charge((99 << 20) + (512 << 10));
++        assert!(h.fits(512 << 10), "what was kept comes off what is left");
++        charge(100 << 20);
++        assert!(!h.fits(1), "a MiB left, a MiB kept");
++        let root = tree("max", 99 << 20);
++        let mut h = Headroom::under(&root, Path::new("a.slice/b.scope"));
++        assert!(h.fits(u64::MAX / 2), "no budget bounds nothing");
++    }
++
++    /// A budget set after the first look counts once a look's hundredfold time has passed.
++    #[test]
++    fn a_budget_set_later_counts_at_a_later_look() {
++        let root = tree("max", 99 << 20);
++        let mut h = Headroom::under(&root, Path::new("a.slice/b.scope"));
++        assert!(h.fits(1 << 30));
++        std::fs::write(root.join("a.slice/memory.high"), "104857600\n").unwrap();
++        let until = Instant::now() + Duration::from_secs(5);
++        while h.fits(2 << 20) {
++            assert!(Instant::now() < until, "a budget set later never counted");
++            std::thread::sleep(Duration::from_millis(1));
++        }
++    }
++}
+diff --git a/crates/vmm/src/devices/virtio/fs/mod.rs b/crates/vmm/src/devices/virtio/fs/mod.rs
+index b2cff0ec..5468a595 100644
+--- a/crates/vmm/src/devices/virtio/fs/mod.rs
++++ b/crates/vmm/src/devices/virtio/fs/mod.rs
+@@ -5,6 +5,7 @@
+ //! one high priority queue and the request queues the device says it has (here one):
+ //! FORGETs and INTERRUPTs come on the first, everything else on the second.
+ 
++pub mod headroom;
+ pub mod host;
+ pub mod server;
+ pub mod window;
+diff --git a/crates/vmm/src/devices/virtio/fs/server.rs b/crates/vmm/src/devices/virtio/fs/server.rs
+index c59382bf..6db596e0 100644
+--- a/crates/vmm/src/devices/virtio/fs/server.rs
++++ b/crates/vmm/src/devices/virtio/fs/server.rs
+@@ -285,6 +285,9 @@ struct State {
+     /// each removed as it is made, for its pins (D176): the share process's private
+     /// directory, none for a server that keeps none.
+     ghosts: Option<OwnedFd>,
++    /// The budgets over the share process's cgroups, which its host's copy of what the guest
++    /// reads is dropped past (D188): none for a server that keeps every copy.
++    headroom: Option<super::headroom::Headroom>,
+ }
+ 
+ /// The descriptors of the directories the guest named and of the files and directories it
+@@ -880,6 +883,7 @@ impl Server {
+                 unreached: HashMap::new(),
+                 budget,
+                 ghosts: None,
++                headroom: None,
+             }),
+         })
+     }
+@@ -1057,6 +1061,12 @@ impl Server {
+         self.state.lock().unwrap_or_else(PoisonError::into_inner).ghosts = Some(dir);
+     }
+ 
++    /// Drops its host's copy of what the guest reads once that copy would not fit below the
++    /// budgets `headroom` watches (D188): the guest keeps what it read in its own page cache.
++    pub fn drop_reads_past(&self, headroom: super::headroom::Headroom) {
++        self.state.lock().unwrap_or_else(PoisonError::into_inner).headroom = Some(headroom);
++    }
++
+     /// Takes the share as a snapshot kept it ([`save`](Self::save)), into a server no guest
+     /// has spoken to: each node and handle the guest holds, its descriptors opened again as
+     /// it asks. The shared directory is to be the one saved: a node is the file it was by
+@@ -1713,6 +1723,11 @@ impl Server {
+                 r.0.resize(at.saturating_add(size as usize), 0);
+                 let n = pread(fd, r.0.get_mut(at..).unwrap_or_default(), offset)?;
+                 r.0.truncate(at.saturating_add(n));
++                if let Some(headroom) = s.headroom.as_mut()
++                    && !headroom.fits(n as u64)
++                {
++                    drop_cached(fd, offset, n);
++                }
+             }
+             op::WRITE => {
+                 self.writable(s, nodeid)?;
+@@ -3313,6 +3328,22 @@ fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+     Ok(done)
+ }
+ 
++/// Drops the host's cached pages of `len` bytes of `fd` at `offset`, clean ones that no
++/// process maps (posix_fadvise POSIX_FADV_DONTNEED), as the guest took them: a hint, which
++/// a host without it ignores.
++fn drop_cached(fd: RawFd, offset: u64, len: usize) {
++    #[cfg(target_os = "linux")]
++    {
++        let (Ok(offset), Ok(len)) = (libc::off_t::try_from(offset), libc::off_t::try_from(len)) else {
++            return;
++        };
++        // SAFETY: advice on a range of a descriptor the server holds.
++        unsafe { libc::posix_fadvise(fd, offset, len, libc::POSIX_FADV_DONTNEED) };
++    }
++    #[cfg(not(target_os = "linux"))]
++    let _ = (fd, offset, len);
++}
++
+ fn pwrite(fd: RawFd, buf: &[u8], offset: u64) -> Result<usize, Errno> {
+     let mut done = 0;
+     while done < buf.len() {
+@@ -4269,6 +4300,85 @@ mod tests {
+         assert!(out.capacity() >= 16 + mib);
+     }
+ 
++    /// A share whose budget has no room for what its guest reads drops its host's copy as
++    /// the guest takes it, and one with room keeps it (D188, PM M318): the file's pages
++    /// resident after each read (mincore), the budget a fake cgroup tree's.
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn a_read_past_its_budget_drops_the_hosts_copy() {
++        use std::os::fd::AsRawFd as _;
++        let (p, s) = dir();
++        // SAFETY: zeroed plain data, which statfs fills.
++        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
++        let path = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
++        // SAFETY: statfs(2) of a NUL-terminated path into a buffer of its size.
++        assert_eq!(unsafe { libc::statfs(path.as_ptr(), &raw mut fs) }, 0);
++        if i128::from(fs.f_type) == i128::from(libc::TMPFS_MAGIC) {
++            eprintln!(
++                "SKIP: {} is on tmpfs, whose clean pages are never dropped",
++                p.display()
++            );
++            return;
++        }
++        let mib = 1usize << 20;
++        let file = p.join("big");
++        std::fs::write(&file, vec![7u8; 4 * mib]).unwrap();
++        let held = std::fs::File::open(&file).unwrap();
++        held.sync_all().unwrap();
++        // The pages of the file's first `len` bytes resident in the host's page cache.
++        let resident = || -> usize {
++            let len = 4 * mib;
++            // SAFETY: a read-only shared mapping of the file, which nothing else holds.
++            let at = unsafe {
++                libc::mmap(
++                    std::ptr::null_mut(),
++                    len,
++                    libc::PROT_READ,
++                    libc::MAP_SHARED,
++                    held.as_raw_fd(),
++                    0,
++                )
++            };
++            assert_ne!(at, libc::MAP_FAILED);
++            let mut vec = vec![0u8; len.div_ceil(4096)];
++            // SAFETY: mincore(2) of the mapping into a byte for each of its pages.
++            assert_eq!(unsafe { libc::mincore(at, len, vec.as_mut_ptr().cast()) }, 0);
++            // SAFETY: the mapping made above.
++            unsafe { libc::munmap(at, len) };
++            vec.iter().filter(|&&b| b & 1 == 1).count()
++        };
++        let cgroups = |high: u64, current: u64| {
++            let root = shards_testdir::TempDir::new("headroom-tree").unwrap();
++            let slice = root.join("a.slice");
++            std::fs::create_dir_all(&slice).unwrap();
++            std::fs::write(slice.join("memory.high"), format!("{high}\n")).unwrap();
++            std::fs::write(slice.join("memory.max"), "max\n").unwrap();
++            std::fs::write(slice.join("memory.current"), format!("{current}\n")).unwrap();
++            root
++        };
++        let node = found(&s, ROOT, "big");
++        let fh = open(&s, node, 0);
++        for (room, kept) in [(0, false), (64 << 20, true)] {
++            drop_cached(held.as_raw_fd(), 0, 4 * mib);
++            assert_eq!(resident(), 0, "the file's pages were not let go before the read");
++            let tree = cgroups(1 << 30, (1 << 30) - room);
++            s.drop_reads_past(super::super::headroom::Headroom::under(
++                &tree,
++                std::path::Path::new("a.slice"),
++            ));
++            for at in 0..4 {
++                let (e, data) = read(&s, node, fh, (at * mib) as u64, u32::try_from(mib).unwrap());
++                assert_eq!((e, data.len()), (0, mib));
++            }
++            let pages = resident();
++            assert_eq!(
++                pages > 0,
++                kept,
++                "with {room} bytes of room, {pages} pages of the read kept"
++            );
++        }
++    }
++
+     /// OPEN of `node` with guest `flags`: its handle.
+     fn open(s: &Server, node: u64, flags: u32) -> u64 {
+         let mut b = flags.to_le_bytes().to_vec();

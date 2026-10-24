@@ -103,7 +103,17 @@ where
     } else {
         builder
     };
-    let thread = match builder.spawn(move || take.recv().ok().and_then(body)) {
+    let thread = match builder.spawn(move || {
+        // It answers its guest as it is asked, however busy its host (PM M317).
+        let _prioritized = match crate::platform::prioritize_device_thread() {
+            Ok(prioritized) => Some(prioritized),
+            Err(e) => {
+                debug!("a device worker runs at its default policy: {e}");
+                None
+            }
+        };
+        take.recv().ok().and_then(body)
+    }) {
         Ok(thread) => thread,
         Err(e) => return Err((format!("spawning the {name} worker: {e}"), payload)),
     };

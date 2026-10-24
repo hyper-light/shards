@@ -62,11 +62,16 @@ mod spiffe;
 mod synced;
 #[cfg(unix)]
 mod volumes;
+#[cfg(target_os = "linux")]
+mod working_set;
 
 const USAGE: &str = "usage: shards ACTION THING [ARG...]
   `shards --help` lists every action, and `shards ACTION` each way it is said.";
 
 fn main() -> ExitCode {
+    // Its clock starts with it, for a run's timing line, which says the client's own time
+    // (`client_us`, cli/client.rs).
+    let _ = shards_vmm::log::uptime_us();
     // A command a daemon started for another machine's client on a terminal (D180).
     #[cfg(unix)]
     {
@@ -95,6 +100,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // the VM's broker (`shards run --kernel`, `shards restore`): not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),
+        // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
+        #[cfg(target_os = "linux")]
+        Some("working-set") => working_set::keeper(),
         // a run's share process (D38), which the daemon starts: not for people to run.
         #[cfg(unix)]
         Some("share") => share::share(args),

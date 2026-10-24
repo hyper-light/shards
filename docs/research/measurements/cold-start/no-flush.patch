@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/devices/virtio/pmem.rs b/crates/vmm/src/devices/virtio/pmem.rs
+index 9bae1012..e259bb80 100644
+--- a/crates/vmm/src/devices/virtio/pmem.rs
++++ b/crates/vmm/src/devices/virtio/pmem.rs
+@@ -1084,6 +1084,8 @@ fn answer(chain: &Chain, mem: &GuestMemory, layer: Option<&Layer>) -> u32 {
+     };
+     let t0 = crate::log::uptime_us();
+     let ret = match (asked, layer) {
++        (REQ_FLUSH, Some(_)) => 0,
++        #[allow(unreachable_patterns)]
+         (REQ_FLUSH, Some(layer)) => match layer.flush() {
+             Ok(()) => {
+                 crate::debug!(

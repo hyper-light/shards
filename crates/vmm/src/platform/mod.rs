@@ -70,7 +70,7 @@ mod macos_thread;
 #[cfg(unix)]
 mod pressure;
 #[cfg(unix)]
-pub use pressure::{MemoryPressure, PressureWatches};
+pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
 
 mod granted;
 #[cfg(unix)]
@@ -82,14 +82,32 @@ pub use granted::{
 #[cfg(target_os = "linux")]
 pub use shards_syscall_filter as seccomp;
 
+/// What keeps a thread at the policy a `prioritize_` call gave it: the thread holds it
+/// while it runs and drops it before it ends. On macOS the real-time policy's governor
+/// watches the thread while it is held (macos_thread.rs): one that runs long goes to
+/// timeshare before XNU's fail-safe would depress it (PM M317).
+#[derive(Debug)]
+pub struct Prioritized {
+    #[cfg(target_os = "macos")]
+    _watch: macos_thread::Watch,
+}
+
 /// Applies the scheduling policy measured to give vCPUs precise timer wake-ups. Only
 /// macOS has a measured policy (docs/research/platform-measurements.md M8, M10); on other
 /// hosts this is a no-op until one is measured.
-pub fn prioritize_vcpu_thread() -> Result<(), String> {
+pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
     #[cfg(target_os = "macos")]
-    return macos_thread::make_current_realtime();
+    return macos_thread::make_current_realtime().map(|watch| Prioritized { _watch: watch });
     #[cfg(not(target_os = "macos"))]
-    Ok(())
+    Ok(Prioritized {})
+}
+
+/// A device worker's thread, which answers its guest's requests: on macOS at the vCPUs'
+/// policy, where with every CPU of the host busy a block device's readers had 238k reads
+/// verified in 3 s at p50, 210k at QoS user-interactive and 156k at the default, and all
+/// three alike on a quiet host (PM M317). Elsewhere as it is.
+pub fn prioritize_device_thread() -> Result<Prioritized, String> {
+    prioritize_vcpu_thread()
 }
 
 /// Has the calling thread, a machine's vCPU hold's governor (D191), run as it wakes,
@@ -99,13 +117,13 @@ pub fn prioritize_vcpu_thread() -> Result<(), String> {
 /// process held to two CPUs kept it from running and used up to 1.58 s of CPU in a second
 /// held to one (PM M294). On Linux, where the hold's test has held on every runner, as it
 /// is.
-pub fn prioritize_governor_thread() -> Result<(), String> {
+pub fn prioritize_governor_thread() -> Result<Prioritized, String> {
     #[cfg(target_os = "macos")]
-    return macos_thread::make_current_realtime();
+    return prioritize_vcpu_thread();
     #[cfg(windows)]
-    return windows::run_time_critical();
+    return windows::run_time_critical().map(|()| Prioritized {});
     #[cfg(not(any(target_os = "macos", windows)))]
-    Ok(())
+    Ok(Prioritized {})
 }
 
 /// The bytes of `name` in the directory `dir` holds open, or `None` if there is no such

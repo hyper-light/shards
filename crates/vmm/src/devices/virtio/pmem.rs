@@ -790,21 +790,38 @@ impl Layer {
     /// The machine is paused and the head saved into `kept` since: no vCPU runs and no host
     /// thread touches the head until this returns.
     pub unsafe fn remap_head(&self, kept: &File) -> Result<(), String> {
-        let len = self.head.len();
-        let guest = self.guest.get();
-        if let Some((gpa, mapper)) = guest {
-            mapper.unmap(*gpa, len)?;
-        }
-        // SAFETY: the caller's contract; the guest has the head no more meanwhile.
-        let remapped = unsafe { self.head.map_back(kept) }.map_err(|e| format!("its layer's head: {e}"));
-        if let Some((gpa, mapper)) = guest {
-            // SAFETY: the head stays mapped in this process for the layer's life, which
-            // outlives the VM (`Running` drops the VM before the devices).
-            if let Err(e) = unsafe { mapper.map(self.head.host().as_ptr(), *gpa, len) } {
-                self.lost.store(true, Ordering::Release);
+        let Some((gpa, mapper)) = self.guest.get() else {
+            // SAFETY: the caller's contract; no guest has the head.
+            return unsafe { self.head.map_back(kept) }.map_err(|e| format!("its layer's head: {e}"));
+        };
+        let host = self.head.host().as_ptr();
+        let whole = [(*gpa, host, self.head.len())];
+        // What the map-back changes alone, taken from the guest meanwhile.
+        let taken = match self.head.changing() {
+            Some(ranges) => super::head::parts_of(&whole, host, &ranges),
+            None => whole.to_vec(),
+        };
+        let give_back = |taken: &[(u64, *mut u8, usize)]| -> Result<(), String> {
+            for &(gpa, host, len) in taken {
+                // SAFETY: the head stays mapped in this process for the layer's life, which
+                // outlives the VM (`Running` drops the VM before the devices).
+                if let Err(e) = unsafe { mapper.map(host, gpa, len) } {
+                    self.lost.store(true, Ordering::Release);
+                    return Err(e);
+                }
+            }
+            Ok(())
+        };
+        for (n, &(gpa, _, len)) in taken.iter().enumerate() {
+            if let Err(e) = mapper.unmap(gpa, len) {
+                give_back(taken.get(..n).unwrap_or_default())?;
                 return Err(e);
             }
         }
+        // SAFETY: the caller's contract; the guest has the parts it changes no more
+        // meanwhile.
+        let remapped = unsafe { self.head.map_back(kept) }.map_err(|e| format!("its layer's head: {e}"));
+        give_back(&taken)?;
         remapped
     }
 
@@ -1382,9 +1399,10 @@ mod tests {
         assert_eq!(unsafe { *head.add(2 * HEAD_BLOCK) }, 0x40);
     }
 
-    /// A placed head is taken from its guest while it is mapped back, and given back after
-    /// whatever came between; one its guest would not give up stays its own memory, and
-    /// one its guest could not be given back is lost to it (D190).
+    /// A placed head's blocks its map-back changes are taken from its guest while it is
+    /// mapped back, and given back after whatever came between, its untouched blocks left
+    /// with the guest; one its guest would not give up stays its own memory, and one its
+    /// guest could not be given back is lost to it (D190).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_placed_heads_guest_gives_it_up_while_it_is_mapped_back() {
@@ -1431,7 +1449,9 @@ mod tests {
             );
             // SAFETY: nothing else touches the head, which no hypervisor maps.
             let remapped = unsafe { booted.remap_head(&kept) };
-            let at = |what| (what, SECTION, head_len);
+            // Its written blocks alone, which the map-back changes, the label its boot wrote
+            // and the test's: the rest, untouched, stays with the guest.
+            let at = |what| (what, SECTION, 2 * HEAD_BLOCK);
             match (unmaps, maps) {
                 (true, true) => {
                     assert_eq!(remapped, Ok(()));

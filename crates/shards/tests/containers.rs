@@ -2391,15 +2391,15 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         .status();
 }
 
-/// A microVM held to a budget gives back what it holds cold of its files as it reaches it
-/// (D188): under a slice of the user's manager whose `MemoryHigh` is past the microVM idle
-/// and short of a gigabyte it reads, in files of a MiB, which it reads through FUSE (a file
-/// of a DAX window's range or more is its host's page cache, mapped into it: D189), its
-/// page cache grows until the budget slows it; the daemon, watching the scope it made there, has it reclaim what it holds cold and report
-/// it free at once, says what it asked to unplug (none while the run's peak since the pass
-/// before is the read's own page cache at the budget, which a pass keeps: M275), and it
-/// reads on to the end. Linux alone: macOS's memory pressure is the whole system's, which
-/// no test may raise for every program on its host.
+/// A microVM held to a budget short of what it holds gives back what it holds cold of its
+/// files, and reads on within it (D188): under a slice of the user's manager, a microVM
+/// that read 512 MiB through FUSE (a file of a DAX window's range or more is its host's
+/// page cache, mapped into it: D189) holds it in its guest's page cache; a `MemoryHigh` set
+/// short of it, the daemon, watching the slice's budget, has it reclaim what it holds cold
+/// and report it free at once, idle as it is, which raises no pressure, says what it gave
+/// back and what it asked to unplug, and holds it within the budget's room, in which it
+/// reads a gigabyte, in files of a MiB, to the end. Linux alone: macOS has no group of
+/// processes a budget holds.
 #[test]
 fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if !cfg!(target_os = "linux") {
@@ -2453,29 +2453,44 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     assert_eq!(started.status, Some(0), "{started}");
     let log = home.join("daemon.log");
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
-    if !said().contains("some task stalled on memory") {
-        eprintln!(
-            "SKIP: this host's kernel arms no memory pressure trigger of its user's (Linux 6.4); the daemon's log:\n{}",
-            said()
-        );
-        return;
-    }
+    let read = |files: &[String]| {
+        let mut read = vec!["exec", "budget", "/bin/testguest", "read"];
+        read.extend(files.iter().map(String::as_str));
+        let read = shards(&read);
+        assert_eq!(read.status, Some(0), "{read}\n{}", said());
+        for file in files {
+            assert!(
+                read.stdout.contains(&format!("read {file} 1048576 ")),
+                "{file}: {read}"
+            );
+        }
+    };
+    // Half of them read with no budget, held in its guest's page cache.
+    read(files.get(..512).unwrap());
     let set = Command::new("systemctl")
         .args(["--user", "set-property", "--runtime", &slice])
         .args(["MemoryHigh=384M", "MemorySwapMax=0"])
         .output()
         .unwrap();
     assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
-    let mut read = vec!["exec", "budget", "/bin/testguest", "read"];
-    read.extend(files.iter().map(String::as_str));
-    let read = shards(&read);
-    assert_eq!(read.status, Some(0), "{read}\n{}", said());
-    for file in &files {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !said().contains("its microVMs gave back") {
         assert!(
-            read.stdout.contains(&format!("read {file} 1048576 ")),
-            "{file}: {read}"
+            std::time::Instant::now() < deadline,
+            "nothing given back said:\n{}",
+            said()
         );
+        std::thread::sleep(Duration::from_millis(50));
     }
+    read(&files);
+    // Held within the room its budget leaves, or, short of it, within the least room a run
+    // goes on in: its host's taking back its template's pages as the budget was set counts
+    // as no room (PM M318), and one that held 512 MiB of page cache under 384 MiB is short.
+    assert!(
+        said().contains("held within its budget") || said().contains("past what it uses, the least room"),
+        "not said to be held within its budget:\n{}",
+        said()
+    );
     // What it gave back of its files, and what it asked to unplug of the memory it had
     // plugged to hold them.
     let log = said();
@@ -12805,15 +12820,118 @@ fn a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host() {
         "{used} ns of CPU in {wall} ns, held to one CPU"
     );
     let mut free = start(&home, &image, &options("free", &[]), &["sleep"]);
+    // What the host gives four busy threads of a program's now: a busy guest's vCPUs share
+    // its CPUs as its programs do (D4, PM M317), so four without a limit show more than a
+    // CPU's time only on a host that gives a program's four that much.
+    let given: f64 = std::thread::scope(|s| {
+        let spun: Vec<_> = (0..4)
+            .map(|_| {
+                s.spawn(|| {
+                    let clock = shards_vmm::platform::ThreadClock::current().unwrap();
+                    let until = Instant::now() + Duration::from_secs(1);
+                    while Instant::now() < until {
+                        std::hint::spin_loop();
+                    }
+                    clock.read().unwrap()
+                })
+            })
+            .collect();
+        spun.into_iter().map(|t| t.join().unwrap() as f64 / 1e9).sum()
+    });
     let (used, wall) = burn("free");
     // Four threads' time, on a host that gives it: more than a CPU's.
-    assert!(
-        used > wall + 1_000_000_000,
-        "{used} ns of CPU in {wall} ns, without a limit"
-    );
+    if given >= 2.0 {
+        assert!(
+            used > wall + 1_000_000_000,
+            "{used} ns of CPU in {wall} ns, without a limit, where the host gave a program's four threads {given:.2} CPUs"
+        );
+    } else {
+        eprintln!(
+            "SKIP: without a limit, {used} ns of CPU in {wall} ns: the host gave a program's four threads {given:.2} CPUs, too few to show a hold of one"
+        );
+    }
     assert_eq!(shards(&["rm", "-f", "held", "free"]).status, Some(0));
     let _ = exit(&mut limited);
     let _ = exit(&mut free);
+}
+
+/// A run's busy vCPUs are never depressed by XNU's real-time fail-safe (D4, PM M317):
+/// with two threads of its guest busy for five seconds, no vCPU thread of its VM process
+/// is at priority 0 at any look, and the busy ones go to timeshare while they run. Without
+/// the governor's watch, a vCPU busy for a second is depressed and stays so.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_microvms_busy_vcpus_are_never_depressed_by_the_real_time_fail_safe() {
+    let Some((home, image)) = home("containers-fail-safe") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut busy = start(&home, &image, &["--name", "busy"], &["sleep"]);
+    let pid: i32 = shards(&["inspect", "-f", "{{.State.Pid}}", "busy"])
+        .stdout
+        .trim()
+        .parse()
+        .unwrap();
+    // Every 50 ms, each vCPU thread of the VM process: its policy (1 timeshare) and base
+    // priority, as proc_pidinfo says them (PROC_PIDLISTTHREADS, PROC_PIDTHREADINFO).
+    let looking = std::thread::spawn(move || {
+        const PROC_PIDLISTTHREADS: i32 = 6;
+        let size = |n: usize| i32::try_from(n).unwrap();
+        let mut seen = Vec::new();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(5500) {
+            let mut ids = [0u64; 256];
+            // SAFETY: a buffer of `ids`' size for the process's thread handles.
+            let n = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    PROC_PIDLISTTHREADS,
+                    0,
+                    ids.as_mut_ptr().cast(),
+                    size(size_of_val(&ids)),
+                )
+            };
+            for &id in ids.iter().take(usize::try_from(n).unwrap_or(0) / 8) {
+                // SAFETY: zeroed plain data, which proc_pidinfo fills.
+                let mut t: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
+                // SAFETY: a buffer of `t`'s size for the thread's information.
+                let got = unsafe {
+                    libc::proc_pidinfo(
+                        pid,
+                        libc::PROC_PIDTHREADINFO,
+                        id,
+                        (&raw mut t).cast(),
+                        size(size_of_val(&t)),
+                    )
+                };
+                // SAFETY: a name proc_pidinfo wrote, NUL-terminated within its array.
+                let name = unsafe { std::ffi::CStr::from_ptr(t.pth_name.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned();
+                if got == size(size_of_val(&t)) && name.starts_with("vcpu") {
+                    seen.push((start.elapsed().as_millis(), name, t.pth_policy, t.pth_priority));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        seen
+    });
+    let burned = shards(&["exec", "busy", "/bin/testguest", "burn", "2", "5000"]);
+    let seen = looking.join().unwrap();
+    assert!(burned.stdout.ends_with("burned\n"), "{burned}");
+    assert!(!seen.is_empty(), "no vCPU thread of VM process {pid} seen");
+    let depressed: Vec<_> = seen.iter().filter(|s| s.3 == 0).collect();
+    assert!(
+        depressed.is_empty(),
+        "vCPU threads depressed to priority 0: {depressed:?}"
+    );
+    assert!(
+        seen.iter().any(|s| s.2 == 1),
+        "no busy vCPU went to timeshare: {:?}",
+        seen.iter().filter(|s| s.0 > 2000).take(40).collect::<Vec<_>>()
+    );
+    assert_eq!(shards(&["rm", "-f", "busy"]).status, Some(0));
+    let _ = exit(&mut busy);
 }
 
 /// A run's swap and memory as its microVM has them (D159): swap as its limits allow,

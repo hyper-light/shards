@@ -595,6 +595,17 @@ pub fn populate_writable(_ptr: *mut u8, _len: usize) -> io::Result<()> {
     ))
 }
 
+/// The host's fault-around held off over ranges (unix.rs `FaultAroundOff`): no snapshot is
+/// restored on Windows yet (vm::SNAPSHOTS), and none is held off.
+#[derive(Debug)]
+pub struct FaultAroundOff;
+
+impl FaultAroundOff {
+    pub fn over(_ranges: &[(*mut u8, usize)]) -> Option<FaultAroundOff> {
+        None
+    }
+}
+
 /// The pages mapped of a range, for a restore's working set (unix.rs `mapped_pages`): no
 /// snapshot is restored on Windows yet (vm::SNAPSHOTS).
 pub fn mapped_pages(_ptr: *const u8, _len: usize) -> io::Result<Vec<(usize, bool)>> {

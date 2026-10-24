@@ -27,7 +27,7 @@ const ROOT: u64 = 1;
 /// `cache=auto` second, as the host may change the directory meanwhile.
 const VALID_S: u64 = 1;
 /// The most the guest writes or reads in one request: 256 pages.
-pub const MAX_PAGES: u16 = 256;
+pub const MAX_PAGES: u16 = shards_abi::SHARE_MAX_PAGES;
 pub const MAX_WRITE: u32 = MAX_PAGES as u32 * 4096;
 // `mode_t` is u16 on macOS and u32 on Linux: its values as the guest's u32.
 #[allow(clippy::unnecessary_cast)]
@@ -285,6 +285,9 @@ struct State {
     /// each removed as it is made, for its pins (D176): the share process's private
     /// directory, none for a server that keeps none.
     ghosts: Option<OwnedFd>,
+    /// The budgets over the share process's cgroups, which its host's copy of what the guest
+    /// reads is dropped past (D188): none for a server that keeps every copy.
+    headroom: Option<super::headroom::Headroom>,
 }
 
 /// The descriptors of the directories the guest named and of the files and directories it
@@ -880,6 +883,7 @@ impl Server {
                 unreached: HashMap::new(),
                 budget,
                 ghosts: None,
+                headroom: None,
             }),
         })
     }
@@ -1055,6 +1059,13 @@ impl Server {
     /// from a save (D176), each removed as soon as it is made.
     pub fn keep_ghosts_in(&self, dir: OwnedFd) {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).ghosts = Some(dir);
+    }
+
+    /// Drops its host's copy of what the guest reads once keeping it would leave the budgets
+    /// `headroom` watches less room than the share's own reads need (D188): the guest keeps
+    /// what it read in its own page cache.
+    pub fn drop_reads_past(&self, headroom: super::headroom::Headroom) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).headroom = Some(headroom);
     }
 
     /// Takes the share as a snapshot kept it ([`save`](Self::save)), into a server no guest
@@ -1259,6 +1270,17 @@ impl Server {
     /// Answers request `req`, the bytes of its readable descriptors: the reply's bytes,
     /// none for a request that takes none (FORGET, BATCH_FORGET, INTERRUPT).
     pub fn handle(&self, req: &[u8]) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        self.handle_into(req, &mut out).then_some(out)
+    }
+
+    /// [`handle`](Self::handle) into `out`, which it empties and leaves the reply in: a
+    /// buffer its caller keeps from one request to the next, so that a reply is built
+    /// where it is sent from, a READ's bytes read into it. False for a request that takes
+    /// no reply. Each MiB read through the share otherwise made four MiB of fresh memory,
+    /// its server's buffer, its reply, its frame and the frame's copy, whose host held its
+    /// run's cgroup at its budget as it read (PM M314).
+    pub fn handle_into(&self, req: &[u8], out: &mut Vec<u8>) -> bool {
         let mut a = Args(req);
         let header = (|| -> Result<_, Errno> {
             let len = a.u32()?;
@@ -1272,18 +1294,23 @@ impl Server {
             Ok((len, opcode, unique, nodeid, uid, gid))
         })();
         let Ok((len, opcode, unique, nodeid, uid, gid)) = header else {
-            return None;
+            return false;
         };
         let body = req
             .get(40..usize::try_from(len).unwrap_or(0).min(req.len()))
             .unwrap_or_default();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let caller = (uid, gid);
+        // Its out header's room first, filled once the answer is known.
+        let mut r = Reply(std::mem::take(out));
+        r.0.clear();
+        r.0.resize(OUT_HEADER_BYTES, 0);
         let answer = match opcode {
             op::FORGET => {
                 let n = Args(body).u64().unwrap_or(0);
                 forget(&mut state, nodeid, n);
-                return None;
+                *out = r.0;
+                return false;
             }
             op::BATCH_FORGET => {
                 let mut b = Args(body);
@@ -1295,11 +1322,15 @@ impl Server {
                     };
                     forget(&mut state, n, l);
                 }
-                return None;
+                *out = r.0;
+                return false;
             }
-            op::INTERRUPT => return None,
+            op::INTERRUPT => {
+                *out = r.0;
+                return false;
+            }
             _ => match self.confined(&state, opcode, nodeid, body) {
-                Ok(()) => self.dispatch(&mut state, opcode, nodeid, caller, body),
+                Ok(()) => self.dispatch(&mut state, opcode, nodeid, caller, body, &mut r),
                 Err(e) => Err(e),
             },
         };
@@ -1307,17 +1338,25 @@ impl Server {
         let pins = u64::try_from(state.pins.len()).unwrap_or(u64::MAX);
         let room = state.budget.saturating_sub(pins);
         state.fds.trim(room);
-        let mut out = Vec::new();
-        let (error, payload) = match answer {
-            Ok(r) => (0i32, r.0),
-            Err(e) => (-e, Vec::new()),
+        let error = match answer {
+            Ok(()) => 0i32,
+            Err(e) => {
+                r.0.truncate(OUT_HEADER_BYTES);
+                -e
+            }
         };
-        let total = u32::try_from(16 + payload.len()).unwrap_or(u32::MAX);
-        out.extend_from_slice(&total.to_le_bytes());
-        out.extend_from_slice(&error.to_le_bytes());
-        out.extend_from_slice(&unique.to_le_bytes());
-        out.extend_from_slice(&payload);
-        Some(out)
+        let total = u32::try_from(r.0.len()).unwrap_or(u32::MAX);
+        let mut header = [0u8; OUT_HEADER_BYTES];
+        let (len_bytes, rest) = header.split_at_mut(4);
+        let (error_bytes, unique_bytes) = rest.split_at_mut(4);
+        len_bytes.copy_from_slice(&total.to_le_bytes());
+        error_bytes.copy_from_slice(&error.to_le_bytes());
+        unique_bytes.copy_from_slice(&unique.to_le_bytes());
+        if let Some(at) = r.0.get_mut(..OUT_HEADER_BYTES) {
+            at.copy_from_slice(&header);
+        }
+        *out = r.0;
+        true
     }
 
     /// Whether the share lets the request through: a file bound alone, at its directory,
@@ -1356,9 +1395,9 @@ impl Server {
         nodeid: u64,
         caller: (u32, u32),
         body: &[u8],
-    ) -> Result<Reply, Errno> {
+        r: &mut Reply,
+    ) -> Result<(), Errno> {
         let mut a = Args(body);
-        let mut r = Reply::default();
         match opcode {
             op::INIT => {
                 // A session begins: nothing the guest knew before it holds.
@@ -1375,7 +1414,7 @@ impl Server {
                 if major != 7 {
                     // The kernel retries with ours.
                     r.u32(7).u32(45);
-                    return Ok(r);
+                    return Ok(());
                 }
                 let want = init::ASYNC_READ
                     | init::ATOMIC_O_TRUNC
@@ -1467,7 +1506,7 @@ impl Server {
                 if unsafe { libc::symlinkat(target.as_ptr(), dir, name.as_ptr()) } != 0 {
                     return Err(last());
                 }
-                self.made(s, nodeid, &name, caller, Kept::default(), &mut r)?;
+                self.made(s, nodeid, &name, caller, Kept::default(), r)?;
             }
             op::MKNOD => {
                 self.writable(s, nodeid)?;
@@ -1528,7 +1567,7 @@ impl Server {
                         (false, e) => return Err(e),
                     }
                 };
-                self.made(s, nodeid, &name, caller, kept, &mut r)?;
+                self.made(s, nodeid, &name, caller, kept, r)?;
             }
             op::MKDIR => {
                 self.writable(s, nodeid)?;
@@ -1540,7 +1579,7 @@ impl Server {
                 if unsafe { libc::mkdirat(dir, name.as_ptr(), host_perm(mode, true) as libc::mode_t) } != 0 {
                     return Err(last());
                 }
-                self.made(s, nodeid, &name, caller, Kept::mode(mode), &mut r)?;
+                self.made(s, nodeid, &name, caller, Kept::mode(mode), r)?;
             }
             op::UNLINK | op::RMDIR => {
                 self.writable(s, nodeid)?;
@@ -1652,7 +1691,7 @@ impl Server {
                         Err(e) => return Err(e),
                     };
                 let made = if created {
-                    self.made(s, nodeid, &name, caller, Kept::mode(mode), &mut r)?
+                    self.made(s, nodeid, &name, caller, Kept::mode(mode), r)?
                 } else {
                     let (id, found, owner) = lookup(s, nodeid, &name)?;
                     let dax = self.dax_of(s, id, &found);
@@ -1680,10 +1719,16 @@ impl Server {
                 let offset = a.u64()?;
                 let size = a.u32()?.min(MAX_WRITE);
                 let fd = file_fd(s, fh)?;
-                let mut buf = vec![0u8; size as usize];
-                let n = pread(fd, &mut buf, offset)?;
-                buf.truncate(n);
-                r.bytes(&buf);
+                // Read where the reply is sent from: no buffer of its own, nor a copy.
+                let at = r.0.len();
+                r.0.resize(at.saturating_add(size as usize), 0);
+                let n = pread(fd, r.0.get_mut(at..).unwrap_or_default(), offset)?;
+                r.0.truncate(at.saturating_add(n));
+                if let Some(headroom) = s.headroom.as_mut()
+                    && !headroom.fits(n as u64)
+                {
+                    drop_cached(fd, offset, n);
+                }
             }
             op::WRITE => {
                 self.writable(s, nodeid)?;
@@ -1916,7 +1961,7 @@ impl Server {
             }
             _ => return Err(ENOSYS),
         }
-        Ok(r)
+        Ok(())
     }
 
     /// The node made as `name` in `parent` by `caller`: its owner kept where it is not
@@ -2170,6 +2215,8 @@ pub const HEADER_BYTES: usize = 16;
 /// The bytes of a request's whole header (struct fuse_in_header), after which its
 /// arguments come.
 pub const IN_HEADER_BYTES: usize = 40;
+/// The bytes of a reply's header (struct fuse_out_header): its length, error and `unique`.
+const OUT_HEADER_BYTES: usize = 16;
 
 /// The answer to `req` where no directory is shared yet: ENODEV, or none for a request
 /// that takes no reply.
@@ -3282,6 +3329,22 @@ fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
     Ok(done)
 }
 
+/// Drops the host's cached pages of `len` bytes of `fd` at `offset`, clean ones that no
+/// process maps (posix_fadvise POSIX_FADV_DONTNEED), as the guest took them: a hint, which
+/// a host without it ignores.
+fn drop_cached(fd: RawFd, offset: u64, len: usize) {
+    #[cfg(target_os = "linux")]
+    {
+        let (Ok(offset), Ok(len)) = (libc::off_t::try_from(offset), libc::off_t::try_from(len)) else {
+            return;
+        };
+        // SAFETY: advice on a range of a descriptor the server holds.
+        unsafe { libc::posix_fadvise(fd, offset, len, libc::POSIX_FADV_DONTNEED) };
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (fd, offset, len);
+}
+
 fn pwrite(fd: RawFd, buf: &[u8], offset: u64) -> Result<usize, Errno> {
     let mut done = 0;
     while done < buf.len() {
@@ -4199,6 +4262,123 @@ mod tests {
         assert_eq!(unsaid.budget(2), (245_760 - 6 - 2 * REQUEST_FDS) / 2);
         let spent = Limits { process: 8, ..unsaid };
         assert_eq!(spent.budget(1), 0);
+    }
+
+    /// A reply is built where it is sent from: two READs of a MiB answered into one
+    /// buffer, its bytes the file's, its header the reply's, the buffer never made anew
+    /// (PM M314).
+    #[test]
+    fn reads_are_answered_into_the_buffer_their_asker_keeps() {
+        let (p, s) = dir();
+        let mib = 1usize << 20;
+        let bytes: Vec<u8> = (0..2 * mib).map(|i| (i % 251) as u8).collect();
+        std::fs::write(p.join("big"), &bytes).unwrap();
+        let node = found(&s, ROOT, "big");
+        let fh = open(&s, node, 0);
+        let mut out = Vec::new();
+        let mut at = None;
+        for half in 0..2 {
+            let mut b = fh.to_le_bytes().to_vec();
+            b.extend_from_slice(&((half * mib) as u64).to_le_bytes());
+            b.extend_from_slice(&u32::try_from(mib).unwrap().to_le_bytes());
+            b.extend_from_slice(&[0u8; 20]);
+            assert!(s.handle_into(&req(op::READ, node, 0, &b), &mut out));
+            assert_eq!(
+                u32::from_le_bytes(out[0..4].try_into().unwrap()) as usize,
+                16 + mib
+            );
+            assert_eq!(i32::from_le_bytes(out[4..8].try_into().unwrap()), 0);
+            assert!(out[16..] == bytes[half * mib..(half + 1) * mib], "half {half}");
+            assert_eq!(
+                *at.get_or_insert(out.as_ptr()),
+                out.as_ptr(),
+                "the buffer was made anew"
+            );
+        }
+        // A request that takes no reply leaves the buffer to the next.
+        let forget = req(op::FORGET, node, 0, &1u64.to_le_bytes());
+        assert!(!s.handle_into(&forget, &mut out));
+        assert!(out.capacity() >= 16 + mib);
+    }
+
+    /// A share whose budget has no room past what its guest reads drops its host's copy as
+    /// the guest takes it, and one with room keeps it (D188, PM M318): the file's pages
+    /// resident after each read (mincore), the budget a fake cgroup tree's, its room a GiB
+    /// past every host's room for its reads.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_past_its_budget_drops_the_hosts_copy() {
+        use std::os::fd::AsRawFd as _;
+        let (p, s) = dir();
+        // SAFETY: zeroed plain data, which statfs fills.
+        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+        let path = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: statfs(2) of a NUL-terminated path into a buffer of its size.
+        assert_eq!(unsafe { libc::statfs(path.as_ptr(), &raw mut fs) }, 0);
+        if i128::from(fs.f_type) == i128::from(libc::TMPFS_MAGIC) {
+            eprintln!(
+                "SKIP: {} is on tmpfs, whose clean pages are never dropped",
+                p.display()
+            );
+            return;
+        }
+        let mib = 1usize << 20;
+        let file = p.join("big");
+        std::fs::write(&file, vec![7u8; 4 * mib]).unwrap();
+        let held = std::fs::File::open(&file).unwrap();
+        held.sync_all().unwrap();
+        // The pages of the file's first `len` bytes resident in the host's page cache.
+        let resident = || -> usize {
+            let len = 4 * mib;
+            // SAFETY: a read-only shared mapping of the file, which nothing else holds.
+            let at = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ,
+                    libc::MAP_SHARED,
+                    held.as_raw_fd(),
+                    0,
+                )
+            };
+            assert_ne!(at, libc::MAP_FAILED);
+            let mut vec = vec![0u8; len.div_ceil(4096)];
+            // SAFETY: mincore(2) of the mapping into a byte for each of its pages.
+            assert_eq!(unsafe { libc::mincore(at, len, vec.as_mut_ptr().cast()) }, 0);
+            // SAFETY: the mapping made above.
+            unsafe { libc::munmap(at, len) };
+            vec.iter().filter(|&&b| b & 1 == 1).count()
+        };
+        let cgroups = |high: u64, current: u64| {
+            let root = shards_testdir::TempDir::new("headroom-tree").unwrap();
+            let slice = root.join("a.slice");
+            std::fs::create_dir_all(&slice).unwrap();
+            std::fs::write(slice.join("memory.high"), format!("{high}\n")).unwrap();
+            std::fs::write(slice.join("memory.max"), "max\n").unwrap();
+            std::fs::write(slice.join("memory.current"), format!("{current}\n")).unwrap();
+            root
+        };
+        let node = found(&s, ROOT, "big");
+        let fh = open(&s, node, 0);
+        for (room, kept) in [(0, false), (1 << 30, true)] {
+            drop_cached(held.as_raw_fd(), 0, 4 * mib);
+            assert_eq!(resident(), 0, "the file's pages were not let go before the read");
+            let tree = cgroups(2 << 30, (2 << 30) - room);
+            s.drop_reads_past(super::super::headroom::Headroom::under(
+                &tree,
+                std::path::Path::new("a.slice"),
+            ));
+            for at in 0..4 {
+                let (e, data) = read(&s, node, fh, (at * mib) as u64, u32::try_from(mib).unwrap());
+                assert_eq!((e, data.len()), (0, mib));
+            }
+            let pages = resident();
+            assert_eq!(
+                pages > 0,
+                kept,
+                "with {room} bytes of room, {pages} pages of the read kept"
+            );
+        }
     }
 
     /// OPEN of `node` with guest `flags`: its handle.

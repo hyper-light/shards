@@ -118,9 +118,10 @@ impl<D: Disk> Daemon<D> {
     /// least recently claimed from. Those planned count as starting at once.
     pub(super) fn plan_refill(&self, state: &mut State, key: &PoolKey, ahead: bool) -> Option<Planned> {
         let dir = key.dir.as_path();
-        // A template collected is restored no more.
+        // A template collected is restored no more, and its files are held no more.
         if !shards_vmm::snapshot::exists(dir) {
             state.pools.remove(key);
+            self.let_go_template(dir);
             return None;
         }
         let (for_runs, more) = {
@@ -153,6 +154,18 @@ impl<D: Disk> Daemon<D> {
             };
             (for_runs, more)
         };
+        // Under a budget (D188), what its VMs copy ahead of a request is none, as every
+        // warm VM would spend it of the budget before any run came; and none is made ahead
+        // of the runs that wait where the budget has no room left.
+        let budget = self
+            .cgroup_of_parent(&key.parent)
+            .and_then(|d| {
+                super::budget::room(&d, Path::new(super::budget::ROOT), &mut |mapped| {
+                    self.budgets.evicted(mapped)
+                })
+            })
+            .map(|(room, _)| room);
+        let more = if budget.is_some_and(|r| r < 0) { 0 } else { more };
         let more = more.min(self.room(state, key, more));
         let count = for_runs + more;
         let pool = state.pools.get_mut(key)?;
@@ -162,6 +175,9 @@ impl<D: Disk> Daemon<D> {
         pool.starting += count;
         // It writes no file of the home: the daemon gives it its container's log (D30).
         let mut args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
+        if budget.is_some() {
+            args.extend(["--prefetch-private".into(), "0".into()]);
+        }
         if let Some(rootfs) = &pool.rootfs {
             let mut backing = rootfs.as_os_str().to_os_string();
             backing.push(":ro");
@@ -301,6 +317,31 @@ impl<D: Disk> Daemon<D> {
                 return Err(e);
             }
         }
+        // As its VMs restore, not before them.
+        self.hold_template(dir);
         Ok(())
+    }
+
+    /// Holds template `dir`'s generation's files open ([`shards_vmm::snapshot::Held`])
+    /// where they are not, or are another generation's: a restore of a template whose
+    /// files its host had let go of read its whole working set back from the disk a page
+    /// at a time, and its guest its programs from its root filesystem, a cold run of 0.3 s
+    /// taking 9 (PM M315).
+    pub(super) fn hold_template(&self, dir: &Path) {
+        if lock(&self.held).get(dir).is_some_and(|h| h.is_current(dir)) {
+            return;
+        }
+        match shards_vmm::snapshot::hold(dir) {
+            Ok(held) => {
+                lock(&self.held).insert(dir.to_path_buf(), held);
+            }
+            Err(e) => log(format!("{}: its files are not held open: {e}", dir.display())),
+        }
+    }
+
+    /// Lets go of template `dir`'s files ([`hold_template`](Self::hold_template)), as it
+    /// goes: held, a file removed keeps its blocks until it is closed.
+    pub(super) fn let_go_template(&self, dir: &Path) {
+        lock(&self.held).remove(dir);
     }
 }

@@ -48,7 +48,7 @@ performance and resource usage.
 | D1 | On macOS, drive Hypervisor.framework natively. No nested KVM (EL2 stays off by default). | Nested exits cost 27–37× more even with NV2 [VIO §2.2]; native HVF exit ≈ 0.7–0.8 µs [PM M4] |
 | D2 | Starts are served by **snapshot restore into a pre-spawned, pre-initialized VMM process**, never by spawning or cold-booting on the request path. | `posix_spawn` → `main` 3.7 ms p50; framework load +1.5 ms; first `hv_vm_create` 0.55 ms [PM M11, M11b]; one VM per process [GT §1.1]; on a shared host, a per-request process's launch, restore and teardown carry the tail, and thread QoS does not shorten it [PM M22] |
 | D3 | Use the in-kernel GIC (`hv_gic`). Snapshot it as HVF's own serialization of the device (`hv_gic_state`), not as its registers (revised 2026-09-29, D14). Open: its 1.2 ms restore, paid ahead of requests by warm VMs. | WFI blocks in-kernel with zero userspace exits [PM M7]; registers lose interrupts on their way to a vCPU, and every restore of a guest with a disk request in flight stalled [PM M45]; the blob restores in 1.2 ms against 20 µs for registers [PM M14] |
-| D4 | vCPU threads run with Mach time-constraint policy plus QoS user-interactive. Pending: fail-safe behaviour under CPU-bound guests. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10] |
+| D4 | vCPU and device worker threads run with Mach time-constraint policy while they wait between runs (the QoS user-interactive they ask first goes as the policy is set). A governor looks at each once a scheduler tick (125 ms); one that has run a tick since it was last seen waiting is looked at every millisecond for a tick more, and goes to timeshare, as any program's thread, only if no look finds it waiting; it is real-time again once seen waiting. XNU's fail-safe depresses a thread at that policy that runs a second without blocking to priority 0 until its host is quiet. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10]; a run's 4 busy loops 0.97–3.25 CPUs → 3.99–4.00; 3 runs of 18 loops, host waits of up to 6.4 s → 14 ms; block reads verified with every CPU busy 144k → 241k at p50; a start unchanged [PM M317] |
 | D5 | Create vCPUs strictly sequentially in index order, both at boot and on restore. | Redistributor frames and processor numbers follow creation order [PM M13] |
 | D6 | Guest RAM uses the 16 KiB IPA granule (default); the guest's own page size stays 4 KiB. | First-touch cost per byte is 4× lower than with a 4 KiB granule [PM M5] |
 | D7 | Snapshot memory is file-backed `MAP_PRIVATE`, mapped lazily. On HVF the working set can be prefetched from helper vCPUs, not from host reads; on KVM the VMM maps it ahead (`KVM_PRE_FAULT_MEMORY`) [PM M33]. Map it in the warm process before the request: in-process faults on file-backed memory have no tail beyond 111 µs in 6.3 M, but fresh processes mapping a just-unmapped file stalled ~1 s in ~1% of boots [PM M15, M16]. | Cheapest first-touch backing, 1.07 µs per 16 KiB page; host pre-read doesn't help; 4 vCPUs fault 2.2× faster [PM M5, M6] |
@@ -869,6 +869,15 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   - If another run's template got there first, the other copy is removed.
 - **Later runs restore it.** A template that does not restore is removed; the run boots
   instead and says so on stderr, and the next run saves the template again.
+- **Its files held open.** The daemon holds each template's files open from its first
+  restore until the template is removed or replaced (`snapshot::hold`): its memory, its
+  writable layer's and DAX windows' heads, and the files its guest only reads, its root
+  filesystem among them. A file no process holds open gives up its vnode once its host's
+  vnode table is full, and the pages cached of it with it (XNU `vclean`). On a Mac whose
+  263,168 vnodes recycled 2,800 a second, a cold run after a build's worth of files had
+  been looked at read its template's whole working set back from the disk a page at a time,
+  and its guest its programs from its root filesystem: 7.9 to 11.0 s where a warm one took
+  0.2 to 0.6. Held, 0.46 to 0.96 s [PM M315].
 - **A run records the working set**: each guest page it touches until its command
   answers, or a while after the command starts, saved with the template as
   `working-set`. REAP found that restored copies of a serverless function's snapshot
@@ -890,6 +899,24 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     present and file-page bits, which need no privilege). Recording costs it nothing.
     The saving run's pages are not a restore's: only 5–16% of a restore's request pages
     were among them, while one restore's were 99.7–100% of the next's [PM M33].
+    `shards restore DIR` records one the same way on a generation's first restore, its
+    spawner keeping it (D30), and later restores map it ahead. A page its host maps is
+    not always one its guest touched: a read fault on a file maps the pages around it its
+    page cache holds too (fault-around), and the comparison's working sets held 4.6 to
+    5.2 times the pages their guests faulted, every one mapped ahead, 2.5 to 3 MiB more
+    of the memory file than a restore without one held [PM M312]. A restored machine
+    holds the host's fault-around off over its guest's memory and pmem for its life
+    (`platform::FaultAroundOff`: a userfaultfd registered for asynchronous
+    write-protection, Linux 6.7, that write-protects nothing and handles no fault), so
+    that a working set records, and a restore maps ahead, what its guest touched: 739 to
+    778 pages where 2,753 to 2,902, its memory file 3.7 to 3.9 MiB resident where 11.6 to
+    12.3 and Firecracker's 11.6 to 14.1. Held only while a working set was mapped ahead,
+    letting it go reset its pages' tables, and KVM's stage 2 with them, and the guest
+    faulted them all in again [PM M312]. Before 6.7, or where a container's filter
+    refuses userfaultfd, it goes on as before. With both, 20 runs of the Firecracker
+    comparison in a row, on every CPU CI's runners land on, held its envelope on every
+    metric, a restore reaching its guest's first beat 5.0 to 8.2 ms before Firecracker's
+    and holding 7.7 to 8.2 MiB less of its memory file [PM M316].
   - The whole way from the request to the command's start is recorded, however long a
     host takes over it; the cap only ends a long command's recording.
   - It is written through the directory held open since the snapshot (or the restore),
@@ -5632,8 +5659,124 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
   6.11, 68cd9050d871; a kernel without the key takes the amount alone), then reports what
   that freed at once (`page_reporting.flush`, D151's patch 0005), so that the host has it
-  back before init answers. One microVM after another, each through one of its runs, its
-  own or else a joiner's (D119).
+  back before init answers. Each microVM through one of its runs, its own or else a
+  joiner's (D119), each on a thread of its own, and one still giving back since a pass
+  before asked nothing more until it has answered or been ended: passes that asked one
+  microVM after another, each waiting up to 10 s for an answer and then for its end,
+  waited on a guest whose own memory its host had taken for minutes, and gave back 3 times
+  in 600 s (PM M308). One with no answer within 10 s is said to have had none, and is
+  ended.
+- **Held within what its budget leaves it** (PM M309). Where the cgroup a microVM's VM
+  process is in, or one above it, holds it to a budget (`memory.high` or `memory.max`, a
+  slice's `MemoryHigh` or `MemoryMax`, D183), the host can take back only page cache from
+  it with no swap, and a guest's page cache is guest RAM, the host's anonymous memory: a
+  guest that read past its budget filled it, and the host took back the one thing it
+  could, the guest's own RAM as a template's file pages, which the guest read back as it
+  ran, 400 to 600 s for a gigabyte its run read in 3 to 5 s with no budget, on CI's AMD
+  and Intel runners alike. So each microVM's guest is told the room its budget leaves it,
+  the least any cgroup over it may still take before its host must take back memory its
+  processes map or hold: its budget less their anonymous, shared and kernel memory
+  (memory.stat's `anon`, `shmem`, `kernel`, `sock`, `zswap`) and the file pages they map,
+  wherever those are charged (each process's `Pss_File`, a page shared among them counted
+  once), a restored guest's own RAM among them, which comes back charged to the budget as
+  the guest reads it again once evicted; no less than its `memory.current` less its page
+  cache no process maps, and of what is charged to it no more than its `memory.current`,
+  which its kernel counts at once where its statistics may be behind it (just after a
+  microVM ended they still counted it, a budget short by 577 MiB told the next); less the
+  inactive page cache its kernel keeps beside the file pages the budget's processes map
+  before it takes those (mm/vmscan.c, `inactive_is_low`: as many as the mapped under a GiB
+  of them). A room of all its page cache no process mapped let one guest fill the budget
+  to its last file page and read its own RAM back for 2,100 s, until its job was ended;
+  statistics read just after the kernel reclaimed a gigabyte, still counting it, once gave
+  a room of all the budget (PM M309). It is told as its run begins, each time a budget
+  over it is set or changed (inotify on each cgroup's `memory.high` and `memory.max`) or
+  met (its `memory.events`), and as another microVM the budget held ends. Init holds its
+  run within it (builtin `ROOM`): the run's `memory.high` never past what it uses and that
+  room, and its grower lifting no hold past it, nor plugging more than lets the run reach
+  it beside its kernel's memory (with the page structures of what it plugs, a 64th of it:
+  a grower that doubled its asks past the cap plugged 16 GiB, whose page structures took
+  the budget), so that the guest's own kernel drops its run's page cache before its host
+  must take anything, as a container's kernel drops its page cache within its cgroup.
+  Where the room is short, the budget's warm microVMs end first, which are speculation;
+  then the microVM gives back what it holds cold (`RECLAIM`; idle, it raises no pressure
+  that would ask) and is told the room the budget has after, until the budget has room
+  again (its `memory.events`, a give-back's end, another microVM's), when it is told so,
+  and told again each window of the host's pressure while it is held short, as a guest
+  held short asks for nothing its host hears. Its cap is the budget's alone: a give-back
+  that held a run below it, at what the run used, once room had come back starved it, a 1
+  GiB read crawling at 0.13 MiB/s for 100 minutes (PM M309). And never closer than the
+  least room a run goes on in to what the run uses, however short the budget: what its
+  kernel charges it ahead of the pages it takes, a batch of 64 pages for each CPU
+  (mm/memcontrol.c, `refill_stock`), which no reclaim takes back; two windows of a read's
+  read-ahead, 128 KiB each (`VM_READAHEAD_PAGES`); and a reader's block as large as a
+  share's request (`SHARE_MAX_PAGES`, 1 MiB), which with no swap no reclaim takes either:
+  2.25 MiB on 4 CPUs, 5.75 on 18. Held within it for the whole of a gigabyte's read
+  through FUSE, alone in its slice under a budget a mebibyte short of what it held, a run
+  on CI's runners read in 0.80 to 0.88 times its time with none at p50 on each of five
+  runner CPUs, its slice refaulting none at p50 (PM M318); before the share kept its
+  buffers, held within 2, 4, 8 or 16 times it, no faster than within it, 2.2 to 3.1 times
+  its time with none (a Xeon's three reads at 8 times, 1.07), the share's fresh memory for
+  each request holding it back (PM M314). Held at what it used, a run could not take a page
+  past it: its reader slept in the kernel's throttle of a cgroup past its `memory.high`
+  (`__mem_cgroup_handle_over_high`, up to 2 s each return to user space), and on CI read a
+  gigabyte at 0.16 to 0.57 MiB/s for 190 to 672 s, each until its budget's own pressure
+  brought room back (PM M309). A room short of the least raises no hold past what the run
+  was held at, so that being told it again each window lets its run grow none, and lowers
+  one its run no longer fills. Init answers what it holds the run within, which the
+  daemon's log says where it is past the room the budget leaves. The cap is kept in whole
+  pages, as the kernel keeps `memory.high` (`page_counter_memparse`): one past a page
+  boundary read back short of itself, and the grower took a run held at it for one held
+  short of it, writing its hold again at each of its run's events. A warm microVM restored
+  under a budget copies none of its template's written pages ahead of its run (64 MiB at
+  most each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of the budget before
+  any run comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1 to 4 MiB
+  for one without, PM M309; on the Mac they bought no time, PM M62), and none is made
+  ahead of the runs that wait where its budget has no room.
+- **What its host takes back of its guest's RAM is no room** (PM M318). A restored guest's
+  RAM is its template's file pages as much as its anonymous memory, and a budget's host
+  takes back file pages first. Counted as room as they went, with the inactive pages kept
+  beside them, a lone microVM's 71 MiB of them told its guest 111 MiB of room where its
+  budget was 23 MiB short; its page cache filled it in 3 s, its host then took back all of
+  its RAM it could, and its vCPUs were throttled 68 s as its guest read it back, each
+  give-back of a pressure pass telling it its room again. Each microVM's file pages are
+  held at the most its VM process has held resident since its run began (its `RssFile`,
+  which another VM sharing its template's pages leaves as it is), less those of them it
+  let go as it gave back, read first as its run begins, before a budget set later takes
+  any back: its host's taking them back makes no room, its own giving back does. Read
+  first at a budget's word instead, a budget set a mebibyte short took a lone microVM's
+  template's pages back as it was written, and 87 MiB of room was told where none was.
+  Held a mebibyte short, alone in its slice, a gigabyte's read through FUSE took 0.80 to
+  0.88 times its time with none at p50 on each of 5 runner CPUs (EPYC 7763, 9V45 and 9V74,
+  Xeon 8573C and 8370C), 2.07 times at most, its slice refaulting none at p50; none of its
+  336 ran away, where 7 of 126 did with the share's copy kept within its reads' room alone
+  and 31 of 144 on the tree.
+- **The share's copy of what its guest reads, kept only within its budgets' room** (PM
+  M318). What a share reads for its guest its guest keeps in its own page cache, so the
+  copy its host's page cache keeps beside it is a second one, under a budget charged to
+  the run: as the tree's copy filled a lone microVM's slice, its host took back the
+  guest's RAM, the slice's mapped files falling from 67 MiB to 15 while it held 213 MiB of
+  the copy. The share process drops its copy of each range it reads (`posix_fadvise`
+  `POSIX_FADV_DONTNEED`, which lets go of the range's clean pages no process maps, another
+  program's of the same file among them) once keeping it would leave the budgets over its
+  cgroups, each `memory.high` and `memory.max` short of `max` from its own up, less room
+  past it than its own reads need: what its host's kernel charges ahead on each CPU, the
+  read in flight and two read-ahead windows, as init's least room has them
+  (`fs::headroom`, 2.25 MiB on 4 CPUs, looked at again a hundred looks' time after the
+  last). Within that room it keeps its copy, for the run's next reader. Held so short, a
+  lone microVM's reads took 0.81 times their time with none at p50 with the copy dropped,
+  1.9 with the tree's, and 1.01 with it kept until its budgets had no room left, its slice
+  then within half a mebibyte of its budget; under a budget with room, a run's later reads
+  of a written gigabyte took 1.74 to 2.45 s at p50 as with the tree's, where dropped under
+  every budget they took 2.91 to 3.94, read from its host's disk again.
+- **The share's own memory held still** (PM M314). A share's process, and its VM process's
+  queue workers, read each request into and build each reply in buffers each keeps from
+  one request to the next (`Server::handle_into`, fs/mod.rs `Buffers`), a frame's size at
+  most. A MiB read through the share had made 5 MiB of fresh memory, freed as its reply
+  went, in processes whose memory a run's budget holds, their threads waiting in mmap and
+  munmap: held short of its budget throughout, a gigabyte's read took 2.2 to 3.1 times its
+  unbudgeted time at every least room from 1 to 16 times this one (a Xeon's three reads at
+  8 times, 1.07), and with the buffers kept 1.19 to 1.31 times on the EPYCs and 1.86 on a
+  Xeon 8573C, its unbudgeted reads 0.50 to 0.62 times as long.
 - **File pages alone.** A clean page of the page cache the guest drops is one the host
   could only have swapped out, written and read back; dropping it reads none of its data.
   Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
@@ -5682,25 +5825,66 @@ paced 357 by 1 s, 615 by 4 s, 866 by 8 s, 50 to 59 MiB staying. Unplugged after 
 working set shrinks, all but 12 to 20 MiB of a gigabyte the guest plugged, used and freed,
 on both.
 
+**Measured (PM M309).** On CI's x86_64 runners (AMD EPYC 7763, 9V45 and 9V74, Intel Xeon
+8370C, 8573C and 6973P, each a virtual machine its KVM is nested in), a gigabyte read
+through FUSE under a slice held to 384 MiB with no swap took 355 to 604 s where it took 3
+to 5 s with no budget; held within its budget's room and never closer than the least room
+a run goes on in to what it uses, 4.79 s at the median sparse and 4.99 written, 8.38 and
+9.14 at the most, where it took 4.65 and 4.95 with none (n 24 each, f0a68074): every read
+within twice the median of none, where runs held at what they used had crawled for 190 to
+672 s. On 12 more runners, each of those six CPUs among them, every read under the budget
+took within 1.59 times its CPU's median under none (n 36 each). Its guest's own RAM, its template's pages, stayed: a read refaulted 1,634 file
+pages at the median sparse and 3,016 written, where one read had refaulted 16.5 million;
+counting only the files charged to the budget, 20,586 written at the median and 273,132 at
+the most. On bare metal (an Intel Core i9-14900HX, Linux 6.19), 1.10 s sparse and 1.32
+written at the median, 2.13 and 2.59 at the most, where it took 1.25 and 1.42 with none
+(n 12 each), and no read refaulted a page.
+
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
-runs. E2E on Linux (tests/containers.rs
-`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a microVM under a slice held
-to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte to its end, in files of a MiB, which
-its guest reads through FUSE into its page cache (a file of a window's range or more is
-the host's page cache, mapped into it: D189), the daemon's log saying it gave back files
-and what it asked to unplug: none there, the run's peak since the pass before being the
-read's own page cache at its budget, which a pass keeps (M275); the cold files' pages are
-the host's again as they are reported free. Not on macOS, whose pressure is the whole
-system's, which no test may raise for every program on its host.
-`an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle daemon's threads
-still.
+runs. Unit (daemon): a budget's room, the least any cgroup over a microVM leaves, its
+unmapped page cache counted as room and its shared memory not, none with no budget and
+none at the root (`a_budgets_room_is_the_least_any_cgroup_over_a_microvm_leaves`); the
+files a budget's processes map held, past what its cgroup counts mapped, and the kernel's
+inactive buffer beside them; a give-back saying what it gave or why it gave nothing, one
+with no answer in time said so; and a microVM that does not answer its give-back keeping
+no other's from the host, nor asked again until it has ended
+(`a_microvm_that_does_not_give_back_keeps_no_other_waiting`, which passes asking one after
+another hang on). Unit (init): a run held within its room, never closer to what it uses
+than the least room a run goes on in, which a room short of it raises no hold past
+(`a_run_is_held_within_its_budgets_room`), that room covering what a reader of 1 MiB
+blocks needed on 4 and 18 CPUs (`a_run_held_short_keeps_the_room_its_reads_need`); a
+microVM held to a budget plugging no more than its cap needs. E2E on Linux, real microVMs
+under a slice of the user's manager, no swap (tests/containers.rs
+`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`): a microVM that read 512 MiB
+through FUSE into its guest's page cache (a file of a window's range or more is its host's
+page cache, mapped into it: D189) gives back what it holds cold once a `MemoryHigh` of 384
+MiB short of it is set, idle as it is, the daemon's log saying what it gave back and that
+it holds it within its budget, in which it reads a gigabyte, in files of a MiB, to the
+end. tests/daemon.rs
+`a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
+restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
+under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
+none took (medians of 3), a run begun under no budget held to one set as it goes within it
+too, and a run alone in the slice, its daemon keeping no warm microVM there, held under a
+budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
+within the least room a run goes on in and reading within it too (where held at what
+they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
+it, the budget ended them for room, and room came back to every run, PM M314): dispatched
+alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). Not on macOS, which has
+no group of processes a budget holds. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs)
+holds the idle daemon's threads still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
 and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB
 staying (p50) in 3 of its 8 blocks; online as auto-movable, 14 MiB in one; all movable,
 none. Plugged memory stays the kernel's own (D133).
 
-**Not yet.** Builders (D133) give back nothing at pressure: a build runs in `shards build`'s
+**Not yet.** A budget below what a cold-booted microVM holds cannot be met: its guest's RAM
+is all anonymous memory, which its host cannot take back without swap, and a read under
+such a budget is throttled for as long as it runs (761 to 1,729 s a gigabyte, PM M318),
+where one restored from its template holds that template's clean pages beside as much
+anonymous memory, which its host may take back. Builders (D133) give back
+nothing at pressure: a build runs in `shards build`'s
 own process, not the daemon's. And they hold little a pass could take (PM M295): what a
 builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
 MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
@@ -5957,7 +6141,14 @@ stores.
   none's (-1.9 to +2.1 MiB). Its held record is on base pages too: there the first range's
   words took a huge page, all 512 pages of a 64 GiB window's record (e1df33d4). A
   template's map-back gives a head's run of zero blocks back in one call (5.4 ms for nine
-  83 GiB windows on the Mac, where 6.5; 187 µs on Fedora). Held by
+  83 GiB windows on the Mac, where 6.5; 187 µs on Fedora), and its save keeps the index it
+  wrote and the blocks it found untouched for it: the map-back reads nothing back from the
+  copy, whose index read back from APFS took 2.8 ms at the median and up to 22, leaves
+  untouched blocks as they are, and takes from its guest, and gives back, only the blocks
+  it changes (`Head::changing`), one a head where it took nine heads whole: 0.21 ms at the
+  median and 0.35 at the most on the Mac, where 2.3 and 25 (n 30 each, PM M311). Held by
+  `placed_window_heads_give_up_only_the_blocks_their_map_back_changes` (mutation-checked)
+  and
   `a_volumes_large_files_go_through_a_dax_window_by_default` (a 4 MiB file mapped by
   default, through FUSE with 0), vmm's `share_windows_go_one_after_another` (fitted, none,
   a kept length refused), `a_kept_blocks_pages_of_zeros_are_holes_in_its_copy` (synced as

@@ -1,0 +1,56 @@
+name: budget E2E
+
+# The FUSE budget E2E (tests/daemon.rs
+# a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one) alone, on
+# eight ubuntu-24.04 runners at once, each runner's CPU as it lands (D188): whether its reads
+# under every budget it sets, the one short of its microVMs last, come within twice its
+# reads under none, run after run across runner CPUs. Runs when the workflow changes, or
+# when asked.
+on:
+  push:
+    paths:
+      - .github/workflows/budget-e2e.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  e2e:
+    name: budget E2E (${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c, d, e, f, g, h]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: User manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          uname -r
+      - name: E2E
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+          SHARDS_REQUIRE_USER_MANAGER: "1"
+        run: |
+          cargo test --locked -p shards --profile test-release --test daemon \
+            a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one -- --exact --nocapture
