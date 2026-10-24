@@ -57,9 +57,7 @@ fn to_daemon(
     payload: &[u8],
     fds: &[std::os::fd::BorrowedFd<'_>],
 ) -> io::Result<()> {
-    let _turn = TO_DAEMON
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _ = &TO_DAEMON;
     shards_ipc::send(daemon, kind, payload, fds)
 }
 
