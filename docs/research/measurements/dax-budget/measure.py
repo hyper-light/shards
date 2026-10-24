@@ -182,11 +182,24 @@ GUEST = (
 )
 
 
-def guest_sample(arm, path, stop):
-    """What the reader's guest says each second (GUEST) until `stop`, each line with the
+# GUEST's samples, of the shell's builtins but one `sleep` a second, for runs held within a
+# room of a few MiB, where GUEST's dozen processes a second took the run's room from its read
+# (--as-e2e): where its dd waits, one look; its run's memory, events and reclaim.
+GUEST_LIGHT = (
+    "until p=$(pidof dd); do sleep 0.05; done; "
+    "while [ -d /proc/$p ]; do read -r t _ < /proc/uptime; w=-; read -r w < /proc/$p/wchan; "
+    "read -r c < /sys/fs/cgroup/memory.current; e=; while read -r k v; do e=\"$e $k $v\"; "
+    "done < /sys/fs/cgroup/memory.events; m=; while read -r k v; do case $k in "
+    "anon|file|kernel|pgscan|pgsteal|workingset_refault_file) m=\"$m $k $v\";; esac; "
+    "done < /sys/fs/cgroup/memory.stat; echo \"$t dd ${w:--} | current $c$e$m\"; sleep 1; done"
+)
+
+
+def guest_sample(arm, path, stop, script=GUEST):
+    """What the reader's guest says each second (`script`) until `stop`, each line with the
     host's time it came."""
     with open(path, "w") as f:
-        p = subprocess.Popen([ARMS[arm][0], "exec", "reader", "sh", "-c", GUEST], env=env(arm),
+        p = subprocess.Popen([ARMS[arm][0], "exec", "reader", "sh", "-c", script], env=env(arm),
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         stopper = threading.Thread(target=lambda: (stop.wait(), p.kill()))
         stopper.start()
@@ -280,11 +293,12 @@ def kvm(pid):
     return done.stdout.strip()
 
 
-def held(f, when, arm):
+def held(f, when, arm, guest=True):
     """What each VM process in the slice holds, mapping by mapping (/proc/PID/smaps: each
     with a MiB or more resident, its Rss, Anonymous, Private_Dirty, Shared_Clean and
-    Private_Clean in KiB), with its status's RssAnon, RssFile and RssShmem; and the reader's
-    guest's view of its memory (/proc/meminfo, its run's memory.stat)."""
+    Private_Clean in KiB), with its status's RssAnon, RssFile and RssShmem; and, with
+    `guest`, the reader's guest's view of its memory (/proc/meminfo, its run's
+    memory.stat)."""
     f.write(f"== {when} {time.time():.3f}\n")
     for pid in vm_pids():
         try:
@@ -310,6 +324,9 @@ def held(f, when, arm):
                         fields[words[0][:-1]] = words[1]
         except OSError as e:
             f.write(f"vm {pid} {e}\n")
+    if not guest:
+        f.flush()
+        return
     try:
         guest = run(arm, "exec", "reader", "sh", "-c",
                     "grep -E '^(MemTotal|MemFree|MemAvailable|Cached|AnonPages|Shmem|Slab):' /proc/meminfo; "
@@ -456,9 +473,10 @@ def slice_holds():
     return max(0, current - max(0, stat["file"] - stat["file_mapped"] - stat["shmem"]))
 
 
-def one(arm, file, high, name, budget=None, cached=False):
+def one(arm, file, high, name, budget=None, cached=False, keep=False):
     """One read's seconds: a microVM started in the slice, its budget set (`budget`, else
-    `high`'s), the file read; out of the host's page cache first, unless `cached`."""
+    `high`'s), the file read; out of the host's page cache first, unless `cached`; the
+    budget taken off after, unless `keep`."""
     if not os.path.isdir(homes[arm]):
         run(arm, "pull", "-q", "alpine")
     held_to = []
@@ -506,7 +524,7 @@ def one(arm, file, high, name, budget=None, cached=False):
     if a.stop_slice:
         systemctl("revert", SLICE)
         systemctl("stop", SLICE)
-    else:
+    elif not keep:
         systemctl("set-property", "--runtime", SLICE, "MemoryHigh=infinity")
     if done.returncode != 0:
         raise SystemExit(f"{name}: exit {done.returncode}\n{done.stdout}{done.stderr}")
@@ -524,10 +542,13 @@ def pooled(arm, file, high, name):
     run_id = run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol",
                  "alpine", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M").stdout.strip()
     vms = open(os.path.join(out, f"{name}.vms"), "w")
-    held(vms, "started", arm)
+    # Its guest asked nothing more than GUEST_LIGHT asks as it reads, which a look into
+    # it would add a process to.
+    held(vms, "started", arm, guest=False)
     stop = threading.Event()
     watchers = [threading.Thread(target=sample, args=(os.path.join(out, f"{name}.txt"), stop)),
-                threading.Thread(target=guest_sample, args=(arm, os.path.join(out, f"{name}.guest"), stop))]
+                threading.Thread(target=guest_sample,
+                                 args=(arm, os.path.join(out, f"{name}.guest"), stop, GUEST_LIGHT))]
     if a.perf:
         watchers.append(threading.Thread(target=profile, args=(name, stop)))
     for w in watchers:
@@ -538,7 +559,7 @@ def pooled(arm, file, high, name):
     stop.set()
     for w in watchers:
         w.join()
-    held(vms, "read", arm)
+    held(vms, "read", arm, guest=False)
     vms.close()
     logs = run(arm, "logs", "reader", check=False)
     said = DD_SECONDS.search(logs.stdout + logs.stderr)
@@ -601,7 +622,8 @@ def e2e_round(arm, i):
     took["past128"] = reads("past128")
     set_budget("infinity")
     late = f"late-{arm}-{file}-{i}"
-    took["late"] = [(late, one(arm, file, "late", late, budget=str(past), cached=True))]
+    # Its budget kept after, as the E2E keeps it while the short budget is worked out.
+    took["late"] = [(late, one(arm, file, "late", late, budget=str(past), cached=True, keep=True))]
     set_budget(str(short_budget()))
     took["short"] = reads("short")
     run(arm, "daemon", "stop", check=False)
