@@ -541,8 +541,13 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
     for w in watchers:
         w.start()
     start = time.perf_counter()
-    done = run(arm, "exec", "reader", "dd", f"if=/vol/{own(file)}", "of=/dev/null", "bs=1M", check=False,
-               timeout=1800)
+    # A read that has not ended in 1,800 s is said as such and the rounds go on: one that
+    # ran away under its budget held each of 40102145014's jobs until its time ran out.
+    try:
+        done = run(arm, "exec", "reader", "dd", f"if=/vol/{own(file)}", "of=/dev/null", "bs=1M", check=False,
+                   timeout=1800)
+    except subprocess.TimeoutExpired:
+        done = None
     if a.again:
         read_before.add(arm)
     took = time.perf_counter() - start
@@ -566,6 +571,9 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
         systemctl("stop", SLICE)
     elif not keep:
         systemctl("set-property", "--runtime", SLICE, "MemoryHigh=infinity")
+    if done is None:
+        print(f"{name}: failed: its read did not end in 1800 s", file=sys.stderr, flush=True)
+        return None
     if done.returncode != 0:
         raise SystemExit(f"{name}: exit {done.returncode}\n{done.stdout}{done.stderr}")
     return took
@@ -820,13 +828,17 @@ if a.as_e2e:
 else:
     cases = [(high, arm, file) for high in a.highs.split(",") for file in FILES for arm in ARMS]
     times = {case: [] for case in cases}
+    failed = {case: 0 for case in cases}
     for i in range(a.rounds):
         for high, arm, file in cases[i % len(cases):] + cases[: i % len(cases)]:
             took = one(arm, file, high, f"{high}-{arm}-{file}-{i + 1}")
+            if took is None:
+                failed[(high, arm, file)] += 1
+                continue
             times[(high, arm, file)].append(took)
             print(f"round {i + 1} {high} {arm} {file}: {took:.2f} s", file=sys.stderr, flush=True)
 for (high, arm, file), xs in times.items():
-    lost = f"; failed {failed[(high, arm, file)]}" if a.as_e2e and failed[(high, arm, file)] else ""
+    lost = f"; failed {failed[(high, arm, file)]}" if failed[(high, arm, file)] else ""
     if not xs:
         print(f"high {high:<8} {arm:<6} {file:<7} n 0{lost}")
         continue
