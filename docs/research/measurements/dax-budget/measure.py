@@ -10,7 +10,8 @@ before each read, so that the read's microVM brings them in and pays for them.
 
     measure.py SHARDS OUT [--huge SHARDS] [--fuse NAME=SHARDS]... [--arms A,B]
                [--guest-mib N] [--rounds N] [--highs 384M,short,infinity] [--size-mib 1024]
-               [--pool N] [--perf] [--stop-slice] [--parent-slice NAME]
+               [--pool N] [--perf] [--stop-slice] [--parent-slice NAME] [--files sparse,written]
+               [--as-e2e [--reads N]]
 
 With --huge, a third arm: that build of shards (huge.patch: each window range on huge
 pages, MADV_HUGEPAGE), its window as long as the host's memory. With --stop-slice, the
@@ -27,7 +28,21 @@ pages its kernel keeps beside their mapped ones (as the daemon counts a budget's
 daemon/budget.rs), so that the run is held within the least room a run goes on in; with
 `--pool 0`, no warm microVM is left to end for room, and it is held so for its whole read.
 Each read under it is said held short throughout, or not, by its daemon's log. With
---pool N, each arm's daemon keeps a pool of N (SHARDS_POOL).
+--pool N, each arm's daemon keeps a pool of N (SHARDS_POOL). --files picks the files read.
+
+With --as-e2e, each round is the FUSE budget E2E's phases
+(a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one) for each
+arm in turn, in its order, in a home of its own given the images and guest kernel pulled
+once, and a slice made for it: a first run, which saves the image's template under the
+slice and warms its pool there; --reads reads under no budget (`infinity`); --reads under a
+budget the slice's microVMs leave 128 MiB of (`past128`); one under that budget set once its
+run has started (`late`), whose VM process is waited out; and --reads under a budget short
+of the slice's microVMs (`short`), set once for them. Each read but the late one is a run of
+its own, taken from the pool, its seconds its dd's, and the file stays in the host's page
+cache between reads, as the E2E's do; --highs is not read. A short budget held each run
+within the least room a run goes on in on CI, where a pool of none (`--pool 0`) held the
+reader's own memory a mebibyte past its budget, which its host throttled: its reads took
+24 minutes, the E2E's 13 s.
 
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
@@ -64,6 +79,9 @@ p.add_argument("--arms")
 p.add_argument("--guest-mib", type=int)
 p.add_argument("--stop-slice", action="store_true")
 p.add_argument("--parent-slice")
+p.add_argument("--files", default="sparse,written")
+p.add_argument("--as-e2e", action="store_true")
+p.add_argument("--reads", type=int, default=3)
 a = p.parse_args()
 
 shards = os.path.realpath(a.shards)
@@ -92,8 +110,11 @@ for given in a.fuse:
     ARMS[arm] = (os.path.realpath(build), {"SHARDS_SHARE_WINDOW_MIB": "0"})
 if a.arms:
     ARMS = {arm: ARMS[arm] for arm in a.arms.split(",")}
-FILES = ("sparse", "written")
+FILES = tuple(a.files.split(","))
 homes = {arm: os.path.join(work, f"home-{arm}") for arm in ARMS}
+# Under --as-e2e, the home the images and guest kernel are pulled into once, which each
+# round's homes are given.
+SEED = os.path.join(work, "seed")
 
 
 def env(arm):
@@ -178,10 +199,14 @@ def guest_sample(arm, path, stop):
 
 def timed_log(arm, stop):
     """Each line of the arm's daemon log, with the host's time it was seen, into
-    OUT/daemon-<arm>.timed.log, until `stop`."""
-    log, seen = os.path.join(homes[arm], "daemon.log"), 0
+    OUT/daemon-<arm>.timed.log, until `stop`; the log of each home the arm is given in
+    turn (--as-e2e)."""
+    log, seen = None, 0
     with open(os.path.join(out, f"daemon-{arm}.timed.log"), "w") as f:
         while not stop.wait(0.2):
+            if log != os.path.join(homes[arm], "daemon.log"):
+                log, seen = os.path.join(homes[arm], "daemon.log"), 0
+                f.write(f"{time.time():.3f} == {log}\n")
             try:
                 with open(log, "rb") as d:
                     d.seek(seen)
@@ -414,8 +439,26 @@ def held_short(arm, run_id):
     return f"{verdict}; held within {holds} KiB"
 
 
-def one(arm, file, high, name):
-    """One read's seconds: a microVM started in the slice, its budget set, the file read."""
+def set_budget(high):
+    """The slice's budget, MemoryHigh, with no swap."""
+    set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={high}", "MemorySwapMax=0")
+    if set_.returncode != 0:
+        raise SystemExit(f"the slice's budget: {set_.stderr}")
+
+
+def slice_holds():
+    """What the slice holds but its page cache no process maps, which its kernel takes back
+    first, the host's of the volume's reads among it: as the E2E counts it."""
+    with open(os.path.join(CGROUP, "memory.current")) as f:
+        current = int(f.read())
+    with open(os.path.join(CGROUP, "memory.stat")) as f:
+        stat = dict((k, int(v)) for k, v in (line.split() for line in f))
+    return max(0, current - max(0, stat["file"] - stat["file_mapped"] - stat["shmem"]))
+
+
+def one(arm, file, high, name, budget=None, cached=False):
+    """One read's seconds: a microVM started in the slice, its budget set (`budget`, else
+    `high`'s), the file read; out of the host's page cache first, unless `cached`."""
     if not os.path.isdir(homes[arm]):
         run(arm, "pull", "-q", "alpine")
     held_to = []
@@ -432,11 +475,9 @@ def one(arm, file, high, name):
     guest_stop = threading.Event()
     guest = threading.Thread(target=guest_sample, args=(arm, os.path.join(out, f"{name}.guest"), guest_stop))
     guest.start()
-    budget = str(short_budget()) if high == "short" else high
-    set_ = systemctl("set-property", "--runtime", SLICE, f"MemoryHigh={budget}", "MemorySwapMax=0")
-    if set_.returncode != 0:
-        raise SystemExit(f"the slice's budget: {set_.stderr}")
-    for each in FILES:
+    budget = budget or (str(short_budget()) if high == "short" else high)
+    set_budget(budget)
+    for each in () if cached else FILES:
         drop(os.path.join(vol, each))
     stop = threading.Event()
     watchers = [threading.Thread(target=sample, args=(os.path.join(out, f"{name}.txt"), stop))]
@@ -472,6 +513,108 @@ def one(arm, file, high, name):
     return took
 
 
+# busybox dd's last word: "N bytes (...) copied, S seconds, R".
+DD_SECONDS = re.compile(r"copied, ([\d.]+) seconds")
+
+
+def pooled(arm, file, high, name):
+    """One read as the E2E's are (--as-e2e): a run of its own in the slice, taken from the
+    pool under the slice's budget as it stands, its command the read; its seconds as its dd
+    says them. Its VM process is not waited out, as `run --rm` leaves it ending."""
+    run_id = run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol",
+                 "alpine", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M").stdout.strip()
+    vms = open(os.path.join(out, f"{name}.vms"), "w")
+    held(vms, "started", arm)
+    stop = threading.Event()
+    watchers = [threading.Thread(target=sample, args=(os.path.join(out, f"{name}.txt"), stop)),
+                threading.Thread(target=guest_sample, args=(arm, os.path.join(out, f"{name}.guest"), stop))]
+    if a.perf:
+        watchers.append(threading.Thread(target=profile, args=(name, stop)))
+    for w in watchers:
+        w.start()
+    start = time.perf_counter()
+    waited = run(arm, "wait", "reader", check=False, timeout=1800)
+    took = time.perf_counter() - start
+    stop.set()
+    for w in watchers:
+        w.join()
+    held(vms, "read", arm)
+    vms.close()
+    logs = run(arm, "logs", "reader", check=False)
+    said = DD_SECONDS.search(logs.stdout + logs.stderr)
+    if high == "short":
+        print(f"{name}: budget {slice_budget() >> 10} KiB; {held_short(arm, run_id)}", file=sys.stderr, flush=True)
+    run(arm, "rm", "-f", "reader", check=False)
+    if waited.stdout.strip() != "0" or not said:
+        raise SystemExit(f"{name}: exit {waited.stdout.strip()}\n{logs.stdout}{logs.stderr}")
+    print(f"{name}: dd {said[1]} s, its run {took:.2f} s", file=sys.stderr, flush=True)
+    return float(said[1])
+
+
+def slice_budget():
+    """The slice's MemoryHigh as it stands, in bytes; 0 where it has none."""
+    with open(os.path.join(CGROUP, "memory.high")) as f:
+        high = f.read().strip()
+    return int(high) if high.isdigit() else 0
+
+
+def warm_in_slice(arm):
+    """Whether a microVM of the arm's home's templates is in the slice: a VM process
+    restored from one, its command line naming them."""
+    templates = os.path.join(homes[arm], "templates").encode()
+    for pid in vm_pids():
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                if templates in f.read():
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def e2e_round(arm, i):
+    """Round `i` of the E2E's phases for `arm` (--as-e2e), in a home of its own given the
+    seed's images and guest kernel, under a slice made for it, which is stopped after: each
+    read's name and seconds by its phase."""
+    homes[arm] = os.path.join(work, f"home-{arm}-{i}")
+    os.makedirs(homes[arm])
+    for part in ("images", "guest"):
+        if os.path.isdir(os.path.join(SEED, part)):
+            shutil.copytree(os.path.join(SEED, part), os.path.join(homes[arm], part), symlinks=True)
+    file = FILES[0]
+    # Out of the host's page cache, as the E2E's file is new: the reads before kept it there.
+    drop(os.path.join(vol, file))
+    # The image's template saved under the slice, and its pool warm there.
+    run(arm, "run", "--rm", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol", "alpine", "true")
+    deadline = time.time() + 120
+    while not warm_in_slice(arm):
+        if time.time() > deadline:
+            raise SystemExit(f"{arm}: no warm microVM in {SLICE}")
+        time.sleep(0.02)
+    def reads(high):
+        names = [f"{high}-{arm}-{file}-{i}-{k + 1}" for k in range(a.reads)]
+        return [(name, pooled(arm, file, high, name)) for name in names]
+
+    took = {"infinity": reads("infinity")}
+    past = slice_holds() + (128 << 20)
+    set_budget(str(past))
+    took["past128"] = reads("past128")
+    set_budget("infinity")
+    late = f"late-{arm}-{file}-{i}"
+    took["late"] = [(late, one(arm, file, "late", late, budget=str(past), cached=True))]
+    set_budget(str(short_budget()))
+    took["short"] = reads("short")
+    run(arm, "daemon", "stop", check=False)
+    try:
+        shutil.copy(os.path.join(homes[arm], "daemon.log"), os.path.join(out, f"daemon-{arm}-{i}.log"))
+    except OSError:
+        pass
+    systemctl("revert", SLICE)
+    systemctl("stop", SLICE)
+    shutil.rmtree(homes[arm], ignore_errors=True)
+    return took
+
+
 def pct(xs, q):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(q * len(xs)))]
@@ -500,13 +643,33 @@ logs_stop = threading.Event()
 logs = [threading.Thread(target=timed_log, args=(arm, logs_stop), daemon=True) for arm in ARMS]
 for t in logs:
     t.start()
-cases = [(high, arm, file) for high in a.highs.split(",") for file in FILES for arm in ARMS]
-times = {case: [] for case in cases}
-for i in range(a.rounds):
-    for high, arm, file in cases[i % len(cases):] + cases[: i % len(cases)]:
-        took = one(arm, file, high, f"{high}-{arm}-{file}-{i + 1}")
-        times[(high, arm, file)].append(took)
-        print(f"round {i + 1} {high} {arm} {file}: {took:.2f} s", file=sys.stderr, flush=True)
+if a.as_e2e:
+    # The images and guest kernel pulled once, by the first arm's build, for every round's
+    # homes; its daemon stopped, so that none holds the store as it is copied.
+    first = next(iter(ARMS))
+    homes[first] = SEED
+    run(first, "pull", "-q", "alpine")
+    run(first, "daemon", "stop", check=False)
+    run(first, "run", "--rm", "--pull", "never", "alpine", "true")
+    run(first, "daemon", "stop", check=False)
+    shutil.rmtree(os.path.join(SEED, "templates"), ignore_errors=True)
+    times = {(high, arm, FILES[0]): [] for high in ("infinity", "past128", "late", "short") for arm in ARMS}
+    arms = list(ARMS)
+    for i in range(a.rounds):
+        # Each arm first in turn, so that each meets the host as the others do.
+        for arm in arms[i % len(arms):] + arms[: i % len(arms)]:
+            for high, xs in e2e_round(arm, i + 1).items():
+                for name, took in xs:
+                    times[(high, arm, FILES[0])].append(took)
+                    print(f"round {i + 1} {high} {arm} {FILES[0]}: {took:.2f} s {name}", file=sys.stderr, flush=True)
+else:
+    cases = [(high, arm, file) for high in a.highs.split(",") for file in FILES for arm in ARMS]
+    times = {case: [] for case in cases}
+    for i in range(a.rounds):
+        for high, arm, file in cases[i % len(cases):] + cases[: i % len(cases)]:
+            took = one(arm, file, high, f"{high}-{arm}-{file}-{i + 1}")
+            times[(high, arm, file)].append(took)
+            print(f"round {i + 1} {high} {arm} {file}: {took:.2f} s", file=sys.stderr, flush=True)
 for (high, arm, file), xs in times.items():
     print(f"high {high:<8} {arm:<6} {file:<7} n {len(xs)} p50 {pct(xs, .5):8.2f} p90 {pct(xs, .9):8.2f} "
           f"p99 {pct(xs, .99):8.2f} max {max(xs):8.2f} s")
