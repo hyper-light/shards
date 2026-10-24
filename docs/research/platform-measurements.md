@@ -12963,6 +12963,12 @@ revision before comparing a changed API/implementation.
     47,000 to 173,000 refaults a second, 4.3 million. Reads of the tree's other builds in
     such rounds (4 and 8 times its room, and ws-reads), budgets of 32 to 83 MiB, ran until
     their jobs' 3 hours ended (40059820620's five copies that did not finish).
+  - The FUSE budget E2E, alone on eight runners (budget E2E run 40074043197, 8ae7bcc8): 3
+    passed, 5 failed one assertion, no run held within the least room. Its short budget,
+    set once for its three reads, 815 MiB in one, met a first read that its daemon counted
+    as holding 331 MiB, room of 451 MiB, and the warm microVM ended for room gave the next
+    reads 414 and 370. A budget a mebibyte short of what a slice holds with warm microVMs in
+    it ends them, which gives every run room again.
 - **Reading.** The room past what a held run uses was not what held its reads: at every
   room from 1 to 16 times, held short throughout, they read in 2.3 to 3.1 times their
   unbudgeted time. A MiB read through the share had made 5 MiB of fresh memory, freed as
@@ -13032,6 +13038,12 @@ revision before comparing a changed API/implementation.
     of 1,346 every time, and two of its runs between churns, after the other arm's, 8.5 and
     10.5 s; with the template's files held, runs 464 to 963 (p50 664), the prefetch 7.8 to
     102 (p50 47), 8 page-ins of 1,419. Warm, held: 171 to 589.
+  - kiln's bench again, its cold phase on the held build (64f0d399), n 60, the Mac's load 10
+    to 23: p50 288, p90 1,372, p99 and max 3,535, where its runs 4 to 6 had 2 or 3 of 20
+    at 2.3 to 8.2 s (p50 218 to 457); every prefetch but the first paged in 2 pages. The 7
+    runs past 1 s came as the load rose past 14, their VMs ready 283 to 506 after their
+    clients' spawns (27.7 at the median), the rest of their time Claude Code's own on a
+    contended host, as its host phase's p90 was 990 at load 20 (kiln's run 6).
 - **Reading.** A cold run's seconds were its template's pages read back from the disk. On a
   Mac whose vnode table is full and recycling thousands a second, a template's files, open
   only while a VM restores from them, give up their vnodes and their cached pages between

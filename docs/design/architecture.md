@@ -5825,9 +5825,11 @@ end. tests/daemon.rs
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
 under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
 none took (medians of 3), a run begun under no budget held to one set as it goes within it
-too, and runs under a budget short of what its microVMs hold and their kernel's inactive
-buffer, by a mebibyte, held within the least room a run goes on in and reading within it
-too (where held at what they used they read 32 MiB in 233 s). Not on macOS, which has no
+too, and a run alone in the slice, its daemon keeping no warm microVM there, held under a
+budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
+within the least room a run goes on in and reading within it too (where held at what
+they used they read 32 MiB in 233 s; with warm microVMs beside it, the budget ended them
+for room, and room came back to every run, PM M314). Not on macOS, which has no
 group of processes a budget holds. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs)
 holds the idle daemon's threads still.
 
