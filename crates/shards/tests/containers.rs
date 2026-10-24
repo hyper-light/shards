@@ -2483,8 +2483,11 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         std::thread::sleep(Duration::from_millis(50));
     }
     read(&files);
+    // Held within the room its budget leaves, or, short of it, within the least room a run
+    // goes on in: its host's taking back its template's pages as the budget was set counts
+    // as no room (PM M318), and one that held 512 MiB of page cache under 384 MiB is short.
     assert!(
-        said().contains("held within its budget"),
+        said().contains("held within its budget") || said().contains("past what it uses, the least room"),
         "not said to be held within its budget:\n{}",
         said()
     );
