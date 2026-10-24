@@ -12978,3 +12978,69 @@ revision before comparing a changed API/implementation.
   `reads_are_answered_into_the_buffer_their_asker_keeps`; the least room stays the charge
   batches, read-ahead and a share's request. A budget below a lone microVM's resident needs
   is D188's next item.
+
+### M315. Where a cold run's seconds went on a loaded Mac: its template's pages, gone with their files' vnodes (D25, D26)
+
+- **Question.** kiln's sandbox_launch bench had 2 or 3 of 20 cold runs (a pool of none) at
+  6.1 to 8.2 s where their median was 218 to 457 ms (its runs 4 to 6, shards a9133de9 and
+  e076065f), and M313's harness, its runs back to back, found none past 1.9 s. Where does
+  such a run's time go?
+- **Method.** kiln's own bench (its build of 2026-10-22; `--phases cold --max-load 2.0
+  --settle-s 20`, as its run 6: Claude Code launched as kiln launches it, `--network host`
+  and kiln's resolver flags included, timed to its answer to `initialize`, each run 20 s or
+  more after the last), each Shards call through
+  `docs/research/measurements/cold-start/kiln-bench.sh`'s `wrap`, which keeps the call and
+  its stderr (its `SHARDS_TIMING` line) and gives each run's Claude Code a debug file; the
+  daemon at `SHARDS_LOG=debug`. Builds: kiln's e076065f; gpu 0e764f28 with the share's
+  buffers kept (M314) and vCPU 0's setup timed in parts (its creation, the working set's
+  prefetch, its state); then the prefetch's loop timed too, with its thread's CPU time
+  (`platform::ThreadClock`, a vCPU's time in its guest included, M288) and the process's
+  faults, page-ins, copy-on-write faults and context switches over it
+  (`platform::task_events`, task_info(TASK_EVENTS_INFO)). Then two A/Bs (`vnode.sh`): a
+  restore, 300,000 files of a directory of its own looked at (`churn.py`, a `stat` of each:
+  what a build's files take of the host's vnodes), and a restore, 4 trials an arm, in turn.
+  The first with the template's memory and heads held open by another process or not; the
+  second two builds of that tree, each with a home, daemon and template of its own, with the
+  daemon holding its templates' files (below) and without. The Mac: Apple M5 Max, 18 CPUs,
+  128 GiB, macOS 26.4.1, its load from the user's other projects 3 to 15; 2026-10-24.
+- **Results** (ms unless said).
+  - kiln's bench, e076065f, load 8 to 14: 3 of 24 runs' VMs took 110, 863 and 1,495 from
+    their restore to their vCPUs ready, where the rest took 6 to 14, and Claude Code's first
+    line came 971 and 2,313 after its client's spawn in the two slowest, 93 to 150 in the
+    rest: the time was the VM's, before Claude Code began.
+  - gpu, the setup in parts, 10 restores, load 3 to 8: in the one slow restore vCPU 0's
+    prefetch of its working set, a loop in its guest touching 1,346 pages, took 1,393, where
+    it took 3.8 to 15.9. With the loop's account, 18 restores: the one slow one's took 1,826
+    wall, 16.7 of it on its CPU, with 1,524 page-ins for its 1,524 pages and 799 context
+    switches; the rest 3.7 to 24.6, 2 page-ins and 1 to 5 switches. Its whole working set
+    came back from the disk, a page a fault.
+  - The host's vnodes: `kern.maxvnodes` 263,168 and `kern.num_vnodes` 263,168, the table
+    full; 912,744,233 recycled in 17 days of uptime, 620 a second on average, and 28,070 in
+    10 s as measured (2,807 a second), from about 221,000 on its free list: a vnode put on
+    it was taken again within about 80 s. A file no process holds open keeps its vnode on
+    that list, and XNU's recycling of a vnode tears down its file's memory object, the pages
+    cached of it with it (bsd/vfs/vfs_subr.c, `vclean`: `ubc_destroy_named`). Between two
+    cold runs nothing held the template's files open.
+  - The first A/B, each restore after 334,000 to 599,000 vnodes were recycled: with nothing
+    held, the prefetch took 1,517 to 2,170 (p50 2,065), 1,524 page-ins every time, and the
+    run 8.0 to 9.5 s (p50 9.3); with the template's memory and heads held, 17.6 to 486 (p50
+    299), 161 page-ins, the pages its working set names of the root filesystem, and the run
+    5.5 to 7.2 s (p50 6.1), its guest reading its programs from the root filesystem again.
+    Warm, either way, the prefetch took 8 to 27 and the run 0.2 to 0.6 s.
+  - The second A/B, each restore after 366,000 to 558,000 vnodes were recycled: the tree,
+    runs 7.9 to 11.0 s (p50 10.4), its prefetch 125 to 2,184 (p50 2,141) with 1,346 page-ins
+    of 1,346 every time, and two of its runs between churns, after the other arm's, 8.5 and
+    10.5 s; with the template's files held, runs 464 to 963 (p50 664), the prefetch 7.8 to
+    102 (p50 47), 8 page-ins of 1,419. Warm, held: 171 to 589.
+- **Reading.** A cold run's seconds were its template's pages read back from the disk. On a
+  Mac whose vnode table is full and recycling thousands a second, a template's files, open
+  only while a VM restores from them, give up their vnodes and their cached pages between
+  runs; the restore's prefetch then reads its working set a fault at a time, and its guest
+  its programs from the root filesystem it maps, seconds of it on a loaded host. M313's runs,
+  back to back, never left the files long enough to lose them; kiln's, 20 s or more apart,
+  and a user's, minutes or hours apart, do.
+- **Consequence.** D25: the daemon holds each template's files open from its first restore
+  until the template is removed or replaced (`snapshot::hold`, `Daemon::hold_template`): its
+  memory, its writable layer's and windows' heads, and the files its guest only reads, its
+  root filesystem among them. Held by `a_generation_held_holds_the_files_its_restores_map`
+  and `a_pool_of_none_serves_every_run` (the daemon's open files).

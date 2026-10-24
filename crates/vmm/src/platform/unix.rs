@@ -2377,6 +2377,37 @@ impl ThreadClock {
     }
 }
 
+/// This process's page faults, page-ins from files, copy-on-write faults and context
+/// switches so far, every thread's (task_info(TASK_EVENTS_INFO), mach/task_info.h), each
+/// a counter that wraps: what a stretch of a thread's work took from its host, told
+/// apart, the disk, the faults themselves, or waits.
+#[cfg(target_os = "macos")]
+pub fn task_events() -> Option<[u64; 4]> {
+    unsafe extern "C" {
+        /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h).
+        static mach_task_self_: libc::mach_port_t;
+    }
+    /// `struct task_events_info` (mach/task_info.h), flavor TASK_EVENTS_INFO (2).
+    #[repr(C)]
+    #[derive(Default)]
+    struct EventsInfo {
+        faults: i32,
+        pageins: i32,
+        cow_faults: i32,
+        messages_sent: i32,
+        messages_received: i32,
+        syscalls_mach: i32,
+        syscalls_unix: i32,
+        csw: i32,
+    }
+    let mut info = EventsInfo::default();
+    let mut count = (std::mem::size_of::<EventsInfo>() / 4) as libc::mach_msg_type_number_t;
+    // SAFETY: task_info(2) of our own task filling `info`, `count` words long.
+    let kr = unsafe { libc::task_info(mach_task_self_, 2, (&raw mut info).cast(), &mut count) };
+    let n = |v: i32| u64::from(v.cast_unsigned());
+    (kr == libc::KERN_SUCCESS).then(|| [n(info.faults), n(info.pageins), n(info.cow_faults), n(info.csw)])
+}
+
 #[cfg(test)]
 mod usage_tests {
     use super::*;

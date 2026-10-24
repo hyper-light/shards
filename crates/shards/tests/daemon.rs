@@ -162,6 +162,26 @@ fn daemon_pid(home: &Path) -> Option<i32> {
         .ok()
 }
 
+/// The files process `pid` holds open, by path: from /proc on Linux, from lsof elsewhere.
+fn open_files(pid: i32) -> Vec<String> {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .unwrap()
+            .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+    }
+    let out = Command::new("/usr/sbin/lsof")
+        .args(["-n", "-P", "-Fn", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix('n'))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Whether no daemon holds `home`'s lock.
 fn home_is_free(home: &Path) -> bool {
     use std::os::fd::AsRawFd;
@@ -1939,6 +1959,23 @@ fn a_pool_of_none_serves_every_run() {
         }
     }
     eventually("a VM was kept warm", || processes_with(&templates).is_empty());
+    // Where no VM is kept, its daemon holds its template's memory and root filesystem open
+    // between its runs, so that its host keeps their pages (PM M315).
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    let real = std::fs::canonicalize(&*home)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let open = open_files(daemon);
+    let held = |end: &str| {
+        open.iter()
+            .any(|p| p.starts_with(&real) && p.contains("/templates/") && p.ends_with(end))
+    };
+    assert!(held("/memory"), "{open:?}");
+    assert!(
+        open.iter().any(|p| p.starts_with(&real) && p.ends_with(".erofs")),
+        "{open:?}"
+    );
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }

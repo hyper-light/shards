@@ -195,6 +195,49 @@ pub struct Pinned {
     pub name: String,
 }
 
+/// The files a restore of a generation maps, held open by its restorer between restores
+/// ([`hold`]): its memory, its writable layer's and DAX windows' heads where it has them,
+/// and the files its guest only reads, its root filesystem's among them. A file no process
+/// holds open gives up its vnode, and the pages its host had cached of it with them, to the
+/// next file its host looks at once the host's vnode table is full; a Mac's of 128 GiB held
+/// 263,168, recycling thousands a second, and a restore then read its whole working set
+/// back from the disk a page at a time, and its guest its programs (PM M315).
+#[derive(Debug)]
+pub struct Held {
+    generation: String,
+    _files: Vec<File>,
+}
+
+impl Held {
+    /// Whether it holds the generation `dir` points at now.
+    pub fn is_current(&self, dir: &Path) -> bool {
+        current(dir).is_ok_and(|name| name == self.generation)
+    }
+}
+
+/// Holds the files of the generation `dir` points at open ([`Held`]).
+pub fn hold(dir: &Path) -> Result<Held, String> {
+    let pinned = read(dir)?;
+    let mut files = Vec::new();
+    for name in [LAYER_HEAD, WINDOW_HEADS] {
+        match platform::open_beneath_input(dir, &[&pinned.name, name]) {
+            Ok(file) => files.push(file),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", pinned.path.join(name).display())),
+        }
+    }
+    for (path, read_only) in backing(&pinned.snapshot.config) {
+        if read_only {
+            files.push(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
+        }
+    }
+    files.push(pinned.memory);
+    Ok(Held {
+        generation: pinned.name,
+        _files: files,
+    })
+}
+
 /// Enough of a backing file's identity to refuse a restore against another file without
 /// reading it: which file it is and, for one the guest only reads, that it is unchanged
 /// (audit A18).
@@ -1482,6 +1525,38 @@ mod tests {
                 }
             }
             assert_eq!(generations(&dir).len(), 2, "{:?}", generations(&dir));
+        }
+
+        /// A generation held holds what its restores map: its memory and the files its
+        /// guest only reads, and not those it writes; a newer generation is not the one
+        /// held, whose memory it keeps (PM M315).
+        #[test]
+        fn a_generation_held_holds_the_files_its_restores_map() {
+            use std::os::unix::fs::MetadataExt as _;
+            let s = Scratch::new("held");
+            let dir = s.0.join("snap");
+            write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
+            let held = hold(&dir).unwrap();
+            assert!(held.is_current(&dir));
+            let id = |f: &File| {
+                let m = f.metadata().unwrap();
+                (m.dev(), m.ino())
+            };
+            let ids: Vec<_> = held._files.iter().map(id).collect();
+            let p = read(&dir).unwrap();
+            assert!(ids.contains(&id(&p.memory)), "its memory");
+            for (path, read_only) in backing(&p.snapshot.config) {
+                let file = File::open(path).unwrap();
+                assert_eq!(ids.contains(&id(&file)), read_only, "{}", path.display());
+            }
+            write(&dir, &sample(&s.0, 2), &ram(2)).unwrap();
+            assert!(!held.is_current(&dir));
+            assert!(hold(&dir).unwrap().is_current(&dir));
+            // The memory it holds is still the generation's it held.
+            let memory = held._files.iter().find(|f| id(f) == id(&p.memory)).unwrap();
+            let mut first = [0u8; 1];
+            platform::read_exact_at(memory, &mut first, 0).unwrap();
+            assert_eq!(first, [1]);
         }
 
         /// One dropped before its commit, a save that failed, leaves nothing behind; and a

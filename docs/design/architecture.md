@@ -869,6 +869,15 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   - If another run's template got there first, the other copy is removed.
 - **Later runs restore it.** A template that does not restore is removed; the run boots
   instead and says so on stderr, and the next run saves the template again.
+- **Its files held open.** The daemon holds each template's files open from its first
+  restore until the template is removed or replaced (`snapshot::hold`): its memory, its
+  writable layer's and DAX windows' heads, and the files its guest only reads, its root
+  filesystem among them. A file no process holds open gives up its vnode once its host's
+  vnode table is full, and the pages cached of it with it (XNU `vclean`). On a Mac whose
+  263,168 vnodes recycled 2,800 a second, a cold run after a build's worth of files had
+  been looked at read its template's whole working set back from the disk a page at a time,
+  and its guest its programs from its root filesystem: 7.9 to 11.0 s where a warm one took
+  0.2 to 0.6. Held, 0.46 to 0.96 s [PM M315].
 - **A run records the working set**: each guest page it touches until its command
   answers, or a while after the command starts, saved with the template as
   `working-set`. REAP found that restored copies of a serverless function's snapshot

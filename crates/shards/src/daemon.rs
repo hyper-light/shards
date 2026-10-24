@@ -961,6 +961,10 @@ struct Daemon<D: Disk = Real> {
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
+    /// Each template's generation's files, held open from its first restore here until
+    /// it is removed or replaced, so that its host keeps their pages cached between its
+    /// restores ([`shards_vmm::snapshot::Held`], PM M315).
+    held: Mutex<HashMap<PathBuf, shards_vmm::snapshot::Held>>,
     /// Collections, run by the collector's thread: one due at start, and once a pull has
     /// moved a reference (audit A13).
     collecting: Collecting,
@@ -1594,6 +1598,7 @@ impl<D: Disk> Daemon<D> {
             visited: Condvar::new(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
+            held: Mutex::default(),
             collecting: Collecting {
                 due: Mutex::new(true),
                 ..Collecting::default()
@@ -6074,6 +6079,7 @@ impl<D: Disk> Daemon<D> {
                         "shards: template {} does not restore; booting instead",
                         dir.display()
                     ));
+                    self.let_go_template(&dir);
                     let _ = std::fs::remove_dir_all(&dir);
                 }
             }
@@ -6106,6 +6112,7 @@ impl<D: Disk> Daemon<D> {
         if let Ok(r) = &mut ready
             && shards_vmm::snapshot::exists(&dir)
         {
+            self.hold_template(&dir);
             // What its run touches is the template's working set, which the daemon writes
             // once its last part has come, within what the template's guest can hold: read
             // here, where a boot is waited for anyway, and kept for the pool's VMs.
@@ -6336,6 +6343,7 @@ impl<D: Disk> Daemon<D> {
                     let _ = ready.vm.kill(libc::SIGKILL);
                 }
             }
+            self.let_go_template(&dir);
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {
                     if let Some(origin) = crate::run::Origin::path(&dir) {
