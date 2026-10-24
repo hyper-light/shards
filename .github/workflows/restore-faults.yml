@@ -6,8 +6,10 @@ name: restore faults
 # more restores of each VMM in KVM (`--traced`), on eight runners at once, each runner's
 # CPU as it lands (docs/research/measurements/restore-faults). Each runner also runs the
 # comparison reading nothing (SHARDS_BENCH_KVM=off), in turn first, so that each
-# envelope's verdicts read and unread are set side by side. Runs when the experiment
-# changes, or when asked.
+# envelope's verdicts read and unread are set side by side. Half the runners are
+# ubuntu-26.04's, whose kernel is Linux 7.0 (its ext4 maps a restored snapshot's large
+# folios, PM M290), the rest ubuntu-24.04's (6.17). Runs when the experiment changes, or
+# when asked.
 on:
   push:
     paths:
@@ -24,13 +26,21 @@ env:
 
 jobs:
   compare:
-    name: compare (${{ matrix.copy }})
-    runs-on: ubuntu-24.04
+    name: compare (${{ matrix.copy }}, ${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        copy: [a, b, c, d, e, f, g, h]
+        include:
+          - { copy: a, runner: ubuntu-26.04 }
+          - { copy: b, runner: ubuntu-26.04 }
+          - { copy: c, runner: ubuntu-26.04 }
+          - { copy: d, runner: ubuntu-26.04 }
+          - { copy: e, runner: ubuntu-24.04 }
+          - { copy: f, runner: ubuntu-24.04 }
+          - { copy: g, runner: ubuntu-24.04 }
+          - { copy: h, runner: ubuntu-24.04 }
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
