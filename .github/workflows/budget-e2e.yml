@@ -1,16 +1,29 @@
 name: budget E2E
 
-# The FUSE budget E2E (tests/daemon.rs
-# a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one) alone, on
-# eight ubuntu-24.04 runners at once, each runner's CPU as it lands (D188): whether its reads
-# under every budget it sets, the one short of its microVMs last, come within twice its
-# reads under none, run after run across runner CPUs. Runs when the workflow changes, or
-# when asked.
+# An E2E test of crates/shards/tests, by default the FUSE budget E2E (tests/daemon.rs
+# a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one, D188),
+# run on eight ubuntu-24.04 runners at once, each runner's CPU as it lands, as many times in
+# a row as asked: whether a test passes run after run across runner CPUs, and whether a
+# failure seen once in the whole suite's job comes back, how often and on which CPU, with
+# the kernel's word on OOM kills and seccomp refusals where one fails. No failure in n runs
+# puts its rate below 3/n at 95%. Runs when the workflow changes, or when asked: a test
+# binary, a test's exact name (none runs the whole binary, every test beside the rest as the
+# suite runs them), and the runs each runner makes.
 on:
   push:
     paths:
       - .github/workflows/budget-e2e.yml
   workflow_dispatch:
+    inputs:
+      test:
+        description: its test binary (cargo test --test)
+        default: daemon
+      name:
+        description: its exact name; none, the whole binary
+        default: a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one
+      times:
+        description: runs on each runner, one after another
+        default: "1"
 
 permissions:
   contents: read
@@ -23,7 +36,7 @@ jobs:
   e2e:
     name: budget E2E (${{ matrix.copy }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +64,22 @@ jobs:
         env:
           SHARDS_REQUIRE_VMS: "1"
           SHARDS_REQUIRE_USER_MANAGER: "1"
+          # A push runs the default, as a dispatch with nothing asked does.
+          TEST: ${{ github.event.inputs.test || 'daemon' }}
+          NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.name || 'a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one' }}
+          TIMES: ${{ github.event.inputs.times || '1' }}
         run: |
-          cargo test --locked -p shards --profile test-release --test daemon \
-            a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one -- --exact --nocapture
+          if [ -n "$NAME" ]; then args=("$NAME" -- --exact --nocapture); else args=(-- --nocapture); fi
+          failed=0
+          for i in $(seq "$TIMES"); do
+            echo "== run $i of $TIMES"
+            cargo test --locked -p shards --profile test-release --test "$TEST" "${args[@]}" \
+              || failed=$((failed + 1))
+          done
+          echo "== ${NAME:-tests/$TEST.rs} failed $failed of $TIMES"
+          [ "$failed" -eq 0 ]
+      - name: What the kernel logged of seccomp refusals and OOM kills
+        if: failure()
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
