@@ -198,15 +198,17 @@ GUEST_LIGHT = (
     "read -r c < /sys/fs/cgroup/memory.current; e=; while read -r k v; do e=\"$e $k $v\"; "
     "done < /sys/fs/cgroup/memory.events; m=; while read -r k v; do case $k in "
     "anon|file|kernel|pgscan|pgsteal|workingset_refault_file) m=\"$m $k $v\";; esac; "
-    "done < /sys/fs/cgroup/memory.stat; echo \"$t dd ${w:--} | current $c$e$m\"; sleep 1; done"
+    "done < /sys/fs/cgroup/memory.stat; g=; while read -r k v _; do case $k in "
+    "MemTotal:|MemFree:|Cached:) g=\"$g $k $v\";; esac; done < /proc/meminfo; "
+    "echo \"$t dd ${w:--} | current $c$e$m |$g\"; sleep 1; done"
 )
 
 
-def guest_sample(arm, path, stop, script=GUEST):
-    """What the reader's guest says each second (`script`) until `stop`, each line with the
-    host's time it came."""
+def guest_sample(arm, path, stop, script=GUEST, name="reader", extra=None):
+    """What the guest of run `name` says each second (`script`) until `stop`, each line with
+    the host's time it came."""
     with open(path, "w") as f:
-        p = subprocess.Popen([ARMS[arm][0], "exec", "reader", "sh", "-c", script], env=env(arm),
+        p = subprocess.Popen([ARMS[arm][0], "exec", name, "sh", "-c", script], env=env(arm, extra),
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         stopper = threading.Thread(target=lambda: (stop.wait(), p.kill()))
         stopper.start()
@@ -728,7 +730,8 @@ def lone(arm, file, i):
         stop = threading.Event()
         watchers = [threading.Thread(target=sample, args=(os.path.join(out, f"{name}.txt"), stop)),
                     threading.Thread(target=guest_sample,
-                                     args=(arm, os.path.join(out, f"{name}.guest"), stop, GUEST_LIGHT))]
+                                     args=(arm, os.path.join(out, f"{name}.guest"), stop, GUEST_LIGHT, "short",
+                                           POOL_NONE))]
         for w in watchers:
             w.start()
         try:
