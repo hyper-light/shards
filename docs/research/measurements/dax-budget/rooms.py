@@ -96,6 +96,7 @@ def host(path):
 
 
 rows = []
+failures = collections.defaultdict(list)
 for run in sys.argv[1:]:
     jobs = json.loads(sh("gh", "run", "view", run, "-R", "hyper-light/shards", "--json", "jobs"))["jobs"]
     for job in jobs:
@@ -110,6 +111,9 @@ for run in sys.argv[1:]:
             subprocess.run(["gh", "run", "download", run, "-R", "hyper-light/shards", "-n",
                             f"dax-budget-x86_64-{copy}", "-D", art], capture_output=True)
         verdicts = {m[1]: m[3] for m in re.finditer(r"(?m)(\S+): budget (\d+) KiB; ([^\n]*)$", log)}
+        # Reads whose run did not start or read (--as-e2e), by budget and arm.
+        for m in re.finditer(r"(?m)^(infinity|past128|late|short)-(.+)-(sparse|written)-\d+(?:-\d+)?: failed: (.*)$", log):
+            failures[(cpu, m[2], m[1])].append(m[4][:120])
         # Each read's name after its seconds where a round holds more than one of a budget
         # (measure.py --as-e2e).
         for m in re.finditer(r"round (\d+) (\S+) (\S+) (\S+): ([\d.]+) s(?: (\S+))?", log):
@@ -139,7 +143,9 @@ for cpu in sorted({r["cpu"] for r in rows}):
                 sel = [r for r in rows if r["cpu"] == cpu and r["arm"] == arm and r["file"] == file and r["high"] == high]
                 if not sel:
                     continue
-                print(f"  {arm:10} {file:7} {high:8} s {summary([r['secs'] for r in sel], 2)}")
+                lost = failures.get((cpu, arm, high), [])
+                print(f"  {arm:10} {file:7} {high:8} s {summary([r['secs'] for r in sel], 2)}"
+                      + (f"; failed {len(lost)}: {lost[0]}" if lost else ""))
                 if high != "short":
                     continue
                 held = [r for r in sel if r["verdict"] and r["verdict"].startswith("held short throughout")]

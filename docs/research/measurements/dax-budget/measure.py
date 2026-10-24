@@ -538,9 +538,16 @@ DD_SECONDS = re.compile(r"copied, ([\d.]+) seconds")
 def pooled(arm, file, high, name):
     """One read as the E2E's are (--as-e2e): a run of its own in the slice, taken from the
     pool under the slice's budget as it stands, its command the read; its seconds as its dd
-    says them. Its VM process is not waited out, as `run --rm` leaves it ending."""
-    run_id = run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol",
-                 "alpine", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M").stdout.strip()
+    says them, or None for a run that did not start or read, which is said and its round
+    goes on. Its VM process is not waited out, as `run --rm` leaves it ending."""
+    started = run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol",
+                  "alpine", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M", check=False)
+    if started.returncode != 0:
+        print(f"{name}: failed: its run did not start (exit {started.returncode}): "
+              f"{(started.stderr or started.stdout).strip().splitlines()[:1]}", file=sys.stderr, flush=True)
+        run(arm, "rm", "-f", "reader", check=False)
+        return None
+    run_id = started.stdout.strip()
     vms = open(os.path.join(out, f"{name}.vms"), "w")
     # Its guest asked nothing more than GUEST_LIGHT asks as it reads, which a look into
     # it would add a process to.
@@ -567,7 +574,9 @@ def pooled(arm, file, high, name):
         print(f"{name}: budget {slice_budget() >> 10} KiB; {held_short(arm, run_id)}", file=sys.stderr, flush=True)
     run(arm, "rm", "-f", "reader", check=False)
     if waited.stdout.strip() != "0" or not said:
-        raise SystemExit(f"{name}: exit {waited.stdout.strip()}\n{logs.stdout}{logs.stderr}")
+        print(f"{name}: failed: exit {waited.stdout.strip()}: {(logs.stdout + logs.stderr).strip()[-300:]}",
+              file=sys.stderr, flush=True)
+        return None
     print(f"{name}: dd {said[1]} s, its run {took:.2f} s", file=sys.stderr, flush=True)
     return float(said[1])
 
@@ -623,7 +632,13 @@ def e2e_round(arm, i):
     set_budget("infinity")
     late = f"late-{arm}-{file}-{i}"
     # Its budget kept after, as the E2E keeps it while the short budget is worked out.
-    took["late"] = [(late, one(arm, file, "late", late, budget=str(past), cached=True, keep=True))]
+    try:
+        late_s = one(arm, file, "late", late, budget=str(past), cached=True, keep=True)
+    except SystemExit as e:
+        print(f"{late}: failed: {str(e)[:300]}", file=sys.stderr, flush=True)
+        run(arm, "rm", "-f", "reader", check=False)
+        late_s = None
+    took["late"] = [(late, late_s)]
     set_budget(str(short_budget()))
     took["short"] = reads("short")
     run(arm, "daemon", "stop", check=False)
@@ -676,12 +691,16 @@ if a.as_e2e:
     run(first, "daemon", "stop", check=False)
     shutil.rmtree(os.path.join(SEED, "templates"), ignore_errors=True)
     times = {(high, arm, FILES[0]): [] for high in ("infinity", "past128", "late", "short") for arm in ARMS}
+    failed = {case: 0 for case in times}
     arms = list(ARMS)
     for i in range(a.rounds):
         # Each arm first in turn, so that each meets the host as the others do.
         for arm in arms[i % len(arms):] + arms[: i % len(arms)]:
             for high, xs in e2e_round(arm, i + 1).items():
                 for name, took in xs:
+                    if took is None:
+                        failed[(high, arm, FILES[0])] += 1
+                        continue
                     times[(high, arm, FILES[0])].append(took)
                     print(f"round {i + 1} {high} {arm} {FILES[0]}: {took:.2f} s {name}", file=sys.stderr, flush=True)
 else:
@@ -693,5 +712,9 @@ else:
             times[(high, arm, file)].append(took)
             print(f"round {i + 1} {high} {arm} {file}: {took:.2f} s", file=sys.stderr, flush=True)
 for (high, arm, file), xs in times.items():
+    lost = f"; failed {failed[(high, arm, file)]}" if a.as_e2e and failed[(high, arm, file)] else ""
+    if not xs:
+        print(f"high {high:<8} {arm:<6} {file:<7} n 0{lost}")
+        continue
     print(f"high {high:<8} {arm:<6} {file:<7} n {len(xs)} p50 {pct(xs, .5):8.2f} p90 {pct(xs, .9):8.2f} "
-          f"p99 {pct(xs, .99):8.2f} max {max(xs):8.2f} s")
+          f"p99 {pct(xs, .99):8.2f} max {max(xs):8.2f} s{lost}")

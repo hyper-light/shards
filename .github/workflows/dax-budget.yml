@@ -5,8 +5,9 @@ name: DAX budget
 # and profiles kept as the run's artifact; x86_64 alone, as hosted arm64 runners have no
 # /dev/kvm. Runs when the experiment changes, or when asked. The experiment now: the FUSE
 # budget E2E's phases (--as-e2e), its last a run held within the least room a run goes on in
-# (`short`), at the tree's least room and at 2, 4, 8 and 16 times it (least-x*.patch),
-# beside the same reads with no budget, on eight runners at once.
+# (`short`), at the tree's least room and at 2, 4, 8 and 16 times it (least-x*.patch), and
+# with a pool under a budget mapping ahead none of the pages its working set's guest wrote
+# (ws-reads.patch), beside the same reads with no budget, on eight runners at once.
 on:
   push:
     paths:
@@ -16,10 +17,10 @@ on:
     inputs:
       args:
         description: measure.py's arguments, after its build and output directory
-        default: --as-e2e --files sparse --rounds 3 --arms none,least-x2,least-x4,least-x8,least-x16
+        default: --as-e2e --files sparse --rounds 3 --arms none,least-x2,least-x4,least-x8,least-x16,ws-reads
       fuse:
         description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
-        default: least-x2 least-x4 least-x8 least-x16
+        default: least-x2 least-x4 least-x8 least-x16 ws-reads
       huge:
         description: build the arm whose window ranges are on huge pages (huge.patch), for --arms huge
         type: boolean
@@ -35,7 +36,7 @@ jobs:
   measure:
     name: measure (${{ matrix.arch }} ${{ matrix.copy }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -70,7 +71,7 @@ jobs:
       # asked for, each kept apart.
       - name: Build
         env:
-          FUSE: ${{ github.event.inputs.fuse || 'least-x2 least-x4 least-x8 least-x16' }}
+          FUSE: ${{ github.event.inputs.fuse || 'least-x2 least-x4 least-x8 least-x16 ws-reads' }}
           HUGE: ${{ github.event.inputs.huge == 'true' && 'huge' || '' }}
         run: |
           cargo build --locked -p shards --release
@@ -83,8 +84,8 @@ jobs:
           done
       - name: Measure
         env:
-          ARGS: ${{ github.event.inputs.args || '--as-e2e --files sparse --rounds 3 --arms none,least-x2,least-x4,least-x8,least-x16' }}
-          FUSE: ${{ github.event.inputs.fuse || 'least-x2 least-x4 least-x8 least-x16' }}
+          ARGS: ${{ github.event.inputs.args || '--as-e2e --files sparse --rounds 3 --arms none,least-x2,least-x4,least-x8,least-x16,ws-reads' }}
+          FUSE: ${{ github.event.inputs.fuse || 'least-x2 least-x4 least-x8 least-x16 ws-reads' }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m
