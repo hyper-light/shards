@@ -1,0 +1,421 @@
+diff --git a/crates/shards/src/daemon/budget.rs b/crates/shards/src/daemon/budget.rs
+index ada2444a..2d6d85a3 100644
+--- a/crates/shards/src/daemon/budget.rs
++++ b/crates/shards/src/daemon/budget.rs
+@@ -22,15 +22,22 @@ pub(super) const ROOT: &str = "/sys/fs/cgroup";
+ /// What the budget over the cgroup `dir` leaves the microVMs made in it: of `dir` and each
+ /// cgroup above it below `root` held to a budget (`memory.high` or `memory.max` short of
+ /// `max`), the least one may still take before its host must take back memory its
+-/// processes map or hold as their own ([`Holding::room`]), the file pages they map counted
+-/// in wherever they are charged; and which cgroup that is. None where no cgroup it is in
+-/// has a budget.
+-pub(super) fn room(dir: &Path, root: &Path) -> Option<(i64, PathBuf)> {
++/// processes map or hold as their own ([`Holding::room_with`]), the file pages they map
++/// counted in wherever they are charged, and those of them their host took back under it
++/// that `evicted` says of what they map now, by process ([`Budgets::evicted`]); and which
++/// cgroup that is. None where no cgroup it is in has a budget.
++pub(super) fn room(
++    dir: &Path,
++    root: &Path,
++    evicted: &mut dyn FnMut(&Mapped) -> u64,
++) -> Option<(i64, PathBuf)> {
+     let mut least: Option<(i64, PathBuf)> = None;
+     let mut at = dir;
+     while at.starts_with(root) && at != root {
+         if let Some(held) = held_at(at) {
+-            let room = held.room(files_mapped_under(at));
++            let mapped = mapped_under(at);
++            let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
++            let room = held.room_with(files, evicted(&mapped));
+             if least.as_ref().is_none_or(|(l, _)| room < *l) {
+                 least = Some((room, at.to_path_buf()));
+             }
+@@ -81,10 +88,21 @@ impl Holding {
+     /// keeps beside the mapped ones charged to it ([`lru_buffer`]): short of none where it
+     /// holds past it.
+     pub fn room(&self, files: u64) -> i64 {
++        self.room_with(files, 0)
++    }
++
++    /// Its [`room`](Self::room) with `evicted` bytes more of its microVMs' guests' RAM held,
++    /// file pages they mapped that their host took back under the budget, as though they
++    /// were mapped still: its guests read them again as they run, and their going is no
++    /// room. Counted as room, a lone microVM's template's pages taken back, 71 MiB of them,
++    /// told its guest 111 MiB of room where its budget was 23 MiB short, which its page
++    /// cache filled in 3 s, and its host then took back all of its RAM it could, its vCPUs
++    /// throttled 68 s (PM M318).
++    pub fn room_with(&self, files: u64, evicted: u64) -> i64 {
+         let signed = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
+         signed(self.budget)
+-            .saturating_sub(signed(self.held(files)))
+-            .saturating_sub(signed(lru_buffer(self.mapped)))
++            .saturating_sub(signed(self.held(files.saturating_add(evicted))))
++            .saturating_sub(signed(lru_buffer(self.mapped.saturating_add(evicted))))
+     }
+ }
+ 
+@@ -148,13 +166,16 @@ pub(super) fn held_at(dir: &Path) -> Option<Holding> {
+     })
+ }
+ 
+-/// The bytes of files the processes of cgroup `dir` and those below it map, each page once
+-/// among them (/proc/PID/smaps_rollup's `Pss_File`, which shares a page's bytes among the
+-/// processes that map it), wherever its page is charged: a restored guest's own RAM, its
+-/// template's file pages, among them, which its budget must hold however they came to be
+-/// charged elsewhere, as any evicted comes back charged to it as its guest reads it again
+-/// (PM M309). A process whose entry says none counts its `RssFile`.
+-pub(super) fn files_mapped_under(dir: &Path) -> u64 {
++/// What each process maps of files, by process ID ([`mapped_under`]).
++pub(super) type Mapped = [(u32, u64)];
++
++/// The processes of cgroup `dir` and those below it, each with the bytes of files it maps,
++/// each page once among them (/proc/PID/smaps_rollup's `Pss_File`, which shares a page's
++/// bytes among the processes that map it), wherever its page is charged: a restored guest's
++/// own RAM, its template's file pages, among them, which its budget must hold however they
++/// came to be charged elsewhere, as any evicted comes back charged to it as its guest reads
++/// it again (PM M309). A process whose entry says none counts its `RssFile`.
++fn mapped_under(dir: &Path) -> Vec<(u32, u64)> {
+     let mut pids = Vec::new();
+     let mut dirs = vec![dir.to_path_buf()];
+     while let Some(d) = dirs.pop() {
+@@ -170,6 +191,15 @@ pub(super) fn files_mapped_under(dir: &Path) -> u64 {
+             );
+         }
+     }
++    pids.into_iter()
++        .filter_map(|pid| Some((pid, mapped_by(pid)?)))
++        .collect()
++}
++
++/// The bytes of files process `pid` maps, a page shared among the processes that map it
++/// counted in their parts (its /proc/PID/smaps_rollup's `Pss_File`), or its `RssFile` where
++/// its entry says none.
++fn mapped_by(pid: u32) -> Option<u64> {
+     let kib = |text: &str, key: &str| {
+         text.lines().find_map(|l| {
+             l.strip_prefix(key)?
+@@ -180,16 +210,15 @@ pub(super) fn files_mapped_under(dir: &Path) -> u64 {
+                 .ok()
+         })
+     };
+-    pids.into_iter()
+-        .filter_map(|pid| {
+-            let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
+-            rollup.as_deref().and_then(|r| kib(r, "Pss_File:")).or_else(|| {
+-                let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+-                kib(&status, "RssFile:")
+-            })
++    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
++    rollup
++        .as_deref()
++        .and_then(|r| kib(r, "Pss_File:"))
++        .or_else(|| {
++            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
++            kib(&status, "RssFile:")
+         })
+         .map(|k| k.saturating_mul(1024))
+-        .fold(0u64, u64::saturating_add)
+ }
+ 
+ /// Whether the cgroup `dir`, or one above it below `root`, holds its processes to a budget:
+@@ -232,6 +261,33 @@ pub(super) struct Budgets {
+     watched: Mutex<Watched>,
+ }
+ 
++impl Budgets {
++    /// Of what the processes `mapped` map, by process, what the microVMs followed among them
++    /// map no more of the most each mapped since it was followed: their guests' RAM their
++    /// host took back, which they read again as they run ([`Holding::room_with`]); each
++    /// one's most raised to what it maps now.
++    pub(super) fn evicted(&self, mapped: &Mapped) -> u64 {
++        let mut held = lock(&self.held);
++        mapped
++            .iter()
++            .fold(0u64, |sum, &(pid, now)| match held.get_mut(&pid) {
++                Some(h) => {
++                    h.most = h.most.max(now);
++                    sum.saturating_add(h.most.saturating_sub(now))
++                }
++                None => sum,
++            })
++    }
++
++    /// VM process `pid` gave back `freed` bytes of what it held: room its budget has again,
++    /// its most mapped lowered by them.
++    pub(super) fn gave_back(&self, pid: u32, freed: u64) {
++        if let Some(h) = lock(&self.held).get_mut(&pid) {
++            h.most = h.most.saturating_sub(freed);
++        }
++    }
++}
++
+ /// The cgroups watched: by its watches' numbers, which cgroup each is of and what it
+ /// watches; those whose budgets are watched, and those of them whose events are, each
+ /// once it has a budget, as the events of one without are no microVM's.
+@@ -255,6 +311,10 @@ struct Held {
+     /// A word to it is under way; and another is due once that has ended.
+     telling: bool,
+     again: bool,
++    /// The most of files its VM process has mapped since it was followed, its guest's RAM
++    /// of its template among them, less what it has given back since: what of it its host
++    /// took back under a budget is no room ([`Holding::room_with`]).
++    most: u64,
+ }
+ 
+ /// What a watch of a cgroup's watches: a file of its budget, or its events, which say it
+@@ -401,6 +461,7 @@ impl<D: Disk> Daemon<D> {
+                         short: false,
+                         telling: false,
+                         again: false,
++                        most: 0,
+                     });
+                     tell.insert(pid);
+                 }
+@@ -599,22 +660,24 @@ impl<D: Disk> Daemon<D> {
+         let (had, was_short) = lock(&self.budgets.held)
+             .get(&pid)
+             .map_or((None, false), |h| (h.told, h.short));
+-        let mut room = room(&dir, Path::new(ROOT));
++        let evicted = &mut |mapped: &Mapped| self.budgets.evicted(mapped);
++        let mut room = room(&dir, Path::new(ROOT), evicted);
+         let (mut ended, mut gave) = (0, None);
+         if let Some((r, level)) = room.clone()
+             && r < 0
+         {
+             ended = self.end_warm_under(&level);
+             if ended > 0 {
+-                room = self::room(&dir, Path::new(ROOT));
++                room = self::room(&dir, Path::new(ROOT), evicted);
+             }
+             if room.as_ref().is_some_and(|(r, _)| *r < 0) && lock(self.watching_giving()).insert(vm.clone()) {
+                 gave = self.give_back_of(&id);
+                 lock(self.watching_giving()).remove(&vm);
+                 if let Some(g) = gave {
++                    self.budgets.gave_back(pid, g.freed);
+                     self.gave(g);
+                 }
+-                room = self::room(&dir, Path::new(ROOT));
++                room = self::room(&dir, Path::new(ROOT), evicted);
+             }
+         }
+         if room.is_none() && had.is_none() {
+@@ -657,13 +720,23 @@ impl<D: Disk> Daemon<D> {
+             room.as_ref()
+                 .and_then(|(_, level)| held_at(level).map(|h| (level, h)))
+                 .map_or(String::new(), |(level, h)| {
+-                    let files = files_mapped_under(level);
++                    let mapped = mapped_under(level);
++                    let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
++                    let evicted = self.budgets.evicted(&mapped);
+                     format!(
+-                        ": {}'s budget, {} MiB, holds {} MiB its host may take back from its processes alone, {} MiB of it files they map",
++                        ": {}'s budget, {} MiB, holds {} MiB its host may take back from its processes alone, {} MiB of it files they map{}",
+                         level.display(),
+                         h.budget >> 20,
+-                        h.held(files) >> 20,
+-                        h.mapped.max(files) >> 20
++                        h.held(files.saturating_add(evicted)) >> 20,
++                        h.mapped.max(files) >> 20,
++                        if evicted >> 20 == 0 {
++                            String::new()
++                        } else {
++                            format!(
++                                " and {} MiB its host took back of what they mapped, which their guests read again",
++                                evicted >> 20
++                            )
++                        }
+                     )
+                 })
+         };
+@@ -754,7 +827,7 @@ mod tests {
+         // 384 MiB less what it holds but its 32 MiB of page cache no process maps, and less
+         // the inactive pages its kernel keeps beside the 117 MiB processes map: short.
+         assert_eq!(
+-            room(&scope, &root),
++            room(&scope, &root, &mut |_| 0),
+             Some(((384 - (383 - 32) - 117) as i64 * MIB as i64, slice.clone()))
+         );
+         // Its shared memory is not page cache its kernel may drop.
+@@ -765,7 +838,10 @@ mod tests {
+             383 * MIB,
+             &stat(149 * MIB, 117 * MIB, 32 * MIB),
+         );
+-        assert_eq!(room(&scope, &root), Some(((1 - 117) * MIB as i64, slice.clone())));
++        assert_eq!(
++            room(&scope, &root, &mut |_| 0),
++            Some(((1 - 117) * MIB as i64, slice.clone()))
++        );
+         // A hard limit under the high counts, and short is below none.
+         cgroup(
+             &slice,
+@@ -774,12 +850,21 @@ mod tests {
+             383 * MIB,
+             &stat(0, 0, 0),
+         );
+-        assert_eq!(room(&scope, &root), Some((-83 * MIB as i64, slice.clone())));
++        assert_eq!(
++            room(&scope, &root, &mut |_| 0),
++            Some((-83 * MIB as i64, slice.clone()))
++        );
+         // The least of two: the scope's own, tighter than its slice's.
+         cgroup(&scope, Some(350 * MIB), None, 383 * MIB, &stat(0, 0, 0));
+-        assert_eq!(room(&scope, &root), Some((-83 * MIB as i64, slice.clone())));
++        assert_eq!(
++            room(&scope, &root, &mut |_| 0),
++            Some((-83 * MIB as i64, slice.clone()))
++        );
+         cgroup(&scope, Some(250 * MIB), None, 383 * MIB, &stat(0, 0, 0));
+-        assert_eq!(room(&scope, &root), Some((-133 * MIB as i64, scope.clone())));
++        assert_eq!(
++            room(&scope, &root, &mut |_| 0),
++            Some((-133 * MIB as i64, scope.clone()))
++        );
+         // Statistics read behind the counter, still counting a gigabyte of page cache the
+         // kernel has just taken back: what the processes hold is counted from them, never
+         // all the budget for room.
+@@ -787,16 +872,16 @@ mod tests {
+         cgroup(&scope, None, None, 383 * MIB, stale);
+         cgroup(&slice, Some(384 * MIB), None, 383 * MIB, stale);
+         assert_eq!(
+-            room(&scope, &root),
++            room(&scope, &root, &mut |_| 0),
+             Some((384 * MIB as i64 - 320_000_000 - 100_000_000, slice.clone()))
+         );
+         // None held to a budget: no room to tell.
+         cgroup(&scope, None, None, 383 * MIB, &stat(0, 0, 0));
+         cgroup(&slice, None, None, 383 * MIB, &stat(0, 0, 0));
+-        assert_eq!(room(&scope, &root), None);
++        assert_eq!(room(&scope, &root, &mut |_| 0), None);
+         // The root itself holds nothing to a budget.
+         cgroup(&root, Some(MIB), None, 900 * MIB, &stat(0, 0, 0));
+-        assert_eq!(room(&scope, &root), None);
++        assert_eq!(room(&scope, &root, &mut |_| 0), None);
+     }
+ 
+     /// The files a budget's processes map count as held, wherever their pages are charged:
+@@ -836,7 +921,95 @@ mod tests {
+             let scope = tmp.join("shards-1-0.scope");
+             std::fs::create_dir_all(&scope).unwrap();
+             std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
+-            assert!(files_mapped_under(&tmp) > 0);
++            assert!(mapped_under(&tmp).iter().any(|&(_, b)| b > 0));
+         }
+     }
++
++    /// A guest's RAM its host took back under a budget is no room: a lone microVM's 71 MiB
++    /// of its template's pages, taken back where its budget was 23 MiB short, left its
++    /// budget as short as before, where counted as room they had told its guest 111 MiB
++    /// (PM M318). Its own memory and the files its processes map read after the pages went.
++    #[test]
++    fn a_guests_ram_its_host_took_back_is_no_room() {
++        let before = Holding {
++            budget: 275 * MIB,
++            own: 75 * MIB,
++            mapped: 123 * MIB,
++            current: 274 * MIB,
++            floor: 198 * MIB,
++        };
++        let short = before.room(123 * MIB);
++        assert!(short < 0, "short before: {short}");
++        let after = Holding {
++            mapped: 52 * MIB,
++            current: 203 * MIB,
++            floor: 127 * MIB,
++            ..before
++        };
++        assert!(
++            after.room(52 * MIB) > 0,
++            "counted as room, its RAM taken back made some"
++        );
++        assert_eq!(after.room_with(52 * MIB, 71 * MIB), short);
++        assert_eq!(before.room_with(123 * MIB, 0), short);
++    }
++
++    /// The most a microVM followed has mapped is kept as what it maps falls, raised as it
++    /// rises, and lowered by what it gives back; a process not followed counts nothing.
++    #[test]
++    fn a_microvms_most_mapped_is_kept_until_it_gives_back() {
++        let budgets = Budgets::default();
++        lock(&budgets.held).insert(
++            7,
++            Held {
++                dir: PathBuf::from("/sys/fs/cgroup/a.slice"),
++                told: None,
++                short: false,
++                telling: false,
++                again: false,
++                most: 0,
++            },
++        );
++        assert_eq!(budgets.evicted(&[(7, 100 * MIB), (8, 50 * MIB)]), 0);
++        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 40 * MIB);
++        assert_eq!(budgets.evicted(&[(7, 120 * MIB)]), 0);
++        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 60 * MIB);
++        budgets.gave_back(7, 30 * MIB);
++        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 30 * MIB);
++        budgets.gave_back(7, u64::MAX);
++        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 0);
++        budgets.gave_back(9, MIB);
++    }
++
++    /// A budget's room hears of each process under it what it maps, by process: this
++    /// test's own, on a host whose processes have /proc entries.
++    #[test]
++    fn a_budgets_room_hears_what_each_process_maps() {
++        if !std::path::Path::new("/proc/self/smaps_rollup").exists() {
++            return;
++        }
++        let tmp = shards_testdir::TempDir::new("budget-evicted").unwrap();
++        let root = tmp.join("cg");
++        let scope = root.join("a.slice");
++        let stat = "anon 1\nfile 0\nkernel 2\nfile_mapped 0\nshmem 0\n";
++        cgroup(&scope, Some(384 * MIB), None, 100 * MIB, stat);
++        std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
++        let mut heard = Vec::new();
++        let taken = room(&scope, &root, &mut |mapped| {
++            heard = mapped.to_vec();
++            10 * MIB
++        });
++        assert!(
++            heard.iter().any(|&(pid, b)| pid == std::process::id() && b > 0),
++            "{heard:?}"
++        );
++        let files = heard.iter().map(|&(_, b)| b).sum::<u64>();
++        let held = held_at(&scope).unwrap();
++        assert_eq!(taken, Some((held.room_with(files, 10 * MIB), scope.clone())));
++        // The 10 MiB taken back held, and as many inactive pages kept beside them.
++        assert_eq!(
++            held.room_with(files, 10 * MIB),
++            held.room_with(files, 0) - 20 * MIB as i64
++        );
++    }
+ }
+diff --git a/crates/shards/src/daemon/reclaim.rs b/crates/shards/src/daemon/reclaim.rs
+index 628234b8..b2aff9c1 100644
+--- a/crates/shards/src/daemon/reclaim.rs
++++ b/crates/shards/src/daemon/reclaim.rs
+@@ -176,6 +176,7 @@ impl<D: Disk> Daemon<D> {
+                         let gave = self.give_back_of(&id);
+                         lock(&self.watching.giving).remove(&vm);
+                         if let Some(gave) = gave {
++                            self.budgets.gave_back(pid, gave.freed);
+                             self.gave(gave);
+                         }
+                         // What it gave back its budget may let it have again (D188).
+diff --git a/crates/shards/src/daemon/refill.rs b/crates/shards/src/daemon/refill.rs
+index ca85e75e..54ba7f43 100644
+--- a/crates/shards/src/daemon/refill.rs
++++ b/crates/shards/src/daemon/refill.rs
+@@ -159,7 +159,11 @@ impl<D: Disk> Daemon<D> {
+         // of the runs that wait where the budget has no room left.
+         let budget = self
+             .cgroup_of_parent(&key.parent)
+-            .and_then(|d| super::budget::room(&d, Path::new(super::budget::ROOT)))
++            .and_then(|d| {
++                super::budget::room(&d, Path::new(super::budget::ROOT), &mut |mapped| {
++                    self.budgets.evicted(mapped)
++                })
++            })
+             .map(|(room, _)| room);
+         let more = if budget.is_some_and(|r| r < 0) { 0 } else { more };
+         let more = more.min(self.room(state, key, more));

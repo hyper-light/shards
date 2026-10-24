@@ -12,8 +12,11 @@ name: DAX budget
 # what its budgets have no room for (share-headroom.patch, whose slice sat at its budget
 # through every read held short on a 9V74, 40093677719), dropping it under any budget and
 # keeping it under none (share-budgeted.patch), and keeping it only while its budgets leave
-# room past it for its own reads (share-margin.patch), beside the same reads with no
-# budget, on eight runners at once. pcp-small.patch holds each CPU's
+# room past it for its own reads (share-margin.patch); and, as a lone microVM's template's
+# pages taken back under its budget were counted as room it was given (40102157076,
+# 40105729007), the daemon holding what its microVMs mapped at most as held, alone
+# (room.patch) and with share-margin.patch (share-margin-room.patch), beside the same reads
+# with no budget, on eight runners at once. pcp-small.patch holds each CPU's
 # lists of free pages in its guest to their least, least-x*.patch give the tree's least
 # room 2 to 16 times over, ws-reads.patch a pool under a budget mapping ahead none of the
 # pages its working set's guest wrote, and --as-e2e the FUSE budget E2E's phases, where
@@ -27,10 +30,10 @@ on:
     inputs:
       args:
         description: measure.py's arguments, after its build and output directory
-        default: --files sparse --rounds 6 --pool 0 --highs short,infinity --arms none,share-dontneed,share-headroom,share-budgeted,share-margin
+        default: --files sparse --rounds 6 --pool 0 --highs short,infinity --arms share-margin,share-margin-room,room
       fuse:
         description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
-        default: share-dontneed share-headroom share-budgeted share-margin
+        default: share-margin share-margin-room room
       huge:
         description: build the arm whose window ranges are on huge pages (huge.patch), for --arms huge
         type: boolean
@@ -82,7 +85,7 @@ jobs:
       # removed too, as two that add one file would not both apply.
       - name: Build
         env:
-          FUSE: ${{ github.event.inputs.fuse || 'share-dontneed share-headroom share-budgeted share-margin' }}
+          FUSE: ${{ github.event.inputs.fuse || 'share-margin share-margin-room room' }}
           HUGE: ${{ github.event.inputs.huge == 'true' && 'huge' || '' }}
         run: |
           cargo build --locked -p shards --release
@@ -96,8 +99,8 @@ jobs:
           done
       - name: Measure
         env:
-          ARGS: ${{ github.event.inputs.args || '--files sparse --rounds 6 --pool 0 --highs short,infinity --arms none,share-dontneed,share-headroom,share-budgeted,share-margin' }}
-          FUSE: ${{ github.event.inputs.fuse || 'share-dontneed share-headroom share-budgeted share-margin' }}
+          ARGS: ${{ github.event.inputs.args || '--files sparse --rounds 6 --pool 0 --highs short,infinity --arms share-margin,share-margin-room,room' }}
+          FUSE: ${{ github.event.inputs.fuse || 'share-margin share-margin-room room' }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m
