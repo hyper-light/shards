@@ -13179,6 +13179,11 @@ revision before comparing a changed API/implementation.
     has found it running at every one, n 6 each, interleaved with both: 240.7k (186 to
     246k) with 18 busy loops, unguarded time-constraint 223.9k (191 to 254k), the tree
     143.9k (113 to 157k); with the host as it was 265.1k, 276.8k and 264.1k.
+  - The block stress beside two other microVMs, each with 18 busy loops, as a gate's other
+    tests' microVMs keep their vCPUs busy (`busy-neighbours.sh`, n 5 each, in turn, the
+    host's load average 82 to 151): the tree 244k at p50 (130 to 252k), the governor 247k
+    (169 to 279k). Neither came near the 104 a gate once verified, which busy neighbours do
+    not explain.
   - The governor's cost: a look, `thread_info`, 0.52 µs, and a policy set 0.47 to 0.51 µs:
     for a VM process's 18 vCPUs and 10 workers, 8 looks a second, about 120 µs of CPU a
     second, and for a thread suspected, a look a millisecond for a tick. A run's start, `build-ab/ab.py`, 300 pooled `run --rm alpine true` through each
