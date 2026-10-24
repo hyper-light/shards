@@ -12834,6 +12834,15 @@ revision before comparing a changed API/implementation.
     were faulted in again. A userfaultfd registered for write-protection, let go, resets
     its ranges' page tables (mm/userfaultfd.c, `userfaultfd_clear_vma`: `uffd_wp_range`,
     `change_protection`), and KVM's MMU notifier takes the reset for its stage 2 gone.
+  - Held off for the machine's life (86174523; runs 40059820497, 40061112552, 40061117451
+    at 295d03ab, 24 runners: 7763 ×6, 9V45 ×5, 9V74 ×8, Xeon 8573C ×2 and others): KVM
+    counted 1 stage-2 fault to the first beat at the median, Firecracker 711 to 739; the
+    working set 738 to 762 pages; restore `rss_file` 3.7 to 3.9 MiB, Firecracker's 11.4 to
+    14.3; `to_beat` better in every pass, by 3.8 to 9.1 ms (the 9V45s 4.1 to 4.5 ms against
+    9.6 to 10.6; the 8573C 6.2 ms on 6.17 where it took 9.1 to 9.6 at 7cf8c5b9, and 5.3 to
+    5.6 on 7.0). One pass of 48 failed its envelope, on boot's `rss_anon` (a 9V74 on 7.0,
+    +0.4 MiB [+0.1, +0.6], the other pass −0.1): on 7.0 the two VMMs' booted guests hold
+    the same anonymous memory within 0.6 MiB, where on 6.17 shards' held 2 to 4 MiB less.
 - **Reading.** A working set recorded by the host's page tables holds the pages the
   host's fault-around mapped beside each the guest touched, four to five times as many,
   and a restore that maps it ahead holds all of them, which the restore without it never
