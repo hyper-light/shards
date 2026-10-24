@@ -12,8 +12,10 @@ hold); the slice's refaults of file pages, the template's among them, per read; 
 guest's dd waited, and where the VM process's threads other than its vCPUs waited, by
 wchan, in the samples' looks; and in the slice's looks during the short reads, what
 its budget had left below it (memory.high less memory.current, short of none where it was
-past it), its file pages processes mapped (its microVM's template's among them) and its
-anonymous memory; and how many of the short reads ran away, two looks or more finding its
+past it), its file pages processes mapped (its microVM's template's among them), its
+anonymous memory, its VM processes' resident files and how much of their template's memory
+file its host's page cache held, with how much of it each read saw taken (each read's row
+says its own); and how many of the short reads ran away, two looks or more finding its
 mapped files under 5 MiB and its anonymous memory within 16 MiB of its budget: its guest's
 page cache filling the budget, its host taking back its RAM, which its guest read back (PM
 M318).
@@ -99,6 +101,13 @@ def host(path):
                 # memory.high's throttle sleeps killable, in D (mm/memcontrol.c).
                 if not name.startswith("vcpu") and state == "D":
                     waits[wchan] += 1
+        elif words[0] == "files" and len(words) >= 4 and words[2] == "RssFile" and looks:
+            # Each VM process's resident files, summed, and of its template's memory file
+            # what the page cache holds: one file its warm VMs share, so the most.
+            if words[3].isdigit():
+                looks[-1]["rss_file"] = looks[-1].get("rss_file", 0) + (int(words[3]) << 10)
+            if len(words) >= 6 and words[4] == "memory" and words[5].isdigit():
+                looks[-1]["template"] = max(looks[-1].get("template", 0), int(words[5]))
         elif "workingset_refault_file" in words:
             pairs = dict(zip(words[::2], words[1::2]))
             for k in ("anon", "file_mapped"):
@@ -148,11 +157,21 @@ for run in args:
                          "guest": guest(os.path.join(art, name + ".guest")),
                          "host": host(os.path.join(art, name + ".txt"))})
 
+def taken(r):
+    """Of the read's template, the MiB its host's page cache held at its first look past
+    the least it held at a later one: its guest's RAM its host took back as it read (PM
+    M318); None where its looks did not say."""
+    held = [l["template"] for l in (r["host"][2] if r["host"] else []) if "template" in l]
+    return (held[0] - min(held)) / (1 << 20) if held else None
+
+
 for r in rows:
     g = r["guest"][0] if r["guest"] else {}
+    took = taken(r)
     print(f"{r['run']} {r['copy']} {r['cpu'][:22]:22} {r['arm']:10} {r['high']:8} {r['file']:7} {r['secs']:7.2f} s "
           f"high {g.get('high')} pgsteal {g.get('pgsteal')} refaults {r['host'][0] if r['host'] else None} "
-          f"{(r['verdict'] or '').split(';')[0]}")
+          + (f"template taken {took:.1f} MiB " if took is not None else "")
+          + f"{(r['verdict'] or '').split(';')[0]}")
 print()
 landed = collections.defaultdict(set)
 for r in rows:
@@ -194,5 +213,6 @@ for cpu in sorted({r["cpu"] for r in rows}):
                 print(f"    ran away: {len(ran)} of {len(sel)}")
                 looks = [l for r in sel if r["host"] for l in r["host"][2]]
                 print(f"    below its budget KiB a look {summary([l['below'] / 1024 for l in looks], 0)}")
-                for k in ("file_mapped", "anon"):
+                for k in ("file_mapped", "anon", "rss_file", "template"):
                     print(f"    its {k} MiB a look {summary([l[k] / (1 << 20) for l in looks if k in l], 1)}")
+                print(f"    its template taken a read, MiB {summary([taken(r) for r in sel], 1)}")
