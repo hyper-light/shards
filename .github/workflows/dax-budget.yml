@@ -5,11 +5,10 @@ name: DAX budget
 # and profiles kept as the run's artifact; x86_64 alone, as hosted arm64 runners have no
 # /dev/kvm. Runs when the experiment changes, or when asked. The experiment now: the FUSE
 # budget E2E's phases (--as-e2e), its last a run held within the least room a run goes on in
-# (`short`), with the tree; with the share's buffers kept from request to request
-# (fuse-buffers.patch); with a pool under a budget mapping ahead none of the pages its
-# working set's guest wrote (ws-reads.patch); and with both; beside the same reads with no
-# budget, on eight runners at once. least-x*.patch give the tree's least room 2 to 16 times
-# over, where asked.
+# (`short`), with the tree, whose share keeps its buffers from request to request (PM M314),
+# beside the same reads with no budget, on eight runners at once. least-x*.patch give the
+# tree's least room 2 to 16 times over, and ws-reads.patch a pool under a budget mapping
+# ahead none of the pages its working set's guest wrote, where asked.
 on:
   push:
     paths:
@@ -19,10 +18,10 @@ on:
     inputs:
       args:
         description: measure.py's arguments, after its build and output directory
-        default: --as-e2e --files sparse --rounds 3 --arms none,fuse-buffers,ws-reads,fuse-buffers-ws-reads
+        default: --as-e2e --files sparse --rounds 3 --arms none
       fuse:
         description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
-        default: fuse-buffers ws-reads fuse-buffers-ws-reads
+        default: ""
       huge:
         description: build the arm whose window ranges are on huge pages (huge.patch), for --arms huge
         type: boolean
@@ -73,7 +72,7 @@ jobs:
       # asked for, each kept apart.
       - name: Build
         env:
-          FUSE: ${{ github.event.inputs.fuse || 'fuse-buffers ws-reads fuse-buffers-ws-reads' }}
+          FUSE: ${{ github.event.inputs.fuse || '' }}
           HUGE: ${{ github.event.inputs.huge == 'true' && 'huge' || '' }}
         run: |
           cargo build --locked -p shards --release
@@ -86,8 +85,8 @@ jobs:
           done
       - name: Measure
         env:
-          ARGS: ${{ github.event.inputs.args || '--as-e2e --files sparse --rounds 3 --arms none,fuse-buffers,ws-reads,fuse-buffers-ws-reads' }}
-          FUSE: ${{ github.event.inputs.fuse || 'fuse-buffers ws-reads fuse-buffers-ws-reads' }}
+          ARGS: ${{ github.event.inputs.args || '--as-e2e --files sparse --rounds 3 --arms none' }}
+          FUSE: ${{ github.event.inputs.fuse || '' }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m

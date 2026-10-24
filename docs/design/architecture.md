@@ -5717,6 +5717,14 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1 to 4 MiB for one
   without, PM M309; on the Mac they bought no time, PM M62), and none is made ahead of the
   runs that wait where its budget has no room.
+- **The share's own memory held still** (PM M314). A share's process, and its VM process's
+  queue workers, read each request into and build each reply in buffers each keeps from
+  one request to the next (`Server::handle_into`, fs/mod.rs `Buffers`), a frame's size at
+  most. A MiB read through the share had made 5 MiB of fresh memory, freed as its reply
+  went, in processes whose memory a run's budget holds, their threads waiting in mmap and
+  munmap: held short of its budget throughout, a gigabyte's read took 2.3 to 3.1 times its
+  unbudgeted time at every least room from 1 to 16 times this one, and with the buffers
+  kept 1.25 to 1.31 times, its unbudgeted reads half as long, on every CPU measured.
 - **File pages alone.** A clean page of the page cache the guest drops is one the host
   could only have swapped out, written and read back; dropping it reads none of its data.
   Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
@@ -5816,7 +5824,10 @@ and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 1
 staying (p50) in 3 of its 8 blocks; online as auto-movable, 14 MiB in one; all movable,
 none. Plugged memory stays the kernel's own (D133).
 
-**Not yet.** Builders (D133) give back nothing at pressure: a build runs in `shards build`'s
+**Not yet.** A budget below what a lone microVM's guest needs resident leaves its host only
+that guest's RAM to take back: held at 95 MiB, a gigabyte's read took 41 s, its slice
+refaulting 4.3 million of its template's pages (PM M314). Builders (D133) give back
+nothing at pressure: a build runs in `shards build`'s
 own process, not the daemon's. And they hold little a pass could take (PM M295): what a
 builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
 MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers

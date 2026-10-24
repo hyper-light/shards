@@ -172,15 +172,25 @@ impl Slot {
 
     /// The server's reply to `req`, none for one that takes none; Err with no server, or
     /// with one that has gone. One request at a time: each queue's worker asks in turn.
+    #[cfg(test)]
     fn ask(&self, req: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let mut reply = Vec::new();
+        Ok(self.ask_into(req, &mut reply)?.then_some(reply))
+    }
+
+    /// [`ask`](Self::ask), the reply read into `reply`, a buffer its asker keeps from one
+    /// request to the next: false for a request that takes none.
+    fn ask_into(&self, req: &[u8], reply: &mut Vec<u8>) -> io::Result<bool> {
         let mut conn = self
             .conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = conn.as_mut().ok_or(io::ErrorKind::NotConnected)?;
         write_frame(conn, req)?;
-        let reply = read_frame(conn)?.ok_or(io::ErrorKind::UnexpectedEof)?;
-        Ok((!reply.is_empty()).then_some(reply))
+        if !read_frame_into(conn, reply)? {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        Ok(!reply.is_empty())
     }
 }
 
@@ -204,21 +214,27 @@ fn descriptor_on(conn: &mut UnixStream, node: u64, writable: bool) -> Result<std
     }
 }
 
-/// Sends `bytes` as a frame: its length (le32), then itself.
+/// Sends `bytes` as a frame: its length (le32), then itself, from where they are.
 pub fn write_frame(to: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
     let len = u32::try_from(bytes.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
-    let mut frame = Vec::with_capacity(4 + bytes.len());
-    frame.extend_from_slice(&len.to_le_bytes());
-    frame.extend_from_slice(bytes);
-    to.write_all(&frame)
+    to.write_all(&len.to_le_bytes())?;
+    to.write_all(bytes)
 }
 
 /// The next frame, none at the end; Err for one past [`MAX_FRAME`].
 pub fn read_frame(from: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    Ok(read_frame_into(from, &mut bytes)?.then_some(bytes))
+}
+
+/// [`read_frame`] into `bytes`, which it empties first, a buffer its caller keeps: false at
+/// the end. A MiB read through the share otherwise made a MiB of fresh memory a reply,
+/// which its host charged its run (PM M314).
+fn read_frame_into(from: &mut UnixStream, bytes: &mut Vec<u8>) -> io::Result<bool> {
     let mut len = [0u8; 4];
     match from.read_exact(&mut len) {
         Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(false),
         Err(e) => return Err(e),
     }
     let len = u32::from_le_bytes(len) as usize;
@@ -228,9 +244,10 @@ pub fn read_frame(from: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
             format!("a {len}-byte frame"),
         ));
     }
-    let mut bytes = vec![0u8; len];
-    from.read_exact(&mut bytes)?;
-    Ok(Some(bytes))
+    bytes.clear();
+    bytes.resize(len, 0);
+    from.read_exact(bytes)?;
+    Ok(true)
 }
 
 /// The bytes of the host's storage a request reads or writes, which its microVM's I/O
@@ -275,7 +292,7 @@ fn control(conn: &mut UnixStream, ask: u8, bytes: &[u8]) -> Result<Vec<u8>, Stri
             Some((_, why)) => Err(String::from_utf8_lossy(why).into_owned()),
             None => Err("an empty answer".into()),
         },
-        Some(Frame::Request(_)) => Err("an answer that is no control frame's".into()),
+        Some(Frame::Request) => Err("an answer that is no control frame's".into()),
         None => Err("it closed first".into()),
     }
 }
@@ -291,14 +308,28 @@ fn write_control(to: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
     to.write_all(&frame)
 }
 
-/// A frame as the share process reads it: a guest's request, or the VM process's own.
+/// A frame as the VM process reads its control's answer: the answer, or a request's,
+/// which no control is answered by.
 enum Frame {
-    Request(Vec<u8>),
+    Request,
     Control(Vec<u8>),
 }
 
 /// The next frame, none at the end; Err for one past its kind's most.
 fn read_any(from: &mut UnixStream) -> io::Result<Option<Frame>> {
+    let mut bytes = Vec::new();
+    Ok(read_any_into(from, &mut bytes)?.map(|control| {
+        if control {
+            Frame::Control(bytes)
+        } else {
+            Frame::Request
+        }
+    }))
+}
+
+/// [`read_any`] into `bytes`, which it empties first, a buffer its caller keeps: whether
+/// the frame is a control frame, none at the end.
+fn read_any_into(from: &mut UnixStream, bytes: &mut Vec<u8>) -> io::Result<Option<bool>> {
     let mut len = [0u8; 4];
     match from.read_exact(&mut len) {
         Ok(()) => {}
@@ -317,17 +348,13 @@ fn read_any(from: &mut UnixStream) -> io::Result<Option<Frame>> {
             format!("a {len}-byte frame"),
         ));
     }
-    let mut bytes = Vec::new();
+    bytes.clear();
     bytes
         .try_reserve_exact(len)
         .map_err(|e| io::Error::other(format!("a {len}-byte frame: {e}")))?;
     bytes.resize(len, 0);
-    from.read_exact(&mut bytes)?;
-    Ok(Some(if control {
-        Frame::Control(bytes)
-    } else {
-        Frame::Request(bytes)
-    }))
+    from.read_exact(bytes)?;
+    Ok(Some(control))
 }
 
 /// Answers `conn`'s requests with `server` until it closes: the share process's side.
@@ -337,13 +364,19 @@ fn read_any(from: &mut UnixStream) -> io::Result<Option<Frame>> {
 /// for a file's descriptor (D189), answered as a shards_ipc message: 0 and the
 /// descriptor, or 1 and the errno that refused it.
 pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
-    while let Some(frame) = read_any(&mut conn)? {
-        match frame {
-            Frame::Request(req) => {
-                let reply = server.handle(&req).unwrap_or_default();
+    // Each request read into, and each reply built in, a buffer kept from one to the next
+    // (`Server::handle_into`).
+    let (mut frame, mut reply) = (Vec::new(), Vec::new());
+    while let Some(control) = read_any_into(&mut conn, &mut frame)? {
+        let asked = frame.as_slice();
+        match control {
+            false => {
+                if !server.handle_into(asked, &mut reply) {
+                    reply.clear();
+                }
                 write_frame(&mut conn, &reply)?;
             }
-            Frame::Control(asked) if asked.first() == Some(&DESCRIPTOR) => {
+            true if asked.first() == Some(&DESCRIPTOR) => {
                 let node = asked
                     .get(1..9)
                     .and_then(|b| <[u8; 8]>::try_from(b).ok())
@@ -360,7 +393,7 @@ pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
                     Err(errno) => shards_ipc::send(&conn, 1, &errno.to_le_bytes(), &[])?,
                 }
             }
-            Frame::Control(asked) => {
+            true => {
                 let done = match asked.split_first() {
                     Some((&SAVE, [])) => server.save(),
                     Some((&RESTORE, tables)) => server.restore(tables).map(|()| Vec::new()),
@@ -500,7 +533,9 @@ impl Fs {
             // The first queue is the high priority one (FORGET, INTERRUPT): no I/O.
             let limit = self.limit.filter(|_| !self.workers.is_empty());
             let window = self.window.as_ref().map(|(_, w)| w.clone());
-            let answer = move |chain: &Chain| serve(chain, &mem, &server, limit, window.as_deref());
+            let mut buffers = Buffers::default();
+            let answer =
+                move |chain: &Chain| serve_with(chain, &mem, &server, limit, window.as_deref(), &mut buffers);
             match Worker::start("virtio-fs", queue, memory.clone(), interrupt.clone(), answer) {
                 Ok(w) => self.workers.push(w),
                 Err((e, queue)) => {
@@ -533,12 +568,34 @@ impl Fs {
 /// the reply, never while the share answers (D29): a share slow to answer, or never
 /// answering, held every other device's queue work, and a snapshot, off guest memory for
 /// as long (audit V04).
+#[cfg(test)]
 fn serve(
     chain: &Chain,
     mem: &GuestMemory,
     slot: &Slot,
     limit: Option<&Limiter>,
     window: Option<&window::Window>,
+) -> u32 {
+    serve_with(chain, mem, slot, limit, window, &mut Buffers::default())
+}
+
+/// A queue worker's buffers, kept from one request to the next: its request, read from
+/// the guest, and its server's reply, which a MiB read and written would otherwise make
+/// anew, fresh memory its host charges its run each time (PM M314).
+#[derive(Debug, Default)]
+struct Buffers {
+    req: Vec<u8>,
+    reply: Vec<u8>,
+}
+
+/// [`serve`], its request and reply in `buffers`.
+fn serve_with(
+    chain: &Chain,
+    mem: &GuestMemory,
+    slot: &Slot,
+    limit: Option<&Limiter>,
+    window: Option<&window::Window>,
+    buffers: &mut Buffers,
 ) -> u32 {
     // Every FUSE request fits a frame, the largest write with its headers: a chain that
     // claims more, up to 256 descriptors of 4 GiB, is answered EINVAL from its header,
@@ -547,11 +604,13 @@ fn serve(
         .readable()
         .try_fold(0usize, |n, d| n.checked_add(d.len as usize))
         .filter(|&n| n <= MAX_FRAME);
-    let mut req = vec![0u8; total.unwrap_or(server::HEADER_BYTES)];
+    let Buffers { req, reply } = buffers;
+    req.clear();
+    req.resize(total.unwrap_or(server::HEADER_BYTES), 0);
     let Ok(access) = mem.access() else {
         return 0;
     };
-    let read = gather(chain, &access, &mut req);
+    let read = gather(chain, &access, req);
     drop(access);
     if read < req.len() {
         // Bytes its device could not read where the guest said they were (outside its
@@ -563,35 +622,44 @@ fn serve(
     }
     // Charged to its microVM's I/O limits before it is asked (D178).
     if let (Some(limit), Some(_)) = (limit, total) {
-        limit.take(io_bytes(&req));
+        limit.take(io_bytes(req));
     }
-    let reply = match total {
+    // A reply of the device's own, into the buffer, which keeps what it holds room for.
+    let put = |reply: &mut Vec<u8>, bytes: Vec<u8>| {
+        reply.clear();
+        reply.extend_from_slice(&bytes);
+        true
+    };
+    let replied = match total {
         // A DAX window's mappings, the device's own to make (D189); anything else its
         // server's. No directory, or its server gone: the guest is told so (ENODEV), as
         // for a share it may not mount.
-        Some(_) => match window.and_then(|w| mapping(&req, w, slot)) {
-            Some(reply) => Some(reply),
+        Some(_) => match window.and_then(|w| mapping(req, w, slot)) {
+            Some(mapped) => put(reply, mapped),
             None => {
-                let mut reply = slot.ask(&req).unwrap_or_else(|_| server::unattached(&req));
+                let asked = match slot.ask_into(req, reply) {
+                    Ok(asked) => asked,
+                    Err(_) => server::unattached(req).is_some_and(|r| put(reply, r)),
+                };
                 // The files whose sizes the reply tells the guest are what its window maps
                 // of them before it hears: grown, the file's pages; cut short, zeros.
-                if let (Some(w), Some(reply)) = (window, reply.as_deref_mut()) {
-                    w.reconcile(&told(&req, reply));
-                    keep_mapped(&req, reply, w);
-                    rerecord_written(&req, reply, w);
+                if let Some(w) = window.filter(|_| asked) {
+                    w.reconcile(&told(req, reply));
+                    keep_mapped(req, reply, w);
+                    rerecord_written(req, reply, w);
                 }
-                reply
+                asked
             }
         },
-        None => server::too_long(&req),
+        None => server::too_long(req).is_some_and(|r| put(reply, r)),
     };
-    let Some(reply) = reply else {
+    if !replied {
         return 0;
-    };
+    }
     // A reply its device could not write whole where the guest said (device memory whose
     // pages are gone, say): EIO in its place, never a success whose bytes are not there.
-    scatter(chain, mem, &reply)
-        .or_else(|_| server::unreachable(&req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
+    scatter(chain, mem, reply)
+        .or_else(|_| server::unreachable(req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
         .unwrap_or(0)
 }
 

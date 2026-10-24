@@ -12914,3 +12914,67 @@ revision before comparing a changed API/implementation.
   where it takes 7 ms, unexplained. kiln's own command and conditions are what is left.
 - **Consequence.** No change to how shards starts a cold run. A run's timing line says its
   client's own time (`client_us`), so that a harness tells a client's launch apart.
+
+### M314. A read held short of its budget through FUSE: the least room, and the share's buffers (D188)
+
+- **Question.** On 7cf8c5b9's CI the FUSE budget E2E's last phase read a gigabyte in 11.1
+  to 13.1 s against 5.3 s with no budget, each run held within the least room a run goes on
+  in (M309) for its whole read. Is that room too small, and what holds such a read within
+  twice its unbudgeted time?
+- **Method.** The DAX budget job (docs/research/measurements/dax-budget, measure.py
+  `--as-e2e`: the E2E's phases in its order, each in a home and slice of its own, 3 rounds
+  of a sparse 1 GiB file through FUSE, `SHARDS_SHARE_WINDOW_MIB=0`; `rooms.py` and the
+  daemon's word for each read, held short throughout or not), on CI's ubuntu-24.04 runners
+  (Linux 6.17.0-1022-azure, 4 CPUs, KVM nested on Hyper-V). Arms: the tree; builds whose
+  least room is 2, 4, 8 and 16 times it (`least-x*.patch`); one whose pool maps ahead none
+  of its working set's written pages under a budget (`ws-reads.patch`); and one whose share
+  reads each request into, and builds each reply in, buffers kept from request to request,
+  in the share process and in the VM process's queue workers (`fuse-buffers.patch`), where
+  a 1 MiB READ had made its server's buffer, its reply, its frame and the frame's copy
+  anew, and the worker its request and the reply's frame. Runs 40059820620 (295d03ab),
+  40063613556 (0e764f28), 40066973123 and 40066974883 (9452af32), 2026-10-24.
+- **Results** (s; reads held short throughout, against the same CPU's reads under no
+  budget, n, p50, p90, max).
+  - The least room, 1 to 16 times (EPYC 7763, three to six runners an arm): the tree n 9
+    p50 13.42, p90 13.97, max 13.97, against 4.31 with none, 3.1 times; 2 times n 16, 12.54,
+    13.72, 14.59 (2.95); 4 times n 12, 12.26, 12.86, 13.36 (2.86); 8 times n 16, 12.69,
+    13.32, 13.35 (2.99); 16 times n 14, 11.17, 13.05, 13.12 (2.57). On an EPYC 9V74, 2, 4
+    and 8 times: 2.64, 2.59 and 2.29 times its none (n 2, 5, 7); on a Xeon Platinum, 1, 4, 8
+    and 16 times: 2.34 to 2.45 (n 3 to 5). No room within twice; the guest's reclaim, 259 to
+    277 pages taken a MiB read, and the slice's refaults of file pages, 202,911 to 236,300 a
+    read at the median, the same at every room.
+  - The share's buffers kept (fuse-buffers): EPYC 7763 n 14, p50 2.74, p90 2.92, max 41.02
+    against 2.15 with none, 1.27 times (the tree's in the same runs: 12.25 against 4.31,
+    2.84); EPYC 9V45 n 10, 1.79, 2.65, 2.65 against 1.43, 1.25 times (the tree's 6.67
+    against 2.60, 2.57); EPYC 9V74 n 6, 2.06, 2.13, 2.13 against 1.57, 1.31 times (7.09
+    against 3.09, 2.29). With no budget it read in half the tree's time on every CPU. The
+    slice's refaults a read held short, at the median: 106,868 on the 7763s against the
+    tree's 219,026, none on the 9V45s against 183,080, 197,680 on the 9V74 against 199,722.
+    In the samples of these runs' short reads, the tree's VM processes' threads were found
+    waiting in mmap or munmap (`vm_mmap_pgoff`, `__vm_munmap`) 136 times, the buffers' 2.
+  - Not mapping written pages ahead (ws-reads): 3.0 and 2.6 times on the 7763 and 9V45
+    (n 3, 1); with the share's buffers too, reads of 183.7 and 263.4 s, 3.4 and 3.1 million
+    refaults.
+  - The 41.02 s read: its round's budget, a mebibyte short of what the slice's microVMs
+    held, was 95 MiB, the slice holding the reader's microVM alone, where in that copy's
+    other rounds it was 754 and 810 MiB beside warm ones. Through the read the slice held 89
+    to 90 MiB of anonymous memory and no file page for more than a second, the host taking
+    back the guest's own RAM, its template's pages, as fast as the guest read them back:
+    47,000 to 173,000 refaults a second, 4.3 million. Reads of the tree's other builds in
+    such rounds (4 and 8 times its room, and ws-reads), budgets of 32 to 83 MiB, ran until
+    their jobs' 3 hours ended (40059820620's five copies that did not finish).
+- **Reading.** The room past what a held run uses was not what held its reads: at every
+  room from 1 to 16 times, held short throughout, they read in 2.3 to 3.1 times their
+  unbudgeted time. A MiB read through the share had made 5 MiB of fresh memory, freed as
+  its reply went: four in the share process (the read's buffer, its reply, the reply with
+  its header, the frame it went in) and one in the VM process (the frame read), processes
+  whose memory the run's budget holds, and their threads waited in mmap and munmap; with
+  each request read into, and each reply built in, buffers
+  kept, every CPU's held reads came within 1.25 to 1.31 times, and its unbudgeted reads took
+  half the time. Below what its one microVM's guest needs resident, a budget leaves its host
+  only that guest's RAM to take back, and its reads crawl as M309's did.
+- **Consequence.** D188: the share's buffers are kept from request to request
+  (`Server::handle_into`, fs/mod.rs `Buffers`), held by
+  `reads_are_answered_into_the_buffer_their_asker_keeps`; the least room stays the charge
+  batches, read-ahead and a share's request. A budget below a lone microVM's resident needs
+  is D188's next item.

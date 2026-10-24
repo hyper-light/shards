@@ -16,6 +16,7 @@ on:
       - "!.github/workflows/dax-budget.yml"
       - "!.github/workflows/dax-boot-memory.yml"
       - "!.github/workflows/envelope.yml"
+      - "!.github/workflows/budget-e2e.yml"
       - "!.github/workflows/restore-faults.yml"
   pull_request:
 
