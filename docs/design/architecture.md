@@ -913,7 +913,10 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     12.3 and Firecracker's 11.6 to 14.1. Held only while a working set was mapped ahead,
     letting it go reset its pages' tables, and KVM's stage 2 with them, and the guest
     faulted them all in again [PM M312]. Before 6.7, or where a container's filter
-    refuses userfaultfd, it goes on as before.
+    refuses userfaultfd, it goes on as before. With both, 20 runs of the Firecracker
+    comparison in a row, on every CPU CI's runners land on, held its envelope on every
+    metric, a restore reaching its guest's first beat 5.0 to 8.2 ms before Firecracker's
+    and holding 7.7 to 8.2 MiB less of its memory file [PM M316].
   - The whole way from the request to the command's start is recorded, however long a
     host takes over it; the cap only ends a long command's recording.
   - It is written through the directory held open since the snapshot (or the restore),

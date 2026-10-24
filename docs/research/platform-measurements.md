@@ -13044,3 +13044,35 @@ revision before comparing a changed API/implementation.
   memory, its writable layer's and windows' heads, and the files its guest only reads, its
   root filesystem among them. Held by `a_generation_held_holds_the_files_its_restores_map`
   and `a_pool_of_none_serves_every_run` (the daemon's open files).
+
+### M316. The Firecracker comparison's envelope in 20 runs across CI's runner CPUs (D25)
+
+- **Question.** With a restore's working set recorded and mapped ahead (M310), its host's
+  fault-around held off for the machine's life (M312), and its restore's memory measured on
+  Linux 7.0 (M312), does shards stay at or under Firecracker on every metric of the
+  comparison, boot and restore, time and memory, run after run, on every runner CPU?
+- **Method.** The envelope job (`.github/workflows/envelope.yml`): CI's comparison
+  (crates/shards/benches/firecracker.rs, `--runs 30`, Firecracker v1.17.0, the guest kernel
+  6.18.48, 1 vCPU, 128 MiB) and its envelope (`scripts/bench-envelope`: each metric's
+  paired median difference, shards less Firecracker, and its bootstrap 95% interval; worse
+  where the interval lies wholly above zero), ten copies at once on ubuntu-24.04 runners,
+  each with its lscpu model and kernel. Two dispatches at 9452af32: runs 40066020010 and
+  40067708482, 2026-10-24, Linux 6.17.0-1022-azure on every runner.
+- **Results.** 20 runs of 20 passed their envelope: of 360 verdicts, 349 better, 11 tied,
+  none worse. The runners: EPYC 7763 9, 9V45 6, 9V74 3, Xeon Platinum 8573C 2. Paired median
+  differences, shards less Firecracker, run by run (lowest to highest of each CPU's runs):
+  - boot, spawn to ready: 7763 −1.5 to −4.5 ms (shards 120.4 to 123.0 at the median,
+    Firecracker 122.3 to 126.2); 9V45 −1.2 to −3.2; 9V74 −1.8 to −3.7; 8573C −4.4 to −4.6;
+  - restore, spawn to the guest's first beat: 7763 −6.5 to −8.2 ms (shards 5.2 to 6.0,
+    Firecracker 12.2 to 13.8); 9V45 −5.0 to −6.6 (3.9 to 4.9 against 9.9 to 11.0); 9V74
+    −5.7 to −6.3; 8573C −5.1 to −7.1;
+  - boot `rss_anon` −4.0 MiB in every run; restore `rss_file` −7.7 to −8.2 MiB (shards 3.7
+    to 3.8, Firecracker 11.5 to 12.0); restore PSS −11.7 to −12.3 MiB; the 16-VM fleet's
+    PSS a VM −4.4 to −4.6 MiB.
+- **Reading.** On every runner CPU CI's ubuntu-24.04 runners land on, shards starts sooner
+  and holds less than Firecracker on every axis the comparison measures, booted or
+  restored, in every run, where 5 of the 57 comparison jobs before M310 failed their restore
+  time on AMD runners.
+- **Consequence.** D25: the restore's working set mapped ahead, with fault-around held off
+  for the machine's life, is the restore; the comparison's envelope holds across runner
+  CPUs.
