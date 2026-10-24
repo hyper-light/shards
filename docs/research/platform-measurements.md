@@ -13457,4 +13457,56 @@ revision before comparing a changed API/implementation.
   (warm.rs `to_daemon`), as the daemon's to a VM do. Test:
   `warm::tests::what_the_vms_threads_send_the_daemon_arrives_whole`, 40 messages of 400
   KiB and 4,000 small ones sent at once from two threads on clones of one connection, each
-  read back as sent.
+  read back as sent. Without the lock it failed 160 of 160 copies, 20 on each of 8
+  runners, on EPYC 7763, 9V45 and 9V74 and Xeon 8573C (40141220381: "after 0 large and 1
+  small messages, one of kind 17 and 409600 bytes: one cut through another"); with it,
+  160 of 160 passed, on EPYC 7763 and 9V74 and Xeon 8573C and 6973P-C (40141224388).
+
+### M320. Flakes: a template's working set replaced by a later restore's, and a budget set from it (D25, D188)
+
+- **Question.** In budget E2E run 40137232060, 600 runs of the FUSE budget E2E (75 on
+  each of 8 runners), one read held within the least room did not end within 600 s (its h,
+  EPYC 7763, run 14). The other 74 runs on that runner read in 1.50 to 2.30 s held so
+  (222 reads). Why?
+- **Method.** That run's samples of its slice (memory.current, memory.high, memory.stat,
+  memory.events and memory.pressure every 30 s, the test's `watching`), the daemon's log
+  it printed, and the held-short budgets the other 74 runs said; then the code that
+  records a template's working set, sends it and keeps it.
+- **Results.**
+  - The other 74 runs held their runs short at 248 to 288 MiB: the test sets the budget
+    a mebibyte short of what its slice holds once the run is restored and has read a
+    small file, which is mostly the template's working set mapped ahead (D25). This one
+    set 41 MiB (memory.high 44,007,424 bytes). The daemon then said the run held "62 MiB
+    its host may take back from its processes alone, 32 MiB of it files they map", 24
+    MiB past the budget, and held it within the least room: its guest had nothing to give
+    back. For 600 s the slice stayed over its memory.high (44.6 to 45.1 MB), anon at 40.8
+    to 40.9 MB, its file pages at 4 to 143 KB: 952,344 `high` events, 5,132,615 pages
+    stolen and 4,985,235 refaulted, its vCPU threads running or asleep in
+    `mem_cgroup_handle_over_high` (19 of 72 looks at them).
+  - Its template's working set had been replaced. The daemon of the run's first phases
+    took "a working set of 41834 pages", then said "the host is short of memory: its
+    microVMs gave back 249 MiB they held cold of their files, and asked to unplug 128
+    MiB", then took "a working set of 9529 pages" for the same generation. The held-short
+    run's restore mapped ahead 9,529 pages, not 41,834, and its slice held 42 MiB when the
+    test read it, before its guest had faulted in what it ran on: as M318 found of the DAX
+    budget job's budgets, worked out a mebibyte short of a run restored from a template
+    whose working set was a run of `true`'s (5,385 pages against a reader's 44,088,
+    40121550959) or none (its read not ending in 1,800 s, 40118424391).
+  - Every restore of a generation without a working set records one (`cfg.record &&
+    working_set.is_none()`, runtime.rs): a pool's first VMs, restored before the first
+    set lands, each record one and send it as its run ends, and the daemon wrote each
+    one over the one before (`accept_working_set`). D25 has the first restore's set kept.
+  - A set holds the pages its host maps when the recording ends (vm/x86_64.rs
+    `recorded`): RAM its guest gives back meanwhile (D151's free page reports, among
+    them those of the page cache a give-back drops) its host no longer maps, and the set
+    leaves it out. The 9,529-page set was sent after the give-back, by a run of the
+    same read whose set would have held its reads' page cache, as the first did.
+- **Consequence.** A generation keeps the first working set it is given, and replaces
+  only one a restore could not read (snapshot `accept_working_set`); a recording keeps
+  what its host held of the RAM its guest gives back while it records
+  (`GuestMemory::keep_given_back`, from the pages the host maps of each range given back,
+  just before they go), and sends none where it could not see them. Tests:
+  `snapshot::tests::on_disk::a_sent_working_set_is_written_only_as_a_restore_would_take_it`
+  (a second set for a generation is not written, a damaged one is replaced; without the
+  check it fails), and
+  `vm::x86_64::tests::a_working_set_keeps_what_its_guest_gave_back_as_it_was_recorded`.
