@@ -13230,9 +13230,10 @@ revision before comparing a changed API/implementation.
     own reads (share-margin.patch); the daemon holding each microVM's file pages at the
     most its VM process has held resident, less what it gave back (room.patch); and both
     (share-margin-room.patch). The adopted code is share-margin-room.patch's but for two
-    changes made after these runs: its count starts afresh as a budget is set or changed,
-    which no read measured crossed, and a give-back lowers it by the files let go as it gave
-    back, where the patch lowered it by all a give-back said it freed.
+    changes made after these runs: a give-back lowers its count by the files let go as it
+    gave back, where the patch lowered it by all a give-back said it freed; and the count is
+    read first as a run begins, where the patch read it first at its microVM's first word
+    of a budget.
   - `rooms.py`: per runner CPU, n, p50, p90, p99 and max of the reads, held short
     throughout or not, beside the unbudgeted; the slice's refaults a read; in the slice's
     looks each second during a short read, what its budget had left below it, its mapped
@@ -13260,7 +13261,10 @@ revision before comparing a changed API/implementation.
     may take back: a budget a mebibyte short of what its slice holds cannot be met by a
     cold one. The harness now makes each arm's template before its first read, unbudgeted,
     by a run of its readers' shape (a template's key holds its run's shares, run.rs
-    `template`: 40093677719's warm-up, with no volume, left its first reads booting cold).
+    `template`: 40093677719's warm-up, with no volume, left its first reads booting cold),
+    and restores it once, which records the working set later restores map ahead: a
+    template's first restore maps none, and a budget worked out a mebibyte short of what
+    its run held came to 35 MiB, its read not ending in 1,800 s (40118424391).
   - M314's regime, on the tree: a lone run held short, its reads run away. Of the tree's
     144 lone reads in 40105729007, 31 ran away, two until their 1,800 s ran out; the
     tree's first pool-0 read held short ran away on all 8 of 40102145014's runners, the
@@ -13333,12 +13337,26 @@ revision before comparing a changed API/implementation.
     from 2026-10-23 to 23a66853, and at 25cce71a in its phase whose budget is set as its run
     goes, one read 4,244 ms against 2,035. Both stalled copies bore the regime's marks: room
     told again as the read ran, then a guest that answered nothing.
+  - At b12ec23d, whose count was first read at a budget's word and started afresh at each
+    budget's change, the E2E's phases (40118447196, 8 runners: EPYC 7763 ×4, 9V45, Xeon
+    8573C, 6973P-C and 8370C): every one of its 144 lone reads held short throughout, at
+    p50 0.86, 0.89, 0.77, 0.78 and 0.78 times its CPU's time with none (1.83 against 2.13
+    s on the 7763s), 2.21 times at most (a Xeon 8573C's 4.36 s against 1.97), its slice
+    refaulting none at p50, none running away.
+  - The count read first at a budget's word, and started afresh at each budget's change
+    (b12ec23d, budget E2E 40118449097 and 40118457230): 15 of 16 copies passed. The one
+    that failed, on a Xeon 8370C (40118457230's e), was told 87 MiB of room under a budget
+    a mebibyte short of what its lone run held, its slice holding 146 MiB, 71 MiB of it
+    files, where the test had counted 277: a budget set below what a cgroup holds is
+    reclaimed as it is written, by its writer (mm/memcontrol.c, `memory_high_write`), the
+    template's pages taken with what else it held, before the daemon heard of it, and a
+    count first read after found them gone. Read as the run begins, the count holds them.
 - **Consequence (D188).** A microVM's file pages are held at the most its VM process has
-  held resident since its run began, less those it let go as it gave back, counted afresh
-  as a budget is set or changed: its host's taking back its guest's RAM makes no room. A
-  share drops its copy of each range its guest reads once keeping it would leave its
-  budgets less room than its own reads need, and keeps it within that, so that a run's
-  next read under a budget with room comes from its host's page cache, as with none. Held
-  a mebibyte short, alone in its slice, a gigabyte's read takes 0.74 to 0.90 times its
-  time with none at p50 on every runner CPU, 1.85 at most, none running away. Not yet: a
-  budget below what a cold-booted microVM holds.
+  held resident since its run began, read first as it began, less those it let go as it
+  gave back: its host's taking back its guest's RAM makes no room. A share drops its copy
+  of each range its guest reads once keeping it would leave its budgets less room than its
+  own reads need, and keeps it within that, so that a run's next read under a budget with
+  room comes from its host's page cache, as with none. Held a mebibyte short, alone in its
+  slice, a gigabyte's read takes 0.74 to 0.90 times its time with none at p50 on every
+  runner CPU, 1.85 at most, none running away. Not yet: a budget below what a cold-booted
+  microVM holds.

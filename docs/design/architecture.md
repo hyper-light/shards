@@ -5738,12 +5738,15 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   give-back of a pressure pass telling it its room again. Each microVM's file pages are
   held at the most its VM process has held resident since its run began (its `RssFile`,
   which another VM sharing its template's pages leaves as it is), less those of them it
-  let go as it gave back, and counted afresh as a budget is set or changed: its host's
-  taking them back makes no room, its own giving back does. Held a mebibyte short, alone
-  in its slice, a gigabyte's read through FUSE took 0.74 to 0.90 times its time with none
-  at p50 on each of 5 runner CPUs (EPYC 7763, 9V45 and 9V74, Xeon 8573C and 6973P-C), 1.85
-  at most, its slice refaulting none at p50; none of its 126 ran away, where 7 did with
-  the share's copy kept within its reads' room alone and 31 of 144 on the tree.
+  let go as it gave back, read first as its run begins, before a budget set later takes
+  any back: its host's taking them back makes no room, its own giving back does. Read
+  first at a budget's word instead, a budget set a mebibyte short took a lone microVM's
+  template's pages back as it was written, and 87 MiB of room was told where none was.
+  Held a mebibyte short, alone in its slice, a gigabyte's read through FUSE took 0.74 to
+  0.90 times its time with none at p50 on each of 5 runner CPUs (EPYC 7763, 9V45 and 9V74,
+  Xeon 8573C and 6973P-C), 1.85 at most, its slice refaulting none at p50; none of its 126
+  ran away, where 7 did with the share's copy kept within its reads' room alone and 31 of
+  144 on the tree.
 - **The share's copy of what its guest reads, kept only within its budgets' room** (PM
   M318). What a share reads for its guest its guest keeps in its own page cache, so the
   copy its host's page cache keeps beside it is a second one, under a budget charged to

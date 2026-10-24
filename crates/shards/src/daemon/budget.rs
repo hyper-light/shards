@@ -349,12 +349,30 @@ struct Held {
     /// A word to it is under way; and another is due once that has ended.
     telling: bool,
     again: bool,
-    /// The most of files its VM process has held resident since it was followed, its guest's
+    /// The most of files its VM process has held resident since its run began, its guest's
     /// RAM of its template among them, less its files it let go as it gave back: what of it its
     /// host took back under a budget is no room ([`Holding::room_with`]). Counted whole,
     /// as another VM process restored from the same template, which shares its pages,
     /// leaves it as it is.
     most: u64,
+}
+
+impl Held {
+    /// VM process `pid`, its run begun in cgroup `dir`, followed from now: what it holds
+    /// resident of files read at once, before a budget set later takes any of it back.
+    /// Read only once a budget was told, a budget set a mebibyte short of a lone microVM
+    /// took its template's pages back as it was written, which then counted as room: 87 MiB
+    /// told where none was (budget E2E 40118457230's e, PM M318).
+    fn of(dir: PathBuf, pid: u32) -> Held {
+        Held {
+            dir,
+            told: None,
+            short: false,
+            telling: false,
+            again: false,
+            most: resident_file(pid).unwrap_or(0),
+        }
+    }
 }
 
 /// What a watch of a cgroup's watches: a file of its budget, or its events, which say it
@@ -495,14 +513,8 @@ impl<D: Disk> Daemon<D> {
             for pid in woke.ran {
                 if let Some(dir) = cgroup_of(pid) {
                     self.watch_chain(&dir);
-                    lock(&self.budgets.held).entry(pid).or_insert(Held {
-                        dir,
-                        told: None,
-                        short: false,
-                        telling: false,
-                        again: false,
-                        most: 0,
-                    });
+                    let followed = Held::of(dir, pid);
+                    lock(&self.budgets.held).entry(pid).or_insert(followed);
                     tell.insert(pid);
                 }
             }
@@ -533,15 +545,12 @@ impl<D: Disk> Daemon<D> {
                     // A budget set: its events watched from now on.
                     self.watch_events(level);
                 }
-                for (&pid, held) in lock(&self.budgets.held).iter_mut() {
+                for (&pid, held) in lock(&self.budgets.held).iter() {
                     if !held.dir.starts_with(level) {
                         continue;
                     }
                     match what {
                         Watch::Budget => {
-                            // A budget set or changed counts afresh what its microVMs hold:
-                            // what their guests read again under it shows as they hold it.
-                            held.most = 0;
                             tell.insert(pid);
                         }
                         Watch::Events => {
@@ -1030,11 +1039,13 @@ mod tests {
         // Files let go past what it gave back went otherwise: taken back, no room.
         assert_eq!(given_back(120 * MIB, 80 * MIB, 40 * MIB, 30 * MIB), 90 * MIB);
         budgets.gave_back(9, Some(MIB), MIB);
-        // Its own process, on a host whose processes have /proc entries: its most raised to
-        // the files it holds resident, read from its own entry. (Not that none goes between
-        // two looks: the test binary's other tests, beside it, unmap files as they run.)
+        // Its own process, on a host whose processes have /proc entries: followed with what
+        // it holds resident of files read at once, and its most raised to it at a look. (Not
+        // that none goes between two looks: the test binary's other tests, beside it, unmap
+        // files as they run.)
         if std::path::Path::new("/proc/self/status").exists() {
             let me = std::process::id();
+            assert!(Held::of(PathBuf::from("/sys/fs/cgroup/a.slice"), me).most > 0);
             let followed = lock(&budgets.held).remove(&7).unwrap();
             lock(&budgets.held).insert(me, followed);
             lock(&budgets.held).get_mut(&me).unwrap().most = 0;
