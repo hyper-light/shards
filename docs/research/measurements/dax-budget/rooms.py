@@ -14,8 +14,8 @@ wchan, in the samples' looks; and in the slice's looks during the short reads, w
 its budget had left below it (memory.high less memory.current, short of none where it was
 past it), its file pages processes mapped (its microVM's template's among them), its
 anonymous memory, its VM processes' resident files and how much of their template's memory
-file its host's page cache held, with how much of it each read saw taken (each read's row
-says its own); and how many of the short reads ran away, two looks or more finding its
+file its host's page cache held, with how much of it each read saw taken, and the share's
+copy of the guests' files there at its most (each read's row says its own); and how many of the short reads ran away, two looks or more finding its
 mapped files under 5 MiB and its anonymous memory within 16 MiB of its budget: its guest's
 page cache filling the budget, its host taking back its RAM, which its guest read back (PM
 M318).
@@ -101,6 +101,9 @@ def host(path):
                 # memory.high's throttle sleeps killable, in D (mm/memcontrol.c).
                 if not name.startswith("vcpu") and state == "D":
                     waits[wchan] += 1
+        elif words[0] == "copy" and len(words) >= 2 and words[1].isdigit() and looks:
+            # The share's copy of what its guest reads, in the host's page cache.
+            looks[-1]["copy"] = int(words[1])
         elif words[0] == "files" and len(words) >= 4 and words[2] == "RssFile" and looks:
             # Each VM process's resident files, summed, and of its template's memory file
             # what the page cache holds: one file its warm VMs share, so the most.
@@ -165,12 +168,20 @@ def taken(r):
     return (held[0] - min(held)) / (1 << 20) if held else None
 
 
+def most_copy(r):
+    """The most of the share's copy of the guests' files its host's page cache held at a
+    look during the read, MiB; None where its looks did not say."""
+    held = [l["copy"] for l in (r["host"][2] if r["host"] else []) if "copy" in l]
+    return max(held) / (1 << 20) if held else None
+
+
 for r in rows:
     g = r["guest"][0] if r["guest"] else {}
     took = taken(r)
     print(f"{r['run']} {r['copy']} {r['cpu'][:22]:22} {r['arm']:10} {r['high']:8} {r['file']:7} {r['secs']:7.2f} s "
           f"high {g.get('high')} pgsteal {g.get('pgsteal')} refaults {r['host'][0] if r['host'] else None} "
           + (f"template taken {took:.1f} MiB " if took is not None else "")
+          + (f"copy at most {kept:.1f} MiB " if (kept := most_copy(r)) is not None else "")
           + f"{(r['verdict'] or '').split(';')[0]}")
 print()
 landed = collections.defaultdict(set)
@@ -213,6 +224,6 @@ for cpu in sorted({r["cpu"] for r in rows}):
                 print(f"    ran away: {len(ran)} of {len(sel)}")
                 looks = [l for r in sel if r["host"] for l in r["host"][2]]
                 print(f"    below its budget KiB a look {summary([l['below'] / 1024 for l in looks], 0)}")
-                for k in ("file_mapped", "anon", "rss_file", "template"):
+                for k in ("file_mapped", "anon", "rss_file", "template", "copy"):
                     print(f"    its {k} MiB a look {summary([l[k] / (1 << 20) for l in looks if k in l], 1)}")
                 print(f"    its template taken a read, MiB {summary([taken(r) for r in sel], 1)}")

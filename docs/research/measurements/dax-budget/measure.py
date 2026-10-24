@@ -202,7 +202,14 @@ GUEST_LIGHT = (
     "anon|file|kernel|pgscan|pgsteal|workingset_refault_file) m=\"$m $k $v\";; esac; "
     "done < /sys/fs/cgroup/memory.stat; g=; while read -r k v _; do case $k in "
     "MemTotal:|MemFree:|Cached:) g=\"$g $k $v\";; esac; done < /proc/meminfo; "
-    "echo \"$t dd ${w:--} | current $c$e$m |$g\"; sleep 1; done"
+    # Each zone's free pages, min watermark and managed pages, and the kernel's direct
+    # reclaim, throttled or not (mm/vmscan.c `allow_direct_reclaim`, `PGSCAN_DIRECT_THROTTLE`).
+    "z=; while read -r a b c d _; do case $a in Node) z=\"$z $d\";; pages) [ \"$b\" = free ] && "
+    "z=\"$z free $c\";; min|managed) z=\"$z $a $b\";; esac; done < /proc/zoneinfo; "
+    "x=; while read -r k n; do case $k in pgscan_direct_throttle|allocstall_dma32|allocstall_normal|"
+    "allocstall_movable|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd) x=\"$x $k $n\";; "
+    "esac; done < /proc/vmstat; "
+    "echo \"$t dd ${w:--} | current $c$e$m |$g | zones$z | vm$x\"; sleep 1; done"
 )
 
 
@@ -309,6 +316,7 @@ LIBC.mmap.restype = ctypes.c_void_p
 LIBC.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
 LIBC.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
 LIBC.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+LOW_BIT = bytes(i & 1 for i in range(256))
 
 
 def cached(path):
@@ -328,7 +336,8 @@ def cached(path):
             vec = ctypes.create_string_buffer((size + page - 1) // page)
             if LIBC.mincore(ctypes.c_void_p(addr), size, vec) != 0:
                 raise OSError(ctypes.get_errno(), "mincore")
-            return sum(b & 1 for b in vec.raw) * page, size
+            # Each byte's least bit says its page is resident; the rest are reserved.
+            return vec.raw.translate(LOW_BIT).count(1) * page, size
         finally:
             LIBC.munmap(ctypes.c_void_p(addr), size)
     finally:
@@ -352,6 +361,20 @@ def files(pid):
         return f"RssFile {rss} memory {held} of {size}"
     except (OSError, ValueError) as e:
         return f"unread: {e}"
+
+
+def copy():
+    """Of the files the guests read (those of the volume a MiB or larger), the bytes the
+    host's page cache holds: the share's copy of what its guest reads (PM M318)."""
+    held = 0
+    try:
+        for name in os.listdir(vol):
+            path = os.path.join(vol, name)
+            if os.path.isfile(path) and os.path.getsize(path) >= 1 << 20:
+                held += cached(path)[0]
+    except (OSError, ValueError) as e:
+        return f"unread: {e}"
+    return str(held)
 
 
 def held(f, when, arm, guest=True):
@@ -417,6 +440,7 @@ def sample(path, stop):
                     " ".join(f"{k} {stat.get(k)}" for k in STAT),
                     "events " + read("memory.events").replace("\n", " "),
                     "pressure " + read("memory.pressure").splitlines()[0],
+                    f"copy {copy()}",
                 ]
                 for pid in vm_pids():
                     lines.append(f"vm {pid} {threads(pid)}")
