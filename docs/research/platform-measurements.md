@@ -13419,3 +13419,42 @@ revision before comparing a changed API/implementation.
   slice, a gigabyte's read takes 0.80 to 0.88 times its time with none at p50 on every
   runner CPU, none of 336 running away. Not yet: a budget below what a cold-booted
   microVM holds.
+
+### M319. Flakes: a working set cut through on its way to the daemon (the flakes goal)
+
+- **Question.** In DAX budget run 40113636061's e (EPYC 7763, unbudgeted) a run's VM ended
+  before its finished command did, its exit said as 255, after the daemon refused the
+  working set it recorded as "not aligned and distinct". What made the set so, and what
+  ended the VM?
+- **Method.** The daemon's logs of the DAX budget job's runs from b12ec23d on (40118447196,
+  40118424391, 40121565734, 40127123235, 40127114245, 40121550959, 40131530388 and
+  40135172411: 511 sets taken), whose refusal says since 13a40d49 how many of a set's pages
+  are off a page or recorded twice, and where; then the code that records a set, sends it
+  and gathers it.
+- **Results.**
+  - One refusal, 40135172411's f (round 4, its daemon 19642, EPYC 7763), and the same two
+    lines as 40113636061's: "a working set whose pages are not aligned and distinct: of
+    42661 pages, 38072 not on a page of 4096 bytes and 18363 recorded twice, from 0xfa4 to
+    0xf00100000000105e", then 0.2 s later "VM 19711 ended before its command did". No
+    guest's page lies at either address: the set's bytes were read shifted.
+  - Not the recorder's: on KVM it walks each region of guest RAM and pmem once in the
+    host's pagemap (vm/x86_64.rs `recorded`, platform `mapped_pages`), and no two regions
+    may overlap; the set is encoded whole in the VM process (runtime.rs `end_recording`).
+    It went as one `kind::WORKING_SET` message of 341 KB (`working_set_parts`, 1 MiB a
+    part), and the daemon gathered it at the length its header counts, so its bytes
+    changed on the way.
+  - The VM process's threads send the daemon messages on its connection, and on clones
+    of it, with nothing between them: the run's end (its OOM and pids facts, its working
+    set, DONE), the records of its processes as they come (D123), its log's asks for
+    segments, host-network frames, a DAX window's watches, a save's answer, an exec's
+    word that it took its client. Linux queues a stream message past what one buffer
+    holds in pieces (net/unix/af_unix.c `unix_stream_sendmsg`), and another sender's
+    message can land between them: the working set read with another's bytes in it, and
+    what was left of it read as the next message's header, which broke the stream, the
+    daemon taking the VM for ended. The daemon's own sends to a VM take a lock for this
+    (daemon.rs `RunSocket`); the VM's did not.
+- **Consequence.** Every message the VM process sends its daemon takes one lock
+  (warm.rs `to_daemon`), as the daemon's to a VM do. Test:
+  `warm::tests::what_the_vms_threads_send_the_daemon_arrives_whole`, 40 messages of 400
+  KiB and 4,000 small ones sent at once from two threads on clones of one connection, each
+  read back as sent.
