@@ -7106,7 +7106,16 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Gra
     // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
     let unstarted = || shards_vmm::platform::launched(pid) == Some(false);
     let mut sampled: Option<String> = None;
+    // Its spawn to its first request answered, its launch and the host's admission of it
+    // among it, for a run that waits for it (cold, D25): said at debug.
+    let spawned = Instant::now();
     let served = crate::grant_answer::serve_waiting(link, template, &mut |sent| {
+        if sent == 1 {
+            shards_vmm::debug!(
+                "VM {pid}: its first request for access answered {} us after its spawn",
+                spawned.elapsed().as_micros()
+            );
+        }
         if sampled.is_some() {
             return;
         }

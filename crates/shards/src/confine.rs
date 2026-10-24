@@ -122,8 +122,9 @@ pub fn confine() -> Result<(), String> {
     // process a VFIO descriptor to make them of.
     requests.extend(shards_vmm::devices::pci::vfio::IOCTLS.iter().map(|&r| r as u32));
     // A userfaultfd's handshake and its ranges' registration, which hold the host's
-    // fault-around off over a restored guest's memory as it records its working set and
-    // maps one ahead (platform::FaultAroundOff); none of its faults is the userfaultfd's.
+    // fault-around off over a restored guest's memory for its machine's life, as it
+    // records its working set and maps one ahead (platform::FaultAroundOff); none of its
+    // faults is the userfaultfd's.
     requests.extend([
         shards_vmm::platform::uffd::IOCTL_API,
         shards_vmm::platform::uffd::IOCTL_REGISTER,

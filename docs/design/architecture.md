@@ -895,11 +895,16 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     not always one its guest touched: a read fault on a file maps the pages around it its
     page cache holds too (fault-around), and the comparison's working sets held 4.6 to
     5.2 times the pages their guests faulted, every one mapped ahead, 2.5 to 3 MiB more
-    of the memory file than a restore without one held [PM M312]. A restore that records
-    its working set, and one that maps it ahead, hold the host's fault-around off over
-    its guest's memory and pmem meanwhile (`platform::FaultAroundOff`: a userfaultfd
-    registered for asynchronous write-protection, Linux 6.7, that write-protects nothing
-    and handles no fault); elsewhere both go on as before.
+    of the memory file than a restore without one held [PM M312]. A restored machine
+    holds the host's fault-around off over its guest's memory and pmem for its life
+    (`platform::FaultAroundOff`: a userfaultfd registered for asynchronous
+    write-protection, Linux 6.7, that write-protects nothing and handles no fault), so
+    that a working set records, and a restore maps ahead, what its guest touched: 739 to
+    778 pages where 2,753 to 2,902, its memory file 3.7 to 3.9 MiB resident where 11.6 to
+    12.3 and Firecracker's 11.6 to 14.1. Held only while a working set was mapped ahead,
+    letting it go reset its pages' tables, and KVM's stage 2 with them, and the guest
+    faulted them all in again [PM M312]. Before 6.7, or where a container's filter
+    refuses userfaultfd, it goes on as before.
   - The whole way from the request to the command's start is recorded, however long a
     host takes over it; the cap only ends a long command's recording.
   - It is written through the directory held open since the snapshot (or the restore),

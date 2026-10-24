@@ -849,7 +849,9 @@ pub fn mapped_pages(ptr: *const u8, len: usize) -> io::Result<Vec<(usize, bool)>
 /// on CI's runners, which the next restore mapped ahead (PM M312). No fault is ever the
 /// userfaultfd's to handle, so it takes user faults alone (UFFD_USER_MODE_ONLY), which needs
 /// no privilege. Dropped, its descriptor closes, which lets the ranges go
-/// (mm/userfaultfd.c, `userfaultfd_release`).
+/// (mm/userfaultfd.c, `userfaultfd_release`), and resets their page tables
+/// (`userfaultfd_clear_vma`: `uffd_wp_range`), which a hypervisor following them through
+/// MMU notifiers (KVM) takes for its stage 2 gone: held for as long as its guest runs.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct FaultAroundOff {

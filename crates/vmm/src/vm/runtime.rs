@@ -834,7 +834,7 @@ fn launch(
     // Each vCPU is moved its own part of the start, and the machine keeps the rest: none
     // of it is shared, and each part goes as soon as its owner is done with it.
     let start_bytes = machine::start_bytes(&start);
-    let (starts, rest) = machine::split(start, vcpus as usize)?;
+    let (starts, mut rest) = machine::split(start, vcpus as usize)?;
     // The bus before the VM, so that an early return drops the VM first: the hypervisor
     // maps the bus's device memory until the VM is destroyed (Machine's own order).
     let bus = Arc::new(bus);
@@ -887,7 +887,10 @@ fn launch(
 
     // vCPUs are created strictly in index order (D5).
     let mut first = None;
+    // Each one's setup, its thread's spawn to its answer: where a slow start's time goes.
+    let (setups, mut slowest) = (crate::log::uptime_us(), (0, 0u128));
     for (index, start) in starts.into_iter().enumerate() {
+        let began = crate::log::uptime_us();
         let (created_tx, created_rx) = mpsc::channel();
         let (vm, sh, bus) = (vm.clone(), shared.clone(), bus.clone());
         let spawned = std::thread::Builder::new()
@@ -905,6 +908,10 @@ fn launch(
                 if index == 0 {
                     first = Some(set_up);
                 }
+                let took = crate::log::uptime_us().saturating_sub(began);
+                if took > slowest.1 {
+                    slowest = (index, took);
+                }
             }
             Ok(Err(e)) => {
                 shared.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
@@ -919,10 +926,21 @@ fn launch(
         }
     }
     if !shared.exiting() {
+        let finishing = crate::log::uptime_us();
+        debug!(
+            "vCPUs set up in {} us, the slowest vCPU {} in {} us",
+            finishing.saturating_sub(setups),
+            slowest.0,
+            slowest.1
+        );
         let finished = machine::finish(&vm, &bus, &finish, rest.as_ref());
+        debug!(
+            "the machine's start finished in {} us",
+            crate::log::uptime_us().saturating_sub(finishing)
+        );
         let _ = shared
             .kept
-            .set(machine::keep(rest.as_ref(), &first.unwrap_or_default()));
+            .set(machine::keep(rest.as_mut(), &first.unwrap_or_default()));
         // The vCPUs dropped theirs once set up: the snapshot's device state goes now, where
         // a warm VM held it for its whole life.
         drop(rest);

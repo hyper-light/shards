@@ -12824,14 +12824,27 @@ revision before comparing a changed API/implementation.
     differences: at 9b99d0be from 1.25 ms worse to 1.08 better, worse in 4 passes of 16;
     at e21790a5 from 2.8 to 6.0 ms better in all 16 (the 9V45s on 6.17 at 5,575 to 5,746 µs
     at the median against Firecracker's 8,535 to 9,619).
+  - Fault-around held off while a restore records its working set and while it maps
+    one ahead, let go after (a25303a1, run 40055793466, eight runners: 7763 ×4, 9V45
+    ×2, 9V74, Xeon Platinum 8573C): the working set 735 to 778 pages at the median; restore
+    `rss_file` 3.7 to 3.9 MiB on every runner and kernel, Firecracker's 11.4 to 14.1;
+    `to_beat` better in 15 passes of 16 by 1.6 to 5.5 ms, tied in one (a 9V74 on 7.0,
+    −286 µs [−663, +294]). But KVM counted 707 to 730 stage-2 faults to the first beat
+    (Firecracker 708 to 750), where e21790a5's restores took 1: the pages mapped ahead
+    were faulted in again. A userfaultfd registered for write-protection, let go, resets
+    its ranges' page tables (mm/userfaultfd.c, `userfaultfd_clear_vma`: `uffd_wp_range`,
+    `change_protection`), and KVM's MMU notifier takes the reset for its stage 2 gone.
 - **Reading.** A working set recorded by the host's page tables holds the pages the
   host's fault-around mapped beside each the guest touched, four to five times as many,
   and a restore that maps it ahead holds all of them, which the restore without it never
   touches by its first beat. Recorded with fault-around held off, the host maps what the
-  guest touched alone; mapped ahead with it held off too, a restore holds those pages.
-- **Consequence.** D25: a restore that records its working set, and one that maps it
-  ahead, holds the host's fault-around off over its guest's memory and pmem meanwhile
-  (`platform::FaultAroundOff`, a userfaultfd registered for asynchronous write-protection
-  that never write-protects; seccomp allows its handshake and registration), on Linux
-  6.7 and later; before 6.7, or where a container's filter refuses userfaultfd, both go
-  on as before. Held by `fault_around_held_off_maps_the_touched_page_alone`.
+  guest touched alone, and the memory file holds a third of what it did; but held off
+  for the mapping ahead alone, letting it go undoes the mapping, and the guest faults
+  every page in as before. Held for the machine's life, nothing is let go while the guest
+  runs.
+- **Consequence.** D25: a restored machine holds the host's fault-around off over its
+  guest's memory and pmem for its life (`platform::FaultAroundOff`, a userfaultfd
+  registered for asynchronous write-protection that never write-protects; seccomp allows
+  its handshake and registration), on Linux 6.7 and later; before 6.7, or where a
+  container's filter refuses userfaultfd, it goes on as before. Held by
+  `fault_around_held_off_maps_the_touched_page_alone`.

@@ -49,9 +49,10 @@ pub struct Restored {
     pub devices: Vec<u8>,
     /// The snapshot's working set, to map before the guest runs; empty for none.
     pub working_set: Vec<hv::Touch>,
-    /// The host's fault-around held off over the guest's memory while vCPU 0 maps the
-    /// working set ahead ([`setup_vcpu`]), so that the host maps the pages it holds and
-    /// none around them (`platform::FaultAroundOff`).
+    /// The host's fault-around held off over the guest's memory and pmem for the machine's
+    /// life ([`Kept`]): what the host maps of them is then what the guest touches, and a
+    /// working set recorded or mapped ahead holds those pages alone
+    /// (`platform::FaultAroundOff`).
     pub around: Option<platform::FaultAroundOff>,
 }
 
@@ -62,10 +63,8 @@ pub enum VcpuStart {
     Boot(Option<x86_64::Boot>),
     Restore {
         state: hv::VcpuState,
-        /// vCPU 0's: the working set it maps ahead, and the host's fault-around held off
-        /// as it does ([`Restored::around`]).
+        /// vCPU 0's: the working set it maps ahead.
         working_set: Option<Vec<hv::Touch>>,
-        around: Option<platform::FaultAroundOff>,
     },
 }
 
@@ -77,6 +76,8 @@ pub struct Remainder {
     devices: Vec<u8>,
     /// Where the snapshot has vCPU 0's TSC start.
     tsc_start: Option<hv::TscStart>,
+    /// [`Restored::around`], which the machine keeps ([`keep`]).
+    around: Option<platform::FaultAroundOff>,
 }
 
 /// What vCPU 0 found as it set up, for the machine to keep.
@@ -104,7 +105,7 @@ pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remai
                 return Err(format!("the snapshot has {} vCPUs, not {vcpus}", r.vcpus.len()));
             }
             let tsc_start = r.vcpus.first().and_then(hv::VcpuState::tsc_start);
-            let (mut working_set, mut around) = (Some(r.working_set), r.around);
+            let mut working_set = Some(r.working_set);
             let starts = r
                 .vcpus
                 .into_iter()
@@ -112,7 +113,6 @@ pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remai
                 .map(|state| VcpuStart::Restore {
                     state,
                     working_set: working_set.take(),
-                    around: around.take(),
                 })
                 .collect();
             Ok((
@@ -121,6 +121,7 @@ pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remai
                     vm: r.vm,
                     devices: r.devices,
                     tsc_start,
+                    around: r.around,
                 }),
             ))
         }
@@ -745,14 +746,14 @@ pub fn restore(
         .chain(a.bus.pmem.iter().map(|(gpa, region)| (*gpa, region.len() as u64)))
         .collect();
     let working_set = super::usable_working_set(working_set, PAGE, &guest);
+    // Before the guest touches any of it, and for the machine's life: a userfaultfd let go
+    // of resets its ranges' page tables, which KVM's MMU notifier takes for its stage 2
+    // gone (mm/userfaultfd.c, `userfaultfd_clear_vma`: `uffd_wp_range`; PM M312), and a
+    // working set mapped ahead with it held off for its mapping alone was faulted in again.
+    let around = platform::FaultAroundOff::over(&host_ranges(&memory, &a.bus.pmem));
     if let Err(e) = copy_written(&memory, &working_set) {
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }
-    let around = if working_set.is_empty() {
-        None
-    } else {
-        platform::FaultAroundOff::over(&host_ranges(&memory, &a.bus.pmem))
-    };
     Ok(Machine {
         vm: a.vm,
         memory,
@@ -850,14 +851,13 @@ fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
 pub const PAGE: u64 = 4 << 10;
 
 /// What records a working set: a restored guest's memory, whose host mappings start
-/// empty, kept mapped until the recording ends, even if the VM stops first; and the host's
-/// fault-around held off over it meanwhile, so that what the host maps is what the guest
-/// touched (`platform::FaultAroundOff`).
+/// empty, kept mapped until the recording ends, even if the VM stops first; the host's
+/// fault-around is held off over it for the machine's life ([`Restored::around`]), so that
+/// what the host maps is what the guest touched.
 #[derive(Debug)]
 pub struct Recorder {
     memory: Arc<GuestMemory>,
     pmem: Vec<(u64, Arc<pmem::Region>)>,
-    _around: Option<platform::FaultAroundOff>,
 }
 
 /// The host's ranges of a machine's guest memory and its pmem: what a working set is
@@ -886,7 +886,6 @@ pub fn recorder(m: &Machine) -> Option<Recorder> {
     (page == PAGE).then(|| Recorder {
         memory: m.memory.clone(),
         pmem: m.bus.pmem.clone(),
-        _around: platform::FaultAroundOff::over(&host_ranges(&m.memory, &m.bus.pmem)),
     })
 }
 
@@ -924,13 +923,20 @@ pub struct Kept {
     tsc: Option<(hv::Tsc, Option<hv::TscStart>)>,
     /// How many pages of its working set a restored machine mapped ahead.
     prefetched: usize,
+    /// [`Restored::around`], held for the machine's life.
+    _around: Option<platform::FaultAroundOff>,
 }
 
 /// What the start leaves the running machine, once every vCPU is set up.
-pub fn keep(rest: Option<&Remainder>, first: &SetUp) -> Kept {
+pub fn keep(rest: Option<&mut Remainder>, first: &SetUp) -> Kept {
+    let (start, around) = match rest {
+        Some(r) => (Some(r.tsc_start), r.around.take()),
+        None => (None, None),
+    };
     Kept {
-        tsc: rest.and_then(|r| first.tsc.clone().map(|tsc| (tsc, r.tsc_start))),
+        tsc: start.and_then(|start| first.tsc.clone().map(|tsc| (tsc, start))),
         prefetched: first.prefetched,
+        _around: around,
     }
 }
 
@@ -962,22 +968,14 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                 vcpu.boot(&boot).map_err(|e| e.to_string())?;
             }
         }
-        VcpuStart::Restore {
-            state,
-            working_set,
-            around,
-        } => {
+        VcpuStart::Restore { state, working_set } => {
             vcpu.restore_state(&state).map_err(|e| e.to_string())?;
             if let Some(working_set) = working_set {
                 set_up.tsc = vcpu.tsc();
                 // After the state, which sets the paging mode KVM maps for.
                 if !working_set.is_empty() {
                     let t0 = crate::log::uptime_us();
-                    set_up.prefetched = {
-                        // Fault-around back once it is done, before the guest runs.
-                        let _around = around;
-                        pre_fault(&vcpu, &working_set)
-                    };
+                    set_up.prefetched = pre_fault(&vcpu, &working_set);
                     info!(
                         "mapped {} of {} working-set pages ahead in {} us",
                         set_up.prefetched,

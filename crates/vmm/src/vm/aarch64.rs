@@ -892,7 +892,7 @@ pub struct Kept {
 }
 
 /// What the start leaves the running machine, once every vCPU is set up.
-pub fn keep(rest: Option<&Remainder>, first: &SetUp) -> Kept {
+pub fn keep(rest: Option<&mut Remainder>, first: &SetUp) -> Kept {
     Kept {
         counter: rest.map(|r| r.counter),
         prefetched: first.prefetched,
