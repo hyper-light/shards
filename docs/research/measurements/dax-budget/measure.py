@@ -11,7 +11,7 @@ before each read, so that the read's microVM brings them in and pays for them.
     measure.py SHARDS OUT [--huge SHARDS] [--fuse NAME=SHARDS]... [--arms A,B]
                [--guest-mib N] [--rounds N] [--highs 384M,short,infinity] [--size-mib 1024]
                [--pool N] [--perf] [--stop-slice] [--parent-slice NAME] [--files sparse,written]
-               [--as-e2e [--reads N]]
+               [--as-e2e [--reads N]] [--again]
 
 With --huge, a third arm: that build of shards (huge.patch: each window range on huge
 pages, MADV_HUGEPAGE), its window as long as the host's memory. With --stop-slice, the
@@ -29,6 +29,10 @@ daemon/budget.rs), so that the run is held within the least room a run goes on i
 `--pool 0`, no warm microVM is left to end for room, and it is held so for its whole read.
 Each read under it is said held short throughout, or not, by its daemon's log. With
 --pool N, each arm's daemon keeps a pool of N (SHARDS_POOL). --files picks the files read.
+
+With --again, each arm reads files of its own, copies of the ones asked, out of the host's
+page cache before its first read alone: each of its later reads, a run of its own, finds
+what the share kept of the arm's read before it, as a user's next run over a volume does.
 
 With --as-e2e, each round is the FUSE budget E2E's phases
 (a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one) for each
@@ -82,6 +86,7 @@ p.add_argument("--parent-slice")
 p.add_argument("--files", default="sparse,written")
 p.add_argument("--as-e2e", action="store_true")
 p.add_argument("--reads", type=int, default=3)
+p.add_argument("--again", action="store_true")
 a = p.parse_args()
 
 shards = os.path.realpath(a.shards)
@@ -475,10 +480,16 @@ def slice_holds():
     return max(0, current - max(0, stat["file"] - stat["file_mapped"] - stat["shmem"]))
 
 
+# The arms that have read a file of their own (--again).
+read_before = set()
+
+
 def one(arm, file, high, name, budget=None, cached=False, keep=False):
     """One read's seconds: a microVM started in the slice, its budget set (`budget`, else
-    `high`'s), the file read; out of the host's page cache first, unless `cached`; the
-    budget taken off after, unless `keep`."""
+    `high`'s), the file read; out of the host's page cache first, unless `cached` or the
+    arm's own file was read before (--again); the budget taken off after, unless `keep`."""
+    own = (lambda each: f"{each}-{arm}") if a.again else (lambda each: each)
+    cached = cached or arm in read_before
     held_to = []
     if a.guest_mib:
         held_to = ["--memory", f"{a.guest_mib}m", "--memory-swap", f"{a.guest_mib}m", "--oom-kill-disable"]
@@ -520,7 +531,7 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
     budget = budget or (str(short_budget()) if high == "short" else high)
     set_budget(budget)
     for each in () if cached else FILES:
-        drop(os.path.join(vol, each))
+        drop(os.path.join(vol, own(each)))
     stop = threading.Event()
     watchers = [threading.Thread(target=sample, args=(os.path.join(out, f"{name}.txt"), stop))]
     if a.perf:
@@ -528,7 +539,10 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
     for w in watchers:
         w.start()
     start = time.perf_counter()
-    done = run(arm, "exec", "reader", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M", check=False, timeout=1800)
+    done = run(arm, "exec", "reader", "dd", f"if=/vol/{own(file)}", "of=/dev/null", "bs=1M", check=False,
+               timeout=1800)
+    if a.again:
+        read_before.add(arm)
     took = time.perf_counter() - start
     stop.set()
     guest_stop.set()
@@ -757,6 +771,12 @@ with open(os.path.join(vol, "written"), "wb") as f:
         f.write(block)
     f.flush()
     os.fsync(f.fileno())
+if a.again:
+    for arm in ARMS:
+        for each in FILES:
+            shutil.copyfile(os.path.join(vol, each), os.path.join(vol, f"{each}-{arm}"))
+            with open(os.path.join(vol, f"{each}-{arm}"), "rb+") as f:
+                os.fsync(f.fileno())
 
 rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 try:
