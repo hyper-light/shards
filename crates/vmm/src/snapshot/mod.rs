@@ -1129,6 +1129,26 @@ pub fn accept_working_set(
     Ok(pages.len())
 }
 
+/// Whether the generation the snapshot in `dir` is at has a working set saved: one a
+/// restore of it maps ahead, and records none of.
+pub fn has_working_set(dir: &Path) -> bool {
+    generation(dir).is_ok_and(|g| g.join(WORKING_SET).is_file())
+}
+
+/// A working set as a restore hands it to its spawner (`--working-set FD`): the name of the
+/// generation it was recorded from, a newline, then the working set
+/// ([`encode_working_set`]); its spawner keeps it as the daemon keeps a warm VM's
+/// ([`accept_working_set`]).
+pub fn split_handed(handed: &[u8]) -> Result<(&str, &[u8]), String> {
+    let at = handed
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or("a handed working set names no generation")?;
+    let (name, rest) = handed.split_at(at);
+    let name = std::str::from_utf8(name).map_err(|_| "a handed working set's generation is not text")?;
+    Ok((name, rest.get(1..).unwrap_or_default()))
+}
+
 /// The working set saved in generation directory `generation`, if it has one recorded at
 /// stage-2 pages of `page` bytes. It holds at most `max_pages` pages, as many as the
 /// guest has; a file too long for that is not read.
@@ -1767,6 +1787,41 @@ mod tests {
             // The set that fits: written, and read back as sent.
             assert_eq!(accept_working_set(&dir, &name, &bytes, page, |_| max), Ok(3));
             assert_eq!(stored(), Some(set));
+        }
+
+        /// A working set a restore hands its spawner is kept in the generation it names,
+        /// and in no other; a newer generation starts without one.
+        #[test]
+        fn a_handed_working_set_is_kept_in_its_generation_and_no_other() {
+            let s = Scratch::new("handed");
+            let dir = s.0.join("snap");
+            write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
+            let name = read(&dir).unwrap().name;
+            let (page, max) = (0x4000, 64);
+            let set = touches(&[0x8000_0000, 0x8000_4000]);
+            let handed = |name: &str| [name.as_bytes(), b"\n", &encode_working_set(&set, page)].concat();
+            let keep = |h: &[u8]| {
+                let (name, bytes) = split_handed(h)?;
+                accept_working_set(&dir, name, bytes, page, |_| max)
+            };
+            assert!(!has_working_set(&dir));
+            // Naming no generation, or another one: nothing kept.
+            assert!(split_handed(b"g-0001").is_err());
+            assert!(split_handed(b"\xff\n").is_err());
+            assert_eq!(keep(&handed("g-not-this")), Ok(0));
+            assert!(!has_working_set(&dir));
+            // Its own generation's: kept there, and read back as handed.
+            assert_eq!(keep(&handed(&name)), Ok(2));
+            assert!(has_working_set(&dir));
+            assert_eq!(
+                read_working_set(&read(&dir).unwrap().path, page, max).unwrap(),
+                Some(set.clone())
+            );
+            // A newer generation has none, and the older one's is not taken for it.
+            write(&dir, &sample(&s.0, 2), &ram(2)).unwrap();
+            assert!(!has_working_set(&dir));
+            assert_eq!(keep(&handed(&name)), Ok(0));
+            assert!(!has_working_set(&dir));
         }
 
         #[test]

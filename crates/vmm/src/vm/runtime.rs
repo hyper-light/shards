@@ -803,6 +803,15 @@ pub fn accept_working_set(dir: &Path, name: &str, bytes: &[u8]) -> Result<usize,
     snapshot::accept_working_set(dir, name, bytes, machine::PAGE, guest_pages)
 }
 
+/// Keeps the working set a restore handed its spawner (`--working-set FD`) beside the
+/// generation of the snapshot in `dir` it names, as [`accept_working_set`] keeps a warm
+/// VM's (`snapshot::split_handed`): the pages kept, 0 where that generation is no longer
+/// the snapshot's.
+pub fn keep_working_set(dir: &Path, handed: &[u8]) -> Result<usize, String> {
+    let (name, bytes) = snapshot::split_handed(handed)?;
+    accept_working_set(dir, name, bytes)
+}
+
 /// Starts the machine's vCPUs; with `hold`, they wait for [`Handle::release`].
 fn launch(
     m: Machine,

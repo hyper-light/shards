@@ -20,7 +20,7 @@ use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{Reader, Writer};
 use crate::snapshot::{MachineConfig, Snapshot};
-use crate::{debug, platform, warn};
+use crate::{debug, info, platform, warn};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
@@ -943,7 +943,7 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                 if !working_set.is_empty() {
                     let t0 = crate::log::uptime_us();
                     set_up.prefetched = pre_fault(&vcpu, &working_set);
-                    debug!(
+                    info!(
                         "mapped {} of {} working-set pages ahead in {} us",
                         set_up.prefetched,
                         working_set.len(),

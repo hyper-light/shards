@@ -38,7 +38,10 @@
 //! as init asks for a template's), Firecracker through its API (`PATCH /vm` Paused,
 //! `PUT /snapshot/create`, Full). Every sample is a fresh VMM process restoring it, as each does it: `shards-vm
 //! restore DIR`, and `firecracker --api-sock` then `PUT /snapshot/load` with its memory
-//! file mapped (`File`) and `resume_vm`.
+//! file mapped (`File`) and `resume_vm`. shards' snapshot's working set is recorded first,
+//! by a restore of it that hands the pages its guest touches over its first second to the
+//! bench (`--working-set`), which keeps it beside the snapshot as `shards restore`'s writer
+//! does (D30): every restore after it maps those pages ahead, as `shards restore` does.
 //!
 //! - `to_beat`: the host's clock from spawn until the guest's first beat after the restore
 //!   reaches the VMM's stdout: the guest running again, what a user waits for.
@@ -48,7 +51,8 @@
 //!   (`SHARDS_LOG=info`), whose writes are in no paired sample. `restored`, `vcpus_ready`
 //!   and `resumed`: the VM process's clock, from its start, as it had the guest's state
 //!   back, its vCPUs ready to run, and the guest saying it resumed (its RESUMED marker);
-//!   `logged_to_beat`, those restores' own `to_beat`.
+//!   `logged_to_beat`, those restores' own `to_beat`; `logged_prefetched_pages`, the pages of
+//!   its working set each mapped ahead.
 //! - What each restore's guest touched and what KVM counted of it, which the envelope does
 //!   not check: as its first beat arrives, the pages of its memory file its host maps and
 //!   those it holds a private copy of (`touched_pages`, `written_pages`), and KVM's
@@ -499,6 +503,9 @@ mod compare {
         booted.kill().unwrap();
         booted.wait().unwrap();
 
+        let kept = record_working_set(&snapshot);
+        println!("shards' snapshot's working set: {kept} pages");
+
         let load = format!(
             "{{\"snapshot_path\":{},\"mem_backend\":{{\"backend_type\":\"File\",\"backend_path\":{}}},\"resume_vm\":true}}",
             json_string(&fc_state.to_string_lossy()),
@@ -564,6 +571,7 @@ mod compare {
             support::diagnostic("vcpus_ready", "us", phase(|p| p.vcpus_ready_us)),
             support::diagnostic("resumed", "us", phase(|p| p.resumed_us)),
             support::diagnostic("logged_to_beat", "us", phase(|p| p.to_beat_us)),
+            support::diagnostic("logged_prefetched_pages", "", phase(|p| p.prefetched)),
         ];
         // What each guest touched and wrote of its memory file and KVM's counters by its first
         // beat, which the envelope does not check.
@@ -881,6 +889,8 @@ mod compare {
         vcpus_ready_us: f64,
         resumed_us: f64,
         to_beat_us: f64,
+        /// The pages of its snapshot's working set it mapped ahead: NaN where it said none.
+        prefetched: f64,
         /// KVM's counters of its VM as its guest first beat (`common::kvm_counters`).
         kvm: Option<std::collections::BTreeMap<String, u64>>,
         /// Its memory file's pages touched and written by then ([`touched`]).
@@ -933,11 +943,23 @@ mod compare {
                 })
                 .unwrap_or(f64::NAN)
         };
+        let prefetched = err
+            .lines()
+            .find_map(|l| {
+                l.split_once("mapped ")?
+                    .1
+                    .split_once(" of ")?
+                    .0
+                    .parse::<f64>()
+                    .ok()
+            })
+            .unwrap_or(f64::NAN);
         Phases {
             restored_us: at(" restored a "),
             vcpus_ready_us: at(" ready to run after "),
             resumed_us: at(" guest marker 2 at "),
             to_beat_us: beat.duration_since(start).as_secs_f64() * 1e6,
+            prefetched,
             kvm,
             touched,
         }
@@ -1047,6 +1069,53 @@ mod compare {
             }
         }
         found.then_some((rss / 4, anon / 4))
+    }
+
+    /// The working set a first restore of shards' `snapshot` records over its first second,
+    /// handed to the bench (`--working-set`) and kept beside the snapshot as `shards
+    /// restore`'s writer keeps one (`vm::keep_working_set`, D30): how many pages, 0 where
+    /// none was recorded (a backend that records no restore's).
+    fn record_working_set(snapshot: &Path) -> usize {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::process::CommandExt as _;
+        let (from_vm, to_bench) = std::io::pipe().expect("the working set's pipe");
+        let fd = to_bench.as_raw_fd();
+        let mut command = Command::new(common::shards_vm());
+        command
+            .arg("restore")
+            .args(["--working-set", "3"])
+            .arg(snapshot)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: runs in the child between fork and exec, calling only dup2(2) and
+        // fcntl(2), which are async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().expect("spawning the recording restore");
+        drop(to_bench);
+        // Handed once its first second has passed, and its end closes the pipe.
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut from_vm, mut handed) = (from_vm, Vec::new());
+            let _ = from_vm.read_to_end(&mut handed);
+            let _ = tx.send(handed);
+        });
+        let handed = rx
+            .recv_timeout(TIMEOUT)
+            .expect("the recording restore handed nothing in time");
+        let _ = child.kill();
+        child.wait().unwrap();
+        if handed.is_empty() {
+            return 0;
+        }
+        shards_vmm::vm::keep_working_set(snapshot, &handed).expect("keeping the working set")
     }
 
     /// The KVM events a traced restore records (`--traced`): its vCPUs entering and leaving

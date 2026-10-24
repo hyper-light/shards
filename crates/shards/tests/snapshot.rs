@@ -148,6 +148,45 @@ fn every_restore_continues_the_guest_where_it_asked_for_the_snapshot() {
     );
 }
 
+/// A restore records the working set of a generation that has none, and its spawner,
+/// `shards restore` itself, keeps it beside the generation (no VM writes its snapshot,
+/// D30); the next restore of that generation maps it ahead before its guest runs, each page
+/// a stage-2 fault its guest does not take (PM M310), and its guest goes on as before.
+#[test]
+fn a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded() {
+    if cannot_run_vms() || cannot_snapshot() || !shards_vmm::vm::RESTORES_RECORD {
+        return;
+    }
+    let s = Scratch::new("wset");
+    let original = boot_and_snapshot(&s, "stop");
+    assert_eq!(original.status, Some(0), "{original}");
+    assert!(!shards_vmm::snapshot::has_working_set(&s.snapshot()));
+    let mapped = |r: &Run| -> Option<u64> {
+        r.stderr
+            .lines()
+            .find_map(|l| l.split_once("mapped ")?.1.split_once(" of ")?.0.parse().ok())
+    };
+    let first = restore_logged(&s.snapshot());
+    assert_eq!(first.status, Some(0), "{first}");
+    assert!(first.stdout.contains("SHARDS-TEST PASS"), "{first}");
+    assert_eq!(mapped(&first), None, "nothing to map ahead yet: {first}");
+    // Its writer keeps it once the VM has handed it over, as the VM ends.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !shards_vmm::snapshot::has_working_set(&s.snapshot()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no working set kept after the first restore: {first}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let second = restore_logged(&s.snapshot());
+    assert_eq!(second.status, Some(0), "{second}");
+    assert!(second.stdout.contains("SHARDS-TEST PASS"), "{second}");
+    let pages =
+        mapped(&second).unwrap_or_else(|| panic!("the second restore mapped nothing ahead: {second}"));
+    assert!(pages > 0, "{second}");
+}
+
 #[test]
 fn the_original_guest_can_continue_after_its_snapshot() {
     if cannot_run_vms() || cannot_snapshot() {

@@ -46,16 +46,16 @@ mod hold;
 mod runtime;
 #[cfg(hv)]
 pub use runtime::{
-    Handle, Running, Saved, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
-    working_set_limit,
+    Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
+    restore_from, start, working_set_limit,
 };
 
 #[cfg(not(hv))]
 mod unsupported;
 #[cfg(not(hv))]
 pub use unsupported::{
-    Handle, Running, Saved, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
-    working_set_limit,
+    Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
+    restore_from, start, working_set_limit,
 };
 
 /// The host sides of a VM's devices that live outside it.

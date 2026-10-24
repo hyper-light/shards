@@ -62,7 +62,7 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
 /// `configure disk` are said as, and `daemon` how the client starts the daemon.
-const OWN: [&str; 25] = [
+const OWN: [&str; 26] = [
     "system",
     // Contexts, and the clients and invitations of this machine's (D180).
     "context",
@@ -82,6 +82,7 @@ const OWN: [&str; 25] = [
     "guest",
     "disk",
     "grants",
+    "working-set",
     "share",
     "frontend",
     "spawner",
@@ -1103,10 +1104,83 @@ fn vm(args: &[OsString]) -> ExitCode {
     instead(&with)
 }
 
-/// `shards run --kernel` and `shards restore`: become shards-vm.
+/// `shards run --kernel` and `shards restore`: become shards-vm. A restore whose snapshot's
+/// generation has no working set first starts its writer, `shardsd working-set`, on a pipe
+/// the VM hands the working set it records to (`--working-set`): no VM writes its snapshot
+/// (D30), and a process that becomes the VM leaves none behind to. The writer is reaped by
+/// the kernel, since SIGCHLD stays ignored through the exec.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
-    instead(args)
+    match working_set_writer(args) {
+        Ok(Some(with)) => instead(&with),
+        Ok(None) => instead(args),
+        Err(e) => failed(&e),
+    }
+}
+
+/// `args` with `--working-set FD` given, its writer started on the pipe's other end, where
+/// they restore a snapshot whose generation has no working set and this backend records a
+/// restore's (`vm::RESTORES_RECORD`); none otherwise, or where the writer cannot start: a
+/// restore without one only takes the faults it would have.
+#[cfg(target_os = "linux")]
+fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
+    use std::os::fd::{AsFd as _, IntoRawFd as _};
+    let spawned_by_daemon = args
+        .iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--warm" || a == "--resume" || a == "--working-set");
+    let (Some(restore), Some(dir), false) = (args.first(), args.get(1), spawned_by_daemon) else {
+        return Ok(None);
+    };
+    let dir = std::path::Path::new(dir);
+    if restore != "restore"
+        || !shards_vmm::vm::RESTORES_RECORD
+        || !shards_vmm::snapshot::exists(dir)
+        || shards_vmm::snapshot::has_working_set(dir)
+    {
+        return Ok(None);
+    }
+    let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (from_vm, to_writer) = std::io::pipe().map_err(|e| format!("the working set's pipe: {e}"))?;
+    let writer = shardsd()?;
+    // SAFETY: signal(2) setting SIGCHLD's disposition, before any thread starts.
+    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+    let stderr = std::io::stderr();
+    let spawned = shards_ipc::spawn(
+        &writer,
+        &["working-set".as_ref(), "--template".as_ref(), dir.as_os_str()],
+        &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
+        true,
+    );
+    if let Err(e) = spawned {
+        shards_vmm::debug!(
+            "not keeping this restore's working set: {}: {e}",
+            writer.display()
+        );
+        return Ok(None);
+    }
+    drop(from_vm);
+    // Kept open through the exec, for the VM.
+    let fd = to_writer.into_raw_fd();
+    // SAFETY: fcntl(2) clearing close-on-exec on a descriptor this process owns.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } != 0 {
+        return Err(format!(
+            "the working set's pipe: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut with: Vec<OsString> = Vec::with_capacity(args.len() + 2);
+    with.extend(args.first().cloned());
+    with.push("--working-set".into());
+    with.push(fd.to_string().into());
+    with.extend(args.iter().skip(1).cloned());
+    Ok(Some(with))
+}
+
+/// No other Unix but macOS records a restore's working set, so none starts a writer.
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
+    Ok(None)
 }
 
 /// `shards run --kernel` and `shards restore` on Windows: shards-vm, started confined (D141):

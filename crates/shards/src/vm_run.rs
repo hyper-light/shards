@@ -68,6 +68,7 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
 
 const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards restore vm DIR [--hold] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards restore vm DIR [--working-set FD] ...
        shards restore vm DIR --warm FD [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]]
        shards restore vm DIR --resume FD [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]]
        shards restore vm MICROVM [SNAPSHOT]
@@ -82,6 +83,11 @@ const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH
           on stdin: a warm VM whose start costs only the release. With a COMMAND, the VM
           resumes at once and connects, and the line runs the command: a warm VM whose
           request costs only the command.
+  --working-set: where the snapshot's generation has no working set, record the pages the
+                 restored guest touches, and write them, after its generation's name and
+                 a newline, to descriptor FD, for its spawner to keep beside the
+                 generation: no VM writes its snapshot (D30). A restore of a generation
+                 that has one maps it ahead.
   --warm: resume at once and connect, then take one command, with the stdio and connection
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
   --resume: DIR is a run's snapshot, its command running already: take its run's stdio,
@@ -456,6 +462,9 @@ struct Restore {
     workload: Options,
     /// `--warm FD`: the daemon's socket.
     warm: Option<i32>,
+    /// `--working-set FD`: where the working set this restore records goes, for its spawner
+    /// to keep (D30).
+    working_set_to: Option<i32>,
     /// `--resume FD`, in place of `--warm FD`: the snapshot is a run's, whose command goes
     /// on (D176).
     resume: bool,
@@ -468,6 +477,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut layer = None;
     let mut layer_cloned = None;
     let mut prefetch_private = shards_vmm::hv::PREFETCH_PRIVATE;
+    let mut working_set_to = None;
     while let Some(arg) = args.next() {
         // The snapshot directory is a path, in whatever bytes; every option is text.
         let Some(flag) = arg.to_str().map(str::to_owned) else {
@@ -501,6 +511,13 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
                 prefetch_private = bytes
                     .parse()
                     .map_err(|_| format!("--prefetch-private: {bytes:?} is not a number of bytes"))?;
+            }
+            "--working-set" => {
+                let fd = text(value("--working-set")?)?;
+                working_set_to = Some(
+                    fd.parse::<i32>()
+                        .map_err(|_| format!("--working-set: {fd:?} is not a descriptor"))?,
+                );
             }
             "--warm" => {
                 let fd = text(value("--warm")?)?;
@@ -544,6 +561,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     {
         return Err("--warm takes its command from the daemon: no --hold, --vsock, --snapshot-dir, workload options or command".into());
     }
+    if warm.is_some() && working_set_to.is_some() {
+        return Err("--warm hands its working set to the daemon: no --working-set".into());
+    }
     let dir = dir.ok_or("the snapshot directory is required")?;
     if layer_cloned.is_some() && layer.is_none() {
         return Err("--layer-cloned says whose clone --layer's file is: it needs --layer".into());
@@ -565,12 +585,15 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         #[cfg(unix)]
         join_share: None,
         io_limit: Some(&IO),
-        // Restored ahead of its request: the prefetch costs the request nothing.
-        prefetch: hold || warm.is_some(),
+        // A working set its generation has is mapped ahead: off a held or warm VM's
+        // request's path, and on a restore's own, where it saves the guest each stage-2
+        // fault it would take, 12 to 20 µs on CI's runners (PM M310).
+        prefetch: true,
         prefetch_private,
-        // A warm VM's request ends the recording as it ends a template's (RECORD_FOR); a
-        // run's snapshot is no template, which restores prefetch from.
-        record: warm.is_some() && !resume,
+        // A warm VM's request ends the recording as it ends a template's (RECORD_FOR), and
+        // its spawner's descriptor a restore's (`hand_working_set`); a run's snapshot is
+        // no template, which restores prefetch from.
+        record: (warm.is_some() && !resume) || (working_set_to.is_some() && shards_vmm::vm::RESTORES_RECORD),
         swap: None,
         layer,
         layer_cloned,
@@ -579,6 +602,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         cfg,
         workload: common.workload,
         warm,
+        working_set_to,
         resume,
     })
 }
@@ -937,6 +961,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         mut cfg,
         workload,
         warm,
+        working_set_to,
         resume,
     } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
@@ -945,6 +970,13 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
     if let Some(fd) = warm {
         return warm_restore(cfg, fd, resume);
     }
+    let to = match working_set_to.map(WorkingSetTo::new).transpose() {
+        Ok(to) => to,
+        Err(e) => {
+            report(e);
+            return ExitCode::FAILURE;
+        }
+    };
     if !workload.argv.is_empty() {
         cfg.console = Console::Discard;
         // A held run resumes now, and holds the command instead: whatever a restored guest
@@ -955,17 +987,127 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
             hold,
             gpu: false,
         };
-        return serve_workload(cfg.vsock.take(), source, move |vsock| {
+        let handing = std::sync::OnceLock::new();
+        let slot = &handing;
+        let code = serve_workload(cfg.vsock.take(), source, move |vsock| {
             cfg.vsock = Some(vsock);
-            restore_vm(cfg)
+            let started = restore_vm(cfg);
+            if let (Ok((handle, _)), Some(to)) = (&started, to)
+                && let Some(h) = to.hand_after(handle, RECORD_FOR)
+            {
+                let _ = slot.set(h);
+            }
+            started
         });
+        if let Some(h) = handing.into_inner() {
+            h.now();
+        }
+        return code;
     }
     let (hold, console) = (cfg.hold, cfg.console);
     let started = restore_vm(cfg);
     if hold && let Ok((handle, _)) = &started {
         wait_for_release(handle);
     }
-    supervise(started, console, false)
+    let handing = match (&started, to) {
+        (Ok((handle, _)), Some(to)) => to.hand_after(handle, RECORD_FOR),
+        _ => None,
+    };
+    let code = supervise(started, console, false);
+    if let Some(h) = handing {
+        h.now();
+    }
+    code
+}
+
+/// Where a restore's recorded working set goes (`--working-set FD`): its spawner's
+/// descriptor, which it writes the generation's name to, a newline, then the working set
+/// as the daemon takes one (`snapshot::encode_working_set`), and closes; nothing where it
+/// recorded none, its generation having one already. Its spawner keeps it beside that
+/// generation (`vm::accept_working_set`): no VM writes its snapshot (D30).
+struct WorkingSetTo(std::fs::File);
+
+impl WorkingSetTo {
+    #[cfg(unix)]
+    fn new(fd: i32) -> Result<WorkingSetTo, String> {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: fcntl(2) asks whether the descriptor is open.
+        if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+            return Err(format!("--working-set {fd}: not a descriptor of its own"));
+        }
+        // SAFETY: fcntl(2) on an open descriptor the spawner left for this process alone,
+        // closed on exec from here on.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(format!("--working-set {fd}: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: as above, owned from here on.
+        Ok(WorkingSetTo(unsafe { std::fs::File::from_raw_fd(fd) }))
+    }
+
+    /// No restore records its working set where descriptors are not inherited by number.
+    #[cfg(not(unix))]
+    fn new(fd: i32) -> Result<WorkingSetTo, String> {
+        Err(format!(
+            "--working-set {fd}: a descriptor this platform does not pass"
+        ))
+    }
+
+    /// Hands what `handle` records once `after` has passed since its vCPUs started, or the
+    /// VM has ended ([`Handing::now`]), whichever is first, on a thread of its own: a
+    /// restore has no request to end its recording, as a warm VM's has. None where it
+    /// records nothing.
+    fn hand_after(self, handle: &Handle, after: std::time::Duration) -> Option<Handing> {
+        if !handle.recording() {
+            return None;
+        }
+        let handle = handle.clone();
+        let (done, ended) = std::sync::mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new()
+            .name("working-set".into())
+            .spawn(move || {
+                let _ = ended.recv_timeout(after);
+                if let Err(e) = self.hand(&handle) {
+                    shards_vmm::debug!("the working set: {e}");
+                }
+            });
+        match spawned {
+            Ok(thread) => Some(Handing { done, thread }),
+            Err(e) => {
+                shards_vmm::debug!("the working set's timer: {e}");
+                None
+            }
+        }
+    }
+
+    fn hand(mut self, handle: &Handle) -> Result<(), String> {
+        // Recorded past the VM's end: the recorder keeps the guest's memory mapped until it
+        // is read.
+        let Some((name, bytes)) = handle.take_working_set()? else {
+            return Ok(());
+        };
+        let mut framed = Vec::with_capacity(name.len() + 1 + bytes.len());
+        framed.extend_from_slice(name.as_bytes());
+        framed.push(b'\n');
+        framed.extend_from_slice(&bytes);
+        self.0
+            .write_all(&framed)
+            .map_err(|e| format!("handing it to its spawner: {e}"))
+    }
+}
+
+/// A restore's working set being handed ([`WorkingSetTo::hand_after`]).
+struct Handing {
+    done: std::sync::mpsc::Sender<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Handing {
+    /// The VM has ended: hands what it recorded now, if its time had not come, before this
+    /// process exits.
+    fn now(self) {
+        let _ = self.done.send(());
+        let _ = self.thread.join();
+    }
 }
 
 /// `--hold`: announces the prepared VM and releases it when a line (or end of input)
@@ -1458,7 +1600,6 @@ fn serve_workload(
 ///   a run should take.
 /// - KVM: 1 s. Recording costs nothing, and a nested host took 125 ms to run `true` (PM
 ///   M33).
-#[cfg(unix)]
 const RECORD_FOR: std::time::Duration = if shards_vmm::vm::RESTORES_RECORD {
     std::time::Duration::from_secs(1)
 } else {
