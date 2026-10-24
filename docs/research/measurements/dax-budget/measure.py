@@ -63,7 +63,7 @@ Linux, with KVM and a user's systemd manager (XDG_RUNTIME_DIR's bus). Each arm h
 of its own, which pulls alpine once, and an empty DOCKER_CONFIG; all of it is removed, and
 its daemons and the slice stopped, however the run ends.
 """
-import argparse, atexit, os, platform, re, shutil, signal, subprocess, sys, tempfile, threading, time
+import argparse, atexit, glob, os, platform, re, shutil, signal, subprocess, sys, tempfile, threading, time
 
 p = argparse.ArgumentParser()
 p.add_argument("shards")
@@ -479,12 +479,21 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
     budget taken off after, unless `keep`."""
     if not os.path.isdir(homes[arm]):
         run(arm, "pull", "-q", "alpine")
-        # The image's first run boots cold and saves its template, its guest's RAM all
-        # anonymous memory its host cannot take back without swap: a budget a mebibyte
-        # short of it cannot be met, and its read is throttled for as long as it runs
-        # (811 to 1,520 s: DAX budget runs 40076551870, 40082475577). Made here, unbudgeted, so that every
-        # read's run restores the template, as a user's second run does.
-        run(arm, "run", "--rm", "--pull", "never", "alpine", "true")
+        # The image's first run boots cold and saves its template once its microVM has
+        # settled, its guest's RAM all anonymous memory its host cannot take back without
+        # swap: a budget a mebibyte short of it cannot be met, and its read is throttled
+        # for as long as it runs (811 to 1,520 s: DAX budget runs 40076551870,
+        # 40082475577). Made here, unbudgeted, by a run kept until its template is saved
+        # (a run of `true` ends before it settles: run 40090430319's first reads booted
+        # cold), so that every read's run restores the template, as a user's second run
+        # does.
+        run(arm, "run", "-d", "--name", "warm", "--pull", "never", "alpine", "sleep", "600")
+        deadline = time.time() + 300
+        while not glob.glob(os.path.join(homes[arm], "templates", "*", "current")):
+            if time.time() > deadline:
+                raise SystemExit(f"{arm}: no template saved in 300 s")
+            time.sleep(0.5)
+        run(arm, "rm", "-f", "warm", check=False)
     held_to = []
     if a.guest_mib:
         held_to = ["--memory", f"{a.guest_mib}m", "--memory-swap", f"{a.guest_mib}m", "--oom-kill-disable"]
