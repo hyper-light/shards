@@ -53,7 +53,7 @@ OUT, for each read, what its slice held each second (memory.current, memory.stat
 anon and reclaim counters, memory.events, memory.pressure), its VM process's vCPU threads'
 states and CPU times, KVM's counters of its VM where `sudo -n` reads debugfs, and the VM
 process's RssFile beside how much of its template's memory file its host's page cache
-holds (fincore(1)); with
+holds (mincore(2)); with
 --perf, a profile of the whole host 5 to 15 s into each read (`sudo -n perf`).
 
 Into OUT/<case>.txt each second, too, each thread of each VM process in the slice, its
@@ -69,7 +69,7 @@ Linux, with KVM and a user's systemd manager (XDG_RUNTIME_DIR's bus). Each arm h
 of its own, which pulls alpine once, and an empty DOCKER_CONFIG; all of it is removed, and
 its daemons and the slice stopped, however the run ends.
 """
-import argparse, atexit, glob, os, platform, re, shutil, signal, subprocess, sys, tempfile, threading, time
+import argparse, atexit, ctypes, glob, mmap, os, platform, re, shutil, signal, subprocess, sys, tempfile, threading, time
 
 p = argparse.ArgumentParser()
 p.add_argument("shards")
@@ -304,23 +304,54 @@ def kvm(pid):
     return done.stdout.strip()
 
 
+LIBC = ctypes.CDLL(None, use_errno=True)
+LIBC.mmap.restype = ctypes.c_void_p
+LIBC.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+LIBC.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+LIBC.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+
+
+def cached(path):
+    """Of file `path`, the bytes its host's page cache holds, and its size: mincore(2) of
+    a shared mapping of it, which faults none in and, to its owner, says the page cache's
+    (mm/mincore.c `can_do_mincore`). Ubuntu's runners have no fincore(1)."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        size = os.fstat(fd).st_size
+        if size == 0:
+            return 0, 0
+        addr = LIBC.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+        if addr is None or addr == ctypes.c_void_p(-1).value:
+            raise OSError(ctypes.get_errno(), "mmap")
+        try:
+            page = os.sysconf("SC_PAGE_SIZE")
+            vec = ctypes.create_string_buffer((size + page - 1) // page)
+            if LIBC.mincore(ctypes.c_void_p(addr), size, vec) != 0:
+                raise OSError(ctypes.get_errno(), "mincore")
+            return sum(b & 1 for b in vec.raw) * page, size
+        finally:
+            LIBC.munmap(ctypes.c_void_p(addr), size)
+    finally:
+        os.close(fd)
+
+
 def files(pid):
     """Its RssFile, KiB, and of its template's memory file the bytes its host's page cache
-    holds and the file's size (fincore(1), which faults none in): whether its host took
-    its guest's RAM back from its page cache or only unmapped it (PM M318)."""
+    holds and the file's size: whether its host took its guest's RAM back from its page
+    cache or only unmapped it (PM M318). What it cannot read it says, losing none of the
+    look's other lines."""
     try:
         with open(f"/proc/{pid}/status") as s:
             rss = next((l.split()[1] for l in s if l.startswith("RssFile")), "?")
         with open(f"/proc/{pid}/maps") as m:
             memory = next((l.split()[-1] for l in m
                            if "/templates/" in l and l.rstrip().endswith("/memory")), None)
-    except OSError as e:
-        return str(e)
-    if not memory:
-        return f"RssFile {rss}"
-    done = subprocess.run(["fincore", "--bytes", "--noheadings", "--output", "RES,SIZE", memory],
-                          capture_output=True, text=True)
-    return f"RssFile {rss} memory {done.stdout.strip() or done.stderr.strip()[:80]}"
+        if not memory:
+            return f"RssFile {rss}"
+        held, size = cached(memory)
+        return f"RssFile {rss} memory {held} of {size}"
+    except (OSError, ValueError) as e:
+        return f"unread: {e}"
 
 
 def held(f, when, arm, guest=True):
