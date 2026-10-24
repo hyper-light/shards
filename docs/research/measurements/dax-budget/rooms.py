@@ -15,7 +15,9 @@ its budget had left below it (memory.high less memory.current, short of none whe
 past it), its file pages processes mapped (its microVM's template's among them), its
 anonymous memory, its VM processes' resident files and how much of their template's memory
 file its host's page cache held, with how much of it each read saw taken, and the share's
-copy of the guests' files there at its most (each read's row says its own); and how many of the short reads ran away, two looks or more finding its
+copy of the guests' files there at its most, the guest's refaults and the looks that found
+its dd held at its run's memory.high, and the whole host's reclaim (each read's row says its
+own); and how many of the short reads ran away, two looks or more finding its
 mapped files under 5 MiB and its anonymous memory within 16 MiB of its budget: its guest's
 page cache filling the budget, its host taking back its RAM, which its guest read back (PM
 M318).
@@ -67,14 +69,24 @@ def guest(path):
                 if w not in ("-", "0"):
                     waits[w] += 1
         if cg and cg[0] == "current":
-            pairs = dict(zip(cg[2::2], cg[3::2]))
-            if all(k in pairs for k in ("pgscan", "pgsteal", "high")):
-                now = {k: int(pairs[k]) for k in ("pgscan", "pgsteal", "high")}
+            # Its value first, where the sampler read one (40136820527's lost it), then names
+            # and values.
+            rest = cg[2:] if len(cg) > 1 and cg[1].isdigit() else cg[1:]
+            pairs = dict(zip(rest[::2], rest[1::2]))
+            # And the guest kernel's own direct reclaim and its throttle (mm/vmscan.c), where
+            # the sampler says them.
+            for part in parts[2:]:
+                words = part.split()
+                if words[:1] == ["vm"]:
+                    pairs.update(zip(words[1::2], words[2::2]))
+            keys = ("pgscan", "pgsteal", "high", "workingset_refault_file", "pgscan_direct_throttle")
+            now = {k: int(pairs[k]) for k in keys if pairs.get(k, "").isdigit()}
+            if all(k in now for k in ("pgscan", "pgsteal")):
                 first = first or now
                 last = now
     if not first:
         return None
-    return {k: last[k] - first[k] for k in first}, waits
+    return {k: last[k] - first[k] for k in first if k in last}, waits
 
 
 def host(path):
@@ -101,6 +113,10 @@ def host(path):
                 # memory.high's throttle sleeps killable, in D (mm/memcontrol.c).
                 if not name.startswith("vcpu") and state == "D":
                     waits[wchan] += 1
+        elif words[0] == "host" and looks:
+            # The whole host's reclaim and stalls (measure.py `host_reclaim`).
+            kv = dict(zip(words[1::2], words[2::2]))
+            looks[-1]["host"] = {k: int(v) for k, v in kv.items() if v.isdigit()}
         elif words[0] == "copy" and len(words) >= 2 and words[1].isdigit() and looks:
             # The share's copy of what its guest reads, in the host's page cache.
             looks[-1]["copy"] = int(words[1])
@@ -168,6 +184,16 @@ def taken(r):
     return (held[0] - min(held)) / (1 << 20) if held else None
 
 
+def host_took(r):
+    """The MiB the whole host's reclaim took over the read, kswapd's and direct, from its
+    first look to its last; None where its looks did not say."""
+    took = [l["host"] for l in (r["host"][2] if r["host"] else []) if "host" in l]
+    if len(took) < 2:
+        return None
+    pages = sum(took[-1].get(k, 0) - took[0].get(k, 0) for k in ("pgsteal_kswapd", "pgsteal_direct"))
+    return pages * 4096 / (1 << 20)
+
+
 def most_copy(r):
     """The most of the share's copy of the guests' files its host's page cache held at a
     look during the read, MiB; None where its looks did not say."""
@@ -182,6 +208,9 @@ for r in rows:
           f"high {g.get('high')} pgsteal {g.get('pgsteal')} refaults {r['host'][0] if r['host'] else None} "
           + (f"template taken {took:.1f} MiB " if took is not None else "")
           + (f"copy at most {kept:.1f} MiB " if (kept := most_copy(r)) is not None else "")
+          + (f"guest refaults {g['workingset_refault_file']} " if "workingset_refault_file" in g else "")
+          + (f"held {r['guest'][1].get('__mem_cgroup_handle_over_high', 0)} " if r["guest"] else "")
+          + (f"host reclaim {hosted:.1f} MiB " if (hosted := host_took(r)) is not None else "")
           + f"{(r['verdict'] or '').split(';')[0]}")
 print()
 landed = collections.defaultdict(set)
