@@ -12,7 +12,9 @@ guest's dd waited, and where the VM process's threads other than its vCPUs waite
 wchan, in the samples' looks; and in the slice's looks during the short reads, what
 its budget had left below it (memory.high less memory.current, short of none where it was
 past it), its file pages processes mapped (its microVM's template's among them) and its
-anonymous memory.
+anonymous memory; and how many of the short reads ran away, a look finding its mapped files
+under 5 MiB and its anonymous memory within 16 MiB of its budget: its guest's page cache
+filling the budget, its host taking back its RAM, which its guest read back (PM M318).
 
     rooms.py [--after N] RUN...   (each run's job logs fetched, its artifacts kept in
                                    ./art-RUN-COPY; --after N leaves out rounds 1 to N, as
@@ -21,6 +23,8 @@ anonymous memory.
 import collections, json, os, re, subprocess, sys
 
 MIB_READ = 1024
+# A look whose slice's mapped files are under this many bytes has had its RAM taken back.
+MIB_RAN = 5 << 20
 
 
 def sh(*args):
@@ -85,7 +89,7 @@ def host(path):
         if not words:
             continue
         if words[0] == "==" and len(words) >= 6 and words[3].isdigit() and words[5].isdigit():
-            looks.append({"below": int(words[5]) - int(words[3])})
+            looks.append({"below": int(words[5]) - int(words[3]), "high": int(words[5])})
         elif words[0] == "threads":
             for t in words[2:]:
                 name, _, rest = t.partition(":")
@@ -180,6 +184,10 @@ for cpu in sorted({r["cpu"] for r in rows}):
                         threads.update(r["host"][1])
                 print(f"    dd waits        {dd.most_common(4)}")
                 print(f"    VM threads wait {threads.most_common(4)}")
+                ran = [r for r in sel if r["host"] and any(
+                    l.get("file_mapped", MIB_RAN) < MIB_RAN and l.get("anon", 0) > l["high"] - (16 << 20)
+                    for l in r["host"][2])]
+                print(f"    ran away: {len(ran)} of {len(sel)}")
                 looks = [l for r in sel if r["host"] for l in r["host"][2]]
                 print(f"    below its budget KiB a look {summary([l['below'] / 1024 for l in looks], 0)}")
                 for k in ("file_mapped", "anon"):
