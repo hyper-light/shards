@@ -697,10 +697,14 @@ def lone(arm, file, i):
                  "sleep", "100000", extra=POOL_NONE).stdout.strip()
     run(arm, "exec", "short", "dd", "if=/vol/small", "of=/dev/null", "bs=1M", extra=POOL_NONE)
     set_budget(str(short_budget()))
+    # The E2E waits for the daemon's word before it reads, and fails without it: here the
+    # reads are measured either way, and each says whether it was held.
     deadline = time.time() + 120
     while not said_least(arm, run_id):
         if time.time() > deadline:
-            raise SystemExit(f"{arm}: run {run_id} never said held within the least room")
+            print(f"short-{arm}-{file}-{i}: not said held within the least room in 120 s", file=sys.stderr,
+                  flush=True)
+            break
         time.sleep(0.02)
     took = []
     for k in range(a.reads):

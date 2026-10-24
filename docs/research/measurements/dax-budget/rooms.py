@@ -9,9 +9,14 @@ log says were held short throughout; per MiB read, the guest's reclaim in the ru
 (pages scanned and taken, and memory.events' `high`, the times the run went past its
 hold); the slice's refaults of file pages, the template's among them, per read; where the
 guest's dd waited, and where the VM process's threads other than its vCPUs waited, by
-wchan, in the samples' looks.
+wchan, in the samples' looks; and in the slice's looks during the short reads, what
+its budget had left below it (memory.high less memory.current, short of none where it was
+past it), its file pages processes mapped (its microVM's template's among them) and its
+anonymous memory.
 
-    rooms.py RUN...   (each run's job logs fetched, its artifacts kept in ./art-RUN-COPY)
+    rooms.py [--after N] RUN...   (each run's job logs fetched, its artifacts kept in
+                                   ./art-RUN-COPY; --after N leaves out rounds 1 to N, as
+                                   the first rounds of runs before 99f68dc7 booted cold)
 """
 import collections, json, os, re, subprocess, sys
 
@@ -65,10 +70,12 @@ def guest(path):
 
 
 def host(path):
-    """The slice's file refaults over the read, and where the VM processes' threads other
-    than their vCPUs waited in each look, from the slice's samples."""
+    """The slice's file refaults over the read, where the VM processes' threads other than
+    their vCPUs waited in each look, and each look's memory: whether the slice was at its
+    budget, its mapped file pages and its anonymous memory, from the slice's samples."""
     first = last = None
     waits = collections.Counter()
+    looks = []
     try:
         lines = open(path).read().splitlines()
     except OSError:
@@ -77,7 +84,9 @@ def host(path):
         words = line.split()
         if not words:
             continue
-        if words[0] == "threads":
+        if words[0] == "==" and len(words) >= 6 and words[3].isdigit() and words[5].isdigit():
+            looks.append({"below": int(words[5]) - int(words[3])})
+        elif words[0] == "threads":
             for t in words[2:]:
                 name, _, rest = t.partition(":")
                 state, _, wchan = rest.partition(":")
@@ -86,18 +95,25 @@ def host(path):
                     waits[wchan] += 1
         elif "workingset_refault_file" in words:
             pairs = dict(zip(words[::2], words[1::2]))
+            for k in ("anon", "file_mapped"):
+                if looks and pairs.get(k, "").isdigit():
+                    looks[-1][k] = int(pairs[k])
             if pairs.get("workingset_refault_file", "None").isdigit():
                 v = int(pairs["workingset_refault_file"])
                 first = v if first is None else first
                 last = v
     if first is None:
         return None
-    return last - first, waits
+    return last - first, waits, looks
 
 
+args = sys.argv[1:]
+after = 0
+if args[:1] == ["--after"]:
+    after, args = int(args[1]), args[2:]
 rows = []
 failures = collections.defaultdict(list)
-for run in sys.argv[1:]:
+for run in args:
     jobs = json.loads(sh("gh", "run", "view", run, "-R", "hyper-light/shards", "--json", "jobs"))["jobs"]
     for job in jobs:
         copy = job["name"].split()[-1].rstrip(")")
@@ -118,6 +134,8 @@ for run in sys.argv[1:]:
         # (measure.py --as-e2e).
         for m in re.finditer(r"round (\d+) (\S+) (\S+) (\S+): ([\d.]+) s(?: (\S+))?", log):
             rnd, high, arm, file, secs, named = m.groups()
+            if int(rnd) <= after:
+                continue
             name = named or f"{high}-{arm}-{file}-{rnd}"
             rows.append({"run": run, "copy": copy, "cpu": cpu, "high": high, "arm": arm, "file": file,
                          "secs": float(secs), "verdict": verdicts.get(name),
@@ -162,3 +180,7 @@ for cpu in sorted({r["cpu"] for r in rows}):
                         threads.update(r["host"][1])
                 print(f"    dd waits        {dd.most_common(4)}")
                 print(f"    VM threads wait {threads.most_common(4)}")
+                looks = [l for r in sel if r["host"] for l in r["host"][2]]
+                print(f"    below its budget KiB a look {summary([l['below'] / 1024 for l in looks], 0)}")
+                for k in ("file_mapped", "anon"):
+                    print(f"    its {k} MiB a look {summary([l[k] / (1 << 20) for l in looks if k in l], 1)}")
