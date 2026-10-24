@@ -203,9 +203,11 @@ GUEST_LIGHT = (
     "done < /sys/fs/cgroup/memory.stat; g=; while read -r k v _; do case $k in "
     "MemTotal:|MemFree:|Cached:) g=\"$g $k $v\";; esac; done < /proc/meminfo; "
     # Each zone's free pages, min watermark and managed pages, and the kernel's direct
-    # reclaim, throttled or not (mm/vmscan.c `allow_direct_reclaim`, `PGSCAN_DIRECT_THROTTLE`).
-    "z=; while read -r a b c d _; do case $a in Node) z=\"$z $d\";; pages) [ \"$b\" = free ] && "
-    "z=\"$z free $c\";; min|managed) z=\"$z $a $b\";; esac; done < /proc/zoneinfo; "
+    # reclaim, throttled or not (mm/vmscan.c `allow_direct_reclaim`, `PGSCAN_DIRECT_THROTTLE`):
+    # the kernel's own, where MemTotal and MemFree add what the host may still plug (D149).
+    # Its own names, as $c above is the run's memory.current.
+    "z=; while read -r za zb zc zd _; do case $za in Node) z=\"$z $zd\";; pages) [ \"$zb\" = free ] && "
+    "z=\"$z free $zc\";; min|managed) z=\"$z $za $zb\";; esac; done < /proc/zoneinfo; "
     "x=; while read -r k n; do case $k in pgscan_direct_throttle|allocstall_dma32|allocstall_normal|"
     "allocstall_movable|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd) x=\"$x $k $n\";; "
     "esac; done < /proc/vmstat; "

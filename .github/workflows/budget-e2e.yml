@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: its test binary (cargo test --test)
+        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, or lib-windows:PACKAGE for a library's own on Windows
         default: daemon
       name:
         description: its exact name; none, the whole binary
@@ -35,6 +35,7 @@ env:
 jobs:
   e2e:
     name: budget E2E (${{ matrix.copy }})
+    if: ${{ !startsWith(github.event.inputs.test || '', 'lib-windows:') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
@@ -70,10 +71,15 @@ jobs:
           TIMES: ${{ github.event.inputs.times || '1' }}
         run: |
           if [ -n "$NAME" ]; then args=("$NAME" -- --exact --nocapture); else args=(-- --nocapture); fi
+          # bin:PACKAGE:BINARY, a binary's own tests (the VM process's: bin:shards-vm-process:shards-vm).
+          case "$TEST" in
+            bin:*) IFS=: read -r _ package binary <<< "$TEST"; target=(-p "$package" --bin "$binary") ;;
+            *) target=(-p shards --test "$TEST") ;;
+          esac
           failed=0
           for i in $(seq "$TIMES"); do
             echo "== run $i of $TIMES"
-            cargo test --locked -p shards --profile test-release --test "$TEST" "${args[@]}" \
+            cargo test --locked --profile test-release "${target[@]}" "${args[@]}" \
               || failed=$((failed + 1))
           done
           echo "== ${NAME:-tests/$TEST.rs} failed $failed of $TIMES"
@@ -83,3 +89,43 @@ jobs:
         run: |
           sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
           free -m || true
+
+  # A library's own test on Windows (lib-windows:PACKAGE): the VMM's hold's, whose threads
+  # held to their share used past it once in four runs on CI's Windows runner (PM M294).
+  windows:
+    name: Windows (${{ matrix.copy }})
+    if: ${{ startsWith(github.event.inputs.test || '', 'lib-windows:') }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c, d, e, f, g, h]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: Host
+        shell: pwsh
+        run: |
+          [Environment]::ProcessorCount
+          (Get-CimInstance Win32_Processor).Name
+      - name: Test
+        shell: bash
+        env:
+          TEST: ${{ github.event.inputs.test }}
+          NAME: ${{ github.event.inputs.name }}
+          TIMES: ${{ github.event.inputs.times }}
+        run: |
+          package="${TEST#lib-windows:}"
+          cargo test --locked --profile test-release -p "$package" --lib --no-run
+          failed=0
+          for i in $(seq "$TIMES"); do
+            cargo test --locked --profile test-release -p "$package" --lib "$NAME" -- --exact \
+              || failed=$((failed + 1))
+          done
+          echo "== $NAME failed $failed of $TIMES"
+          [ "$failed" -eq 0 ]
