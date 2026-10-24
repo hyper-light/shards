@@ -51,8 +51,15 @@ impl Link {
 static TO_DAEMON: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Sends the daemon a message on `daemon` ([`TO_DAEMON`]).
-fn to_daemon(daemon: &UnixStream, kind: u8, payload: &[u8], fds: &[std::os::fd::BorrowedFd<'_>]) -> io::Result<()> {
-    let _turn = TO_DAEMON.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+fn to_daemon(
+    daemon: &UnixStream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[std::os::fd::BorrowedFd<'_>],
+) -> io::Result<()> {
+    let _turn = TO_DAEMON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     shards_ipc::send(daemon, kind, payload, fds)
 }
 
@@ -1587,42 +1594,63 @@ mod tests {
     /// What the VM's threads send the daemon arrives whole, one message after another,
     /// however they send at once on clones of its connection: a working set's message cut
     /// through by another's broke the stream's framing (PM M319). Many large messages and
-    /// many small ones, each sent from a thread of its own, are each read back as sent.
+    /// many small ones, each sent from a thread of its own, are each read back as sent; a
+    /// stream whose framing broke, which would leave its reader waiting for bytes no message
+    /// brings, is said so within 30 s.
     #[test]
     fn what_the_vms_threads_send_the_daemon_arrives_whole() {
         const LARGE: usize = 400 << 10;
         const LARGES: usize = 40;
         const SMALLS: usize = 4000;
         let (ours, daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
         let other = ours.try_clone().unwrap();
-        std::thread::scope(|s| {
+        let read = std::thread::scope(|s| {
+            // Each sender stops at its first refused send, its reader's end gone.
             s.spawn(|| {
                 for i in 0..LARGES {
-                    let payload = vec![i as u8; LARGE];
-                    to_daemon(&ours, kind::WORKING_SET, &payload, &[]).unwrap();
+                    if to_daemon(&ours, kind::WORKING_SET, &vec![i as u8; LARGE], &[]).is_err() {
+                        return;
+                    }
                 }
             });
             s.spawn(|| {
                 for i in 0..SMALLS {
-                    to_daemon(&other, kind::PROCESS, &(i as u64).to_be_bytes(), &[]).unwrap();
+                    if to_daemon(&other, kind::PROCESS, &(i as u64).to_be_bytes(), &[]).is_err() {
+                        return;
+                    }
                 }
             });
-            let (mut larges, mut smalls) = (0, 0);
-            while larges < LARGES || smalls < SMALLS {
-                let m = shards_ipc::recv(&daemon).unwrap().unwrap();
-                match m.kind {
-                    kind::WORKING_SET => {
-                        assert_eq!(m.payload.len(), LARGE, "large message {larges}");
-                        assert!(m.payload.iter().all(|&b| b == larges as u8), "large message {larges} cut through");
-                        larges += 1;
+            let daemon = daemon;
+            let read = (|| -> Result<(), String> {
+                let (mut larges, mut smalls) = (0, 0);
+                while larges < LARGES || smalls < SMALLS {
+                    let m = shards_ipc::recv(&daemon)
+                        .map_err(|e| format!("after {larges} large and {smalls} small messages: {e}"))?
+                        .ok_or("the stream ended early")?;
+                    match m.kind {
+                        kind::WORKING_SET
+                            if m.payload.len() == LARGE && m.payload.iter().all(|&b| b == larges as u8) =>
+                        {
+                            larges += 1;
+                        }
+                        kind::PROCESS if m.payload == (smalls as u64).to_be_bytes() => smalls += 1,
+                        kind => {
+                            return Err(format!(
+                                "after {larges} large and {smalls} small messages, one of kind {kind} and {} bytes: one cut through another",
+                                m.payload.len()
+                            ));
+                        }
                     }
-                    kind::PROCESS => {
-                        assert_eq!(m.payload, (smalls as u64).to_be_bytes(), "small message {smalls}");
-                        smalls += 1;
-                    }
-                    other => panic!("a message of kind {other}: the stream's framing broken"),
                 }
-            }
+                Ok(())
+            })();
+            // Its end gone, a sender waiting on a stream full of what will not be read is let go.
+            drop(daemon);
+            read
         });
+        assert_eq!(read, Ok(()));
     }
 }
