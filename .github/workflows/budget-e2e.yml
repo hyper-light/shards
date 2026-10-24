@@ -7,8 +7,8 @@ name: budget E2E
 # failure seen once in the whole suite's job comes back, how often and on which CPU, with
 # the kernel's word on OOM kills and seccomp refusals where one fails. No failure in n runs
 # puts its rate below 3/n at 95%. Runs when the workflow changes, or when asked: a test
-# binary, a test's exact name (none runs the whole binary, every test beside the rest as the
-# suite runs them), and the runs each runner makes.
+# binary, a test's exact name (`all` runs the whole binary, every test beside the rest as
+# the suite runs them), and the runs each runner makes.
 on:
   push:
     paths:
@@ -16,10 +16,10 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, or lib-windows:PACKAGE for a library's own on Windows
+        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, or lib-windows:PACKAGE for a library's own on Windows
         default: daemon
       name:
-        description: its exact name; none, the whole binary
+        description: its exact name; all, the whole binary
         default: a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one
       times:
         description: runs on each runner, one after another
@@ -70,10 +70,12 @@ jobs:
           NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.name || 'a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one' }}
           TIMES: ${{ github.event.inputs.times || '1' }}
         run: |
-          if [ -n "$NAME" ]; then args=("$NAME" -- --exact --nocapture); else args=(-- --nocapture); fi
-          # bin:PACKAGE:BINARY, a binary's own tests (the VM process's: bin:shards-vm-process:shards-vm).
+          if [ "$NAME" != all ]; then args=("$NAME" -- --exact --nocapture); else args=(-- --nocapture); fi
+          # bin:PACKAGE:BINARY, a binary's own tests (the VM process's: bin:shards-vm-process:shards-vm);
+          # lib:PACKAGE, a library's own (the VMM's: lib:shards-vmm).
           case "$TEST" in
             bin:*) IFS=: read -r _ package binary <<< "$TEST"; target=(-p "$package" --bin "$binary") ;;
+            lib:*) target=(-p "${TEST#lib:}" --lib) ;;
             *) target=(-p shards --test "$TEST") ;;
           esac
           failed=0
@@ -82,7 +84,7 @@ jobs:
             cargo test --locked --profile test-release "${target[@]}" "${args[@]}" \
               || failed=$((failed + 1))
           done
-          echo "== ${NAME:-tests/$TEST.rs} failed $failed of $TIMES"
+          echo "== $NAME of $TEST failed $failed of $TIMES"
           [ "$failed" -eq 0 ]
       - name: What the kernel logged of seccomp refusals and OOM kills
         if: failure()
