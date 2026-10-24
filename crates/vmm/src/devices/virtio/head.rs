@@ -46,6 +46,8 @@ pub struct Head {
     /// reads each whole, and the rest, its own memory, only where its guest touched them
     /// ([`save`](Self::save)).
     filed: Box<[AtomicBool]>,
+    /// What its last save found and wrote, for the map-back after it ([`Saved`]).
+    saved: std::sync::Mutex<Option<Saved>>,
     /// The snapshot's copy, where the head was restored from one.
     _file: Option<File>,
 }
@@ -84,6 +86,7 @@ impl Head {
             host,
             len,
             filed: unfiled(len / HEAD_BLOCK),
+            saved: std::sync::Mutex::new(None),
             _file: None,
         })
     }
@@ -104,6 +107,7 @@ impl Head {
             host,
             len,
             filed: unfiled(blocks),
+            saved: std::sync::Mutex::new(None),
             _file: None,
         };
         for ((i, kept_at), filed) in index.iter().enumerate().zip(head.filed.iter()) {
@@ -161,7 +165,10 @@ impl Head {
     /// for guest RAM (`GuestMemory::save`); a block mapped from a snapshot's copy is read
     /// whole, its untouched pages being the copy's.
     pub fn save(&self, file: &File) -> std::io::Result<()> {
-        save_head(file, self.host, self.len, self.untouched()?.as_deref())
+        let untouched = self.untouched()?;
+        let index = save_head(file, self.host, self.len, untouched.as_deref())?;
+        *crate::sync::lock(&self.saved) = Some(Saved { untouched, index });
+        Ok(())
     }
 
     /// Which of its blocks are its own memory none of whose pages its guest touched, where
@@ -200,8 +207,70 @@ impl Head {
     /// thread touches the head until this returns, and no hypervisor whose stage 2 holds the
     /// pages it maps maps the head meanwhile.
     pub unsafe fn map_back(&self, kept: &File) -> Result<(), String> {
+        // SAFETY: the caller's contract, passed on.
+        unsafe { self.map_back_counted(kept) }.map(|_| ())
+    }
+
+    /// The byte ranges of the head, from its start, that its map-back after its last save
+    /// changes ([`map_back`](Self::map_back)): every block but those it leaves alone
+    /// ([`left_alone`]), so that a hypervisor whose stage 2 holds the pages it maps need be
+    /// kept from those alone meanwhile. None without a save, where it may change any.
+    pub fn changing(&self) -> Option<Vec<(usize, usize)>> {
+        let saved = crate::sync::lock(&self.saved);
+        let saved = saved
+            .as_ref()
+            .filter(|s| s.index.len() == self.len / HEAD_BLOCK)?;
+        let untouched_at = |i: usize| {
+            saved
+                .untouched
+                .as_ref()
+                .and_then(|u| u.get(i))
+                .copied()
+                .unwrap_or(false)
+        };
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for ((i, kept_at), filed) in saved.index.iter().enumerate().zip(self.filed.iter()) {
+            if left_alone(*kept_at, filed.load(Ordering::Acquire), untouched_at(i)) {
+                continue;
+            }
+            let at = i * HEAD_BLOCK;
+            match ranges.last_mut() {
+                Some((start, len)) if *start + *len == at => *len += HEAD_BLOCK,
+                _ => ranges.push((at, HEAD_BLOCK)),
+            }
+        }
+        Some(ranges)
+    }
+
+    /// [`map_back`](Self::map_back), with what it did: its blocks mapped from the copy,
+    /// those made fresh memory, and the runs of zero blocks given back. A zero block of its
+    /// own memory its save found untouched is left as it is, holding no memory to give
+    /// back: giving back each run of those, MAP_FIXED over runs as long as a window's head,
+    /// took a template's map-back of nine DAX windows' heads 355 to 482 µs on the Mac,
+    /// where 167 to 246 without them (PM M311).
+    ///
+    /// # Safety
+    /// As [`map_back`](Self::map_back)'s.
+    unsafe fn map_back_counted(&self, kept: &File) -> Result<MappedBack, String> {
+        let mut did = MappedBack::default();
         let blocks = self.len / HEAD_BLOCK;
-        let index = read_head_index(kept, blocks)?;
+        // The save's own index of the copy it wrote, else the copy's, read from it.
+        let (untouched, index) = match crate::sync::lock(&self.saved).take() {
+            Some(Saved { untouched, index }) if index.len() == blocks => (untouched, index),
+            _ => {
+                let t0 = crate::log::uptime_us();
+                let index = read_head_index(kept, blocks)?;
+                did.index_us = crate::log::uptime_us().saturating_sub(t0);
+                (None, index)
+            }
+        };
+        let untouched_at = |i: usize| {
+            untouched
+                .as_ref()
+                .and_then(|u| u.get(i))
+                .copied()
+                .unwrap_or(false)
+        };
         // On the host's base pages, as a restore's head is ([`restore`](Self::restore)).
         platform::small_pages(self.host, self.len);
         // Whether to go on: where no file maps over part of a reservation (Windows), the
@@ -220,14 +289,26 @@ impl Head {
         };
         let mut zeros = None;
         for ((i, kept_at), filed) in index.iter().enumerate().zip(self.filed.iter()) {
-            if kept_at.is_none() && !filed.load(Ordering::Acquire) {
+            let filed_now = filed.load(Ordering::Acquire);
+            // Nothing of it to give back, and nothing for a run to start at.
+            if left_alone(*kept_at, filed_now, untouched_at(i)) {
+                if let Some(from) = zeros.take() {
+                    did.zero_runs += 1;
+                    if !on(discard(from, i))? {
+                        return Ok(did);
+                    }
+                }
+                continue;
+            }
+            if kept_at.is_none() && !filed_now {
                 zeros.get_or_insert(i);
                 continue;
             }
-            if let Some(from) = zeros.take()
-                && !on(discard(from, i))?
-            {
-                return Ok(());
+            if let Some(from) = zeros.take() {
+                did.zero_runs += 1;
+                if !on(discard(from, i))? {
+                    return Ok(did);
+                }
             }
             // SAFETY: a whole block of the head, which nothing touches meanwhile (the
             // caller's contract), and which held what the copy keeps of it.
@@ -237,25 +318,31 @@ impl Head {
                 // discard would bring the copy's bytes back (madvise(2), MADV_DONTNEED of
                 // a private file mapping).
                 None => {
+                    did.fresh += 1;
                     // SAFETY: as above.
                     unsafe { fresh(block, HEAD_BLOCK) }.map(|()| filed.store(false, Ordering::Release))
                 }
                 Some(n) => {
+                    did.from_copy += 1;
                     let offset = kept_block_at(*n, blocks)?;
                     // Counted the copy's before it may be: a save reads such a block whole.
                     filed.store(true, Ordering::Release);
+                    let t = crate::log::uptime_us();
                     // SAFETY: as above.
-                    unsafe { platform::map_file_private(kept, offset, HEAD_BLOCK, block) }
+                    let mapped = unsafe { platform::map_file_private(kept, offset, HEAD_BLOCK, block) };
+                    did.copy_us += crate::log::uptime_us().saturating_sub(t);
+                    mapped
                 }
             };
             if !on(remapped)? {
-                return Ok(());
+                return Ok(did);
             }
         }
         if let Some(from) = zeros {
+            did.zero_runs += 1;
             on(discard(from, blocks))?;
         }
-        Ok(())
+        Ok(did)
     }
 }
 
@@ -359,7 +446,7 @@ impl WindowHeads {
     ///
     /// # Safety
     /// As [`Head::map_back`]'s: the machine is paused and the heads saved into `kept` since.
-    pub unsafe fn remap(&self, kept: &File) -> Result<(), String> {
+    pub unsafe fn remap(&self, kept: &File) -> Result<String, String> {
         let mapper = self.mapper.get();
         let give_back = |taken: &[(u64, *mut u8, usize)]| -> Result<(), String> {
             let Some(mapper) = mapper else {
@@ -376,19 +463,97 @@ impl WindowHeads {
             Ok(())
         };
         let all: Vec<(u64, *mut u8, usize)> = self.mappings().collect();
+        // What the map-back changes alone, taken from the guest meanwhile: a template's
+        // nine heads change a block each (PM M311).
+        let taken = match self.head.changing() {
+            Some(ranges) => parts_of(&all, self.head.host().as_ptr(), &ranges),
+            None => all,
+        };
+        let t0 = crate::log::uptime_us();
         if let Some(mapper) = mapper {
-            for (n, &(gpa, _, len)) in all.iter().enumerate() {
+            for (n, &(gpa, _, len)) in taken.iter().enumerate() {
                 if let Err(e) = mapper.unmap(gpa, len) {
-                    give_back(all.get(..n).unwrap_or_default())?;
+                    give_back(taken.get(..n).unwrap_or_default())?;
                     return Err(e);
                 }
             }
         }
+        let t1 = crate::log::uptime_us();
         // SAFETY: the caller's contract; the guest has none of them meanwhile.
-        let remapped = unsafe { self.head.map_back(kept) };
-        give_back(&all)?;
-        remapped
+        let remapped = unsafe { self.head.map_back_counted(kept) };
+        let t2 = crate::log::uptime_us();
+        give_back(&taken)?;
+        let t3 = crate::log::uptime_us();
+        remapped.map(|did| {
+            format!(
+                "{} parts of its heads taken from its guest in {} us, mapped back in {} us ({} blocks from the \
+                 copy, {} fresh, {} runs of zeros given back; the copy's index read in {} us, its blocks mapped \
+                 in {} us), given back in {} us",
+                taken.len(),
+                t1.saturating_sub(t0),
+                t2.saturating_sub(t1),
+                did.from_copy,
+                did.fresh,
+                did.zero_runs,
+                did.index_us,
+                did.copy_us,
+                t3.saturating_sub(t2)
+            )
+        })
     }
+}
+
+/// Whether a head's map-back leaves a block as it is: its own memory (not `filed`) its last
+/// save found untouched, of which the copy keeps nothing ([`Head::map_back`]); it holds no
+/// memory to give back. The one rule both the map-back and what it says it changes
+/// ([`Head::changing`]) follow.
+fn left_alone(kept_at: Option<u32>, filed: bool, untouched: bool) -> bool {
+    kept_at.is_none() && !filed && untouched
+}
+
+/// The parts of the guest's `mappings` (its address, the host's, and their length) that
+/// hold the head's byte `ranges` from `base`, the head's start.
+pub(crate) fn parts_of(
+    mappings: &[(u64, *mut u8, usize)],
+    base: *mut u8,
+    ranges: &[(usize, usize)],
+) -> Vec<(u64, *mut u8, usize)> {
+    let mut parts = Vec::new();
+    for &(at, len) in ranges {
+        let (start, end) = (base as usize + at, base as usize + at + len);
+        for &(gpa, host, size) in mappings {
+            let (from, to) = (start.max(host as usize), end.min(host as usize + size));
+            if from < to {
+                parts.push((
+                    gpa + (from - host as usize) as u64,
+                    base.wrapping_add(from - base as usize),
+                    to - from,
+                ));
+            }
+        }
+    }
+    parts
+}
+
+/// What a head's save found and wrote ([`Head::save`]), for the map-back after it, the
+/// machine paused between them: the blocks it found untouched, which asking the OS again
+/// would cost a look at each page of the head; and the copy's index, which reading back
+/// from the copy just written took 2.8 ms at the median on the Mac, and up to 22 ms, of a
+/// template's map-back of nine DAX windows' heads (PM M311).
+struct Saved {
+    untouched: Option<Vec<bool>>,
+    index: Vec<Option<u32>>,
+}
+
+/// What a head's map-back did ([`Head::map_back`]), for its log.
+#[derive(Debug, Default)]
+struct MappedBack {
+    from_copy: usize,
+    fresh: usize,
+    zero_runs: usize,
+    /// Its time reading the copy's index, and mapping the copy's blocks.
+    index_us: u128,
+    copy_us: u128,
 }
 
 /// A head's blocks as a snapshot keeps them: what the guest's kernel fills each of a
@@ -423,13 +588,14 @@ pub(crate) fn kept_block_at(n: u32, blocks: usize) -> Result<u64, String> {
 /// of its blocks, each a number among those kept after it, or `u32::MAX` for all zeros;
 /// then each kept block once, in the order first met, its pages of zeros left holes, which
 /// read as zeros: a block its guest wrote one page structure of keeps a page of the file,
-/// not 2 MiB (PM M306). Blocks `untouched` marks hold zeros, and are not read.
+/// not 2 MiB (PM M306). Blocks `untouched` marks hold zeros, and are not read. Returns the
+/// index, as [`read_head_index`] reads it back.
 pub(crate) fn save_head(
     file: &File,
     host: NonNull<u8>,
     len: usize,
     untouched: Option<&[bool]>,
-) -> std::io::Result<()> {
+) -> std::io::Result<Vec<Option<u32>>> {
     let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
     if !len.is_multiple_of(HEAD_BLOCK) {
         return Err(invalid());
@@ -514,7 +680,7 @@ pub(crate) fn save_head(
             break;
         }
     }
-    Ok(())
+    Ok(index.into_iter().map(|n| (n != u32::MAX).then_some(n)).collect())
 }
 
 /// The index of a head [`save_head`] kept in `file`, of `blocks` blocks: each block's
@@ -729,8 +895,12 @@ mod tests {
             let each = HEAD_BLOCK;
             let heads = WindowHeads::new(Head::new(2 * each).unwrap(), vec![a, b], each).unwrap();
             let host = heads.mappings().next().unwrap().1;
+            // Both written, so that the map-back changes both.
             // SAFETY: within the head, which `heads` holds.
-            unsafe { host.add(each).write_bytes(0x40, each) };
+            unsafe {
+                host.write_bytes(0x20, 64);
+                host.add(each).write_bytes(0x40, each);
+            }
             let kept = file(&dir, &format!("heads-{n}"));
             heads.save(&kept).unwrap();
             let calls = Calls::default();
@@ -743,7 +913,7 @@ mod tests {
             let remapped = unsafe { heads.remap(&kept) };
             match (refuses, maps) {
                 (None, true) => {
-                    assert_eq!(remapped, Ok(()));
+                    assert!(remapped.is_ok(), "{remapped:?}");
                     assert_eq!(
                         *lock(&calls),
                         [("unmap", a), ("unmap", b), ("map", a), ("map", b)]
@@ -762,6 +932,52 @@ mod tests {
             // SAFETY: as above.
             assert_eq!(unsafe { *host.add(2 * each - 1) }, 0x40);
         }
+    }
+
+    /// Placed heads' blocks the map-back leaves alone, their guest's untouched, stay with
+    /// their guest: only the blocks it changes are taken from it and given back, a block
+    /// of one window's head here (PM M311).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn placed_window_heads_give_up_only_the_blocks_their_map_back_changes() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::sync::lock;
+
+        type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
+        struct Guest(Calls);
+        impl Mapper for Guest {
+            unsafe fn map(&self, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.0).push(("map", gpa, len));
+                Ok(())
+            }
+            fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.0).push(("unmap", gpa, len));
+                Ok(())
+            }
+        }
+        let dir = shards_testdir::TempDir::new("window-part").unwrap();
+        let each = 2 * HEAD_BLOCK;
+        let at = vec![1u64 << 32, 1u64 << 33, 1u64 << 34];
+        let heads = WindowHeads::new(Head::new(3 * each).unwrap(), at.clone(), each).unwrap();
+        let host = heads.mappings().next().unwrap().1;
+        // The second block of the second window's head, as a guest's kernel writes one.
+        // SAFETY: within the head, which `heads` holds.
+        unsafe { host.add(each + HEAD_BLOCK).write_bytes(0x40, 64) };
+        let kept = file(&dir, "heads");
+        heads.save(&kept).unwrap();
+        let calls = Calls::default();
+        heads.placed(Box::new(Guest(calls.clone())));
+        // SAFETY: nothing else touches the heads, which no hypervisor maps.
+        let remapped = unsafe { heads.remap(&kept) };
+        assert!(remapped.is_ok(), "{remapped:?}");
+        let part = at[1] + HEAD_BLOCK as u64;
+        assert_eq!(
+            *lock(&calls),
+            [("unmap", part, HEAD_BLOCK), ("map", part, HEAD_BLOCK)]
+        );
+        // SAFETY: as above.
+        assert_eq!(unsafe { *host.add(each + HEAD_BLOCK) }, 0x40);
     }
 
     /// A head mapped back gives back the pages of its blocks of zeros, a run of them in one

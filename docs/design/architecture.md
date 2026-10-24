@@ -6058,7 +6058,14 @@ stores.
   none's (-1.9 to +2.1 MiB). Its held record is on base pages too: there the first range's
   words took a huge page, all 512 pages of a 64 GiB window's record (e1df33d4). A
   template's map-back gives a head's run of zero blocks back in one call (5.4 ms for nine
-  83 GiB windows on the Mac, where 6.5; 187 µs on Fedora). Held by
+  83 GiB windows on the Mac, where 6.5; 187 µs on Fedora), and its save keeps the index it
+  wrote and the blocks it found untouched for it: the map-back reads nothing back from the
+  copy, whose index read back from APFS took 2.8 ms at the median and up to 22, leaves
+  untouched blocks as they are, and takes from its guest, and gives back, only the blocks
+  it changes (`Head::changing`), one a head where it took nine heads whole: 0.21 ms at the
+  median and 0.35 at the most on the Mac, where 2.3 and 25 (n 30 each, PM M311). Held by
+  `placed_window_heads_give_up_only_the_blocks_their_map_back_changes` (mutation-checked)
+  and
   `a_volumes_large_files_go_through_a_dax_window_by_default` (a 4 MiB file mapped by
   default, through FUSE with 0), vmm's `share_windows_go_one_after_another` (fitted, none,
   a kept length refused), `a_kept_blocks_pages_of_zeros_are_holes_in_its_copy` (synced as

@@ -12742,3 +12742,53 @@ revision before comparing a changed API/implementation.
   runner: each pass's own snapshots, a hundred faults apart, and its runner move each
   VMM's median by up to 2.4 ms. The counters' reading moved no verdict either way
   consistently.
+
+### M311. Where a template's map-back of its DAX windows' heads goes on the Mac, and what is left of it (D189)
+
+- **Question.** M307 left a template's map-back of nine windows' heads at 5.4 ms on the
+  Mac, where Fedora's took 0.19: where does it go, phase by phase, and what of it can go?
+- **Method.** `docs/research/measurements/dax-window/mapback.sh`: fresh homes, each given a
+  seed's image store and guest kernel by clone, each saving a template of alpine with
+  eight volumes (nine windows of 83,538 MiB with the join share's, the guest's 40-bit
+  addresses), `SHARDS_LOG=info`, the daemon log's line for the map-back read back: its
+  whole, its heads taken from the guest at stage 2 (`hv_vm_unmap`), mapped back from the
+  copy, and given back (`hv_vm_map`), with the copy's blocks mapped (MAP_FIXED of the
+  copy, private), the blocks made fresh, the runs of zero blocks given back, and, split
+  out, the copy's index read and its blocks' mapping. `mapback-ab.sh`: two builds
+  interleaved round by round, each round's first in turn, n 30 a build. Builds of gpu
+  e21790a5's tree: A, its map-back with the phases logged; B, its save's index and
+  untouched blocks kept for the map-back after it, which reads nothing back from the copy
+  and gives back no block the save found untouched; C, B with only the blocks the
+  map-back changes taken from the guest and given back. The Mac (Apple M5 Max, 18 CPUs,
+  128 GiB, macOS 26.4.1), load 8.6 to 14.4 from other projects' builds. 2026-10-23.
+- **Results.**
+  - A alone, three passes (n 20 each): the whole 576, 3,132 and 5,495 µs at the median,
+    4,714, 22,447 and 21,913 at the most. Taken 172 µs (p90 189) and given back 66 (p90
+    74) in every pass; the rest, mapped back, 328 µs at the median in the first pass and
+    3,015 to 4,563 in the others, 21,826 at the most. Split: the copy's index, read back
+    from the copy the save had just written, 2,782 µs at the median, p90 21,331, at most
+    22,125; its nine blocks mapped 100 µs (p90 164). The zero blocks' runs, ten calls
+    MAP_FIXED over runs as long as a window's head, gone with B's untouched blocks: 0
+    runs; in the rounds where neither build's index read stalled (A against B's untouched
+    blocks alone, the index still read, rounds 1 to 4), mapped back in 355 to 482 µs
+    against 167 to 246.
+  - A against B (n 30 each): the whole, A 2,319 µs at the median, p90 21,532, p99 and
+    most 25,254; B 418, p90 531, p99 and most 613. Mapped back, A 1,841 (p90 20,829), B
+    129 (p90 196), its index read 0 µs. Taken, A 222 and B 221; given back, A 73 and B 64.
+  - B against C (n 30 each): the whole, B 387 µs at the median, p90 448, at most 449; C
+    212, p90 299, at most 350. Taken, B 204 (p90 243) and C 66 (p90 126), nine parts of a
+    block each where B took nine heads whole; given back, B 63 and C 12 (p90 13). Mapped
+    back, B 107 and C 124, its nine blocks of the copy mapped in 102 and 121.
+- **Reading.** Most of the Mac's map-back, and all of its tail, was the read of the copy's
+  index the save had just written, at times tens of milliseconds while APFS had the file's
+  pages in hand: the save knows the index it wrote, and the map-back after it reads
+  nothing. Of what is left, stage 2 was the most: taking every head whole from the guest
+  and giving it back, where the map-back changes one block of each, the rest of a head its
+  guest's untouched memory. Taking and giving back those blocks alone, the map-back is
+  0.21 ms at the median and 0.35 at the most, about Fedora's 0.19 (M307), most of it now
+  the nine blocks' mappings of the copy (12 to 14 µs each), which KVM's host needs too.
+- **Consequence.** D189: a head's save keeps its index and the blocks it found untouched
+  for the map-back after it, which reads nothing back from the copy and leaves untouched
+  blocks as they are; a map-back takes from the guest, and gives back, only the blocks it
+  changes (`Head::changing`), on HVF the only backend whose stage 2 it touches. Measured
+  on the Mac alone: a Linux host's map-back reads no index now either, unmeasured since.

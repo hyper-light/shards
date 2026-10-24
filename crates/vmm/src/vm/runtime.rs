@@ -1155,8 +1155,8 @@ impl Coordinator {
         // SAFETY: every vCPU is parked and the devices quiet since the heads were saved
         // into `kept`.
         match unsafe { heads.remap(kept) } {
-            Ok(()) => info!(
-                "its DAX windows' heads mapped back from its snapshot in {} us",
+            Ok(parts) => info!(
+                "its DAX windows' heads mapped back from its snapshot in {} us: {parts}",
                 crate::log::uptime_us().saturating_sub(t0)
             ),
             Err(e) if heads.lost() => return Err(format!("its DAX windows' heads: {e}")),
