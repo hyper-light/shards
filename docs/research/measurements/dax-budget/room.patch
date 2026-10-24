@@ -1,5 +1,5 @@
 diff --git a/crates/shards/src/daemon/budget.rs b/crates/shards/src/daemon/budget.rs
-index ada2444a..2d6d85a3 100644
+index ada2444a..a4bd74c3 100644
 --- a/crates/shards/src/daemon/budget.rs
 +++ b/crates/shards/src/daemon/budget.rs
 @@ -22,15 +22,22 @@ pub(super) const ROOT: &str = "/sys/fs/cgroup";
@@ -78,10 +78,12 @@ index ada2444a..2d6d85a3 100644
      let mut pids = Vec::new();
      let mut dirs = vec![dir.to_path_buf()];
      while let Some(d) = dirs.pop() {
-@@ -170,6 +191,15 @@ pub(super) fn files_mapped_under(dir: &Path) -> u64 {
+@@ -170,8 +191,33 @@ pub(super) fn files_mapped_under(dir: &Path) -> u64 {
              );
          }
      }
+-    let kib = |text: &str, key: &str| {
+-        text.lines().find_map(|l| {
 +    pids.into_iter()
 +        .filter_map(|pid| Some((pid, mapped_by(pid)?)))
 +        .collect()
@@ -91,13 +93,32 @@ index ada2444a..2d6d85a3 100644
 +/// counted in their parts (its /proc/PID/smaps_rollup's `Pss_File`), or its `RssFile` where
 +/// its entry says none.
 +fn mapped_by(pid: u32) -> Option<u64> {
-     let kib = |text: &str, key: &str| {
-         text.lines().find_map(|l| {
++    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
++    rollup
++        .as_deref()
++        .and_then(|r| kib(r, "Pss_File:"))
++        .or_else(|| resident_file(pid))
++}
++
++/// The bytes of files process `pid` holds resident, each page it maps whole however many
++/// others map it too (its /proc/PID/status's `RssFile`).
++fn resident_file(pid: u32) -> Option<u64> {
++    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
++    kib(&status, "RssFile:")
++}
++
++/// The bytes a /proc file's line `key` says in kB.
++fn kib(text: &str, key: &str) -> Option<u64> {
++    text.lines()
++        .find_map(|l| {
              l.strip_prefix(key)?
-@@ -180,16 +210,15 @@ pub(super) fn files_mapped_under(dir: &Path) -> u64 {
+                 .trim()
+                 .strip_suffix("kB")?
+@@ -179,17 +225,7 @@ pub(super) fn files_mapped_under(dir: &Path) -> u64 {
+                 .parse::<u64>()
                  .ok()
          })
-     };
+-    };
 -    pids.into_iter()
 -        .filter_map(|pid| {
 -            let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
@@ -105,39 +126,35 @@ index ada2444a..2d6d85a3 100644
 -                let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
 -                kib(&status, "RssFile:")
 -            })
-+    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
-+    rollup
-+        .as_deref()
-+        .and_then(|r| kib(r, "Pss_File:"))
-+        .or_else(|| {
-+            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-+            kib(&status, "RssFile:")
-         })
+-        })
          .map(|k| k.saturating_mul(1024))
 -        .fold(0u64, u64::saturating_add)
  }
  
  /// Whether the cgroup `dir`, or one above it below `root`, holds its processes to a budget:
-@@ -232,6 +261,33 @@ pub(super) struct Budgets {
+@@ -232,6 +268,50 @@ pub(super) struct Budgets {
      watched: Mutex<Watched>,
  }
  
 +impl Budgets {
-+    /// Of what the processes `mapped` map, by process, what the microVMs followed among them
-+    /// map no more of the most each mapped since it was followed: their guests' RAM their
-+    /// host took back, which they read again as they run ([`Holding::room_with`]); each
-+    /// one's most raised to what it maps now.
++    /// Of the processes `mapped` names, what the microVMs followed among them hold resident
++    /// no more of the most of files each held since it was followed ([`resident_file`]):
++    /// their guests' RAM their host took back, which they read again as they run
++    /// ([`Holding::room_with`]); each one's most raised to what it holds now.
 +    pub(super) fn evicted(&self, mapped: &Mapped) -> u64 {
-+        let mut held = lock(&self.held);
-+        mapped
-+            .iter()
-+            .fold(0u64, |sum, &(pid, now)| match held.get_mut(&pid) {
-+                Some(h) => {
-+                    h.most = h.most.max(now);
-+                    sum.saturating_add(h.most.saturating_sub(now))
-+                }
-+                None => sum,
-+            })
++        let followed: Vec<u32> = {
++            let held = lock(&self.held);
++            mapped
++                .iter()
++                .map(|&(pid, _)| pid)
++                .filter(|pid| held.contains_key(pid))
++                .collect()
++        };
++        let resident: Vec<(u32, u64)> = followed
++            .into_iter()
++            .filter_map(|pid| Some((pid, resident_file(pid)?)))
++            .collect();
++        evicted_of(&mut lock(&self.held), &resident)
 +    }
 +
 +    /// VM process `pid` gave back `freed` bytes of what it held: room its budget has again,
@@ -149,21 +166,37 @@ index ada2444a..2d6d85a3 100644
 +    }
 +}
 +
++/// What the microVMs `held` hold no more of the most each held resident, of what each holds
++/// now (`resident`, by VM process), each one's most raised to it ([`Budgets::evicted`]).
++fn evicted_of(held: &mut HashMap<u32, Held>, resident: &[(u32, u64)]) -> u64 {
++    resident
++        .iter()
++        .fold(0u64, |sum, &(pid, now)| match held.get_mut(&pid) {
++            Some(h) => {
++                h.most = h.most.max(now);
++                sum.saturating_add(h.most.saturating_sub(now))
++            }
++            None => sum,
++        })
++}
++
  /// The cgroups watched: by its watches' numbers, which cgroup each is of and what it
  /// watches; those whose budgets are watched, and those of them whose events are, each
  /// once it has a budget, as the events of one without are no microVM's.
-@@ -255,6 +311,10 @@ struct Held {
+@@ -255,6 +335,12 @@ struct Held {
      /// A word to it is under way; and another is due once that has ended.
      telling: bool,
      again: bool,
-+    /// The most of files its VM process has mapped since it was followed, its guest's RAM
-+    /// of its template among them, less what it has given back since: what of it its host
-+    /// took back under a budget is no room ([`Holding::room_with`]).
++    /// The most of files its VM process has held resident since it was followed, its guest's
++    /// RAM of its template among them, less what it has given back since: what of it its
++    /// host took back under a budget is no room ([`Holding::room_with`]). Counted whole,
++    /// as another VM process restored from the same template, which shares its pages,
++    /// leaves it as it is.
 +    most: u64,
  }
  
  /// What a watch of a cgroup's watches: a file of its budget, or its events, which say it
-@@ -401,6 +461,7 @@ impl<D: Disk> Daemon<D> {
+@@ -401,6 +487,7 @@ impl<D: Disk> Daemon<D> {
                          short: false,
                          telling: false,
                          again: false,
@@ -171,7 +204,7 @@ index ada2444a..2d6d85a3 100644
                      });
                      tell.insert(pid);
                  }
-@@ -599,22 +660,24 @@ impl<D: Disk> Daemon<D> {
+@@ -599,22 +686,24 @@ impl<D: Disk> Daemon<D> {
          let (had, was_short) = lock(&self.budgets.held)
              .get(&pid)
              .map_or((None, false), |h| (h.told, h.short));
@@ -199,7 +232,7 @@ index ada2444a..2d6d85a3 100644
              }
          }
          if room.is_none() && had.is_none() {
-@@ -657,13 +720,23 @@ impl<D: Disk> Daemon<D> {
+@@ -657,13 +746,23 @@ impl<D: Disk> Daemon<D> {
              room.as_ref()
                  .and_then(|(_, level)| held_at(level).map(|h| (level, h)))
                  .map_or(String::new(), |(level, h)| {
@@ -227,7 +260,7 @@ index ada2444a..2d6d85a3 100644
                      )
                  })
          };
-@@ -754,7 +827,7 @@ mod tests {
+@@ -754,7 +853,7 @@ mod tests {
          // 384 MiB less what it holds but its 32 MiB of page cache no process maps, and less
          // the inactive pages its kernel keeps beside the 117 MiB processes map: short.
          assert_eq!(
@@ -236,7 +269,7 @@ index ada2444a..2d6d85a3 100644
              Some(((384 - (383 - 32) - 117) as i64 * MIB as i64, slice.clone()))
          );
          // Its shared memory is not page cache its kernel may drop.
-@@ -765,7 +838,10 @@ mod tests {
+@@ -765,7 +864,10 @@ mod tests {
              383 * MIB,
              &stat(149 * MIB, 117 * MIB, 32 * MIB),
          );
@@ -248,7 +281,7 @@ index ada2444a..2d6d85a3 100644
          // A hard limit under the high counts, and short is below none.
          cgroup(
              &slice,
-@@ -774,12 +850,21 @@ mod tests {
+@@ -774,12 +876,21 @@ mod tests {
              383 * MIB,
              &stat(0, 0, 0),
          );
@@ -273,7 +306,7 @@ index ada2444a..2d6d85a3 100644
          // Statistics read behind the counter, still counting a gigabyte of page cache the
          // kernel has just taken back: what the processes hold is counted from them, never
          // all the budget for room.
-@@ -787,16 +872,16 @@ mod tests {
+@@ -787,16 +898,16 @@ mod tests {
          cgroup(&scope, None, None, 383 * MIB, stale);
          cgroup(&slice, Some(384 * MIB), None, 383 * MIB, stale);
          assert_eq!(
@@ -293,14 +326,14 @@ index ada2444a..2d6d85a3 100644
      }
  
      /// The files a budget's processes map count as held, wherever their pages are charged:
-@@ -836,7 +921,95 @@ mod tests {
+@@ -836,7 +947,107 @@ mod tests {
              let scope = tmp.join("shards-1-0.scope");
              std::fs::create_dir_all(&scope).unwrap();
              std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
 -            assert!(files_mapped_under(&tmp) > 0);
 +            assert!(mapped_under(&tmp).iter().any(|&(_, b)| b > 0));
-         }
-     }
++        }
++    }
 +
 +    /// A guest's RAM its host took back under a budget is no room: a lone microVM's 71 MiB
 +    /// of its template's pages, taken back where its budget was 23 MiB short, left its
@@ -331,10 +364,11 @@ index ada2444a..2d6d85a3 100644
 +        assert_eq!(before.room_with(123 * MIB, 0), short);
 +    }
 +
-+    /// The most a microVM followed has mapped is kept as what it maps falls, raised as it
-+    /// rises, and lowered by what it gives back; a process not followed counts nothing.
++    /// The most a microVM followed has held resident is kept as what it holds falls, raised
++    /// as it rises, and lowered by what it gives back; a process not followed counts
++    /// nothing.
 +    #[test]
-+    fn a_microvms_most_mapped_is_kept_until_it_gives_back() {
++    fn a_microvms_most_resident_is_kept_until_it_gives_back() {
 +        let budgets = Budgets::default();
 +        lock(&budgets.held).insert(
 +            7,
@@ -347,15 +381,26 @@ index ada2444a..2d6d85a3 100644
 +                most: 0,
 +            },
 +        );
-+        assert_eq!(budgets.evicted(&[(7, 100 * MIB), (8, 50 * MIB)]), 0);
-+        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 40 * MIB);
-+        assert_eq!(budgets.evicted(&[(7, 120 * MIB)]), 0);
-+        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 60 * MIB);
++        let evicted = |resident: &[(u32, u64)]| evicted_of(&mut lock(&budgets.held), resident);
++        assert_eq!(evicted(&[(7, 100 * MIB), (8, 50 * MIB)]), 0);
++        assert_eq!(evicted(&[(7, 60 * MIB)]), 40 * MIB);
++        assert_eq!(evicted(&[(7, 120 * MIB)]), 0);
++        assert_eq!(evicted(&[(7, 60 * MIB)]), 60 * MIB);
 +        budgets.gave_back(7, 30 * MIB);
-+        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 30 * MIB);
++        assert_eq!(evicted(&[(7, 60 * MIB)]), 30 * MIB);
 +        budgets.gave_back(7, u64::MAX);
-+        assert_eq!(budgets.evicted(&[(7, 60 * MIB)]), 0);
++        assert_eq!(evicted(&[(7, 60 * MIB)]), 0);
 +        budgets.gave_back(9, MIB);
++        // Its own process, on a host whose processes have /proc entries: what it holds
++        // resident read whole, none of it taken back between two looks at once.
++        if std::path::Path::new("/proc/self/status").exists() {
++            let me = std::process::id();
++            let followed = lock(&budgets.held).remove(&7).unwrap();
++            lock(&budgets.held).insert(me, followed);
++            assert!(resident_file(me).is_some_and(|b| b > 0));
++            budgets.evicted(&[(me, 0)]);
++            assert!(budgets.evicted(&[(me, 0)]) < 4 * MIB);
++        }
 +    }
 +
 +    /// A budget's room hears of each process under it what it maps, by process: this
@@ -364,7 +409,7 @@ index ada2444a..2d6d85a3 100644
 +    fn a_budgets_room_hears_what_each_process_maps() {
 +        if !std::path::Path::new("/proc/self/smaps_rollup").exists() {
 +            return;
-+        }
+         }
 +        let tmp = shards_testdir::TempDir::new("budget-evicted").unwrap();
 +        let root = tmp.join("cg");
 +        let scope = root.join("a.slice");
@@ -388,7 +433,7 @@ index ada2444a..2d6d85a3 100644
 +            held.room_with(files, 10 * MIB),
 +            held.room_with(files, 0) - 20 * MIB as i64
 +        );
-+    }
+     }
  }
 diff --git a/crates/shards/src/daemon/reclaim.rs b/crates/shards/src/daemon/reclaim.rs
 index 628234b8..b2aff9c1 100644
