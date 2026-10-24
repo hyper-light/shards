@@ -1,0 +1,81 @@
+name: E2E repeat
+
+# One E2E test of crates/shards/tests, run again and again on each of eight ubuntu-24.04
+# runners at once, each runner's CPU recorded: whether a failure seen once in the whole
+# suite's job comes back, how often, and on which CPU, with the kernel's word on OOM kills
+# and seccomp refusals where one fails. No failure in n runs puts its rate below 3/n at
+# 95%. Runs when asked.
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: its test binary (cargo test --test)
+        default: containers
+      name:
+        description: its exact name; none, the whole binary, every test of it beside the rest as the suite runs them
+        default: ""
+      times:
+        description: runs on each runner, one after another
+        default: "25"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  e2e:
+    name: E2E repeat (${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c, d, e, f, g, h]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: User manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          uname -r
+      - name: Build
+        env:
+          TEST: ${{ github.event.inputs.test }}
+        run: cargo test --locked -p shards --profile test-release --test "$TEST" --no-run
+      - name: E2E
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+          SHARDS_REQUIRE_USER_MANAGER: "1"
+          TEST: ${{ github.event.inputs.test }}
+          NAME: ${{ github.event.inputs.name }}
+          TIMES: ${{ github.event.inputs.times }}
+        run: |
+          if [ -n "$NAME" ]; then args=("$NAME" -- --exact --nocapture); else args=(-- --nocapture); fi
+          failed=0
+          for i in $(seq "$TIMES"); do
+            echo "== run $i of $TIMES"
+            cargo test --locked -p shards --profile test-release --test "$TEST" "${args[@]}" \
+              || failed=$((failed + 1))
+          done
+          echo "== ${NAME:-tests/$TEST.rs} failed $failed of $TIMES"
+          [ "$failed" -eq 0 ]
+      - name: What the kernel logged of seccomp refusals and OOM kills
+        if: failure()
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
