@@ -8,9 +8,12 @@ name: DAX budget
 # (`short`), where on an EPYC 7763 the FUSE budget E2E's reads took 2.3 times their time
 # with none, its slice taking back its guest's RAM (its template's mapped pages, 67 MiB to
 # 15) beside 213 MiB of the share's copy of what it read: with the tree, with the share
-# dropping its copy of each range its guest has read (share-dontneed.patch), and with it
-# dropping only what its budgets have no room for (share-headroom.patch), beside the same
-# reads with no budget, on eight runners at once. pcp-small.patch holds each CPU's
+# dropping its copy of each range its guest has read (share-dontneed.patch), dropping only
+# what its budgets have no room for (share-headroom.patch, whose slice sat at its budget
+# through every read held short on a 9V74, 40093677719), dropping it under any budget and
+# keeping it under none (share-budgeted.patch), and keeping it only while its budgets leave
+# room past it for its own reads (share-margin.patch), beside the same reads with no
+# budget, on eight runners at once. pcp-small.patch holds each CPU's
 # lists of free pages in its guest to their least, least-x*.patch give the tree's least
 # room 2 to 16 times over, ws-reads.patch a pool under a budget mapping ahead none of the
 # pages its working set's guest wrote, and --as-e2e the FUSE budget E2E's phases, where
@@ -24,10 +27,10 @@ on:
     inputs:
       args:
         description: measure.py's arguments, after its build and output directory
-        default: --files sparse --rounds 6 --pool 0 --highs short,infinity --arms none,share-dontneed,share-headroom
+        default: --files sparse --rounds 6 --pool 0 --highs short,infinity --arms none,share-dontneed,share-headroom,share-budgeted,share-margin
       fuse:
         description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
-        default: share-dontneed share-headroom
+        default: share-dontneed share-headroom share-budgeted share-margin
       huge:
         description: build the arm whose window ranges are on huge pages (huge.patch), for --arms huge
         type: boolean
@@ -78,7 +81,7 @@ jobs:
       # asked for, each kept apart.
       - name: Build
         env:
-          FUSE: ${{ github.event.inputs.fuse || 'share-dontneed share-headroom' }}
+          FUSE: ${{ github.event.inputs.fuse || 'share-dontneed share-headroom share-budgeted share-margin' }}
           HUGE: ${{ github.event.inputs.huge == 'true' && 'huge' || '' }}
         run: |
           cargo build --locked -p shards --release
@@ -91,8 +94,8 @@ jobs:
           done
       - name: Measure
         env:
-          ARGS: ${{ github.event.inputs.args || '--files sparse --rounds 6 --pool 0 --highs short,infinity --arms none,share-dontneed,share-headroom' }}
-          FUSE: ${{ github.event.inputs.fuse || 'share-dontneed share-headroom' }}
+          ARGS: ${{ github.event.inputs.args || '--files sparse --rounds 6 --pool 0 --highs short,infinity --arms none,share-dontneed,share-headroom,share-budgeted,share-margin' }}
+          FUSE: ${{ github.event.inputs.fuse || 'share-dontneed share-headroom share-budgeted share-margin' }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m

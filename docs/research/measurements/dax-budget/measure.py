@@ -117,17 +117,19 @@ homes = {arm: os.path.join(work, f"home-{arm}") for arm in ARMS}
 SEED = os.path.join(work, "seed")
 
 
-def env(arm):
+def env(arm, extra=None):
     e = dict(os.environ, SHARDS_HOME=homes[arm], DOCKER_CONFIG=config)
     e.pop("SHARDS_SHARE_WINDOW_MIB", None)
     e.update(ARMS[arm][1])
     if a.pool is not None:
         e["SHARDS_POOL"] = str(a.pool)
+    e.update(extra or {})
     return e
 
 
-def run(arm, *args, check=True, timeout=None):
-    done = subprocess.run([ARMS[arm][0], *args], env=env(arm), capture_output=True, text=True, timeout=timeout)
+def run(arm, *args, check=True, timeout=None, extra=None):
+    done = subprocess.run([ARMS[arm][0], *args], env=env(arm, extra), capture_output=True, text=True,
+                          timeout=timeout)
     if check and done.returncode != 0:
         raise SystemExit(f"{arm}: shards {' '.join(args)}: exit {done.returncode}\n{done.stdout}{done.stderr}")
     return done
@@ -477,26 +479,33 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
     """One read's seconds: a microVM started in the slice, its budget set (`budget`, else
     `high`'s), the file read; out of the host's page cache first, unless `cached`; the
     budget taken off after, unless `keep`."""
+    held_to = []
+    if a.guest_mib:
+        held_to = ["--memory", f"{a.guest_mib}m", "--memory-swap", f"{a.guest_mib}m", "--oom-kill-disable"]
     if not os.path.isdir(homes[arm]):
         run(arm, "pull", "-q", "alpine")
         # The image's first run boots cold and saves its template once its microVM has
         # settled, its guest's RAM all anonymous memory its host cannot take back without
         # swap: a budget a mebibyte short of it cannot be met, and its read is throttled
         # for as long as it runs (811 to 1,520 s: DAX budget runs 40076551870,
-        # 40082475577). Made here, unbudgeted, by a run kept until its template is saved
-        # (a run of `true` ends before it settles: run 40090430319's first reads booted
-        # cold), so that every read's run restores the template, as a user's second run
-        # does.
-        run(arm, "run", "-d", "--name", "warm", "--pull", "never", "alpine", "sleep", "600")
+        # 40082475577). Made here, unbudgeted, by a run of the readers' shape, in the slice
+        # as theirs are, kept until its template is saved, so that every read's run
+        # restores the template, as a user's second run does: a run of `true` ends before
+        # it settles (run 40090430319's first reads booted cold), and a template's key
+        # holds its run's shares (run.rs `template`: 40093677719's, made with no volume,
+        # left them booting cold too).
+        run(arm, "run", "-d", "--name", "warm", "--cgroup-parent", SLICE, *held_to, "-v", f"{vol}:/vol",
+            "--pull", "never", "alpine", "sleep", "600")
+        pid = run(arm, "inspect", "-f", "{{.State.Pid}}", "warm").stdout.strip()
+        started = stat_of(pid)
         deadline = time.time() + 300
         while not glob.glob(os.path.join(homes[arm], "templates", "*", "current")):
             if time.time() > deadline:
                 raise SystemExit(f"{arm}: no template saved in 300 s")
             time.sleep(0.5)
         run(arm, "rm", "-f", "warm", check=False)
-    held_to = []
-    if a.guest_mib:
-        held_to = ["--memory", f"{a.guest_mib}m", "--memory-swap", f"{a.guest_mib}m", "--oom-kill-disable"]
+        if started:
+            ended(pid, started[1])
     run_id = run(arm, "run", "-d", "--name", "reader", "--cgroup-parent", SLICE, *held_to, "-v", f"{vol}:/vol",
                  "alpine", "sleep", "100000").stdout.strip()
     pid = run(arm, "inspect", "-f", "{{.State.Pid}}", "reader").stdout.strip()
@@ -654,9 +663,8 @@ def e2e_round(arm, i):
         run(arm, "rm", "-f", "reader", check=False)
         late_s = None
     took["late"] = [(late, late_s)]
-    set_budget(str(short_budget()))
-    took["short"] = reads("short")
-    run(arm, "daemon", "stop", check=False)
+    took["short"] = lone(arm, file, i)
+    run(arm, "daemon", "stop", check=False, extra=POOL_NONE)
     try:
         shutil.copy(os.path.join(homes[arm], "daemon.log"), os.path.join(out, f"daemon-{arm}-{i}.log"))
     except OSError:
@@ -665,6 +673,70 @@ def e2e_round(arm, i):
     systemctl("stop", SLICE)
     shutil.rmtree(homes[arm], ignore_errors=True)
     return took
+
+
+# The lone run's daemon keeps no warm microVM.
+POOL_NONE = {"SHARDS_POOL": "0"}
+
+
+def lone(arm, file, i):
+    """The E2E's short phase (--as-e2e), as 23a66853's E2E has it: its daemon started again
+    keeping no warm microVM, a run of its own alone in the slice, its guest's way to the
+    share warmed by a small file's read; then a budget a mebibyte short of what the slice
+    holds with it running (`short_budget`), the daemon's word that the run is held within
+    the least room, and the run's reads of the file, each an exec into it: each read's name
+    and seconds as its dd says them, or None. A short budget worked out with no run in the
+    slice, as this harness had it, once came to 28 MiB, the daemon having ended the slice's
+    warm microVMs for room: the next run's vCPUs were throttled at memory.high for 2.5 hours,
+    its template's working set 167 MiB (DAX budget run 40085529809)."""
+    run(arm, "daemon", "stop", check=False)
+    set_budget("infinity")
+    with open(os.path.join(vol, "small"), "wb") as f:
+        f.write(b"\1" * (1 << 20))
+    run_id = run(arm, "run", "-d", "--name", "short", "--cgroup-parent", SLICE, "-v", f"{vol}:/vol", "alpine",
+                 "sleep", "100000", extra=POOL_NONE).stdout.strip()
+    run(arm, "exec", "short", "dd", "if=/vol/small", "of=/dev/null", "bs=1M", extra=POOL_NONE)
+    set_budget(str(short_budget()))
+    deadline = time.time() + 120
+    while not said_least(arm, run_id):
+        if time.time() > deadline:
+            raise SystemExit(f"{arm}: run {run_id} never said held within the least room")
+        time.sleep(0.02)
+    took = []
+    for k in range(a.reads):
+        name = f"short-{arm}-{file}-{i}-{k + 1}"
+        vms = open(os.path.join(out, f"{name}.vms"), "w")
+        held(vms, "started", arm, guest=False)
+        stop = threading.Event()
+        watchers = [threading.Thread(target=sample, args=(os.path.join(out, f"{name}.txt"), stop)),
+                    threading.Thread(target=guest_sample,
+                                     args=(arm, os.path.join(out, f"{name}.guest"), stop, GUEST_LIGHT))]
+        for w in watchers:
+            w.start()
+        try:
+            done = run(arm, "exec", "short", "dd", f"if=/vol/{file}", "of=/dev/null", "bs=1M", check=False,
+                       timeout=1800, extra=POOL_NONE)
+            said = DD_SECONDS.search(done.stdout + done.stderr) if done.returncode == 0 else None
+        except subprocess.TimeoutExpired:
+            said = None
+        stop.set()
+        for w in watchers:
+            w.join()
+        held(vms, "read", arm, guest=False)
+        vms.close()
+        print(f"{name}: budget {slice_budget() >> 10} KiB; {held_short(arm, run_id)}", file=sys.stderr, flush=True)
+        took.append((name, float(said[1]) if said else None))
+    run(arm, "rm", "-f", "short", check=False, extra=POOL_NONE)
+    return took
+
+
+def said_least(arm, run_id):
+    """Whether the arm's daemon has said run `run_id` is held within the least room."""
+    try:
+        with open(os.path.join(homes[arm], "daemon.log"), errors="replace") as f:
+            return any(f"container {run_id}:" in l and "the least room a run goes on in" in l for l in f)
+    except OSError:
+        return False
 
 
 def pct(xs, q):
