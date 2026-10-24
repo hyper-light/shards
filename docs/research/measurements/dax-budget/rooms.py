@@ -5,7 +5,8 @@ read with no budget, by runner CPU (D188): the DAX budget job's runs of measure.
 its arms the tree's least room (`none`) and builds whose least room is 2 to 16 times it
 (least-x*.patch). For each CPU, room, budget and file:
 n, p50, p90, p99 and max of the read's seconds; how many of the short reads the daemon's
-log says were held short throughout; per MiB read, the guest's reclaim in the run's cgroup
+log says were held short throughout, and their seconds, their guest's pages taken a MiB and
+their slice's refaults; per MiB read, the guest's reclaim in the run's cgroup
 (pages scanned and taken, and memory.events' `high`, the times the run went past its
 hold); the slice's refaults of file pages, the template's among them, per read; where the
 guest's dd waited, and where the VM process's threads other than its vCPUs waited, by
@@ -172,7 +173,9 @@ for cpu in sorted({r["cpu"] for r in rows}):
                 if high != "short":
                     continue
                 held = [r for r in sel if r["verdict"] and r["verdict"].startswith("held short throughout")]
-                print(f"    held short throughout: {len(held)} of {len(sel)}")
+                print(f"    held short throughout: {len(held)} of {len(sel)}, s {summary([r['secs'] for r in held], 2)}")
+                print(f"      their guest pgsteal a MiB {summary([r['guest'][0]['pgsteal'] / MIB_READ for r in held if r['guest']], 1)}")
+                print(f"      their slice refaults {summary([r['host'][0] for r in held if r['host']], 0)}")
                 gs = [r["guest"][0] for r in sel if r["guest"]]
                 for k in ("high", "pgsteal", "pgscan"):
                     print(f"    guest {k} a MiB  {summary([g[k] / MIB_READ for g in gs], 1)}")

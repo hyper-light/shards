@@ -12933,7 +12933,8 @@ revision before comparing a changed API/implementation.
   in the share process and in the VM process's queue workers (`fuse-buffers.patch`), where
   a 1 MiB READ had made its server's buffer, its reply, its frame and the frame's copy
   anew, and the worker its request and the reply's frame. Runs 40059820620 (295d03ab),
-  40063613556 (0e764f28), 40066973123 and 40066974883 (9452af32), 2026-10-24.
+  40063613556 (0e764f28), and 40066973123, 40066974883, 40072181887, 40072183563,
+  40075910855 and 40075912701 (9452af32), 2026-10-24.
 - **Results** (s; reads held short throughout, against the same CPU's reads under no
   budget, n, p50, p90, max).
   - The least room, 1 to 16 times (EPYC 7763, three to six runners an arm): the tree n 9
@@ -12944,6 +12945,38 @@ revision before comparing a changed API/implementation.
     and 16 times: 2.34 to 2.45 (n 3 to 5). No room within twice; the guest's reclaim, 259 to
     277 pages taken a MiB read, and the slice's refaults of file pages, 202,911 to 236,300 a
     read at the median, the same at every room.
+  - The same, 9452af32's six runs pooled (47 runners, `rooms.py 40066973123 40066974883
+    40072181887 40072183563 40075910855 40075912701`), reads held short throughout, s, with
+    the share's buffers kept (fuse-buffers) in the same runs:
+
+    | CPU (runners) | room | n | p50 | p90 | p99 | max | none: n, p50 | ratio | guest's pages taken a MiB, p50 | slice's refaults a read, p50 |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | EPYC 7763 (30) | 1 | 74 | 12.37 | 13.13 | 14.21 | 14.21 | 257, 4.27 | 2.90 | 274 | 214,860 |
+    | | 2 | 48 | 12.25 | 13.04 | 13.64 | 13.64 | 135, 4.28 | 2.86 | 270 | 214,187 |
+    | | 4 | 36 | 12.28 | 13.00 | 351.08 | 351.08 | 141, 4.30 | 2.86 | 265 | 213,085 |
+    | | 8 | 43 | 12.26 | 12.88 | 13.45 | 13.45 | 138, 4.28 | 2.86 | 270 | 211,980 |
+    | | 16 | 58 | 12.05 | 12.72 | 204.28 | 204.28 | 126, 4.27 | 2.82 | 267 | 212,925 |
+    | | buffers | 8 | 2.75 | 41.02 | 41.02 | 41.02 | 69, 2.15 | 1.28 | 198 | 100,407 |
+    | EPYC 9V45 (7) | 1 | 39 | 6.95 | 8.43 | 9.47 | 9.47 | 59, 2.60 | 2.67 | 253 | 195,934 |
+    | | 2 | 18 | 6.87 | 7.91 | 8.11 | 8.11 | 21, 2.51 | 2.74 | 248 | 203,348 |
+    | | 4 | 20 | 6.46 | 9.26 | 9.43 | 9.43 | 21, 2.55 | 2.53 | 244 | 178,776 |
+    | | 8 | 9 | 5.79 | 7.95 | 7.95 | 7.95 | 9, 2.50 | 2.32 | 235 | 187,112 |
+    | | 16 | 31 | 7.21 | 8.31 | 9.03 | 9.03 | 42, 2.65 | 2.72 | 248 | 198,496 |
+    | | buffers | 14 | 1.78 | 1.90 | 2.65 | 2.65 | 39, 1.49 | 1.19 | 146 | 0 |
+    | EPYC 9V74 (8) | 1 | 33 | 7.00 | 8.53 | 10.39 | 10.39 | 69, 3.12 | 2.24 | 251 | 172,300 |
+    | | 2 | 21 | 7.61 | 9.79 | 11.04 | 11.04 | 51, 3.09 | 2.46 | 260 | 205,390 |
+    | | 4 | 27 | 7.26 | 9.07 | 10.30 | 10.30 | 54, 3.09 | 2.35 | 251 | 200,863 |
+    | | 8 | 16 | 7.01 | 7.99 | 8.19 | 8.19 | 27, 3.17 | 2.21 | 240 | 190,976 |
+    | | 16 | 9 | 7.80 | 11.10 | 11.10 | 11.10 | 18, 3.16 | 2.47 | 252 | 218,584 |
+    | | buffers | 12 | 2.00 | 2.11 | 2.13 | 2.13 | 18, 1.56 | 1.28 | 125 | 0 |
+    | Xeon 8573C (2) | 1 | 7 | 8.28 | 9.35 | 9.35 | 9.35 | 12, 3.32 | 2.49 | 270 | 213,254 |
+    | | 8 | 3 | 3.73 | 3.75 | 3.75 | 3.75 | 6, 3.48 | 1.07 | 210 | 160,695 |
+    | | 16 | 12 | 8.23 | 9.93 | 10.05 | 10.05 | 12, 3.53 | 2.33 | 254 | 219,492 |
+    | | buffers | 6 | 3.83 | 3.91 | 3.91 | 3.91 | 9, 2.06 | 1.86 | 217 | 219,425 |
+
+    No Xeon read landed at 2 or 4 times. Within twice at no room but a Xeon's three reads at
+    8 times. The 7763's slowest at 4 and 16 times, 351 and 204 s, refaulted 33.1 and 22.0
+    million pages each, its guest reading back its RAM as its host took it: M318's regime.
   - The share's buffers kept (fuse-buffers): EPYC 7763 n 14, p50 2.74, p90 2.92, max 41.02
     against 2.15 with none, 1.27 times (the tree's in the same runs: 12.25 against 4.31,
     2.84); EPYC 9V45 n 10, 1.79, 2.65, 2.65 against 1.43, 1.25 times (the tree's 6.67
@@ -12971,14 +13004,15 @@ revision before comparing a changed API/implementation.
     reads 414 and 370. A budget a mebibyte short of what a slice holds with warm microVMs in
     it ends them, which gives every run room again.
 - **Reading.** The room past what a held run uses was not what held its reads: at every
-  room from 1 to 16 times, held short throughout, they read in 2.3 to 3.1 times their
-  unbudgeted time. A MiB read through the share had made 5 MiB of fresh memory, freed as
+  room from 1 to 16 times, held short throughout, they read in 2.2 to 3.1 times their
+  unbudgeted time on every CPU, but for a Xeon's three reads at 8 times. A MiB read through the share had made 5 MiB of fresh memory, freed as
   its reply went: four in the share process (the read's buffer, its reply, the reply with
   its header, the frame it went in) and one in the VM process (the frame read), processes
   whose memory the run's budget holds, and their threads waited in mmap and munmap; with
   each request read into, and each reply built in, buffers
-  kept, every CPU's held reads came within 1.25 to 1.31 times, and its unbudgeted reads took
-  half the time. Below what its one microVM's guest needs resident, a budget leaves its host
+  kept, the EPYCs' held reads came within 1.19 to 1.31 times and a Xeon 8573C's within 1.86
+  (n 6, refaulting as the tree's did), and their unbudgeted reads took 0.50 to 0.62 times
+  as long. Below what its one microVM's guest needs resident, a budget leaves its host
   only that guest's RAM to take back, and its reads crawl as M309's did.
 - **Consequence.** D188: the share's buffers are kept from request to request
   (`Server::handle_into`, fs/mod.rs `Buffers`), held by
@@ -13329,6 +13363,29 @@ revision before comparing a changed API/implementation.
     with neither patch's code in its VM process, ended 255 though its `dd` read the whole
     file, its VM ended before it said so after the daemon refused the working set it
     recorded ("not aligned and distinct"): open.
+  - The final tree (8d3f7c56: both, its count read first as a run begins and lowered by the
+    files a give-back let go), lone reads held a mebibyte short, s, in the E2E's phases
+    (40121565734, 40127123235, 16 runners) and each read a run of its own as its budget is
+    set (pool-0, 40127114245, 8 runners):
+
+    | CPU | n | held throughout | p50 | p90 | p99 | max | unbudgeted n, p50 | ratio at p50 | refaults a read, p50 (max) |
+    |---|---|---|---|---|---|---|---|---|---|
+    | EPYC 7763 (14) | 204 | 202 | 1.92 | 2.43 | 3.04 | 3.26 | 204, 2.17 | 0.88 | 0 (29,821) |
+    | EPYC 9V45 (3) | 42 | 42 | 1.25 | 1.81 | 2.74 | 2.74 | 42, 1.46 | 0.86 | 0 (112) |
+    | EPYC 9V74 (3) | 30 | 28 | 1.50 | 2.48 | 3.88 | 3.88 | 30, 1.87 | 0.80 | 0 (1,131) |
+    | Xeon 8573C (3) | 54 | 54 | 1.58 | 2.15 | 2.62 | 2.62 | 54, 1.91 | 0.83 | 0 (4,441) |
+    | Xeon 8370C | 6 | 6 | 1.96 | 2.30 | 2.30 | 2.30 | 6, 2.40 | 0.82 | 0 (3,924) |
+
+    None of its 336 ran away; at most 2.07 times its CPU's time with none (a 9V74's 3.88
+    s). Its other phases on the 7763s: under the budget its idle microVMs leave 128 MiB
+    of, 2.95 s at p50 (n 180) against 2.17 with none; one such read took 9.81 s, its
+    guest's reader asleep in its own kernel's `throttle_direct_reclaim` as its run was
+    held within its room, its host's vCPUs running: open. The FUSE budget E2E at 8d3f7c56:
+    16 of 16 copies passed (40121567553, 40121574774: EPYC 7763 ×8, 9V74 ×7, 9V45 ×1),
+    and 16 of 16 at 4fc9cb98 (40128478144, 40128486439: EPYC 9V45 ×7, 7763 ×5, 9V74 ×2,
+    Xeon 8573C ×2), 32 of 32. Each copy's three reads held within the least room took
+    0.77 to 0.98 times its reads under none at their median, each read within 1.10 times
+    but one, a 9V74's 2,976 ms against 1,417, its copy's other two 1,389 and 1,240: open.
   - The FUSE budget E2E, dispatched alone (budget-e2e.yml): 23 of 24 copies passed at
     23a66853 (40078541414, 40079524601) and 7 of 8 at 25cce71a (40088882919). One, on a
     9V45 (40079524601's d), stalled in its short phase: a read held within the least room
@@ -13359,6 +13416,6 @@ revision before comparing a changed API/implementation.
   of each range its guest reads once keeping it would leave its budgets less room than its
   own reads need, and keeps it within that, so that a run's next read under a budget with
   room comes from its host's page cache, as with none. Held a mebibyte short, alone in its
-  slice, a gigabyte's read takes 0.74 to 0.90 times its time with none at p50 on every
-  runner CPU, 1.85 at most, none running away. Not yet: a budget below what a cold-booted
+  slice, a gigabyte's read takes 0.80 to 0.88 times its time with none at p50 on every
+  runner CPU, none of 336 running away. Not yet: a budget below what a cold-booted
   microVM holds.
