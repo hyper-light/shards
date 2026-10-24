@@ -191,6 +191,36 @@ fn home_is_free(home: &Path) -> bool {
     unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
+/// Each thread of process `pid`: its name, state and what it waits in (/proc/PID/task/*/
+/// stat and wchan), on one line; elsewhere `ps -M`'s.
+fn threads_of(pid: i32) -> String {
+    if !cfg!(target_os = "linux") {
+        let ps = Command::new("ps").args(["-M", "-p", &pid.to_string()]).output();
+        return ps
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+    }
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return "gone".into();
+    };
+    let read = |p: PathBuf| std::fs::read_to_string(p).unwrap_or_default();
+    tasks
+        .flatten()
+        .map(|t| {
+            let state = read(t.path().join("stat"))
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
+                .unwrap_or_default();
+            format!(
+                "{}/{state}/{}",
+                read(t.path().join("comm")).trim(),
+                read(t.path().join("wchan")).trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn alive(pid: i32) -> bool {
     // SAFETY: kill(2) with signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid, 0) == 0 }
@@ -2625,7 +2655,28 @@ fn a_restored_microvm_ends_with_its_home() {
     eventually("the home could not be removed", || {
         matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
     });
-    eventually("the daemon outlived its home", || !alive(daemon));
+    // Its log went with its home: where its threads and its VMs' wait, should it outlive
+    // it, and how long it did.
+    let removed = Instant::now();
+    while alive(daemon) && removed.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if alive(daemon) {
+        let vms: Vec<String> = processes_with(&named)
+            .into_iter()
+            .map(|vm| format!("VM process {vm}: {}", threads_of(vm as i32)))
+            .collect();
+        let waits = format!("daemon {daemon}: {}\n{}", threads_of(daemon), vms.join("\n"));
+        while alive(daemon) && removed.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let ended = if alive(daemon) {
+            "not ended a minute after its removal".to_string()
+        } else {
+            format!("ended {:?} after its removal", removed.elapsed())
+        };
+        panic!("the daemon outlived its home: {ended}; at 5 s:\n{waits}");
+    }
     eventually("a restored VM outlived its home", || {
         processes_with(&named).is_empty()
     });
