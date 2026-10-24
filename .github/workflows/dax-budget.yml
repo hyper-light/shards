@@ -78,7 +78,8 @@ jobs:
         run: scripts/retry 3 30 sudo apt-get install -y "linux-tools-$(uname -r)" || echo "no perf for $(uname -r)"
       # The tree's shards, the tree's with each window range on huge pages where asked
       # (docs/research/measurements/dax-budget/huge.patch), and the tree's with each patch
-      # asked for, each kept apart.
+      # asked for, each kept apart: the tree made again after each, the files a patch adds
+      # removed too, as two that add one file would not both apply.
       - name: Build
         env:
           FUSE: ${{ github.event.inputs.fuse || 'share-dontneed share-headroom share-budgeted share-margin' }}
@@ -91,6 +92,7 @@ jobs:
             cargo build --locked -p shards --release
             cp target/release/shards "$RUNNER_TEMP/shards-$patch"
             git checkout -- crates
+            git clean -fdq -- crates
           done
       - name: Measure
         env:
