@@ -19,6 +19,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{
@@ -1965,12 +1966,14 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     }
     let held_short: Vec<u64> = (0..3)
         .map(|_| {
-            let exec = run_shards_env(
-                &["exec"],
-                &["short", "/bin/testguest", "read", "/vol/big"],
-                &pool_of_none,
-                Duration::from_secs(600),
-            );
+            let exec = watching(&cgroup, "a read held within the least room", || {
+                run_shards_env(
+                    &["exec"],
+                    &["short", "/bin/testguest", "read", "/vol/big"],
+                    &pool_of_none,
+                    Duration::from_secs(600),
+                )
+            });
             assert_eq!(exec.status, Some(0), "{exec}\nthe daemon's log:\n{}", said());
             took("a read held within the least room", &exec.stdout)
         })
@@ -1990,6 +1993,113 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     );
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// Runs `f`, and while it runs past a minute, every 30 s, says on stderr what the slice
+/// `cgroup` and the processes in it are doing ([`slice_state`]): a read held short takes
+/// seconds, and one that stalls (40079524601's (d): 600 s, its guest answering nothing)
+/// leaves in CI's log where its time went.
+fn watching<T>(cgroup: &Path, what: &str, f: impl FnOnce() -> T) -> T {
+    /// Set as `f` returns or unwinds, which ends the watch.
+    struct Done<'a>(&'a AtomicBool);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let start = Instant::now();
+            let mut next = Duration::from_secs(60);
+            while !done.load(Ordering::Acquire) {
+                if start.elapsed() >= next {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "{what}, {} s in: {}",
+                        start.elapsed().as_secs(),
+                        slice_state(cgroup)
+                    );
+                    next += Duration::from_secs(30);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let _done = Done(&done);
+        f()
+    })
+}
+
+/// The slice's memory, its events and pressure, and for each process in its tree its
+/// memory and each thread's state and wait channel (/proc/PID/task/TID/wchan).
+fn slice_state(cgroup: &Path) -> String {
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+    let stat = read(&cgroup.join("memory.stat"));
+    let keys = [
+        "anon",
+        "file",
+        "file_mapped",
+        "shmem",
+        "pgscan",
+        "pgsteal",
+        "pgmajfault",
+        "workingset_refault_file",
+    ];
+    let picked: Vec<&str> = keys
+        .iter()
+        .filter_map(|k| stat.lines().find(|l| l.split_whitespace().next() == Some(k)))
+        .collect();
+    let mut out = format!(
+        "current {} high {}; {}; events {}; pressure {}",
+        read(&cgroup.join("memory.current")).trim(),
+        read(&cgroup.join("memory.high")).trim(),
+        picked.join(", "),
+        read(&cgroup.join("memory.events"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        read(&cgroup.join("memory.pressure")).lines().next().unwrap_or("")
+    );
+    let mut dirs = vec![cgroup.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for pid in read(&dir.join("cgroup.procs")).lines() {
+            let proc = PathBuf::from(format!("/proc/{pid}"));
+            let status = read(&proc.join("status"));
+            let field = |k: &str| {
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix(k))
+                    .map_or(String::new(), |v| {
+                        v.split_whitespace().collect::<Vec<_>>().join(" ")
+                    })
+            };
+            out += &format!(
+                "\n  {pid} {} RssAnon {} RssFile {}:",
+                read(&proc.join("comm")).trim(),
+                field("RssAnon:"),
+                field("RssFile:")
+            );
+            let Ok(tasks) = std::fs::read_dir(proc.join("task")) else {
+                continue;
+            };
+            for task in tasks.flatten() {
+                let t = task.path();
+                let state = read(&t.join("stat"))
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
+                    .unwrap_or_default();
+                out += &format!(
+                    " {}/{state}/{}",
+                    read(&t.join("comm")).trim(),
+                    read(&t.join("wchan")).trim()
+                );
+            }
+        }
+        if let Ok(children) = std::fs::read_dir(&dir) {
+            dirs.extend(children.flatten().map(|c| c.path()).filter(|p| p.is_dir()));
+        }
+    }
+    out
 }
 
 /// A pool of 0 keeps no VM warm, and every run restores its own: the second run of an
