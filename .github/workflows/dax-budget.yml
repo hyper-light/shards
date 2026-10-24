@@ -20,6 +20,10 @@ on:
       fuse:
         description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
         default: least-x2 least-x4 least-x8 least-x16
+      huge:
+        description: build the arm whose window ranges are on huge pages (huge.patch), for --arms huge
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -61,16 +65,17 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
       - name: perf
         run: scripts/retry 3 30 sudo apt-get install -y "linux-tools-$(uname -r)" || echo "no perf for $(uname -r)"
-      # The tree's shards, the tree's with each window range on huge pages
+      # The tree's shards, the tree's with each window range on huge pages where asked
       # (docs/research/measurements/dax-budget/huge.patch), and the tree's with each patch
       # asked for, each kept apart.
       - name: Build
         env:
           FUSE: ${{ github.event.inputs.fuse || 'least-x2 least-x4 least-x8 least-x16' }}
+          HUGE: ${{ github.event.inputs.huge == 'true' && 'huge' || '' }}
         run: |
           cargo build --locked -p shards --release
           cp target/release/shards "$RUNNER_TEMP/shards"
-          for patch in huge $FUSE; do
+          for patch in $HUGE $FUSE; do
             git apply "docs/research/measurements/dax-budget/$patch.patch"
             cargo build --locked -p shards --release
             cp target/release/shards "$RUNNER_TEMP/shards-$patch"
@@ -90,8 +95,10 @@ jobs:
           # Pushed: the experiment above; asked for: the arguments asked with.
           fuse=""
           for patch in $FUSE; do fuse="$fuse --fuse $patch=$RUNNER_TEMP/shards-$patch"; done
+          huge=""
+          [ -x "$RUNNER_TEMP/shards-huge" ] && huge="--huge $RUNNER_TEMP/shards-huge"
           python3 -I docs/research/measurements/dax-budget/measure.py "$RUNNER_TEMP/shards" dax-budget \
-            --huge "$RUNNER_TEMP/shards-huge" $fuse $ARGS
+            $huge $fuse $ARGS
           python3 -I docs/research/measurements/dax-budget/samples.py dax-budget
       - uses: actions/upload-artifact@v7.0.1
         if: always()
