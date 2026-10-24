@@ -13510,3 +13510,76 @@ revision before comparing a changed API/implementation.
   (a second set for a generation is not written, a damaged one is replaced; without the
   check it fails), and
   `vm::x86_64::tests::a_working_set_keeps_what_its_guest_gave_back_as_it_was_recorded`.
+
+### M321. Flakes: the held-short read's tail, its guest's own reclaim within the least room (D188)
+
+- **Question.** What makes a gigabyte's read through FUSE, held within the least room for
+  the whole read (D188), take over twice its CPU's time with none? Of 144 such reads in
+  DAX budget run 40131530388 (the tree at d9127e31, `--as-e2e`), three did: an EPYC
+  9V74's 4.41 s and 3.52 s against 1.59, and a 9V45's 3.25 s against 1.46. One read of
+  M318's final tree, a 9V74's 3.88 s, had lost 99 MiB of its guest's RAM to its host's
+  reclaim within a second; the 4.41 s read lost almost none.
+- **Method.** The DAX budget job's `--as-e2e` reads (measure.py), 8 ubuntu-24.04 runners a
+  run, and rooms.py's row for each: in each second's look at the slice, its
+  `memory.events` and reclaim, what its budget left below it, its mapped files and
+  anonymous memory, the share's copy of the guest's files, how much of each VM process's
+  template memory file the host's page cache held (mincore(2), 9933d271), and the whole
+  host's reclaim and pressure (/proc/vmstat, /proc/pressure/memory); from inside the guest
+  each second, its run's cgroup's reclaim (`pgscan`, `pgsteal`,
+  `workingset_refault_file`, `memory.events`) and where its reader waited. Tested against
+  them, the goal's four candidates: the slice at its `memory.high`, the host's multi-gen
+  LRU taking the guest's RAM (its template's pages), the guest's own reclaim in its held
+  cgroup, and the runner. Runs: the tree with the looks, 40135172411, 40136820527 and
+  40139062118 (432 reads); then arms on the same runners, the tree beside least-x2.patch
+  (the least room doubled, 40139156517, 4 rounds) and beside least-request.patch and
+  least-x2.patch (40141647845, 4 rounds), least-request.patch adding to the least room
+  the page cache a share's request fills, `SHARE_MAX_PAGES` pages.
+- **Results.**
+  - The tree, 624 reads with every look (the three runs and the arms' tree reads): none
+    over twice, 1.86 times at most (a 7763's 4.05 s). Against each read's time over its
+    CPU's with none, Spearman's rank correlation with the guest's own refaults was 0.52,
+    with the slice's refaults 0.62, with its template's pages its host took 0.43, and
+    with the looks finding its reader asleep at its run's `memory.high` 0.29. The host's
+    own reclaim outside the slice was none in every read that had its look. The quarter
+    of reads with the most guest refaults (over 9,211) took 0.98 times at p50 and 1.37 at
+    p90; the rest 0.83 and 1.03. Of the 12 reads over 1.5 times, 11 had their guest
+    refault 2,392 to 41,499 of its pages, and the twelfth, a 9V45's at 1.66 times, 907,
+    its host taking 125 MiB of its template; 6 of the 12 lost none of their template.
+  - The other candidates. The slice at its `memory.high`: in the looks during the tree's
+    short reads on the 7763s (40141647845), its budget had 1.76 MiB left below it at p50
+    and 2.49 at p90; no look found the VM process's threads other than its vCPUs waiting
+    in reclaim or a throttle; its refaults a read were 0 at p50 and 534 at p90. The
+    host's multi-gen LRU: reclaim outside the slice none in each read that had the look
+    (64 reads), and the template's pages it took (rank correlation 0.43) went with
+    guest refaults in the slowest reads; with more room, the reads that lost theirs took
+    at most 1.11 times. The runner: the reads over twice were on EPYC 9V74s and a 9V45
+    (40131530388); the A/Bs drew none of the 9V74s.
+  - The guest's own reclaim. A run held within the least room holds its kernel's charge
+    ahead (64 pages a CPU), two read-ahead windows and its reader's 1 MiB block, which
+    leave it no room for the page cache a share's request fills on its way to the block,
+    up to `SHARE_MAX_PAGES` (1 MiB): its cgroup at its hold reclaims its reads' own pages
+    before its reader takes them, and reads them again, through the share. Of the three
+    reads over twice, each refaulted (31,159, 2,605 and 14,917 pages). A guest's refaults
+    are reads its share makes again, of the host's file, and its slice's page cache with
+    them: with more room, fewer reads lost their template (4 of the arms' 288 lost 10 MiB
+    or more, against 13 of the tree's 192 beside them), and those that did took 0.98 to
+    1.11 times their CPU's time.
+  - The arms, on the same runners, held-short reads' slowest over their CPU's time with
+    none, and the guest's refaults a read at p50, p90 and most:
+
+    | run | CPU | n | tree | least-request | least-x2 |
+    |---|---|---|---|---|---|
+    | 40139156517 | EPYC 7763 (4) | 48 | 1.57; 2,913, 23,197, 41,150 | | 1.10; 3, 1,823, 2,885 |
+    | 40139156517 | EPYC 9V45 (3) | 36 | 1.66; 6,382, 40,933, 41,515 | | 1.05; 0, 399, 1,462 |
+    | 40139156517 | Xeon 8573C | 12 | 0.88; 8,121, 23,012, 30,045 | | 0.97; 3, 1,372, 1,999 |
+    | 40141647845 | EPYC 7763 (6) | 72 | 1.47; 2,899, 16,327, 50,461 | 1.12; 1, 687, 3,576 | 1.11; 4, 1,155, 2,985 |
+    | 40141647845 | EPYC 9V45 | 12 | 1.08; 5,275, 23,127, 38,349 | 1.19; 0, 1,564, 2,062 | 1.11; 0, 575, 1,121 |
+    | 40141647845 | Xeon 8573C | 12 | 1.35; 4,715, 24,868, 27,762 | 1.06; 66, 1,607, 1,785 | 0.95; 0, 79, 877 |
+
+    The looks that found a reader asleep at its run's `memory.high` (dd's wchan
+    `__mem_cgroup_handle_over_high`) were 3 of the tree's 72 reads on the 7763s, none of
+    either arm's. The request's page cache did what doubling the room did, at 1 MiB of
+    room against 2.25.
+- **Consequence (D188).** The least room counts the page cache a share's request fills
+  beside its reader's block: 3.25 MiB on 4 CPUs, 6.75 on 18 (init plug.rs
+  `working_room_of`).

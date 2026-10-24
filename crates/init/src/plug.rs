@@ -551,14 +551,18 @@ pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
 /// for each CPU (`MEMCG_CHARGE_BATCH`, mm/memcontrol.c `refill_stock`), which no reclaim
 /// takes back; the pages a read holds as its file is read ahead of it, two windows of 128
 /// KiB (`VM_READAHEAD_PAGES`, mm/readahead.c: the window read and the one read ahead of
-/// it, a share's own, as its server keeps the window the kernel offers); and a reader's
-/// block as large as one request of a share carries ([`shards_abi::SHARE_MAX_PAGES`]),
-/// which with no swap no reclaim takes either. Held within nothing past what it used, a
-/// run's `dd` of 1 MiB blocks through FUSE took 233 s for 32 MiB it read in 0.28 s with no
-/// budget, asleep in the kernel's throttle of a cgroup past its `memory.high`
+/// it, a share's own, as its server keeps the window the kernel offers); a reader's block
+/// as large as one request of a share carries ([`shards_abi::SHARE_MAX_PAGES`]), which
+/// with no swap no reclaim takes either; and the page cache that request fills on its way
+/// to the block, as many pages. Held within nothing past what it used, a run's `dd` of 1
+/// MiB blocks through FUSE took 233 s for 32 MiB it read in 0.28 s with no budget, asleep
+/// in the kernel's throttle of a cgroup past its `memory.high`
 /// (`__mem_cgroup_handle_over_high`), its kernel's reclaim taking 3% of what it scanned;
-/// within 1 MiB, 3.9 to 201 s, and within 1.25 MiB on 4 vCPUs 0.8 to 7.6 s; within 1.5
-/// MiB on 4 vCPUs and 2 MiB on 18, as fast as with none (PM M309).
+/// within 1 MiB, 3.9 to 201 s, and within 1.25 MiB on 4 vCPUs 0.8 to 7.6 s (PM M309).
+/// Held within all but the request's page cache, a gigabyte's read took its reads' own
+/// pages back and read them again, 2,899 times at the median and 16,327 at p90 on CI's EPYC
+/// 7763s, and three reads in 144 took over twice their CPU's time with none, the slowest
+/// 2.77 times; with it, 1 and 687 times, the slowest 1.12 times (PM M321).
 fn working_room() -> u64 {
     // SAFETY: sysconf(3) reads a value of the running kernel's.
     let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1));
@@ -571,7 +575,7 @@ fn working_room_of(cpus: u64, page: u64) -> u64 {
     const READ_AHEAD: u64 = 128 << 10;
     CHARGE_BATCH
         .saturating_mul(cpus)
-        .saturating_add(u64::from(shards_abi::SHARE_MAX_PAGES))
+        .saturating_add(2 * u64::from(shards_abi::SHARE_MAX_PAGES))
         .saturating_mul(page)
         .saturating_add(2 * READ_AHEAD)
 }
@@ -1369,14 +1373,15 @@ mod tests {
     }
 
     /// The least room a run is held within covers what its kernel charges it ahead on
-    /// each CPU, two read-ahead windows and a share's largest request: on 4 CPUs of 4 KiB
-    /// pages, 2.25 MiB, past the 1.5 MiB a reader of 1 MiB blocks needed, and on 18, 5.75
-    /// MiB, past the 2 MiB it needed there (PM M309); this guest's, by its own CPUs.
+    /// each CPU, two read-ahead windows, and a share's largest request twice, its reader's
+    /// block and the page cache it fills: on 4 CPUs of 4 KiB pages, 3.25 MiB, past the 1.5
+    /// MiB a reader of 1 MiB blocks needed, and on 18, 6.75 MiB, past the 2 MiB it needed
+    /// there (PM M309, M321); this guest's, by its own CPUs.
     #[test]
     fn a_run_held_short_keeps_the_room_its_reads_need() {
-        assert_eq!(working_room_of(4, 4096), 9 * MIB / 4);
+        assert_eq!(working_room_of(4, 4096), 13 * MIB / 4);
         assert!(working_room_of(4, 4096) >= 3 * MIB / 2);
-        assert_eq!(working_room_of(18, 4096), 23 * MIB / 4);
+        assert_eq!(working_room_of(18, 4096), 27 * MIB / 4);
         assert!(working_room_of(18, 4096) >= 2 * MIB);
         // SAFETY: sysconf(3) reads a value of the running kernel's.
         let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) })

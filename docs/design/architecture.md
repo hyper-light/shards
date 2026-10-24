@@ -5708,16 +5708,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   least room a run goes on in to what the run uses, however short the budget: what its
   kernel charges it ahead of the pages it takes, a batch of 64 pages for each CPU
   (mm/memcontrol.c, `refill_stock`), which no reclaim takes back; two windows of a read's
-  read-ahead, 128 KiB each (`VM_READAHEAD_PAGES`); and a reader's block as large as a
-  share's request (`SHARE_MAX_PAGES`, 1 MiB), which with no swap no reclaim takes either:
-  2.25 MiB on 4 CPUs, 5.75 on 18. Held within it for the whole of a gigabyte's read
-  through FUSE, alone in its slice under a budget a mebibyte short of what it held, a run
-  on CI's runners read in 0.80 to 0.88 times its time with none at p50 on each of five
-  runner CPUs, its slice refaulting none at p50 (PM M318); before the share kept its
-  buffers, held within 2, 4, 8 or 16 times it, no faster than within it, 2.2 to 3.1 times
-  its time with none (a Xeon's three reads at 8 times, 1.07), the share's fresh memory for
-  each request holding it back (PM M314). Held at what it used, a run could not take a page
-  past it: its reader slept in the kernel's throttle of a cgroup past its `memory.high`
+  read-ahead, 128 KiB each (`VM_READAHEAD_PAGES`); a reader's block as large as a
+  share's request (`SHARE_MAX_PAGES`, 1 MiB), which with no swap no reclaim takes either;
+  and the page cache that request fills on its way to the block, as many pages: 3.25 MiB
+  on 4 CPUs, 6.75 on 18. Held within all but that page cache for the whole of a
+  gigabyte's read through FUSE, alone in its slice under a budget a mebibyte short of what
+  it held, a run on CI's runners read in 0.80 to 0.88 times its time with none at p50 on
+  each of five runner CPUs, its slice refaulting none at p50 (PM M318), but its guest
+  took its reads' own pages back and read them again, 2,899 times a read at the median on
+  the EPYC 7763s and 16,327 at p90, its reader at times asleep at its run's
+  `memory.high`, and 3 of 144 reads took over twice their CPU's time with none, 2.77
+  times at most (an EPYC 9V74's); with it, 1 and 687 times, and 1.19 times its time with
+  none at most on three runner CPUs (PM M321). Before the share kept its buffers, held
+  within 2, 4, 8 or 16 times it, no faster than within it, 2.2 to 3.1 times its time with
+  none (a Xeon's three reads at 8 times, 1.07), the share's fresh memory for each request
+  holding it back (PM M314). Held at what it used, a run could not take a page past it:
+  its reader slept in the kernel's throttle of a cgroup past its `memory.high`
   (`__mem_cgroup_handle_over_high`, up to 2 s each return to user space), and on CI read a
   gigabyte at 0.16 to 0.57 MiB/s for 190 to 672 s, each until its budget's own pressure
   brought room back (PM M309). A room short of the least raises no hold past what the run
