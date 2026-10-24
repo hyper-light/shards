@@ -173,9 +173,11 @@ impl<D: Disk> Daemon<D> {
                 std::thread::Builder::new()
                     .name("give-back".into())
                     .spawn_scoped(threads, move || {
+                        let before = super::budget::resident_file(pid);
                         let gave = self.give_back_of(&id);
                         lock(&self.watching.giving).remove(&vm);
                         if let Some(gave) = gave {
+                            self.budgets.gave_back(pid, before, gave.freed);
                             self.gave(gave);
                         }
                         // What it gave back its budget may let it have again (D188).

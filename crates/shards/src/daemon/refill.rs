@@ -159,7 +159,11 @@ impl<D: Disk> Daemon<D> {
         // of the runs that wait where the budget has no room left.
         let budget = self
             .cgroup_of_parent(&key.parent)
-            .and_then(|d| super::budget::room(&d, Path::new(super::budget::ROOT)))
+            .and_then(|d| {
+                super::budget::room(&d, Path::new(super::budget::ROOT), &mut |mapped| {
+                    self.budgets.evicted(mapped)
+                })
+            })
             .map(|(room, _)| room);
         let more = if budget.is_some_and(|r| r < 0) { 0 } else { more };
         let more = more.min(self.room(state, key, more));

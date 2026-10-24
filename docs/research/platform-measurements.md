@@ -13199,3 +13199,146 @@ revision before comparing a changed API/implementation.
   most into the fail-safe's second; it is real-time again once seen waiting. A busy guest
   shares its host's CPUs as its host's programs do; one waiting on its devices, and an
   idle one, keep the policy.
+
+### M318. Reads held short through FUSE: a cold boot's budget, the share's copy of what its guest reads, and a guest's RAM counted as room (D188)
+
+- **Question.** With the share keeping its buffers from request to request (ff8d72b4,
+  M314), does a 1 GiB read through FUSE held within the least room for its whole read come
+  within twice its unbudgeted time on every runner CPU CI lands on, in the FUSE budget
+  E2E's regime and with its run alone in its slice? What were the DAX budget job's reads of
+  761 to 1,729 s? And what is the regime M314 found past the least room, where a lone
+  microVM's read took 41 s and others did not end?
+- **Method.** The DAX budget job (docs/research/measurements/dax-budget/measure.py) on CI's
+  ubuntu-24.04 runners, Linux 6.17.0-1022-azure, 4 CPUs, KVM nested on Hyper-V, 8 runners a
+  run, 2026-10-24:
+  - `--as-e2e`, the E2E's phases in its order, each round in a home and slice of its own,
+    its last a lone run alone in the slice under a budget a mebibyte short of what it holds,
+    read three times once its daemon says it is held within the least room. At 23a66853:
+    runs 40082480910 and 40084026167. With the share's policies as arms (below):
+    40102157076 (beed1833, 3 rounds), 40105729007 (1fc68ddb, 6 rounds, its guest sampled
+    from within), 40113636061 (269d6589, 6 rounds).
+  - `--pool 0 --highs short,infinity`, each read a run of its own, its budget set as it
+    starts: runs 40082475577 (23a66853), 40093677719 (ed182512), 40102145014 (beed1833) and
+    40113625738 (269d6589).
+  - `--again --files written --highs 4G --pool 0`: each arm's own written gigabyte, out of
+    the host's page cache before its first read alone, each later read a run of its own
+    under a budget with room for every arm's copy: run 40102159064 (beed1833).
+  - The arms, each a patch of the tree's: the share dropping its copy of each range its
+    guest reads (share-dontneed.patch); dropping only what its budgets have no room left
+    for (share-headroom.patch); dropping it under any budget, keeping it under none
+    (share-budgeted.patch); keeping it only while its budgets leave room past it for its
+    own reads (share-margin.patch); the daemon holding each microVM's file pages at the
+    most its VM process has held resident, less what it gave back (room.patch); and both
+    (share-margin-room.patch). The adopted code is share-margin-room.patch's but for two
+    changes made after these runs: its count starts afresh as a budget is set or changed,
+    which no read measured crossed, and a give-back lowers it by the files let go as it gave
+    back, where the patch lowered it by all a give-back said it freed.
+  - `rooms.py`: per runner CPU, n, p50, p90, p99 and max of the reads, held short
+    throughout or not, beside the unbudgeted; the slice's refaults a read; in the slice's
+    looks each second during a short read, what its budget had left below it, its mapped
+    files and its anonymous memory; and the reads that ran away, two looks or more finding
+    its mapped files under 5 MiB and its anonymous memory within 16 MiB of its budget.
+- **Results.**
+  - Held short throughout, the E2E's regime at 23a66853 (runs 40082480910 and
+    40084026167), against the same CPU's unbudgeted reads, s:
+
+    | CPU | n | p50 | p90 | max | unbudgeted n, p50 | ratio | refaults a read, p50 |
+    |---|---|---|---|---|---|---|---|
+    | EPYC 7763 | 21 | 2.59 | 2.70 | 2.76 | 120, 2.10 | 1.23 | 116,520 |
+    | EPYC 9V45 | 7 | 1.70 | 1.84 | 1.84 | 36, 1.49 | 1.14 | 0 |
+    | EPYC 9V74 | 15 | 2.04 | 2.11 | 2.17 | 24, 1.60 | 1.27 | 0 |
+
+  - A cold boot. With a pool of none each arm's first read was its image's first run, which
+    boots cold and saves the template: 761 to 1,729 s on every runner, where every later
+    read, restoring the template, took 1.2 to 5.9 s. Its slice held 75 to 79 MiB for the
+    whole read against its 73 MiB budget, 71 to 73 MiB of it anonymous and 4 to 16 KiB of
+    files: the VM process's guest RAM, 68 to 70 MiB resident of its 260 MiB mapping, where
+    its guest used 22 MB (Slab 12.5 MB, Cached 2 MB) and the rest was its kernel's own;
+    with no swap nothing of it could be taken back, and memory.high throttled the slice
+    throughout (919 `high` events a second). A restored microVM holds about as much
+    anonymous memory (65 MiB) beside 111 MiB of its template's clean pages, which its host
+    may take back: a budget a mebibyte short of what its slice holds cannot be met by a
+    cold one. The harness now makes each arm's template before its first read, unbudgeted,
+    by a run of its readers' shape (a template's key holds its run's shares, run.rs
+    `template`: 40093677719's warm-up, with no volume, left its first reads booting cold).
+  - M314's regime, on the tree: a lone run held short, its reads run away. Of the tree's
+    144 lone reads in 40105729007, 31 ran away, two until their 1,800 s ran out; the
+    tree's first pool-0 read held short ran away on all 8 of 40102145014's runners, the
+    longest for two hours. On a 9V74 (40093677719's h) none of its 5 pool-0 reads was held
+    within the least room: 3.71 s at p50 (5.85 at most) against 1.91 with none, its slice
+    past its budget (948 KiB at p50), its mapped files 0.1 MiB and its anonymous memory 265
+    MiB, its whole budget, 201,127 refaults a read at p50. In order, from the daemon's log
+    and the guest's own samples of one such read (40105729007's f, share-margin.patch):
+    held short, the slice holding 198 MiB, 123 MiB of it files its processes map; its host
+    took back 71 MiB of its template's pages, its guest's RAM, and its daemon, counting
+    what its processes held resident and the inactive pages kept beside them, found 111
+    MiB of room, which it told the guest ("has room again"); the guest, 15,926 of its
+    15,958 MiB free, filled 141 MiB of page cache in 3 s, its run's own `memory.high`
+    never met; its host took back all of its RAM it could, and its vCPUs were throttled 68
+    s as it read it back. Each give-back of a host pressure pass, which a slice's own
+    throttling raises, told the guest its room again. The share's copy of what the guest
+    read, as it filled the slice, took the template's pages first: on a 7763 (budget E2E
+    40088882919's c) the slice's mapped files fell from 67 MiB to 15 while it held 213 MiB
+    of the copy.
+  - The share's copy, lone reads held a mebibyte short, s, p50 (max), and the reads that
+    ran away (40102157076, 69 reads an arm on 8 runners):
+
+    | CPU | unbudgeted | tree | dropped | dropped under any budget | kept within the room its reads need |
+    |---|---|---|---|---|---|
+    | EPYC 7763 (3) | 2.15 | 1.82 (4.97) | 1.70 (1.98) | 1.70 (2.17) | 1.75 (21.90) |
+    | EPYC 9V74 (3) | 1.57 | 1.68 (4.24) | 1.21 (1.29) | 1.22 (3.66) | 1.24 (2.22) |
+    | Xeon 8370C | 2.01 | 1.86 (4.59) | 1.51 (1.60) | 1.58 (2.07) | 1.58 (1.87) |
+    | ran away | | 5 | 0 | 1 | 1 |
+
+    Kept until its budgets had no room left (share-headroom.patch, 40093677719), the copy
+    held the slice within half a mebibyte of its budget in every look (228 and 288 KiB at
+    p50), its template's mapped pages taken to 4.5 MiB in 2 of a 9V74's 5 reads: 1.01 and
+    1.02 times its time with none, where dropped it read in 0.81. Under a budget with room
+    for it, a run's later reads of a written gigabyte (40102159064, rounds 2 to 6, n 10 to
+    15 a CPU) took, at p50, 2.39, 1.74 and 1.85 s on the 7763, 9V45 and 9V74 with the tree,
+    2.45, 1.74 and 1.80 with the copy kept within the room its reads need, and 3.20, 2.91
+    and 3.94 with it dropped under any budget, each read from the host's disk. With none,
+    every arm alike.
+  - The room. Lone reads held a mebibyte short, both arms on each runner (40113636061, 6
+    rounds, 7 runners), the share keeping its copy within its reads' room with and without
+    the daemon holding its microVMs' file pages at their most:
+
+    | CPU | n | unbudgeted p50 | without: p50 (max), ran away | with: p50, p90, max | held throughout | refaults a read, p50 (max) |
+    |---|---|---|---|---|---|---|
+    | EPYC 7763 (2) | 36 | 2.14 | 1.84 (2.59), 0 | 1.85, 2.32, 3.95 | 33 | 0 (637) |
+    | EPYC 9V45 | 18 | 1.48 | 1.16 (28.31), 2 | 1.29, 1.79, 2.18 | 18 | 0 (7) |
+    | EPYC 9V74 (2) | 36 | 1.59 | 1.40 (9.72), 4 | 1.43, 1.66, 2.88 | 36 | 0 (66) |
+    | Xeon 8573C | 18 | 1.98 | 1.66 (2.39), 0 | 1.71, 2.21, 2.48 | 18 | 0 (688) |
+    | Xeon 6973P-C | 18 | 2.03 | 1.52 (3.64), 1 | 1.50, 2.34, 2.55 | 18 | 0 (477) |
+
+    With it, none of the 126 ran away, against 7 without. The daemon's holding alone, the
+    tree's copy kept, let 1 run away for 315 s (40113636061's d): its daemon found its lone
+    run 94 MiB of room from its first word, never short, and two pressure passes'
+    give-backs of 76 and 144 MiB, its guest's page cache, its host's anonymous memory, were
+    taken off what it counted taken back, which the adopted code does no more. Its
+    other phases, with and without, alike (under the budget its idle microVMs leave 128
+    MiB of, 1.73 to 2.85 s at p50 against 1.99 to 2.54). In pool-0, where each read begins
+    as its budget is set, the share's copy kept within its reads' room without the
+    daemon's holding ran away on all 8 of 40113625738's runners. A read of 40113636061's,
+    with neither patch's code in its VM process, ended 255 though its `dd` read the whole
+    file, its VM ended before it said so after the daemon refused the working set it
+    recorded ("not aligned and distinct"): open.
+  - The FUSE budget E2E, dispatched alone (budget-e2e.yml): 23 of 24 copies passed at
+    23a66853 (40078541414, 40079524601) and 7 of 8 at 25cce71a (40088882919). One, on a
+    9V45 (40079524601's d), stalled in its short phase: a read held within the least room
+    did not end in 600 s, the run given room again (62 MiB) during it, a pass of the host's
+    pressure taking 60 s, its guest answering nothing. One, on a 7763 (40088882919's c),
+    read 2.3 times its time with none, its run held short and given room by turns. In gpu
+    CI's x86_64 Linux job, beside the whole suite, the E2E failed in 8 of the 10 failed runs
+    from 2026-10-23 to 23a66853, and at 25cce71a in its phase whose budget is set as its run
+    goes, one read 4,244 ms against 2,035. Both stalled copies bore the regime's marks: room
+    told again as the read ran, then a guest that answered nothing.
+- **Consequence (D188).** A microVM's file pages are held at the most its VM process has
+  held resident since its run began, less those it let go as it gave back, counted afresh
+  as a budget is set or changed: its host's taking back its guest's RAM makes no room. A
+  share drops its copy of each range its guest reads once keeping it would leave its
+  budgets less room than its own reads need, and keeps it within that, so that a run's
+  next read under a budget with room comes from its host's page cache, as with none. Held
+  a mebibyte short, alone in its slice, a gigabyte's read takes 0.74 to 0.90 times its
+  time with none at p50 on every runner CPU, 1.85 at most, none running away. Not yet: a
+  budget below what a cold-booted microVM holds.

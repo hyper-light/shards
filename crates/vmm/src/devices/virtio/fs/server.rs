@@ -285,6 +285,9 @@ struct State {
     /// each removed as it is made, for its pins (D176): the share process's private
     /// directory, none for a server that keeps none.
     ghosts: Option<OwnedFd>,
+    /// The budgets over the share process's cgroups, which its host's copy of what the guest
+    /// reads is dropped past (D188): none for a server that keeps every copy.
+    headroom: Option<super::headroom::Headroom>,
 }
 
 /// The descriptors of the directories the guest named and of the files and directories it
@@ -880,6 +883,7 @@ impl Server {
                 unreached: HashMap::new(),
                 budget,
                 ghosts: None,
+                headroom: None,
             }),
         })
     }
@@ -1055,6 +1059,13 @@ impl Server {
     /// from a save (D176), each removed as soon as it is made.
     pub fn keep_ghosts_in(&self, dir: OwnedFd) {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).ghosts = Some(dir);
+    }
+
+    /// Drops its host's copy of what the guest reads once keeping it would leave the budgets
+    /// `headroom` watches less room than the share's own reads need (D188): the guest keeps
+    /// what it read in its own page cache.
+    pub fn drop_reads_past(&self, headroom: super::headroom::Headroom) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).headroom = Some(headroom);
     }
 
     /// Takes the share as a snapshot kept it ([`save`](Self::save)), into a server no guest
@@ -1713,6 +1724,11 @@ impl Server {
                 r.0.resize(at.saturating_add(size as usize), 0);
                 let n = pread(fd, r.0.get_mut(at..).unwrap_or_default(), offset)?;
                 r.0.truncate(at.saturating_add(n));
+                if let Some(headroom) = s.headroom.as_mut()
+                    && !headroom.fits(n as u64)
+                {
+                    drop_cached(fd, offset, n);
+                }
             }
             op::WRITE => {
                 self.writable(s, nodeid)?;
@@ -3313,6 +3329,22 @@ fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
     Ok(done)
 }
 
+/// Drops the host's cached pages of `len` bytes of `fd` at `offset`, clean ones that no
+/// process maps (posix_fadvise POSIX_FADV_DONTNEED), as the guest took them: a hint, which
+/// a host without it ignores.
+fn drop_cached(fd: RawFd, offset: u64, len: usize) {
+    #[cfg(target_os = "linux")]
+    {
+        let (Ok(offset), Ok(len)) = (libc::off_t::try_from(offset), libc::off_t::try_from(len)) else {
+            return;
+        };
+        // SAFETY: advice on a range of a descriptor the server holds.
+        unsafe { libc::posix_fadvise(fd, offset, len, libc::POSIX_FADV_DONTNEED) };
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (fd, offset, len);
+}
+
 fn pwrite(fd: RawFd, buf: &[u8], offset: u64) -> Result<usize, Errno> {
     let mut done = 0;
     while done < buf.len() {
@@ -4267,6 +4299,86 @@ mod tests {
         let forget = req(op::FORGET, node, 0, &1u64.to_le_bytes());
         assert!(!s.handle_into(&forget, &mut out));
         assert!(out.capacity() >= 16 + mib);
+    }
+
+    /// A share whose budget has no room past what its guest reads drops its host's copy as
+    /// the guest takes it, and one with room keeps it (D188, PM M318): the file's pages
+    /// resident after each read (mincore), the budget a fake cgroup tree's, its room a GiB
+    /// past every host's room for its reads.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_past_its_budget_drops_the_hosts_copy() {
+        use std::os::fd::AsRawFd as _;
+        let (p, s) = dir();
+        // SAFETY: zeroed plain data, which statfs fills.
+        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+        let path = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: statfs(2) of a NUL-terminated path into a buffer of its size.
+        assert_eq!(unsafe { libc::statfs(path.as_ptr(), &raw mut fs) }, 0);
+        if i128::from(fs.f_type) == i128::from(libc::TMPFS_MAGIC) {
+            eprintln!(
+                "SKIP: {} is on tmpfs, whose clean pages are never dropped",
+                p.display()
+            );
+            return;
+        }
+        let mib = 1usize << 20;
+        let file = p.join("big");
+        std::fs::write(&file, vec![7u8; 4 * mib]).unwrap();
+        let held = std::fs::File::open(&file).unwrap();
+        held.sync_all().unwrap();
+        // The pages of the file's first `len` bytes resident in the host's page cache.
+        let resident = || -> usize {
+            let len = 4 * mib;
+            // SAFETY: a read-only shared mapping of the file, which nothing else holds.
+            let at = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ,
+                    libc::MAP_SHARED,
+                    held.as_raw_fd(),
+                    0,
+                )
+            };
+            assert_ne!(at, libc::MAP_FAILED);
+            let mut vec = vec![0u8; len.div_ceil(4096)];
+            // SAFETY: mincore(2) of the mapping into a byte for each of its pages.
+            assert_eq!(unsafe { libc::mincore(at, len, vec.as_mut_ptr().cast()) }, 0);
+            // SAFETY: the mapping made above.
+            unsafe { libc::munmap(at, len) };
+            vec.iter().filter(|&&b| b & 1 == 1).count()
+        };
+        let cgroups = |high: u64, current: u64| {
+            let root = shards_testdir::TempDir::new("headroom-tree").unwrap();
+            let slice = root.join("a.slice");
+            std::fs::create_dir_all(&slice).unwrap();
+            std::fs::write(slice.join("memory.high"), format!("{high}\n")).unwrap();
+            std::fs::write(slice.join("memory.max"), "max\n").unwrap();
+            std::fs::write(slice.join("memory.current"), format!("{current}\n")).unwrap();
+            root
+        };
+        let node = found(&s, ROOT, "big");
+        let fh = open(&s, node, 0);
+        for (room, kept) in [(0, false), (1 << 30, true)] {
+            drop_cached(held.as_raw_fd(), 0, 4 * mib);
+            assert_eq!(resident(), 0, "the file's pages were not let go before the read");
+            let tree = cgroups(2 << 30, (2 << 30) - room);
+            s.drop_reads_past(super::super::headroom::Headroom::under(
+                &tree,
+                std::path::Path::new("a.slice"),
+            ));
+            for at in 0..4 {
+                let (e, data) = read(&s, node, fh, (at * mib) as u64, u32::try_from(mib).unwrap());
+                assert_eq!((e, data.len()), (0, mib));
+            }
+            let pages = resident();
+            assert_eq!(
+                pages > 0,
+                kept,
+                "with {room} bytes of room, {pages} pages of the read kept"
+            );
+        }
     }
 
     /// OPEN of `node` with guest `flags`: its handle.

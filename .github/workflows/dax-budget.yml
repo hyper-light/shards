@@ -3,24 +3,17 @@ name: DAX budget
 # What a microVM held to a budget pays to read a file through its volume's DAX window, on
 # CI's runners (D188, D189): docs/research/measurements/dax-budget/measure.py, its samples
 # and profiles kept as the run's artifact; x86_64 alone, as hosted arm64 runners have no
-# /dev/kvm. Runs when the experiment changes, or when asked. The experiment now: a run
-# alone in its slice (a pool of none) held under a budget a mebibyte short of what it holds
-# (`short`), where on an EPYC 7763 the FUSE budget E2E's reads took 2.3 times their time
-# with none, its slice taking back its guest's RAM (its template's mapped pages, 67 MiB to
-# 15) beside 213 MiB of the share's copy of what it read: with the tree, with the share
-# dropping its copy of each range its guest has read (share-dontneed.patch), dropping only
-# what its budgets have no room for (share-headroom.patch, whose slice sat at its budget
-# through every read held short on a 9V74, 40093677719), dropping it under any budget and
-# keeping it under none (share-budgeted.patch), and keeping it only while its budgets leave
-# room past it for its own reads (share-margin.patch); and, as a lone microVM's template's
-# pages taken back under its budget were counted as room it was given (40102157076,
-# 40105729007), the daemon holding what its microVMs mapped at most as held, alone
-# (room.patch) and with share-margin.patch (share-margin-room.patch), beside the same reads
-# with no budget, on eight runners at once. pcp-small.patch holds each CPU's
-# lists of free pages in its guest to their least, least-x*.patch give the tree's least
-# room 2 to 16 times over, ws-reads.patch a pool under a budget mapping ahead none of the
-# pages its working set's guest wrote, and --as-e2e the FUSE budget E2E's phases, where
-# asked.
+# /dev/kvm. Runs when the experiment changes, or when asked. The experiment now: the tree,
+# its daemon holding what its microVMs held resident at most of their files as held and its
+# share keeping its copy of what its guest reads only within its budgets' room (PM M318), a
+# run alone in its slice (a pool of none) under a budget a mebibyte short of what it holds
+# (`short`) and under none, on eight runners at once. Each patch here is an arm of the tree
+# it was measured on (PM M314, M318, whose runs say which), given by name where asked: the
+# share's and the room's arms (share-*.patch, room.patch) of the tree before both were
+# taken, pcp-small.patch holds each CPU's lists of free pages in its guest to their least,
+# least-x*.patch give the least room 2 to 16 times over, ws-reads.patch a pool under a
+# budget mapping ahead none of the pages its working set's guest wrote; and --as-e2e runs
+# the FUSE budget E2E's phases.
 on:
   push:
     paths:
@@ -30,10 +23,10 @@ on:
     inputs:
       args:
         description: measure.py's arguments, after its build and output directory
-        default: --files sparse --rounds 6 --pool 0 --highs short,infinity --arms share-margin,share-margin-room,room
+        default: --files sparse --rounds 6 --pool 0 --highs short,infinity --arms none
       fuse:
         description: patches of docs/research/measurements/dax-budget, each built and measured as an arm through FUSE, by name
-        default: share-margin share-margin-room room
+        default: ''
       huge:
         description: build the arm whose window ranges are on huge pages (huge.patch), for --arms huge
         type: boolean
@@ -85,7 +78,7 @@ jobs:
       # removed too, as two that add one file would not both apply.
       - name: Build
         env:
-          FUSE: ${{ github.event.inputs.fuse || 'share-margin share-margin-room room' }}
+          FUSE: ${{ github.event.inputs.fuse || '' }}
           HUGE: ${{ github.event.inputs.huge == 'true' && 'huge' || '' }}
         run: |
           cargo build --locked -p shards --release
@@ -99,8 +92,8 @@ jobs:
           done
       - name: Measure
         env:
-          ARGS: ${{ github.event.inputs.args || '--files sparse --rounds 6 --pool 0 --highs short,infinity --arms share-margin,share-margin-room,room' }}
-          FUSE: ${{ github.event.inputs.fuse || 'share-margin share-margin-room room' }}
+          ARGS: ${{ github.event.inputs.args || '--files sparse --rounds 6 --pool 0 --highs short,infinity --arms none' }}
+          FUSE: ${{ github.event.inputs.fuse || '' }}
         run: |
           lscpu | grep -E 'Model name' || true
           free -m

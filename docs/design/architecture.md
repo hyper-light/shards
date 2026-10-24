@@ -5729,6 +5729,39 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1 to 4 MiB for one
   without, PM M309; on the Mac they bought no time, PM M62), and none is made ahead of the
   runs that wait where its budget has no room.
+- **What its host takes back of its guest's RAM is no room** (PM M318). A restored guest's
+  RAM is its template's file pages as much as its anonymous memory, and a budget's host
+  takes back file pages first. Counted as room as they went, with the inactive pages kept
+  beside them, a lone microVM's 71 MiB of them told its guest 111 MiB of room where its
+  budget was 23 MiB short; its page cache filled it in 3 s, its host then took back all of
+  its RAM it could, and its vCPUs were throttled 68 s as its guest read it back, each
+  give-back of a pressure pass telling it its room again. Each microVM's file pages are
+  held at the most its VM process has held resident since its run began (its `RssFile`,
+  which another VM sharing its template's pages leaves as it is), less those of them it
+  let go as it gave back, and counted afresh as a budget is set or changed: its host's
+  taking them back makes no room, its own giving back does. Held a mebibyte short, alone
+  in its slice, a gigabyte's read through FUSE took 0.74 to 0.90 times its time with none
+  at p50 on each of 5 runner CPUs (EPYC 7763, 9V45 and 9V74, Xeon 8573C and 6973P-C), 1.85
+  at most, its slice refaulting none at p50; none of its 126 ran away, where 7 did with
+  the share's copy kept within its reads' room alone and 31 of 144 on the tree.
+- **The share's copy of what its guest reads, kept only within its budgets' room** (PM
+  M318). What a share reads for its guest its guest keeps in its own page cache, so the
+  copy its host's page cache keeps beside it is a second one, under a budget charged to
+  the run: as the tree's copy filled a lone microVM's slice, its host took back the
+  guest's RAM, the slice's mapped files falling from 67 MiB to 15 while it held 213 MiB of
+  the copy. The share process drops its copy of each range it reads (`posix_fadvise`
+  `POSIX_FADV_DONTNEED`, which lets go of the range's clean pages no process maps, another
+  program's of the same file among them) once keeping it would leave the budgets over its
+  cgroups, each `memory.high` and `memory.max` short of `max` from its own up, less room
+  past it than its own reads need: what its host's kernel charges ahead on each CPU, the
+  read in flight and two read-ahead windows, as init's least room has them
+  (`fs::headroom`, 2.25 MiB on 4 CPUs, looked at again a hundred looks' time after the
+  last). Within that room it keeps its copy, for the run's next reader. Held so short, a
+  lone microVM's reads took 0.81 times their time with none at p50 with the copy dropped,
+  1.9 with the tree's, and 1.01 with it kept until its budgets had no room left, its slice
+  then within half a mebibyte of its budget; under a budget with room, a run's later reads
+  of a written gigabyte took 1.74 to 2.45 s at p50 as with the tree's, where dropped under
+  every budget they took 2.91 to 3.94, read from its host's disk again.
 - **The share's own memory held still** (PM M314). A share's process, and its VM process's
   queue workers, read each request into and build each reply in buffers each keeps from
   one request to the next (`Server::handle_into`, fs/mod.rs `Buffers`), a frame's size at
@@ -5838,9 +5871,11 @@ and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 1
 staying (p50) in 3 of its 8 blocks; online as auto-movable, 14 MiB in one; all movable,
 none. Plugged memory stays the kernel's own (D133).
 
-**Not yet.** A budget below what a lone microVM's guest needs resident leaves its host only
-that guest's RAM to take back: held at 95 MiB, a gigabyte's read took 41 s, its slice
-refaulting 4.3 million of its template's pages (PM M314). Builders (D133) give back
+**Not yet.** A budget below what a cold-booted microVM holds cannot be met: its guest's RAM
+is all anonymous memory, which its host cannot take back without swap, and a read under
+such a budget is throttled for as long as it runs (761 to 1,729 s a gigabyte, PM M318),
+where one restored from its template holds that template's clean pages beside as much
+anonymous memory, which its host may take back. Builders (D133) give back
 nothing at pressure: a build runs in `shards build`'s
 own process, not the daemon's. And they hold little a pass could take (PM M295): what a
 builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73

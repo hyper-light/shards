@@ -12,9 +12,10 @@ guest's dd waited, and where the VM process's threads other than its vCPUs waite
 wchan, in the samples' looks; and in the slice's looks during the short reads, what
 its budget had left below it (memory.high less memory.current, short of none where it was
 past it), its file pages processes mapped (its microVM's template's among them) and its
-anonymous memory; and how many of the short reads ran away, a look finding its mapped files
-under 5 MiB and its anonymous memory within 16 MiB of its budget: its guest's page cache
-filling the budget, its host taking back its RAM, which its guest read back (PM M318).
+anonymous memory; and how many of the short reads ran away, two looks or more finding its
+mapped files under 5 MiB and its anonymous memory within 16 MiB of its budget: its guest's
+page cache filling the budget, its host taking back its RAM, which its guest read back (PM
+M318).
 
     rooms.py [--after N] RUN...   (each run's job logs fetched, its artifacts kept in
                                    ./art-RUN-COPY; --after N leaves out rounds 1 to N, as
@@ -184,9 +185,9 @@ for cpu in sorted({r["cpu"] for r in rows}):
                         threads.update(r["host"][1])
                 print(f"    dd waits        {dd.most_common(4)}")
                 print(f"    VM threads wait {threads.most_common(4)}")
-                ran = [r for r in sel if r["host"] and any(
+                ran = [r for r in sel if r["host"] and sum(
                     l.get("file_mapped", MIB_RAN) < MIB_RAN and l.get("anon", 0) > l["high"] - (16 << 20)
-                    for l in r["host"][2])]
+                    for l in r["host"][2]) >= 2]
                 print(f"    ran away: {len(ran)} of {len(sel)}")
                 looks = [l for r in sel if r["host"] for l in r["host"][2]]
                 print(f"    below its budget KiB a look {summary([l['below'] / 1024 for l in looks], 0)}")

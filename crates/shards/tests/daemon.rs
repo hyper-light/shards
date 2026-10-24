@@ -1858,17 +1858,24 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         said()
     );
     budget(&held.to_string());
-    let exec = run_shards_env(
-        &["exec"],
-        &["held", "/bin/testguest", "read", "/vol/big"],
-        &env,
-        Duration::from_secs(600),
-    );
-    assert_eq!(exec.status, Some(0), "{exec}\nthe daemon's log:\n{}", said());
-    let late = took("a read under a budget set as its run went", &exec.stdout);
+    // Three reads, each in the run begun under no budget, their median held to the bound
+    // as each phase's is: one read alone, beside the whole suite on a CI runner, once took
+    // 2.09 times (CI 40088873246).
+    let late: Vec<u64> = (0..3)
+        .map(|_| {
+            let exec = run_shards_env(
+                &["exec"],
+                &["held", "/bin/testguest", "read", "/vol/big"],
+                &env,
+                Duration::from_secs(600),
+            );
+            assert_eq!(exec.status, Some(0), "{exec}\nthe daemon's log:\n{}", said());
+            took("a read under a budget set as its run went", &exec.stdout)
+        })
+        .collect();
     assert!(
-        late <= 2 * unbudgeted,
-        "a read under a budget set as its run went took {late} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
+        median(late.clone()) <= 2 * unbudgeted,
+        "reads under a budget set as their run went took {late:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
         said()
     );
     // Its VM process, which `rm -f` leaves ending once its run has: until it has, the
@@ -2017,7 +2024,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     let _ = run_shards_env(&["rm"], &["-f", "short"], &pool_of_none, TIMEOUT);
     // Each phase's reads, for a run's record (.github/workflows/budget-e2e.yml).
     eprintln!(
-        "reads in ms: under none {unbudgeted} (the median); under {} MiB {budgeted:?}; under it set as its run went {late}; held within the least room under {} MiB {held_short:?}",
+        "reads in ms: under none {unbudgeted} (the median); under {} MiB {budgeted:?}; under it set as its run went {late:?}; held within the least room under {} MiB {held_short:?}",
         held >> 20,
         short >> 20
     );

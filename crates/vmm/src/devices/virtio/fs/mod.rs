@@ -5,6 +5,7 @@
 //! one high priority queue and the request queues the device says it has (here one):
 //! FORGETs and INTERRUPTs come on the first, everything else on the second.
 
+pub mod headroom;
 pub mod host;
 pub mod server;
 pub mod window;
