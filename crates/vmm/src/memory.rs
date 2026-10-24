@@ -997,13 +997,6 @@ impl<'a> Access<'a> {
         {
             return Ok(0);
         }
-        // A working set being recorded keeps what the host held of it.
-        if let Some(kept) = lock(&self.mem.given_back).as_mut()
-            && let Some((region, r)) =
-                (self.mem.regions.iter().enumerate()).find(|(_, r)| start >= r.gpa && end <= r.end())
-        {
-            kept.keep(region, ((start - r.gpa) / page) as usize, host, size);
-        }
         unmap(start, size)?;
         // SAFETY: whole host pages of guest RAM, which the guest holds free and no host
         // thread accesses under this access: a device's buffers are the guest's in use.
