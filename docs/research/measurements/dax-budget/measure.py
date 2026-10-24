@@ -479,6 +479,12 @@ def one(arm, file, high, name, budget=None, cached=False, keep=False):
     budget taken off after, unless `keep`."""
     if not os.path.isdir(homes[arm]):
         run(arm, "pull", "-q", "alpine")
+        # The image's first run boots cold and saves its template, its guest's RAM all
+        # anonymous memory its host cannot take back without swap: a budget a mebibyte
+        # short of it cannot be met, and its read is throttled for as long as it runs
+        # (811 to 1,520 s: DAX budget runs 40076551870, 40082475577). Made here, unbudgeted, so that every
+        # read's run restores the template, as a user's second run does.
+        run(arm, "run", "--rm", "--pull", "never", "alpine", "true")
     held_to = []
     if a.guest_mib:
         held_to = ["--memory", f"{a.guest_mib}m", "--memory-swap", f"{a.guest_mib}m", "--oom-kill-disable"]
