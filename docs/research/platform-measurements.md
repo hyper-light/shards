@@ -12792,3 +12792,46 @@ revision before comparing a changed API/implementation.
   blocks as they are; a map-back takes from the guest, and gives back, only the blocks it
   changes (`Head::changing`), on HVF the only backend whose stage 2 it touches. Measured
   on the Mac alone: a Linux host's map-back reads no index now either, unmeasured since.
+
+### M312. What a restore's working set holds of its guest's pages on CI's runners, and the host's fault-around (D25)
+
+- **Question.** e21790a5 has `shards restore DIR` record its working set and the next
+  restore map it ahead (PM M310's faults): with it the comparison's restores reached
+  their first beat 2.8 to 6.0 ms before Firecracker's, but their memory file held more
+  than Firecracker's on Linux 6.17. What does the working set hold, against the 558 to
+  595 pages its guest faults to its first beat (M310)?
+- **Method.** The restore-faults job (`.github/workflows/restore-faults.yml`), eight
+  runners, each the comparison twice (its snapshots read into the page cache first and
+  not), n 30 restores a VMM a pass, its restore arm's `logged_prefetched_pages` (the
+  pages the restore mapped ahead, from its VM's log) and each VMM's `rss_file`: at
+  9b99d0be (no working set) run 40048168045, at e21790a5 run 40050382599, ubuntu-24.04
+  runners on Linux 6.17.0-1022-azure and ubuntu-26.04 ones on 7.0.0-1017-azure. The
+  recorder's account of a page touched is its host's (/proc/self/pagemap's present bit,
+  `platform::mapped_pages`); the kernel's read fault on a file's page maps the pages
+  around it its page cache holds too, 16 at the default `fault_around_bytes`
+  (mm/memory.c, `do_read_fault`, `should_fault_around`), unless the range is registered
+  with a userfaultfd for write-protection or minor faults (`uffd_disable_fault_around`),
+  which an asynchronous write-protecting one may be over any memory with no privilege
+  (mm/userfaultfd.c, `vma_can_userfault`: `wp_async`; Linux 6.7).
+- **Results.**
+  - The working set mapped ahead: 2,753 to 2,902 pages at the median, every runner, both
+    kernels: 4.6 to 5.2 times the pages its guest faults to its first beat.
+  - Restore `rss_file`, shards: 9.0 to 9.6 MiB at 9b99d0be on every runner and kernel,
+    11.6 to 12.3 at e21790a5; Firecracker's 11.3 to 12.1 on 6.17 and 13.5 to 14.3 on
+    7.0. On 6.17 the working set took shards from 2.0 to 3.0 MiB under Firecracker to 0.1
+    to 0.6 over it in seven of eight passes (tied in one).
+  - Restore `to_beat`, shards against Firecracker, the envelope's paired median
+    differences: at 9b99d0be from 1.25 ms worse to 1.08 better, worse in 4 passes of 16;
+    at e21790a5 from 2.8 to 6.0 ms better in all 16 (the 9V45s on 6.17 at 5,575 to 5,746 µs
+    at the median against Firecracker's 8,535 to 9,619).
+- **Reading.** A working set recorded by the host's page tables holds the pages the
+  host's fault-around mapped beside each the guest touched, four to five times as many,
+  and a restore that maps it ahead holds all of them, which the restore without it never
+  touches by its first beat. Recorded with fault-around held off, the host maps what the
+  guest touched alone; mapped ahead with it held off too, a restore holds those pages.
+- **Consequence.** D25: a restore that records its working set, and one that maps it
+  ahead, holds the host's fault-around off over its guest's memory and pmem meanwhile
+  (`platform::FaultAroundOff`, a userfaultfd registered for asynchronous write-protection
+  that never write-protects; seccomp allows its handshake and registration), on Linux
+  6.7 and later; before 6.7, or where a container's filter refuses userfaultfd, both go
+  on as before. Held by `fault_around_held_off_maps_the_touched_page_alone`.

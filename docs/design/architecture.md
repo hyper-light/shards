@@ -890,6 +890,16 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     present and file-page bits, which need no privilege). Recording costs it nothing.
     The saving run's pages are not a restore's: only 5–16% of a restore's request pages
     were among them, while one restore's were 99.7–100% of the next's [PM M33].
+    `shards restore DIR` records one the same way on a generation's first restore, its
+    spawner keeping it (D30), and later restores map it ahead. A page its host maps is
+    not always one its guest touched: a read fault on a file maps the pages around it its
+    page cache holds too (fault-around), and the comparison's working sets held 4.6 to
+    5.2 times the pages their guests faulted, every one mapped ahead, 2.5 to 3 MiB more
+    of the memory file than a restore without one held [PM M312]. A restore that records
+    its working set, and one that maps it ahead, hold the host's fault-around off over
+    its guest's memory and pmem meanwhile (`platform::FaultAroundOff`: a userfaultfd
+    registered for asynchronous write-protection, Linux 6.7, that write-protects nothing
+    and handles no fault); elsewhere both go on as before.
   - The whole way from the request to the command's start is recorded, however long a
     host takes over it; the cap only ends a long command's recording.
   - It is written through the directory held open since the snapshot (or the restore),
