@@ -1030,15 +1030,19 @@ mod tests {
         // Files let go past what it gave back went otherwise: taken back, no room.
         assert_eq!(given_back(120 * MIB, 80 * MIB, 40 * MIB, 30 * MIB), 90 * MIB);
         budgets.gave_back(9, Some(MIB), MIB);
-        // Its own process, on a host whose processes have /proc entries: what it holds
-        // resident read whole, none of it taken back between two looks at once.
+        // Its own process, on a host whose processes have /proc entries: its most raised to
+        // the files it holds resident, read from its own entry. (Not that none goes between
+        // two looks: the test binary's other tests, beside it, unmap files as they run.)
         if std::path::Path::new("/proc/self/status").exists() {
             let me = std::process::id();
             let followed = lock(&budgets.held).remove(&7).unwrap();
             lock(&budgets.held).insert(me, followed);
-            assert!(resident_file(me).is_some_and(|b| b > 0));
+            lock(&budgets.held).get_mut(&me).unwrap().most = 0;
             budgets.evicted(&[(me, 0)]);
-            assert!(budgets.evicted(&[(me, 0)]) < 4 * MIB);
+            assert!(
+                lock(&budgets.held)[&me].most > 0,
+                "its most raised to what it holds"
+            );
         }
     }
 

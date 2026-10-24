@@ -1114,18 +1114,34 @@ fn decode_working_set(bytes: &[u8], page: u64, max_pages: usize) -> codec::Resul
         })
     })?;
     r.finish()?;
-    let aligned = pages.iter().all(|t| page.is_power_of_two() && t.gpa % page == 0);
+    let misaligned = pages
+        .iter()
+        .filter(|t| !page.is_power_of_two() || t.gpa % page != 0)
+        .count();
     // Reserved as the entries were: a set the host cannot hold is refused, not an abort.
     let mut gpas: Vec<u64> = Vec::new();
     gpas.try_reserve_exact(pages.len())
         .map_err(|e| DecodeError(format!("a working set of {} pages: {e}", pages.len())))?;
     gpas.extend(pages.iter().map(|t| t.gpa));
     gpas.sort_unstable();
-    let distinct = gpas.windows(2).all(|w| matches!(w, [a, b] if a != b));
-    if !aligned || !distinct {
-        return Err(DecodeError(
-            "a working set whose pages are not aligned and distinct".into(),
-        ));
+    let twice: Vec<u64> = gpas
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] if a == b => Some(*a),
+            _ => None,
+        })
+        .collect();
+    if misaligned > 0 || !twice.is_empty() {
+        // Said whole, as a set refused is not kept: which of its pages broke it.
+        return Err(DecodeError(format!(
+            "a working set whose pages are not aligned and distinct: of {} pages, {misaligned} not on a page of {page} bytes and {} recorded twice{}",
+            pages.len(),
+            twice.len(),
+            match (twice.first(), twice.last()) {
+                (Some(first), Some(last)) => format!(", from {first:#x} to {last:#x}"),
+                _ => String::new(),
+            }
+        )));
     }
     Ok(Some(pages))
 }
@@ -1400,6 +1416,16 @@ mod tests {
             let bytes = encode_working_set(&touches(bad), 16384);
             assert!(decode_working_set(&bytes, 16384, 8).is_err(), "{bad:x?}");
         }
+        // A set refused says which of its pages broke it, as it is not kept.
+        let bytes = encode_working_set(
+            &touches(&[0x8000_4000, 0xc000_0000, 0x8000_4000, 0x9000_0002]),
+            16384,
+        );
+        let said = decode_working_set(&bytes, 16384, 8).unwrap_err().0;
+        assert!(
+            said.ends_with("of 4 pages, 1 not on a page of 16384 bytes and 1 recorded twice, from 0x80004000 to 0x80004000"),
+            "{said}"
+        );
     }
 
     /// A few bytes claiming 2^26 pages fail before anything is allocated for them (audit
