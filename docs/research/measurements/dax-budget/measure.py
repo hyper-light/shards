@@ -51,7 +51,9 @@ reader's own memory a mebibyte past its budget, which its host throttled: its re
 Prints n, p50, p90, p99 and max of each read's seconds, with host, OS and revision. Into
 OUT, for each read, what its slice held each second (memory.current, memory.stat's file,
 anon and reclaim counters, memory.events, memory.pressure), its VM process's vCPU threads'
-states and CPU times, and KVM's counters of its VM where `sudo -n` reads debugfs; with
+states and CPU times, KVM's counters of its VM where `sudo -n` reads debugfs, and the VM
+process's RssFile beside how much of its template's memory file its host's page cache
+holds (fincore(1)); with
 --perf, a profile of the whole host 5 to 15 s into each read (`sudo -n perf`).
 
 Into OUT/<case>.txt each second, too, each thread of each VM process in the slice, its
@@ -302,6 +304,25 @@ def kvm(pid):
     return done.stdout.strip()
 
 
+def files(pid):
+    """Its RssFile, KiB, and of its template's memory file the bytes its host's page cache
+    holds and the file's size (fincore(1), which faults none in): whether its host took
+    its guest's RAM back from its page cache or only unmapped it (PM M318)."""
+    try:
+        with open(f"/proc/{pid}/status") as s:
+            rss = next((l.split()[1] for l in s if l.startswith("RssFile")), "?")
+        with open(f"/proc/{pid}/maps") as m:
+            memory = next((l.split()[-1] for l in m
+                           if "/templates/" in l and l.rstrip().endswith("/memory")), None)
+    except OSError as e:
+        return str(e)
+    if not memory:
+        return f"RssFile {rss}"
+    done = subprocess.run(["fincore", "--bytes", "--noheadings", "--output", "RES,SIZE", memory],
+                          capture_output=True, text=True)
+    return f"RssFile {rss} memory {done.stdout.strip() or done.stderr.strip()[:80]}"
+
+
 def held(f, when, arm, guest=True):
     """What each VM process in the slice holds, mapping by mapping (/proc/PID/smaps: each
     with a MiB or more resident, its Rss, Anonymous, Private_Dirty, Shared_Clean and
@@ -370,6 +391,7 @@ def sample(path, stop):
                     lines.append(f"vm {pid} {threads(pid)}")
                     lines.append(f"threads {pid} {every_thread(pid)}")
                     lines.append(f"kvm {kvm(pid)}")
+                    lines.append(f"files {pid} {files(pid)}")
             except (OSError, ValueError, IndexError) as e:
                 lines = [f"== {time.time():.3f} {e}"]
             f.write("\n".join(lines) + "\n")

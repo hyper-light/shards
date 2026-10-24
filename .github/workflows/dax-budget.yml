@@ -99,6 +99,10 @@ jobs:
           free -m
           # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
           sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
+          # How this host's kernel reclaims a slice's pages: the multi-gen LRU or the two
+          # lists, and the config it was built with (PM M318).
+          echo "lru_gen enabled: $(cat /sys/kernel/mm/lru_gen/enabled 2>/dev/null || echo none)"
+          grep -E '^CONFIG_(LRU_GEN|LRU_GEN_ENABLED|LRU_GEN_WALKS_MMU)=' "/boot/config-$(uname -r)" || true
           # A profile only where asked (--perf in the arguments): it samples the whole host 5
           # to 15 s into each read, which slows the slow reads it profiles.
           # Pushed: the experiment above; asked for: the arguments asked with.
