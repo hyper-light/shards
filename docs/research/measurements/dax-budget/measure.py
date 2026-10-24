@@ -53,7 +53,7 @@ OUT, for each read, what its slice held each second (memory.current, memory.stat
 anon and reclaim counters, memory.events, memory.pressure), its VM process's vCPU threads'
 states and CPU times, KVM's counters of its VM where `sudo -n` reads debugfs, and the VM
 process's RssFile beside how much of its template's memory file its host's page cache
-holds (mincore(2)); with
+holds (mincore(2)), and the whole host's reclaim and memory pressure; with
 --perf, a profile of the whole host 5 to 15 s into each read (`sudo -n perf`).
 
 Into OUT/<case>.txt each second, too, each thread of each VM process in the slice, its
@@ -365,6 +365,23 @@ def files(pid):
         return f"unread: {e}"
 
 
+HOST_VMSTAT = ("pgscan_kswapd", "pgsteal_kswapd", "pgscan_direct", "pgsteal_direct", "workingset_refault_file",
+               "allocstall_normal", "allocstall_movable", "pgmajfault")
+
+
+def host_reclaim():
+    """The whole host's reclaim counters (/proc/vmstat) and its memory pressure's total
+    (/proc/pressure/memory, `some` and `full` stall microseconds): what the runner's own
+    reclaim takes beside the slice's (PM M318)."""
+    try:
+        with open("/proc/vmstat") as f:
+            stat = dict(line.split() for line in f if line.split()[:1] and line.split()[0] in HOST_VMSTAT)
+        with open("/proc/pressure/memory") as f:
+            stalls = {w[0]: w[-1].split("=")[1] for w in (line.split() for line in f) if w}
+    except (OSError, ValueError, IndexError) as e:
+        return f"unread: {e}"
+    return " ".join(f"{k} {stat.get(k, '-')}" for k in HOST_VMSTAT) + f" some {stalls.get('some', '-')} full {stalls.get('full', '-')}"
+
 def copy():
     """Of the files the guests read (those of the volume a MiB or larger), the bytes the
     host's page cache holds: the share's copy of what its guest reads (PM M318)."""
@@ -443,6 +460,7 @@ def sample(path, stop):
                     "events " + read("memory.events").replace("\n", " "),
                     "pressure " + read("memory.pressure").splitlines()[0],
                     f"copy {copy()}",
+                    f"host {host_reclaim()}",
                 ]
                 for pid in vm_pids():
                     lines.append(f"vm {pid} {threads(pid)}")
