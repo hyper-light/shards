@@ -15,6 +15,8 @@ on:
       - "!docs/research/measurements/**/*.json"
       - "!.github/workflows/dax-budget.yml"
       - "!.github/workflows/dax-boot-memory.yml"
+      - "!.github/workflows/envelope.yml"
+      - "!.github/workflows/restore-faults.yml"
   pull_request:
 
 permissions:
