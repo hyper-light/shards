@@ -1286,9 +1286,9 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
    - Timer lateness drops from ~26% of the interval to 5–19 µs (M10).
    - Kick latency drops to 0.9 µs busy / 4.5 µs idle (M9).
    - Interrupt p99 drops to ≤11 µs (M8).
-   - Open risk: XNU's real-time fail-safe demotion under CPU-bound guests, and
-     fairness across many VMs. Must be measured before committing (see open
-     questions).
+   - XNU's real-time fail-safe under CPU-bound guests, and fairness across many VMs:
+     measured in M317. A thread at the policy that runs a second without blocking is
+     depressed to priority 0; a governor moves one that runs long to timeshare first.
 4. **Keep the 16 KiB IPA granule for RAM.**
    - First-touch costs ~1.1–1.4 µs per 16 KiB page, about 4× cheaper per byte than
      4 KiB (M5).
@@ -1323,8 +1323,9 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 
 ## Open questions (to measure)
 
-- Behaviour of real-time vCPU threads under sustained CPU-bound guests:
-  - demotion, throughput, and host responsiveness with N ≫ cores VMs.
+- ~~Behaviour of real-time vCPU threads under sustained CPU-bound guests~~.
+  - Answered by M317: demotion, throughput, and host responsiveness with 54 busy vCPUs
+    on 18 cores.
 - ~~Whether GIC plus vCPU state restore fits in <100 µs~~.
   - Answered by M14: the blob path does not fit (1.2 ms).
   - The register-level path does: ~20 µs for the distributor plus ~0.5 µs per vCPU.
@@ -13088,3 +13089,108 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D25: the restore's working set mapped ahead, with fault-around held off
   for the machine's life, is the restore; the comparison's envelope holds across runner
   CPUs.
+
+### M317. A busy microVM's threads under XNU's real-time fail-safe, and its device workers on a busy host (D4)
+
+- **Question.** A microVM's vCPU threads run at Mach's time-constraint policy (D4, M8, M10),
+  and D4 left open what XNU does to them when a guest keeps them busy. A gate's block
+  stress test once verified 104 reads where alone it verified 250,000, its device workers
+  at the default policy. What does the fail-safe do to a busy run's vCPUs and to its host,
+  and at which policy do device workers keep their throughput on a busy host?
+- **Method.** `docs/research/measurements/macos-sched/`, every program started as a launchd
+  job of the user's session (`launchd-run.sh`, ProcessType Interactive), as a user's
+  terminal starts one: an agent's own session runs under a utility QoS clamp, every thread
+  at priority 20 or below and QoS requests above it clamped to it (`qos.py` there, spinning
+  threads as `ps -M` shows them: user-interactive, initiated, default and utility at 15,
+  11, 12 and 16; under launchd 37, 37, 31 and 20).
+  The 2026-10-22 policy A/B (block stress under 18 busy loops: default 63–76k verified
+  reads, user-interactive 61–95k, time-constraint 246–265k, n 5 each) ran under the clamp,
+  so its user-interactive arm was the clamp's utility.
+  - XNU's source, apple-oss-distributions/xnu main (xnu-12377.121.6): osfmk/kern/priority.c
+    `thread_quantum_expire` (the fail-safe), sched_prim.c (`MAX_UNSAFE_RT_QUANTA` 100,
+    `SAFE_RT_MULTIPLIER` 2, the 10 ms quantum, `computation_metered`), thread_policy.c
+    (DEPRESSPRI for a real-time thread the fail-safe demoted; `thread_policy_set` removes a
+    thread's QoS as it sets another policy; QoS settable only by the thread itself),
+    sched.h (`SCHED_TICK_SHIFT` 3, a 125 ms tick).
+  - `spin.c`: 18, 12 and 6 threads spinning 5 s at the vCPUs' policy, at QoS
+    user-interactive and at the default, the CPU time each got, 2 rounds;
+    `spin-timeline.c`: four at the vCPUs' policy, their policy and CPU every 50 ms, read by
+    a thread at a tighter constraint (0.1 ms in 0.2).
+  - `failsafe.sh`: runs of busy loops for 15 s (`alpine`, `timeout 15 sh -c 'while :; do
+    :; done'`): one run of 4, one of 18, three of 18 at once (54 busy vCPUs on 18 CPUs,
+    every run with the host's CPUs as vCPUs, D191); every VM process's threads looked at
+    every 20 ms by `threads.py` (proc_pidinfo, itself at the time-constraint policy), a
+    host thread's 1 ms sleeps at the default priority (`probe.py`); `timeline.py` and
+    `summary.py` tabulate. The tree (64f0d399's build) and the governor's, in turn, tree,
+    governor, governor, tree, twice.
+  - `workers.sh`: the block stress test (tests/block.rs concurrent_readers: a guest's
+    readers of a virtio-blk disk, its reads verified in 3 s), 6 rounds of each arm in turn,
+    the order turned each round, with the host as it was and with 18 busy loops at the
+    default priority, as a user's build would have it. Arms by `SHARDS_VM_BINARY`: a
+    scratch build whose device workers take `SHARDS_WORKER_POLICY` (default,
+    user-interactive, time-constraint), and the governor's build.
+  - Apple M5 Max (6 Super, 12 Performance cores), macOS 26.4.1, 23a66853 and it with the
+    governor, 2026-10-24; the host's load average 31 to 134 throughout, other projects'
+    work at utility QoS.
+- **Results.**
+  - The fail-safe, from the source. A thread at the time-constraint policy that runs 100
+    quanta, a second, without blocking is demoted to timeshare for 200 quanta at priority
+    0, below every thread of its host. Its count is its CPU time since it last woke from a
+    block, preemptions and other policies included, and its release is looked for only as
+    the thread runs. Setting the policy takes a thread's QoS class off: user-interactive
+    asked before it, none after, and none at timeshare (`policy-qos.c`), as M8 and M10's
+    `--qos=ui --rt` threads had it too.
+  - Measured on spinners. Four at the vCPUs' policy ran 50 ms of every 50 for 1.0 s, then
+    0 to 4 ms of every 50 for the 7 s that followed, never released. 18, 12 and 6 got 0.18
+    to 0.20 of a CPU each over 5 s (3.2 to 3.3, 2.35 and 1.2 CPUs together), where at
+    user-interactive they got 0.93 to 1.00 (16.8 to 17.0, 11.6, 6.0) and at the default
+    0.85 to 1.00 (15.6 to 16.3, 11.4 to 11.6, 6.0).
+  - Runs of busy loops, tree against the governor, four rounds each in turn (`summary.py`
+    over the loops' seconds 3 to 16; the busy vCPUs' CPUs together, the share of their
+    looks at priority 0, the host thread's longest wait):
+
+    | Load | Tree: CPUs | depressed | host waited | Governor: CPUs | depressed | host waited |
+    |---|---|---|---|---|---|---|
+    | 1 run, 4 loops | 0.97, 3.25, 1.94, 1.32 | 41, 17, 30, 70% | ≤ 5 ms | 3.99, 3.99, 4.00, 3.99 | 0% | ≤ 5 ms |
+    | 1 run, 18 loops | 11.9, 11.8, 11.1, 9.6 | 0% | 8.7, 7.3, 7.4, 30.1 ms | 16.0, 16.1, 16.2, 16.3 | 0% | 13.9, 9.2, 12.9, 32.5 ms |
+    | 3 runs, 18 loops each | 11.9, 10.0, 11.2, 9.2 | 0 to 10% | 961, 1,453, 5, 6,424 ms | 16.1, 16.3, 16.2, 16.1 | 0% | 5.1, 7.0, 11.1, 13.7 ms |
+
+    The first two governor rounds are the first governor's (below), the last two the
+    governor's as built; the host's load average 35 to 134. On the tree a busy vCPU that
+    never idled was depressed within 1 to 5 s of its loop's start and stayed so 2 to 13 s
+    at a time (one: a second's CPU by 8.3 s, 3 ms in the 3 s after); with 18 loops each
+    vCPU idled in HVF's in-kernel WFI often enough to start its count again, and none was.
+    The governor's vCPUs were at timeshare within 0.2 s of their loops' start, the host's
+    thread then waiting on them as on its other programs: more than 5 ms late 67 to 121
+    times in 14 s with 18 loops, against 1 to 3 on the tree, where only 9.6 to 11.9 of 18
+    CPUs went to the guest.
+  - Device workers, verified reads in 3 s, n 6 each, p50 (min to max). The host as it was:
+    default 270k, user-interactive 266k, time-constraint 274k. With 18 busy loops: default
+    156k (124 to 184k), user-interactive 210k (192 to 248k), time-constraint 238k (192 to
+    249k); in each round time-constraint at or above user-interactive, and
+    user-interactive 35 to 55% above the default. A first governor, which moved a thread at
+    the first look to find it a tick past its last seen wait, verified 123k (112 to 135k)
+    with 18 busy loops, against the tree's 136k (123 to 169k) and unguarded
+    time-constraint's 213k (196 to 244k), n 6 each, interleaved (261k, 267k and 280k with
+    the host as it was): the stress's four vCPUs, each using half a CPU and waiting on the
+    device's answers the rest, were found at timeshare in 33 to 84% of looks, a thread at
+    timeshare on a busy host seldom found waiting rather than runnable, so seldom moved
+    back. The governor as built, which moves a thread only once a tick of millisecond looks
+    has found it running at every one, n 6 each, interleaved with both: 240.7k (186 to
+    246k) with 18 busy loops, unguarded time-constraint 223.9k (191 to 254k), the tree
+    143.9k (113 to 157k); with the host as it was 265.1k, 276.8k and 264.1k.
+  - The governor's cost: a look, `thread_info`, 0.52 µs, and a policy set 0.47 to 0.51 µs:
+    for a VM process's 18 vCPUs and 10 workers, 8 looks a second, about 120 µs of CPU a
+    second, and for a thread suspected, a look a millisecond for a tick. A run's start, `build-ab/ab.py`, 300 pooled `run --rm alpine true` through each
+    build in turn, both restoring the tree's template, the host's load average 40 to 69:
+    wall clock tree p50 9,391 µs (p90 11,140, p99 25,969, max 31,062), governor 9,245 (10,991,
+    32,367, 74,274), paired median −54 µs, 95% [−134, +34]; the command's time in the guest
+    −64 µs [−70, −55]; the rest +22 µs [−55, +86].
+- **Consequence (D4).** Every vCPU and device worker thread runs at the time-constraint
+  policy while it waits between runs, which is where M8 and M10 measured what the policy
+  gives a guest. A governor looks at each once a scheduler tick; one that has run a tick
+  since it was last seen waiting is looked at every millisecond for a tick more, and goes
+  to timeshare, as any program's thread, only if no look finds it waiting, three ticks at
+  most into the fail-safe's second; it is real-time again once seen waiting. A busy guest
+  shares its host's CPUs as its host's programs do; one waiting on its devices, and an
+  idle one, keep the policy.

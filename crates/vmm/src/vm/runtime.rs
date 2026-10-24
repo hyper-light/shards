@@ -988,11 +988,16 @@ fn vcpu_thread(
     start: machine::VcpuStart,
     created: &mpsc::Sender<Result<machine::SetUp, String>>,
 ) {
-    if let Err(e) = platform::prioritize_vcpu_thread()
-        && index == 0
-    {
-        warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
-    }
+    // Held while the vCPU runs.
+    let _prioritized = match platform::prioritize_vcpu_thread() {
+        Ok(prioritized) => Some(prioritized),
+        Err(e) => {
+            if index == 0 {
+                warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
+            }
+            None
+        }
+    };
     // Its part of the start goes with its setup.
     let (mut vcpu, set_up) = match machine::setup_vcpu(vm, index, start) {
         Ok(v) => v,
