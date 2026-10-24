@@ -12848,3 +12848,60 @@ revision before comparing a changed API/implementation.
   its handshake and registration), on Linux 6.7 and later; before 6.7, or where a
   container's filter refuses userfaultfd, it goes on as before. Held by
   `fault_around_held_off_maps_the_touched_page_alone`.
+
+### M313. A cold run's time on a loaded Mac, and where its outliers go (D2, D26)
+
+- **Question.** kiln's sandbox_launch on this Mac (its run 4, shards a9133de9) had 3 of 20
+  cold runs (a pool of none) at 2.3, 6.1 and 6.8 s where their median was 218 ms. What do
+  cold runs pay on a loaded host, and where does an outlier's time go?
+- **Method.** `docs/research/measurements/cold-start/cold.py`: N runs of an image with
+  `SHARDS_POOL=0`, each restoring a microVM of its own from the image's template, timed by
+  its client, with its timing line (`client_us`, the client's own time, from this entry
+  on, so that a run less it is its client's launch) and its daemon's log, at debug its VM's
+  phases (`VM created`, `GIC created`, restored, each vCPU's setup, the start's finish,
+  ready, the guest's markers) and the daemon's account of each VM's spawn to its first
+  request answered. Builds interleaved run by run, or in blocks of 50 or 100 runs each
+  turn. Load: the host's own (other projects' builds, 4 to 28), new executables launched
+  8 a second or 64 at once every 5 s (macOS assesses each, PM M166), or 18 processes
+  spinning (`--burn`). Images: alpine `true`, and kiln's harness image
+  (kiln-harness/claude:2.1.302, 959 MB) running `claude --version`. The Mac (Apple M5 Max,
+  18 CPUs, 128 GiB, macOS 26.4.1), gpu 295d03ab with the instrumentation, and kiln's own
+  build of e076065f. 2026-10-23.
+- **Results** (ms: n, p50 / p90 / p99 / max).
+  - alpine, new executables 8 a second, debug, load 5.3 to 7.9: 1,000 runs, 82.1 / 493.1 /
+    983.4 / 1,226.2. In the slowest the VM's own clock was at 481 ms as its command ran
+    and its spawn to its first request 7.4 ms: the rest, 745 ms, outside the VM's clock,
+    not split here.
+  - The writable layer's flush at a run's end, F_FULLFSYNC on macOS (100 to 614 ms each on
+    the loaded host): answered at once for a `--rm` run against the tree, in blocks of
+    100, log level unset, load 6.1 to 11.4, 1,000 runs each: tree 31.0 / 74.0 / 123.1 /
+    1,054.6, no flush 35.7 / 85.3 / 127.5 / 750.6; both arms' outliers in the same block.
+    Interleaved run by run (300 each): 85.0 / 131.6 / 404.6 / 1,112.7 against 76.3 /
+    106.9 / 176.6 / 1,103.9.
+  - kiln's image, new executables 8 a second, debug, load 8.7 to 11.5: 500 runs, 38.6 /
+    53.6 / 121.2 / 1,056.0. vCPU 0's setup, which maps the working set ahead by a guest loop
+    on HVF, the slowest vCPU's in all 500: 7.2 / 23.8 / 27.5 / 1,019.3; the 1,056 ms run was
+    that setup's 1,018.6.
+  - vCPU threads given the real-time policy after their setup rather than before, kiln's
+    image, blocks of 50, 300 each: load 4.1 to 4.7, 37.6 / 50.0 / 95.7 / 196.3 against 39.1 /
+    51.5 / 90.8 / 114.2, vCPU 0's setup 6.2 at p50 against 8.4; 18 spinning, 200 each,
+    141.4 / 519.9 / 735.0 / 1,267.5 against 141.2 / 447.4 / 775.4 / 1,066.4.
+  - 18 spinning: every phase stretched, the VM process's spawn to its first request 538
+    and 868 ms in the two slowest runs, its restore to ready 177 to 440 ms.
+  - kiln's image, 64 new executables at once every 5 s, load 9.5 to 12.3: 300 runs, 61.0 /
+    112.7 / 179.1 / 197.6; the VM's spawn to its first request 5.5 / 6.8 / 20.3 / 25.4; the
+    client's launch 4.1 / 10.9 / 31.2 / 31.6.
+  - kiln's build of e076065f against gpu, kiln's image, blocks of 50, load 8.0 to 16.6,
+    300 each: 57.3 / 144.0 / 249.2 / 1,892.9 against 73.1 / 144.1 / 1,058.8 / 1,555.2, both
+    arms' outliers in the same blocks.
+- **Reading.** None of kiln's 2 to 7 s outliers came back: the longest cold runs here were
+  1.9 s with kiln's build and 1.6 s with gpu, side by side under the same load, and below
+  saturation runs stayed under 0.2 s. A cold run's VM process carries what a loaded host
+  does to a new process, its launch and its restore stretched alike under saturation, as
+  D2 has it of a per-request process (PM M22); neither the layer's flush at its end nor the
+  order of its vCPU threads' real-time policy moved its tail. macOS's assessment of new
+  executables held up no VM process's launch here (M166's stalls behind 192 new copies, 64
+  at once, did not recur behind 64). One outlier was vCPU 0's working-set prefetch, 1.0 s
+  where it takes 7 ms, unexplained. kiln's own command and conditions are what is left.
+- **Consequence.** No change to how shards starts a cold run. A run's timing line says its
+  client's own time (`client_us`), so that a harness tells a client's launch apart.

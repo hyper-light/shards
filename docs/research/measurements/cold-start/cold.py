@@ -9,20 +9,24 @@ which macOS assesses before it lets them run, and a launch of any other executab
 behind those assessments (PM M166).
 
     cold.py SHARDS IMAGE N OUT [--seed HOME] [--assess K] [--arm NAME=SHARDS]...
-            [--log LEVEL] [--block K] [-- CMD...]
+            [--log LEVEL] [--block K] [--burn K] [--herd K] [-- CMD...]
 
 The home is OUT/home, given SEED's image store and guest kernel by clone where --seed
 names a home that holds IMAGE, or pulling it; its first run, which saves the template, is
 not counted. DOCKER_CONFIG is an empty directory of its own. Into OUT/runs.jsonl, each
 run: its seconds, its exit, its timing line, and its daemon's log lines while it ran.
 Prints n, p50, p90, p99 and max of the runs' milliseconds with host, OS, load and
-revision, and each run past three times the median with what its daemon said. With
+revision, its clients' launches (the run less the client's own time, `client_us`), and
+each run past three times the median with what its daemon said. With
 --arm, each NAME's build of shards is an arm of its own beside SHARDS's (`a`), with a home
 of its own (OUT/home-NAME), the arms' runs interleaved, each round's first in turn, so
 that each meets the host as the others do; with --block K, K runs of an arm at a time, so
 that what one arm's runs leave the host doing (a flush, a write-back) reaches its own
 runs, not another's. --log sets SHARDS_LOG (debug by default; `none` leaves it unset, as
-a user's runs have it). `no-flush.patch` is a build whose writable layer answers its
+a user's runs have it). With --burn K, K processes spin at their default priority meanwhile
+(`yes`, its output thrown away), the host's CPUs that busy whatever else it runs. With
+--herd K, every 5 s K new executables are launched at once, as a parallel build makes
+them, which macOS assesses one at a time while every other launch waits (PM M166). `no-flush.patch` is a build whose writable layer answers its
 guest's flushes at once, nothing made durable: the other arm of the layer flush's A/B.
 """
 import json, os, platform, shutil, subprocess, sys, tempfile, threading, time
@@ -32,7 +36,15 @@ cmd = ["true"]
 if "--" in args:
     cmd = args[args.index("--") + 1 :]
     args = args[: args.index("--")]
-seed, assess, log_level, extra, block = None, 0, "debug", [], 1
+seed, assess, log_level, extra, block, burn, herd = None, 0, "debug", [], 1, 0, 0
+if "--herd" in args:
+    i = args.index("--herd")
+    herd = int(args[i + 1])
+    del args[i : i + 2]
+if "--burn" in args:
+    i = args.index("--burn")
+    burn = int(args[i + 1])
+    del args[i : i + 2]
 if "--block" in args:
     i = args.index("--block")
     block = int(args[i + 1])
@@ -92,6 +104,8 @@ for arm in builds:
         if done.returncode != 0:
             clean()
             raise SystemExit(f"pull: {done.stderr}")
+# Spun up once the arms' templates are saved, and ended however the runs end.
+burners = []
 try:
     for arm in builds:
         first = shards_run(arm, "run", "--rm", "--pull", "never", image, *cmd)
@@ -102,7 +116,7 @@ try:
     # as the linker signs every arm64 executable, launched from a new path each time.
     stop = threading.Event()
     assessed = [0]
-    if assess:
+    if assess or herd:
         source = os.path.join(out, "tiny.c")
         with open(source, "w") as f:
             f.write("int main(void) { return 0; }\n")
@@ -123,10 +137,27 @@ try:
                 if left > 0:
                     stop.wait(left)
 
-        workers = [threading.Thread(target=assessor, args=(w,)) for w in range(max(1, int(assess // 4)))]
+        def herder():
+            k = 0
+            while not stop.wait(5):
+                paths = []
+                for j in range(herd):
+                    path = os.path.join(out, "herd", f"{k}-{j}", "tiny")
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    shutil.copy2(tiny, path)
+                    paths.append(path)
+                for p in [subprocess.Popen([path]) for path in paths]:
+                    p.wait()
+                assessed[0] += herd
+                k += 1
+
+        workers = [threading.Thread(target=assessor, args=(w,)) for w in range(max(1, int(assess // 4)))] if assess else []
+        if herd:
+            workers.append(threading.Thread(target=herder))
         for w in workers:
             w.start()
 
+    burners += [subprocess.Popen(["yes"], stdout=subprocess.DEVNULL) for _ in range(burn)]
     runs = []
     names = [name for name, _ in arms]
     with open(os.path.join(out, "runs.jsonl"), "w") as f:
@@ -150,10 +181,13 @@ try:
                 f.write(json.dumps(run) + "\n")
                 f.flush()
     stop.set()
-    if assess:
+    if assess or herd:
         for w in workers:
             w.join()
 finally:
+    for b in burners:
+        b.kill()
+        b.wait()
     clean()
 
 
@@ -164,16 +198,25 @@ def pct(xs, q):
 
 rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 print(f"host {platform.node()} {platform.machine()}, {platform.system()} {platform.release()}, "
-      f"{os.cpu_count()} CPUs, revision {rev}; {image} {' '.join(cmd)}; assessing {assess}/s "
+      f"{os.cpu_count()} CPUs, revision {rev}; {image} {' '.join(cmd)}; {burn} burning; assessing {assess}/s "
       f"({assessed[0]} launched); load {min(r['load'] for r in runs):.1f} to {max(r['load'] for r in runs):.1f}")
 for name, build in arms:
     mine = [r for r in runs if r["arm"] == name]
     ms = [r["s"] * 1000 for r in mine]
     print(f"{name} ({build}): cold runs n {len(ms)} p50 {pct(ms, .5):.1f} p90 {pct(ms, .9):.1f} "
           f"p99 {pct(ms, .99):.1f} max {max(ms):.1f} ms; failed {sum(1 for r in mine if r['exit'] != 0)}")
+    # Its client's launch, where its timing line says the client's own time (`client_us`):
+    # the run from its client's spawn, less what the client itself took.
+    launch = [r["s"] * 1000 - r["timing"]["client_us"] / 1000 for r in mine
+              if r["timing"] and "client_us" in r["timing"]]
+    if launch:
+        print(f"{name}: its clients' launches n {len(launch)} p50 {pct(launch, .5):.1f} p90 {pct(launch, .9):.1f} "
+              f"p99 {pct(launch, .99):.1f} max {max(launch):.1f} ms")
     median = pct(ms, .5)
     for r in mine:
         if r["s"] * 1000 > 3 * median:
-            print(f"  {name} run {r['i']}: {r['s'] * 1000:.0f} ms, exit {r['exit']}, load {r['load']:.1f}")
+            own = r["timing"].get("client_us") if r["timing"] else None
+            print(f"  {name} run {r['i']}: {r['s'] * 1000:.0f} ms, exit {r['exit']}, load {r['load']:.1f}"
+                  + (f", its client's own {own / 1000:.0f} ms" if own is not None else ""))
             for line in r["said"][-12:]:
                 print(f"    {line[:220]}")
