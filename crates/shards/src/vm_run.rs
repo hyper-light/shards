@@ -296,6 +296,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
     let mut memory_max = None;
     let mut attach = None;
+    #[cfg(unix)]
+    let mut served: Vec<i32> = Vec::new();
     while let Some(arg) = args.next() {
         let arg = text(arg)?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -333,6 +335,18 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     .map_err(|e| format!("--shares: {e}"))?;
                 cfg.shares = (0..n).map(|_| std::sync::Arc::default()).collect();
                 let _ = SHARES.set(cfg.shares.clone());
+            }
+            // A share another server serves (D38): a connected socket its spawner hands in,
+            // which that server answers in this device's framing, as `slates shards VOLUME
+            // --fd N -- shards run … --slates-fs-fd N` hands it one its daemon serves a slates
+            // volume on. Taken once its flags are all read.
+            #[cfg(unix)]
+            "--slates-fs-fd" => {
+                let fd = text(value("--slates-fs-fd")?)?;
+                served.push(
+                    fd.parse::<i32>()
+                        .map_err(|_| format!("--slates-fs-fd: {fd:?} is not a descriptor"))?,
+                );
             }
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
@@ -392,6 +406,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
     }
     common.check_workload()?;
+    #[cfg(unix)]
+    served_shares(&mut cfg, &served, warm)?;
     if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
         return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
     }
@@ -2108,6 +2124,41 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     })
 }
 
+/// The shares other servers serve (`--slates-fs-fd`, D38), after the VM's own: each a
+/// socket its spawner handed this process alone, as it hands `--grants` its, taken once.
+/// A daemon's VM is given its shares by its daemon (`--warm`, `--shares`), never these.
+#[cfg(unix)]
+fn served_shares(cfg: &mut Config, served: &[i32], warm: Option<i32>) -> Result<(), String> {
+    if served.is_empty() {
+        return Ok(());
+    }
+    if warm.is_some() || !cfg.shares.is_empty() {
+        return Err(
+            "--slates-fs-fd with --warm or --shares: a daemon's VM is given its shares by its daemon".into(),
+        );
+    }
+    // The socket `--grants` took, where the VM process asks a broker for access (macOS).
+    #[cfg(target_os = "macos")]
+    let grants = {
+        use std::os::fd::AsRawFd as _;
+        GRANTS.get().map(|link| link.as_raw_fd())
+    };
+    #[cfg(not(target_os = "macos"))]
+    let grants: Option<i32> = None;
+    for (i, &fd) in served.iter().enumerate() {
+        if served.iter().take(i).any(|&other| other == fd) || grants == Some(fd) {
+            return Err(format!("--slates-fs-fd {fd}: given twice"));
+        }
+    }
+    for &fd in served {
+        let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
+        slot.attach(crate::warm::inherited_socket("--slates-fs-fd", fd)?)
+            .map_err(|e| format!("--slates-fs-fd {fd}: {e}"))?;
+        cfg.shares.push(slot);
+    }
+    Ok(())
+}
+
 /// Takes the socket at descriptor `fd` to ask the spawner for access on (macOS).
 #[cfg(target_os = "macos")]
 fn grants(fd: &str) -> Result<(), String> {
@@ -2457,6 +2508,51 @@ mod tests {
         assert!(e.contains("not valid UTF-8"), "{e}");
         let e = parse_restore(args(&[b"/t", b"/\xff"])).err().unwrap();
         assert!(e.contains("unexpected argument"), "{e}");
+    }
+
+    /// A share another server serves (`--slates-fs-fd`, D38) takes a socket its spawner
+    /// handed this process, once, as the VM's last share: never stdio, a file or a
+    /// descriptor named twice, nor beside the shares a daemon gives its VM.
+    #[test]
+    fn a_served_share_takes_its_socket_once() {
+        use std::os::fd::{AsRawFd as _, IntoRawFd as _};
+        let with = |extra: &[&str]| {
+            let all: Vec<&[u8]> = ["--kernel", "/k"]
+                .iter()
+                .chain(extra)
+                .map(|a| a.as_bytes())
+                .collect();
+            parse_run(args(&all))
+        };
+        let (kept, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let fd = kept.as_raw_fd().to_string();
+        let fd = fd.as_str();
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let not_socket = file.as_raw_fd().to_string();
+        for (extra, why) in [
+            (vec!["--slates-fs-fd", "0"], "not a descriptor of its own"),
+            (vec!["--slates-fs-fd", "x"], "is not a descriptor"),
+            (vec!["--slates-fs-fd", not_socket.as_str()], "not a socket"),
+            (vec!["--slates-fs-fd", fd, "--slates-fs-fd", fd], "given twice"),
+            (
+                vec!["--slates-fs-fd", fd, "--warm", "9"],
+                "with --warm or --shares",
+            ),
+        ] {
+            let e = with(&extra).err().unwrap();
+            assert!(e.contains(why), "{extra:?}: {e}");
+        }
+        // Beside a daemon's shares (`--shares`, which sets the process's SHARES, so given
+        // here as a VM's own slot).
+        let mut cfg = Config::new(PathBuf::new(), None);
+        cfg.shares.push(std::sync::Arc::default());
+        let e = served_shares(&mut cfg, &[kept.as_raw_fd()], None).unwrap_err();
+        assert!(e.contains("with --warm or --shares"), "{e}");
+        // Taken, and owned by its share from here on.
+        let (ours, _theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        let given = ours.into_raw_fd().to_string();
+        let run = with(&["--slates-fs-fd", given.as_str()]).unwrap();
+        assert_eq!(run.cfg.shares.len(), 1);
     }
 
     /// --memory-max is the guest's memory in all, its order among the options no matter:

@@ -2744,6 +2744,18 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
   a template is made for each number of shares (`run::template`). A guest that mounts
   a share before its run has one is told ENODEV.
+- **A share another server serves** (`shards run --kernel … --slates-fs-fd N`): a direct
+  run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
+  hands it, which a server answers in this device's framing, as `slates shards VOLUME --fd
+  N -- shards run …` hands it one the slates daemon serves a volume on (slates' A-161). The
+  VM process takes it as it takes `--grants` (`warm::inherited_socket`: a socket, not
+  stdio, closed on exec), each descriptor once, and never beside `--warm` or `--shares`: a
+  daemon's VM is given its shares by its daemon. With `--share-window` the share has a DAX
+  window, whose mappings its server answers (D189): slates since its ba0f8ef0, a
+  shared-memory object of each file, the range each mapping asks filled. Tests
+  (tests/slates_fs.rs, where `SLATES_BIN` names a slates binary): a guest mounts, reads and
+  writes a slates volume, and one maps a slates file through its window, its fsynced
+  stores in the volume at slates' first read and slates' write of the file in its map.
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that

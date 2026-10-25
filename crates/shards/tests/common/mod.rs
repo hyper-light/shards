@@ -1176,21 +1176,25 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     dir: Option<&Path>,
     timeout: Duration,
 ) -> Run {
-    let start = Instant::now();
     // What it was asked, for the failure that names it.
-    let asked: Vec<String> = command
-        .iter()
-        .map(|c| (*c).to_string())
+    let asked: Vec<String> = std::iter::once("shards".to_string())
+        .chain(command.iter().map(|c| (*c).to_string()))
         .chain(args.iter().map(|a| a.as_ref().to_string_lossy().into_owned()))
         .collect();
     let mut cmd = self::command();
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
+    cmd.args(command).args(args).envs(env.iter().copied());
+    run_command(cmd, &asked, timeout)
+}
+
+/// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
+/// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
+/// after `timeout`, `asked` naming it then.
+pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run {
+    let start = Instant::now();
     let mut child = cmd
-        .args(command)
-        .args(args)
-        .envs(env.iter().copied())
         .env("SHARDS_TIMING", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1246,7 +1250,7 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "shards {} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
+                "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
                 asked.join(" "),
                 took(&out),
                 took(&err)
