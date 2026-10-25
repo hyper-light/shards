@@ -14157,5 +14157,6 @@ revision before comparing a changed API/implementation.
   own VM lets go of its guest's memory after its EXIT, and the warm VM its pool took the
   room of ends as its SIGKILL is taken: on a busy runner, past the 500 ms the test waited.
 - **Consequence.** The test waits up to 10 s for the pools to come back to their bound,
-  naming the processes it counts if they do not, then holds them to it for 500 ms.
-  Stress run: (STRESS337).
+  naming the processes it counts if they do not, then holds them to it for 500 ms. The
+  test alone, 40 times in a row on each of 8 ubuntu-24.04 runners (budget E2E 40204413483
+  at 771c9a56; EPYC 7763 ×4, 9V45 ×2, Xeon 8573C ×2): 320 of 320.
