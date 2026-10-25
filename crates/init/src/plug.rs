@@ -865,10 +865,8 @@ fn high(cgroup: &str, most: u64, plugged: u64) -> io::Result<u64> {
 /// gone: its page cache took the rest, its guest's kernel throttled its own reclaim at its
 /// zones' least, and its grower, woken only at the hold, plugged none (PM M324).
 fn hold_of(current: u64, free: u64, leaving: u64, reserve: u64) -> u64 {
-    current
-        .saturating_add(free)
-        .saturating_sub(leaving)
-        .saturating_sub(reserve)
+    let _ = leaving;
+    current.saturating_add(free).saturating_sub(reserve)
 }
 
 /// What stays of the memory plugged past `boot` while the kernel has `total`: no more than
