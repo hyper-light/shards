@@ -977,6 +977,13 @@ for the exit status.
     before the status, so a pipeline reading it ends with the client, and again when the
     client hangs up, so a command outliving its client writes nowhere. A container's
     output likewise stops reaching a `docker run` that has gone.
+  - Each message to the daemon goes whole, under one lock (warm.rs `to_daemon`), as the
+    daemon's to a VM do (`RunSocket`): the VM's threads send on its connection and on
+    clones of it (the run's end and its working set, its processes' records, its log's
+    asks, a save's answer), and Linux queues a stream message larger than one buffer in
+    pieces, between which another's could land. A working set of 341 KB was read with
+    another's bytes in it, refused, and the stream broken, the daemon taking the VM for
+    ended: 1 of 511 sets taken on CI's runners (PM M319).
   - The warm VM serves one request, then exits.
 - **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run` as its client
   (`client.rs`).
@@ -7153,7 +7160,16 @@ log, ports, events and end are a start's. Three things a start does not have mak
   dials the exec port twice, each HELLO one token, as an exec's connection is checked:
   compared whole, in constant time, by the exec port's one reader. The VM process waits
   for them before its vCPUs run, and only where the restored init speaks this build's
-  protocol (control::ABI).
+  protocol (control::ABI). An exec's connection is its client's, which went with the
+  microVM saved: what the exec writes after the restore has nowhere to go, and init drops
+  it as it reads it, as it drops anything whose connection is gone. It had read an exec's
+  output only while less than BUFFERED of it waited, so an exec that wrote that much more
+  was read no more: killed with the run, it was never seen to end, and its run outlived
+  its stop's SIGTERM and SIGKILL until its VM was killed. Held by
+  `a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored`, an exec writing
+  as fast as it can through the save, its run stopped once restored: ended by the stop's
+  SIGTERM (143). Mutation-checked: without the drop, the stop took 40.0 s, its 30 s
+  timeout and the 10 s past its SIGKILL, and the run ended with its VM (255) (PM M328).
 - **Its interface, as its guest holds it.** Its MAC, and its address on a network of its
   own (D46), are kept with the snapshot, and asked for again as `--mac-address` and `--ip`
   ask: a member that took the address meanwhile keeps it, and the restore fails, naming

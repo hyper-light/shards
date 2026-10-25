@@ -13737,6 +13737,41 @@ revision before comparing a changed API/implementation.
   no swap, end in an OOM kill where a reader's page cache was reclaimed instead:
   unconfirmed, and fixed with them (db423887).
 
+### M326. Flakes: the macOS VM grant stall, none in 115,440 runs beside full gates (D30)
+
+- **Question.** A VM process once sent no request for access for 60 s, its client's first
+  line never coming (the grant stall). Its two suspects are answered on this tree: a
+  template held open, so that its pages are not recycled with its vnode (64f0d399, M315),
+  and the real-time governor (8b0b2795, M317). Does it stall still, beside full gates?
+- **Method.** docs/research/measurements/vm-grant-stall/campaign.sh: rounds of the fleet
+  measurement (tests/fleet.rs, FLEET_SIZES=10 FLEET_BURST=16 FLEET_ROUNDS=60: 10 first
+  runs, pull, boot and save; 10 second, restores; 60 one at a time, 200 ms apart; 960 in
+  bursts of 16; 1,040 runs a round), each round's daemon saying the VMs it saw stall
+  (`stalls said`; daemon.rs `grant` samples one that has asked for nothing at 10 s). Run as
+  a launchd job (macos-sched/launchd-run.sh, unclamped, as a user's program runs) beside a
+  loop of full gates (`cargo test --workspace --profile test-release --no-fail-fast`), on
+  this Mac (Apple M5 Max, 18 CPUs, 128 GiB, macOS 26.4.1), 2026-10-25 00:03 to 04:33 UTC,
+  at 291f066a, ff01fe0b, 88c2cbfa, 9fb4bc61 and 6534aee8, each with both suspects' fixes.
+- **Results.** 129 rounds whole, 134,160 runs: no stall said, none failed. Of them 111
+  rounds, 115,440 runs, ran wholly within gates whose start and end the loop's log records
+  (ff01fe0b 6,240, 88c2cbfa 12,480, 9fb4bc61 16,640, 6534aee8 80,080); the rest beside the
+  loops a kiln restart ended, their gates' ends unrecorded. Of the 20 gates with recorded
+  ends, 15 passed; 4 at 6534aee8 failed on Docker Hub's anonymous pull limit alone (429,
+  every failed test's error), and 1 at ff01fe0b on the launchd job's 256 descriptors
+  (63b7ad0f, the harness's `ulimit -n`): each loaded the host throughout. Starts across
+  the rounds, the median and the most of the rounds' own figures, ms:
+
+  | runs | a round | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | first (pull, boot, save) | 10 | 362.9 | 401.4 | 446.9 (most 4,557.5) | 4,557.5 |
+  | second (restore) | 10 | 19.7 | 26.8 | 32.2 (most 147.3) | 147.3 |
+  | one at a time | 60 | 12.8 | 15.9 | 23.9 (most 400.4) | 744.8 |
+  | bursts of 16 | 960 | 89.7 | 225.4 | 499.6 (most 3,617.3) | 8,940.0 |
+
+- **Consequence.** None in the code: no stall in 115,440 runs puts its rate below
+  3/115,440, one in 38,480, at 95% (no failure in n bounds it below 3/n). Which of the two
+  fixes ended it, if either, is not shown: the stall was never caught with its stacks.
+
 ### M327. Flakes: the block stress's 104 reads, beside full gates in either session (D4)
 
 - **Question.** A gate's `concurrent_readers_see_consistent_data` (tests/block.rs) once
@@ -13761,3 +13796,49 @@ revision before comparing a changed API/implementation.
   Every one of 90 passed; the least verified 152,606 reads, 1,467 times the 104 seen.
 - **Consequence.** None in the code: not reproduced in 90 runs beside full gates, the least
   more than 150 times the test's floor in either session.
+
+### M328. Flakes: a restored microVM's run outliving its stop, an exec's output held unread (D176)
+
+- **Question.** In CI's x86_64 Linux job at db423887, a daemon whose home was removed took
+  15.04 s to end, its stop timeout and the 5 s past its SIGKILL: a run restored from its
+  save (D176) outlived both signals until its VM was killed, its relay waiting on the
+  guest for its end, every vCPU idle (`a_restored_microvm_ends_with_its_home`'s dump at
+  5 s). `a_killed_daemons_runs_end_with_it` failed alike, 4 of 608 at ff01fe0b (budget E2E
+  40148130548, 40148135044, the daemon suite 38 times on each of 8 runners): its restored
+  run outlived its killed daemon, each time with a give-back cut short by the save. What
+  holds a restored run past its stop?
+- **Method.** docs/research/measurements/restore-stop/repro.sh: a run of the test guest
+  under `--init`, an exec beside it, the run saved and restored, its daemon killed, and how
+  long the home's processes outlive it, up to 5 s; on this Mac (Apple M5 Max, 18 CPUs,
+  macOS 26.4.1), 2026-10-25, at 6534aee8 and with the change below. The exec sleeping (23
+  rounds), `shards stats` asked again and again through the save (10), writing a line a
+  millisecond (`counter 1`) or as fast as it can (`count`, through an 8 KiB buffer).
+- **Results.** Every run with a sleeping exec, with stats asked, or writing a line a
+  millisecond ended 0.06 to 0.94 s after its daemon; every run whose exec wrote as fast
+  as it could outlived it:
+
+  | exec | build | n | outlived 5 s | ended after its daemon |
+  |---|---|---|---|---|
+  | `count`, as fast as it can | 6534aee8 | 5 | 5 | |
+  | `counter 1`, a line a ms | 6534aee8 | 3 | 0 | 0.139 to 0.188 s |
+  | `count` | with the change | 5 | 0 | 0.255 to 0.304 s |
+  | `counter 1` | with the change | 3 | 0 | 0.170 to 0.247 s |
+
+  Its cause, in init (run.rs, `relay`): an exec's output is read only while less than
+  BUFFERED (256 KiB) of it waits to go on its connection. The restore resets that
+  connection, its client's; init's write to it fails and the connection goes, and what
+  waited stays, so an exec that writes BUFFERED more is read no more. The stop's signal
+  ends the workload, init kills every other process with it, and the exec's end, its
+  output's end of file, is never read: the relay, which ends once every exec has, never
+  does. The workload's own output would be held so too, its connection gone.
+- **Consequence.** What has no connection left to go on is dropped as it is read: an
+  exec's once its connection has gone, and the run's, and a save's flush, once the host's
+  has. Held by `a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored`
+  (tests/saved.rs): an exec writing as fast as it can through a save, its run stopped with
+  a 30 s timeout once restored, ended by the stop's SIGTERM (143). Mutation-checked:
+  without the drop, the stop took 40.02 s, its timeout and the 10 s past its SIGKILL, and
+  the run ended with its VM (255). The killed-daemon failures' exec was a give-back
+  (`RECLAIM`), whose output is a few bytes, and the removed home's log went with it:
+  whether they had this cause is the experiment's to say (exp-step3: the guest's console,
+  init's word on each signal and on what holds its relay, the guest kernel's hung tasks at
+  2 s).

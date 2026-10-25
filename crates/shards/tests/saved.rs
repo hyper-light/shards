@@ -730,6 +730,46 @@ fn a_microvm_saved_and_left_running_is_restored_from_its_save() {
     assert_eq!(shards(&["kill", "counter"]).status, Some(0));
 }
 
+/// A microVM saved as an exec in it writes on ends with its run once restored, by the
+/// stop's own signal. The restore resets the exec's connection, its client's (D176), and
+/// init read the exec's output only while less than BUFFERED of it waited to go: past
+/// that, with no connection to take it, it read it no more, and the exec, killed with the
+/// run, was never seen to end. The run outlived its stop's SIGTERM and SIGKILL alike until
+/// its VM was killed (flakes plan step 3, PM M328).
+#[test]
+fn a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored() {
+    let Some((home, image)) = home("resumed-writer") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // Under --init, so that its command ends at the stop's SIGTERM.
+    let run = shards(&[
+        "run", "-d", "--init", "--pull", "never", "--name", "writer", &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = shards(&["exec", "-d", "writer", "/bin/testguest", "count", "1000000000"]);
+    assert_eq!(exec.status, Some(0), "{exec}");
+    let saved = shards(&["save", "vm", "writer", "snap"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let restored = shards(&["restore", "vm", "writer"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    // A stop timeout past the test's, so that one its SIGKILL ended is told apart.
+    let asked = Instant::now();
+    let stopped = shards(&["stop", "-t", "30", "writer"]);
+    let took = asked.elapsed();
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "writer"]);
+    assert_eq!(
+        (code.stdout.trim(), took < Duration::from_secs(30)),
+        ("143", true),
+        "stopped in {took:?}\n{}",
+        evidence(&home, "writer")
+    );
+}
+
 /// What a microVM swapped out under its memory limit comes back with it: saved, its swap
 /// is kept beside its snapshot, and restored, a copy is mapped back before its guest runs.
 #[test]
