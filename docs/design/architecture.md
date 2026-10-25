@@ -922,6 +922,17 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   - It is written through the directory held open since the snapshot (or the restore),
     since the daemon renames a new template into place meanwhile. A damaged one is
     ignored, and on KVM recorded again.
+  - A generation keeps the first it is given (snapshot `accept_working_set`), and
+    replaces only one a restore could not read. On KVM each restore made before a set
+    lands records one, a pool's first VMs together, and each sends its own as its run
+    ends: written over the one before, the last one won, and once that was one recorded
+    as its guest gave memory back, 9,529 pages where the first held 41,834; a budget the
+    FUSE budget E2E set from what the next restore held was then 24 MiB short of what
+    its run needed, and its read did not end in 600 s (PM M320).
+  - A recording keeps what its host held of the RAM its guest gives back while it
+    records (D151's free page reports; `GuestMemory::keep_given_back`): the pages its
+    host maps when it ends no longer show one given back, and the set would leave it
+    out. It sends none where it could not see a range given back.
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
   `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
   and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
@@ -5807,6 +5818,15 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   its memory came back took the kernel's own and met its OOM killer: 3 of 30 runs of the
   benchmark with DAX windows, whose guests hold no page cache of the files they map and so
   keep less; none of 60 since, the host as short of memory and as much given back.
+- **No hold counts what goes** (PM M324): every hold init sets counts out the memory
+  still plugged past its device's request, which goes as its driver unplugs it, free or
+  not, as the give-back's own hold does; and what is plugged, for a run held at its cap or
+  a grower lifting its hold once all its most is plugged, is what stays. The daemon tells
+  a microVM its room again as it gives back, which came 10 to 15 ms after: worked out
+  while the driver still unplugged, its hold counted the 128 MiB going as free, 261 to 274
+  MB where its microVM would have 233 MiB, and its page cache filled its zones to their
+  min watermarks, its guest's kernel throttling its own reclaim and its grower, woken
+  only at the hold, plugging none: 5 of 384 past128 reads in the DAX budget job.
 - **Said in the daemon's log** at most once a minute, with what was given back since.
 - **Idle, it costs nothing**: with no microVM running it waits for one, hearing no
   pressure meanwhile, whose trigger fires each window while the host stays short (on a CI

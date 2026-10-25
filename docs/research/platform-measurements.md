@@ -13659,4 +13659,54 @@ revision before comparing a changed API/implementation.
   system calls until it ends, and two others start the binary again (`Command`). A fork between the pair's making and its drop kept `a` open
   in the child until it ended.
 - **Consequence.** The test waits for the end, 5 s at most, as the poller is waited on
-  everywhere else (crates/net poll.rs); what it asserts is unchanged.
+  everywhere else (crates/net poll.rs); what it asserts is unchanged. At ffa1448e the same
+  suite ran 4,800 times (40147621514, 600 on each of 8 runners: EPYC 7763 ×4, 9V74 ×2,
+  9V45, Xeon 8573C) and failed in none: under 3 in 4,800 (0.06%) at 95%, against 5 in
+  2,400 (0.21%) before.
+
+### M324. Flakes: a past128 read's guest kernel throttling its own reclaim, a hold counting memory being unplugged as free (D148, D188)
+
+- **Question.** M318's past128 read of 9.81 s had its guest's reader asleep in its own
+  kernel's `throttle_direct_reclaim`, its guest reporting 16 GB free. What drains a held
+  guest's zones, and why does its grower not plug more?
+- **Method.** The DAX budget job's `--as-e2e` reads with each look's zones (free, min and
+  managed pages up to Normal, /proc/zoneinfo) and the guest kernel's direct reclaim
+  (`pgscan_direct_throttle`, `allocstall_*`, /proc/vmstat), rooms.py; then the
+  hold-notes arm (hold-notes.patch), in which init appends each hold it sets on the run's
+  cgroup (with the cap, the memory and the run's use), each room told, each give-back's
+  keep, each event its grower sees, each ask, each arrival and each lift to a file the
+  guest's sampler reads at each look, as the run's own cgroup is its container's parent,
+  which the container cannot read. Runs: 40141647845 (at 24a27d12), 40146450144 and
+  40146455283 (ac30b6f9), 288 past128 reads each pair; hold-notes 40148050379 and
+  40148055198 (ff01fe0b, 8 rounds, 384 past128 reads).
+- **Results.**
+  - "16 GB free" is the memory its host may still plug, which shards' kernel reports as
+    free (D149); a throttled guest's zones up to Normal had drained to their min
+    watermarks (40141647845's a: DMA 256 free of a min of 21, DMA32 414 of 314, Normal 0
+    of 369), the run's container holding 230 MB of a 233 MiB guest and 18 MiB plugged.
+    Of 288 past128 reads 3 throttled (pgscan_direct_throttle 46, 12, 1) at 24a27d12 and 2
+    (36, 6) at ac30b6f9, the slowest 1.84 and 1.61 times their CPU's time with none; no
+    look caught the reader throttled, which a throttle of a few milliseconds a time
+    escapes; 9 of 288 lost plugged memory as they read.
+  - Every one of the hold-notes arm's 5 throttled reads of 384 went the same way. The
+    read begins under a hold of 145 to 152 MB; the run reaches it, its grower asks for 256
+    MiB, which comes within 20 to 100 ms, and raises its hold to about 400 MB. Then, 50
+    to 130 ms later, a give-back of the host's pressure pass (`RECLAIM`): init's
+    `reclaim_cold` drops the run's page cache to 15 to 31 MB and `shrink_run` keeps none of
+    what is plugged (twice what the run then used and its peak since were within what its
+    microVM booted with), asks its device for none and holds the run at 122 to 131 MB, the
+    memory to go counted out. 10 to 15 ms after, the daemon's word of the room the
+    give-back left (`tell_room`): `hold_within` held the run at 261 to 274 MB, its free
+    memory counted with the 128 MiB still plugged as its driver unplugged it. Once it had
+    gone the guest had 233 MiB and its run a hold past all of it: the run's page cache
+    filled its zones to their min watermarks within a second, its kernel's kswapd and
+    direct reclaim took it back at the zones' least, throttled (1 to 37 times a read), and
+    its grower, woken only as the run reached its hold, plugged none.
+- **Consequence (D148, D188).** Every hold init sets counts out the memory still plugged
+  past its device's request, which goes as its driver unplugs it, free or not (plug.rs
+  `high`, `hold_of`, `staying`), as `shrink_run` counted out what it gave back; what is
+  plugged, for a run held at its cap or a grower lifting its hold once all its most is
+  plugged, is what stays. Test:
+  `plug::tests::a_hold_counts_out_what_goes_as_it_is_unplugged` (the trace's numbers:
+  held at 252 MiB past the 233 MiB that stayed; with it, the run, its kernel's own and
+  its reserve within what stays).
