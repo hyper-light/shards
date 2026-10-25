@@ -14004,6 +14004,54 @@ revision before comparing a changed API/implementation.
   gate after them, 2,180 tests. The E2E test bounds its read at a run's time, so a signal
   lost fails it, its pass named, rather than holding its job.
 
+### M333. Flakes: a budget's later reads without the prefetch of their template's written pages (D188)
+
+- **Question.** `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`
+  (tests/daemon.rs) failed its budgeted phase, the median of three reads under a budget its
+  idle microVMs leave 128 MiB of past twice the median read with none: 5 times in the
+  daemon suite's repeats of 2026-10-25 at 633547a5 and cfd05ec9 (2.00 to 2.12 times, each
+  on an EPYC 7763), and once at d2eb6def (budget E2E 40186881437's job 121149460461, EPYC
+  7763: [3113, 5349, 5416] ms against 2,525). What slows a budget's reads?
+- **Method.** The `reads in ms` line of every passing run in those repeats' logs, n = 1,374,
+  and the daemon's log each failure prints; then the test alone, 40 times in a row on each
+  of 8 ubuntu-24.04 runners an arm (budget E2E, `name` the test), arms dispatched together:
+  A (022e886d, as it was; 40190124069, and again as A' 40193342168), B (b64b69ef, no warm VM
+  made ahead while a run serves under the budget; 40190127785) and C (0fbd5414, a VM
+  restored under a budget given the prefetch of its template's written pages any VM has;
+  40193324021). Each read's time is divided by its own run's median read with no budget.
+- **Results.**
+  - In the repeats, each budgeted read was slower than the one before: p50 1.04, 1.36 and
+    1.77 times its time with none, p99 1.51, 1.94 and 2.26, max 5.73, 2.10 and 2.42.
+  - Not the warm VMs made ahead: some failures' logs show one restored at each hand-over
+    and ended "for no room", but B read as A did (per read p50 1.23, 1.43 and 1.45 against
+    1.26, 1.42 and 1.43; the median of three at p99 1.61 against 1.60), no warm VM was
+    ended for room in either, and the d2eb6def failure's reads had 60, 895 and 1,026 MiB of
+    room and none ended.
+  - What differs: the first read's VM was restored before the budget was set, with the
+    prefetch of its template's written pages (64 MiB at most, `hv::PREFETCH_PRIVATE`); the
+    later reads' were restored under it, without (`--prefetch-private 0`, D188 since PM
+    M309), each written page their runs touched copied as they went.
+
+    | arm | n | read 1 p50 | read 2 p50 | read 3 p50 | median of 3: p50 | p90 | p99 | max |
+    |---|---|---|---|---|---|---|---|---|
+    | A, as it was | 320 | 1.26 | 1.42 | 1.43 | 1.40 | 1.51 | 1.60 | 1.64 |
+    | A', as it was | 319 | 1.28 | 1.48 | 1.48 | 1.44 | 1.57 | 1.63 | 1.65 |
+    | C, prefetched under a budget | 320 | 1.24 | 1.22 | 1.20 | 1.21 | 1.29 | 1.34 | 1.40 |
+
+    Runners: A, EPYC 7763 ×5, 9V74 ×2, Xeon 8573C; A', 7763 ×2, 9V45 ×3, 9V74 ×3; C, 7763
+    ×6, 9V74, Xeon 8573C (B: 7763 ×5, 9V45 ×2, 9V74). With the prefetch, a later read is as
+    fast as the first; without it, the run's own copying is what a busy suite's runner
+    stretches past twice.
+  - A second failure, in A' (job 121168855422, EPYC 9V45): its reads within bounds, "no
+    microVM said to be held within its budget": each read's first word of its room found
+    the budget already short, by 1, 56 and 26 MiB, and held it within the least room a
+    run goes on in. A run's room is told once it has begun, and a read had filled it first.
+- **Consequence.** A VM restored under a budget prefetches its template's written pages as
+  one under none does (daemon/refill.rs; the VM process's `--prefetch-private`, which only
+  a budget set, is gone): what they hold is a warm VM's, which a budget's room takes back
+  first (D188). The test takes either word, held within the budget's room or within the
+  least room, for the run held. The daemon suite's count at the fix: (COUNT).
+
 ### M334. Flakes: a daemon out of descriptors coming to its last client's slot after the test stopped waiting (audit A07)
 
 - **Question.** `a_daemon_out_of_descriptors_waits_for_room` failed a gate in this agent's

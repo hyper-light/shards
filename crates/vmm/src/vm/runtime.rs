@@ -675,8 +675,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         None
     };
     if let Some(ws) = &mut working_set {
-        let private = cfg.prefetch_private.min(hv::PREFETCH_PRIVATE);
-        let cleared = hv::budget_writes(ws, machine::PAGE, private);
+        let cleared = hv::budget_writes(ws, machine::PAGE, hv::PREFETCH_PRIVATE);
         if cleared > 0 {
             debug!("{cleared} written pages past the prefetch's private budget are read instead");
         }

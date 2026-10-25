@@ -154,9 +154,12 @@ impl<D: Disk> Daemon<D> {
             };
             (for_runs, more)
         };
-        // Under a budget (D188), what its VMs copy ahead of a request is none, as every
-        // warm VM would spend it of the budget before any run came; and none is made ahead
-        // of the runs that wait where the budget has no room left.
+        // Under a budget (D188), none is made ahead of the runs that wait where the budget
+        // has no room left. What its VMs copy ahead of a request is the same as with none
+        // (hv::PREFETCH_PRIVATE): without it, each read of a budgeted slice after its first,
+        // on a VM restored under the budget, took 1.42 to 1.48 times its time with none at
+        // p50 where with it 1.20 to 1.22 (PM M333), and what it holds of the budget is a
+        // warm VM's, which the budget's room takes back first.
         let budget = self
             .cgroup_of_parent(&key.parent)
             .and_then(|d| {
@@ -175,9 +178,6 @@ impl<D: Disk> Daemon<D> {
         pool.starting += count;
         // It writes no file of the home: the daemon gives it its container's log (D30).
         let mut args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
-        if budget.is_some() {
-            args.extend(["--prefetch-private".into(), "0".into()]);
-        }
         if let Some(rootfs) = &pool.rootfs {
             let mut backing = rootfs.as_os_str().to_os_string();
             backing.push(":ro");

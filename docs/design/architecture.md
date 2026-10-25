@@ -5769,11 +5769,17 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   is kept in whole pages, as the kernel keeps `memory.high` (`page_counter_memparse`): one
   past a page boundary read back short of itself, and the grower took a run held at it for
   one held short of it, writing its hold again at each of its run's events. A warm microVM
-  restored under a budget copies none of its template's written pages ahead of its run (64
-  MiB at most each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of the budget
-  before any run comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1
-  to 4 MiB for one without, PM M309; on the Mac they bought no time, PM M62), and none is
-  made ahead of the runs that wait where its budget has no room.
+  restored under a budget copies its template's written pages ahead of its run as any
+  does (64 MiB at most each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of
+  the budget before any run comes: 65 MiB of a 384 MiB budget's anonymous memory for one
+  such VM, 1 to 4 MiB for one without, PM M309). Restored with none, as from M309 to M333,
+  each read of a budgeted slice's after its first, which met a warm VM restored before the
+  budget, took 1.42 to 1.48 times its time with none at p50 against the first's 1.26 to
+  1.28, each written page it touched copied as its run went; with them, 1.20 to 1.22, as
+  the first (the test alone on CI's runners, 319 and 320 runs an arm; PM M333). On the Mac
+  they bought no time (PM M62), where no budget holds a run. What they hold is a warm VM's,
+  which the budget's room takes back first. None is made ahead of the runs that wait where
+  its budget has no room.
 - **What its host takes back of its guest's RAM is no room** (PM M318). A restored guest's
   RAM is its template's file pages as much as its anonymous memory, and a budget's host
   takes back file pages first. Counted as room as they went, with the inactive pages kept
