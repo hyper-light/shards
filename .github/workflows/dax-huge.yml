@@ -1,0 +1,76 @@
+name: DAX huge
+
+# Whether a volume's DAX window maps its ranges better on 2 MiB folios, on CI's runners
+# (D189's Next, PM M308): docs/research/measurements/dax-huge/measure.py over the tree's
+# build (window), the tree's with each range advised onto huge pages (huge:
+# dax-budget/huge.patch) and onto them and to read at random (huge-random:
+# dax-huge/huge-random.patch), on eight runners at once, whatever their CPUs (every window
+# given, as an AMD virtual machine has none by default); each runner's output, rule.py's
+# verdict on it and its daemons' logs kept as the run's artifact. x86_64 alone, as hosted
+# arm64 runners have no /dev/kvm. Runs when the experiment changes; `gh run rerun` takes
+# eight runners more.
+on:
+  push:
+    paths:
+      - docs/research/measurements/dax-huge/**
+      - .github/workflows/dax-huge.yml
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+  # The experiment now: measure.py's arguments after its output and builds.
+  ARGS: --rounds 1 --n 100 --touch-gib 1 --seq-mib 256
+
+jobs:
+  measure:
+    name: measure (${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c, d, e, f, g, h]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: User manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      # The tree's shards and the tree's with each patch, each kept apart (the tree made
+      # again after each); then the build's own files removed, for the volume's room.
+      - name: Build
+        run: |
+          cargo build --locked -p shards --release
+          cp target/release/shards "$RUNNER_TEMP/shards"
+          for patch in dax-budget/huge dax-huge/huge-random; do
+            git apply "docs/research/measurements/$patch.patch"
+            cargo build --locked -p shards --release
+            cp target/release/shards "$RUNNER_TEMP/shards-${patch#*/}"
+            git checkout -- crates
+          done
+          rm -rf target
+          df -h .
+      - name: Measure
+        run: |
+          lscpu | grep -E 'Model name|Vendor ID|Hypervisor vendor' || true
+          # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
+          sudo dmesg | grep -i -E 'hyper-v|enlightened|direct tlb flush' | head -20 || true
+          python3 -I docs/research/measurements/dax-huge/measure.py dax-huge --window "$RUNNER_TEMP/shards" \
+            --huge "$RUNNER_TEMP/shards-huge" --huge-random "$RUNNER_TEMP/shards-huge-random" $ARGS
+          python3 -I docs/research/measurements/dax-huge/rule.py dax-huge/out.txt | tee dax-huge/rule.txt
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: dax-huge-${{ matrix.copy }}-${{ github.run_attempt }}
+          path: dax-huge
