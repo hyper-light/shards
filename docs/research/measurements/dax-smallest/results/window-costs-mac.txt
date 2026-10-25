@@ -1,0 +1,10 @@
+reconcile, its size unchanged: n 2000 | p50 0.33 | p90 0.38 | p99 0.46 | max 0.54 us
+rerecord, a range's first: n 1000 | p50 38.54 | p90 53.17 | p99 67.38 | max 75.29 us
+rerecord, taken already: n 2000 | p50 0.04 | p90 0.04 | p99 0.08 | max 1.21 us
+mincore(2) of a range, its pages held: n 2000 | p50 27.79 | p90 27.96 | p99 31.33 | max 56.46 us
+mincore(2) of a range, its pages none held: n 2000 | p50 27.71 | p90 28.33 | p99 29.25 | max 41.33 us
+a 4 KiB file's range, mapped to read: n 2000 | p50 1.88 | p90 2.04 | p99 2.71 | max 16.38 us
+its unmap: n 2000 | p50 1.21 | p90 1.33 | p99 1.75 | max 22.25 us
+a 4 KiB file's range, mapped to write: n 2000 | p50 2.83 | p90 3.12 | p99 3.88 | max 16.46 us
+its unmap: n 2000 | p50 1.21 | p90 1.38 | p99 2.25 | max 6.79 us
+host mappings a range adds: a 4 KiB file's 1, a 2 MiB file's 1 (of 1095 before)

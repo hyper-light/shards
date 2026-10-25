@@ -1,0 +1,39 @@
+== /home/adalundhe/dax-smallest/e-cores.txt: sizes 4k, 16k, 32k, 64k, 256k, 1m, 2044k, 2m; runs failed 0; matrix mappings refused 0
+      4k: fails: first warm p50 window [324.5, 451.6] above fuse [266.5, 318.2]; memory: window +28.5 KiB a file over fuse (medians, 1,000 files)
+     16k: fails: memory: window +16.8 KiB a file over fuse (medians, 1,000 files)
+     32k: passes
+     64k: fails: overwrite warm p50 window [411.9, 616.1] above fuse [354.2, 378.2]
+    256k: passes
+      1m: passes
+   2044k: passes
+      2m: passes
+  sets (run seconds, median [range]; refused mappings):
+    mix   window    1024 fuse   smallest        -: 31.94 [27.31, 41.96] refused 0
+    mix   window    1024 window smallest        0: 37.23 [34.66, 41.29] refused 0
+    mix   window    1024 window smallest   262144: 32.14 [27.37, 35.10] refused 0
+    mix   window    1024 window smallest  1048576: 29.37 [27.90, 33.02] refused 0
+    mix   window default fuse   smallest        -: 32.31 [26.93, 75.01] refused 0
+    mix   window default window smallest        0: 40.78 [40.24, 52.31] refused 0
+    mix   window default window smallest   262144: 28.62 [27.96, 35.80] refused 0
+    mix   window default window smallest  1048576: 29.88 [28.39, 32.01] refused 0
+    small window    1024 fuse   smallest        -: 34.62 [32.68, 35.51] refused 0
+    small window    1024 window smallest        0: 37.13 [35.85, 41.34] refused 0
+    small window    1024 window smallest   262144: 33.12 [30.66, 35.63] refused 0
+    small window    1024 window smallest  1048576: 35.55 [32.15, 42.78] refused 0
+    small window default fuse   smallest        -: 33.85 [27.99, 36.02] refused 0
+    small window default window smallest        0: 51.94 [47.21, 54.46] refused 0
+    small window default window smallest   262144: 35.19 [29.72, 35.99] refused 0
+    small window default window smallest  1048576: 32.08 [28.41, 35.77] refused 0
+    mix window 1024 at 0: no longer than FUSE
+    mix window 1024 at 1048576: no longer than FUSE
+    mix window 1024 at 262144: no longer than FUSE
+    mix window default at 0: no longer than FUSE
+    mix window default at 1048576: no longer than FUSE
+    mix window default at 262144: no longer than FUSE
+    small window 1024 at 0: longer than FUSE beyond the spread
+    small window 1024 at 1048576: no longer than FUSE
+    small window 1024 at 262144: no longer than FUSE
+    small window default at 0: longer than FUSE beyond the spread
+    small window default at 1048576: no longer than FUSE
+    small window default at 262144: no longer than FUSE
+sizes passing in every output: 32k, 256k, 1m, 2044k, 2m; the rule's S by the matrix: 256k

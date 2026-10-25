@@ -1,0 +1,39 @@
+== /home/adalundhe/dax-smallest/p-cores.txt: sizes 4k, 16k, 32k, 64k, 256k, 1m, 2044k, 2m; runs failed 0; matrix mappings refused 0
+      4k: fails: first warm p99 window [306.7, 748.7] above fuse [150.3, 217.1]; overwrite cold p50 window [118.3, 178.6] above fuse [94.0, 104.3]; memory: window +27.6 KiB a file over fuse (medians, 1,000 files)
+     16k: fails: memory: window +15.4 KiB a file over fuse (medians, 1,000 files)
+     32k: fails: first warm p99 window [252.3, 497.4] above fuse [174.3, 228.9]
+     64k: fails: first warm p99 window [297.5, 637.7] above fuse [216.4, 285.3]; overwrite cold p99 window [205.0, 279.6] above fuse [134.3, 199.8]
+    256k: fails: overwrite cold p50 window [251.2, 258.2] above fuse [201.7, 208.5]
+      1m: passes
+   2044k: passes
+      2m: passes
+  sets (run seconds, median [range]; refused mappings):
+    mix   window    1024 fuse   smallest        -: 12.40 [11.56, 12.48] refused 0
+    mix   window    1024 window smallest        0: 15.55 [15.46, 15.82] refused 0
+    mix   window    1024 window smallest   262144: 12.54 [12.26, 15.59] refused 0
+    mix   window    1024 window smallest  1048576: 13.77 [12.19, 14.96] refused 0
+    mix   window default fuse   smallest        -: 12.65 [11.67, 14.11] refused 0
+    mix   window default window smallest        0: 20.86 [20.18, 20.94] refused 0
+    mix   window default window smallest   262144: 13.25 [11.90, 14.22] refused 0
+    mix   window default window smallest  1048576: 13.29 [11.61, 14.23] refused 0
+    small window    1024 fuse   smallest        -: 12.89 [12.63, 13.07] refused 0
+    small window    1024 window smallest        0: 15.31 [15.07, 16.28] refused 0
+    small window    1024 window smallest   262144: 13.41 [13.04, 17.64] refused 0
+    small window    1024 window smallest  1048576: 14.12 [13.01, 14.89] refused 0
+    small window default fuse   smallest        -: 14.69 [13.19, 16.99] refused 0
+    small window default window smallest        0: 23.37 [21.26, 24.91] refused 0
+    small window default window smallest   262144: 13.62 [12.93, 15.19] refused 0
+    small window default window smallest  1048576: 13.48 [12.57, 17.69] refused 0
+    mix window 1024 at 0: longer than FUSE beyond the spread
+    mix window 1024 at 1048576: no longer than FUSE
+    mix window 1024 at 262144: no longer than FUSE
+    mix window default at 0: longer than FUSE beyond the spread
+    mix window default at 1048576: no longer than FUSE
+    mix window default at 262144: no longer than FUSE
+    small window 1024 at 0: longer than FUSE beyond the spread
+    small window 1024 at 1048576: no longer than FUSE
+    small window 1024 at 262144: no longer than FUSE
+    small window default at 0: longer than FUSE beyond the spread
+    small window default at 1048576: no longer than FUSE
+    small window default at 262144: no longer than FUSE
+sizes passing in every output: 1m, 2044k, 2m; the rule's S by the matrix: 1m

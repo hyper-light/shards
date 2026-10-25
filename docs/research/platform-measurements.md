@@ -14160,3 +14160,130 @@ revision before comparing a changed API/implementation.
   naming the processes it counts if they do not, then holds them to it for 500 ms. The
   test alone, 40 times in a row on each of 8 ubuntu-24.04 runners (budget E2E 40204413483
   at 771c9a56; EPYC 7763 ×4, 9V45 ×2, Xeon 8573C ×2): 320 of 320.
+
+### M338. From what size a volume's file is mapped through its DAX window: files under 2 MiB through a window and through FUSE, on the Mac and on Fedora (D189)
+
+- **Question.** D189's DAX_SMALLEST, the smallest file a share's server tells its guest to
+  map, was one window range, 2 MiB, "not measured below it"; working trees are 99.8 to
+  99.9% files under 2 MiB, so it decides how most of a volume's files reach a guest. From
+  what size is a file read and written better through a window than through FUSE alone,
+  and what does a smaller threshold cost a VM process and its host?
+- **Method.** docs/research/measurements/dax-smallest/ (3ac02479, fb20a952; its results/
+  hold every table below in full). A release build of shards with smallest.patch (a
+  measurement build's: the server takes DAX_SMALLEST from SHARDS_DAX_SMALLEST; the VM
+  process logs each mapping's parts, each removal, and at a run's end its windows' ranges,
+  host mappings, descriptors and memory): the Mac's of 3ac02479, Fedora's of f9364970's
+  sources (the same code below the harness). guestsmall.c times each of N files of one
+  size in a volume, in a fixed-seed order: `first` (open, read whole, close), `again`,
+  `overwrite` (pwrite of its size at 0), `rewrite` (O_TRUNC, write), `stat`. measure.py
+  runs it in two homes, FUSE (SHARDS_SHARE_WINDOW_MIB=0) and window (the host's default
+  window, SHARDS_DAX_SMALLEST=0: every file mapped), at 4, 16, 32, 64, 256 and 1,024 KiB,
+  2 MiB less 4 KiB and 2 MiB, 1,000 files a size, the host's cache cold (Linux
+  POSIX_FADV_DONTNEED, macOS msync(2) MS_INVALIDATE) or warm, 5 rounds of every cell in an
+  order turning each round; then the many-small-files sets, a cargo registry's size mix
+  (66,357 files of 2 MiB or less, mix.txt) and 70,000 files of 4 KiB, each read once
+  under the default window and a 1 GiB one (512 ranges), the window arm at thresholds 0,
+  256 KiB and 1 MiB, 3 rounds; cells.py, sustained-io's npm (`npm ci --offline`, npm/cli
+  v12.2.1) and cargo (`cargo build --release`, rust-analyzer 2026-10-19) on a volume at
+  2 MiB and at each host's S, 5 rounds; window_costs (window.rs) and vm-maps.sh (a VM
+  process's own mappings). The rule, fixed in measure.py's docstring before any number:
+  S is the smallest measured size at which, and at every larger one, on the Mac and on
+  Fedora, the window's per-file p50 and p99 are no worse than FUSE's beyond the rounds'
+  spread (worse beyond it where the window's whole range of per-round values lies above
+  FUSE's; rule.py) for first reads cold and warm, re-reads and overwrites, the VM process's
+  memory per mapped file is no more than FUSE's, and the sets at S refuse no mapping, stay
+  within the host's limits and take no longer than FUSE. Hosts: the Mac (Apple M5 Max,
+  18 CPUs, 128 GiB, macOS 26.4.1, kernel 25.4.0), its runs launchd jobs (a user's
+  scheduling, M335), 2026-10-25, load at each run's start 5.7 to 7.0 (matrix); Fedora
+  (Intel i9-14900HX, 32 CPUs, 64 GiB, Fedora 44, kernel 6.19.10-300.fc44.x86_64,
+  vm.max_map_count 1,048,576, fs.inotify.max_user_watches 510,332), one transient unit
+  (MemoryMax 12G), a pass on the performance cores (taskset 0-15, 18:32 to 19:14 UTC) and
+  one on the efficient cores (16-31, 19:14 to 20:31 UTC), 2026-10-25. Linux on arm64 has
+  no host here (hosted arm64 runners have no /dev/kvm): unmeasured.
+- **Results, the rule's verdict a size** (rule.py; n 5,000 files an arm, size, phase and
+  cache; µs, the median of the rounds' p50s and their range):
+  - Mac: 4 to 64 KiB fail, 256 KiB and every larger size pass: S 256 KiB. 4 KiB: warm
+    first reads 256.1 [251.8, 259.3] through the window, 214.7 [211.0, 216.1] through
+    FUSE; cold overwrites 287.5 against 185.5; 64 KiB: cold first reads 531.8 [518.3,
+    536.8] against 362.8 [356.5, 372.7]. 256 KiB: cold first reads 821.2 [798.3, 880.7]
+    against 749.9 [736.5, 803.0], within the spread; warm 282.8 against 509.5, re-reads
+    129.6 against 443.2, cold overwrites 314.0 against 527.2. 2 MiB: cold first reads
+    2,950.1 against 3,206.7, warm 471.6 against 2,541.9, re-reads 223.2 against 2,403.3.
+  - Fedora's performance cores: S 1 MiB. 256 KiB fails one comparison, cold overwrites,
+    254.2 [251.2, 258.2] through the window against 208.0 [201.7, 208.5] (a guest's store
+    into a page its host does not hold waits for the host to read it in, PM M283); 1 MiB:
+    cold first reads 575.2 [565.1, 578.1] against 813.7 [566.5, 1,651.0], re-reads 115.4
+    against 485.6, cold overwrites 722.1 [716.6, 733.6] against 683.5 [665.3, 862.1].
+  - Fedora's efficient cores: S 256 KiB (32 KiB passes; 64 KiB fails warm overwrites,
+    [411.9, 616.1] against [354.2, 378.2]). 1 MiB: cold first reads 1,179.5 against
+    2,351.3, re-reads 328.9 against 1,495.2.
+  - Memory, the VM process's at a run's end (median, 1,000 files): a 4 KiB file costs a
+    window 23.6 KiB (Mac), 27.6 and 28.5 (Fedora) more than FUSE's page, 16 KiB 15.4 to
+    16.8 more on Fedora; from 16 KiB on the Mac and 32 KiB on Fedora less (FUSE keeps each
+    file in guest memory: the Mac's 1 MiB arm 2,136,483 KiB against the window's 58,457).
+  - No run failed and no mapping was refused, on either host; statx said DAX of exactly
+    the files at or past each arm's threshold in all 376 window-arm runs, and of none of
+    the FUSE arm's.
+- **Results, the sets** (run seconds, median [range] of 3; the window arm at each
+  threshold): at 256 KiB and 1 MiB no longer than FUSE beyond the spread in all 24 of
+  sets, windows and passes; at 0, mapping every file, longer in 8 of 12. Mac, the mix under the
+  default window: FUSE 40.34 [40.26, 47.98], 0 115.51 [53.15, 143.89], 256 KiB 49.57
+  [42.62, 55.68], 1 MiB 48.65 [42.55, 49.02]; Fedora's performance cores, the 4 KiB set:
+  FUSE 14.69 [13.19, 16.99], 0 23.37 [21.26, 24.91] (44,400 ranges reclaimed, 25,609 at
+  the peak), 256 KiB 13.62, 1 MiB 13.48.
+- **Results, a VM's mappings and the daemon's** (Fedora, Linux): a mapped range of a file
+  shorter than it is two of its VM process's mappings, the file's and the zeros past it,
+  a whole range one (window_costs; 1,000 small files mapped 2,279 against FUSE's 270);
+  each mapped file one descriptor of the VM process and one of the daemon, and one of the
+  daemon's inotify watches (1,057 and 1,087 descriptors, 1,015 watches, against 54, 85
+  and 14). Mapping every file of the 4 KiB set under the default window (32,009 ranges)
+  peaked at 25,609 ranges, 51,500 mappings, 25,659 and 25,695 descriptors and 25,623
+  watches; at 1 MiB the mix maps its 25 files of 1 MiB or more, and the 4 KiB set none. A VM process's own mappings, its
+  windows empty, are 346 to 385 for 1 to 32 vCPUs (vm-maps.sh: every microVM has the
+  host's CPUs, D191). So a host at Linux's default limit, 65,530, refuses mappings once a
+  VM holds more than about 32,600 such ranges at once, and a guest maps every range of a
+  window when it must: a 64 GiB host's default window and its join share's, or a 128 GiB
+  host's one.
+- **Results, the work** (cells.py, seconds, median [range] of 5; no run failed): Mac,
+  cargo 69.31 [68.55, 151.36] at 256 KiB, 69.93 [69.33, 73.25] at 1 MiB, 86.29 [70.30,
+  131.11] at 2 MiB; npm 17.52, 27.78 and 18.61. Fedora's performance cores, cargo 85.88
+  at 1 MiB, 84.79 at 2 MiB, npm 10.27 and 10.69; its efficient cores, cargo 108.33 at
+  256 KiB, 111.33 at 2 MiB, npm 16.70 and 18.37. No threshold differs beyond the spread.
+  The Mac's slow runs (npm 60 to 108 s, cargo 131 to 151) were its own filesystem's: its
+  share process sat in pwrite(2), openat(2) and close(2) (sample(1)) while its vCPUs
+  waited, and fsprobe.py, with no microVM running, timed a batch of 2,000 small files'
+  creates, writes, closes and unlinks at 0.47 s at p50, 3.10 at p90 and 70.8 at the most,
+  slow batches for minutes at a time (11:59 to 12:06 PDT), the slowest's calls 112 to 445
+  times the median batch's at p50 (open(2) 5,386 µs against 48). Spotlight was not it: at
+  the cells' slowest it indexed no new file in 120 s (mdfind), no importer running.
+- **Results, a busier Mac** (load 7.4 to 10.0, one round; then cold first reads at 256 KiB
+  to 2 MiB, 3 rounds at load 7.1 to 10.3): which arm leads held but at 16 and 32 KiB and
+  1 MiB first reads, where the window led; at 2 MiB cold first reads FUSE led in its one
+  round (the window's 8,388 against 3,101), the window in the 3 (2,985.7 [2,631.2,
+  3,027.2] against 3,230.8 [3,133.2, 3,329.7]); the window's cold first reads' p99 at 2 MiB less 4 KiB,
+  8,998.9 [8,541.7, 9,943.5] against 5,586.0 [5,437.5, 5,717.8], is worse beyond the
+  spread there, a cold page-in a fault at a time where FUSE's pread(2) reads ahead.
+- **Results, a mapping's own cost** (window_costs, n 2,000, sources without the patch): a
+  4 KiB file's range mapped to read 1.88 µs at p50 (p90 2.04, p99 2.71, max 16.38) on the
+  Mac, 1.61 (1.77, 5.35, 12.32) on Fedora; to write 2.83 and 2.93; unmapped 1.21 and 1.44.
+- **Reading.** The rule gives 256 KiB on the Mac and on Fedora's efficient cores, 1 MiB on
+  its performance cores, whose 256 KiB cold overwrites lose to FUSE's: the host reads the
+  page a guest's store lands in, which a FUSE_WRITE of the whole page does not; S on both
+  hosts is 1 MiB, and as the two answers are one measured size apart, one value serves
+  every host. Below 64 KiB a mapping's round trip and mmap cost a first read more than a
+  FUSE read, and a 4 KiB file's mapping holds more of its VM's memory than the page FUSE
+  keeps. At 1 MiB a working tree's mappings are few (the cargo mix's 25 files), so the
+  daemon's descriptors and watches and the VM's mappings stay small; at any threshold a
+  window's ranges can take a VM process past Linux's default mapping limit, which a 2 MiB
+  file's tail range reaches as a small file's range does.
+- **Consequence.** DAX_SMALLEST is 1 MiB (server.rs; its basis test,
+  `dax_smallest_is_what_its_measurement_found`, and the boundary held on either side,
+  `dax_is_offered_for_files_a_window_maps`; on a microVM,
+  `a_volumes_files_are_mapped_from_dax_smallest_bytes`). A mapping is charged its
+  microVM's I/O limits its file's bytes in its range as it is made, not the range's 2 MiB
+  (`a_dax_mapping_is_charged_its_files_bytes_as_it_is_made`). On Linux each of a VM's
+  windows is no longer than lets every range of them be mapped at once within the host's
+  vm.max_map_count, two mappings a range past the VM's own 385 and two for each vCPU past
+  32 (`share_window_bound_mib`): Linux's default holds a VM of one volume to 31.8 GiB a
+  window. D189 says so. The window's cold first reads' tail, and whether a range read
+  ahead as it is mapped would cut it (a writer's cost, D189), stay with D189's next items.

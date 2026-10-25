@@ -1,0 +1,31 @@
+== ../g121d/dax-results/mac-extra/sets-at-s.txt: sizes ; runs failed 0; matrix mappings refused 0
+  sets (run seconds, median [range]; refused mappings):
+    mix   window    1024 fuse   smallest        -: 43.40 [36.84, 62.03] refused 0
+    mix   window    1024 window smallest        0: 54.93 [41.49, 57.36] refused 0
+    mix   window    1024 window smallest   262144: 36.88 [35.79, 43.41] refused 0
+    mix   window    1024 window smallest  1048576: 36.38 [35.89, 39.41] refused 0
+    mix   window default fuse   smallest        -: 40.34 [40.26, 47.98] refused 0
+    mix   window default window smallest        0: 115.51 [53.15, 143.89] refused 0
+    mix   window default window smallest   262144: 49.57 [42.62, 55.68] refused 0
+    mix   window default window smallest  1048576: 48.65 [42.55, 49.02] refused 0
+    small window    1024 fuse   smallest        -: 40.35 [39.00, 55.36] refused 0
+    small window    1024 window smallest        0: 144.45 [43.73, 185.54] refused 0
+    small window    1024 window smallest   262144: 45.54 [40.79, 53.28] refused 0
+    small window    1024 window smallest  1048576: 46.48 [39.89, 58.28] refused 0
+    small window default fuse   smallest        -: 38.49 [38.08, 40.91] refused 0
+    small window default window smallest        0: 55.20 [45.50, 304.49] refused 0
+    small window default window smallest   262144: 39.75 [37.96, 43.98] refused 0
+    small window default window smallest  1048576: 40.92 [39.93, 42.62] refused 0
+    mix window 1024 at 0: no longer than FUSE
+    mix window 1024 at 1048576: no longer than FUSE
+    mix window 1024 at 262144: no longer than FUSE
+    mix window default at 0: longer than FUSE beyond the spread
+    mix window default at 1048576: no longer than FUSE
+    mix window default at 262144: no longer than FUSE
+    small window 1024 at 0: no longer than FUSE
+    small window 1024 at 1048576: no longer than FUSE
+    small window 1024 at 262144: no longer than FUSE
+    small window default at 0: longer than FUSE beyond the spread
+    small window default at 1048576: no longer than FUSE
+    small window default at 262144: no longer than FUSE
+sizes passing in every output: -; the rule's S by the matrix: none

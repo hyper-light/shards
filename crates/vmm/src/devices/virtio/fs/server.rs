@@ -121,10 +121,16 @@ mod init {
 
 /// `fuse_attr.flags`' FUSE_ATTR_DAX: the guest maps this file into its DAX window (D189).
 const ATTR_DAX: u32 = 1 << 1;
-/// The smallest file the guest is told to map into its DAX window: one of the window's
-/// ranges, which it maps a file in (fs/fuse/dax.c, FUSE_DAX_SZ); smaller files are read
-/// through FUSE, each mapping a round trip to the share process and a host mmap.
-const DAX_SMALLEST: u64 = super::window::RANGE;
+/// The smallest file the guest is told to map into its DAX window, 1 MiB: the smallest of
+/// the sizes measured from 4 KiB to 2 MiB at which, and at each larger one, a file read,
+/// re-read and overwritten through a window was no worse than through FUSE at p50 and p99
+/// beyond the rounds' spread, held no more memory, and left a working tree's files no slower
+/// to read, on the Mac and on Fedora's performance and efficient cores (PM M338): from
+/// 256 KiB on the Mac and Fedora's efficient cores, from 1 MiB on its performance cores,
+/// where a 256 KiB file's cold overwrite took 251 to 258 µs at p50 through a window and 202
+/// to 209 through FUSE. Smaller files are read through FUSE, which a mapping, a round trip
+/// to the share process and a host mmap(2), costs them more than it saves.
+pub const DAX_SMALLEST: u64 = 1 << 20;
 
 mod fattr {
     pub const MODE: u32 = 1 << 0;
@@ -3472,18 +3478,26 @@ mod tests {
         (p, server)
     }
 
+    /// DAX_SMALLEST is what PM M338's measurement found by its rule: 1 MiB, the smallest
+    /// measured size from which a window was no worse than FUSE on the Mac (from 256 KiB)
+    /// and on Fedora's performance cores (from 1 MiB) and efficient ones (from 256 KiB).
+    #[test]
+    fn dax_smallest_is_what_its_measurement_found() {
+        assert_eq!(DAX_SMALLEST, 1 << 20, "PM M338");
+    }
+
     /// A guest that maps files into a DAX window (D189) is told the host's page size its
     /// mappings' offsets are whole multiples of, and which files to map: a regular file of
-    /// a range or more the server may read, never a small one, and where a mapping's
-    /// descriptor is opened to write too (Hypervisor.framework's), one it may write, in a
-    /// share written to. A mapping's file, which the guest names by its node alone, is
-    /// opened to read, and to write too where the share is written to; never a directory, a
-    /// node the server does not know, or a file put at its name since.
+    /// `DAX_SMALLEST` bytes or more the server may read, never one a byte short, and where a
+    /// mapping's descriptor is opened to write too (Hypervisor.framework's), one it may
+    /// write, in a share written to. A mapping's file, which the guest names by its node
+    /// alone, is opened to read, and to write too where the share is written to; never a
+    /// directory, a node the server does not know, or a file put at its name since.
     #[test]
     fn dax_is_offered_for_files_a_window_maps() {
         let (p, s) = dir();
         std::fs::write(p.join("big"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
-        std::fs::write(p.join("small"), [1u8; 4096]).unwrap();
+        std::fs::write(p.join("small"), vec![1u8; DAX_SMALLEST as usize - 1]).unwrap();
         std::fs::write(p.join("kept"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
         std::fs::set_permissions(
             p.join("kept"),

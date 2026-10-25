@@ -1967,6 +1967,81 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
 }
 
+/// A volume's files are mapped through its microVM's DAX window from `DAX_SMALLEST` bytes
+/// (D189): a file of that size its guest maps, as statx says, and one a byte short it reads
+/// through FUSE; each it reads whole as the host wrote it, what it writes in place the host
+/// reads, and what the host writes in place it reads.
+#[test]
+fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-daxs");
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let dir = TempDir::new("containers-daxs-v");
+    let smallest = usize::try_from(shards_vmm::devices::virtio::fs::server::DAX_SMALLEST).unwrap();
+    let bytes =
+        |n: usize, by: u32| -> Vec<u8> { (0..n as u32).map(|i| (i.wrapping_mul(by) >> 24) as u8).collect() };
+    let files = [
+        ("at", bytes(smallest, 2_654_435_761)),
+        ("short", bytes(smallest - 1, 40_503)),
+    ];
+    for (name, file) in &files {
+        std::fs::write(dir.join(name), file).unwrap();
+    }
+    let volume = format!("{}:/v", dir.display());
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "daxs", "-u", "0", "-v", &volume, &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "daxs", "/bin/testguest"];
+        all.extend_from_slice(args);
+        let r = shards(&all);
+        assert_eq!(r.status, Some(0), "{args:?}: {r}");
+        r.stdout
+    };
+    assert_eq!(
+        exec(&["fs", "dax:/v/at", "dax:/v/short"]),
+        "dax /v/at yes\ndax /v/short no\n"
+    );
+    for (name, file) in &files {
+        let path = format!("/v/{name}");
+        let digest = format!("{:016x}", shards_testguest::fnv1a(file));
+        assert_eq!(exec(&["digest", &path]), format!("digest {path} {digest}\n"));
+        // Its last byte written in place by the guest: the host reads it.
+        let last = file.len() - 1;
+        let byte = file[last].wrapping_add(1);
+        exec(&["fs", &format!("poke:{path}:{last}:{byte}")]);
+        assert_eq!(std::fs::read(dir.join(name)).unwrap()[last], byte, "{name}");
+        // Its first written in place by the host: the guest reads it.
+        let byte = file[0].wrapping_add(2);
+        {
+            use std::os::unix::fs::FileExt as _;
+            let host = std::fs::OpenOptions::new()
+                .write(true)
+                .open(dir.join(name))
+                .unwrap();
+            host.write_all_at(&[byte], 0).unwrap();
+        }
+        assert_eq!(
+            exec(&["fs", &format!("peek:{path}:0")]),
+            format!("peek {path} 0 {byte}\n")
+        );
+    }
+    assert_eq!(shards(&["rm", "-f", "daxs"]).status, Some(0));
+}
+
 /// A volume's large files go through a DAX window by default, one as long as its host's
 /// memory (D189, PM M306), but where the host is itself a virtual machine on an AMD CPU,
 /// whose hypervisor maps each page a window gives anew (PM M308); through FUSE where
