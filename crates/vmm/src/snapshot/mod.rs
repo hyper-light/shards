@@ -1166,8 +1166,12 @@ fn decode_working_set_bytes(bytes: &[u8], page: u64, max_pages: u64) -> Result<O
 /// (the daemon's: no VM writes a snapshot it restores, D30). Taken only if `name` is still
 /// the generation `dir` is at, and only as a restore would take it: recorded at `page`
 /// bytes, its pages aligned, distinct and no more than `max_pages` of the snapshot's guest.
-/// Returns how many pages it wrote: 0 for a set recorded from a generation since replaced,
-/// or at another page size.
+/// A generation keeps the first it is given, which every restore after maps ahead and
+/// records none of (D25): the restores of a pool, made before it had one, each record one
+/// and send it as their runs end, and a set sent after replaced the one before, once a
+/// run's that gave memory back as it waited (PM M320). One a restore could not read is
+/// replaced. Returns how many pages it wrote: 0 for a set recorded from a generation since
+/// replaced, or at another page size, or for a generation that has one.
 pub fn accept_working_set(
     dir: &Path,
     name: &str,
@@ -1179,7 +1183,11 @@ pub fn accept_working_set(
     if pinned.name != name {
         return Ok(0);
     }
-    let Some(pages) = decode_working_set_bytes(bytes, page, max_pages(&pinned.snapshot))? else {
+    let max_pages = max_pages(&pinned.snapshot);
+    if matches!(read_working_set(&pinned.path, page, max_pages), Ok(Some(_))) {
+        return Ok(0);
+    }
+    let Some(pages) = decode_working_set_bytes(bytes, page, max_pages)? else {
         return Ok(0);
     };
     let generation = platform::open_dir_beneath(dir, &[&pinned.name])
@@ -1887,7 +1895,16 @@ mod tests {
             assert_eq!(stored(), None);
             // The set that fits: written, and read back as sent.
             assert_eq!(accept_working_set(&dir, &name, &bytes, page, |_| max), Ok(3));
-            assert_eq!(stored(), Some(set));
+            assert_eq!(stored(), Some(set.clone()));
+            // Another restore's, sent after: the generation keeps its first.
+            let fewer = encode_working_set(&touches(&[0x8000_4000]), page);
+            assert_eq!(accept_working_set(&dir, &name, &fewer, page, |_| max), Ok(0));
+            assert_eq!(stored(), Some(set.clone()));
+            // One a restore cannot read is replaced.
+            fs::write(read(&dir).unwrap().path.join(WORKING_SET), b"damaged").unwrap();
+            assert!(read_working_set(&read(&dir).unwrap().path, page, max).is_err());
+            assert_eq!(accept_working_set(&dir, &name, &fewer, page, |_| max), Ok(1));
+            assert_eq!(stored(), Some(touches(&[0x8000_4000])));
         }
 
         /// A working set a restore hands its spawner is kept in the generation it names,

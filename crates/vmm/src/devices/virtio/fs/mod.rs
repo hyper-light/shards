@@ -122,7 +122,7 @@ impl Slot {
                 .clone()
                 .ok_or("DAX mappings for a share with no window")?;
             for (moffset, m) in mappings {
-                let again = descriptor_on(&mut conn, m.node, m.writable)
+                let again = descriptor_on(&mut conn, m.node, m.writable, m.foffset, m.len)
                     .and_then(|fd| window.map(fd, m.node, m.foffset, moffset, m.len, m.writable));
                 // Its file reached no more: zeros there, as past a file's end.
                 if again.is_err() {
@@ -161,14 +161,20 @@ impl Slot {
     }
 
     /// A descriptor of the file of its server's node `node`, for a DAX window's mapping of
-    /// it (D189), writable only if `writable`: an errno where the server refuses it, or
-    /// there is none.
-    fn descriptor(&self, node: u64, writable: bool) -> Result<std::os::fd::OwnedFd, i32> {
+    /// `len` bytes of it from `foffset` (D189), writable only if `writable`: an errno where
+    /// the server refuses it, or there is none.
+    fn descriptor(
+        &self,
+        node: u64,
+        writable: bool,
+        foffset: u64,
+        len: u64,
+    ) -> Result<std::os::fd::OwnedFd, i32> {
         let mut conn = self
             .conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        descriptor_on(conn.as_mut().ok_or(libc::ENODEV)?, node, writable)
+        descriptor_on(conn.as_mut().ok_or(libc::ENODEV)?, node, writable, foffset, len)
     }
 
     /// The server's reply to `req`, none for one that takes none; Err with no server, or
@@ -196,14 +202,16 @@ impl Slot {
 }
 
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
-/// for a DAX window's mapping of it (D189), writable only if `writable`: an errno where the
-/// server refuses it.
-fn descriptor_on(conn: &mut UnixStream, node: u64, writable: bool) -> Result<std::os::fd::OwnedFd, i32> {
-    let mut ask = Vec::with_capacity(10);
-    ask.push(DESCRIPTOR);
-    ask.extend_from_slice(&node.to_le_bytes());
-    ask.push(u8::from(writable));
-    write_control(conn, &ask).map_err(|_| libc::EIO)?;
+/// for a DAX window's mapping of `len` bytes of it from `foffset` (D189), writable only if
+/// `writable`: an errno where the server refuses it.
+fn descriptor_on(
+    conn: &mut UnixStream,
+    node: u64,
+    writable: bool,
+    foffset: u64,
+    len: u64,
+) -> Result<std::os::fd::OwnedFd, i32> {
+    write_control(conn, &descriptor_ask(node, writable, foffset, len)).map_err(|_| libc::EIO)?;
     match shards_ipc::recv(conn) {
         Ok(Some(m)) if m.kind == 0 => m.fds.into_iter().next().ok_or(libc::EIO),
         Ok(Some(m)) => Err(m
@@ -213,6 +221,20 @@ fn descriptor_on(conn: &mut UnixStream, node: u64, writable: bool) -> Result<std
             .map_or(libc::EIO, i32::from_le_bytes)),
         _ => Err(libc::EIO),
     }
+}
+
+/// A `DESCRIPTOR` ask: the node (le64), whether the mapping is writable (one byte), then
+/// the range of the file it maps, its offset and length (le64 each). A server that keeps
+/// a file's bytes in an object of its own for each mapping (slates' shares) answers for
+/// that range; shards' own reads the node and the flag alone.
+fn descriptor_ask(node: u64, writable: bool, foffset: u64, len: u64) -> Vec<u8> {
+    let mut ask = Vec::with_capacity(26);
+    ask.push(DESCRIPTOR);
+    ask.extend_from_slice(&node.to_le_bytes());
+    ask.push(u8::from(writable));
+    ask.extend_from_slice(&foffset.to_le_bytes());
+    ask.extend_from_slice(&len.to_le_bytes());
+    ask
 }
 
 /// Sends `bytes` as a frame: its length (le32), then itself, from where they are.
@@ -377,6 +399,8 @@ pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
                 }
                 write_frame(&mut conn, &reply)?;
             }
+            // The node and whether writable; the range past them is a server's of its own
+            // objects to read ([`descriptor_ask`]).
             true if asked.first() == Some(&DESCRIPTOR) => {
                 let node = asked
                     .get(1..9)
@@ -722,7 +746,7 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>> 
                 // hundred misses, and the window's 1 MiB writes after a page of each range
                 // was written took 1,285 µs at p50 where they took 682 (PM M302). The window
                 // keeps one a file, not one a range.
-                slot.descriptor(node, writable)
+                slot.descriptor(node, writable, foffset, len)
                     .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
             }
             _ => Err(libc::EINVAL),
@@ -1246,6 +1270,22 @@ mod tests {
         assert!(mapping(&request(1, 1, b"big\0"), &w, &slot).is_none());
         drop(slot);
         t.join().unwrap();
+    }
+
+    /// A `DESCRIPTOR` ask says the range of the file its mapping maps after its node and
+    /// flag, bytes 10 to 26, for a server that answers each range from an object of its own
+    /// (slates' shares); shards' own server reads past them, as
+    /// `a_dax_mapping_maps_the_file_of_its_node` asks it so.
+    #[test]
+    fn a_descriptor_ask_says_its_mappings_range() {
+        let ask = descriptor_ask(0x0102_0304_0506_0708, true, 2 << 20, 1 << 20);
+        assert_eq!(ask.len(), 26);
+        assert_eq!(ask[0], DESCRIPTOR);
+        assert_eq!(ask[1..9], 0x0102_0304_0506_0708u64.to_le_bytes());
+        assert_eq!(ask[9], 1);
+        assert_eq!(ask[10..18], (2u64 << 20).to_le_bytes());
+        assert_eq!(ask[18..26], (1u64 << 20).to_le_bytes());
+        assert_eq!(descriptor_ask(7, false, 0, 0)[9], 0);
     }
 
     /// The files whose sizes a reply may tell the guest, as the server answers: its

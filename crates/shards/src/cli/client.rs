@@ -160,7 +160,7 @@ fn serve(
     let resizes = request.tty && !request.detach && out_terminal;
     // Where the run's signals go: its slot's `say`, or a socket's. One run a process, so the
     // forwarder, which lives as long as the process, shares it as a `static`.
-    static CURRENT: Mutex<Option<Says>> = Mutex::new(None);
+    static CURRENT: Mutex<Current> = Mutex::new(Current::new());
     let current = &CURRENT;
     // Signals are taken now, before any thread starts, as each inherits what this one
     // blocks; the threads that forward them and fill the command's stdin start once the
@@ -216,6 +216,10 @@ fn serve(
         };
         let ran = match asked {
             Asked::Slot(mut client) => {
+                match client.sender() {
+                    Ok(say) => hold(current, Says::Slot(say)),
+                    Err(e) => return failed(&format!("its slot: {e}")),
+                }
                 if let Err(e) = forwarding(&mut signals) {
                     return failed(&e);
                 }
@@ -247,13 +251,7 @@ fn serve(
                             Err(e) => return Ran::Failed(format!("a stream's thread: {e}")),
                         }
                     }
-                    let says = || {
-                        client
-                            .sender()
-                            .map(Says::Slot)
-                            .map_err(|e| format!("its slot: {e}"))
-                    };
-                    let ran = ran_on(request, home, cid, current, resizes, &says, &mut || {
+                    let ran = ran_on(request, home, cid, current, resizes, &mut || {
                         loop {
                             match slot_message(&client)? {
                                 Some(m) if m.kind == kind::HEARD => {
@@ -304,6 +302,10 @@ fn serve(
                     Err(e) => return failed(&format!("asking the daemon: {e}")),
                     Ok(()) => {}
                 }
+                match conn.try_clone() {
+                    Ok(said) => hold(current, Says::Socket(said)),
+                    Err(e) => return failed(&format!("the daemon's connection: {e}")),
+                }
                 if let Err(e) = forwarding(&mut signals) {
                     return failed(&e);
                 }
@@ -313,12 +315,7 @@ fn serve(
                 {
                     return failed(&e);
                 }
-                let says = || {
-                    conn.try_clone()
-                        .map(Says::Socket)
-                        .map_err(|e| format!("the daemon's connection: {e}"))
-                };
-                ran_on(request, home, cid, current, resizes, &says, &mut || {
+                ran_on(request, home, cid, current, resizes, &mut || {
                     shards_ipc::recv(&conn)
                 })
             }
@@ -331,11 +328,130 @@ fn serve(
                 }
                 return status;
             }
-            Ran::Restart => {}
-            Ran::Failed(e) => return failed(&e),
+            // What went to its daemon went with it: an interrupt it had yet to answer ends
+            // the client as it asked, its run never made; the rest wait for the next
+            // daemon's connection.
+            Ran::Restart => {
+                if let Some(sig) = let_go(current) {
+                    end_by(sig);
+                }
+            }
+            Ran::Failed(e) => {
+                if let Some(sig) = let_go(current) {
+                    end_by(sig);
+                }
+                return failed(&e);
+            }
         }
     }
     failed("the daemon kept asking for a restart")
+}
+
+/// Where a run's signals go, from the moment its request is on its way, and what went
+/// there (D26). Its command may run, and say so on this client's stdout, before this client
+/// has heard that its run was made (CREATED): a signal taken then had no connection to go
+/// on, and one the client was started ignoring went nowhere while the command waited for
+/// it (2 hours in budget E2E 40170179004's `signals_reach_a_warm_run`, PM M332). Each goes
+/// on the run's connection now, and its daemon says which side of the run's making it came.
+#[derive(Debug)]
+struct Current {
+    says: Option<Says>,
+    /// Its run is made, or needs no making (an exec's, an attach's): what it sends is the
+    /// command's.
+    made: bool,
+    /// The first INTERRUPT it sent before it heard its run was made.
+    interrupted: Option<libc::c_int>,
+}
+
+impl Current {
+    const fn new() -> Current {
+        Current {
+            says: None,
+            made: false,
+            interrupted: None,
+        }
+    }
+}
+
+fn lock_current(current: &Mutex<Current>) -> std::sync::MutexGuard<'_, Current> {
+    current.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The run's connection, its request on its way there: what this client sends goes on it
+/// from now.
+fn hold(current: &Mutex<Current>, to: Says) {
+    let mut c = lock_current(current);
+    c.says = Some(to);
+    c.made = false;
+    c.interrupted = None;
+}
+
+/// Its run made, or one needing no making: what the client sends is its command's, whose
+/// terminal is sized as it starts, in case that changed since the request; an attach's one
+/// row and column larger first, so that the size changes and the command redraws what it
+/// shows (docker/cli attach.go resizeTTY).
+fn made(current: &Mutex<Current>, resizes: bool, attach: bool) {
+    let mut c = lock_current(current);
+    c.made = true;
+    c.interrupted = None;
+    if resizes && let Some(to) = &c.says {
+        if attach {
+            resize_by(to, 1);
+        }
+        resize(to);
+    }
+}
+
+/// Lets go of the run's connection, whose daemon went or asked for a restart: says the
+/// INTERRUPT the client sent before its run was made, which none will answer now.
+fn let_go(current: &Mutex<Current>) -> Option<libc::c_int> {
+    let mut c = lock_current(current);
+    c.says = None;
+    c.interrupted.take()
+}
+
+/// Sends Linux signal `linux` on the run's connection in `current`, as INTERRUPT where it
+/// would end the client (`ending`, the signal), else as SIGNAL: whether it went. With
+/// `resize_first`, the command's terminal is resized first (SIGWINCH).
+fn hand(current: &Mutex<Current>, linux: u32, ending: Option<libc::c_int>, resize_first: bool) -> bool {
+    let mut c = lock_current(current);
+    let Some(conn) = &c.says else {
+        return false;
+    };
+    if resize_first {
+        resize(conn);
+    }
+    let kind = if ending.is_some() {
+        kind::INTERRUPT
+    } else {
+        kind::SIGNAL
+    };
+    if conn.send(kind, &linux.to_be_bytes()).is_err() {
+        return false;
+    }
+    if !c.made && c.interrupted.is_none() {
+        c.interrupted = ending;
+    }
+    true
+}
+
+/// Ends this client as signal `sig` ends the Docker CLI before its container is made, the
+/// terminal restored first: SIGINT and SIGTERM with 128 and their number and nothing said
+/// (docker/cli cmd/docker/docker.go, notifyContext); SIGHUP and SIGQUIT as they would have.
+fn end_by(sig: libc::c_int) -> ! {
+    terminal::restore();
+    if sig != libc::SIGINT && sig != libc::SIGTERM {
+        // SAFETY: the default action of a terminating signal, on this process.
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            let mut only: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut only);
+            libc::sigaddset(&mut only, sig);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
+            libc::raise(sig);
+        }
+    }
+    std::process::exit(128 + sig)
 }
 
 /// Where a client's messages to its command go: its slot's `say` (D185), or the socket of
@@ -365,36 +481,21 @@ enum Ran {
 }
 
 /// The command's messages, as `recv` takes them, until it ends: its ID once made, for
-/// `--cidfile`; then signals go to it, through what `says` makes, and its terminal follows
-/// this client's (a run's once the daemon has made its container, an exec's at once); a
-/// detached run's answer; its status.
+/// `--cidfile`, from when what the client sends on the run's connection in `current` is
+/// the command's, and its terminal follows this client's (a run's once the daemon has made
+/// its container, an exec's at once); a detached run's answer; its status; or the daemon's
+/// answer to the client's asking to be ended before its run was made.
 fn ran_on(
     request: &Attached,
     home: &Path,
     cid: &mut Option<crate::cli::request::CidFile>,
-    current: &Mutex<Option<Says>>,
+    current: &Mutex<Current>,
     resizes: bool,
-    says: &dyn Fn() -> Result<Says, String>,
     recv: &mut dyn FnMut() -> io::Result<Option<shards_ipc::Message>>,
 ) -> Ran {
-    let attach = || -> Result<(), String> {
-        let to = says()?;
-        // The size as the command starts, in case it changed since the request; an
-        // attach's one row and column larger first, so that the size changes and the
-        // command redraws what it shows (docker/cli attach.go resizeTTY).
-        if resizes {
-            if request.kind == kind::ATTACH {
-                resize_by(&to, 1);
-            }
-            resize(&to);
-        }
-        *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(to);
-        Ok(())
-    };
-    if request.kind != kind::START
-        && let Err(e) = attach()
-    {
-        return Ran::Failed(e);
+    let attach = request.kind == kind::ATTACH;
+    if request.kind != kind::START {
+        made(current, resizes, attach);
     }
     loop {
         match recv() {
@@ -405,9 +506,16 @@ fn ran_on(
                 {
                     return Ran::Failed(e);
                 }
-                if let Err(e) = attach() {
-                    return Ran::Failed(e);
-                }
+                made(current, resizes, attach);
+            }
+            // Its INTERRUPT, taken before its run was made (D26).
+            Ok(Some(m)) if m.kind == kind::INTERRUPTED => {
+                let sig = m
+                    .payload
+                    .first_chunk::<4>()
+                    .and_then(|linux| shards_ipc::local_signal(u32::from_be_bytes(*linux)))
+                    .unwrap_or(libc::SIGINT);
+                end_by(sig);
             }
             Ok(Some(m)) if m.kind == kind::EXIT => {
                 let Some((&status, timing)) = m.payload.split_first() else {
@@ -1164,15 +1272,14 @@ fn resize_by(conn: &Says, more: u16) {
 /// current connection, even those this process was started ignoring, as the Docker CLI
 /// does (shards_ipc::take_forwarded). They are blocked in the calling thread, which every
 /// thread started later inherits, so only the forwarder's `sigwait` receives them. One that
-/// would end the client, arriving with no connection to send it on, ends the client,
-/// unless it was ignored, with the terminal restored first: SIGINT and SIGTERM as they
-/// end the Docker CLI before its container is made, with 128 and their number and
-/// nothing said (docker/cli cmd/docker/docker.go, notifyContext); SIGHUP and SIGQUIT as
-/// they would have. With `reads_terminal`, the terminal's job control applies to the
-/// client (shards_ipc::forwarded). With `resizes`, SIGWINCH first resizes the command's
-/// terminal, then goes to the command too, as both reach a Docker container's (docker/cli
-/// tty.go, signals.go). Without `proxies`, only SIGWINCH is taken, to resize the command's
-/// terminal with `resizes`, and the rest act on the client as they would.
+/// would end the client, unless it was ignored, goes as INTERRUPT, which its daemon takes
+/// as the client's end before its run is made (D26); with no connection to send it on, the
+/// request yet to go, it ends the client ([`end_by`]). With `reads_terminal`, the
+/// terminal's job control applies to the client (shards_ipc::forwarded). With `resizes`,
+/// SIGWINCH first resizes the command's terminal, then goes to the command too, as both
+/// reach a Docker container's (docker/cli tty.go, signals.go). Without `proxies`, only
+/// SIGWINCH is taken, to resize the command's terminal with `resizes`, and the rest act on
+/// the client as they would.
 fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Option<Signals>, String> {
     if !proxies {
         if !resizes {
@@ -1218,7 +1325,7 @@ struct Signals {
 
 /// Starts the thread that receives `signals`, as [`take_signals`] says, on the run's
 /// connection in `current` once there is one.
-fn forward(signals: Option<Signals>, current: &'static Mutex<Option<Says>>) -> Result<(), String> {
+fn forward(signals: Option<Signals>, current: &'static Mutex<Current>) -> Result<(), String> {
     let Some(Signals {
         set,
         ignored,
@@ -1235,7 +1342,7 @@ fn forward(signals: Option<Signals>, current: &'static Mutex<Option<Says>>) -> R
                 let mut sig = 0;
                 // SAFETY: sigwait(3) on a valid set.
                 while unsafe { libc::sigwait(&set, &mut sig) } == 0 {
-                    if let Some(conn) = current.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                    if let Some(conn) = lock_current(current).says.as_ref() {
                         resize(conn);
                     }
                 }
@@ -1254,41 +1361,19 @@ fn forward(signals: Option<Signals>, current: &'static Mutex<Option<Says>>) -> R
                     return;
                 }
                 if sig == shards_ipc::CARRIER {
-                    if let Some(conn) = current.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-                        for linux in shards_ipc::sent_faults() {
-                            let _ = conn.send(kind::SIGNAL, &linux.to_be_bytes());
-                        }
+                    for linux in shards_ipc::sent_faults() {
+                        hand(current, linux, None, false);
                     }
                     continue;
                 }
                 let Some(linux) = shards_ipc::linux_signal(sig) else {
                     continue;
                 };
-                let sent = current
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .as_ref()
-                    .is_some_and(|conn| {
-                        if resizes && sig == libc::SIGWINCH {
-                            resize(conn);
-                        }
-                        conn.send(kind::SIGNAL, &linux.to_be_bytes()).is_ok()
-                    });
-                let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
-                if !sent && ends && !ignored.contains(&sig) {
-                    terminal::restore();
-                    if sig == libc::SIGINT || sig == libc::SIGTERM {
-                        std::process::exit(128 + sig);
-                    }
-                    // SAFETY: the default action of a terminating signal, on this process.
-                    unsafe {
-                        libc::signal(sig, libc::SIG_DFL);
-                        let mut only: libc::sigset_t = std::mem::zeroed();
-                        libc::sigemptyset(&mut only);
-                        libc::sigaddset(&mut only, sig);
-                        libc::pthread_sigmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
-                        libc::raise(sig);
-                    }
+                let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig)
+                    && !ignored.contains(&sig);
+                let ending = ends.then_some(sig);
+                if !hand(current, linux, ending, resizes && sig == libc::SIGWINCH) && ends {
+                    end_by(sig);
                 }
             }
         })
@@ -1299,6 +1384,49 @@ fn forward(signals: Option<Signals>, current: &'static Mutex<Option<Says>>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Once its request is on its way, a client's signals go on its run's connection, one
+    /// that would end it as INTERRUPT, which its daemon takes as its end before its run is
+    /// made (D26); before, none goes, for the client to end itself. The first interrupt
+    /// before its run is made is kept, for a daemon that goes without answering it, and is
+    /// let go of once the run is made. Taken before it heard its run was made, a signal had
+    /// no connection to go on, and one the client was started ignoring went nowhere while
+    /// the command waited for it (PM M332).
+    #[test]
+    fn a_runs_signals_go_on_its_connection_from_its_request() {
+        let current = Mutex::new(Current::new());
+        assert!(
+            !hand(&current, 2, Some(libc::SIGINT), false),
+            "sent before the request"
+        );
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        hold(&current, Says::Socket(ours));
+        assert!(hand(&current, 10, None, false));
+        assert!(hand(&current, 2, Some(libc::SIGINT), false));
+        assert!(hand(&current, 15, Some(libc::SIGTERM), false));
+        for (kind, linux) in [(kind::SIGNAL, 10u32), (kind::INTERRUPT, 2), (kind::INTERRUPT, 15)] {
+            let m = shards_ipc::recv(&theirs).unwrap().unwrap();
+            assert_eq!((m.kind, m.payload), (kind, linux.to_be_bytes().to_vec()));
+        }
+        assert_eq!(let_go(&current), Some(libc::SIGINT));
+        assert!(
+            !hand(&current, 2, Some(libc::SIGINT), false),
+            "sent once let go of"
+        );
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        hold(&current, Says::Socket(ours));
+        assert!(hand(&current, 1, Some(libc::SIGHUP), false));
+        made(&current, false, false);
+        assert!(hand(&current, 2, Some(libc::SIGINT), false));
+        assert_eq!(let_go(&current), None, "kept once its run was made");
+        for linux in [1u32, 2] {
+            let m = shards_ipc::recv(&theirs).unwrap().unwrap();
+            assert_eq!(
+                (m.kind, m.payload),
+                (kind::INTERRUPT, linux.to_be_bytes().to_vec())
+            );
+        }
+    }
 
     /// The client's own fields go first in the VM's timing line, an empty one too, and a
     /// line that is no object stays as it came.

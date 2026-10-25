@@ -41,6 +41,28 @@ impl Link {
     }
 }
 
+/// One message at a time to the daemon, whichever of the VM's threads sends it, on a
+/// connection of the daemon's or a clone of one: as the daemon sends to a VM (its
+/// `RunSocket`). Linux queues a stream message past one buffer's worth in pieces
+/// (net/unix/af_unix.c `unix_stream_sendmsg`), between which another thread's message can
+/// land: a run's working set reached its daemon cut through by another message, which it
+/// refused as pages neither aligned nor distinct, and the stream's framing broken there
+/// took the VM for ended before its command (PM M319).
+static TO_DAEMON: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Sends the daemon a message on `daemon` ([`TO_DAEMON`]).
+fn to_daemon(
+    daemon: &UnixStream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[std::os::fd::BorrowedFd<'_>],
+) -> io::Result<()> {
+    let _turn = TO_DAEMON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    shards_ipc::send(daemon, kind, payload, fds)
+}
+
 /// The VM's socket to its network process, on which its run's published ports close as
 /// the run ends (`--net-release`).
 static RELEASE: std::sync::OnceLock<UnixStream> = std::sync::OnceLock::new();
@@ -207,7 +229,7 @@ impl shards_vmm::devices::virtio::fs::window::Watch for Watching {
         let mut said = self.share.to_be_bytes().to_vec();
         said.extend_from_slice(&node.to_be_bytes());
         said.extend_from_slice(&size.to_be_bytes());
-        if let Err(e) = shards_ipc::send(&self.daemon, kind::WATCH, &said, &[file]) {
+        if let Err(e) = to_daemon(&self.daemon, kind::WATCH, &said, &[file]) {
             shards_vmm::warn!("a share's DAX window: telling the daemon of a file it maps: {e}");
         }
     }
@@ -215,7 +237,7 @@ impl shards_vmm::devices::virtio::fs::window::Watch for Watching {
     fn unwatch(&self, node: u64) {
         let mut said = self.share.to_be_bytes().to_vec();
         said.extend_from_slice(&node.to_be_bytes());
-        if let Err(e) = shards_ipc::send(&self.daemon, kind::UNWATCH, &said, &[]) {
+        if let Err(e) = to_daemon(&self.daemon, kind::UNWATCH, &said, &[]) {
             shards_vmm::debug!("a share's DAX window: telling the daemon of a file it maps no more: {e}");
         }
     }
@@ -290,7 +312,7 @@ fn tell_lost(daemon: &UnixStream, ended: &workload::Ended) {
     if ended.lost > 0 || ended.dropped > 0 {
         let mut counts = ended.lost.to_be_bytes().to_vec();
         counts.extend(ended.dropped.to_be_bytes());
-        let _ = shards_ipc::send(daemon, kind::LOST, &counts, &[]);
+        let _ = to_daemon(daemon, kind::LOST, &counts, &[]);
     }
 }
 
@@ -328,7 +350,7 @@ pub fn receive(
     // way to the guest (review 8.13).
     let daemon_relay = Relay::start("daemon-signals", to)?;
     let client_relay = Relay::start("client-signals", to)?;
-    shards_ipc::send(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
+    to_daemon(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
     let request = shards_ipc::recv(daemon)
         .map_err(|e| format!("waiting for a request: {e}"))?
         .ok_or("the daemon closed without a request")?;
@@ -428,7 +450,7 @@ pub fn receive(
     // (daemon.rs, hand_over). A daemon gone by now has no copies left to close, and hands
     // the run to no other: the command runs. Any other failure leaves the daemon unable to
     // tell whether this VM has the run, so it does not.
-    if let Err(e) = shards_ipc::send(daemon, kind::TAKEN, &[], &[])
+    if let Err(e) = to_daemon(daemon, kind::TAKEN, &[], &[])
         && !matches!(
             e.kind(),
             io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
@@ -496,7 +518,7 @@ pub fn receive(
 /// passes to `answers`: none once the daemon has gone.
 fn segments_from(daemon: UnixStream, answers: mpsc::Receiver<Segment>) -> workload::NextSegment {
     Box::new(move |seq| {
-        shards_ipc::send(&daemon, kind::LOG_SEGMENT, &seq.to_be_bytes(), &[])?;
+        to_daemon(&daemon, kind::LOG_SEGMENT, &seq.to_be_bytes(), &[])?;
         loop {
             let (answered, fds) = answers
                 .recv()
@@ -655,14 +677,14 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let saved = save_request(message);
                     let said = saved.as_ref().err().map(String::as_bytes).unwrap_or_default();
                     if let Ok(answer) = &answer {
-                        let _ = shards_ipc::send(answer, kind::SAVED, said, &[]);
+                        let _ = to_daemon(answer, kind::SAVED, said, &[]);
                     }
                     SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
                     drop(saved);
                 });
                 if let Err(e) = saving {
                     SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
-                    let _ = shards_ipc::send(
+                    let _ = to_daemon(
                         conn,
                         kind::SAVED,
                         format!("its save's thread: {e}").as_bytes(),
@@ -670,7 +692,8 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     );
                 }
             }
-            kind::SIGNAL => {
+            // A client's INTERRUPT is its command's signal once its run is made (D26).
+            kind::SIGNAL | kind::INTERRUPT => {
                 if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
                     let signal = u32::from_be_bytes(signal);
                     match joiner.map(|id| id.load(std::sync::atomic::Ordering::SeqCst)) {
@@ -689,7 +712,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                 // The client's connection is this process's now: the daemon may let its
                 // copy go.
                 if let Some(number) = message.payload.first_chunk::<8>() {
-                    let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
+                    let _ = to_daemon(conn, kind::EXEC_TAKEN, number, &[]);
                 }
                 // An exec into a joiner runs in its namespaces (D119).
                 let into = joiner.map(|id| id.load(std::sync::atomic::Ordering::SeqCst));
@@ -699,7 +722,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             }
             kind::JOIN if !client && joiner.is_none() => {
                 if let Some(number) = message.payload.first_chunk::<8>() {
-                    let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
+                    let _ = to_daemon(conn, kind::EXEC_TAKEN, number, &[]);
                 }
                 if let Err(e) = join_request(message, to) {
                     let _ = writeln!(io::stderr(), "shards: a joining container: {e}");
@@ -709,7 +732,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // before that joiner's `JOIN`, and so before its guest mounts the share.
             kind::JOIN_SHARE if !client && joiner.is_none() => {
                 if let Some(number) = message.payload.first_chunk::<8>() {
-                    let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
+                    let _ = to_daemon(conn, kind::EXEC_TAKEN, number, &[]);
                 }
                 match (message.fds.into_iter().next(), crate::vm_run::join_share()) {
                     (Some(server), Some(slot)) => {
@@ -727,7 +750,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             }
             kind::ATTACH_RUN if !client => {
                 if let Some(number) = message.payload.first_chunk::<8>() {
-                    let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
+                    let _ = to_daemon(conn, kind::EXEC_TAKEN, number, &[]);
                 }
                 // A joiner's clients attach to the joiner, never to the workload (D119).
                 let into = joiner.map(|id| id.load(std::sync::atomic::Ordering::SeqCst));
@@ -1030,7 +1053,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
-    if let Err(e) = shards_ipc::send(link, kind::TAKEN, &[], &[])
+    if let Err(e) = to_daemon(link, kind::TAKEN, &[], &[])
         && !matches!(
             e.kind(),
             io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
@@ -1091,7 +1114,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
                 &|| {
                     let_go_of_layer();
                     let guest = id.load(std::sync::atomic::Ordering::SeqCst);
-                    let _ = shards_ipc::send(link, kind::STARTED, &guest.to_be_bytes(), &[]);
+                    let _ = to_daemon(link, kind::STARTED, &guest.to_be_bytes(), &[]);
                 },
                 &|which, said| {
                     let to = if which == shards_abi::run::kind::MEMBER {
@@ -1099,7 +1122,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
                     } else {
                         kind::PORTS
                     };
-                    let _ = shards_ipc::send(link, to, said, &[]);
+                    let _ = to_daemon(link, to, said, &[]);
                 },
             )
         });
@@ -1130,7 +1153,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
             match workload::receive_layer(&mut conn, out) {
                 Ok(used) => {
                     let payload = used.map(u64::to_be_bytes);
-                    let _ = shards_ipc::send(
+                    let _ = to_daemon(
                         link,
                         kind::LAYER_SAVED,
                         payload.as_ref().map_or(&[][..], |p| p),
@@ -1180,17 +1203,17 @@ fn joined_finish(
         // A joiner's process killed for want of memory, said as a run's is (D119, D159),
         // and what its cgroup was refused past its pids limit (D193).
         if let Some(facts) = &ended.oom {
-            let _ = shards_ipc::send(link, kind::OOM, facts, &[]);
+            let _ = to_daemon(link, kind::OOM, facts, &[]);
         }
         if let Some(facts) = &ended.pids {
-            let _ = shards_ipc::send(link, kind::PIDS, facts, &[]);
+            let _ = to_daemon(link, kind::PIDS, facts, &[]);
         }
     }
     let mut done = vec![status];
     if let Some((said, _)) = &failed {
         done.extend_from_slice(said.as_bytes());
     }
-    let _ = shards_ipc::send(link, kind::DONE, &done, &[]);
+    let _ = to_daemon(link, kind::DONE, &done, &[]);
     if let Some(client) = client {
         // Its client's stderr is the one its request gave, not this process's.
         if let (Some(text), Some(mut stderr)) = (text, stderr) {
@@ -1284,7 +1307,7 @@ pub fn serve_engine(
             return;
         };
         engine_held().insert(number, held);
-        let sent = shards_ipc::send(
+        let sent = to_daemon(
             &daemon,
             kind::ENGINE_CONN,
             &number.to_be_bytes(),
@@ -1303,7 +1326,7 @@ pub fn serve_engine(
 
 /// Tells the daemon the command runs, before the client has anything the command wrote.
 pub fn started(link: &Link) {
-    let _ = shards_ipc::send(&link.daemon, kind::STARTED, &[], &[]);
+    let _ = to_daemon(&link.daemon, kind::STARTED, &[], &[]);
 }
 
 /// Tells the daemon how the command ended, then the client: `ps` then shows the
@@ -1365,20 +1388,20 @@ pub fn finish(
         tell_lost(&link.daemon, ended);
     }
     if let Some(facts) = served.as_ref().ok().and_then(|ended| ended.oom.as_deref()) {
-        let _ = shards_ipc::send(&link.daemon, kind::OOM, facts, &[]);
+        let _ = to_daemon(&link.daemon, kind::OOM, facts, &[]);
     }
     // A process or thread its pids limit refused it (D193), said as its OOM is.
     if let Some(facts) = served.as_ref().ok().and_then(|ended| ended.pids.as_deref()) {
-        let _ = shards_ipc::send(&link.daemon, kind::PIDS, facts, &[]);
+        let _ = to_daemon(&link.daemon, kind::PIDS, facts, &[]);
     }
     if let Some((name, set)) = working_set {
         let _ = shards_ipc::working_set_parts(name, set, |part| {
-            shards_ipc::send(&link.daemon, kind::WORKING_SET, part, &[])
+            to_daemon(&link.daemon, kind::WORKING_SET, part, &[])
         });
     }
     release_ports();
     release_host(0);
-    let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);
+    let _ = to_daemon(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {
         let mut payload = vec![said_status];
         payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
@@ -1394,7 +1417,7 @@ pub fn finish(
 /// Gives the daemon records of the processes the run's members started and ended (D123),
 /// as they come.
 pub fn processes(link: &Link, records: &[u8]) {
-    let _ = shards_ipc::send(&link.daemon, kind::PROCESS, records, &[]);
+    let _ = to_daemon(&link.daemon, kind::PROCESS, records, &[]);
 }
 
 /// Gives the daemon its guest's ask of the host on the host's network (D124): the frame's
@@ -1425,7 +1448,7 @@ pub fn host_net(link: &Link, frame: &[u8]) {
             asked.push(bind.owner);
         }
     }
-    let _ = shards_ipc::send(&link.daemon, kind::HOST_NET, frame, &[]);
+    let _ = to_daemon(&link.daemon, kind::HOST_NET, frame, &[]);
 }
 
 /// Has the daemon let go of container `owner`'s ports of the host's (D124) as it ends,
@@ -1446,7 +1469,7 @@ fn release_host(owner: u32) {
     let Some(daemon) = HOST.daemon.get() else {
         return;
     };
-    if shards_ipc::send(daemon, kind::HOST_RELEASE, &owner.to_be_bytes(), &[]).is_err() {
+    if to_daemon(daemon, kind::HOST_RELEASE, &owner.to_be_bytes(), &[]).is_err() {
         return;
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -1474,7 +1497,7 @@ fn release_host(owner: u32) {
 /// Tells the daemon the container's writable layer is whole where it asked for it.
 pub fn layer_saved(link: &Link, used: Option<u64>) {
     let payload = used.map(u64::to_be_bytes);
-    let _ = shards_ipc::send(
+    let _ = to_daemon(
         &link.daemon,
         kind::LAYER_SAVED,
         payload.as_ref().map_or(&[][..], |p| p),
@@ -1505,7 +1528,7 @@ pub fn tell_kept() {
         .take();
     if let Some((daemon, used)) = held {
         let payload = used.map(u64::to_be_bytes);
-        let _ = shards_ipc::send(
+        let _ = to_daemon(
             &daemon,
             kind::LAYER_KEPT,
             payload.as_ref().map_or(&[][..], |p| p),
@@ -1567,5 +1590,68 @@ mod tests {
             daemon.set_nonblocking(true).unwrap();
             assert!(shards_ipc::recv(&daemon).is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock));
         }
+    }
+
+    /// What the VM's threads send the daemon arrives whole, one message after another,
+    /// however they send at once on clones of its connection: a working set's message cut
+    /// through by another's broke the stream's framing (PM M319). Many large messages and
+    /// many small ones, each sent from a thread of its own, are each read back as sent; a
+    /// stream whose framing broke, which would leave its reader waiting for bytes no message
+    /// brings, is said so within 30 s.
+    #[test]
+    fn what_the_vms_threads_send_the_daemon_arrives_whole() {
+        const LARGE: usize = 400 << 10;
+        const LARGES: usize = 40;
+        const SMALLS: usize = 4000;
+        let (ours, daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        let other = ours.try_clone().unwrap();
+        let read = std::thread::scope(|s| {
+            // Each sender stops at its first refused send, its reader's end gone.
+            s.spawn(|| {
+                for i in 0..LARGES {
+                    if to_daemon(&ours, kind::WORKING_SET, &vec![i as u8; LARGE], &[]).is_err() {
+                        return;
+                    }
+                }
+            });
+            s.spawn(|| {
+                for i in 0..SMALLS {
+                    if to_daemon(&other, kind::PROCESS, &(i as u64).to_be_bytes(), &[]).is_err() {
+                        return;
+                    }
+                }
+            });
+            let daemon = daemon;
+            let read = (|| -> Result<(), String> {
+                let (mut larges, mut smalls) = (0, 0);
+                while larges < LARGES || smalls < SMALLS {
+                    let m = shards_ipc::recv(&daemon)
+                        .map_err(|e| format!("after {larges} large and {smalls} small messages: {e}"))?
+                        .ok_or("the stream ended early")?;
+                    match m.kind {
+                        kind::WORKING_SET
+                            if m.payload.len() == LARGE && m.payload.iter().all(|&b| b == larges as u8) =>
+                        {
+                            larges += 1;
+                        }
+                        kind::PROCESS if m.payload == (smalls as u64).to_be_bytes() => smalls += 1,
+                        kind => {
+                            return Err(format!(
+                                "after {larges} large and {smalls} small messages, one of kind {kind} and {} bytes: one cut through another",
+                                m.payload.len()
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            // Its end gone, a sender waiting on a stream full of what will not be read is let go.
+            drop(daemon);
+            read
+        });
+        assert_eq!(read, Ok(()));
     }
 }

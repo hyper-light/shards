@@ -66,6 +66,8 @@ struct Offered {
 pub(super) struct Live {
     /// Opened by its client: its request is being read, answered, or passed on.
     session: bool,
+    /// Its request went on to the daemon's handling, whose answer it passes back.
+    passed: bool,
     /// When the piece of an answer being written to its client began ([`PIECE`]): what it
     /// waits on its client from.
     pub(super) writing: Option<Instant>,
@@ -99,10 +101,13 @@ impl<D: Disk> Daemon<D> {
     /// client opened holds it. Once it has closed, each holds it until its serving ends, or
     /// until its client has had the time a request has (`request_timeout`) and not gone on:
     /// not taken the piece of its answer being written to it, since that piece's write
-    /// began, or not gone on at all since its last step or the close, the later. A client
-    /// reading its answer takes each piece as it comes, however slowly it reads; one
-    /// stopped, or held by a pager that waits, takes nothing, and keeps no daemon from
-    /// exiting nor the next from starting.
+    /// began, or, its request not yet gone on, not gone on at all since its last step or
+    /// the close, the later. A client reading its answer takes each piece as it comes,
+    /// however slowly it reads; one stopped, or held by a pager that waits, takes nothing,
+    /// and keeps no daemon from exiting nor the next from starting. One whose request went
+    /// on, with nothing of its answer to take yet, takes nothing it could: it holds the
+    /// daemon while the daemon has yet to answer, as an attached run its stop ends after its
+    /// timeout says nothing meanwhile (PM M331).
     pub(super) fn slots_hold(&self) -> (bool, Option<Instant>) {
         let closed_at = *lock(&self.closed_at);
         let now = Instant::now();
@@ -113,7 +118,14 @@ impl<D: Disk> Daemon<D> {
                 held |= live.session;
                 continue;
             };
-            let since = live.writing.unwrap_or_else(|| live.went_on.max(closed_at));
+            let since = match (live.writing, live.passed) {
+                (Some(since), _) => since,
+                (None, true) => {
+                    held = true;
+                    continue;
+                }
+                (None, false) => live.went_on.max(closed_at),
+            };
             match since.checked_add(self.request_timeout) {
                 Some(at) if at <= now => {}
                 at => {
@@ -446,6 +458,9 @@ impl<D: Disk> Daemon<D> {
         // keep until then (M24).
         let mut streams = Some((input, output, errors));
         let mut relayed = 0usize;
+        if sent.is_ok() {
+            living.passed();
+        }
         std::thread::scope(|inner| {
             let say = &say;
             // The client's messages, on to the daemon; its end, the connection's. None
@@ -481,6 +496,11 @@ impl<D: Disk> Daemon<D> {
                 }
                 if living.answer(&answer, m.kind, &m.payload).is_err() {
                     break;
+                }
+                // Its answer's last word passed on: what the daemon's side holds after it,
+                // a VM ending, holds a closed daemon no longer than a request's time.
+                if matches!(m.kind, kind::EXIT | kind::END | kind::RESTART) {
+                    living.answered();
                 }
             }
             drop(streams.take());
@@ -550,6 +570,7 @@ impl<'a, D: Disk> Living<'a, D> {
     pub(super) fn new(daemon: &'a Daemon<D>, n: u64) -> Self {
         let live = Live {
             session: false,
+            passed: false,
             writing: None,
             went_on: Instant::now(),
         };
@@ -560,6 +581,18 @@ impl<'a, D: Disk> Living<'a, D> {
     /// Its client opened it.
     fn opened(&self) {
         self.step(|live| live.session = true);
+    }
+
+    /// Its request went on to the daemon's handling: it holds a closed daemon while that
+    /// has yet to answer ([`Daemon::slots_hold`]).
+    pub(super) fn passed(&self) {
+        self.step(|live| live.passed = true);
+    }
+
+    /// Its answer's last word is its client's: from here it holds a closed daemon as one
+    /// whose request has yet to go on does ([`Daemon::slots_hold`]).
+    fn answered(&self) {
+        self.step(|live| live.passed = false);
     }
 
     /// Its client asked for the daemon's stop, whose session the daemon holds until it

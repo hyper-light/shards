@@ -56,7 +56,9 @@ pub struct Touch {
 
 /// The private bytes a restore may spend, ahead of its request, copying the pages its
 /// working set says the guest wrote (audit D02, PM M62). Every warm VM spends them before
-/// any request is known, so the pool's VMs times this bounds what a fleet speculates. 64
+/// any request is known, under a budget too, whose later reads ran 1.42 to 1.48 times their
+/// time with no budget at p50 without them and 1.20 to 1.22 with (D188, PM M333), so the
+/// pool's VMs times this bounds what a fleet speculates. 64
 /// MiB is above the largest working set measured, 3,900 pages of 16 KiB (M33), were every
 /// page of it written. Past it, written pages are prefetched as reads: the guest's first
 /// write copies each, as it would without a working set.

@@ -1423,5 +1423,108 @@ mod tests {
                 }))
             );
         }
+        // A small file's range (D189's DAX_SMALLEST, PM's dax-smallest entry): a 4 KiB file
+        // mapped in a range of its own, its page and the zeros past it, and unmapped; and the
+        // host mappings a range adds, a small file's and a large one's.
+        let small_path = dir.join("small");
+        std::fs::write(&small_path, vec![2u8; 4096]).unwrap();
+        let small = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&small_path)
+            .unwrap();
+        let stage2 = Recorded(Arc::new(Told::default()));
+        let w = Window::new(GPA, 64 * MIB, |_| Ok(Box::new(stage2) as Box<dyn Stage2>)).unwrap();
+        for writable in [false, true] {
+            let (mut maps, mut unmaps) = (Vec::new(), Vec::new());
+            for _ in 0..2000 {
+                let fd = OwnedFd::from(small.try_clone().unwrap());
+                let t = std::time::Instant::now();
+                w.map(fd, 9, 0, 0, 2 * MIB, writable).unwrap();
+                maps.push(t.elapsed().as_secs_f64() * 1e6);
+                let t = std::time::Instant::now();
+                w.unmap(0, 2 * MIB).unwrap();
+                unmaps.push(t.elapsed().as_secs_f64() * 1e6);
+            }
+            let to = if writable { "write" } else { "read" };
+            eprintln!("a 4 KiB file's range, mapped to {to}: {}", summary(maps));
+            eprintln!("its unmap: {}", summary(unmaps));
+        }
+        let before = host_mappings();
+        w.map(OwnedFd::from(small.try_clone().unwrap()), 9, 0, 0, 2 * MIB, false)
+            .unwrap();
+        let with_small = host_mappings();
+        w.map(
+            OwnedFd::from(file.try_clone().unwrap()),
+            7,
+            0,
+            2 * MIB,
+            2 * MIB,
+            false,
+        )
+        .unwrap();
+        let with_large = host_mappings();
+        eprintln!(
+            "host mappings a range adds: a 4 KiB file's {}, a 2 MiB file's {} (of {} before)",
+            with_small
+                .zip(before)
+                .map_or("?".into(), |(a, b)| (a as i64 - b as i64).to_string()),
+            with_large
+                .zip(with_small)
+                .map_or("?".into(), |(a, b)| (a as i64 - b as i64).to_string()),
+            before.map_or("?".into(), |n| n.to_string())
+        );
+    }
+
+    /// This process's host mappings: Linux's /proc/self/maps lines; macOS's regions, by
+    /// mach_vm_region; none elsewhere.
+    fn host_mappings() -> Option<usize> {
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/proc/self/maps")
+                .ok()
+                .map(|m| m.lines().count())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            unsafe extern "C" {
+                /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h).
+                static mach_task_self_: libc::mach_port_t;
+                fn mach_vm_region(
+                    target_task: libc::vm_map_t,
+                    address: *mut u64,
+                    size: *mut u64,
+                    flavor: i32,
+                    info: *mut i32,
+                    count: *mut u32,
+                    object_name: *mut libc::mach_port_t,
+                ) -> libc::kern_return_t;
+            }
+            // VM_REGION_BASIC_INFO_64 and its count of words (mach/vm_region.h).
+            let (mut at, mut n) = (0u64, 0usize);
+            loop {
+                let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 16], 9u32, 0);
+                // SAFETY: mach_vm_region(2) filling `info`, room for its flavor's words, for
+                // the region at or after `at` of this task.
+                let kr = unsafe {
+                    mach_vm_region(
+                        mach_task_self_,
+                        &raw mut at,
+                        &raw mut size,
+                        9,
+                        info.as_mut_ptr(),
+                        &raw mut count,
+                        &raw mut object,
+                    )
+                };
+                if kr != 0 {
+                    return Some(n);
+                }
+                n += 1;
+                at = at.checked_add(size)?;
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        None
     }
 }

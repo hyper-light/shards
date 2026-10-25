@@ -11557,6 +11557,14 @@ revision before comparing a changed API/implementation.
   THREAD_PRIORITY_TIME_CRITICAL (`platform::prioritize_governor_thread`), a thread that runs
   briefly between waits, as Microsoft reserves high priority for; its clock and waits stay
   as they are.
+- **Since (the flakes goal, 2026-10-25).**
+  `vm::hold::tests::threads_held_use_no_more_than_their_share` failed in none of 237 runs
+  on CI's windows-2025 runners from a724bee0 (the governor at TIME_CRITICAL) to 291f066a:
+  it passed in each of the 77 x86_64 Windows jobs of the 92 CI runs since that ran it (the
+  aarch64 jobs build it and run none; 14 were cancelled first and one failed before it, on
+  another branch's tests), and in each of budget E2E run 40138491521's 160, 20 in a row on
+  each of 8 runners (EPYC 7763 ×5, 9V45, Xeon 8370C and one more). Under 3 in 237 (1.3%)
+  at 95%, where it had failed once in four runs.
 
 ### M295. What a builder microVM holds of its memory after a build's steps (D188, D133)
 
@@ -13419,3 +13427,736 @@ revision before comparing a changed API/implementation.
   slice, a gigabyte's read takes 0.80 to 0.88 times its time with none at p50 on every
   runner CPU, none of 336 running away. Not yet: a budget below what a cold-booted
   microVM holds.
+
+### M319. Flakes: a working set cut through on its way to the daemon (the flakes goal)
+
+- **Question.** In DAX budget run 40113636061's e (at 269d6589, an EPYC 7763 ubuntu-24.04
+  runner, unbudgeted) a run's VM ended before its finished command did, its exit said as
+  255, after the daemon refused the working set it recorded as "not aligned and distinct".
+  What made the set so, and what ended the VM?
+- **Method.** The daemon's logs of the DAX budget job's runs from b12ec23d on (40118447196,
+  40118424391, 40121565734, 40127123235, 40127114245, 40121550959, 40131530388 and
+  40135172411: 511 sets taken), whose refusal says since 13a40d49 how many of a set's pages
+  are off a page or recorded twice, and where; then the code that records a set, sends it
+  and gathers it.
+- **Results.**
+  - One refusal, 40135172411's f (round 4, its daemon 19642, EPYC 7763), and the same two
+    lines as 40113636061's: "a working set whose pages are not aligned and distinct: of
+    42661 pages, 38072 not on a page of 4096 bytes and 18363 recorded twice, from 0xfa4 to
+    0xf00100000000105e", then 0.2 s later "VM 19711 ended before its command did". No
+    guest's page lies at either address: the set's bytes were read shifted.
+  - Not the recorder's: on KVM it walks each region of guest RAM and pmem once in the
+    host's pagemap (vm/x86_64.rs `recorded`, platform `mapped_pages`), and no two regions
+    may overlap; the set is encoded whole in the VM process (runtime.rs `end_recording`).
+    It went as one `kind::WORKING_SET` message of 341 KB (`working_set_parts`, 1 MiB a
+    part), and the daemon gathered it at the length its header counts, so its bytes
+    changed on the way.
+  - The VM process's threads send the daemon messages on its connection, and on clones
+    of it, with nothing between them: the run's end (its OOM and pids facts, its working
+    set, DONE), the records of its processes as they come (D123), its log's asks for
+    segments, host-network frames, a DAX window's watches, a save's answer, an exec's
+    word that it took its client. Linux queues a stream message past what one buffer
+    holds in pieces (net/unix/af_unix.c `unix_stream_sendmsg`), and another sender's
+    message can land between them: the working set read with another's bytes in it, and
+    what was left of it read as the next message's header, which broke the stream, the
+    daemon taking the VM for ended. The daemon's own sends to a VM take a lock for this
+    (daemon.rs `RunSocket`); the VM's did not.
+- **Consequence.** Every message the VM process sends its daemon takes one lock
+  (warm.rs `to_daemon`), as the daemon's to a VM do. Test:
+  `warm::tests::what_the_vms_threads_send_the_daemon_arrives_whole`, 40 messages of 400
+  KiB and 4,000 small ones sent at once from two threads on clones of one connection, each
+  read back as sent. Without the lock it failed 160 of 160 copies, 20 on each of 8
+  runners, on EPYC 7763, 9V45 and 9V74 and Xeon 8573C (40141220381: "after 0 large and 1
+  small messages, one of kind 17 and 409600 bytes: one cut through another"); with it,
+  160 of 160 passed, on EPYC 7763 and 9V74 and Xeon 8573C and 6973P-C (40141224388).
+
+### M320. Flakes: a template's working set replaced by a later restore's, and a budget set from it (D25, D188)
+
+- **Question.** In budget E2E run 40137232060 (at c82a75dd), 600 runs of the FUSE budget
+  E2E (75 on each of 8 ubuntu-24.04 runners), one read held within the least room did not
+  end within 600 s (its h, EPYC 7763, run 14). The other 74 runs on that runner read in
+  1.50 to 2.30 s held so (222 reads). Why?
+- **Method.** That run's samples of its slice (memory.current, memory.high, memory.stat,
+  memory.events and memory.pressure every 30 s, the test's `watching`), the daemon's log
+  it printed, and the held-short budgets the other 74 runs said; then the code that
+  records a template's working set, sends it and keeps it.
+- **Results.**
+  - The other 74 runs held their runs short at 248 to 288 MiB: the test sets the budget
+    a mebibyte short of what its slice holds once the run is restored and has read a
+    small file, which is mostly the template's working set mapped ahead (D25). This one
+    set 41 MiB (memory.high 44,007,424 bytes). The daemon then said the run held "62 MiB
+    its host may take back from its processes alone, 32 MiB of it files they map", 24
+    MiB past the budget, and held it within the least room: its guest had nothing to give
+    back. For 600 s the slice stayed over its memory.high (44.6 to 45.1 MB), anon at 40.8
+    to 40.9 MB, its file pages at 4 to 143 KB: 952,344 `high` events, 5,132,615 pages
+    stolen and 4,985,235 refaulted, its vCPU threads running or asleep in
+    `mem_cgroup_handle_over_high` (19 of 72 looks at them).
+  - Its template's working set had been replaced. The daemon of the run's first phases
+    took "a working set of 41834 pages", then said "the host is short of memory: its
+    microVMs gave back 249 MiB they held cold of their files, and asked to unplug 128
+    MiB", then took "a working set of 9529 pages" for the same generation. The held-short
+    run's restore mapped ahead 9,529 pages, not 41,834, and its slice held 42 MiB when the
+    test read it, before its guest had faulted in what it ran on: as M318 found of the DAX
+    budget job's budgets, worked out a mebibyte short of a run restored from a template
+    whose working set was a run of `true`'s (5,385 pages against a reader's 44,088,
+    40121550959) or none (its read not ending in 1,800 s, 40118424391).
+  - Every restore of a generation without a working set records one (`cfg.record &&
+    working_set.is_none()`, runtime.rs): a pool's first VMs, restored before the first
+    set lands, each record one and send it as its run ends, and the daemon wrote each
+    one over the one before (`accept_working_set`). D25 has the first restore's set kept.
+  - A set holds the pages its host maps when the recording ends (vm/x86_64.rs
+    `recorded`): RAM its guest gives back meanwhile (D151's free page reports, among
+    them those of the page cache a give-back drops) its host no longer maps, and the set
+    leaves it out. The 9,529-page set was sent after the give-back, by a run of the
+    same read whose set would have held its reads' page cache, as the first did.
+- **Consequence.** A generation keeps the first working set it is given, and replaces
+  only one a restore could not read (snapshot `accept_working_set`); a recording keeps
+  what its host held of the RAM its guest gives back while it records
+  (`GuestMemory::keep_given_back`, from the pages the host maps of each range given back,
+  just before they go), and sends none where it could not see them. Tests:
+  `snapshot::tests::on_disk::a_sent_working_set_is_written_only_as_a_restore_would_take_it`
+  (a second set for a generation is not written, a damaged one is replaced; without the
+  check it fails), and
+  `vm::x86_64::tests::a_working_set_keeps_what_its_guest_gave_back_as_it_was_recorded`.
+
+### M321. Flakes: the held-short read's tail, its guest's own reclaim within the least room (D188)
+
+- **Question.** What makes a gigabyte's read through FUSE, held within the least room for
+  the whole read (D188), take over twice its CPU's time with none? Of 144 such reads in
+  DAX budget run 40131530388 (the tree at d9127e31, `--as-e2e`), three did: an EPYC
+  9V74's 4.41 s and 3.52 s against 1.59, and a 9V45's 3.25 s against 1.46. One read of
+  M318's final tree, a 9V74's 3.88 s, had lost 99 MiB of its guest's RAM to its host's
+  reclaim within a second; the 4.41 s read lost almost none.
+- **Method.** The DAX budget job's `--as-e2e` reads (measure.py), 8 ubuntu-24.04 runners a
+  run, and rooms.py's row for each: in each second's look at the slice, its
+  `memory.events` and reclaim, what its budget left below it, its mapped files and
+  anonymous memory, the share's copy of the guest's files, how much of each VM process's
+  template memory file the host's page cache held (mincore(2), 9933d271), and the whole
+  host's reclaim and pressure (/proc/vmstat, /proc/pressure/memory); from inside the guest
+  each second, its run's cgroup's reclaim (`pgscan`, `pgsteal`,
+  `workingset_refault_file`, `memory.events`) and where its reader waited. Tested against
+  them, the goal's four candidates: the slice at its `memory.high`, the host's multi-gen
+  LRU taking the guest's RAM (its template's pages), the guest's own reclaim in its held
+  cgroup, and the runner. Runs: the tree with the looks, 40135172411, 40136820527 and
+  40139062118 (432 reads); then arms on the same runners, the tree beside least-x2.patch
+  (the least room doubled, 40139156517, 4 rounds) and beside least-request.patch and
+  least-x2.patch (40141647845, 4 rounds), least-request.patch adding to the least room
+  the page cache a share's request fills, `SHARE_MAX_PAGES` pages.
+- **Results.**
+  - The tree, 624 reads with every look (the three runs and the arms' tree reads): none
+    over twice, 1.86 times at most (a 7763's 4.05 s). Against each read's time over its
+    CPU's with none, Spearman's rank correlation with the guest's own refaults was 0.52,
+    with the slice's refaults 0.62, with its template's pages its host took 0.43, and
+    with the looks finding its reader asleep at its run's `memory.high` 0.29. The host's
+    own reclaim outside the slice was none in every read that had its look. The quarter
+    of reads with the most guest refaults (over 9,211) took 0.98 times at p50 and 1.37 at
+    p90; the rest 0.83 and 1.03. Of the 12 reads over 1.5 times, 11 had their guest
+    refault 2,392 to 41,499 of its pages, and the twelfth, a 9V45's at 1.66 times, 907,
+    its host taking 125 MiB of its template; 6 of the 12 lost none of their template.
+  - The other candidates. The slice at its `memory.high`: in the looks during the tree's
+    short reads on the 7763s (40141647845), its budget had 1.76 MiB left below it at p50
+    and 2.49 at p90; no look found the VM process's threads other than its vCPUs waiting
+    in reclaim or a throttle; its refaults a read were 0 at p50 and 534 at p90. The
+    host's multi-gen LRU: reclaim outside the slice none in each read that had the look
+    (64 reads), and the template's pages it took (rank correlation 0.43) went with
+    guest refaults in the slowest reads; with more room, the reads that lost theirs took
+    at most 1.11 times. The runner: the reads over twice were on EPYC 9V74s and a 9V45
+    (40131530388); the A/Bs drew none of the 9V74s.
+  - The guest's own reclaim. A run held within the least room holds its kernel's charge
+    ahead (64 pages a CPU), two read-ahead windows and its reader's 1 MiB block, which
+    leave it no room for the page cache a share's request fills on its way to the block,
+    up to `SHARE_MAX_PAGES` (1 MiB): its cgroup at its hold reclaims its reads' own pages
+    before its reader takes them, and reads them again, through the share. Of the three
+    reads over twice, each refaulted (31,159, 2,605 and 14,917 pages). A guest's refaults
+    are reads its share makes again, of the host's file, and its slice's page cache with
+    them: with more room, fewer reads lost their template (4 of the arms' 288 lost 10 MiB
+    or more, against 13 of the tree's 192 beside them), and those that did took 0.98 to
+    1.11 times their CPU's time.
+  - The arms, on the same runners, held-short reads' slowest over their CPU's time with
+    none, and the guest's refaults a read at p50, p90 and most:
+
+    | run | CPU | n | tree | least-request | least-x2 |
+    |---|---|---|---|---|---|
+    | 40139156517 | EPYC 7763 (4) | 48 | 1.57; 2,913, 23,197, 41,150 | | 1.10; 3, 1,823, 2,885 |
+    | 40139156517 | EPYC 9V45 (3) | 36 | 1.66; 6,382, 40,933, 41,515 | | 1.05; 0, 399, 1,462 |
+    | 40139156517 | Xeon 8573C | 12 | 0.88; 8,121, 23,012, 30,045 | | 0.97; 3, 1,372, 1,999 |
+    | 40141647845 | EPYC 7763 (6) | 72 | 1.47; 2,899, 16,327, 50,461 | 1.12; 1, 687, 3,576 | 1.11; 4, 1,155, 2,985 |
+    | 40141647845 | EPYC 9V45 | 12 | 1.08; 5,275, 23,127, 38,349 | 1.19; 0, 1,564, 2,062 | 1.11; 0, 575, 1,121 |
+    | 40141647845 | Xeon 8573C | 12 | 1.35; 4,715, 24,868, 27,762 | 1.06; 66, 1,607, 1,785 | 0.95; 0, 79, 877 |
+
+    The looks that found a reader asleep at its run's `memory.high` (dd's wchan
+    `__mem_cgroup_handle_over_high`) were 3 of the tree's 72 reads on the 7763s, none of
+    either arm's. The request's page cache did what doubling the room did, at 1 MiB of
+    room against 2.25.
+- **Consequence (D188).** The least room counts the page cache a share's request fills
+  beside its reader's block: 3.25 MiB on 4 CPUs, 6.75 on 18 (init plug.rs
+  `working_room_of`, 291f066a). Measured at 291f066a on the same job (40144898519 and
+  40144903784, 6 rounds each, 16 runners), every one of 288 reads held short throughout,
+  none over twice its CPU's time with none, against 3 of 144 on the tree:
+
+  | CPU | n | unbudgeted p50 | p50 | p90 | p99 | max | most over unbudgeted | guest refaults a read, p50 (max) |
+  |---|---|---|---|---|---|---|---|---|
+  | EPYC 7763 (10) | 180 | 2.15 | 1.75 | 2.11 | 2.31 | 2.35 | 1.09 | 3 (5,407) |
+  | EPYC 9V45 (2) | 36 | 1.41 | 1.09 | 1.20 | 1.57 | 1.57 | 1.11 | 0 (1,879) |
+  | EPYC 9V74 (3) | 54 | 1.60 | 1.28 | 1.65 | 2.00 | 2.00 | 1.25 | 3 (3,008) |
+  | Xeon 8573C | 18 | 1.90 | 1.53 | 1.73 | 1.98 | 1.98 | 1.04 | 46 (1,096) |
+
+  Over its CPU's time with none, the 288 took 0.80 at p50, 0.96 at p90, 1.18 at p99 and
+  1.25 at most (a 9V74's 2.00 s against 1.60, where the tree's took 4.41 s). The FUSE
+  budget E2E at 291f066a: 40 of 40 copies passed (40144908573, 4 in a row on each of 8
+  runners, and 40144890867's 8: EPYC 7763 ×24, 9V45 ×13, 9V74 ×3), each of their 120
+  reads held within the least room within twice its copy's reads under none at their
+  median, 1.38 times at most (a 9V45's 1,755 ms against 1,269).
+
+### M322. Flakes: the CLI killed at launch, launched 200,000 times beside a full gate (the flakes goal)
+
+- **Question.** In 2026-10-06's gate a `shards pull` ended in 17 ms with no status (a
+  signal), nothing printed and no crash report; no failed CI job since has recorded a
+  killing signal (`Run::signal`). Does a launch of the CLI as the E2E tests launch it end
+  by a signal on this Mac under a full gate's load?
+- **Method.** docs/research/measurements/launch-stress/launch.rs, built by rustc alone (no
+  cargo, so the gate's build directory is untouched), launches the E2E tests' placed copy
+  (target/e2e/shards-2d7063ea6df9209a, placed by the gate's tests from 291f066a, held as
+  they hold it, a shared flock(2)) through `std::process::Command`, its output piped and
+  read, from 8 threads at once, and counts how each launch ended. Beside the first of a
+  run of full gates (`cargo test --workspace --profile test-release --no-fail-fast`) and
+  the grant-stall campaign's fleet bursts (M326), Apple M5 Max, 18 CPUs, 128 GiB, macOS
+  26.4.1 (25E253), this agent's session, 2026-10-25. Two batches of 100,000: commands that
+  end in-process (`--version`, `-h`, `run -h`, `pull -h`), and a daemon's clients in a
+  home of their own (`ps -q`, `images -q`, `ps -aq`; its first 8 clients each starting
+  its daemon, one holding the home, D26).
+- **Results.**
+
+  | batch | n | exit 0 | another exit | a signal | p50 | p90 | p99 | max ms |
+  |---|---|---|---|---|---|---|---|---|
+  | in-process | 100,000 | 100,000 | 0 | 0 | 7.79 | 20.79 | 43.79 | 160.33 |
+  | the daemon's clients | 100,000 | 100,000 | 0 | 0 | 12.26 | 55.10 | 224.97 | 8,332.35 |
+
+  The clients' slowest was among their first, which waited for their daemon to start
+  under the gate's load. No launch was ended by a signal: under 3 in 200,000 (1.5 in
+  100,000) at 95%.
+- **Consequence.** None in the CLI's launch. The tests place each build's copy whole
+  (written into a directory of its own and renamed into place, tests/common `place`), so
+  no launch runs a copy changed in place, which macOS kills (code signing). Step 8 of the
+  flakes plan holds: launches ended by a signal, 0 of 200,000.
+
+### M323. Flakes: a socket's end said late in the network process's tests, a test's fork holding it (the flakes goal)
+
+- **Question.** gpu CI 40144890871's aarch64-unknown-linux-musl job failed in
+  `poll::tests::an_end_is_said` (crates/net): a wait found no event where the test's peer
+  had just closed its end of a socket pair. Neither the poller nor the test had changed
+  since 2026-10-14. What delays an end?
+- **Method.** The whole library suite of shards-net, as CI runs it (its tests side by
+  side), 300 times in a row on each of 8 ubuntu-24.04 runners (budget E2E 40146751896,
+  `lib:shards-net`, at ac30b6f9); then the code of the test and of its neighbors.
+- **Results.** 5 failures in 2,400 runs, all of `an_end_is_said` (EPYC 7763 ×3, Xeon
+  6973P-C; two in one runner's 300), no other test. The test looked once, at once
+  (`ready`: a wait of no time) after `drop(a)`. A socket's end reaches its peer as its last
+  descriptor goes (net/unix/af_unix.c `unix_release_sock`), and a process forked holds a
+  copy of each of its parent's descriptors until it ends or execs (PM M134). The same
+  binary's confine.rs tests fork while it runs:
+  `the_filter_ends_a_process_that_makes_what_none_makes` forks a child that makes raw
+  system calls until it ends, and two others start the binary again (`Command`). A fork between the pair's making and its drop kept `a` open
+  in the child until it ended.
+- **Consequence.** The test waits for the end, 5 s at most, as the poller is waited on
+  everywhere else (crates/net poll.rs); what it asserts is unchanged. At ffa1448e the same
+  suite ran 4,800 times (40147621514, 600 on each of 8 runners: EPYC 7763 ×4, 9V74 ×2,
+  9V45, Xeon 8573C) and failed in none: under 3 in 4,800 (0.06%) at 95%, against 5 in
+  2,400 (0.21%) before.
+
+### M324. Flakes: a past128 read's guest kernel throttling its own reclaim, a hold counting memory being unplugged as free (D148, D188)
+
+- **Question.** M318's past128 read of 9.81 s had its guest's reader asleep in its own
+  kernel's `throttle_direct_reclaim`, its guest reporting 16 GB free. What drains a held
+  guest's zones, and why does its grower not plug more?
+- **Method.** The DAX budget job's `--as-e2e` reads with each look's zones (free, min and
+  managed pages up to Normal, /proc/zoneinfo) and the guest kernel's direct reclaim
+  (`pgscan_direct_throttle`, `allocstall_*`, /proc/vmstat), rooms.py; then the hold-notes
+  arm (hold-notes.patch), in which init appends each hold it sets on the run's cgroup
+  (with the cap, the memory and the run's use), each room told, each give-back's keep,
+  each event its grower sees, each ask, each arrival and each lift to a file the guest's
+  sampler reads at each look, as the run's own cgroup is its container's parent, which the
+  container cannot read. Runs, each on 8 ubuntu-24.04 runners: 40141647845 (at 24a27d12),
+  40146450144 and 40146455283 (ac30b6f9), 288 past128 reads each pair; hold-notes
+  40148050379 and 40148055198 (ff01fe0b, 8 rounds, 384 past128 reads).
+- **Results.**
+  - "16 GB free" is the memory its host may still plug, which shards' kernel reports as
+    free (D149); a throttled guest's zones up to Normal had drained to their min
+    watermarks (40141647845's a: DMA 256 free of a min of 21, DMA32 414 of 314, Normal 0
+    of 369), the run's container holding 230 MB of a 233 MiB guest and 18 MiB plugged.
+    Of 288 past128 reads 3 throttled (pgscan_direct_throttle 46, 12, 1) at 24a27d12 and 2
+    (36, 6) at ac30b6f9, the slowest 1.84 and 1.61 times their CPU's time with none; no
+    look caught the reader throttled, which a throttle of a few milliseconds a time
+    escapes; 9 of 288 lost plugged memory as they read.
+  - Every one of the hold-notes arm's 5 throttled reads of 384 went the same way. The
+    read begins under a hold of 145 to 152 MB; the run reaches it, its grower asks for 256
+    MiB, which comes within 20 to 100 ms, and raises its hold to about 400 MB. Then, 50
+    to 130 ms later, a give-back of the host's pressure pass (`RECLAIM`): init's
+    `reclaim_cold` drops the run's page cache to 15 to 31 MB and `shrink_run` keeps none of
+    what is plugged (twice what the run then used and its peak since were within what its
+    microVM booted with), asks its device for none and holds the run at 122 to 131 MB, the
+    memory to go counted out. 10 to 15 ms after, the daemon's word of the room the
+    give-back left (`tell_room`): `hold_within` held the run at 261 to 274 MB, its free
+    memory counted with the 128 MiB still plugged as its driver unplugged it. Once it had
+    gone the guest had 233 MiB and its run a hold past all of it: the run's page cache
+    filled its zones to their min watermarks within a second, its kernel's kswapd and
+    direct reclaim took it back at the zones' least, throttled (1 to 37 times a read), and
+    its grower, woken only as the run reached its hold, plugged none.
+- **Consequence (D148, D188).** Every hold init sets counts out the memory still plugged
+  past its device's request, which goes as its driver unplugs it, free or not (plug.rs
+  `high`, `hold_of`, `staying`), as `shrink_run` counted out what it gave back; what is
+  plugged, for a run held at its cap or a grower lifting its hold once all its most is
+  plugged, is what stays. Test:
+  `plug::tests::a_hold_counts_out_what_goes_as_it_is_unplugged` (the trace's numbers:
+  held at 252 MiB past the 233 MiB that stayed; with it, the run, its kernel's own and
+  its reserve within what stays): without the change it failed 24 of 24 on 8 runners
+  (40151643846), with it 24 of 24 passed (40151649051). Measured at db423887 on the same
+  job (40151654026 and 40151659263, 16 runners), none of 288 past128 reads had its guest
+  kernel throttle its direct reclaim (`pgscan_direct_throttle` 0 in each), no look found
+  its zones short, and the slowest took 1.64 times its CPU's time with none (EPYC 7763
+  ×11: 1.60 and 1.56 at most a run; 9V74 1.58; 9V45 ×4 1.64).
+
+### M325. Flakes: a run raised to a larger limit OOM-killed, bounded on CI's runners (D148)
+
+- **Question.** `update_moves_a_microvms_memory_both_ways` (containers.rs) raises a run of
+  `-m 256m` to `1g` and has it allocate 512 MiB, which its microVM plugs as it grows. On
+  x86_64 Linux the allocation once ended in an OOM kill (status 137) 1.5 s in, in a
+  Fedora gate where 127 of the 128 other tests passed, and in CI's x86_64 Linux job; it
+  passed on re-runs. How often does it?
+- **Method.** budget E2E run 40137238083 (c82a75dd): the test alone, 75 times in a row on
+  each of 8 ubuntu-24.04 runners. A failing run says init's word on the kill from the
+  daemon's log (`kind::OOM`: what asked for memory, the zones against their watermarks,
+  what was ended).
+- **Results.** 600 of 600 passed, on EPYC 7763 ×4, 9V45 ×2, 9V74 and Xeon 8573C: none
+  killed, under 0.5% at 95%.
+- **Consequence.** None in the code from this run; the test keeps saying init's facts
+  should a kill come again, as its cause was not seen. In CI's job, and in the Fedora gate,
+  it ran beside a whole suite, whose host's pressure has microVMs give back as they grow;
+  alone on a runner of its own, nothing pressed. M324's holds, set past the memory that
+  stayed as a give-back's went, would have its allocation, which no reclaim takes back with
+  no swap, end in an OOM kill where a reader's page cache was reclaimed instead:
+  unconfirmed, and fixed with them (db423887).
+
+### M326. Flakes: the macOS VM grant stall, none in 115,440 runs beside full gates (D30)
+
+- **Question.** A VM process once sent no request for access for 60 s, its client's first
+  line never coming (the grant stall). Its two suspects are answered on this tree: a
+  template held open, so that its pages are not recycled with its vnode (64f0d399, M315),
+  and the real-time governor (8b0b2795, M317). Does it stall still, beside full gates?
+- **Method.** docs/research/measurements/vm-grant-stall/campaign.sh: rounds of the fleet
+  measurement (tests/fleet.rs, FLEET_SIZES=10 FLEET_BURST=16 FLEET_ROUNDS=60: 10 first
+  runs, pull, boot and save; 10 second, restores; 60 one at a time, 200 ms apart; 960 in
+  bursts of 16; 1,040 runs a round), each round's daemon saying the VMs it saw stall
+  (`stalls said`; daemon.rs `grant` samples one that has asked for nothing at 10 s). Run as
+  a launchd job (macos-sched/launchd-run.sh, unclamped, as a user's program runs) beside a
+  loop of full gates (`cargo test --workspace --profile test-release --no-fail-fast`), on
+  this Mac (Apple M5 Max, 18 CPUs, 128 GiB, macOS 26.4.1), 2026-10-25 00:03 to 04:33 UTC,
+  at 291f066a, ff01fe0b, 88c2cbfa, 9fb4bc61 and 6534aee8, each with both suspects' fixes.
+- **Results.** 129 rounds whole, 134,160 runs: no stall said, none failed. Of them 111
+  rounds, 115,440 runs, ran wholly within gates whose start and end the loop's log records
+  (ff01fe0b 6,240, 88c2cbfa 12,480, 9fb4bc61 16,640, 6534aee8 80,080); the rest beside the
+  loops a kiln restart ended, their gates' ends unrecorded. Of the 20 gates with recorded
+  ends, 15 passed; 4 at 6534aee8 failed on Docker Hub's anonymous pull limit alone (429,
+  every failed test's error), and 1 at ff01fe0b on the launchd job's 256 descriptors
+  (63b7ad0f, the harness's `ulimit -n`): each loaded the host throughout. Starts across
+  the rounds, the median and the most of the rounds' own figures, ms:
+
+  | runs | a round | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | first (pull, boot, save) | 10 | 362.9 | 401.4 | 446.9 (most 4,557.5) | 4,557.5 |
+  | second (restore) | 10 | 19.7 | 26.8 | 32.2 (most 147.3) | 147.3 |
+  | one at a time | 60 | 12.8 | 15.9 | 23.9 (most 400.4) | 744.8 |
+  | bursts of 16 | 960 | 89.7 | 225.4 | 499.6 (most 3,617.3) | 8,940.0 |
+
+- **Consequence.** None in the code: no stall in 115,440 runs puts its rate below
+  3/115,440, one in 38,480, at 95% (no failure in n bounds it below 3/n). Which of the two
+  fixes ended it, if either, is not shown: the stall was never caught with its stacks.
+
+### M327. Flakes: the block stress's 104 reads, beside full gates in either session (D4)
+
+- **Question.** A gate's `concurrent_readers_see_consistent_data` (tests/block.rs) once
+  verified 104 reads in its 3 s, where it asks for more than 1,000, in this agent's
+  session, whose threads run clamped at utility QoS (priority 20 or below). Does it fall
+  short beside full gates, clamped or as a user's program?
+- **Method.** The test alone, 30 times in a row a batch, beside the loop of full gates
+  (`cargo test --workspace --profile test-release --no-fail-fast`) and the grant-stall
+  campaign's fleet bursts (M326), on this Mac (Apple M5 Max, 18 CPUs, macOS 26.4.1),
+  2026-10-25: two batches in this agent's session (one as its gate built and ran its unit
+  tests at ff01fe0b, one as its gate ran its E2E tests at 88c2cbfa) and one as a launchd
+  job (macos-sched/launchd-run.sh, unclamped, as a user's program runs) at 88c2cbfa;
+  each run's verified reads from its own line.
+- **Results.** Verified reads in 3 s:
+
+  | batch | n | p50 | p90 | least | most |
+  |---|---|---|---|---|---|
+  | clamped, its gate building and in unit tests | 30 | 260,183 | 281,945 | 184,925 | 285,876 |
+  | clamped, its gate in E2E | 30 | 255,954 | 280,732 | 190,970 | 290,887 |
+  | a user's program (launchd) | 30 | 242,441 | 268,831 | 152,606 | 270,046 |
+
+  Every one of 90 passed; the least verified 152,606 reads, 1,467 times the 104 seen.
+- **Consequence.** None in the code: not reproduced in 90 runs beside full gates, the least
+  more than 150 times the test's floor in either session.
+
+### M328. Flakes: a restored microVM's run outliving its stop, an exec's output held unread (D176)
+
+- **Question.** In CI's x86_64 Linux job at db423887, a daemon whose home was removed took
+  15.04 s to end, its stop timeout and the 5 s past its SIGKILL: a run restored from its
+  save (D176) outlived both signals until its VM was killed, its relay waiting on the
+  guest for its end, every vCPU idle (`a_restored_microvm_ends_with_its_home`'s dump at
+  5 s). `a_killed_daemons_runs_end_with_it` failed alike, 4 of 608 at ff01fe0b (budget E2E
+  40148130548, 40148135044, the daemon suite 38 times on each of 8 runners): its restored
+  run outlived its killed daemon, each time with a give-back cut short by the save. What
+  holds a restored run past its stop?
+- **Method.** docs/research/measurements/restore-stop/repro.sh: a run of the test guest
+  under `--init`, an exec beside it, the run saved and restored, its daemon killed, and how
+  long the home's processes outlive it, up to 5 s; on this Mac (Apple M5 Max, 18 CPUs,
+  macOS 26.4.1), 2026-10-25, at 6534aee8 and with the change below. The exec sleeping (23
+  rounds), `shards stats` asked again and again through the save (10), writing a line a
+  millisecond (`counter 1`) or as fast as it can (`count`, through an 8 KiB buffer).
+- **Results.** Every run with a sleeping exec, with stats asked, or writing a line a
+  millisecond ended 0.06 to 0.94 s after its daemon; every run whose exec wrote as fast
+  as it could outlived it:
+
+  | exec | build | n | outlived 5 s | ended after its daemon |
+  |---|---|---|---|---|
+  | `count`, as fast as it can | 6534aee8 | 5 | 5 | |
+  | `counter 1`, a line a ms | 6534aee8 | 3 | 0 | 0.139 to 0.188 s |
+  | `count` | with the change | 5 | 0 | 0.255 to 0.304 s |
+  | `counter 1` | with the change | 3 | 0 | 0.170 to 0.247 s |
+
+  Its cause, in init (run.rs, `relay`): an exec's output is read only while less than
+  BUFFERED (256 KiB) of it waits to go on its connection. The restore resets that
+  connection, its client's; init's write to it fails and the connection goes, and what
+  waited stays, so an exec that writes BUFFERED more is read no more. The stop's signal
+  ends the workload, init kills every other process with it, and the exec's end, its
+  output's end of file, is never read: the relay, which ends once every exec has, never
+  does. The workload's own output would be held so too, its connection gone.
+- **Consequence.** What has no connection left to go on is dropped as it is read: an
+  exec's once its connection has gone, and the run's, and a save's flush, once the host's
+  has. Held by `a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored`
+  (tests/saved.rs): an exec writing as fast as it can through a save, its run stopped with
+  a 30 s timeout once restored, ended by the stop's SIGTERM (143). Mutation-checked:
+  without the drop, the stop took 40.02 s, its timeout and the 10 s past its SIGKILL, and
+  the run ended with its VM (255). The killed-daemon failures' exec was a give-back
+  (`RECLAIM`), whose output is a few bytes, and the removed home's log went with it:
+  whether they had this cause is the experiment's to say (exp-step3: the guest's console,
+  init's word on each signal and on what holds its relay, the guest kernel's hung tasks at
+  2 s).
+
+### M329. Flakes: three daemon tests' reading of their pools and budget, under the daemon suite's load (D26, D188)
+
+- **Question.** The daemon suite run 38 times on each of 8 ubuntu-24.04 runners at
+  ff01fe0b (budget E2E 40148130548, 40148135044: 608 runs of each test) failed three tests
+  besides M328's: `pools_keep_what_their_runs_need_while_they_come` 4 times ("5 warm",
+  "6 warm" and "3 warm, past the pool's most", all on one EPYC 9V74),
+  `interactive_stdin_ends_with_its_client` twice ("the pool did not refill", "the run
+  outlived its client's stdin"), and
+  `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one` once
+  ("no microVM said to be held within the least room a run goes on in, under a budget of
+  229 MiB"). What did each see?
+- **Method.** Each failure's message and its daemon's log, against the test and the
+  daemon's code.
+- **Results.**
+  - The pool and stdin tests count a template's warm VMs as the processes whose command
+    line names the home's templates. A run's VM is one of them too, and it tells its run's
+    end before it goes (D26): the burst of three's own VMs, still going 500 ms after their
+    clients had their ends, counted with the three the pool kept (3 + 3 = 6), and a VM a
+    loaded runner kept past the stdin test's 300 ms of settling counted as waiting, its
+    going then taken for the refill's absence or for the run's own VM's.
+  - The budget test sets its last budget from the slice's statistics a mebibyte short of
+    what its kernel keeps. Setting it, the kernel took back more than the statistics said
+    it would keep, and the daemon, counting the room the slice had after, found 22 MiB
+    (its log: "held within its budget, 22 MiB of room ... 229 MiB"), not the shortfall it
+    holds a run within the least room for.
+- **Consequence.** In the tests alone: the pool's most is checked once the burst's own VMs
+  have gone, its count settled at or under it and kept so for a second, as what a pool
+  keeps it keeps until its keep-alive; the stdin test follows its run's own VM by its
+  container's `State.Pid`, a refill as a VM new since the pool settled, and the refill
+  staying as the run's VM goes; the budget test sets its budget again from the slice as it
+  is then, every 3 s, until the daemon says the run is held within the least room. Gone
+  in the daemon suite's repeats once these and M328's change are in: flakes plan step 3's
+  count.
+
+### M330. Flakes: a restored run held by an exec's reset connection, never writable (D176)
+
+- **Question.** M328's cause needs an exec that writes 256 KiB after the restore; the CI
+  failures' exec was a give-back, which writes a few bytes. What held them?
+- **Method.** Branch exp-step3 (633547a5, 6534aee8 with diagnostics alone): the guest's
+  console in its VM's log, init saying each signal it hears, its redial, and what holds
+  its relay once the workload has ended, the VM saying how its signals' connection came
+  and each signal it sends; the daemon suite 38 times on each of 8 ubuntu-24.04 runners
+  (budget E2E 40162744975, 40162749830: 608 runs of each test), 2026-10-25.
+- **Results.** `a_restored_microvm_ends_with_its_home` failed once (its daemon ended 15.04
+  s after its home's removal) and `a_killed_daemons_runs_end_with_it` once, both on EPYC
+  7763, both alike. The restored guest redialed the host, holding one exec from before the
+  save, the daemon's give-back (`RECLAIM`, its id 1, still running); the stop's SIGTERM
+  came on the new signals' connection and init sent it on (`kill` 0); the workload ended;
+  and the relay went on, held by that exec alone: its status 0, its output read to its
+  end, its EXIT said into the 23 bytes waiting for its connection, and the connection
+  still held, unwritten until the VM was killed, SIGKILL changing nothing. Its connection
+  was reset by the restore (the muxer's RST, muxer.rs `next_rx`) while it held what init
+  had not read: a reset socket with nothing unread is closing, and poll says it writable
+  (af_vsock.c `vsock_poll`), so it held bytes, and the only ones the host sends a
+  give-back's connection are the empty STDIN frame its stdin's end is said by, sent as the
+  exec starts, which came as the save was taken. Linux's vsock leaves a socket reset with
+  data unread established, readable to its end (virtio_transport_common.c
+  `virtio_transport_do_close`, v6.18 as v7.2), and takes the peer's credit from every
+  packet's header (`virtio_transport_space_update`): the RST's 0 left it no room, and poll
+  never says it writable, nor hung up. Init reads an exec's connection no more once
+  its stdin has ended, and writes to it as poll says it takes: neither came again. The
+  four killed-daemon failures of 608 at ff01fe0b had the same give-back cut short (M328).
+- **Consequence.** A restored init lets go of every exec's connection as it redials the
+  host, as each is its client's, which went with the microVM saved (D176); what an exec
+  writes from then on is dropped as it is read (M328). Held by
+  `a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored`
+  (tests/saved.rs): an `exec -i` that reads none of its stdin given it until nothing takes
+  more (720,896 bytes on this Mac), so that what its connection took waits unread in the
+  guest as the save is taken; restored, its run stopped with a 30 s timeout ends by its
+  SIGTERM (143), 3 of 3. Mutation-checked: without the release, at 97b6c45b's init, the
+  stop took 40.03 s and the run ended with its VM (255), as CI's did. As it lets go of an
+  exec's connection, init ends its stdin, as its client's going ends it: an exec reading
+  its stdin through a save ends once restored, held by
+  `an_exec_reading_its_stdin_through_a_save_ends_once_restored` (`exec -i` of `cat`). On
+  this Mac the exec's reset came with the run's, its end read in the same pass, and it
+  ended without the stdin's end too (7 of 7): the test holds the behaviour; the end covers
+  a reset read only once the restore is seen, which these runs did not make.
+- **Count.** The daemon suite 38 times in a row on each of 16 ubuntu-24.04 runners (budget
+  E2E 40186876215 and 40186881437, at d2eb6def with M328, M330, M331 and M332; EPYC 7763
+  ×8, 9V45 ×4, 9V74 ×3, Xeon 8573C ×1): `a_restored_microvm_ends_with_its_home` 608 of 608,
+  its daemon outliving its home none (under 0.5% at 95%); `a_killed_daemons_runs_end_with_it`
+  608 of 608, against 604 at ff01fe0b; `signals_reach_a_warm_run` (M332) and
+  `a_daemon_ending_its_runs_is_waited_for` (M331) 608 of 608 each. The one test that failed
+  in the count was the FUSE budget E2E's budgeted reads, once (M333).
+
+### M331. Flakes: a stopping daemon exiting before its slot passed on its run's end (D185)
+
+- **Question.** `a_daemon_ending_its_runs_is_waited_for` stops a daemon whose attached run
+  ignores SIGTERM under a stop timeout of 35 s. Once in 608 runs of the daemon suite
+  (budget E2E 40162744975's a, at 633547a5, an EPYC 7763 ubuntu-24.04 runner, exp-step3's
+  diagnostics on) the run's client exited 125, where its SIGKILL's 137 was due. What did
+  it hear?
+- **Method.** That job's daemon log, the guest's console and the VM's word on each signal
+  among it (M330's diagnostics); the client's code (cli/client.rs), the VM's `finish`
+  (warm.rs) and the slots' (daemon/slots.rs).
+- **Results.** The stop's SIGKILL went at 35.43 s of the VM's life, the guest ended the run
+  and init said its end; the daemon said "request slot 3: its client went no further in
+  35.020815733s; exiting without it" and exited, and the VM saw its daemon gone at 35.467
+  s. The client exits 125 only where its slot's session ends with no EXIT ("the command's
+  microVM stopped before the command ended"). A slot's client hears its run's EXIT through
+  the daemon, whose bridge passes on what the VM writes on the connection it was handed
+  (D185); the VM says DONE to the daemon first and EXIT to its client next (warm.rs
+  `finish`). Once closed, the daemon was held by a slot with no piece of its answer being
+  written only a request's time (10 s) from the close: the run said nothing for 35 s, so
+  its slot held nothing, and the run's DONE left the daemon quiet, which exited between the
+  DONE and its bridge's passing on of the EXIT.
+- **Consequence.** A slot whose request went on, with nothing of its answer to take yet,
+  holds a closed daemon until its answer's last word (`EXIT`, `END`, `RESTART`) is passed
+  on, and a request's time at most after; a piece its client leaves untaken, and a request
+  not yet gone on, let go of it as before. Held by
+  `daemon::tests::a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear`:
+  mutation-checked, the slot let go of 600 ms after the close without the hold ("a slot
+  whose request went on let go of with its answer still to come"). The E2E test passes
+  with it (38.81 s, this Mac).
+
+### M332. Flakes: a warm run's signal taken before its client heard its run was made (D26)
+
+- **Question.** `signals_reach_a_warm_run` hung in its 12th of 38 runs of the daemon suite
+  on budget E2E 40170179004's job 121099253149 (EPYC 9V74, cfd05ec9): its last line came
+  at 07:17 UTC, the job's other 15 copies ended by 08:12, and it was cancelled at 09:15.
+  Where did its SIGINT go?
+- **Method.** The job's log (the suite's 12th run: every test but this one done, its "has
+  been running for over 60 seconds" the last word of it), the test, and the signal path
+  of the client (cli/client.rs), the daemon's slot relay (daemon/slots.rs) and the run's
+  VM (warm.rs).
+- **Results.** The test sends its client SIGINT as the command says "ready" on the client's
+  stdout, then reads the rest to its end, unbounded. The command's output reaches the
+  client on a stream of its own (the slot's output, which the client's `show` thread
+  copies to its stdout), and the daemon's messages on another: `CREATED`, which the daemon
+  sends before it hands the run to its VM, its slot relay passes on from a thread of its
+  own (D185). So "ready" may come before the client has heard `CREATED`, from which alone
+  it took signals as the run's (`ran_on`'s attach). One taken before was one that ends the
+  client before its run is made, as the Docker CLI ends before its container is made: one
+  the client was started ignoring (the test's second pass, as a shell's `cmd &` starts it)
+  went nowhere, and the command, `trap INT`, waited for it, and the test's read with it.
+  Not ignored, the code ends the client with 130 as its command runs on.
+- **A fix that failed.** Holding such a signal for the run's connection once the request
+  had gone broke `a_run_interrupted_as_it_pulls_ends_at_once`: a SIGINT as the run pulls
+  waited for a connection that comes only as the pull ends (180.25 s, where the test asks
+  for 130 within 5 s). The client cannot tell the two apart: what it has heard lags what
+  the daemon has done by the relay's thread, so no order it keeps is exact.
+- **Consequence.** The daemon decides, where it knows (D26). From its request on, the
+  client sends each signal it takes on the run's connection, one that would end it as
+  `INTERRUPT` (shards_ipc kind 70). While the run prepares (`cancellable`), the daemon's
+  watch of the client reads its signals and sizes: an `INTERRUPT` is the client's end,
+  answered (`INTERRUPTED`), the prepare cancelled and no container made, and the client
+  ends as before (`end_by`); a daemon that asks it to restart, or goes, with an interrupt
+  of its unanswered, ends it so too. Once prepared, the watch has ended: what follows waits
+  for the run's VM, whose relays take an `INTERRUPT` as a signal for the command. Held by
+  `daemon::tests::a_clients_end_and_interrupt_are_seen_and_nothing_else_it_sent_is_taken`
+  and `cli::client::tests::a_runs_signals_go_on_its_connection_from_its_request`,
+  mutation-checked: each fails with its fix undone, a signal that would end the client sent
+  as SIGNAL, an interrupt kept once the run was made, the INTERRUPT unanswered (its answer
+  read within 5 s), the watch ended at the client's first signal, or a signal taken as the
+  client's end. On this Mac (Apple M5 Max, macOS 26.4.1, 022e886d and this change, as a
+  launchd job), `signals_reach_a_warm_run` and `a_client_waiting_for_its_daemon_ends_on_sigterm`
+  (daemon.rs), `a_run_interrupted_as_it_pulls_ends_at_once`, `start_attached_passes_signals_on`
+  and `run_writes_cidfiles_pulls_quietly_and_keeps_signals` (containers.rs) pass, and a full
+  gate after them, 2,180 tests. The E2E test bounds its read at a run's time, so a signal
+  lost fails it, its pass named, rather than holding its job.
+
+### M333. Flakes: a budget's later reads without the prefetch of their template's written pages (D188)
+
+- **Question.** `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`
+  (tests/daemon.rs) failed its budgeted phase, the median of three reads under a budget its
+  idle microVMs leave 128 MiB of past twice the median read with none: 5 times in the
+  daemon suite's repeats of 2026-10-25 at 633547a5 and cfd05ec9 (2.00 to 2.12 times, each
+  on an EPYC 7763), and once at d2eb6def (budget E2E 40186881437's job 121149460461, EPYC
+  7763: [3113, 5349, 5416] ms against 2,525). What slows a budget's reads?
+- **Method.** The `reads in ms` line of every passing run in those repeats' logs, n = 1,374,
+  and the daemon's log each failure prints; then the test alone, 40 times in a row on each
+  of 8 ubuntu-24.04 runners an arm (budget E2E, `name` the test), arms dispatched together:
+  A (022e886d, as it was; 40190124069, and again as A' 40193342168), B (b64b69ef, no warm VM
+  made ahead while a run serves under the budget; 40190127785) and C (0fbd5414, a VM
+  restored under a budget given the prefetch of its template's written pages any VM has;
+  40193324021). Each read's time is divided by its own run's median read with no budget.
+- **Results.**
+  - In the repeats, each budgeted read was slower than the one before: p50 1.04, 1.36 and
+    1.77 times its time with none, p99 1.51, 1.94 and 2.26, max 5.73, 2.10 and 2.42.
+  - Not the warm VMs made ahead: some failures' logs show one restored at each hand-over
+    and ended "for no room", but B read as A did (per read p50 1.23, 1.43 and 1.45 against
+    1.26, 1.42 and 1.43; the median of three at p99 1.61 against 1.60), no warm VM was
+    ended for room in either, and the d2eb6def failure's reads had 60, 895 and 1,026 MiB of
+    room and none ended.
+  - What differs: the first read's VM was restored before the budget was set, with the
+    prefetch of its template's written pages (64 MiB at most, `hv::PREFETCH_PRIVATE`); the
+    later reads' were restored under it, without (`--prefetch-private 0`, D188 since PM
+    M309), each written page their runs touched copied as they went.
+
+    | arm | n | read 1 p50 | read 2 p50 | read 3 p50 | median of 3: p50 | p90 | p99 | max |
+    |---|---|---|---|---|---|---|---|---|
+    | A, as it was | 320 | 1.26 | 1.42 | 1.43 | 1.40 | 1.51 | 1.60 | 1.64 |
+    | A', as it was | 319 | 1.28 | 1.48 | 1.48 | 1.44 | 1.57 | 1.63 | 1.65 |
+    | C, prefetched under a budget | 320 | 1.24 | 1.22 | 1.20 | 1.21 | 1.29 | 1.34 | 1.40 |
+
+    Runners: A, EPYC 7763 ×5, 9V74 ×2, Xeon 8573C; A', 7763 ×2, 9V45 ×3, 9V74 ×3; C, 7763
+    ×6, 9V74, Xeon 8573C (B: 7763 ×5, 9V45 ×2, 9V74). With the prefetch, a later read is as
+    fast as the first; without it, the run's own copying is what a busy suite's runner
+    stretches past twice.
+  - A second failure, in A' (job 121168855422, EPYC 9V45): its reads within bounds, "no
+    microVM said to be held within its budget": each read's first word of its room found
+    the budget already short, by 1, 56 and 26 MiB, and held it within the least room a
+    run goes on in. A run's room is told once it has begun, and a read had filled it first.
+- **Consequence.** A VM restored under a budget prefetches its template's written pages as
+  one under none does (daemon/refill.rs; the VM process's `--prefetch-private`, which only
+  a budget set, is gone): what they hold is a warm VM's, which a budget's room takes back
+  first (D188). The test takes either word, held within the budget's room or within the
+  least room, for the run held. The daemon suite at the fix, 38 times in a row on each of
+  16 ubuntu-24.04 runners (budget E2E 40197051533 and 40197057608 at 3ac02479; EPYC 7763
+  ×5, 9V45 ×5, 9V74 ×4, Xeon 8370C ×2): the test 608 of 608, where at d2eb6def it failed 1
+  of 608 and at cfd05ec9 3; per read p50 1.00, 1.04 and 1.27, p90 1.22, 1.46 and 1.77,
+  p99 1.36, 1.63 and 1.99, max 1.49, 1.88 and 2.18; the median of three at p50 1.06, p90
+  1.46, p99 1.59 and max 1.88, against 1.34, 1.80, 1.92 and 2.00 before. Its third read
+  still runs slower beside the suite than alone, which this does not explain.
+
+### M334. Flakes: a daemon out of descriptors coming to its last client's slot after the test stopped waiting (audit A07)
+
+- **Question.** `a_daemon_out_of_descriptors_waits_for_room` failed a gate in this agent's
+  session (utility QoS clamp, the host's load ~15 from other projects' tests), 2026-10-25
+  ~05:50 UTC: "the daemon kept finding room", five rounds in a row each finding room in the
+  window in which the test holds it out of descriptors, though its log says no client's
+  request ran out of time ("a client sent no request in"). Where did its room come from?
+- **Method.** That gate's daemon log; then docs/research/measurements/slot-room/fdwatch.py,
+  which starts a daemon limited to 128 descriptors (as the test does), fills it with
+  clients that take a slot and write its first byte (the test's `silent_slot`), stops when
+  none is offered in 200 ms and the log says it is out, then samples the daemon's
+  descriptors (proc_pidinfo PROC_PIDLISTFDS) every millisecond for seconds, with its log;
+  beside 24 busy loops started unclamped as a launchd job (slot-room/burn.sh), the daemon
+  and its clients clamped, this Mac (Apple M5 Max, macOS 26.4.1), 997fe65b.
+- **Results.** In 1 of 23 runs (its load average 51), the daemon was out at 2,229 ms with
+  33 clients in; at 2,406 ms one descriptor closed, a pipe's (fd 123), and in that
+  millisecond the daemon said "offering slots again, after 390 ms" and made a slot (4
+  FIFOs and 3 pipe ends, 127 descriptors), out again at 2,491 ms. The pipe is the write end
+  of the stop pipe of the slot the last client took: the slots' maker lets go of it as it
+  hears that the slot was taken (`Event::Asked`), and that one descriptor was the room a
+  slot lacked (each attempt needs one past the 7 a slot keeps). Its maker came to it 177
+  ms after the test stopped waiting, its thread clamped behind the busy loops: the room
+  was the last take's own, and the test, taking the window it found it in for one in
+  which room came, ran the round again, which ended the same way. In the other 22 runs
+  (load 46 to 51) each fill went on to 34 clients, past which no take's leaves room.
+- **Consequence.** None in the daemon: it offers what room it has. The test takes room a
+  window finds where no request ran out of time, the slot that room made, and runs the
+  window again; a request out of time, as the daemon says, runs the round again with its
+  clients let go. Beside the same busy loops (load 82 to 93), 30 of 30 passed: in 2 the
+  window found its last take's room and took it, in 2 a request ran out of time (rounds of
+  26 and 30 s), 11 to 17 s a run otherwise.
+
+### M335. Flakes: a 64-vCPU storm's vCPUs stalled a minute under an agent session's QoS clamp (D4)
+
+- **Question.** `storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`
+  (tests/snapshot.rs) failed a gate in this agent's session (its QoS clamp: every thread
+  at priority 20 or below; the host's load ~15 from other projects' tests), 2026-10-25
+  ~05:50 UTC: its first VM, 64 vCPUs, said READY and was still running at 120 s, two of
+  its vCPUs (29 and 37) stuck 39 to 67 s by its kernel's watchdog, with no scheduler tick
+  in a 59 s RCU grace period ("0 ticks this GP"). It passed in 16 gates before and in every
+  gate run as a launchd job. What stops two vCPUs of 64 for a minute?
+- **Method.** The test at 64 vCPUs (`SHARDS_STORM_CPUS=64`), its VM's threads sampled every
+  20 ms (macos-sched/threads.py: each thread's policy and current priority), through
+  macos-sched/storm-sampled.sh, in this agent's session and as a launchd job (unclamped),
+  alone and beside 18 busy loops started unclamped (macos-sched/busy-loops.sh, one a CPU);
+  this Mac (Apple M5 Max, 18 CPUs, macOS 26.4.1), d2eb6def.
+- **Results.**
+
+  | session | beside | run | vCPU samples at real-time (97) | at timeshare, their priority |
+  |---|---|---|---|---|
+  | clamped | the host alone (load 34) | 14 s | 12,023 | 521, at 9 to 20 |
+  | launchd | the host alone (load 27) | 6 s | 7,802 | 6, at 31 |
+  | clamped | 18 busy loops (load 59) | 74 s | 486 | none seen |
+  | launchd | 18 busy loops (load 71) | 2 s | 2,010 | 2, at 31 |
+
+  A vCPU that runs a tick without waiting goes to timeshare (D4's governor, ahead of XNU's
+  fail-safe); in a clamped session its priority is the clamp's, 20 at most and decayed to
+  9 as it runs, below every unclamped program's thread (31), where unclamped it shares the
+  CPUs at 31 as any program's does. One so moved gets no CPU while unclamped threads keep
+  them busy, so it is never seen waiting and never made real-time again: two such vCPUs
+  are what a minute without ticks looks like. Beside 18 busy loops, everything the session
+  ran starved: the sampler, real-time as asked, took 1 to 70 samples a second where it
+  takes 1,200, and the run took 37 times as long.
+- **Consequence.** None in the code: the clamp is the starter's ask, which a busy guest
+  under it meets as the OS means it to, and a user's session has none. Gates and timed
+  campaigns on this Mac run as launchd jobs (macos-sched/launchd-run.sh), as every gate
+  since 2026-10-25 ~06:00 UTC has.
+
+### M336. Flakes: the block I/O limit test timed its runs' starts and ends, not its reads (D44)
+
+- **Question.** `block_io_limits_hold` (tests/containers.rs) failed gpu CI's x86_64 musl job
+  at 3ac02479 (40197051482, job 121180055518, an ubuntu-24.04 runner, its CPU not logged):
+  "3.747232538s 2.966067558s", the read with no limit slower than the one held to 512 KiB
+  a second. Why?
+- **Method.** The test and testguest's `fs readn`.
+- **Results.** The test timed each whole `shards run` from the host: its microVM's start, a
+  read of 1 MiB of /dev/pmem0, and its end. Held to 512 KiB a second the read takes two
+  seconds, and unlimited a few milliseconds; on a busy runner the unlimited run's start and
+  end took 3.75 s, more than the held run's 2.97 s whole.
+- **Consequence.** testguest's `readn` says how long its read took (`readn N in US us`),
+  and the test compares those: the held read at least a second, the unlimited one shorter.
+  A run's start and end, which a busy runner stretches, are no longer in what it compares.
+  The test alone, 40 times in a row on each of 8 ubuntu-24.04 runners (budget E2E
+  40201646564 at 24025f5a; EPYC 7763 ×3, 9V45, 9V74 ×4): 320 of 320.
+
+### M337. Flakes: the warm-VM bound test counted VMs still exiting (audit A13)
+
+- **Question.** `warm_vms_are_bounded_across_templates` (tests/daemon.rs) failed once in the
+  count of M333 (budget E2E 40197051533's job 121180057768 at 3ac02479, EPYC 9V74,
+  ubuntu-24.04): "2 warm VMs" 500 ms after its first image was served again, under a bound
+  of one (`SHARDS_WARM_MAX=1`). Did the daemon keep two?
+- **Method.** The test, the daemon's log the failure printed, and how the test counts.
+- **Results.** The test counted the processes whose command line names the home's templates:
+  a warm VM's, but also a VM still serving or exiting, which names its template as it was
+  restored from it. The daemon's log has each VM it ended for the bound ("1 warm VMs are
+  kept at most") and its end; the daemon counts what is ready or starting alone. The run's
+  own VM lets go of its guest's memory after its EXIT, and the warm VM its pool took the
+  room of ends as its SIGKILL is taken: on a busy runner, past the 500 ms the test waited.
+- **Consequence.** The test waits up to 10 s for the pools to come back to their bound,
+  naming the processes it counts if they do not, then holds them to it for 500 ms. The
+  test alone, 40 times in a row on each of 8 ubuntu-24.04 runners (budget E2E 40204413483
+  at 771c9a56; EPYC 7763 ×4, 9V45 ×2, Xeon 8573C ×2): 320 of 320.

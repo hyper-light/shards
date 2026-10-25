@@ -11356,14 +11356,25 @@ fn block_io_limits_hold() {
         ]
     );
     // A MiB of the disk (of two) at half a MiB a second: no less than a second, where
-    // unlimited it takes milliseconds.
+    // unlimited it takes milliseconds, as the guest times its read: a run's start and end on
+    // a busy runner took longer than the held read whole (3.75 s against 2.97 s, x86_64 musl
+    // CI 40197051482, PM M336).
     let read = |extra: &[&str]| {
         let mut o = vec!["--rm", "-u", "0", "--device", "/dev/pmem0"];
         o.extend_from_slice(extra);
-        let started = std::time::Instant::now();
         let r = run_in(&home, &image, &o, &["fs", "readn:1048576:/dev/pmem0"]);
         assert_eq!(r.status, Some(0), "{r}");
-        started.elapsed()
+        let us = r
+            .stdout
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("readn 1048576 in ")?
+                    .strip_suffix(" us")?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or_else(|| panic!("no read's time: {r}"));
+        std::time::Duration::from_micros(us)
     };
     let held = read(&["--device-read-bps", "/dev/pmem0:512kb"]);
     assert!(held >= std::time::Duration::from_secs(1), "{held:?}");

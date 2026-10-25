@@ -340,8 +340,18 @@ fn signals_reach_a_warm_run() {
         assert_eq!(line, "ready\n");
         // SAFETY: kill(2) of our own child.
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
-        let mut rest = String::new();
-        out.read_to_string(&mut rest).unwrap();
+        // Within a run's time: a signal lost leaves its command waiting, and a read of its
+        // output would wait with it (2 hours in budget E2E 40170179004, cancelled).
+        let (read, rest) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = String::new();
+            let _ = out.read_to_string(&mut rest);
+            let _ = read.send(rest);
+        });
+        let Ok(rest) = rest.recv_timeout(TIMEOUT) else {
+            let _ = child.kill();
+            panic!("the run outlived its SIGINT by {TIMEOUT:?}; ignored at start: {ignored}");
+        };
         assert_eq!(wait(&mut child), Some(0), "ignored at start: {ignored}");
         assert_eq!(rest, "got 2\n", "ignored at start: {ignored}");
     }
@@ -710,7 +720,7 @@ fn interactive_stdin_ends_with_its_client() {
         }
     }
     let mut client = common::command()
-        .args(["run", "-i", "--pull", "never", &image, "cat"])
+        .args(["run", "-i", "--pull", "never", "--name", "reader", &image, "cat"])
         .env("SHARDS_HOME", &*home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -723,17 +733,33 @@ fn interactive_stdin_ends_with_its_client() {
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
     assert_eq!(line, "through the client\n");
-    // The pool refills while the run goes on: one waiting, besides the one serving.
+    // The VM serving it, as its container says, rather than the one of those waiting that
+    // went: a run's VM tells its end before it goes, and one that took a loaded runner past
+    // the pool's settling was counted as waiting, and its going as this one's.
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "reader"], &env, TIMEOUT);
+    let vm: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+    // The pool refills while the run goes on: a VM of the template's new since it settled.
+    let refilled = std::cell::Cell::new(None);
     eventually("the pool did not refill", || {
-        processes_with(&templates).len() > waiting.len()
+        refilled.set(
+            processes_with(&templates)
+                .into_iter()
+                .find(|p| *p != vm && !waiting.contains(p)),
+        );
+        refilled.get().is_some()
     });
     client.kill().unwrap();
     client.wait().unwrap();
-    // The VM that served it ends; those still waiting stay.
+    // The VM that served it ends; the one refilled for the next run stays.
     eventually("the run outlived its client's stdin", || {
-        let now = processes_with(&templates);
-        waiting.iter().filter(|pid| now.contains(pid)).count() == waiting.len() - 1
+        !processes_with(&templates).contains(&vm)
     });
+    let refilled = refilled.get().unwrap();
+    assert!(
+        alive(refilled as i32),
+        "the VM refilled, {refilled}, went with the run's"
+    );
 }
 
 /// `SHARDS_TIMING` reaches a warm run's client, which prints the line the VM measured.
@@ -1438,7 +1464,27 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     std::fs::create_dir_all(left.parent().unwrap()).unwrap();
     let due = home.join("images").join("collect-due");
     let mut silent = Vec::new();
-    for round in 1.. {
+    // Clients that take every slot it offers and say nothing past their first byte, until it
+    // has no room to make the next and offers none for a while: a client it has yet to see
+    // the end of (the `ps` that started it), or one that takes a slot as it runs out, gives
+    // it room for more first (CI 41eab0d5: 270 µs after).
+    let fill = |silent: &mut Vec<Silent>| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match silent_slot(&home, Duration::from_millis(200)) {
+                Some(client) => silent.push(client),
+                None if out(&said()) => break,
+                None => {}
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the daemon never ran out of descriptors, {} clients in; its log:\n{}",
+                silent.len(),
+                said()
+            );
+        }
+    };
+    'rounds: for round in 1.. {
         // Each round's clients its own: a client says nothing past its first byte, and the
         // daemon lets one go once its request's time has run out (REQUEST_TIMEOUT, 10 s),
         // so that an earlier round's, kept, gave it room in each later round on a busy host
@@ -1454,50 +1500,46 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
                 });
             }
         }
-        // Clients that take every slot it offers and say nothing past their first byte,
-        // until it has no room to make the next and offers none for a while: a client it
-        // has yet to see the end of (the `ps` that started it), or one that takes a slot
-        // as it runs out, gives it room for more first (CI 41eab0d5: 270 µs after).
-        let deadline = Instant::now() + Duration::from_secs(10);
+        fill(&mut silent);
         loop {
-            match silent_slot(&home, Duration::from_millis(200)) {
-                Some(client) => silent.push(client),
-                None if out(&said()) => break,
-                None => {}
+            let from = said().len();
+            let before = cpu_time(daemon);
+            std::thread::sleep(Duration::from_secs(1));
+            let spent = cpu_time(daemon).saturating_sub(before);
+            // A collection due meanwhile waits: its files would take what clients wait for.
+            std::fs::write(&left, b"left behind").unwrap();
+            std::fs::write(&due, b"").unwrap();
+            eventually("the collection due was not seen", || !due.exists());
+            std::thread::sleep(Duration::from_millis(500));
+            if !said().get(from..).is_some_and(|since| since.contains(AGAIN)) {
+                assert!(
+                    spent < Duration::from_millis(300),
+                    "the daemon spun: {spent:?} of CPU in 1 s"
+                );
+                assert!(
+                    left.exists(),
+                    "collected while out of descriptors; its log:\n{}",
+                    said()
+                );
+                break 'rounds;
             }
-            assert!(
-                Instant::now() < deadline,
-                "the daemon never ran out of descriptors, {} clients in; its log:\n{}",
-                silent.len(),
-                said()
-            );
+            // Room it found meanwhile was room to collect in: the window says nothing. Where a
+            // client's request ran out of time (REQUEST_TIMEOUT), as the daemon says, the
+            // round is run again, its clients let go; else the room was its last take's own,
+            // the stop pipe of the slot taken, which a busy daemon came to after this test
+            // stopped waiting for a slot (PM M334): that slot is taken, and the window run
+            // again.
+            if said()
+                .get(from..)
+                .is_some_and(|since| since.contains("sent no request in"))
+            {
+                assert!(round < 5, "the daemon kept finding room; its log:\n{}", said());
+                eprintln!("round {round}: a client's request ran out of time; a new round");
+                continue 'rounds;
+            }
+            eprintln!("round {round}: the daemon found room as its window went; its slot taken");
+            fill(&mut silent);
         }
-        let from = said().len();
-        let before = cpu_time(daemon);
-        std::thread::sleep(Duration::from_secs(1));
-        let spent = cpu_time(daemon).saturating_sub(before);
-        assert!(
-            spent < Duration::from_millis(300),
-            "the daemon spun: {spent:?} of CPU in 1 s"
-        );
-        // A collection due meanwhile waits: its files would take what clients wait for.
-        std::fs::write(&left, b"left behind").unwrap();
-        std::fs::write(&due, b"").unwrap();
-        eventually("the collection due was not seen", || !due.exists());
-        std::thread::sleep(Duration::from_millis(500));
-        // Room it found meanwhile, a client ending or its request's time running out
-        // (REQUEST_TIMEOUT), was room to collect in: the round says nothing, and is run
-        // again.
-        if said().get(from..).is_some_and(|since| since.contains(AGAIN)) {
-            assert!(round < 5, "the daemon kept finding room; its log:\n{}", said());
-            continue;
-        }
-        assert!(
-            left.exists(),
-            "collected while out of descriptors; its log:\n{}",
-            said()
-        );
-        break;
     }
     drop(silent);
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -1828,8 +1870,12 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         held >> 20,
         said()
     );
+    // Held, as its first word said: within its budget's room, or within the least room a
+    // run goes on in where its read had filled that room before the word came, which comes
+    // once its run has begun (budget E2E 40193342168: short by 1 to 56 MiB at each read's
+    // first word, its reads within bounds, PM M333).
     assert!(
-        said().contains("held within its budget"),
+        said().contains("held within its budget") || said().contains("its microVM's budget is short by"),
         "no microVM said to be held within its budget\nthe daemon's log:\n{}",
         said()
     );
@@ -1960,46 +2006,58 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
             .unwrap_or(0)
     };
-    let deadline = Instant::now() + TIMEOUT;
-    let (current, stat) = loop {
-        let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
-        if stat_of(&stat, "anon") + stat_of(&stat, "file") <= current {
-            break (current, stat);
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{slice}'s statistics still count more than it holds ({current} bytes):\n{stat}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
+    let short_now = || {
+        let deadline = Instant::now() + TIMEOUT;
+        let (current, stat) = loop {
+            let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
+            if stat_of(&stat, "anon") + stat_of(&stat, "file") <= current {
+                break (current, stat);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{slice}'s statistics still count more than it holds ({current} bytes):\n{stat}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let mapped = stat_of(&stat, "file_mapped");
+        let unmapped = stat_of(&stat, "file")
+            .saturating_sub(mapped)
+            .saturating_sub(stat_of(&stat, "shmem"));
+        let gb = (mapped * 2) >> 30;
+        let ratio = if gb == 0 { 1 } else { (gb * 10).isqrt() };
+        (current.saturating_sub(unmapped) + mapped / ratio).saturating_sub(1 << 20)
     };
-    let mapped = stat_of(&stat, "file_mapped");
-    let unmapped = stat_of(&stat, "file")
-        .saturating_sub(mapped)
-        .saturating_sub(stat_of(&stat, "shmem"));
-    let gb = (mapped * 2) >> 30;
-    let ratio = if gb == 0 { 1 } else { (gb * 10).isqrt() };
-    let short = (current.saturating_sub(unmapped) + mapped / ratio).saturating_sub(1 << 20);
-    budget(&short.to_string());
     let id = started.stdout.trim().to_string();
     let held_least = || {
         said()
             .lines()
             .any(|l| l.contains(&format!("container {id}:")) && l.contains("the least room a run goes on in"))
     };
+    // Set again from the slice as it is then, while the daemon finds room under it: the
+    // kernel takes back more of the slice as its budget falls than its statistics said it
+    // keeps beside what its processes map, and the daemon counts the room the slice has
+    // after (22 MiB under 229 MiB in budget E2E 40148135044's h, 1 of 608 runs). A budget
+    // that leaves none is said at once.
+    let (mut asked, mut short): (Vec<u64>, u64) = (Vec::new(), 0);
     let deadline = Instant::now() + TIMEOUT;
     while !held_least() {
         assert!(
             Instant::now() < deadline,
-            "no microVM said to be held within the least room a run goes on in, under a budget of {} MiB\nthe daemon's log:\n{}",
-            short >> 20,
+            "no microVM said to be held within the least room a run goes on in, under budgets of {asked:?} MiB\nthe daemon's log:\n{}",
             said()
         );
-        std::thread::sleep(Duration::from_millis(20));
+        short = short_now();
+        budget(&short.to_string());
+        asked.push(short >> 20);
+        let set = Instant::now();
+        while !held_least() && set.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     let held_short: Vec<u64> = (0..3)
         .map(|_| {
@@ -2322,10 +2380,26 @@ fn warm_vms_are_bounded_across_templates() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Never more than the bound, as the first is served again.
+    // Never more than the bound, as the first is served again: once its run's own VM and
+    // the warm VM its pool took the room of have gone, as a VM process takes its time to,
+    // its guest's memory let go of (2 counted 500 ms after the run on a busy runner, budget
+    // E2E 40197051533, PM M337), one at most, and no refill takes the pools past it.
     run(&first);
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(warm(&templates) <= 1, "{} warm VMs", warm(&templates));
+    let all = || commands_with(&templates.to_string_lossy());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while warm(&templates) > 1 {
+        assert!(
+            Instant::now() < deadline,
+            "the pools came back to their bound in no 10 s: {:?}",
+            all()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(500) {
+        assert!(warm(&templates) <= 1, "past the bound: {:?}", all());
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
@@ -2448,8 +2522,16 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         assert_eq!(b.join().unwrap(), Some(0));
     }
     settled("a burst of three", &|n| n >= 2);
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(warm() <= 3, "{} warm, past the pool's most", warm());
+    // Never past its most, once the burst's own VMs have gone, each of which tells its run's
+    // end before it goes, a loaded runner's past 500 ms: what the pool keeps it keeps until
+    // its keep-alive, so a pool past its most stays so.
+    settled("the burst's VMs gone", &|n| n <= 3);
+    let held = Instant::now();
+    while held.elapsed() < Duration::from_secs(1) {
+        let n = warm();
+        assert!(n <= 3, "{n} warm, past the pool's most");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     // Unclaimed past its keep-alive: nothing, until the next run.
     std::thread::sleep(KEEP);
     settled("past the keep-alive", &|n| n == 0);

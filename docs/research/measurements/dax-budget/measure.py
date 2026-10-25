@@ -53,7 +53,7 @@ OUT, for each read, what its slice held each second (memory.current, memory.stat
 anon and reclaim counters, memory.events, memory.pressure), its VM process's vCPU threads'
 states and CPU times, KVM's counters of its VM where `sudo -n` reads debugfs, and the VM
 process's RssFile beside how much of its template's memory file its host's page cache
-holds (mincore(2)); with
+holds (mincore(2)), and the whole host's reclaim and memory pressure; with
 --perf, a profile of the whole host 5 to 15 s into each read (`sudo -n perf`).
 
 Into OUT/<case>.txt each second, too, each thread of each VM process in the slice, its
@@ -195,14 +195,29 @@ GUEST = (
 # room of a few MiB, where GUEST's dozen processes a second took the run's room from its read
 # (--as-e2e): where its dd waits, one look; its run's memory, events and reclaim.
 GUEST_LIGHT = (
-    "until p=$(pidof dd); do sleep 0.05; done; "
+    "until p=$(pidof dd); do sleep 0.05; done; q=0; "
     "while [ -d /proc/$p ]; do read -r t _ < /proc/uptime; w=-; read -r w < /proc/$p/wchan; "
     "read -r c < /sys/fs/cgroup/memory.current; e=; while read -r k v; do e=\"$e $k $v\"; "
     "done < /sys/fs/cgroup/memory.events; m=; while read -r k v; do case $k in "
     "anon|file|kernel|pgscan|pgsteal|workingset_refault_file) m=\"$m $k $v\";; esac; "
     "done < /sys/fs/cgroup/memory.stat; g=; while read -r k v _; do case $k in "
     "MemTotal:|MemFree:|Cached:) g=\"$g $k $v\";; esac; done < /proc/meminfo; "
-    "echo \"$t dd ${w:--} | current $c$e$m |$g\"; sleep 1; done"
+    # Each zone's free pages, min watermark and managed pages, and the kernel's direct
+    # reclaim, throttled or not (mm/vmscan.c `allow_direct_reclaim`, `PGSCAN_DIRECT_THROTTLE`):
+    # the kernel's own, where MemTotal and MemFree add what the host may still plug (D149).
+    # Its own names, as $c above is the run's memory.current.
+    "z=; while read -r za zb zc zd _; do case $za in Node) z=\"$z $zd\";; pages) [ \"$zb\" = free ] && "
+    "z=\"$z free $zc\";; min|managed) z=\"$z $za $zb\";; esac; done < /proc/zoneinfo; "
+    "x=; while read -r k n; do case $k in pgscan_direct_throttle|allocstall_dma32|allocstall_normal|"
+    "allocstall_movable|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd) x=\"$x $k $n\";; "
+    "esac; done < /proc/vmstat; "
+    "echo \"$t dd ${w:--} | current $c$e$m |$g | zones$z | vm$x\"; "
+    # And, in the hold-notes arm (hold-notes.patch), what init noted since the look before:
+    # each hold it set on the run's cgroup, the room it was told, what its grower asked for
+    # and what came. The run's own cgroup is its container's parent, which the container
+    # cannot read.
+    "if [ -f /tmp/.shards-holds ]; then tail -n +$((q + 1)) /tmp/.shards-holds | sed 's/^/note /'; "
+    "q=$(wc -l < /tmp/.shards-holds); fi; sleep 1; done"
 )
 
 
@@ -309,6 +324,7 @@ LIBC.mmap.restype = ctypes.c_void_p
 LIBC.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
 LIBC.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
 LIBC.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+LOW_BIT = bytes(i & 1 for i in range(256))
 
 
 def cached(path):
@@ -328,7 +344,8 @@ def cached(path):
             vec = ctypes.create_string_buffer((size + page - 1) // page)
             if LIBC.mincore(ctypes.c_void_p(addr), size, vec) != 0:
                 raise OSError(ctypes.get_errno(), "mincore")
-            return sum(b & 1 for b in vec.raw) * page, size
+            # Each byte's least bit says its page is resident; the rest are reserved.
+            return vec.raw.translate(LOW_BIT).count(1) * page, size
         finally:
             LIBC.munmap(ctypes.c_void_p(addr), size)
     finally:
@@ -352,6 +369,37 @@ def files(pid):
         return f"RssFile {rss} memory {held} of {size}"
     except (OSError, ValueError) as e:
         return f"unread: {e}"
+
+
+HOST_VMSTAT = ("pgscan_kswapd", "pgsteal_kswapd", "pgscan_direct", "pgsteal_direct", "workingset_refault_file",
+               "allocstall_normal", "allocstall_movable", "pgmajfault")
+
+
+def host_reclaim():
+    """The whole host's reclaim counters (/proc/vmstat) and its memory pressure's total
+    (/proc/pressure/memory, `some` and `full` stall microseconds): what the runner's own
+    reclaim takes beside the slice's (PM M318)."""
+    try:
+        with open("/proc/vmstat") as f:
+            stat = dict(line.split() for line in f if line.split()[:1] and line.split()[0] in HOST_VMSTAT)
+        with open("/proc/pressure/memory") as f:
+            stalls = {w[0]: w[-1].split("=")[1] for w in (line.split() for line in f) if w}
+    except (OSError, ValueError, IndexError) as e:
+        return f"unread: {e}"
+    return " ".join(f"{k} {stat.get(k, '-')}" for k in HOST_VMSTAT) + f" some {stalls.get('some', '-')} full {stalls.get('full', '-')}"
+
+def copy():
+    """Of the files the guests read (those of the volume a MiB or larger), the bytes the
+    host's page cache holds: the share's copy of what its guest reads (PM M318)."""
+    held = 0
+    try:
+        for name in os.listdir(vol):
+            path = os.path.join(vol, name)
+            if os.path.isfile(path) and os.path.getsize(path) >= 1 << 20:
+                held += cached(path)[0]
+    except (OSError, ValueError) as e:
+        return f"unread: {e}"
+    return str(held)
 
 
 def held(f, when, arm, guest=True):
@@ -417,6 +465,8 @@ def sample(path, stop):
                     " ".join(f"{k} {stat.get(k)}" for k in STAT),
                     "events " + read("memory.events").replace("\n", " "),
                     "pressure " + read("memory.pressure").splitlines()[0],
+                    f"copy {copy()}",
+                    f"host {host_reclaim()}",
                 ]
                 for pid in vm_pids():
                     lines.append(f"vm {pid} {threads(pid)}")

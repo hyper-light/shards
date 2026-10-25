@@ -476,7 +476,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut backing = Vec::new();
     let mut layer = None;
     let mut layer_cloned = None;
-    let mut prefetch_private = shards_vmm::hv::PREFETCH_PRIVATE;
     let mut working_set_to = None;
     while let Some(arg) = args.next() {
         // The snapshot directory is a path, in whatever bytes; every option is text.
@@ -505,13 +504,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             }
             // Which generation's layer that file is a clone of.
             "--layer-cloned" => layer_cloned = Some(text(value("--layer-cloned")?)?),
-            // What its prefetch may copy ahead of its request: none under a budget (D188).
-            "--prefetch-private" => {
-                let bytes = text(value("--prefetch-private")?)?;
-                prefetch_private = bytes
-                    .parse()
-                    .map_err(|_| format!("--prefetch-private: {bytes:?} is not a number of bytes"))?;
-            }
             "--working-set" => {
                 let fd = text(value("--working-set")?)?;
                 working_set_to = Some(
@@ -589,7 +581,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         // request's path, and on a restore's own, where it saves the guest each stage-2
         // fault it would take, 12 to 20 µs on CI's runners (PM M310).
         prefetch: true,
-        prefetch_private,
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR), and
         // its spawner's descriptor a restore's (`hand_working_set`); a run's snapshot is
         // no template, which restores prefetch from.

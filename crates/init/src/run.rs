@@ -4255,6 +4255,21 @@ impl Workload {
             if host.is_none() {
                 self.hosts = None;
             }
+            // What has no connection left to go on is dropped as it is read, so that what
+            // writes it is never held and its end is seen. Its output is read only while
+            // less than BUFFERED of it waits: one whose connection a restore reset (D176)
+            // and that wrote that much more was never read again, and its process, killed
+            // with the run, never seen to end, held the run's end until its VM was killed
+            // (flakes plan step 3, PM M328).
+            if host.is_none() {
+                to_host.clear();
+                flushing = None;
+            }
+            for e in &mut execs {
+                if e.conn.is_none() {
+                    e.to_conn.clear();
+                }
+            }
             // A joiner's writable layer, sent as the host asked once its end is said; its
             // layers kept until all of it is (D119).
             for e in &mut execs {
@@ -4851,9 +4866,20 @@ impl Workload {
             }
             // Restored from a save of the run (D176): the host's connections, which the
             // restore reset, dialed again with the save's tokens, and what waited goes on.
-            // Execs' connections are their clients', which went with the microVM saved.
+            // Execs' connections are their clients', which went with the microVM saved: let
+            // go of here, what each exec writes from now on dropped as it is read (above),
+            // and its stdin ended, as its client's going ends it.
+            // Waited on, one the restore reset as it held what init had not read stayed
+            // established, reading as at its end, and never writable, its reset leaving it
+            // no credit: init read it no more past its stdin's end, and wrote its exec's end
+            // only as it took a byte, which it never did, so that the exec held the run's
+            // end until its VM was killed (flakes plan step 3, PM M330).
             if lost {
                 lost = false;
+                for e in &mut execs {
+                    e.conn = None;
+                    e.stdin_eof = true;
+                }
                 match tokens.take().map(|t| redial(&t)) {
                     Some(Ok((run, signal))) => {
                         conn = run;

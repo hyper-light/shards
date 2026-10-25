@@ -326,6 +326,17 @@ pub mod kind {
     /// past its `--pids-limit` (shards_abi::run::kind::PIDS), and what its cgroup was
     /// allowed and held (D193).
     pub const PIDS: u8 = 69;
+    /// Client → daemon, or its run's VM: a signal that would end the client, SIGINT,
+    /// SIGTERM, SIGHUP or SIGQUIT where it was not ignored as the client started, as
+    /// `SIGNAL`'s payload. Before the client's run is made (its image pulled and its spec
+    /// prepared), its daemon takes it as the client's end, answers `INTERRUPTED`, and makes
+    /// no container, as a Docker CLI interrupted then ends; after, it is the command's, as
+    /// `SIGNAL` is (D26).
+    pub const INTERRUPT: u8 = 70;
+    /// Daemon → client: the `INTERRUPT` it took before the client's run was made, its
+    /// payload as it came: the client ends as that signal ends the Docker CLI before its
+    /// container is made (D26).
+    pub const INTERRUPTED: u8 = 71;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

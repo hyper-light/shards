@@ -1406,9 +1406,23 @@ fn short_of_descriptors(why: &str) -> bool {
         .any(|code| why.ends_with(&format!("(os error {code})")))
 }
 
-/// Whether `conn`'s peer goes before `ended`'s does: its end read before anything it
-/// sends. Nothing is taken from `conn`: it is peeked at.
-fn hung_up(conn: &UnixStream, ended: &UnixStream) -> bool {
+/// How a client's watch ended ([`watch_client`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Watched {
+    /// Told to end: the client is there.
+    Stayed,
+    /// The client went.
+    Gone,
+    /// The client asked to be ended (`INTERRUPT`), and was answered (`INTERRUPTED`).
+    Interrupted,
+}
+
+/// Watches `conn`, a client's, until `ended`'s peer goes: says whether the client went
+/// first, or asked to be ended by a signal (`INTERRUPT`, D26), which is answered here
+/// (`INTERRUPTED`). The signals and terminal sizes it sends meanwhile are for a command yet
+/// to run, and go with the watch, as a Docker CLI passes none on before its container is
+/// made; anything else ends the watch, kept for what reads `conn` next.
+fn watch_client(conn: &UnixStream, ended: &UnixStream) -> Watched {
     let mut polled = [conn.as_raw_fd(), ended.as_raw_fd()].map(|fd| libc::pollfd {
         fd,
         events: libc::POLLIN,
@@ -1420,33 +1434,45 @@ fn hung_up(conn: &UnixStream, ended: &UnixStream) -> bool {
             if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
             }
-            return false;
+            return Watched::Stayed;
         }
         let [client, own] = polled;
         if own.revents != 0 {
-            return false;
+            return Watched::Stayed;
         }
         if client.revents == 0 {
             continue;
         }
-        let mut byte = 0u8;
-        // SAFETY: recv(2) of at most one byte into a local, with MSG_PEEK: the byte stays
-        // for whoever reads the connection.
+        // The next message's kind, its first byte, with MSG_PEEK: a message not the
+        // watch's stays for whoever reads the connection.
+        let mut next = 0u8;
+        // SAFETY: recv(2) of at most one byte into a local.
         let peeked = unsafe {
             libc::recv(
                 conn.as_raw_fd(),
-                (&raw mut byte).cast(),
+                (&raw mut next).cast(),
                 1,
                 libc::MSG_PEEK | libc::MSG_DONTWAIT,
             )
         };
         match peeked {
-            0 => return true,
-            1.. => return false,
+            0 => return Watched::Gone,
+            1.. => {}
             _ => match io::Error::last_os_error().kind() {
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => {}
-                _ => return true,
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => continue,
+                _ => return Watched::Gone,
             },
+        }
+        if ![kind::SIGNAL, kind::RESIZE, kind::INTERRUPT].contains(&next) {
+            return Watched::Stayed;
+        }
+        match shards_ipc::recv(conn) {
+            Ok(Some(m)) if m.kind == kind::INTERRUPT => {
+                let _ = shards_ipc::send(conn, kind::INTERRUPTED, &m.payload, &[]);
+                return Watched::Interrupted;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => return Watched::Gone,
         }
     }
 }
@@ -2013,10 +2039,16 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Runs `work` with a cancel that a shutdown sets (`end_clients`), and that the
-    /// client's going sets: its connection ending while `work` runs. Nothing the client
-    /// sends meanwhile is read here: it stays for what reads the connection next. Says
-    /// too whether the client went.
-    fn cancellable<T>(&self, client: u64, conn: &UnixStream, work: impl FnOnce(&Cancel) -> T) -> (T, bool) {
+    /// client's going sets: its connection ending while `work` runs, or its asking to be
+    /// ended (`INTERRUPT`), which is answered then. Of what the client sends meanwhile,
+    /// only its signals and terminal sizes are read here ([`watch_client`]). Says too how
+    /// the watch of the client ended.
+    fn cancellable<T>(
+        &self,
+        client: u64,
+        conn: &UnixStream,
+        work: impl FnOnce(&Cancel) -> T,
+    ) -> (T, Watched) {
         let cancel = Cancel::new();
         lock(&self.preparing).insert(client, cancel.clone());
         if self.stopping.load(Ordering::SeqCst) {
@@ -2028,11 +2060,11 @@ impl<D: Disk> Daemon<D> {
             let watched = conn.try_clone()?;
             let cancel = cancel.clone();
             let thread = std::thread::Builder::new().name("hangup".into()).spawn(move || {
-                let gone = hung_up(&watched, &ended);
-                if gone {
+                let watch = watch_client(&watched, &ended);
+                if watch != Watched::Stayed {
                     cancel.cancel();
                 }
-                gone
+                watch
             })?;
             Ok((done, thread))
         })();
@@ -2041,11 +2073,11 @@ impl<D: Disk> Daemon<D> {
             .ok();
         let out = work(&cancel);
         lock(&self.preparing).remove(&client);
-        let gone = watch.is_some_and(|(done, thread)| {
+        let watched = watch.map_or(Watched::Stayed, |(done, thread)| {
             drop(done);
-            thread.join().unwrap_or(false)
+            thread.join().unwrap_or(Watched::Stayed)
         });
-        (out, gone)
+        (out, watched)
     }
 
     /// Ends the VMs still waiting, lets go of the home, and exits ([`finish`](Self::finish)).
@@ -2510,10 +2542,11 @@ impl<D: Disk> Daemon<D> {
             run.hostname = Some(id.get(..12).unwrap_or(&id).to_string());
         }
         // The next run's spare is made once this one is answered, off its path. What it
-        // downloads, a shutdown cancels, and its client's going. A client that went gets no
-        // container, as a Docker CLI interrupted as it pulls gets none, and hears nothing
-        // more: its stderr, which this daemon holds, may be a terminal it gave back.
-        let (prepared, gone) = self.cancellable(number, conn, |cancel| {
+        // downloads, a shutdown cancels, and its client's going, or its asking to be ended
+        // (`INTERRUPT`, D26). A client that went, or asked, gets no container, as a Docker
+        // CLI interrupted as it pulls gets none, and hears nothing more but the answer to
+        // its asking: its stderr, which this daemon holds, may be a terminal it gave back.
+        let (prepared, watched) = self.cancellable(number, conn, |cancel| {
             let heard = |line: &str| {
                 if !cancel.is_cancelled() {
                     say(line);
@@ -2521,7 +2554,7 @@ impl<D: Disk> Daemon<D> {
             };
             crate::run::prepare(&run, &self.home, &heard, cancel)
         });
-        if gone {
+        if watched != Watched::Stayed {
             abandon(&id);
             return None;
         }
@@ -7254,25 +7287,48 @@ mod tests {
         PoolKey::new(dir.as_ref(), "")
     }
 
-    /// A client's end is seen; what it sent first is not taken, and is no end; and the
-    /// watch ends when told to, though the client stays.
+    /// A client's end is seen; a message not the watch's is not taken, and ends the watch,
+    /// the client there; its signals and terminal sizes go with the watch, which goes on;
+    /// its INTERRUPT is answered, as it came, and ends the watch, what follows kept; and the
+    /// watch ends when told to, though the client stays (D26).
     #[test]
-    fn a_clients_end_is_seen_and_nothing_it_sent_is_taken() {
-        use std::io::Read as _;
+    fn a_clients_end_and_interrupt_are_seen_and_nothing_else_it_sent_is_taken() {
         let (_done, ended) = UnixStream::pair().unwrap();
         let (conn, client) = UnixStream::pair().unwrap();
         drop(client);
-        assert!(hung_up(&conn, &ended));
-        let (conn, mut client) = UnixStream::pair().unwrap();
-        client.write_all(b"x").unwrap();
-        assert!(!hung_up(&conn, &ended));
-        let mut byte = [0u8; 1];
-        (&conn).read_exact(&mut byte).unwrap();
-        assert_eq!(&byte, b"x");
+        assert_eq!(watch_client(&conn, &ended), Watched::Gone);
+        let (conn, client) = UnixStream::pair().unwrap();
+        shards_ipc::send(&client, kind::EXIT, &[0], &[]).unwrap();
+        assert_eq!(watch_client(&conn, &ended), Watched::Stayed);
+        let m = shards_ipc::recv(&conn).unwrap().unwrap();
+        assert_eq!((m.kind, m.payload), (kind::EXIT, vec![0]));
+        let (conn, client) = UnixStream::pair().unwrap();
+        shards_ipc::send(&client, kind::SIGNAL, &28u32.to_be_bytes(), &[]).unwrap();
+        shards_ipc::send(&client, kind::RESIZE, &[0, 24, 0, 80], &[]).unwrap();
+        drop(client);
+        assert_eq!(watch_client(&conn, &ended), Watched::Gone);
+        let (conn, client) = UnixStream::pair().unwrap();
+        shards_ipc::send(&client, kind::SIGNAL, &10u32.to_be_bytes(), &[]).unwrap();
+        shards_ipc::send(&client, kind::INTERRUPT, &2u32.to_be_bytes(), &[]).unwrap();
+        shards_ipc::send(&client, kind::INTERRUPT, &15u32.to_be_bytes(), &[]).unwrap();
+        assert_eq!(watch_client(&conn, &ended), Watched::Interrupted);
+        // By a deadline: one unanswered fails the test, which would wait for it else.
+        let m = shards_ipc::recv_by(&client, Instant::now() + Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (m.kind, m.payload),
+            (kind::INTERRUPTED, 2u32.to_be_bytes().to_vec())
+        );
+        let m = shards_ipc::recv(&conn).unwrap().unwrap();
+        assert_eq!(
+            (m.kind, m.payload),
+            (kind::INTERRUPT, 15u32.to_be_bytes().to_vec())
+        );
         let (conn, _client) = UnixStream::pair().unwrap();
         let (done, ended) = UnixStream::pair().unwrap();
         drop(done);
-        assert!(!hung_up(&conn, &ended));
+        assert_eq!(watch_client(&conn, &ended), Watched::Stayed);
     }
 
     /// A client's connection handed over while collections of in-flight descriptors run
@@ -8609,6 +8665,44 @@ mod tests {
             t.until("its slot did not end with its client", |d| {
                 lock(&d.live).is_empty()
             });
+        });
+    }
+
+    /// A closed daemon's slot whose request went on holds it while the daemon has yet to
+    /// answer, past a request's time: an attached run its stop ends after its timeout says
+    /// nothing meanwhile, and its client, with nothing to take, is not one that takes
+    /// nothing. Let go of a request's time after the close, the daemon exited as the run's
+    /// end came, before its slot passed on the EXIT the run's VM wrote, and the run's client
+    /// said its microVM stopped before its command ended (125: budget E2E 40162744975's a,
+    /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client's piece left untaken
+    /// lets go of it as before.
+    #[test]
+    fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
+        let mut t = Test::new("sp");
+        t.daemon.request_timeout = Duration::from_millis(200);
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            living.passed();
+            t.daemon.close();
+            std::thread::sleep(t.daemon.request_timeout * 3);
+            assert!(
+                t.daemon.slots_hold().0,
+                "a slot whose request went on let go of with its answer still to come"
+            );
+            // An answer its client leaves untaken lets go of it a request's time in.
+            let (client, ours) = std::io::pipe().unwrap();
+            let ours = File::from(std::os::fd::OwnedFd::from(ours));
+            let answer = vec![b'x'; 1 << 20];
+            std::thread::scope(|s| {
+                let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
+                t.until("a client that takes nothing held its closed daemon", |d| {
+                    !d.slots_hold().0
+                });
+                drop(client);
+                assert!(writer.join().unwrap().is_err());
+            });
+            drop(living);
+            assert!(lock(&t.daemon.live).is_empty());
         });
     }
 

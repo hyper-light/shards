@@ -1511,7 +1511,8 @@ pub fn attach_joiner(to: &'static ToGuest, id: u32, req: AttachRequest) -> Resul
         .spawn(move || {
             while let Ok(Some(m)) = shards_ipc::recv(&listened) {
                 match m.kind {
-                    shards_ipc::kind::SIGNAL if m.payload.len() == 4 => {
+                    // Its INTERRUPT is the command's signal (D26).
+                    shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT if m.payload.len() == 4 => {
                         let signal = [&id.to_be_bytes()[..], &m.payload].concat();
                         to_guest(to, kind::EXEC_SIGNAL, &signal);
                     }
@@ -1687,7 +1688,8 @@ pub fn join(
                             let resize = [&id.to_be_bytes()[..], &m.payload].concat();
                             to_guest(to, kind::EXEC_RESIZE, &resize);
                         }
-                        shards_ipc::kind::SIGNAL if m.payload.len() == 4 => {
+                        // Its INTERRUPT is the command's signal once its run is made (D26).
+                        shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT if m.payload.len() == 4 => {
                             let signal = [&id.to_be_bytes()[..], &m.payload].concat();
                             to_guest(to, kind::EXEC_SIGNAL, &signal);
                         }
@@ -1899,7 +1901,8 @@ pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
         .spawn(move || {
             while let Ok(Some(m)) = shards_ipc::recv(&listened) {
                 match m.kind {
-                    shards_ipc::kind::SIGNAL => {
+                    // Its INTERRUPT is the command's signal (D26).
+                    shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT => {
                         if let Ok(sig) = <[u8; 4]>::try_from(m.payload.as_slice()) {
                             signal_guest(to, u32::from_be_bytes(sig));
                         }

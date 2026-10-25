@@ -523,7 +523,7 @@ fn grown_hold(cgroup: &str) -> io::Result<u64> {
         return Ok(u64::MAX);
     };
     let most = most_within(boot, control_read64(control::HOTPLUG_SIZE)?, cgroup);
-    let plugged = mem_total()?.saturating_sub(boot);
+    let plugged = staying(boot, mem_total()?);
     if plugged >= most {
         return Ok(u64::MAX);
     }
@@ -551,14 +551,18 @@ pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
 /// for each CPU (`MEMCG_CHARGE_BATCH`, mm/memcontrol.c `refill_stock`), which no reclaim
 /// takes back; the pages a read holds as its file is read ahead of it, two windows of 128
 /// KiB (`VM_READAHEAD_PAGES`, mm/readahead.c: the window read and the one read ahead of
-/// it, a share's own, as its server keeps the window the kernel offers); and a reader's
-/// block as large as one request of a share carries ([`shards_abi::SHARE_MAX_PAGES`]),
-/// which with no swap no reclaim takes either. Held within nothing past what it used, a
-/// run's `dd` of 1 MiB blocks through FUSE took 233 s for 32 MiB it read in 0.28 s with no
-/// budget, asleep in the kernel's throttle of a cgroup past its `memory.high`
+/// it, a share's own, as its server keeps the window the kernel offers); a reader's block
+/// as large as one request of a share carries ([`shards_abi::SHARE_MAX_PAGES`]), which
+/// with no swap no reclaim takes either; and the page cache that request fills on its way
+/// to the block, as many pages. Held within nothing past what it used, a run's `dd` of 1
+/// MiB blocks through FUSE took 233 s for 32 MiB it read in 0.28 s with no budget, asleep
+/// in the kernel's throttle of a cgroup past its `memory.high`
 /// (`__mem_cgroup_handle_over_high`), its kernel's reclaim taking 3% of what it scanned;
-/// within 1 MiB, 3.9 to 201 s, and within 1.25 MiB on 4 vCPUs 0.8 to 7.6 s; within 1.5
-/// MiB on 4 vCPUs and 2 MiB on 18, as fast as with none (PM M309).
+/// within 1 MiB, 3.9 to 201 s, and within 1.25 MiB on 4 vCPUs 0.8 to 7.6 s (PM M309).
+/// Held within all but the request's page cache, a gigabyte's read took its reads' own
+/// pages back and read them again, 2,899 times at the median and 16,327 at p90 on CI's EPYC
+/// 7763s, and three reads in 144 took over twice their CPU's time with none, the slowest
+/// 2.77 times; with it, 1 and 687 times, the slowest 1.12 times (PM M321).
 fn working_room() -> u64 {
     // SAFETY: sysconf(3) reads a value of the running kernel's.
     let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1));
@@ -571,7 +575,7 @@ fn working_room_of(cpus: u64, page: u64) -> u64 {
     const READ_AHEAD: u64 = 128 << 10;
     CHARGE_BATCH
         .saturating_mul(cpus)
-        .saturating_add(u64::from(shards_abi::SHARE_MAX_PAGES))
+        .saturating_add(2 * u64::from(shards_abi::SHARE_MAX_PAGES))
         .saturating_mul(page)
         .saturating_add(2 * READ_AHEAD)
 }
@@ -672,7 +676,8 @@ fn peak_since(used: u64) -> u64 {
 
 /// What a run keeps plugged past what its microVM booted with as its host asks for memory
 /// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
-/// what it has plugged and has asked to have, what it uses and what it used at its peak
+/// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses and
+/// what it used at its peak
 /// since it was last asked: twice what it uses, as the grower asks for twice what it
 /// reaches (D148), never less than its peak, in whole memory blocks. None where it gives
 /// back nothing: less than a block, or while memory it asked for to grow is still to come,
@@ -701,18 +706,24 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     };
     // No more than its budget's room lets its run hold (D188).
     let most = most_within(boot, control_read64(control::HOTPLUG_SIZE)?, cgroup);
-    let plugged = mem_total()?.saturating_sub(boot);
+    let total = mem_total()?;
+    let plugged = total.saturating_sub(boot);
     let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
-    let Some(keep) = to_keep(boot, most, plugged, asked, used, peak_since(used)) else {
+    // Of what stays: what a give-back before asked its driver to unplug goes already.
+    let stays = staying(boot, total);
+    let Some(keep) = to_keep(boot, most, stays, asked, used, peak_since(used)) else {
         return Ok(0);
     };
-    let gone = plugged.saturating_sub(keep);
-    // The free memory that goes with it counted out of the hold now, before it goes.
-    set_high(cgroup, high(cgroup, most, keep)?.saturating_sub(gone))?;
+    // The free memory that goes with it counted out of the hold now, before it goes, as
+    // every hold counts out what goes already ([`high`]).
+    set_high(
+        cgroup,
+        high(cgroup, most, keep)?.saturating_sub(stays.saturating_sub(keep)),
+    )?;
     control_write64(control::HOTPLUG_REQUEST, keep)?;
-    Ok(gone)
+    Ok(plugged.saturating_sub(keep))
 }
 
 /// Holds a run's processes in `cgroup` at what is plugged so far again, as [`Plug::hold_run`]
@@ -725,7 +736,7 @@ pub fn rehold_run(cgroup: &'static str) -> io::Result<()> {
         return Ok(());
     };
     let most = most_within(boot, control_read64(control::HOTPLUG_SIZE)?, cgroup);
-    let plugged = mem_total()?.saturating_sub(boot);
+    let plugged = staying(boot, mem_total()?);
     if plugged >= most {
         return Ok(());
     }
@@ -829,15 +840,43 @@ fn reserve(total: u64, left: u64) -> u64 {
     SLACK.saturating_add(total.min(left) / 64)
 }
 
-/// The build's `memory.high`: what it holds now and what is free, less the [`reserve`]
-/// for what may still be plugged, `left` of it. Its page cache counts as its own, so it is
-/// not free; nothing else the kernel keeps is the build's.
+/// The build's `memory.high`: what it holds now and what is free and stays plugged, less
+/// the [`reserve`] for what may still be plugged, `left` of it. Its page cache counts as
+/// its own, so it is not free; nothing else the kernel keeps is the build's.
 fn high(cgroup: &str, most: u64, plugged: u64) -> io::Result<u64> {
     let current = number(&format!("{cgroup}/memory.current")).unwrap_or(0);
     let (total, free) = memory()?;
-    Ok(current
+    let leaving = BOOT.get().map_or(0, |&boot| {
+        total.saturating_sub(boot).saturating_sub(staying(boot, total))
+    });
+    Ok(hold_of(
+        current,
+        free,
+        leaving,
+        reserve(total, most.saturating_sub(plugged)),
+    ))
+}
+
+/// The hold of a run that uses `current` bytes, its kernel `free`, `leaving` of its memory
+/// plugged its device's to unplug and the kernel's `reserve` beside it: what it uses and
+/// what is free, but for what goes, free or not, and the reserve. A hold that counted
+/// what goes as free, set as a give-back's memory was unplugged (the host's word of the
+/// room its budget had after it), held a run past all its microVM would have once it had
+/// gone: its page cache took the rest, its guest's kernel throttled its own reclaim at its
+/// zones' least, and its grower, woken only at the hold, plugged none (PM M324).
+fn hold_of(current: u64, free: u64, leaving: u64, reserve: u64) -> u64 {
+    current
         .saturating_add(free)
-        .saturating_sub(reserve(total, most.saturating_sub(plugged))))
+        .saturating_sub(leaving)
+        .saturating_sub(reserve)
+}
+
+/// What stays of the memory plugged past `boot` while the kernel has `total`: no more than
+/// its device's request, which a give-back lowers (D188) and its driver unplugs down to as
+/// it can; what is plugged past it goes.
+fn staying(boot: u64, total: u64) -> u64 {
+    let plugged = total.saturating_sub(boot);
+    control_read64(control::HOTPLUG_REQUEST).map_or(plugged, |asked| plugged.min(asked))
 }
 
 /// Sets `cgroup`'s `memory.high` to `high`, never past what its host's budget leaves it
@@ -1237,6 +1276,8 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             continue;
         }
         let Ok(total) = mem_total() else { continue };
+        // What stays plugged: a give-back's driver unplugs the rest (D188).
+        let total = plug.boot.saturating_add(staying(plug.boot, total));
         if total.saturating_sub(plug.boot) >= plug.most {
             lift();
             continue;
@@ -1368,15 +1409,39 @@ mod tests {
         assert_eq!(in_pages(u64::MAX, 4096), u64::MAX);
     }
 
+    /// A hold counts out what its device has been asked to unplug, free or not, so that the
+    /// run, its kernel's own and its reserve fit what stays: set as a give-back's last 128
+    /// MiB still went (CI 40148050379's h, a past128 read: booted with 233 MiB, the run
+    /// using 20 MiB, 302 MiB free), the hold counting it as free held the run at 252 MiB,
+    /// past all its microVM had once it had gone (PM M324).
+    #[test]
+    fn a_hold_counts_out_what_goes_as_it_is_unplugged() {
+        let (boot, total, free, current) = (244_293_632u64, 378_511_360u64, 316_907_520u64, 20_647_936u64);
+        let (kernel, leaving) = (total - free - current, total - boot);
+        let reserve = reserve(total, u64::MAX);
+        assert_eq!(
+            hold_of(current, free, 0, reserve),
+            264_532_352,
+            "the hold it was given"
+        );
+        assert_eq!(hold_of(current, free, 0, reserve) + kernel + reserve, total);
+        let held = hold_of(current, free, leaving, reserve);
+        assert_eq!(held + kernel + reserve, boot, "within what stays");
+        // With nothing going, as before.
+        assert_eq!(hold_of(current, free, 0, 0), current + free);
+        assert_eq!(hold_of(current, free, current + free, reserve), 0);
+    }
+
     /// The least room a run is held within covers what its kernel charges it ahead on
-    /// each CPU, two read-ahead windows and a share's largest request: on 4 CPUs of 4 KiB
-    /// pages, 2.25 MiB, past the 1.5 MiB a reader of 1 MiB blocks needed, and on 18, 5.75
-    /// MiB, past the 2 MiB it needed there (PM M309); this guest's, by its own CPUs.
+    /// each CPU, two read-ahead windows, and a share's largest request twice, its reader's
+    /// block and the page cache it fills: on 4 CPUs of 4 KiB pages, 3.25 MiB, past the 1.5
+    /// MiB a reader of 1 MiB blocks needed, and on 18, 6.75 MiB, past the 2 MiB it needed
+    /// there (PM M309, M321); this guest's, by its own CPUs.
     #[test]
     fn a_run_held_short_keeps_the_room_its_reads_need() {
-        assert_eq!(working_room_of(4, 4096), 9 * MIB / 4);
+        assert_eq!(working_room_of(4, 4096), 13 * MIB / 4);
         assert!(working_room_of(4, 4096) >= 3 * MIB / 2);
-        assert_eq!(working_room_of(18, 4096), 23 * MIB / 4);
+        assert_eq!(working_room_of(18, 4096), 27 * MIB / 4);
         assert!(working_room_of(18, 4096) >= 2 * MIB);
         // SAFETY: sysconf(3) reads a value of the running kernel's.
         let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) })

@@ -853,11 +853,19 @@ pub const PAGE: u64 = 4 << 10;
 /// What records a working set: a restored guest's memory, whose host mappings start
 /// empty, kept mapped until the recording ends, even if the VM stops first; the host's
 /// fault-around is held off over it for the machine's life ([`Restored::around`]), so that
-/// what the host maps is what the guest touched.
+/// what the host maps is what the guest touched, and what it held of the RAM the guest
+/// gives back meanwhile is kept ([`GuestMemory::keep_given_back`]).
 #[derive(Debug)]
 pub struct Recorder {
     memory: Arc<GuestMemory>,
     pmem: Vec<(u64, Arc<pmem::Region>)>,
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        // A recording let go of keeps nothing more.
+        let _ = self.memory.given_back();
+    }
 }
 
 /// The host's ranges of a machine's guest memory and its pmem: what a working set is
@@ -883,34 +891,51 @@ pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
 /// host's pages are not the working set's.
 pub fn recorder(m: &Machine) -> Option<Recorder> {
     let page = platform::page_size().ok()? as u64;
-    (page == PAGE).then(|| Recorder {
+    if page != PAGE {
+        return None;
+    }
+    if let Err(e) = m.memory.keep_given_back() {
+        debug!("not recording a working set: {e}");
+        return None;
+    }
+    Some(Recorder {
         memory: m.memory.clone(),
         pmem: m.bus.pmem.clone(),
     })
 }
 
-/// The pages touched since the restore: those the host maps, written where it holds a
-/// private copy of RAM. pmem is read-only, so a page there that is not the file's is the
-/// shared zero page, past the end of the file.
+/// The pages touched since the restore: those the host maps, and those of RAM it held as
+/// the guest gave them back, written where it held a private copy. pmem is read-only, so a
+/// page there that is not the file's is the shared zero page, past the end of the file.
 pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
-    let regions = recorder
-        .memory
-        .regions()
-        .map(|(gpa, host, len)| (gpa, host, len, true))
-        .chain(
-            recorder
-                .pmem
-                .iter()
-                .map(|(gpa, r)| (*gpa, r.host(), r.len(), false)),
-        );
+    let given = recorder.memory.given_back();
+    if let Some(e) = given.as_ref().and_then(|g| g.unseen.as_ref()) {
+        return Err(format!("the RAM its guest gave back as it was recorded: {e}"));
+    }
+    let mapped = |gpa: u64, host: *mut u8, len: usize| {
+        platform::mapped_pages(host, len).map_err(|e| format!("the pages mapped at {gpa:#x}: {e}"))
+    };
     let mut touched = Vec::new();
-    for (gpa, host, len, writable) in regions {
-        let mapped =
-            platform::mapped_pages(host, len).map_err(|e| format!("the pages mapped at {gpa:#x}: {e}"))?;
-        touched.extend(mapped.into_iter().map(|(i, copied)| hv::Touch {
+    for (region, (gpa, host, len)) in recorder.memory.regions().enumerate() {
+        let mut pages: std::collections::BTreeMap<usize, bool> =
+            mapped(gpa, host, len)?.into_iter().collect();
+        for (i, copied) in given.as_ref().map(|g| g.pages(region)).unwrap_or_default() {
+            *pages.entry(i).or_default() |= copied;
+        }
+        touched.extend(pages.into_iter().map(|(i, copied)| hv::Touch {
             gpa: gpa + i as u64 * PAGE,
-            written: copied && writable,
+            written: copied,
         }));
+    }
+    for (gpa, r) in &recorder.pmem {
+        touched.extend(
+            mapped(*gpa, r.host(), r.len())?
+                .into_iter()
+                .map(|(i, _)| hv::Touch {
+                    gpa: gpa + i as u64 * PAGE,
+                    written: false,
+                }),
+        );
     }
     Ok(touched)
 }
@@ -1123,5 +1148,68 @@ mod tests {
             let copies = platform::mapped_pages(host, 16 * PAGE as usize).unwrap();
             assert_eq!(copies, [(0, true), (1, true)], "at {gpa:#x}");
         }
+    }
+
+    /// A working set keeps the pages its guest touched and then gave back as it was
+    /// recorded, which its host no longer maps when the recording ends: a set recorded as
+    /// a guest gave its reads' page cache back held 9,529 pages, its pool's first 41,834
+    /// (PM M320).
+    #[cfg(hv = "kvm")]
+    #[test]
+    fn a_working_set_keeps_what_its_guest_gave_back_as_it_was_recorded() {
+        let dir = shards_testdir::TempDir::new("given-back").unwrap();
+        let path = dir.join("memory");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(32 * PAGE).unwrap();
+        let ranges = [(0, 16 * PAGE as usize), (0x10_0000, 16 * PAGE as usize)];
+        let memory = Arc::new(GuestMemory::from_file(&ranges, &file).unwrap());
+        // Each read fault maps the page it faulted on alone, as a recording restore's
+        // memory, whose host holds fault-around off (PM M312): no read ahead of the file's
+        // holes for fault-around to map beside it.
+        for (gpa, len) in ranges {
+            let host = std::ptr::NonNull::new(memory.host_ptr(gpa, len).unwrap()).unwrap();
+            platform::reads_at_random(host, len);
+        }
+        memory.keep_given_back().unwrap();
+        let recorder = Recorder {
+            memory: memory.clone(),
+            pmem: Vec::new(),
+        };
+        let host = |gpa: u64| memory.host_ptr(gpa, PAGE as usize).unwrap();
+        // SAFETY: pages of guest RAM no guest or device touches here.
+        unsafe {
+            host(0).write_volatile(1);
+            let _ = host(PAGE).read_volatile();
+            host(0x10_0000 + 2 * PAGE).write_volatile(1);
+            let _ = host(0x10_0000 + 3 * PAGE).read_volatile();
+        }
+        // The guest gives back the first region's first four pages, and the second's
+        // fourth; it takes its first page back after.
+        let access = memory.access().unwrap();
+        for (gpa, len) in [(0, 4 * PAGE), (0x10_0000 + 3 * PAGE, PAGE)] {
+            access.discard(gpa, len, |_, _| Ok(()), |_, _, _| Ok(())).unwrap();
+        }
+        drop(access);
+        assert!(platform::mapped_pages(host(0), PAGE as usize).unwrap().is_empty());
+        // SAFETY: as above.
+        unsafe { host(0).write_volatile(2) };
+        let touch = |gpa, written| hv::Touch { gpa, written };
+        assert_eq!(
+            recorded(&recorder).unwrap(),
+            [
+                touch(0, true),
+                touch(PAGE, false),
+                touch(0x10_0000 + 2 * PAGE, true),
+                touch(0x10_0000 + 3 * PAGE, false),
+            ]
+        );
+        // Ended, the recording keeps nothing more.
+        assert!(memory.given_back().is_none());
     }
 }

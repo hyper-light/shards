@@ -48,7 +48,7 @@ performance and resource usage.
 | D1 | On macOS, drive Hypervisor.framework natively. No nested KVM (EL2 stays off by default). | Nested exits cost 27–37× more even with NV2 [VIO §2.2]; native HVF exit ≈ 0.7–0.8 µs [PM M4] |
 | D2 | Starts are served by **snapshot restore into a pre-spawned, pre-initialized VMM process**, never by spawning or cold-booting on the request path. | `posix_spawn` → `main` 3.7 ms p50; framework load +1.5 ms; first `hv_vm_create` 0.55 ms [PM M11, M11b]; one VM per process [GT §1.1]; on a shared host, a per-request process's launch, restore and teardown carry the tail, and thread QoS does not shorten it [PM M22] |
 | D3 | Use the in-kernel GIC (`hv_gic`). Snapshot it as HVF's own serialization of the device (`hv_gic_state`), not as its registers (revised 2026-09-29, D14). Open: its 1.2 ms restore, paid ahead of requests by warm VMs. | WFI blocks in-kernel with zero userspace exits [PM M7]; registers lose interrupts on their way to a vCPU, and every restore of a guest with a disk request in flight stalled [PM M45]; the blob restores in 1.2 ms against 20 µs for registers [PM M14] |
-| D4 | vCPU and device worker threads run with Mach time-constraint policy while they wait between runs (the QoS user-interactive they ask first goes as the policy is set). A governor looks at each once a scheduler tick (125 ms); one that has run a tick since it was last seen waiting is looked at every millisecond for a tick more, and goes to timeshare, as any program's thread, only if no look finds it waiting; it is real-time again once seen waiting. XNU's fail-safe depresses a thread at that policy that runs a second without blocking to priority 0 until its host is quiet. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10]; a run's 4 busy loops 0.97–3.25 CPUs → 3.99–4.00; 3 runs of 18 loops, host waits of up to 6.4 s → 14 ms; block reads verified with every CPU busy 144k → 241k at p50; a start unchanged [PM M317] |
+| D4 | vCPU and device worker threads run with Mach time-constraint policy while they wait between runs (the QoS user-interactive they ask first goes as the policy is set). A governor looks at each once a scheduler tick (125 ms); one that has run a tick since it was last seen waiting is looked at every millisecond for a tick more, and goes to timeshare, as any program's thread, only if no look finds it waiting; it is real-time again once seen waiting. XNU's fail-safe depresses a thread at that policy that runs a second without blocking to priority 0 until its host is quiet. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10]; a run's 4 busy loops 0.97–3.25 CPUs → 3.99–4.00; 3 runs of 18 loops, host waits of up to 6.4 s → 14 ms; block reads verified with every CPU busy 144k → 241k at p50; a start unchanged [PM M317]; beside full gates, in an agent's clamped session or as a user's program, 152,606 block reads verified in 3 s at least, 90 of 90 runs [PM M327] |
 | D5 | Create vCPUs strictly sequentially in index order, both at boot and on restore. | Redistributor frames and processor numbers follow creation order [PM M13] |
 | D6 | Guest RAM uses the 16 KiB IPA granule (default); the guest's own page size stays 4 KiB. | First-touch cost per byte is 4× lower than with a 4 KiB granule [PM M5] |
 | D7 | Snapshot memory is file-backed `MAP_PRIVATE`, mapped lazily. On HVF the working set can be prefetched from helper vCPUs, not from host reads; on KVM the VMM maps it ahead (`KVM_PRE_FAULT_MEMORY`) [PM M33]. Map it in the warm process before the request: in-process faults on file-backed memory have no tail beyond 111 µs in 6.3 M, but fresh processes mapping a just-unmapped file stalled ~1 s in ~1% of boots [PM M15, M16]. | Cheapest first-touch backing, 1.07 µs per 16 KiB page; host pre-read doesn't help; 4 vCPUs fault 2.2× faster [PM M5, M6] |
@@ -922,6 +922,17 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   - It is written through the directory held open since the snapshot (or the restore),
     since the daemon renames a new template into place meanwhile. A damaged one is
     ignored, and on KVM recorded again.
+  - A generation keeps the first it is given (snapshot `accept_working_set`), and
+    replaces only one a restore could not read. On KVM each restore made before a set
+    lands records one, a pool's first VMs together, and each sends its own as its run
+    ends: written over the one before, the last one won, and once that was one recorded
+    as its guest gave memory back, 9,529 pages where the first held 41,834; a budget the
+    FUSE budget E2E set from what the next restore held was then 24 MiB short of what
+    its run needed, and its read did not end in 600 s (PM M320).
+  - A recording keeps what its host held of the RAM its guest gives back while it
+    records (D151's free page reports; `GuestMemory::keep_given_back`): the pages its
+    host maps when it ends no longer show one given back, and the set would leave it
+    out. It sends none where it could not see a range given back.
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
   `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
   and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
@@ -959,13 +970,30 @@ for the exit status.
     `SCM_RIGHTS`: the client's connection, then its stdin, stdout and stderr. They become
     the warm VM's own stdio, so the workload writes straight to the client's. The VM
     answers `TAKEN`.
-  - Signals come from the client on its connection, as Linux numbers. Once the VM has
-    taken a run, they queue until the command runs.
+  - Signals come from the client on its connection, as Linux numbers, from the moment its
+    request is on its way; one that would end the client (SIGINT, SIGTERM, SIGHUP or
+    SIGQUIT, not ignored as it started) as `INTERRUPT`. Until the run is prepared (its
+    image pulled), the daemon's watch of the client reads them: an `INTERRUPT` is the
+    client's end, which the daemon answers (`INTERRUPTED`), cancelling the prepare and
+    making no container, and the client ends as the Docker CLI does before its container
+    is made (128 and the signal's number, nothing said); the rest are for a command yet to
+    run, and go. After, they wait for the run's VM, which takes an `INTERRUPT` as a signal
+    for the command. Only the daemon knows which side of the run's making a signal came:
+    the command's output reaches the client on a stream of its own, before the client may
+    have heard `CREATED`, which the daemon's slot relay passes on from a thread of its own
+    (PM M332). Once the VM has taken a run, they queue until the command runs.
   - The exit status goes back the moment the command ends, before the VM is torn down.
     Any error reaches the client's stderr first. The VM lets go of the client's stdio
     before the status, so a pipeline reading it ends with the client, and again when the
     client hangs up, so a command outliving its client writes nowhere. A container's
     output likewise stops reaching a `docker run` that has gone.
+  - Each message to the daemon goes whole, under one lock (warm.rs `to_daemon`), as the
+    daemon's to a VM do (`RunSocket`): the VM's threads send on its connection and on
+    clones of it (the run's end and its working set, its processes' records, its log's
+    asks, a save's answer), and Linux queues a stream message larger than one buffer in
+    pieces, between which another's could land. A working set of 341 KB was read with
+    another's bytes in it, refused, and the stream broken, the daemon taking the VM for
+    ended: 1 of 511 sets taken on CI's runners (PM M319).
   - The warm VM serves one request, then exits.
 - **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run` as its client
   (`client.rs`).
@@ -5510,8 +5538,16 @@ descriptors.
   slot its client opened holds it; once it has closed, every slot does, but a client that
   takes nothing, stopped, or held by a pager that waits, holds it no longer than a
   request's time (`REQUEST_TIMEOUT`, 10 s) from the start of the piece of its answer it
-  leaves untaken, or from its last step or the close, the later: the daemon says so, and
-  exits, and the next daemon starts. A FIFO takes 8 KiB on macOS and 64 KiB on Linux
+  leaves untaken, or, its request not yet gone on, from its last step or the close, the
+  later: the daemon says so, and exits, and the next daemon starts. A slot whose request
+  went on, with nothing of its answer yet to take, holds it until the daemon has answered,
+  its answer's last word (`EXIT`, `END`, `RESTART`) passed on, and a request's time at most
+  after: an attached run its stop ended after a 35 s timeout said nothing meanwhile, and
+  timed from the close, its slot let go of the daemon, which exited as the run's VM said
+  DONE, before its slot passed on the EXIT the VM wrote next. The run's client said its
+  microVM stopped before its command ended (125 where its SIGKILL's 137 was due), once in
+  608 runs of the daemon suite on CI (PM M331). Held by
+  `a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear`, mutation-checked. A FIFO takes 8 KiB on macOS and 64 KiB on Linux
   (M261), so an answer past that is what such a client leaves untaken. A slot writes an
   answer 64 KiB at a time, what a Linux FIFO holds, each piece a step on as its client
   takes it: a client taking a long answer slowly goes on (timed from the whole answer's
@@ -5708,30 +5744,42 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   least room a run goes on in to what the run uses, however short the budget: what its
   kernel charges it ahead of the pages it takes, a batch of 64 pages for each CPU
   (mm/memcontrol.c, `refill_stock`), which no reclaim takes back; two windows of a read's
-  read-ahead, 128 KiB each (`VM_READAHEAD_PAGES`); and a reader's block as large as a
-  share's request (`SHARE_MAX_PAGES`, 1 MiB), which with no swap no reclaim takes either:
-  2.25 MiB on 4 CPUs, 5.75 on 18. Held within it for the whole of a gigabyte's read
-  through FUSE, alone in its slice under a budget a mebibyte short of what it held, a run
-  on CI's runners read in 0.80 to 0.88 times its time with none at p50 on each of five
-  runner CPUs, its slice refaulting none at p50 (PM M318); before the share kept its
+  read-ahead, 128 KiB each (`VM_READAHEAD_PAGES`); a reader's block as large as a
+  share's request (`SHARE_MAX_PAGES`, 1 MiB), which with no swap no reclaim takes either;
+  and the page cache that request fills on its way to the block, as many pages: 3.25 MiB
+  on 4 CPUs, 6.75 on 18. Held within all but that page cache for the whole of a
+  gigabyte's read through FUSE, alone in its slice under a budget a mebibyte short of what
+  it held, a run on CI's runners read in 0.80 to 0.88 times its time with none at p50 on
+  each of five runner CPUs, its slice refaulting none at p50 (PM M318), but its guest
+  took its reads' own pages back and read them again, 2,899 times a read at the median on
+  the EPYC 7763s and 16,327 at p90, its reader at times asleep at its run's
+  `memory.high`, and 3 of 144 reads took over twice their CPU's time with none, 2.77
+  times at most (an EPYC 9V74's); with it, 1 and 687 times, and of 288 reads on four
+  runner CPUs none over 1.25 times its time with none (PM M321). Before the share kept its
   buffers, held within 2, 4, 8 or 16 times it, no faster than within it, 2.2 to 3.1 times
   its time with none (a Xeon's three reads at 8 times, 1.07), the share's fresh memory for
-  each request holding it back (PM M314). Held at what it used, a run could not take a page
-  past it: its reader slept in the kernel's throttle of a cgroup past its `memory.high`
-  (`__mem_cgroup_handle_over_high`, up to 2 s each return to user space), and on CI read a
-  gigabyte at 0.16 to 0.57 MiB/s for 190 to 672 s, each until its budget's own pressure
-  brought room back (PM M309). A room short of the least raises no hold past what the run
-  was held at, so that being told it again each window lets its run grow none, and lowers
-  one its run no longer fills. Init answers what it holds the run within, which the
-  daemon's log says where it is past the room the budget leaves. The cap is kept in whole
-  pages, as the kernel keeps `memory.high` (`page_counter_memparse`): one past a page
-  boundary read back short of itself, and the grower took a run held at it for one held
-  short of it, writing its hold again at each of its run's events. A warm microVM restored
-  under a budget copies none of its template's written pages ahead of its run (64 MiB at
-  most each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of the budget before
-  any run comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1 to 4 MiB
-  for one without, PM M309; on the Mac they bought no time, PM M62), and none is made
-  ahead of the runs that wait where its budget has no room.
+  each request holding it back (PM M314). Held at what it used, a run could not take a
+  page past it: its reader slept in the kernel's throttle of a cgroup past its
+  `memory.high` (`__mem_cgroup_handle_over_high`, up to 2 s each return to user space),
+  and on CI read a gigabyte at 0.16 to 0.57 MiB/s for 190 to 672 s, each until its
+  budget's own pressure brought room back (PM M309). A room short of the least raises no
+  hold past what the run was held at, so that being told it again each window lets its run
+  grow none, and lowers one its run no longer fills. Init answers what it holds the run
+  within, which the daemon's log says where it is past the room the budget leaves. The cap
+  is kept in whole pages, as the kernel keeps `memory.high` (`page_counter_memparse`): one
+  past a page boundary read back short of itself, and the grower took a run held at it for
+  one held short of it, writing its hold again at each of its run's events. A warm microVM
+  restored under a budget copies its template's written pages ahead of its run as any
+  does (64 MiB at most each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of
+  the budget before any run comes: 65 MiB of a 384 MiB budget's anonymous memory for one
+  such VM, 1 to 4 MiB for one without, PM M309). Restored with none, as from M309 to M333,
+  each read of a budgeted slice's after its first, which met a warm VM restored before the
+  budget, took 1.42 to 1.48 times its time with none at p50 against the first's 1.26 to
+  1.28, each written page it touched copied as its run went; with them, 1.20 to 1.22, as
+  the first (the test alone on CI's runners, 319 and 320 runs an arm; PM M333). On the Mac
+  they bought no time (PM M62), where no budget holds a run. What they hold is a warm VM's,
+  which the budget's room takes back first. None is made ahead of the runs that wait where
+  its budget has no room.
 - **What its host takes back of its guest's RAM is no room** (PM M318). A restored guest's
   RAM is its template's file pages as much as its anonymous memory, and a budget's host
   takes back file pages first. Counted as room as they went, with the inactive pages kept
@@ -5801,6 +5849,16 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   its memory came back took the kernel's own and met its OOM killer: 3 of 30 runs of the
   benchmark with DAX windows, whose guests hold no page cache of the files they map and so
   keep less; none of 60 since, the host as short of memory and as much given back.
+- **No hold counts what goes** (PM M324): every hold init sets counts out the memory
+  still plugged past its device's request, which goes as its driver unplugs it, free or
+  not, as the give-back's own hold does; and what is plugged, for a run held at its cap or
+  a grower lifting its hold once all its most is plugged, is what stays. The daemon tells
+  a microVM its room again as it gives back, which came 10 to 15 ms after: worked out
+  while the driver still unplugged, its hold counted the 128 MiB going as free, 261 to 274
+  MB where its microVM would have 233 MiB, and its page cache filled its zones to their
+  min watermarks, its guest's kernel throttling its own reclaim and its grower, woken
+  only at the hold, plugging none: 5 of 384 past128 reads in the DAX budget job, and none
+  of 288 since.
 - **Said in the daemon's log** at most once a minute, with what was given back since.
 - **Idle, it costs nothing**: with no microVM running it waits for one, hearing no
   pressure meanwhile, whose trigger fires each window while the host stays short (on a CI
@@ -5910,15 +5968,19 @@ stores.
   daemon gives every microVM's shares one, as long as its host's memory unless
   `SHARDS_SHARE_WINDOW_MIB` says another length (below), and keys its templates by it.
 - The VM process answers FUSE_SETUPMAPPING and FUSE_REMOVEMAPPING itself
-  (devices/virtio/fs/window.rs). Linux names a mapping's file by its node alone, its handle
-  -1 (fs/fuse/dax.c, `fuse_setup_one_mapping`), so the VM process asks its share process
-  for a descriptor of the node's file (a control frame; the descriptor by SCM_RIGHTS),
-  which the server opens along the node's path, checked to be the node, as virtiofsd does
-  (`setupmapping`): to read, and to write where the mapping is to be written, never in a
-  volume the guest may not write. The range is mapped into the window shared: on KVM one
-  memslot covers the window and its MMU notifiers follow each range placed in it; on HVF
-  each range is mapped at stage 2 as it is placed, readable and executable (a guest runs
-  programs from its volumes), and writable where the guest may write it.
+  (devices/virtio/fs/window.rs). Linux names a mapping's file by its node alone, its
+  handle -1 (fs/fuse/dax.c, `fuse_setup_one_mapping`), so the VM process asks its share
+  process for a descriptor of the node's file (a control frame; the descriptor by
+  SCM_RIGHTS), which the server opens along the node's path, checked to be the node, as
+  virtiofsd does (`setupmapping`): to read, and to write where the mapping is to be
+  written, never in a volume the guest may not write. The ask says the range the mapping
+  maps too, its offset and length (`descriptor_ask`), for a server that keeps a file's
+  bytes in an object of its own (slates' shares answer each with a shared-memory object
+  of the file, agreed 2026-10-24); shards' own reads the node and the flag alone. The
+  range is mapped into the window shared: on KVM one memslot covers the window and its
+  MMU notifiers follow each range placed in it; on HVF each range is mapped at stage 2
+  as it is placed, readable and executable (a guest runs programs from its volumes), and
+  writable where the guest may write it.
 - HVF maps a shared range only from a descriptor opened to write too (M17), and a private
   one goes on showing the guest the bytes it first read after the host writes the file
   (M270): there every range's descriptor is opened to read and write, and the guest is
@@ -7122,7 +7184,25 @@ log, ports, events and end are a start's. Three things a start does not have mak
   dials the exec port twice, each HELLO one token, as an exec's connection is checked:
   compared whole, in constant time, by the exec port's one reader. The VM process waits
   for them before its vCPUs run, and only where the restored init speaks this build's
-  protocol (control::ABI).
+  protocol (control::ABI). An exec's connection is its client's, which went with the
+  microVM saved: init lets go of each as it redials, ending the exec's stdin as its
+  client's going does, and what the exec writes after has nowhere to go and is dropped as
+  it is read, as anything whose connection is gone is.
+  Waited on, a connection the restore reset as it held what init had not read stayed
+  established, readable to its end and never writable, the reset taking its credit
+  (Linux's vsock, `virtio_transport_space_update`): init, which reads an exec's connection
+  no more once its stdin has ended, never wrote the exec's end, and the run outlived its
+  stop until its VM was killed, a give-back the save cut short once in 608 CI runs. Held
+  by `a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored`, the
+  connection full of an exec's unread stdin as the save is taken, mutation-checked: without
+  the release, the stop took 40.03 s and the run ended with its VM (PM M330). It had read an exec's
+  output only while less than BUFFERED of it waited, so an exec that wrote that much more
+  was read no more: killed with the run, it was never seen to end, and its run outlived
+  its stop's SIGTERM and SIGKILL until its VM was killed. Held by
+  `a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored`, an exec writing
+  as fast as it can through the save, its run stopped once restored: ended by the stop's
+  SIGTERM (143). Mutation-checked: without the drop, the stop took 40.0 s, its 30 s
+  timeout and the 10 s past its SIGKILL, and the run ended with its VM (255) (PM M328).
 - **Its interface, as its guest holds it.** Its MAC, and its address on a network of its
   own (D46), are kept with the snapshot, and asked for again as `--mac-address` and `--ip`
   ask: a member that took the address meanwhile keeps it, and the restore fails, naming
@@ -9347,6 +9427,9 @@ builder memory as its build needs it; runs now have it too.
 - **Verified on real VMs** (containers.rs `a_runs_memory_grows_as_its_workload_needs_it`):
   without `-m`, 1 GiB in a microVM booted with 256 MiB, in the one that saved the
   template and in a restore; `-m 256m` ended at 137; `-m 1g` holding 512 MiB.
+  `update_moves_a_microvms_memory_both_ways`: raised from `-m 256m` to `1g` and
+  allocating 512 MiB, plugged as it grows, 600 of 600 alone on 8 CI runners (EPYC 7763
+  ×4, 9V45 ×2, 9V74, Xeon 8573C), none killed (PM M325).
   `run_limits_a_microvms_resources`: each limit, at 1 vCPU and at every one, held
   to within 16 MiB of it. boot.rs `a_snapshot_keeps_memory_to_plug`: a guest snapshotted with memory to
   plug, the booted VM and two restores each plugging 512 MiB. Mutation-checked: without

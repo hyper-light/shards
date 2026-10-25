@@ -217,6 +217,74 @@ impl Pins {
     }
 }
 
+/// What the host held of the RAM a guest gave back while a working set was recorded from
+/// what its host maps ([`GuestMemory::keep_given_back`]), which a page given back leaves:
+/// for each host page of each region, two bits, whether the host held it and whether as a
+/// private copy, written.
+#[derive(Debug)]
+pub struct GivenBack {
+    /// Each region's, as [`GuestMemory::regions`] gives them: its pages held, its pages
+    /// copied.
+    regions: Vec<(Vec<u64>, Vec<u64>)>,
+    /// The first range given back whose pages the host could not say: the recording lost
+    /// them.
+    pub unseen: Option<String>,
+}
+
+impl GivenBack {
+    /// The pages of region `region` the host held as the guest gave them back, each as its
+    /// index and whether it was a private copy.
+    pub fn pages(&self, region: usize) -> Vec<(usize, bool)> {
+        let Some((held, copied)) = self.regions.get(region) else {
+            return Vec::new();
+        };
+        let mut pages = Vec::new();
+        for (w, (&held, &copied)) in held.iter().zip(copied).enumerate() {
+            let mut left = held;
+            while left != 0 {
+                let bit = left.trailing_zeros() as usize;
+                left &= left - 1;
+                pages.push((w * 64 + bit, copied & (1 << bit) != 0));
+            }
+        }
+        pages
+    }
+
+    /// Keeps the pages the host maps of `len` bytes at `host`, from page `first` of region
+    /// `region`, as the guest gives them back.
+    fn keep(&mut self, region: usize, first: usize, host: *const u8, len: usize) {
+        #[cfg(any(target_os = "linux", windows))]
+        let mapped = platform::mapped_pages(host, len);
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let mapped: io::Result<Vec<(usize, bool)>> = {
+            let _ = (host, len);
+            Err(io::Error::new(io::ErrorKind::Unsupported, "no pagemap here"))
+        };
+        let (mapped, Some((held, copied))) = (mapped, self.regions.get_mut(region)) else {
+            return;
+        };
+        let mapped = match mapped {
+            Ok(mapped) => mapped,
+            Err(e) => {
+                self.unseen.get_or_insert_with(|| {
+                    format!("{len:#x} bytes of region {region} from its page {first}: {e}")
+                });
+                return;
+            }
+        };
+        for (i, private) in mapped {
+            let page = first + i;
+            let (word, bit) = (page / 64, 1u64 << (page % 64));
+            if let (Some(h), Some(c)) = (held.get_mut(word), copied.get_mut(word)) {
+                *h |= bit;
+                if private {
+                    *c |= bit;
+                }
+            }
+        }
+    }
+}
+
 /// Guest RAM regions, each backed by its own host reservation, and the memory a virtio-mem
 /// device plugs, where the guest has one.
 #[derive(Debug)]
@@ -228,6 +296,9 @@ pub struct GuestMemory {
     file_backed: bool,
     /// The bytes the guest has reported free, given back or not (D151).
     reported: AtomicU64,
+    /// While a working set is recorded: what the host held of the RAM the guest gave back
+    /// since ([`keep_given_back`](Self::keep_given_back)).
+    given_back: Mutex<Option<GivenBack>>,
     /// What a device's DMA holds pinned ([`GuestMemory::pin`]).
     pins: Mutex<Pins>,
     /// Device memory its devices reach as they reach RAM ([`give_devices`](Self::give_devices)):
@@ -277,6 +348,7 @@ impl GuestMemory {
             file_backed: false,
             host: Mutex::new(()),
             reported: AtomicU64::new(0),
+            given_back: Mutex::new(None),
             pins: Mutex::new(Pins::default()),
             devices: OnceLock::new(),
             holder: AtomicUsize::new(0),
@@ -685,6 +757,33 @@ impl GuestMemory {
         self.reported.load(Ordering::Relaxed)
     }
 
+    /// Keeps, from now until [`given_back`](Self::given_back), which pages of RAM the host
+    /// held as the guest gave them back ([`Access::discard`]): for a working set recorded
+    /// from the pages its host maps when it ends (`vm::recorded`), which a page given back
+    /// in between leaves, and which then left out of one what its run's guest had given
+    /// back of its reads' page cache as its host ran short (PM M320).
+    pub fn keep_given_back(&self) -> Result<(), String> {
+        let page = platform::page_size().map_err(|e| e.to_string())?;
+        let regions = self
+            .regions
+            .iter()
+            .map(|r| {
+                let words = (r.len / page).div_ceil(64);
+                (vec![0; words], vec![0; words])
+            })
+            .collect();
+        *lock(&self.given_back) = Some(GivenBack {
+            regions,
+            unseen: None,
+        });
+        Ok(())
+    }
+
+    /// What was kept since [`keep_given_back`](Self::keep_given_back), and keeps no more.
+    pub fn given_back(&self) -> Option<GivenBack> {
+        lock(&self.given_back).take()
+    }
+
     /// Keeps `gpa..gpa+len`, within one region, on the host's base pages
     /// ([`platform::small_pages`]): guest RAM the guest touches sparsely. Before it does.
     pub fn small_pages(&self, gpa: u64, len: usize) -> Result<(), OutOfBounds> {
@@ -897,6 +996,13 @@ impl<'a> Access<'a> {
             && untouched.iter().all(|u| *u)
         {
             return Ok(0);
+        }
+        // A working set being recorded keeps what the host held of it.
+        if let Some(kept) = lock(&self.mem.given_back).as_mut()
+            && let Some((region, r)) =
+                (self.mem.regions.iter().enumerate()).find(|(_, r)| start >= r.gpa && end <= r.end())
+        {
+            kept.keep(region, ((start - r.gpa) / page) as usize, host, size);
         }
         unmap(start, size)?;
         // SAFETY: whole host pages of guest RAM, which the guest holds free and no host
