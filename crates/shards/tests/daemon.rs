@@ -710,7 +710,7 @@ fn interactive_stdin_ends_with_its_client() {
         }
     }
     let mut client = common::command()
-        .args(["run", "-i", "--pull", "never", &image, "cat"])
+        .args(["run", "-i", "--pull", "never", "--name", "reader", &image, "cat"])
         .env("SHARDS_HOME", &*home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -723,17 +723,33 @@ fn interactive_stdin_ends_with_its_client() {
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
     assert_eq!(line, "through the client\n");
-    // The pool refills while the run goes on: one waiting, besides the one serving.
+    // The VM serving it, as its container says, rather than the one of those waiting that
+    // went: a run's VM tells its end before it goes, and one that took a loaded runner past
+    // the pool's settling was counted as waiting, and its going as this one's.
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "reader"], &env, TIMEOUT);
+    let vm: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+    // The pool refills while the run goes on: a VM of the template's new since it settled.
+    let refilled = std::cell::Cell::new(None);
     eventually("the pool did not refill", || {
-        processes_with(&templates).len() > waiting.len()
+        refilled.set(
+            processes_with(&templates)
+                .into_iter()
+                .find(|p| *p != vm && !waiting.contains(p)),
+        );
+        refilled.get().is_some()
     });
     client.kill().unwrap();
     client.wait().unwrap();
-    // The VM that served it ends; those still waiting stay.
+    // The VM that served it ends; the one refilled for the next run stays.
     eventually("the run outlived its client's stdin", || {
-        let now = processes_with(&templates);
-        waiting.iter().filter(|pid| now.contains(pid)).count() == waiting.len() - 1
+        !processes_with(&templates).contains(&vm)
     });
+    let refilled = refilled.get().unwrap();
+    assert!(
+        alive(refilled as i32),
+        "the VM refilled, {refilled}, went with the run's"
+    );
 }
 
 /// `SHARDS_TIMING` reaches a warm run's client, which prints the line the VM measured.
@@ -1960,46 +1976,58 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
             .unwrap_or(0)
     };
-    let deadline = Instant::now() + TIMEOUT;
-    let (current, stat) = loop {
-        let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
-        if stat_of(&stat, "anon") + stat_of(&stat, "file") <= current {
-            break (current, stat);
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{slice}'s statistics still count more than it holds ({current} bytes):\n{stat}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
+    let short_now = || {
+        let deadline = Instant::now() + TIMEOUT;
+        let (current, stat) = loop {
+            let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
+            if stat_of(&stat, "anon") + stat_of(&stat, "file") <= current {
+                break (current, stat);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{slice}'s statistics still count more than it holds ({current} bytes):\n{stat}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let mapped = stat_of(&stat, "file_mapped");
+        let unmapped = stat_of(&stat, "file")
+            .saturating_sub(mapped)
+            .saturating_sub(stat_of(&stat, "shmem"));
+        let gb = (mapped * 2) >> 30;
+        let ratio = if gb == 0 { 1 } else { (gb * 10).isqrt() };
+        (current.saturating_sub(unmapped) + mapped / ratio).saturating_sub(1 << 20)
     };
-    let mapped = stat_of(&stat, "file_mapped");
-    let unmapped = stat_of(&stat, "file")
-        .saturating_sub(mapped)
-        .saturating_sub(stat_of(&stat, "shmem"));
-    let gb = (mapped * 2) >> 30;
-    let ratio = if gb == 0 { 1 } else { (gb * 10).isqrt() };
-    let short = (current.saturating_sub(unmapped) + mapped / ratio).saturating_sub(1 << 20);
-    budget(&short.to_string());
     let id = started.stdout.trim().to_string();
     let held_least = || {
         said()
             .lines()
             .any(|l| l.contains(&format!("container {id}:")) && l.contains("the least room a run goes on in"))
     };
+    // Set again from the slice as it is then, while the daemon finds room under it: the
+    // kernel takes back more of the slice as its budget falls than its statistics said it
+    // keeps beside what its processes map, and the daemon counts the room the slice has
+    // after (22 MiB under 229 MiB in budget E2E 40148135044's h, 1 of 608 runs). A budget
+    // that leaves none is said at once.
+    let (mut asked, mut short): (Vec<u64>, u64) = (Vec::new(), 0);
     let deadline = Instant::now() + TIMEOUT;
     while !held_least() {
         assert!(
             Instant::now() < deadline,
-            "no microVM said to be held within the least room a run goes on in, under a budget of {} MiB\nthe daemon's log:\n{}",
-            short >> 20,
+            "no microVM said to be held within the least room a run goes on in, under budgets of {asked:?} MiB\nthe daemon's log:\n{}",
             said()
         );
-        std::thread::sleep(Duration::from_millis(20));
+        short = short_now();
+        budget(&short.to_string());
+        asked.push(short >> 20);
+        let set = Instant::now();
+        while !held_least() && set.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     let held_short: Vec<u64> = (0..3)
         .map(|_| {
@@ -2448,8 +2476,16 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         assert_eq!(b.join().unwrap(), Some(0));
     }
     settled("a burst of three", &|n| n >= 2);
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(warm() <= 3, "{} warm, past the pool's most", warm());
+    // Never past its most, once the burst's own VMs have gone, each of which tells its run's
+    // end before it goes, a loaded runner's past 500 ms: what the pool keeps it keeps until
+    // its keep-alive, so a pool past its most stays so.
+    settled("the burst's VMs gone", &|n| n <= 3);
+    let held = Instant::now();
+    while held.elapsed() < Duration::from_secs(1) {
+        let n = warm();
+        assert!(n <= 3, "{n} warm, past the pool's most");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     // Unclaimed past its keep-alive: nothing, until the next run.
     std::thread::sleep(KEEP);
     settled("past the keep-alive", &|n| n == 0);

@@ -13842,3 +13842,37 @@ revision before comparing a changed API/implementation.
   whether they had this cause is the experiment's to say (exp-step3: the guest's console,
   init's word on each signal and on what holds its relay, the guest kernel's hung tasks at
   2 s).
+
+### M329. Flakes: three daemon tests' reading of their pools and budget, under the daemon suite's load (D26, D188)
+
+- **Question.** The daemon suite run 38 times on each of 8 ubuntu-24.04 runners at
+  ff01fe0b (budget E2E 40148130548, 40148135044: 608 runs of each test) failed three tests
+  besides M328's: `pools_keep_what_their_runs_need_while_they_come` 4 times ("5 warm",
+  "6 warm" and "3 warm, past the pool's most", all on one EPYC 9V74),
+  `interactive_stdin_ends_with_its_client` twice ("the pool did not refill", "the run
+  outlived its client's stdin"), and
+  `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one` once
+  ("no microVM said to be held within the least room a run goes on in, under a budget of
+  229 MiB"). What did each see?
+- **Method.** Each failure's message and its daemon's log, against the test and the
+  daemon's code.
+- **Results.**
+  - The pool and stdin tests count a template's warm VMs as the processes whose command
+    line names the home's templates. A run's VM is one of them too, and it tells its run's
+    end before it goes (D26): the burst of three's own VMs, still going 500 ms after their
+    clients had their ends, counted with the three the pool kept (3 + 3 = 6), and a VM a
+    loaded runner kept past the stdin test's 300 ms of settling counted as waiting, its
+    going then taken for the refill's absence or for the run's own VM's.
+  - The budget test sets its last budget from the slice's statistics a mebibyte short of
+    what its kernel keeps. Setting it, the kernel took back more than the statistics said
+    it would keep, and the daemon, counting the room the slice had after, found 22 MiB
+    (its log: "held within its budget, 22 MiB of room ... 229 MiB"), not the shortfall it
+    holds a run within the least room for.
+- **Consequence.** In the tests alone: the pool's most is checked once the burst's own VMs
+  have gone, its count settled at or under it and kept so for a second, as what a pool
+  keeps it keeps until its keep-alive; the stdin test follows its run's own VM by its
+  container's `State.Pid`, a refill as a VM new since the pool settled, and the refill
+  staying as the run's VM goes; the budget test sets its budget again from the slice as it
+  is then, every 3 s, until the daemon says the run is held within the least room. Gone
+  in the daemon suite's repeats once these and M328's change are in: flakes plan step 3's
+  count.
