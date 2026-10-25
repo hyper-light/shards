@@ -13430,10 +13430,10 @@ revision before comparing a changed API/implementation.
 
 ### M319. Flakes: a working set cut through on its way to the daemon (the flakes goal)
 
-- **Question.** In DAX budget run 40113636061's e (EPYC 7763, unbudgeted) a run's VM ended
-  before its finished command did, its exit said as 255, after the daemon refused the
-  working set it recorded as "not aligned and distinct". What made the set so, and what
-  ended the VM?
+- **Question.** In DAX budget run 40113636061's e (at 269d6589, an EPYC 7763 ubuntu-24.04
+  runner, unbudgeted) a run's VM ended before its finished command did, its exit said as
+  255, after the daemon refused the working set it recorded as "not aligned and distinct".
+  What made the set so, and what ended the VM?
 - **Method.** The daemon's logs of the DAX budget job's runs from b12ec23d on (40118447196,
   40118424391, 40121565734, 40127123235, 40127114245, 40121550959, 40131530388 and
   40135172411: 511 sets taken), whose refusal says since 13a40d49 how many of a set's pages
@@ -13472,10 +13472,10 @@ revision before comparing a changed API/implementation.
 
 ### M320. Flakes: a template's working set replaced by a later restore's, and a budget set from it (D25, D188)
 
-- **Question.** In budget E2E run 40137232060, 600 runs of the FUSE budget E2E (75 on
-  each of 8 runners), one read held within the least room did not end within 600 s (its h,
-  EPYC 7763, run 14). The other 74 runs on that runner read in 1.50 to 2.30 s held so
-  (222 reads). Why?
+- **Question.** In budget E2E run 40137232060 (at c82a75dd), 600 runs of the FUSE budget
+  E2E (75 on each of 8 ubuntu-24.04 runners), one read held within the least room did not
+  end within 600 s (its h, EPYC 7763, run 14). The other 74 runs on that runner read in
+  1.50 to 2.30 s held so (222 reads). Why?
 - **Method.** That run's samples of its slice (memory.current, memory.high, memory.stat,
   memory.events and memory.pressure every 30 s, the test's `watching`), the daemon's log
   it printed, and the held-short budgets the other 74 runs said; then the code that
@@ -13671,14 +13671,14 @@ revision before comparing a changed API/implementation.
   guest's zones, and why does its grower not plug more?
 - **Method.** The DAX budget job's `--as-e2e` reads with each look's zones (free, min and
   managed pages up to Normal, /proc/zoneinfo) and the guest kernel's direct reclaim
-  (`pgscan_direct_throttle`, `allocstall_*`, /proc/vmstat), rooms.py; then the
-  hold-notes arm (hold-notes.patch), in which init appends each hold it sets on the run's
-  cgroup (with the cap, the memory and the run's use), each room told, each give-back's
-  keep, each event its grower sees, each ask, each arrival and each lift to a file the
-  guest's sampler reads at each look, as the run's own cgroup is its container's parent,
-  which the container cannot read. Runs: 40141647845 (at 24a27d12), 40146450144 and
-  40146455283 (ac30b6f9), 288 past128 reads each pair; hold-notes 40148050379 and
-  40148055198 (ff01fe0b, 8 rounds, 384 past128 reads).
+  (`pgscan_direct_throttle`, `allocstall_*`, /proc/vmstat), rooms.py; then the hold-notes
+  arm (hold-notes.patch), in which init appends each hold it sets on the run's cgroup
+  (with the cap, the memory and the run's use), each room told, each give-back's keep,
+  each event its grower sees, each ask, each arrival and each lift to a file the guest's
+  sampler reads at each look, as the run's own cgroup is its container's parent, which the
+  container cannot read. Runs, each on 8 ubuntu-24.04 runners: 40141647845 (at 24a27d12),
+  40146450144 and 40146455283 (ac30b6f9), 288 past128 reads each pair; hold-notes
+  40148050379 and 40148055198 (ff01fe0b, 8 rounds, 384 past128 reads).
 - **Results.**
   - "16 GB free" is the memory its host may still plug, which shards' kernel reports as
     free (D149); a throttled guest's zones up to Normal had drained to their min
@@ -13924,9 +13924,10 @@ revision before comparing a changed API/implementation.
 ### M331. Flakes: a stopping daemon exiting before its slot passed on its run's end (D185)
 
 - **Question.** `a_daemon_ending_its_runs_is_waited_for` stops a daemon whose attached run
-  ignores SIGTERM under a stop timeout of 35 s. Once in 608 runs of the daemon suite (budget
-  E2E 40162744975's a, EPYC 7763, exp-step3's diagnostics on) the run's client exited 125,
-  where its SIGKILL's 137 was due. What did it hear?
+  ignores SIGTERM under a stop timeout of 35 s. Once in 608 runs of the daemon suite
+  (budget E2E 40162744975's a, at 633547a5, an EPYC 7763 ubuntu-24.04 runner, exp-step3's
+  diagnostics on) the run's client exited 125, where its SIGKILL's 137 was due. What did
+  it hear?
 - **Method.** That job's daemon log, the guest's console and the VM's word on each signal
   among it (M330's diagnostics); the client's code (cli/client.rs), the VM's `finish`
   (warm.rs) and the slots' (daemon/slots.rs).
