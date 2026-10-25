@@ -1,5 +1,5 @@
 diff --git a/crates/init/src/plug.rs b/crates/init/src/plug.rs
-index 5c1d54657..6bd4f801e 100644
+index ef8f442a9..24bda0b51 100644
 --- a/crates/init/src/plug.rs
 +++ b/crates/init/src/plug.rs
 @@ -541,6 +541,7 @@ pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
@@ -10,15 +10,17 @@ index 5c1d54657..6bd4f801e 100644
      set_high(cgroup, grown_hold(cgroup)?)?;
      crate::run::flush_page_reports();
      Ok(room.map(|_| cap().saturating_sub(used)))
-@@ -713,6 +714,7 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
+@@ -713,6 +714,9 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
+         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
+     // Of what stays: what a give-back before asked its driver to unplug goes already.
+     let stays = staying(boot, total);
++    note_hold(&format!(
++        "shrink used {used} plugged {plugged} asked {asked} stays {stays}"
++    ));
+     let Some(keep) = to_keep(boot, most, stays, asked, used, peak_since(used)) else {
          return Ok(0);
      };
-     let gone = plugged.saturating_sub(keep);
-+    note_hold(&format!("shrink used {used} plugged {plugged} keep {keep} gone {gone}"));
-     // The free memory that goes with it counted out of the hold now, before it goes.
-     set_high(cgroup, high(cgroup, most, keep)?.saturating_sub(gone))?;
-     control_write64(control::HOTPLUG_REQUEST, keep)?;
-@@ -846,6 +848,22 @@ fn high(cgroup: &str, most: u64, plugged: u64) -> io::Result<u64> {
+@@ -881,6 +885,25 @@ fn staying(boot: u64, total: u64) -> u64 {
  
  /// Sets `cgroup`'s `memory.high` to `high`, never past what its host's budget leaves it
  /// ([`CAP`]): `max` for no hold at all.
@@ -26,7 +28,10 @@ index 5c1d54657..6bd4f801e 100644
 +/// the DAX budget job's hold-notes arm, which its guest's sampler reads.
 +fn note_hold(what: &str) {
 +    use std::io::Write as _;
-+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++    let mut t = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
 +    // SAFETY: clock_gettime(2) into a timespec this function owns.
 +    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut t) };
 +    if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -41,21 +46,22 @@ index 5c1d54657..6bd4f801e 100644
  fn set_high(cgroup: &str, high: u64) -> io::Result<()> {
      let high = high.min(cap());
      let text = if high == u64::MAX {
-@@ -853,6 +871,13 @@ fn set_high(cgroup: &str, high: u64) -> io::Result<()> {
+@@ -888,6 +911,14 @@ fn set_high(cgroup: &str, high: u64) -> io::Result<()> {
      } else {
          high.to_string()
      };
 +    note_hold(&format!(
-+        "high {text} cap {} total {} free {} current {}",
++        "high {text} cap {} total {} free {} current {} request {}",
 +        cap(),
 +        memory().map_or(0, |m| m.0),
 +        memory().map_or(0, |m| m.1),
-+        number(&format!("{cgroup}/memory.current")).unwrap_or(0)
++        number(&format!("{cgroup}/memory.current")).unwrap_or(0),
++        control_read64(control::HOTPLUG_REQUEST).unwrap_or(0)
 +    ));
      std::fs::write(format!("{cgroup}/memory.high"), text)
          .map_err(|e| err(format!("{cgroup}/memory.high: {e}")))
  }
-@@ -972,10 +997,12 @@ impl Grows for Builder<'_> {
+@@ -1007,10 +1038,12 @@ impl Grows for Builder<'_> {
      }
  
      fn ask(&mut self, bytes: u64) -> io::Result<()> {
@@ -68,7 +74,7 @@ index 5c1d54657..6bd4f801e 100644
          let cgroup = self.plug.cgroup;
          if let Err(e) = high(cgroup, self.plug.most, plugged).and_then(|h| set_high(cgroup, h)) {
              say(self.notes, self.plug.whose, &e.to_string());
-@@ -1194,6 +1221,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
+@@ -1229,6 +1262,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
      let cgroup = plug.cgroup;
      // No hold but what its host's budget leaves it (D188).
      let lift = || {
@@ -76,7 +82,7 @@ index 5c1d54657..6bd4f801e 100644
          if let Err(e) = set_high(cgroup, u64::MAX) {
              say(notes, plug.whose, &e.to_string());
          }
-@@ -1233,6 +1261,12 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
+@@ -1268,6 +1302,12 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
              ),
              ..plug
          };
