@@ -5826,7 +5826,8 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   while the driver still unplugged, its hold counted the 128 MiB going as free, 261 to 274
   MB where its microVM would have 233 MiB, and its page cache filled its zones to their
   min watermarks, its guest's kernel throttling its own reclaim and its grower, woken
-  only at the hold, plugging none: 5 of 384 past128 reads in the DAX budget job.
+  only at the hold, plugging none: 5 of 384 past128 reads in the DAX budget job, and none
+  of 288 since.
 - **Said in the daemon's log** at most once a minute, with what was given back since.
 - **Idle, it costs nothing**: with no microVM running it waits for one, hearing no
   pressure meanwhile, whose trigger fires each window while the host stays short (on a CI

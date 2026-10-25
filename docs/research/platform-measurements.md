@@ -13620,7 +13620,7 @@ revision before comparing a changed API/implementation.
   they hold it, a shared flock(2)) through `std::process::Command`, its output piped and
   read, from 8 threads at once, and counts how each launch ended. Beside the first of a
   run of full gates (`cargo test --workspace --profile test-release --no-fail-fast`) and
-  the grant-stall campaign's fleet bursts (M324), Apple M5 Max, 18 CPUs, 128 GiB, macOS
+  the grant-stall campaign's fleet bursts (M326), Apple M5 Max, 18 CPUs, 128 GiB, macOS
   26.4.1 (25E253), this agent's session, 2026-10-25. Two batches of 100,000: commands that
   end in-process (`--version`, `-h`, `run -h`, `pull -h`), and a daemon's clients in a
   home of their own (`ps -q`, `images -q`, `ps -aq`; its first 8 clients each starting
@@ -13709,4 +13709,55 @@ revision before comparing a changed API/implementation.
   plugged, is what stays. Test:
   `plug::tests::a_hold_counts_out_what_goes_as_it_is_unplugged` (the trace's numbers:
   held at 252 MiB past the 233 MiB that stayed; with it, the run, its kernel's own and
-  its reserve within what stays).
+  its reserve within what stays): without the change it failed 24 of 24 on 8 runners
+  (40151643846), with it 24 of 24 passed (40151649051). Measured at db423887 on the same
+  job (40151654026 and 40151659263, 16 runners), none of 288 past128 reads had its guest
+  kernel throttle its direct reclaim (`pgscan_direct_throttle` 0 in each), no look found
+  its zones short, and the slowest took 1.64 times its CPU's time with none (EPYC 7763
+  ×11: 1.60 and 1.56 at most a run; 9V74 1.58; 9V45 ×4 1.64).
+
+### M325. Flakes: a run raised to a larger limit OOM-killed, bounded on CI's runners (D148)
+
+- **Question.** `update_moves_a_microvms_memory_both_ways` (containers.rs) raises a run of
+  `-m 256m` to `1g` and has it allocate 512 MiB, which its microVM plugs as it grows. On
+  x86_64 Linux the allocation once ended in an OOM kill (status 137) 1.5 s in, in a
+  Fedora gate where 127 of the 128 other tests passed, and in CI's x86_64 Linux job; it
+  passed on re-runs. How often does it?
+- **Method.** budget E2E run 40137238083 (c82a75dd): the test alone, 75 times in a row on
+  each of 8 ubuntu-24.04 runners. A failing run says init's word on the kill from the
+  daemon's log (`kind::OOM`: what asked for memory, the zones against their watermarks,
+  what was ended).
+- **Results.** 600 of 600 passed, on EPYC 7763 ×4, 9V45 ×2, 9V74 and Xeon 8573C: none
+  killed, under 0.5% at 95%.
+- **Consequence.** None in the code from this run; the test keeps saying init's facts
+  should a kill come again, as its cause was not seen. In CI's job, and in the Fedora gate,
+  it ran beside a whole suite, whose host's pressure has microVMs give back as they grow;
+  alone on a runner of its own, nothing pressed. M324's holds, set past the memory that
+  stayed as a give-back's went, would have its allocation, which no reclaim takes back with
+  no swap, end in an OOM kill where a reader's page cache was reclaimed instead:
+  unconfirmed, and fixed with them (db423887).
+
+### M327. Flakes: the block stress's 104 reads, beside full gates in either session (D4)
+
+- **Question.** A gate's `concurrent_readers_see_consistent_data` (tests/block.rs) once
+  verified 104 reads in its 3 s, where it asks for more than 1,000, in this agent's
+  session, whose threads run clamped at utility QoS (priority 20 or below). Does it fall
+  short beside full gates, clamped or as a user's program?
+- **Method.** The test alone, 30 times in a row a batch, beside the loop of full gates
+  (`cargo test --workspace --profile test-release --no-fail-fast`) and the grant-stall
+  campaign's fleet bursts (M326), on this Mac (Apple M5 Max, 18 CPUs, macOS 26.4.1),
+  2026-10-25: two batches in this agent's session (one as its gate built and ran its unit
+  tests at ff01fe0b, one as its gate ran its E2E tests at 88c2cbfa) and one as a launchd
+  job (macos-sched/launchd-run.sh, unclamped, as a user's program runs) at 88c2cbfa;
+  each run's verified reads from its own line.
+- **Results.** Verified reads in 3 s:
+
+  | batch | n | p50 | p90 | least | most |
+  |---|---|---|---|---|---|
+  | clamped, its gate building and in unit tests | 30 | 260,183 | 281,945 | 184,925 | 285,876 |
+  | clamped, its gate in E2E | 30 | 255,954 | 280,732 | 190,970 | 290,887 |
+  | a user's program (launchd) | 30 | 242,441 | 268,831 | 152,606 | 270,046 |
+
+  Every one of 90 passed; the least verified 152,606 reads, 1,467 times the 104 seen.
+- **Consequence.** None in the code: not reproduced in 90 runs beside full gates, the least
+  more than 150 times the test's floor in either session.
