@@ -2602,7 +2602,8 @@ fn addrs() -> i32 {
 /// followed), `mknod:b|c:MAJOR:MINOR:P`, `open:r|w:P`, `dev:P`, which prints a device
 /// node's type, numbers and mode, `ino:P`, which prints P's device and inode numbers (not
 /// followed), `print:P`, which prints a file, `readn:N:P`, which reads
-/// N bytes of P, and `sleep:MS`; and the mount family, each its syscall alone:
+/// N bytes of P and prints how long that took (`readn N in US us`), and `sleep:MS`; and the
+/// mount family, each its syscall alone:
 /// `mount:FSTYPE:SOURCE:TARGET`, `umount:TARGET`, `remount-rw:TARGET` (a bind's flags
 /// changed), `fsopen:FSTYPE` and `open-tree:P` (a detached clone). Stops at the first that
 /// fails, saying which.
@@ -2703,8 +2704,10 @@ fn fs(ops: &[String]) -> i32 {
                 let (n, p) = rest.split_once(':').unwrap_or((rest, ""));
                 n.parse::<u64>().map_err(io::Error::other).and_then(|n| {
                     let mut f = std::fs::File::open(p)?.take(n);
+                    let started = std::time::Instant::now();
                     let read = io::copy(&mut f, &mut io::sink())?;
                     if read == n {
+                        let _ = writeln!(io::stdout(), "readn {n} in {} us", started.elapsed().as_micros());
                         Ok(())
                     } else {
                         Err(io::Error::other(format!("{read} bytes")))

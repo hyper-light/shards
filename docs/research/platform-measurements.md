@@ -14119,3 +14119,18 @@ revision before comparing a changed API/implementation.
   under it meets as the OS means it to, and a user's session has none. Gates and timed
   campaigns on this Mac run as launchd jobs (macos-sched/launchd-run.sh), as every gate
   since 2026-10-25 ~06:00 UTC has.
+
+### M336. Flakes: the block I/O limit test timed its runs' starts and ends, not its reads (D44)
+
+- **Question.** `block_io_limits_hold` (tests/containers.rs) failed gpu CI's x86_64 musl job
+  at 3ac02479 (40197051482, job 121180055518, an ubuntu-24.04 runner, its CPU not logged):
+  "3.747232538s 2.966067558s", the read with no limit slower than the one held to 512 KiB
+  a second. Why?
+- **Method.** The test and testguest's `fs readn`.
+- **Results.** The test timed each whole `shards run` from the host: its microVM's start, a
+  read of 1 MiB of /dev/pmem0, and its end. Held to 512 KiB a second the read takes two
+  seconds, and unlimited a few milliseconds; on a busy runner the unlimited run's start and
+  end took 3.75 s, more than the held run's 2.97 s whole.
+- **Consequence.** testguest's `readn` says how long its read took (`readn N in US us`),
+  and the test compares those: the held read at least a second, the unlimited one shorter.
+  Stress run: (STRESS).
