@@ -1,0 +1,330 @@
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index a236317f3..a72420242 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -3808,8 +3808,17 @@ impl<D: Disk> Daemon<D> {
+             ghosts.as_fd(),
+             4 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?,
+         ));
++        // The DAX harness's threshold, which the share's server reads: the share process
++        // has no environment but what it is given (measurement builds alone,
++        // docs/research/measurements/dax-smallest/smallest.patch).
++        let smallest = std::env::var_os("SHARDS_DAX_SMALLEST");
++        let env: Vec<(&str, &OsStr)> = smallest
++            .as_deref()
++            .map(|v| ("SHARDS_DAX_SMALLEST", v))
++            .into_iter()
++            .collect();
+         // Of its microVM's processes: under its parent (D183).
+-        let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &[])
++        let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &env)
+             .map_err(|e| format!("starting the share process: {e}"))?;
+         self.follow_share(threads, child);
+         Ok(Some(vm))
+diff --git a/crates/shards/src/warm.rs b/crates/shards/src/warm.rs
+index cd045428e..a32eb4fe3 100644
+--- a/crates/shards/src/warm.rs
++++ b/crates/shards/src/warm.rs
+@@ -1341,6 +1341,28 @@ pub fn started(link: &Link) {
+ /// Where the VM holds a host's devices ([`HOST_DEVICES`]), the status goes with this
+ /// process's pidfd, which its client waits on before it is done: the devices are free
+ /// once this process has ended.
++/// This process's memory as its run ends, in KiB, for the DAX harness (measurement builds
++/// alone, docs/research/measurements/dax-smallest/smallest.patch): Linux's
++/// /proc/self/smaps_rollup Pss, macOS's phys_footprint; 0 where unknown.
++fn dax_memory_kib() -> u64 {
++    #[cfg(target_os = "linux")]
++    {
++        std::fs::read_to_string("/proc/self/smaps_rollup")
++            .ok()
++            .and_then(|s| {
++                let line = s.lines().find_map(|l| l.strip_prefix("Pss:"))?;
++                line.trim().strip_suffix("kB")?.trim().parse().ok()
++            })
++            .unwrap_or(0)
++    }
++    #[cfg(target_vendor = "apple")]
++    {
++        shards_ipc::footprint_kib()
++    }
++    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
++    0
++}
++
+ pub fn finish(
+     link: &Link,
+     client: Option<&UnixStream>,
+@@ -1348,6 +1370,8 @@ pub fn finish(
+     timing: Option<&str>,
+     working_set: Option<&(String, Vec<u8>)>,
+ ) {
++    shards_vmm::devices::virtio::fs::window::log_end();
++    shards_vmm::warn!("DAX-END memory_kib {}", dax_memory_kib());
+     // A microVM its save stopped (D176): its command goes on once it is restored, and its
+     // client hears it was saved, with the status a shell gives a job it stopped.
+     let saved = SAVED.get();
+diff --git a/crates/vmm/src/devices/virtio/fs/mod.rs b/crates/vmm/src/devices/virtio/fs/mod.rs
+index e9ca88f0f..1f466a315 100644
+--- a/crates/vmm/src/devices/virtio/fs/mod.rs
++++ b/crates/vmm/src/devices/virtio/fs/mod.rs
+@@ -746,21 +746,40 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>>
+                 // hundred misses, and the window's 1 MiB writes after a page of each range
+                 // was written took 1,285 µs at p50 where they took 682 (PM M302). The window
+                 // keeps one a file, not one a range.
+-                slot.descriptor(node, writable, foffset, len)
+-                    .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
++                let t = std::time::Instant::now();
++                let fd = slot.descriptor(node, writable, foffset, len);
++                let asked = t.elapsed();
++                let done = fd.and_then(|fd| window.map(fd, node, foffset, moffset, len, writable));
++                crate::warn!(
++                    "DAX-SETUP node {node} write {} descriptor_us {} total_us {} errno {}",
++                    u8::from(writable),
++                    asked.as_micros(),
++                    t.elapsed().as_micros(),
++                    done.err().unwrap_or(0)
++                );
++                done
+             }
+             _ => Err(libc::EINVAL),
+         }
+     } else {
+         // fuse_removemapping_in's count, then each fuse_removemapping_one: moffset, len.
+         match word(at) {
+-            Some(count) => (0..count as usize).try_for_each(|i| {
+-                let one = at + 4 + i * 16;
+-                match (long(one), long(one + 8)) {
+-                    (Some(moffset), Some(len)) => window.unmap(moffset, len),
+-                    _ => Err(libc::EINVAL),
+-                }
+-            }),
++            Some(count) => {
++                let t = std::time::Instant::now();
++                let done = (0..count as usize).try_for_each(|i| {
++                    let one = at + 4 + i * 16;
++                    match (long(one), long(one + 8)) {
++                        (Some(moffset), Some(len)) => window.unmap(moffset, len),
++                        _ => Err(libc::EINVAL),
++                    }
++                });
++                crate::warn!(
++                    "DAX-REMOVE count {count} total_us {} errno {}",
++                    t.elapsed().as_micros(),
++                    done.err().unwrap_or(0)
++                );
++                done
++            }
+             None => Err(libc::EINVAL),
+         }
+     };
+diff --git a/crates/vmm/src/devices/virtio/fs/server.rs b/crates/vmm/src/devices/virtio/fs/server.rs
+index f70cfcaa5..ee3b64156 100644
+--- a/crates/vmm/src/devices/virtio/fs/server.rs
++++ b/crates/vmm/src/devices/virtio/fs/server.rs
+@@ -126,6 +126,18 @@ const ATTR_DAX: u32 = 1 << 1;
+ /// through FUSE, each mapping a round trip to the share process and a host mmap.
+ const DAX_SMALLEST: u64 = super::window::RANGE;
+ 
++/// [`DAX_SMALLEST`], or `SHARDS_DAX_SMALLEST`'s bytes where it is set: measurement builds
++/// alone (docs/research/measurements/dax-smallest/smallest.patch).
++fn dax_smallest() -> u64 {
++    static SMALLEST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
++    *SMALLEST.get_or_init(|| {
++        std::env::var("SHARDS_DAX_SMALLEST")
++            .ok()
++            .and_then(|v| v.parse().ok())
++            .unwrap_or(DAX_SMALLEST)
++    })
++}
++
+ mod fattr {
+     pub const MODE: u32 = 1 << 0;
+     pub const UID: u32 = 1 << 1;
+@@ -1221,7 +1233,7 @@ impl Server {
+         } else {
+             (libc::S_IROTH as u32, libc::S_IWOTH as u32)
+         };
+-        let large = mode & S_IFMT == S_IFREG && u64::try_from(size).is_ok_and(|n| n >= DAX_SMALLEST);
++        let large = mode & S_IFMT == S_IFREG && u64::try_from(size).is_ok_and(|n| n >= dax_smallest());
+         let reachable = mode & read != 0
+             && (!super::window::SHARED_NEEDS_WRITE || (mode & write != 0 && self.writable(s, node).is_ok()));
+         large && reachable
+diff --git a/crates/vmm/src/devices/virtio/fs/window.rs b/crates/vmm/src/devices/virtio/fs/window.rs
+index 90384adc5..f847183ef 100644
+--- a/crates/vmm/src/devices/virtio/fs/window.rs
++++ b/crates/vmm/src/devices/virtio/fs/window.rs
+@@ -193,6 +193,97 @@ impl Drop for Reserved {
+     }
+ }
+ 
++/// What this process's windows map as its run ends (measurement builds alone,
++/// docs/research/measurements/dax-smallest/smallest.patch): ranges mapped now and at most,
++/// mappings and removals made.
++static RANGES_NOW: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++static RANGES_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++static MAPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static REMOVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++/// The length of every window this process made, in bytes.
++static WINDOWS_LEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++/// Logs, as this process's run ends, its windows' ranges mapped now and at most, the
++/// mappings and removals made, its host mappings (Linux: /proc/self/maps' lines; macOS:
++/// its regions, by mach_vm_region) and its open descriptors.
++pub fn log_end() {
++    use std::sync::atomic::Ordering::Relaxed;
++    crate::warn!(
++        "DAX-END windows_mib {} ranges {} peak {} maps {} removes {} host_mappings {} descriptors {}",
++        WINDOWS_LEN.load(Relaxed) >> 20,
++        RANGES_NOW.load(Relaxed),
++        RANGES_PEAK.load(Relaxed),
++        MAPS.load(Relaxed),
++        REMOVES.load(Relaxed),
++        host_mappings().map_or_else(|| "?".to_string(), |n| n.to_string()),
++        open_descriptors()
++    );
++}
++
++#[cfg(target_os = "linux")]
++fn host_mappings() -> Option<usize> {
++    std::fs::read_to_string("/proc/self/maps")
++        .ok()
++        .map(|m| m.lines().count())
++}
++
++#[cfg(target_os = "macos")]
++fn host_mappings() -> Option<usize> {
++    unsafe extern "C" {
++        /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h).
++        static mach_task_self_: libc::mach_port_t;
++        fn mach_vm_region(
++            target_task: libc::vm_map_t,
++            address: *mut u64,
++            size: *mut u64,
++            flavor: i32,
++            info: *mut i32,
++            count: *mut u32,
++            object_name: *mut libc::mach_port_t,
++        ) -> libc::kern_return_t;
++    }
++    // VM_REGION_BASIC_INFO_64 and its count of words (mach/vm_region.h).
++    const BASIC_INFO_64: i32 = 9;
++    const BASIC_INFO_COUNT_64: u32 = 9;
++    let (mut at, mut n) = (0u64, 0usize);
++    loop {
++        let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 16], BASIC_INFO_COUNT_64, 0);
++        // SAFETY: mach_vm_region(2) filling `info`, room for its flavor's words, for the
++        // region at or after `at` of this task.
++        let kr = unsafe {
++            mach_vm_region(
++                mach_task_self_,
++                &raw mut at,
++                &raw mut size,
++                BASIC_INFO_64,
++                info.as_mut_ptr(),
++                &raw mut count,
++                &raw mut object,
++            )
++        };
++        if kr != 0 {
++            return Some(n);
++        }
++        n += 1;
++        at = at.checked_add(size)?;
++    }
++}
++
++#[cfg(not(any(target_os = "linux", target_os = "macos")))]
++fn host_mappings() -> Option<usize> {
++    None
++}
++
++/// Descriptors open in this process, by fcntl(2) of each below its limit.
++fn open_descriptors() -> usize {
++    // SAFETY: getdtablesize(3) and fcntl(F_GETFD) take nothing of this process's memory.
++    let most = unsafe { libc::getdtablesize() }.max(0);
++    (0..most)
++        // SAFETY: fcntl(F_GETFD) of a descriptor number, open or not.
++        .filter(|&fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1)
++        .count()
++}
++
+ pub struct Window {
+     gpa: u64,
+     len: u64,
+@@ -348,6 +439,7 @@ impl Window {
+         len: u64,
+         stage2: impl FnOnce(*mut u8) -> Result<Box<dyn Stage2>, String>,
+     ) -> Result<Window, String> {
++        WINDOWS_LEN.fetch_add(len, std::sync::atomic::Ordering::Relaxed);
+         if len == 0 || !len.is_multiple_of(RANGE) || !gpa.is_multiple_of(RANGE) {
+             return Err(format!(
+                 "a DAX window of {len} bytes at {gpa:#x}: whole 2 MiB ranges"
+@@ -546,10 +638,12 @@ impl Window {
+         len: u64,
+         writable: bool,
+     ) -> Result<(), i32> {
++        let t0 = std::time::Instant::now();
+         let (host, size) = self.place(moffset, len).ok_or(libc::EINVAL)?;
+         let gpa = self.gpa.checked_add(moffset).ok_or(libc::EINVAL)?;
+         let page = page().ok_or(libc::EINVAL)?;
+         let file_size = size_of(&file).ok_or(libc::EIO)?;
++        let t_size = t0.elapsed();
+         let file_to = file_end(file_size, foffset, len, page);
+         let mut mapped = self.lock();
+         let watched = mapped.maps(node);
+@@ -565,6 +659,7 @@ impl Window {
+             }
+             Ok(())
+         })();
++        let t_mmap = t0.elapsed();
+         let staged = backed.and_then(|()| {
+             // SAFETY: the file's mapping and the zeros stay until this window replaces them,
+             // or the VM, which goes before its devices, is destroyed.
+@@ -579,6 +674,7 @@ impl Window {
+             self.settle(mapped, gone, None);
+             return Err(errno);
+         }
++        let t_stage2 = t0.elapsed();
+         let watch = (!watched)
+             .then(|| file.try_clone().ok())
+             .flatten()
+@@ -606,12 +702,30 @@ impl Window {
+         // mapped a range to be written, upgrading one mapped to be read alone first (patch
+         // 0009); for one to be read, the record's mincore(2) would cost it 52 µs at p50 of
+         // 77 where its host holds the range (Fedora, PM M302), for nothing.
++        let t_insert = t0.elapsed();
+         if writable {
+             self.record_held(moffset, host, size);
+         } else {
+             self.clear_held(moffset, size);
+         }
++        let t_held = t0.elapsed();
++        let ranges = mapped.ranges.len();
++        let peak = RANGES_PEAK
++            .fetch_max(ranges, std::sync::atomic::Ordering::Relaxed)
++            .max(ranges);
++        RANGES_NOW.store(ranges, std::sync::atomic::Ordering::Relaxed);
++        MAPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         self.settle(mapped, gone, watch);
++        crate::warn!(
++            "DAX-MAP node {node} write {} file_size {file_size} size_us {} mmap_us {} stage2_us {} insert_us {} held_us {} settle_us {} ranges {ranges} peak {peak}",
++            u8::from(writable),
++            t_size.as_micros(),
++            (t_mmap - t_size).as_micros(),
++            (t_stage2 - t_mmap).as_micros(),
++            (t_insert - t_stage2).as_micros(),
++            (t_held - t_insert).as_micros(),
++            (t0.elapsed() - t_held).as_micros(),
++        );
+         Ok(())
+     }
+ 
+@@ -678,6 +792,8 @@ impl Window {
+         for (at, n) in recorded {
+             self.clear_held(at, usize::try_from(n).unwrap_or(usize::MAX));
+         }
++        RANGES_NOW.store(mapped.ranges.len(), std::sync::atomic::Ordering::Relaxed);
++        REMOVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         self.settle(mapped, gone, None);
+         reserved.map(|_| ()).map_err(errno)
+     }
