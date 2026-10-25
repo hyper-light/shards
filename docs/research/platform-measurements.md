@@ -13914,3 +13914,32 @@ revision before comparing a changed API/implementation.
   guest as the save is taken; restored, its run stopped with a 30 s timeout ends by its
   SIGTERM (143), 3 of 3. Mutation-checked: without the release, at 97b6c45b's init, the
   stop took 40.03 s and the run ended with its VM (255), as CI's did.
+
+### M331. Flakes: a stopping daemon exiting before its slot passed on its run's end (D185)
+
+- **Question.** `a_daemon_ending_its_runs_is_waited_for` stops a daemon whose attached run
+  ignores SIGTERM under a stop timeout of 35 s. Once in 608 runs of the daemon suite (budget
+  E2E 40162744975's a, EPYC 7763, exp-step3's diagnostics on) the run's client exited 125,
+  where its SIGKILL's 137 was due. What did it hear?
+- **Method.** That job's daemon log, the guest's console and the VM's word on each signal
+  among it (M330's diagnostics); the client's code (cli/client.rs), the VM's `finish`
+  (warm.rs) and the slots' (daemon/slots.rs).
+- **Results.** The stop's SIGKILL went at 35.43 s of the VM's life, the guest ended the run
+  and init said its end; the daemon said "request slot 3: its client went no further in
+  35.020815733s; exiting without it" and exited, and the VM saw its daemon gone at 35.467
+  s. The client exits 125 only where its slot's session ends with no EXIT ("the command's
+  microVM stopped before the command ended"). A slot's client hears its run's EXIT through
+  the daemon, whose bridge passes on what the VM writes on the connection it was handed
+  (D185); the VM says DONE to the daemon first and EXIT to its client next (warm.rs
+  `finish`). Once closed, the daemon was held by a slot with no piece of its answer being
+  written only a request's time (10 s) from the close: the run said nothing for 35 s, so
+  its slot held nothing, and the run's DONE left the daemon quiet, which exited between the
+  DONE and its bridge's passing on of the EXIT.
+- **Consequence.** A slot whose request went on, with nothing of its answer to take yet,
+  holds a closed daemon until its answer's last word (`EXIT`, `END`, `RESTART`) is passed
+  on, and a request's time at most after; a piece its client leaves untaken, and a request
+  not yet gone on, let go of it as before. Held by
+  `daemon::tests::a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear`:
+  mutation-checked, the slot let go of 600 ms after the close without the hold ("a slot
+  whose request went on let go of with its answer still to come"). The E2E test passes
+  with it (38.81 s, this Mac).

@@ -5528,8 +5528,16 @@ descriptors.
   slot its client opened holds it; once it has closed, every slot does, but a client that
   takes nothing, stopped, or held by a pager that waits, holds it no longer than a
   request's time (`REQUEST_TIMEOUT`, 10 s) from the start of the piece of its answer it
-  leaves untaken, or from its last step or the close, the later: the daemon says so, and
-  exits, and the next daemon starts. A FIFO takes 8 KiB on macOS and 64 KiB on Linux
+  leaves untaken, or, its request not yet gone on, from its last step or the close, the
+  later: the daemon says so, and exits, and the next daemon starts. A slot whose request
+  went on, with nothing of its answer yet to take, holds it until the daemon has answered,
+  its answer's last word (`EXIT`, `END`, `RESTART`) passed on, and a request's time at most
+  after: an attached run its stop ended after a 35 s timeout said nothing meanwhile, and
+  timed from the close, its slot let go of the daemon, which exited as the run's VM said
+  DONE, before its slot passed on the EXIT the VM wrote next. The run's client said its
+  microVM stopped before its command ended (125 where its SIGKILL's 137 was due), once in
+  608 runs of the daemon suite on CI (PM M331). Held by
+  `a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear`, mutation-checked. A FIFO takes 8 KiB on macOS and 64 KiB on Linux
   (M261), so an answer past that is what such a client leaves untaken. A slot writes an
   answer 64 KiB at a time, what a Linux FIFO holds, each piece a step on as its client
   takes it: a client taking a long answer slowly goes on (timed from the whole answer's

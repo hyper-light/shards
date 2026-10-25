@@ -8612,6 +8612,44 @@ mod tests {
         });
     }
 
+    /// A closed daemon's slot whose request went on holds it while the daemon has yet to
+    /// answer, past a request's time: an attached run its stop ends after its timeout says
+    /// nothing meanwhile, and its client, with nothing to take, is not one that takes
+    /// nothing. Let go of a request's time after the close, the daemon exited as the run's
+    /// end came, before its slot passed on the EXIT the run's VM wrote, and the run's client
+    /// said its microVM stopped before its command ended (125: budget E2E 40162744975's a,
+    /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client's piece left untaken
+    /// lets go of it as before.
+    #[test]
+    fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
+        let mut t = Test::new("sp");
+        t.daemon.request_timeout = Duration::from_millis(200);
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            living.passed();
+            t.daemon.close();
+            std::thread::sleep(t.daemon.request_timeout * 3);
+            assert!(
+                t.daemon.slots_hold().0,
+                "a slot whose request went on let go of with its answer still to come"
+            );
+            // An answer its client leaves untaken lets go of it a request's time in.
+            let (client, ours) = std::io::pipe().unwrap();
+            let ours = File::from(std::os::fd::OwnedFd::from(ours));
+            let answer = vec![b'x'; 1 << 20];
+            std::thread::scope(|s| {
+                let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
+                t.until("a client that takes nothing held its closed daemon", |d| {
+                    !d.slots_hold().0
+                });
+                drop(client);
+                assert!(writer.join().unwrap().is_err());
+            });
+            drop(living);
+            assert!(lock(&t.daemon.live).is_empty());
+        });
+    }
+
     /// A closed daemon's slot holds it while its client takes a long answer slowly, though
     /// all of it takes that client far past a request's time: each piece it takes is a step
     /// on. Timed from the whole answer's write, its client was let go of a request's time
