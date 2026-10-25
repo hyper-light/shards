@@ -14028,3 +14028,39 @@ revision before comparing a changed API/implementation.
   clients let go. Beside the same busy loops (load 82 to 93), 30 of 30 passed: in 2 the
   window found its last take's room and took it, in 2 a request ran out of time (rounds of
   26 and 30 s), 11 to 17 s a run otherwise.
+
+### M335. Flakes: a 64-vCPU storm's vCPUs stalled a minute under an agent session's QoS clamp (D4)
+
+- **Question.** `storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`
+  (tests/snapshot.rs) failed a gate in this agent's session (its QoS clamp: every thread
+  at priority 20 or below; the host's load ~15 from other projects' tests), 2026-10-25
+  ~05:50 UTC: its first VM, 64 vCPUs, said READY and was still running at 120 s, two of
+  its vCPUs (29 and 37) stuck 39 to 67 s by its kernel's watchdog, with no scheduler tick
+  in a 59 s RCU grace period ("0 ticks this GP"). It passed in 16 gates before and in every
+  gate run as a launchd job. What stops two vCPUs of 64 for a minute?
+- **Method.** The test at 64 vCPUs (`SHARDS_STORM_CPUS=64`), its VM's threads sampled every
+  20 ms (macos-sched/threads.py: each thread's policy and current priority), through
+  macos-sched/storm-sampled.sh, in this agent's session and as a launchd job (unclamped),
+  alone and beside 18 busy loops started unclamped (macos-sched/busy-loops.sh, one a CPU);
+  this Mac (Apple M5 Max, 18 CPUs, macOS 26.4.1), d2eb6def.
+- **Results.**
+
+  | session | beside | run | vCPU samples at real-time (97) | at timeshare, their priority |
+  |---|---|---|---|---|
+  | clamped | the host alone (load 34) | 14 s | 12,023 | 521, at 9 to 20 |
+  | launchd | the host alone (load 27) | 6 s | 7,802 | 6, at 31 |
+  | clamped | 18 busy loops (load 59) | 74 s | 486 | none seen |
+  | launchd | 18 busy loops (load 71) | 2 s | 2,010 | 2, at 31 |
+
+  A vCPU that runs a tick without waiting goes to timeshare (D4's governor, ahead of XNU's
+  fail-safe); in a clamped session its priority is the clamp's, 20 at most and decayed to
+  9 as it runs, below every unclamped program's thread (31), where unclamped it shares the
+  CPUs at 31 as any program's does. One so moved gets no CPU while unclamped threads keep
+  them busy, so it is never seen waiting and never made real-time again: two such vCPUs
+  are what a minute without ticks looks like. Beside 18 busy loops, everything the session
+  ran starved: the sampler, real-time as asked, took 1 to 70 samples a second where it
+  takes 1,200, and the run took 37 times as long.
+- **Consequence.** None in the code: the clamp is the starter's ask, which a busy guest
+  under it meets as the OS means it to, and a user's session has none. Gates and timed
+  campaigns on this Mac run as launchd jobs (macos-sched/launchd-run.sh), as every gate
+  since 2026-10-25 ~06:00 UTC has.
