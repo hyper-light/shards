@@ -92,8 +92,10 @@ def guest(path):
         return None
     managed = None
     for line in lines:
-        if line.startswith("kmsg "):
-            kernel["kmsg"].append(line[5:])
+        words = line.split()
+        if len(words) > 2 and words[1] == "note":
+            # The hold-notes arm's: each its uptime, then what init did.
+            kernel["kmsg"].append(" ".join(words[2:]))
             continue
         parts = line.split("|")
         if len(parts) < 2:
@@ -116,9 +118,8 @@ def guest(path):
             if "throttle_direct_reclaim" in head:
                 free = next((p.split() for p in parts[2:] if "MemFree:" in p), [])
                 mem = free[free.index("MemFree:") + 1] if "MemFree:" in free[:-1] else "?"
-                held = cg[cg.index("held") + 1] if "held" in cg[:-1] else "?"
                 kernel["throttled"].append({"zones": zones, "memfree_kb": mem, "uptime": head[1] if len(head) > 1 else "?",
-                                            "current": cg[1] if len(cg) > 1 else "?", "held": held})
+                                            "current": cg[1] if len(cg) > 1 else "?"})
         if cg and cg[0] == "current":
             # Its value first, where the sampler read one (40136820527's lost it), then names
             # and values.
@@ -138,6 +139,12 @@ def guest(path):
                 last = now
     if not first:
         return None
+    # The notes of its own read: from 10 s before its first look to its last.
+    ups = [float(l.split()[1]) for l in lines if len(l.split()) > 1 and l.split()[1] != "note"
+           and l.split()[1].replace(".", "", 1).isdigit()]
+    if ups:
+        kernel["kmsg"] = [n for n in kernel["kmsg"] if n.split()[:1] and n.split()[0].replace(".", "", 1).isdigit()
+                          and min(ups) - 10 <= float(n.split()[0]) <= max(ups) + 1]
     return {k: last[k] - first[k] for k in first if k in last}, waits, kernel
 
 
@@ -298,11 +305,11 @@ for cpu in sorted({r["cpu"] for r in rows}):
                     for t in throttled[:6]:
                         z = " ".join(f"{n} {v.get('free')}/{v.get('min')}/{v.get('managed')}"
                                      for n, v in t["zones"].items() if v.get("managed"))
-                        print(f"      throttled at {t['uptime']} s, run {t['current']} held at {t['held']}, "
+                        print(f"      throttled at {t['uptime']} s, its container {t['current']}, "
                               f"MemFree {t['memfree_kb']} kB: free/min/managed {z}")
                     for k in [k for k in ks if k["throttled"] or k["unplugged"]][:4]:
-                        for said in k["kmsg"][-6:]:
-                            print(f"      kmsg {said}")
+                        for said in k["kmsg"][-12:]:
+                            print(f"      note {said}")
                 if high != "short":
                     continue
                 held = [r for r in sel if r["verdict"] and r["verdict"].startswith("held short throughout")]

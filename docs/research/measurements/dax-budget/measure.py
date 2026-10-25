@@ -195,10 +195,9 @@ GUEST = (
 # room of a few MiB, where GUEST's dozen processes a second took the run's room from its read
 # (--as-e2e): where its dd waits, one look; its run's memory, events and reclaim.
 GUEST_LIGHT = (
-    "until p=$(pidof dd); do sleep 0.05; done; "
+    "until p=$(pidof dd); do sleep 0.05; done; q=0; "
     "while [ -d /proc/$p ]; do read -r t _ < /proc/uptime; w=-; read -r w < /proc/$p/wchan; "
-    "read -r c < /sys/fs/cgroup/memory.current; read -r h < /sys/fs/cgroup/memory.high; "
-    "e=; while read -r k v; do e=\"$e $k $v\"; "
+    "read -r c < /sys/fs/cgroup/memory.current; e=; while read -r k v; do e=\"$e $k $v\"; "
     "done < /sys/fs/cgroup/memory.events; m=; while read -r k v; do case $k in "
     "anon|file|kernel|pgscan|pgsteal|workingset_refault_file) m=\"$m $k $v\";; esac; "
     "done < /sys/fs/cgroup/memory.stat; g=; while read -r k v _; do case $k in "
@@ -212,10 +211,13 @@ GUEST_LIGHT = (
     "x=; while read -r k n; do case $k in pgscan_direct_throttle|allocstall_dma32|allocstall_normal|"
     "allocstall_movable|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd) x=\"$x $k $n\";; "
     "esac; done < /proc/vmstat; "
-    "echo \"$t dd ${w:--} | current $c held $h$e$m |$g | zones$z | vm$x\"; sleep 1; done; "
-    # Then what init's grower and the memory device said in the guest's kernel log as it
-    # read (plug.rs `say`): what was asked for, what came, what was given back.
-    "dmesg 2>/dev/null | grep -E 'virtio_mem|bytes asked|asking|plugged|unplug' | tail -40 | sed 's/^/kmsg /'"
+    "echo \"$t dd ${w:--} | current $c$e$m |$g | zones$z | vm$x\"; "
+    # And, in the hold-notes arm (hold-notes.patch), what init noted since the look before:
+    # each hold it set on the run's cgroup, the room it was told, what its grower asked for
+    # and what came. The run's own cgroup is its container's parent, which the container
+    # cannot read.
+    "if [ -f /tmp/.shards-holds ]; then tail -n +$((q + 1)) /tmp/.shards-holds | sed 's/^/note /'; "
+    "q=$(wc -l < /tmp/.shards-holds); fi; sleep 1; done"
 )
 
 
