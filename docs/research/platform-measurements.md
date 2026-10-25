@@ -14050,7 +14050,13 @@ revision before comparing a changed API/implementation.
   one under none does (daemon/refill.rs; the VM process's `--prefetch-private`, which only
   a budget set, is gone): what they hold is a warm VM's, which a budget's room takes back
   first (D188). The test takes either word, held within the budget's room or within the
-  least room, for the run held. The daemon suite's count at the fix: (COUNT).
+  least room, for the run held. The daemon suite at the fix, 38 times in a row on each of
+  16 ubuntu-24.04 runners (budget E2E 40197051533 and 40197057608 at 3ac02479; EPYC 7763
+  ×5, 9V45 ×5, 9V74 ×4, Xeon 8370C ×2): the test 608 of 608, where at d2eb6def it failed 1
+  of 608 and at cfd05ec9 3; per read p50 1.00, 1.04 and 1.27, p90 1.22, 1.46 and 1.77,
+  p99 1.36, 1.63 and 1.99, max 1.49, 1.88 and 2.18; the median of three at p50 1.06, p90
+  1.46, p99 1.59 and max 1.88, against 1.34, 1.80, 1.92 and 2.00 before. Its third read
+  still runs slower beside the suite than alone, which this does not explain.
 
 ### M334. Flakes: a daemon out of descriptors coming to its last client's slot after the test stopped waiting (audit A07)
 
@@ -14133,4 +14139,23 @@ revision before comparing a changed API/implementation.
   end took 3.75 s, more than the held run's 2.97 s whole.
 - **Consequence.** testguest's `readn` says how long its read took (`readn N in US us`),
   and the test compares those: the held read at least a second, the unlimited one shorter.
-  Stress run: (STRESS).
+  A run's start and end, which a busy runner stretches, are no longer in what it compares.
+  The test alone, 40 times in a row on each of 8 ubuntu-24.04 runners (budget E2E
+  40201646564 at 24025f5a; EPYC 7763 ×3, 9V45, 9V74 ×4): 320 of 320.
+
+### M337. Flakes: the warm-VM bound test counted VMs still exiting (audit A13)
+
+- **Question.** `warm_vms_are_bounded_across_templates` (tests/daemon.rs) failed once in the
+  count of M333 (budget E2E 40197051533's job 121180057768 at 3ac02479, EPYC 9V74,
+  ubuntu-24.04): "2 warm VMs" 500 ms after its first image was served again, under a bound
+  of one (`SHARDS_WARM_MAX=1`). Did the daemon keep two?
+- **Method.** The test, the daemon's log the failure printed, and how the test counts.
+- **Results.** The test counted the processes whose command line names the home's templates:
+  a warm VM's, but also a VM still serving or exiting, which names its template as it was
+  restored from it. The daemon's log has each VM it ended for the bound ("1 warm VMs are
+  kept at most") and its end; the daemon counts what is ready or starting alone. The run's
+  own VM lets go of its guest's memory after its EXIT, and the warm VM its pool took the
+  room of ends as its SIGKILL is taken: on a busy runner, past the 500 ms the test waited.
+- **Consequence.** The test waits up to 10 s for the pools to come back to their bound,
+  naming the processes it counts if they do not, then holds them to it for 500 ms.
+  Stress run: (STRESS337).

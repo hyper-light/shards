@@ -2380,10 +2380,26 @@ fn warm_vms_are_bounded_across_templates() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Never more than the bound, as the first is served again.
+    // Never more than the bound, as the first is served again: once its run's own VM and
+    // the warm VM its pool took the room of have gone, as a VM process takes its time to,
+    // its guest's memory let go of (2 counted 500 ms after the run on a busy runner, budget
+    // E2E 40197051533, PM M337), one at most, and no refill takes the pools past it.
     run(&first);
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(warm(&templates) <= 1, "{} warm VMs", warm(&templates));
+    let all = || commands_with(&templates.to_string_lossy());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while warm(&templates) > 1 {
+        assert!(
+            Instant::now() < deadline,
+            "the pools came back to their bound in no 10 s: {:?}",
+            all()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(500) {
+        assert!(warm(&templates) <= 1, "past the bound: {:?}", all());
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
