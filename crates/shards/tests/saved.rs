@@ -770,6 +770,87 @@ fn a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored() {
     );
 }
 
+/// A microVM saved as an exec's stdin waits in its connection ends with its run once
+/// restored, by the stop's own signal. The restore resets the exec's connection, its
+/// client's (D176): one that held what init had not read stayed established in the guest,
+/// read as at its end and never writable, the reset leaving it no credit. Init reads an
+/// exec's connection no more while its stdin waits whole, and wrote the exec's end only as
+/// the connection took it, so that the run outlived its stop's SIGTERM and SIGKILL until
+/// its VM was killed; in CI a give-back the save cut short did so (flakes plan step 3, PM
+/// M330).
+#[test]
+fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+    let Some((home, image)) = home("resumed-stdin") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run", "-d", "--init", "--pull", "never", "--name", "reader", &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    // An exec that reads none of its stdin, given it until nothing takes more: its pipe,
+    // what init holds for it, its connection and the client between them all full, the
+    // rest of what its connection took unread in the guest as the save is taken.
+    let (stdin, mut writer) = std::io::pipe().unwrap();
+    // SAFETY: fcntl(2) setting the flags of a descriptor this test holds open.
+    unsafe {
+        let fd = writer.as_raw_fd();
+        libc::fcntl(
+            fd,
+            libc::F_SETFL,
+            libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+        );
+    }
+    let mut exec = common::command()
+        .args(["exec", "-i", "reader", "/bin/testguest", "sleep"])
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(stdin)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let chunk = vec![b'x'; 64 << 10];
+    let (mut given, mut full_since) = (0usize, None::<Instant>);
+    while full_since.is_none_or(|at| at.elapsed() < Duration::from_secs(1)) {
+        match writer.write(&chunk) {
+            Ok(n) => {
+                given += n;
+                full_since = None;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                full_since.get_or_insert_with(Instant::now);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("the exec's stdin: {e}"),
+        }
+        assert!(given < 64 << 20, "the exec took 64 MiB of stdin");
+    }
+    let saved = shards(&["save", "vm", "reader", "snap"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let _ = exit(&mut exec);
+    let restored = shards(&["restore", "vm", "reader"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    // A stop timeout past the test's, so that one its SIGKILL ended is told apart.
+    let asked = Instant::now();
+    let stopped = shards(&["stop", "-t", "30", "reader"]);
+    let took = asked.elapsed();
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "reader"]);
+    assert_eq!(
+        (code.stdout.trim(), took < Duration::from_secs(30)),
+        ("143", true),
+        "{given} bytes of stdin given; stopped in {took:?}\n{}",
+        evidence(&home, "reader")
+    );
+}
+
 /// What a microVM swapped out under its memory limit comes back with it: saved, its swap
 /// is kept beside its snapshot, and restored, a copy is mapped back before its guest runs.
 #[test]

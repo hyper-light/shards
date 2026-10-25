@@ -13876,3 +13876,41 @@ revision before comparing a changed API/implementation.
   is then, every 3 s, until the daemon says the run is held within the least room. Gone
   in the daemon suite's repeats once these and M328's change are in: flakes plan step 3's
   count.
+
+### M330. Flakes: a restored run held by an exec's reset connection, never writable (D176)
+
+- **Question.** M328's cause needs an exec that writes 256 KiB after the restore; the CI
+  failures' exec was a give-back, which writes a few bytes. What held them?
+- **Method.** Branch exp-step3 (633547a5, 6534aee8 with diagnostics alone): the guest's
+  console in its VM's log, init saying each signal it hears, its redial, and what holds
+  its relay once the workload has ended, the VM saying how its signals' connection came
+  and each signal it sends; the daemon suite 38 times on each of 8 ubuntu-24.04 runners
+  (budget E2E 40162744975, 40162749830: 608 runs of each test), 2026-10-25.
+- **Results.** `a_restored_microvm_ends_with_its_home` failed once (its daemon ended 15.04
+  s after its home's removal) and `a_killed_daemons_runs_end_with_it` once, both on EPYC
+  7763, both alike. The restored guest redialed the host, holding one exec from before the
+  save, the daemon's give-back (`RECLAIM`, its id 1, still running); the stop's SIGTERM
+  came on the new signals' connection and init sent it on (`kill` 0); the workload ended;
+  and the relay went on, held by that exec alone: its status 0, its output read to its
+  end, its EXIT said into the 23 bytes waiting for its connection, and the connection
+  still held, unwritten until the VM was killed, SIGKILL changing nothing. Its connection
+  was reset by the restore (the muxer's RST, muxer.rs `next_rx`) while it held what init
+  had not read: a reset socket with nothing unread is closing, and poll says it writable
+  (af_vsock.c `vsock_poll`), so it held bytes, and the only ones the host sends a
+  give-back's connection are the empty STDIN frame its stdin's end is said by, sent as the
+  exec starts, which came as the save was taken. Linux's vsock leaves a socket reset with
+  data unread established, readable to its end (virtio_transport_common.c
+  `virtio_transport_do_close`, v6.18 as v7.2), and takes the peer's credit from every
+  packet's header (`virtio_transport_space_update`): the RST's 0 left it no room, and poll
+  never says it writable, nor hung up. Init reads an exec's connection no more once
+  its stdin has ended, and writes to it as poll says it takes: neither came again. The
+  four killed-daemon failures of 608 at ff01fe0b had the same give-back cut short (M328).
+- **Consequence.** A restored init lets go of every exec's connection as it redials the
+  host, as each is its client's, which went with the microVM saved (D176); what an exec
+  writes from then on is dropped as it is read (M328). Held by
+  `a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored`
+  (tests/saved.rs): an `exec -i` that reads none of its stdin given it until nothing takes
+  more (720,896 bytes on this Mac), so that what its connection took waits unread in the
+  guest as the save is taken; restored, its run stopped with a 30 s timeout ends by its
+  SIGTERM (143), 3 of 3. Mutation-checked: without the release, at 97b6c45b's init, the
+  stop took 40.03 s and the run ended with its VM (255), as CI's did.

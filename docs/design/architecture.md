@@ -7161,8 +7161,16 @@ log, ports, events and end are a start's. Three things a start does not have mak
   compared whole, in constant time, by the exec port's one reader. The VM process waits
   for them before its vCPUs run, and only where the restored init speaks this build's
   protocol (control::ABI). An exec's connection is its client's, which went with the
-  microVM saved: what the exec writes after the restore has nowhere to go, and init drops
-  it as it reads it, as it drops anything whose connection is gone. It had read an exec's
+  microVM saved: init lets go of each as it redials, and what the exec writes after has
+  nowhere to go and is dropped as it is read, as anything whose connection is gone is.
+  Waited on, a connection the restore reset as it held what init had not read stayed
+  established, readable to its end and never writable, the reset taking its credit
+  (Linux's vsock, `virtio_transport_space_update`): init, which reads an exec's connection
+  no more once its stdin has ended, never wrote the exec's end, and the run outlived its
+  stop until its VM was killed, a give-back the save cut short once in 608 CI runs. Held
+  by `a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored`, the
+  connection full of an exec's unread stdin as the save is taken, mutation-checked: without
+  the release, the stop took 40.03 s and the run ended with its VM (PM M330). It had read an exec's
   output only while less than BUFFERED of it waited, so an exec that wrote that much more
   was read no more: killed with the run, it was never seen to end, and its run outlived
   its stop's SIGTERM and SIGKILL until its VM was killed. Held by

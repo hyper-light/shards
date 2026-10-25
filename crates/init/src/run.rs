@@ -4866,9 +4866,18 @@ impl Workload {
             }
             // Restored from a save of the run (D176): the host's connections, which the
             // restore reset, dialed again with the save's tokens, and what waited goes on.
-            // Execs' connections are their clients', which went with the microVM saved.
+            // Execs' connections are their clients', which went with the microVM saved: let
+            // go of here, what each exec writes from now on dropped as it is read (above).
+            // Waited on, one the restore reset as it held what init had not read stayed
+            // established, reading as at its end, and never writable, its reset leaving it
+            // no credit: init read it no more past its stdin's end, and wrote its exec's end
+            // only as it took a byte, which it never did, so that the exec held the run's
+            // end until its VM was killed (flakes plan step 3, PM M330).
             if lost {
                 lost = false;
+                for e in &mut execs {
+                    e.conn = None;
+                }
                 match tokens.take().map(|t| redial(&t)) {
                     Some(Ok((run, signal))) => {
                         conn = run;
