@@ -13913,7 +13913,13 @@ revision before comparing a changed API/implementation.
   more (720,896 bytes on this Mac), so that what its connection took waits unread in the
   guest as the save is taken; restored, its run stopped with a 30 s timeout ends by its
   SIGTERM (143), 3 of 3. Mutation-checked: without the release, at 97b6c45b's init, the
-  stop took 40.03 s and the run ended with its VM (255), as CI's did.
+  stop took 40.03 s and the run ended with its VM (255), as CI's did. As it lets go of an
+  exec's connection, init ends its stdin, as its client's going ends it: an exec reading
+  its stdin through a save ends once restored, held by
+  `an_exec_reading_its_stdin_through_a_save_ends_once_restored` (`exec -i` of `cat`). On
+  this Mac the exec's reset came with the run's, its end read in the same pass, and it
+  ended without the stdin's end too (7 of 7): the test holds the behaviour; the end covers
+  a reset read only once the restore is seen, which these runs did not make.
 
 ### M331. Flakes: a stopping daemon exiting before its slot passed on its run's end (D185)
 

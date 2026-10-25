@@ -7169,8 +7169,9 @@ log, ports, events and end are a start's. Three things a start does not have mak
   compared whole, in constant time, by the exec port's one reader. The VM process waits
   for them before its vCPUs run, and only where the restored init speaks this build's
   protocol (control::ABI). An exec's connection is its client's, which went with the
-  microVM saved: init lets go of each as it redials, and what the exec writes after has
-  nowhere to go and is dropped as it is read, as anything whose connection is gone is.
+  microVM saved: init lets go of each as it redials, ending the exec's stdin as its
+  client's going does, and what the exec writes after has nowhere to go and is dropped as
+  it is read, as anything whose connection is gone is.
   Waited on, a connection the restore reset as it held what init had not read stayed
   established, readable to its end and never writable, the reset taking its credit
   (Linux's vsock, `virtio_transport_space_update`): init, which reads an exec's connection

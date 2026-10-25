@@ -851,6 +851,63 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
     );
 }
 
+/// An exec reading its stdin through a save ends once its microVM is restored: its stdin
+/// ends with its client, which went with the microVM saved (D176), as a client's going
+/// ends it while it runs. Before, it read on for ever from a stdin no one could write (PM
+/// M330).
+#[test]
+fn an_exec_reading_its_stdin_through_a_save_ends_once_restored() {
+    use std::io::{BufRead as _, Write as _};
+    let Some((home, image)) = home("resumed-cat") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run", "-d", "--init", "--pull", "never", "--name", "reader", &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let (stdin, mut writer) = std::io::pipe().unwrap();
+    let mut exec = common::command()
+        .args(["exec", "-i", "reader", "/bin/testguest", "cat"])
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Reading as the save is taken: what it was given comes back.
+    writer.write_all(b"before the save\n").unwrap();
+    let mut echoed = String::new();
+    BufReader::new(exec.stdout.take().unwrap())
+        .read_line(&mut echoed)
+        .unwrap();
+    assert_eq!(echoed, "before the save\n");
+    let saved = shards(&["save", "vm", "reader", "snap"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let _ = exit(&mut exec);
+    let restored = shards(&["restore", "vm", "reader"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    // The writer is still open here: the exec's stdin ends with its connection's client.
+    let listed = || shards(&["exec", "reader", "/bin/testguest", "ps"]).stdout;
+    let mut ps = listed();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ps.contains("testguest cat") {
+        assert!(
+            Instant::now() < deadline,
+            "an exec reading its stdin outlived its client by 10 s:\n{ps}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        ps = listed();
+    }
+    drop(writer);
+    assert_eq!(shards(&["stop", "reader"]).status, Some(0));
+}
+
 /// What a microVM swapped out under its memory limit comes back with it: saved, its swap
 /// is kept beside its snapshot, and restored, a copy is mapped back before its guest runs.
 #[test]

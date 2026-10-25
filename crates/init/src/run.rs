@@ -4867,7 +4867,8 @@ impl Workload {
             // Restored from a save of the run (D176): the host's connections, which the
             // restore reset, dialed again with the save's tokens, and what waited goes on.
             // Execs' connections are their clients', which went with the microVM saved: let
-            // go of here, what each exec writes from now on dropped as it is read (above).
+            // go of here, what each exec writes from now on dropped as it is read (above),
+            // and its stdin ended, as its client's going ends it.
             // Waited on, one the restore reset as it held what init had not read stayed
             // established, reading as at its end, and never writable, its reset leaving it
             // no credit: init read it no more past its stdin's end, and wrote its exec's end
@@ -4877,6 +4878,7 @@ impl Workload {
                 lost = false;
                 for e in &mut execs {
                     e.conn = None;
+                    e.stdin_eof = true;
                 }
                 match tokens.take().map(|t| redial(&t)) {
                     Some(Ok((run, signal))) => {
