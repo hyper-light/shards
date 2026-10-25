@@ -25,6 +25,55 @@ fn parent() -> PathBuf {
     std::env::temp_dir().join("shards-tests")
 }
 
+/// Raises this test process's soft limit on open descriptors to its hard limit, and on
+/// macOS to no more than `kern.maxfilesperproc`, as shards' own processes raise theirs
+/// (vmm `platform::raise_descriptor_limit`): a test binary runs its tests side by side,
+/// and a macOS terminal, or a launchd job, starts it with 256, which the daemon's tests
+/// passed together, 7 of them failing for "Too many open files". Where it cannot, the
+/// limit stays as it was.
+#[cfg(unix)]
+fn raise_descriptor_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) into a local.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let most = lim.rlim_max.min(per_process_most().unwrap_or(libc::rlim_t::MAX));
+    if most > lim.rlim_cur {
+        lim.rlim_cur = most;
+        // SAFETY: setrlimit(2) from a local.
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) };
+    }
+}
+
+/// The most descriptors macOS lets a process have open, whatever its limit
+/// (`kern.maxfilesperproc`, which setrlimit(2) refuses a soft limit past).
+#[cfg(target_os = "macos")]
+fn per_process_most() -> Option<libc::rlim_t> {
+    let mut most: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname(3) of an int into a local of its size.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&raw mut most).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (read == 0).then(|| libc::rlim_t::try_from(most).ok()).flatten()
+}
+
+/// None elsewhere: the hard limit is the most.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn per_process_most() -> Option<libc::rlim_t> {
+    None
+}
+
 /// A test's directory, made empty, removed as it is dropped.
 #[derive(Debug)]
 pub struct TempDir(PathBuf);
@@ -36,7 +85,11 @@ impl TempDir {
         static SWEPT: Once = Once::new();
         static N: AtomicUsize = AtomicUsize::new(0);
         let parent = parent();
-        SWEPT.call_once(|| sweep(&parent));
+        SWEPT.call_once(|| {
+            #[cfg(unix)]
+            raise_descriptor_limit();
+            sweep(&parent);
+        });
         let n = N.fetch_add(1, Ordering::Relaxed);
         let dir = parent
             .join(std::process::id().to_string())

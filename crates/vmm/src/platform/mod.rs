@@ -384,6 +384,8 @@ mod tests {
         use std::os::fd::AsFd as _;
         use std::os::unix::net::UnixStream;
         use std::time::{Duration, Instant};
+        // Its 150 pairs past the 256 descriptors a macOS terminal starts a process with.
+        raise_descriptor_limit().unwrap();
         let poller = Poller::new().unwrap();
         let (mut a, a_peer) = UnixStream::pair().unwrap();
         let (b, b_peer) = UnixStream::pair().unwrap();
