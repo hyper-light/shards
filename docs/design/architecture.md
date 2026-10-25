@@ -5937,15 +5937,19 @@ stores.
   daemon gives every microVM's shares one, as long as its host's memory unless
   `SHARDS_SHARE_WINDOW_MIB` says another length (below), and keys its templates by it.
 - The VM process answers FUSE_SETUPMAPPING and FUSE_REMOVEMAPPING itself
-  (devices/virtio/fs/window.rs). Linux names a mapping's file by its node alone, its handle
-  -1 (fs/fuse/dax.c, `fuse_setup_one_mapping`), so the VM process asks its share process
-  for a descriptor of the node's file (a control frame; the descriptor by SCM_RIGHTS),
-  which the server opens along the node's path, checked to be the node, as virtiofsd does
-  (`setupmapping`): to read, and to write where the mapping is to be written, never in a
-  volume the guest may not write. The range is mapped into the window shared: on KVM one
-  memslot covers the window and its MMU notifiers follow each range placed in it; on HVF
-  each range is mapped at stage 2 as it is placed, readable and executable (a guest runs
-  programs from its volumes), and writable where the guest may write it.
+  (devices/virtio/fs/window.rs). Linux names a mapping's file by its node alone, its
+  handle -1 (fs/fuse/dax.c, `fuse_setup_one_mapping`), so the VM process asks its share
+  process for a descriptor of the node's file (a control frame; the descriptor by
+  SCM_RIGHTS), which the server opens along the node's path, checked to be the node, as
+  virtiofsd does (`setupmapping`): to read, and to write where the mapping is to be
+  written, never in a volume the guest may not write. The ask says the range the mapping
+  maps too, its offset and length (`descriptor_ask`), for a server that keeps a file's
+  bytes in an object of its own (slates' shares answer each with a shared-memory object
+  of the file, agreed 2026-10-24); shards' own reads the node and the flag alone. The
+  range is mapped into the window shared: on KVM one memslot covers the window and its
+  MMU notifiers follow each range placed in it; on HVF each range is mapped at stage 2
+  as it is placed, readable and executable (a guest runs programs from its volumes), and
+  writable where the guest may write it.
 - HVF maps a shared range only from a descriptor opened to write too (M17), and a private
   one goes on showing the guest the bytes it first read after the host writes the file
   (M270): there every range's descriptor is opened to read and write, and the guest is
