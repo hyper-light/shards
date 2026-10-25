@@ -50,16 +50,51 @@ def summary(xs, digits=1):
             f"p99 {pct(xs, .99):8.{digits}f} max {max(xs):8.{digits}f}")
 
 
+def zones_of(words):
+    """Each zone's free pages, min watermark and managed pages, from a look's `zones` part
+    (measure.py GUEST_LIGHT): {zone: {"free": n, "min": n, "managed": n}}."""
+    zones, name = {}, None
+    it = iter(words)
+    for w in it:
+        if w in ("free", "min", "managed"):
+            v = next(it, "")
+            if name is not None and v.isdigit():
+                zones[name][w] = int(v)
+        elif not w.isdigit():
+            name = w
+            zones[name] = {}
+    return zones
+
+
+def kernel_short(zones):
+    """Whether a look's zones up to Normal hold fewer free pages than half their min
+    watermarks: the guest kernel's direct reclaimers then wait for kswapd
+    (mm/vmscan.c `allow_direct_reclaim`, which counts the zones up to ZONE_NORMAL with
+    managed pages)."""
+    low = [z for n, z in zones.items() if n in ("DMA", "DMA32", "Normal") and z.get("managed")]
+    if not low:
+        return None
+    return sum(z.get("free", 0) for z in low) <= sum(z.get("min", 0) for z in low) // 2
+
+
 def guest(path):
-    """The run's cgroup's reclaim over the read (pages scanned and taken, `high` events) and
-    where dd waited in each look, from the guest's samples."""
+    """The run's cgroup's reclaim over the read (pages scanned and taken, `high` events),
+    where dd waited in each look, and the guest kernel's own: the looks whose zones up to
+    Normal were short of half their min watermarks, and those that found dd throttled in
+    the kernel's direct reclaim (`throttle_direct_reclaim`), each with its zones and
+    MemFree, from the guest's samples."""
     first = last = None
     waits = collections.Counter()
+    kernel = {"looks": 0, "short": 0, "throttled": [], "kmsg": [], "unplugged": 0}
     try:
         lines = open(path).read().splitlines()
     except OSError:
         return None
+    managed = None
     for line in lines:
+        if line.startswith("kmsg "):
+            kernel["kmsg"].append(line[5:])
+            continue
         parts = line.split("|")
         if len(parts) < 2:
             continue
@@ -68,6 +103,22 @@ def guest(path):
             for w in head[head.index("dd") + 1 : head.index("dd") + 6]:
                 if w not in ("-", "0"):
                     waits[w] += 1
+        zones = next((zones_of(p.split()[1:]) for p in parts[2:] if p.split()[:1] == ["zones"]), None)
+        if zones:
+            kernel["looks"] += 1
+            kernel["short"] += bool(kernel_short(zones))
+            # Memory plugged that went between looks, as its run read (its Normal zone's
+            # managed pages, where the guest onlines what it plugs, D148).
+            now = zones.get("Normal", {}).get("managed")
+            if managed is not None and now is not None and now + 1024 < managed:
+                kernel["unplugged"] += 1
+            managed = now if now is not None else managed
+            if "throttle_direct_reclaim" in head:
+                free = next((p.split() for p in parts[2:] if "MemFree:" in p), [])
+                mem = free[free.index("MemFree:") + 1] if "MemFree:" in free[:-1] else "?"
+                held = cg[cg.index("held") + 1] if "held" in cg[:-1] else "?"
+                kernel["throttled"].append({"zones": zones, "memfree_kb": mem, "uptime": head[1] if len(head) > 1 else "?",
+                                            "current": cg[1] if len(cg) > 1 else "?", "held": held})
         if cg and cg[0] == "current":
             # Its value first, where the sampler read one (40136820527's lost it), then names
             # and values.
@@ -79,14 +130,15 @@ def guest(path):
                 words = part.split()
                 if words[:1] == ["vm"]:
                     pairs.update(zip(words[1::2], words[2::2]))
-            keys = ("pgscan", "pgsteal", "high", "workingset_refault_file", "pgscan_direct_throttle")
+            keys = ("pgscan", "pgsteal", "high", "workingset_refault_file", "pgscan_direct_throttle",
+                    "pgscan_direct", "allocstall_dma32", "allocstall_normal", "allocstall_movable")
             now = {k: int(pairs[k]) for k in keys if pairs.get(k, "").isdigit()}
             if all(k in now for k in ("pgscan", "pgsteal")):
                 first = first or now
                 last = now
     if not first:
         return None
-    return {k: last[k] - first[k] for k in first if k in last}, waits
+    return {k: last[k] - first[k] for k in first if k in last}, waits, kernel
 
 
 def host(path):
@@ -211,6 +263,9 @@ for r in rows:
           + (f"guest refaults {g['workingset_refault_file']} " if "workingset_refault_file" in g else "")
           + (f"held {r['guest'][1].get('__mem_cgroup_handle_over_high', 0)} " if r["guest"] else "")
           + (f"host reclaim {hosted:.1f} MiB " if (hosted := host_took(r)) is not None else "")
+          + (f"direct throttle {g['pgscan_direct_throttle']} " if "pgscan_direct_throttle" in g else "")
+          + (f"throttled {len(r['guest'][2]['throttled'])} zones short {r['guest'][2]['short']} of "
+             f"{r['guest'][2]['looks']} " if r["guest"] and r["guest"][2]["looks"] else "")
           + f"{(r['verdict'] or '').split(';')[0]}")
 print()
 landed = collections.defaultdict(set)
@@ -229,6 +284,25 @@ for cpu in sorted({r["cpu"] for r in rows}):
                 lost = failures.get((cpu, arm, high), [])
                 print(f"  {arm:10} {file:7} {high:8} s {summary([r['secs'] for r in sel], 2)}"
                       + (f"; failed {len(lost)}: {lost[0]}" if lost else ""))
+                # The guest kernel's direct reclaim, throttled while its zones up to Normal
+                # are short of half their min watermarks (step 2 of the flakes plan).
+                ks = [r["guest"][2] for r in sel if r["guest"] and r["guest"][2]["looks"]]
+                if ks and high != "infinity":
+                    throttled = [t for k in ks for t in k["throttled"]]
+                    print(f"    guest kernel: looks with its zones short {sum(k['short'] for k in ks)} of "
+                          f"{sum(k['looks'] for k in ks)}; reads with dd throttled in direct reclaim "
+                          f"{sum(1 for k in ks if k['throttled'])} of {len(ks)}; pgscan_direct_throttle a read "
+                          f"{summary([r['guest'][0].get('pgscan_direct_throttle', 0) for r in sel if r['guest']], 0)}")
+                    print(f"    guest kernel: reads whose plugged memory went as they read "
+                          f"{sum(1 for k in ks if k['unplugged'])} of {len(ks)}")
+                    for t in throttled[:6]:
+                        z = " ".join(f"{n} {v.get('free')}/{v.get('min')}/{v.get('managed')}"
+                                     for n, v in t["zones"].items() if v.get("managed"))
+                        print(f"      throttled at {t['uptime']} s, run {t['current']} held at {t['held']}, "
+                              f"MemFree {t['memfree_kb']} kB: free/min/managed {z}")
+                    for k in [k for k in ks if k["throttled"] or k["unplugged"]][:4]:
+                        for said in k["kmsg"][-6:]:
+                            print(f"      kmsg {said}")
                 if high != "short":
                     continue
                 held = [r for r in sel if r["verdict"] and r["verdict"].startswith("held short throughout")]
