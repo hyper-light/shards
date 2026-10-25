@@ -13920,6 +13920,13 @@ revision before comparing a changed API/implementation.
   this Mac the exec's reset came with the run's, its end read in the same pass, and it
   ended without the stdin's end too (7 of 7): the test holds the behaviour; the end covers
   a reset read only once the restore is seen, which these runs did not make.
+- **Count.** The daemon suite 38 times in a row on each of 16 ubuntu-24.04 runners (budget
+  E2E 40186876215 and 40186881437, at d2eb6def with M328, M330, M331 and M332; EPYC 7763
+  ×8, 9V45 ×4, 9V74 ×3, Xeon 8573C ×1): `a_restored_microvm_ends_with_its_home` 608 of 608,
+  its daemon outliving its home none (under 0.5% at 95%); `a_killed_daemons_runs_end_with_it`
+  608 of 608, against 604 at ff01fe0b; `signals_reach_a_warm_run` (M332) and
+  `a_daemon_ending_its_runs_is_waited_for` (M331) 608 of 608 each. The one test that failed
+  in the count was the FUSE budget E2E's budgeted reads, once (M333).
 
 ### M331. Flakes: a stopping daemon exiting before its slot passed on its run's end (D185)
 
