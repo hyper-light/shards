@@ -14224,6 +14224,37 @@ revision before comparing a changed API/implementation.
   - No run failed and no mapping was refused, on either host; statx said DAX of exactly
     the files at or past each arm's threshold in all 376 window-arm runs, and of none of
     the FUSE arm's.
+- **Results, the cells either side of the threshold in full** (µs per file; p50, p90 and p99
+  the medians of the 5 rounds', max the largest of all; every size, phase and cache is in
+  results/mac-matrix.txt, fedora-p-cores.txt and fedora-e-cores.txt):
+
+  | host | size | phase | arm | n | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|---|---|
+  | Mac | 256 KiB | first, cold | FUSE | 5,000 | 749.9 | 790.5 | 965.9 | 3,053.7 |
+  | Mac | 256 KiB | first, cold | window | 5,000 | 821.2 | 920.0 | 997.6 | 6,142.4 |
+  | Mac | 256 KiB | overwrite, cold | FUSE | 5,000 | 527.2 | 557.9 | 614.0 | 7,825.8 |
+  | Mac | 256 KiB | overwrite, cold | window | 5,000 | 314.0 | 330.5 | 373.4 | 6,159.8 |
+  | Mac | 1 MiB | first, cold | FUSE | 5,000 | 1,649.8 | 1,924.3 | 2,014.2 | 4,054.8 |
+  | Mac | 1 MiB | first, cold | window | 5,000 | 1,774.8 | 1,903.4 | 2,018.0 | 7,669.5 |
+  | Mac | 1 MiB | overwrite, cold | FUSE | 5,000 | 1,314.9 | 1,388.2 | 6,097.5 | 9,221.7 |
+  | Mac | 1 MiB | overwrite, cold | window | 5,000 | 393.9 | 443.4 | 476.7 | 4,509.9 |
+  | Fedora P | 256 KiB | first, cold | FUSE | 5,000 | 437.8 | 530.9 | 844.6 | 13,485.9 |
+  | Fedora P | 256 KiB | first, cold | window | 5,000 | 219.4 | 241.4 | 465.9 | 38,831.5 |
+  | Fedora P | 256 KiB | overwrite, cold | FUSE | 5,000 | 208.0 | 222.2 | 342.9 | 864.9 |
+  | Fedora P | 256 KiB | overwrite, cold | window | 5,000 | 254.2 | 263.5 | 358.7 | 1,531.4 |
+  | Fedora P | 1 MiB | first, cold | FUSE | 5,000 | 813.7 | 1,232.0 | 1,549.8 | 105,532.3 |
+  | Fedora P | 1 MiB | first, cold | window | 5,000 | 575.2 | 612.1 | 876.5 | 28,936.3 |
+  | Fedora P | 1 MiB | overwrite, cold | FUSE | 5,000 | 683.5 | 815.7 | 1,230.9 | 43,349.2 |
+  | Fedora P | 1 MiB | overwrite, cold | window | 5,000 | 722.1 | 765.2 | 1,018.9 | 22,389.8 |
+  | Fedora E | 256 KiB | first, cold | FUSE | 5,000 | 888.1 | 1,082.4 | 1,812.7 | 53,702.2 |
+  | Fedora E | 256 KiB | first, cold | window | 5,000 | 576.0 | 628.6 | 1,146.2 | 22,358.0 |
+  | Fedora E | 256 KiB | overwrite, cold | FUSE | 5,000 | 599.9 | 759.3 | 1,217.9 | 10,165.6 |
+  | Fedora E | 256 KiB | overwrite, cold | window | 5,000 | 591.1 | 675.1 | 1,002.5 | 2,470.2 |
+  | Fedora E | 1 MiB | first, cold | FUSE | 5,000 | 2,351.3 | 3,723.3 | 29,660.9 | 202,337.4 |
+  | Fedora E | 1 MiB | first, cold | window | 5,000 | 1,179.5 | 1,431.6 | 2,698.7 | 30,713.6 |
+  | Fedora E | 1 MiB | overwrite, cold | FUSE | 5,000 | 1,482.8 | 1,727.4 | 2,054.7 | 43,213.5 |
+  | Fedora E | 1 MiB | overwrite, cold | window | 5,000 | 1,531.3 | 1,725.8 | 2,358.9 | 11,043.7 |
+
 - **Results, the sets** (run seconds, median [range] of 3; the window arm at each
   threshold): at 256 KiB and 1 MiB no longer than FUSE beyond the spread in all 24 of
   sets, windows and passes; at 0, mapping every file, longer in 8 of 12. Mac, the mix under the
