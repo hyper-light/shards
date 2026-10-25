@@ -11557,6 +11557,14 @@ revision before comparing a changed API/implementation.
   THREAD_PRIORITY_TIME_CRITICAL (`platform::prioritize_governor_thread`), a thread that runs
   briefly between waits, as Microsoft reserves high priority for; its clock and waits stay
   as they are.
+- **Since (the flakes goal, 2026-10-25).**
+  `vm::hold::tests::threads_held_use_no_more_than_their_share` failed in none of 237 runs
+  on CI's windows-2025 runners from a724bee0 (the governor at TIME_CRITICAL) to 291f066a:
+  it passed in each of the 77 x86_64 Windows jobs of the 92 CI runs since that ran it (the
+  aarch64 jobs build it and run none; 14 were cancelled first and one failed before it, on
+  another branch's tests), and in each of budget E2E run 40138491521's 160, 20 in a row on
+  each of 8 runners (EPYC 7763 ×5, 9V45, Xeon 8370C and one more). Under 3 in 237 (1.3%)
+  at 95%, where it had failed once in four runs.
 
 ### M295. What a builder microVM holds of its memory after a build's steps (D188, D133)
 
@@ -13612,7 +13620,7 @@ revision before comparing a changed API/implementation.
   they hold it, a shared flock(2)) through `std::process::Command`, its output piped and
   read, from 8 threads at once, and counts how each launch ended. Beside the first of a
   run of full gates (`cargo test --workspace --profile test-release --no-fail-fast`) and
-  the grant-stall campaign's fleet bursts (M323), Apple M5 Max, 18 CPUs, 128 GiB, macOS
+  the grant-stall campaign's fleet bursts (M324), Apple M5 Max, 18 CPUs, 128 GiB, macOS
   26.4.1 (25E253), this agent's session, 2026-10-25. Two batches of 100,000: commands that
   end in-process (`--version`, `-h`, `run -h`, `pull -h`), and a daemon's clients in a
   home of their own (`ps -q`, `images -q`, `ps -aq`; its first 8 clients each starting
@@ -13631,3 +13639,24 @@ revision before comparing a changed API/implementation.
   (written into a directory of its own and renamed into place, tests/common `place`), so
   no launch runs a copy changed in place, which macOS kills (code signing). Step 8 of the
   flakes plan holds: launches ended by a signal, 0 of 200,000.
+
+### M323. Flakes: a socket's end said late in the network process's tests, a test's fork holding it (the flakes goal)
+
+- **Question.** gpu CI 40144890871's aarch64-unknown-linux-musl job failed in
+  `poll::tests::an_end_is_said` (crates/net): a wait found no event where the test's peer
+  had just closed its end of a socket pair. Neither the poller nor the test had changed
+  since 2026-10-14. What delays an end?
+- **Method.** The whole library suite of shards-net, as CI runs it (its tests side by
+  side), 300 times in a row on each of 8 ubuntu-24.04 runners (budget E2E 40146751896,
+  `lib:shards-net`, at ac30b6f9); then the code of the test and of its neighbors.
+- **Results.** 5 failures in 2,400 runs, all of `an_end_is_said` (EPYC 7763 ×3, Xeon
+  6973P-C; two in one runner's 300), no other test. The test looked once, at once
+  (`ready`: a wait of no time) after `drop(a)`. A socket's end reaches its peer as its last
+  descriptor goes (net/unix/af_unix.c `unix_release_sock`), and a process forked holds a
+  copy of each of its parent's descriptors until it ends or execs (PM M134). The same
+  binary's confine.rs tests fork while it runs:
+  `the_filter_ends_a_process_that_makes_what_none_makes` forks a child that makes raw
+  system calls until it ends, and two others start the binary again (`Command`). A fork between the pair's making and its drop kept `a` open
+  in the child until it ended.
+- **Consequence.** The test waits for the end, 5 s at most, as the poller is waited on
+  everywhere else (crates/net poll.rs); what it asserts is unchanged.

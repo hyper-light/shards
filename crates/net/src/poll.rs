@@ -711,14 +711,18 @@ mod tests {
         (&b).read_exact(&mut got).unwrap();
     }
 
-    /// A peer's end is said, as the next read finds it.
+    /// A peer's end is said, as the next read finds it, once its socket's last descriptor
+    /// goes: a child another test forks meanwhile holds a copy of every descriptor until it
+    /// ends or execs (confine.rs's, PM M134), and a wait that looked once, at once, then
+    /// found nothing (CI 40144890871, aarch64 musl).
     #[test]
     fn an_end_is_said() {
         let p = Poller::new().unwrap();
         let (a, b) = UnixStream::pair().unwrap();
         p.set(b.raw_sock(), 3, Interest::NONE, Interest::READ).unwrap();
         drop(a);
-        let events = ready(&p);
+        let mut events = Vec::new();
+        p.wait(&mut events, Some(Duration::from_secs(5))).unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].read && events[0].ended, "{events:?}");
     }
