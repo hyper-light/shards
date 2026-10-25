@@ -970,8 +970,18 @@ for the exit status.
     `SCM_RIGHTS`: the client's connection, then its stdin, stdout and stderr. They become
     the warm VM's own stdio, so the workload writes straight to the client's. The VM
     answers `TAKEN`.
-  - Signals come from the client on its connection, as Linux numbers. Once the VM has
-    taken a run, they queue until the command runs.
+  - Signals come from the client on its connection, as Linux numbers, from the moment its
+    request is on its way; one that would end the client (SIGINT, SIGTERM, SIGHUP or
+    SIGQUIT, not ignored as it started) as `INTERRUPT`. Until the run is prepared (its
+    image pulled), the daemon's watch of the client reads them: an `INTERRUPT` is the
+    client's end, which the daemon answers (`INTERRUPTED`), cancelling the prepare and
+    making no container, and the client ends as the Docker CLI does before its container
+    is made (128 and the signal's number, nothing said); the rest are for a command yet to
+    run, and go. After, they wait for the run's VM, which takes an `INTERRUPT` as a signal
+    for the command. Only the daemon knows which side of the run's making a signal came:
+    the command's output reaches the client on a stream of its own, before the client may
+    have heard `CREATED`, which the daemon's slot relay passes on from a thread of its own
+    (PM M332). Once the VM has taken a run, they queue until the command runs.
   - The exit status goes back the moment the command ends, before the VM is torn down.
     Any error reaches the client's stderr first. The VM lets go of the client's stdio
     before the status, so a pipeline reading it ends with the client, and again when the

@@ -340,8 +340,18 @@ fn signals_reach_a_warm_run() {
         assert_eq!(line, "ready\n");
         // SAFETY: kill(2) of our own child.
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
-        let mut rest = String::new();
-        out.read_to_string(&mut rest).unwrap();
+        // Within a run's time: a signal lost leaves its command waiting, and a read of its
+        // output would wait with it (2 hours in budget E2E 40170179004, cancelled).
+        let (read, rest) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = String::new();
+            let _ = out.read_to_string(&mut rest);
+            let _ = read.send(rest);
+        });
+        let Ok(rest) = rest.recv_timeout(TIMEOUT) else {
+            let _ = child.kill();
+            panic!("the run outlived its SIGINT by {TIMEOUT:?}; ignored at start: {ignored}");
+        };
         assert_eq!(wait(&mut child), Some(0), "ignored at start: {ignored}");
         assert_eq!(rest, "got 2\n", "ignored at start: {ignored}");
     }

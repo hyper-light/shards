@@ -692,7 +692,8 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     );
                 }
             }
-            kind::SIGNAL => {
+            // A client's INTERRUPT is its command's signal once its run is made (D26).
+            kind::SIGNAL | kind::INTERRUPT => {
                 if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
                     let signal = u32::from_be_bytes(signal);
                     match joiner.map(|id| id.load(std::sync::atomic::Ordering::SeqCst)) {

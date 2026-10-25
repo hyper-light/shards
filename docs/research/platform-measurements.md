@@ -13949,3 +13949,49 @@ revision before comparing a changed API/implementation.
   mutation-checked, the slot let go of 600 ms after the close without the hold ("a slot
   whose request went on let go of with its answer still to come"). The E2E test passes
   with it (38.81 s, this Mac).
+
+### M332. Flakes: a warm run's signal taken before its client heard its run was made (D26)
+
+- **Question.** `signals_reach_a_warm_run` hung in its 12th of 38 runs of the daemon suite
+  on budget E2E 40170179004's job 121099253149 (EPYC 9V74, cfd05ec9): its last line came
+  at 07:17 UTC, the job's other 15 copies ended by 08:12, and it was cancelled at 09:15.
+  Where did its SIGINT go?
+- **Method.** The job's log (the suite's 12th run: every test but this one done, its "has
+  been running for over 60 seconds" the last word of it), the test, and the signal path
+  of the client (cli/client.rs), the daemon's slot relay (daemon/slots.rs) and the run's
+  VM (warm.rs).
+- **Results.** The test sends its client SIGINT as the command says "ready" on the client's
+  stdout, then reads the rest to its end, unbounded. The command's output reaches the
+  client on a stream of its own (the slot's output, which the client's `show` thread
+  copies to its stdout), and the daemon's messages on another: `CREATED`, which the daemon
+  sends before it hands the run to its VM, its slot relay passes on from a thread of its
+  own (D185). So "ready" may come before the client has heard `CREATED`, from which alone
+  it took signals as the run's (`ran_on`'s attach). One taken before was one that ends the
+  client before its run is made, as the Docker CLI ends before its container is made: one
+  the client was started ignoring (the test's second pass, as a shell's `cmd &` starts it)
+  went nowhere, and the command, `trap INT`, waited for it, and the test's read with it.
+  Not ignored, the code ends the client with 130 as its command runs on.
+- **A fix that failed.** Holding such a signal for the run's connection once the request
+  had gone broke `a_run_interrupted_as_it_pulls_ends_at_once`: a SIGINT as the run pulls
+  waited for a connection that comes only as the pull ends (180.25 s, where the test asks
+  for 130 within 5 s). The client cannot tell the two apart: what it has heard lags what
+  the daemon has done by the relay's thread, so no order it keeps is exact.
+- **Consequence.** The daemon decides, where it knows (D26). From its request on, the
+  client sends each signal it takes on the run's connection, one that would end it as
+  `INTERRUPT` (shards_ipc kind 70). While the run prepares (`cancellable`), the daemon's
+  watch of the client reads its signals and sizes: an `INTERRUPT` is the client's end,
+  answered (`INTERRUPTED`), the prepare cancelled and no container made, and the client
+  ends as before (`end_by`); a daemon that asks it to restart, or goes, with an interrupt
+  of its unanswered, ends it so too. Once prepared, the watch has ended: what follows waits
+  for the run's VM, whose relays take an `INTERRUPT` as a signal for the command. Held by
+  `daemon::tests::a_clients_end_and_interrupt_are_seen_and_nothing_else_it_sent_is_taken`
+  and `cli::client::tests::a_runs_signals_go_on_its_connection_from_its_request`,
+  mutation-checked: each fails with its fix undone, a signal that would end the client sent
+  as SIGNAL, an interrupt kept once the run was made, the INTERRUPT unanswered (its answer
+  read within 5 s), the watch ended at the client's first signal, or a signal taken as the
+  client's end. On this Mac (Apple M5 Max, macOS 26.4.1, 022e886d and this change, as a
+  launchd job), `signals_reach_a_warm_run` and `a_client_waiting_for_its_daemon_ends_on_sigterm`
+  (daemon.rs), `a_run_interrupted_as_it_pulls_ends_at_once`, `start_attached_passes_signals_on`
+  and `run_writes_cidfiles_pulls_quietly_and_keeps_signals` (containers.rs) pass, and a full
+  gate after them, 2,180 tests. The E2E test bounds its read at a run's time, so a signal
+  lost fails it, its pass named, rather than holding its job.
