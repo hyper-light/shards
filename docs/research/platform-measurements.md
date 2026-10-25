@@ -13996,3 +13996,35 @@ revision before comparing a changed API/implementation.
   and `run_writes_cidfiles_pulls_quietly_and_keeps_signals` (containers.rs) pass, and a full
   gate after them, 2,180 tests. The E2E test bounds its read at a run's time, so a signal
   lost fails it, its pass named, rather than holding its job.
+
+### M334. Flakes: a daemon out of descriptors coming to its last client's slot after the test stopped waiting (audit A07)
+
+- **Question.** `a_daemon_out_of_descriptors_waits_for_room` failed a gate in this agent's
+  session (utility QoS clamp, the host's load ~15 from other projects' tests), 2026-10-25
+  ~05:50 UTC: "the daemon kept finding room", five rounds in a row each finding room in the
+  window in which the test holds it out of descriptors, though its log says no client's
+  request ran out of time ("a client sent no request in"). Where did its room come from?
+- **Method.** That gate's daemon log; then docs/research/measurements/slot-room/fdwatch.py,
+  which starts a daemon limited to 128 descriptors (as the test does), fills it with
+  clients that take a slot and write its first byte (the test's `silent_slot`), stops when
+  none is offered in 200 ms and the log says it is out, then samples the daemon's
+  descriptors (proc_pidinfo PROC_PIDLISTFDS) every millisecond for seconds, with its log;
+  beside 24 busy loops started unclamped as a launchd job (slot-room/burn.sh), the daemon
+  and its clients clamped, this Mac (Apple M5 Max, macOS 26.4.1), 997fe65b.
+- **Results.** In 1 of 23 runs (its load average 51), the daemon was out at 2,229 ms with
+  33 clients in; at 2,406 ms one descriptor closed, a pipe's (fd 123), and in that
+  millisecond the daemon said "offering slots again, after 390 ms" and made a slot (4
+  FIFOs and 3 pipe ends, 127 descriptors), out again at 2,491 ms. The pipe is the write end
+  of the stop pipe of the slot the last client took: the slots' maker lets go of it as it
+  hears that the slot was taken (`Event::Asked`), and that one descriptor was the room a
+  slot lacked (each attempt needs one past the 7 a slot keeps). Its maker came to it 177
+  ms after the test stopped waiting, its thread clamped behind the busy loops: the room
+  was the last take's own, and the test, taking the window it found it in for one in
+  which room came, ran the round again, which ended the same way. In the other 22 runs
+  (load 46 to 51) each fill went on to 34 clients, past which no take's leaves room.
+- **Consequence.** None in the daemon: it offers what room it has. The test takes room a
+  window finds where no request ran out of time, the slot that room made, and runs the
+  window again; a request out of time, as the daemon says, runs the round again with its
+  clients let go. Beside the same busy loops (load 82 to 93), 30 of 30 passed: in 2 the
+  window found its last take's room and took it, in 2 a request ran out of time (rounds of
+  26 and 30 s), 11 to 17 s a run otherwise.
