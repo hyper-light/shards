@@ -5718,26 +5718,26 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   took its reads' own pages back and read them again, 2,899 times a read at the median on
   the EPYC 7763s and 16,327 at p90, its reader at times asleep at its run's
   `memory.high`, and 3 of 144 reads took over twice their CPU's time with none, 2.77
-  times at most (an EPYC 9V74's); with it, 1 and 687 times, and 1.19 times its time with
-  none at most on three runner CPUs (PM M321). Before the share kept its buffers, held
-  within 2, 4, 8 or 16 times it, no faster than within it, 2.2 to 3.1 times its time with
-  none (a Xeon's three reads at 8 times, 1.07), the share's fresh memory for each request
-  holding it back (PM M314). Held at what it used, a run could not take a page past it:
-  its reader slept in the kernel's throttle of a cgroup past its `memory.high`
-  (`__mem_cgroup_handle_over_high`, up to 2 s each return to user space), and on CI read a
-  gigabyte at 0.16 to 0.57 MiB/s for 190 to 672 s, each until its budget's own pressure
-  brought room back (PM M309). A room short of the least raises no hold past what the run
-  was held at, so that being told it again each window lets its run grow none, and lowers
-  one its run no longer fills. Init answers what it holds the run within, which the
-  daemon's log says where it is past the room the budget leaves. The cap is kept in whole
-  pages, as the kernel keeps `memory.high` (`page_counter_memparse`): one past a page
-  boundary read back short of itself, and the grower took a run held at it for one held
-  short of it, writing its hold again at each of its run's events. A warm microVM restored
-  under a budget copies none of its template's written pages ahead of its run (64 MiB at
-  most each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of the budget before
-  any run comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1 to 4 MiB
-  for one without, PM M309; on the Mac they bought no time, PM M62), and none is made
-  ahead of the runs that wait where its budget has no room.
+  times at most (an EPYC 9V74's); with it, 1 and 687 times, and of 288 reads on four
+  runner CPUs none over 1.25 times its time with none (PM M321). Before the share kept its
+  buffers, held within 2, 4, 8 or 16 times it, no faster than within it, 2.2 to 3.1 times
+  its time with none (a Xeon's three reads at 8 times, 1.07), the share's fresh memory for
+  each request holding it back (PM M314). Held at what it used, a run could not take a
+  page past it: its reader slept in the kernel's throttle of a cgroup past its
+  `memory.high` (`__mem_cgroup_handle_over_high`, up to 2 s each return to user space),
+  and on CI read a gigabyte at 0.16 to 0.57 MiB/s for 190 to 672 s, each until its
+  budget's own pressure brought room back (PM M309). A room short of the least raises no
+  hold past what the run was held at, so that being told it again each window lets its run
+  grow none, and lowers one its run no longer fills. Init answers what it holds the run
+  within, which the daemon's log says where it is past the room the budget leaves. The cap
+  is kept in whole pages, as the kernel keeps `memory.high` (`page_counter_memparse`): one
+  past a page boundary read back short of itself, and the grower took a run held at it for
+  one held short of it, writing its hold again at each of its run's events. A warm microVM
+  restored under a budget copies none of its template's written pages ahead of its run (64
+  MiB at most each, `hv::PREFETCH_PRIVATE`, which every warm microVM spends of the budget
+  before any run comes: 65 MiB of a 384 MiB budget's anonymous memory for one such VM, 1
+  to 4 MiB for one without, PM M309; on the Mac they bought no time, PM M62), and none is
+  made ahead of the runs that wait where its budget has no room.
 - **What its host takes back of its guest's RAM is no room** (PM M318). A restored guest's
   RAM is its template's file pages as much as its anonymous memory, and a budget's host
   takes back file pages first. Counted as room as they went, with the inactive pages kept

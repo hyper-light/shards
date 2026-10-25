@@ -13582,4 +13582,52 @@ revision before comparing a changed API/implementation.
     room against 2.25.
 - **Consequence (D188).** The least room counts the page cache a share's request fills
   beside its reader's block: 3.25 MiB on 4 CPUs, 6.75 on 18 (init plug.rs
-  `working_room_of`).
+  `working_room_of`, 291f066a). Measured at 291f066a on the same job (40144898519 and
+  40144903784, 6 rounds each, 16 runners), every one of 288 reads held short throughout,
+  none over twice its CPU's time with none, against 3 of 144 on the tree:
+
+  | CPU | n | unbudgeted p50 | p50 | p90 | p99 | max | most over unbudgeted | guest refaults a read, p50 (max) |
+  |---|---|---|---|---|---|---|---|---|
+  | EPYC 7763 (10) | 180 | 2.15 | 1.75 | 2.11 | 2.31 | 2.35 | 1.09 | 3 (5,407) |
+  | EPYC 9V45 (2) | 36 | 1.41 | 1.09 | 1.20 | 1.57 | 1.57 | 1.11 | 0 (1,879) |
+  | EPYC 9V74 (3) | 54 | 1.60 | 1.28 | 1.65 | 2.00 | 2.00 | 1.25 | 3 (3,008) |
+  | Xeon 8573C | 18 | 1.90 | 1.53 | 1.73 | 1.98 | 1.98 | 1.04 | 46 (1,096) |
+
+  Over its CPU's time with none, the 288 took 0.80 at p50, 0.96 at p90, 1.18 at p99 and
+  1.25 at most (a 9V74's 2.00 s against 1.60, where the tree's took 4.41 s). The FUSE
+  budget E2E at 291f066a: 40 of 40 copies passed (40144908573, 4 in a row on each of 8
+  runners, and 40144890867's 8: EPYC 7763 ×24, 9V45 ×13, 9V74 ×3), each of their 120
+  reads held within the least room within twice its copy's reads under none at their
+  median, 1.38 times at most (a 9V45's 1,755 ms against 1,269).
+
+### M322. Flakes: the CLI killed at launch, launched 200,000 times beside a full gate (the flakes goal)
+
+- **Question.** In 2026-10-06's gate a `shards pull` ended in 17 ms with no status (a
+  signal), nothing printed and no crash report; no failed CI job since has recorded a
+  killing signal (`Run::signal`). Does a launch of the CLI as the E2E tests launch it end
+  by a signal on this Mac under a full gate's load?
+- **Method.** docs/research/measurements/launch-stress/launch.rs, built by rustc alone (no
+  cargo, so the gate's build directory is untouched), launches the E2E tests' placed copy
+  (target/e2e/shards-2d7063ea6df9209a, placed by the gate's tests from 291f066a, held as
+  they hold it, a shared flock(2)) through `std::process::Command`, its output piped and
+  read, from 8 threads at once, and counts how each launch ended. Beside the first of a
+  run of full gates (`cargo test --workspace --profile test-release --no-fail-fast`) and
+  the grant-stall campaign's fleet bursts (M323), Apple M5 Max, 18 CPUs, 128 GiB, macOS
+  26.4.1 (25E253), this agent's session, 2026-10-25. Two batches of 100,000: commands that
+  end in-process (`--version`, `-h`, `run -h`, `pull -h`), and a daemon's clients in a
+  home of their own (`ps -q`, `images -q`, `ps -aq`; its first 8 clients each starting
+  its daemon, one holding the home, D26).
+- **Results.**
+
+  | batch | n | exit 0 | another exit | a signal | p50 | p90 | p99 | max ms |
+  |---|---|---|---|---|---|---|---|---|
+  | in-process | 100,000 | 100,000 | 0 | 0 | 7.79 | 20.79 | 43.79 | 160.33 |
+  | the daemon's clients | 100,000 | 100,000 | 0 | 0 | 12.26 | 55.10 | 224.97 | 8,332.35 |
+
+  The clients' slowest was among their first, which waited for their daemon to start
+  under the gate's load. No launch was ended by a signal: under 3 in 200,000 (1.5 in
+  100,000) at 95%.
+- **Consequence.** None in the CLI's launch. The tests place each build's copy whole
+  (written into a directory of its own and renamed into place, tests/common `place`), so
+  no launch runs a copy changed in place, which macOS kills (code signing). Step 8 of the
+  flakes plan holds: launches ended by a signal, 0 of 200,000.
