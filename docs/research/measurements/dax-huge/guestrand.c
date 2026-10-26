@@ -9,14 +9,22 @@
 //                       touched)
 //   write FILE N SEED   N distinct ranges drawn from SEED: a 4 KiB pwrite(2) of new bytes at
 //                       a random page of each (`write`), then fsync(2) of FILE, which the
-//                       host's writeback of what they dirtied waits for
+//                       host's writeback of what they dirtied waits for. A whole page its host
+//                       does not hold goes as a FUSE_WRITE (D189, PM M301), whatever the
+//                       window's pages are
+//   rewrite FILE N SEED as write, each range's page read first (untimed) and another page of
+//                       it written (`rewrite`): what the read brought into the host's page
+//                       cache is written through the window, a store into its folio
+//   partial FILE N SEED as write, 512 bytes at a random 512-byte offset of each page
+//                       (`partial`): a part of a page goes through the window, its host
+//                       reading the page first
 // then, untimed, whether statx(2) says FILE is DAX, and the guest's Cached and MemFree
 // (/proc/meminfo) before and after.
 //
-// Usage: guestrand seq FILE | touch FILE N SEED | write FILE N SEED
+// Usage: guestrand seq FILE | touch|write|rewrite|partial FILE N SEED
 //   prints: seq bytes B s S
 //       or: first n N p50 P p90 P p99 P max M, then second n ..., in µs
-//       or: write n N p50 ... in µs, then fsync s S
+//       or: write (rewrite, partial) n N p50 ... in µs, then fsync s S
 //   then:   dax 1|0
 //   then:   meminfo cached_kib BEFORE AFTER memfree_kib BEFORE AFTER
 #define _GNU_SOURCE
@@ -101,12 +109,12 @@ static long meminfo(const char *key) {
     return v;
 }
 
-// A page's worth at `at`, whole, read or written; the count of bytes is the caller's.
-static void page_io(int fd, char *buf, off_t at, int write, const char *name) {
+// `len` bytes at `at`, whole, read or written.
+static void page_io(int fd, char *buf, off_t at, size_t len, int write, const char *name) {
     size_t done = 0;
-    while (done < PAGE) {
-        ssize_t r = write ? pwrite(fd, buf + done, PAGE - done, at + (off_t)done)
-                          : pread(fd, buf + done, PAGE - done, at + (off_t)done);
+    while (done < len) {
+        ssize_t r = write ? pwrite(fd, buf + done, len - done, at + (off_t)done)
+                          : pread(fd, buf + done, len - done, at + (off_t)done);
         if (r < 0) {
             if (errno == EINTR)
                 continue;
@@ -123,9 +131,11 @@ static void page_io(int fd, char *buf, off_t at, int write, const char *name) {
 int main(int argc, char **argv) {
     int seq = argc == 3 && strcmp(argv[1], "seq") == 0;
     int touch = argc == 5 && strcmp(argv[1], "touch") == 0;
-    int write = argc == 5 && strcmp(argv[1], "write") == 0;
+    int rewrite = argc == 5 && strcmp(argv[1], "rewrite") == 0;
+    int partial = argc == 5 && strcmp(argv[1], "partial") == 0;
+    int write = (argc == 5 && strcmp(argv[1], "write") == 0) || rewrite || partial;
     if (!seq && !touch && !write) {
-        fprintf(stderr, "usage: guestrand seq FILE | touch FILE N SEED | write FILE N SEED\n");
+        fprintf(stderr, "usage: guestrand seq FILE | touch|write|rewrite|partial FILE N SEED\n");
         return 2;
     }
     const char *name = argv[2];
@@ -180,17 +190,28 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < n; i++)
             page[i] = (uint32_t)(next(&seed) % (RANGE / PAGE));
         for (size_t i = 0; i < n; i++) {
+            off_t at = (off_t)(order[i] * RANGE + (uint64_t)page[i] * PAGE);
+            size_t len = PAGE;
+            if (rewrite) {
+                // The range's page read, then another of its pages written.
+                page_io(fd, buf, at, PAGE, 0, name);
+                uint32_t other = (uint32_t)(next(&seed) % (RANGE / PAGE - 1));
+                other += other >= page[i];
+                at = (off_t)(order[i] * RANGE + (uint64_t)other * PAGE);
+            } else if (partial) {
+                len = 512;
+                at += (off_t)(next(&seed) % (PAGE / 512) * 512);
+            }
             if (write)
-                for (size_t b = 0; b < PAGE; b += 8) {
+                for (size_t b = 0; b < len; b += 8) {
                     uint64_t v = next(&seed);
                     memcpy(buf + b, &v, 8);
                 }
-            off_t at = (off_t)(order[i] * RANGE + (uint64_t)page[i] * PAGE);
             uint64_t t = now_ns();
-            page_io(fd, buf, at, write, name);
+            page_io(fd, buf, at, len, write, name);
             took[i] = now_ns() - t;
         }
-        report(write ? "write" : "first", took, n);
+        report(!write ? "first" : rewrite ? "rewrite" : partial ? "partial" : "write", took, n);
         if (write) {
             uint64_t t = now_ns();
             if (fsync(fd) != 0)
@@ -203,7 +224,7 @@ int main(int argc, char **argv) {
                 other += other >= page[i];
                 off_t at = (off_t)(order[i] * RANGE + (uint64_t)other * PAGE);
                 uint64_t t = now_ns();
-                page_io(fd, buf, at, 0, name);
+                page_io(fd, buf, at, PAGE, 0, name);
                 took[i] = now_ns() - t;
             }
             report("second", took, n);

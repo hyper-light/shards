@@ -35,7 +35,13 @@ NAME.slice's child, which a shared host holds to a MemoryMax of its own):
   write    guestrand write /vol/touch N SEED: a 4 KiB pwrite at a random page of each of N
            distinct ranges, then fsync: µs a write; the bytes the volume's block device
            wrote (/proc/diskstats) from before the run to after a syncfs(2) past its end,
-           per write
+           per write. A whole page its host does not hold goes as a FUSE_WRITE whatever the
+           arm (D189, PM M301), as the smoke run at 46d285fb found on every arm alike; so
+  rewrite  as write, each range's page read first and another page of it written: what the
+           read brought into the host's page cache written through the window, a store
+           into its folio, and
+  partial  as write, 512 bytes at a random 512-byte offset of each page: a part of a page,
+           which goes through the window, its host reading the page first
   budget-seq, budget-touch  seq-written and touch with the slice's MemoryHigh at --high
            (as M308), no swap, set once the run has started
 SEED is the round's, the same for every arm. Around each workload: the VM process's
@@ -56,9 +62,9 @@ and huge-random against window, each comparison over the arms' per-round values,
 beyond the rounds' spread where its whole range lies above window's (its least above
 window's most), better beyond it where its whole range lies below:
   1. seq: neither file's seconds worse beyond the spread, and at least one file's better;
-  2. touch (first and second) and write: µs a read or a write, p50 and p99, no worse
-     beyond the spread;
-  3. write: bytes written back per write no worse beyond the spread;
+  2. touch (first and second), write, rewrite and partial: µs a read or a write, p50 and
+     p99, no worse beyond the spread;
+  3. write, rewrite and partial: bytes written back per write no worse beyond the spread;
   4. budget: every run finished and none killed (memory.events oom_kill 0), budget-seq's
      seconds and budget-touch's first p50 and p99 no worse beyond the spread.
 Memory held (the slice's file and file_thp, the file's bytes in the page cache) is
@@ -114,7 +120,7 @@ for arm in a.arms.split(","):
     ARMS[arm] = (os.path.realpath(BUILDS[arm][0]), BUILDS[arm][1])
 KINDS = []
 for cell in a.cells.split(","):
-    KINDS += {"seq": ["seq-sparse", "seq-written"], "touch": ["touch"], "write": ["write"],
+    KINDS += {"seq": ["seq-sparse", "seq-written"], "touch": ["touch"], "write": ["write", "rewrite", "partial"],
               "budget": ["budget-seq", "budget-touch"]}[cell]
 homes = {arm: os.path.join(work, f"home-{arm}") for arm in ARMS}
 OUT = open(os.path.join(out, "out.txt"), "a")
@@ -449,7 +455,7 @@ def parse(lines):
         w = line.split()
         if not w:
             continue
-        if w[0] in ("first", "second", "write") and len(w) >= 11:
+        if w[0] in ("first", "second", "write", "rewrite", "partial") and len(w) >= 11:
             for k, v in zip(w[1::2], w[2::2]):
                 fields[f"{w[0]}_{k}"] = v
         elif w[0] == "seq" and len(w) >= 5:
@@ -495,7 +501,8 @@ def cell(r, arm, kind, seed, dev):
         stop.set()
         watch.join()
         fields = parse(done.stdout.splitlines())
-        said = {"seq": ("s",), "touch": ("first_p50", "second_p50"), "write": ("write_p50", "fsync_s")}[work_args[0]]
+        said = {"seq": ("s",), "touch": ("first_p50", "second_p50"), "write": ("write_p50", "fsync_s"),
+                "rewrite": ("rewrite_p50", "fsync_s"), "partial": ("partial_p50", "fsync_s")}[work_args[0]]
         if done.returncode != 0 or any(k not in fields for k in said):
             raise RuntimeError(f"guestrand exit {done.returncode}: {done.stdout.strip()} {done.stderr.strip()}")
         after_kvm, stat, after_events = kvm(pid), slice_stat(), events()
@@ -511,7 +518,7 @@ def cell(r, arm, kind, seed, dev):
                       held=cached(os.path.join(vol, file)))
         for k in ("high", "max", "oom", "oom_kill"):
             fields[k] = after_events.get(k, 0) - before_events.get(k, 0)
-        if kind == "write":
+        if kind in ("write", "rewrite", "partial"):
             syncfs()
             after_written = written_bytes(dev)
             if before_written is not None and after_written is not None:

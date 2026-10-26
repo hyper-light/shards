@@ -15,7 +15,8 @@ import statistics
 import sys
 from collections import defaultdict
 
-LATENCY = {"touch": ("first", "second"), "write": ("write",), "budget-touch": ("first", "second")}
+LATENCY = {"touch": ("first", "second"), "write": ("write",), "rewrite": ("rewrite",), "partial": ("partial",),
+           "budget-touch": ("first", "second")}
 ARMS = ("huge", "huge-random")
 
 
@@ -67,8 +68,8 @@ def spread(v):
 def tables(host):
     print("kind arm: rounds; per read or write, n, p50 median [range], p90 median, p99 median [range], max (µs); "
           "or seconds median [range]")
-    kinds = sorted({k for k, _ in host["cells"]}, key=lambda k: ("seq-sparse", "seq-written", "touch", "write",
-                                                               "budget-seq", "budget-touch").index(k))
+    kinds = sorted({k for k, _ in host["cells"]}, key=lambda k: ("seq-sparse", "seq-written", "touch", "write", "rewrite",
+                                                               "partial", "budget-seq", "budget-touch").index(k))
     for kind in kinds:
         for arm in ("window", "huge", "huge-random", "fuse"):
             cells = host["cells"].get((kind, arm))
@@ -113,13 +114,15 @@ def verdict(host, arm):
     seq = [worse(k, "s") for k in ("seq-sparse", "seq-written")]
     if not any(seq) and None not in seq and not (better("seq-sparse", "s") or better("seq-written", "s")):
         fails.append("seq: neither file faster than window's beyond the spread")
-    # 2. touch and write: p50 and p99.
-    for kind, whats in (("touch", ("first", "second")), ("write", ("write",))):
+    # 2. touch and the writes: p50 and p99.
+    for kind, whats in (("touch", ("first", "second")), ("write", ("write",)), ("rewrite", ("rewrite",)),
+                        ("partial", ("partial",))):
         for what in whats:
             for q in ("p50", "p99"):
                 worse(kind, f"{what}_{q}")
     # 3. bytes written back per write.
-    worse("write", "written_per_write")
+    for kind in ("write", "rewrite", "partial"):
+        worse(kind, "written_per_write")
     # 4. budget: every run finished, none killed; seq's seconds and touch's first reads.
     for kind in ("budget-seq", "budget-touch"):
         ran, failed = len(host["cells"].get((kind, arm), [])), host["failed"].get((kind, arm), 0)
