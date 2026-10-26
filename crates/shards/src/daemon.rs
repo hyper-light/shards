@@ -834,6 +834,9 @@ struct Daemon<D: Disk = Real> {
     keep: Duration,
     /// Each volume's DAX window in MiB, 0 for none (D189): `SHARDS_SHARE_WINDOW_MIB`.
     share_window_mib: u64,
+    /// The most mappings one process may hold, Linux's `vm.max_map_count`, which bounds each
+    /// run's windows (D189); none where the host has no such limit.
+    max_map_count: Option<u64>,
     /// How much of each container's output its log keeps, where the daemon's environment
     /// says (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`); else [`Daemon::log_retention`]
     /// reads the home's disk settings.
@@ -1159,6 +1162,8 @@ struct Settings {
     bridge: Option<shards_net::bridge::Bridge>,
     /// Each volume's DAX window in MiB, 0 for none (D189): `SHARDS_SHARE_WINDOW_MIB`.
     share_window_mib: u64,
+    /// Linux's `vm.max_map_count` ([`max_map_count`]).
+    max_map_count: Option<u64>,
 }
 
 /// What a host's CPU says of the host, for its shares' windows (D189, PM M308): whether
@@ -1209,6 +1214,48 @@ fn share_window_default(host_mib: u64, cpu: &HostCpu) -> u64 {
     } else {
         host_mib
     }
+}
+
+/// The host mappings one of a DAX window's ranges takes of its VM process at most, on
+/// Linux: the file's mapping and, past the file's end, the zeros' (window_costs: a 4 KiB
+/// file's range 2, a 2 MiB file's 1; a window of small files mapped at its peak, 25,609
+/// ranges, 51,500 in all; PM M338).
+const MAPPINGS_A_RANGE: u64 = 2;
+
+/// A VM process's own host mappings before its windows map anything, on Linux: at most 385
+/// of microVMs of 1 to 32 vCPUs, with a volume and with none, on a host of 32 CPUs (PM M338),
+/// each having every host CPU (D191) ...
+const VM_OWN_MAPPINGS: u64 = 385;
+/// ... of which this host's CPUs, whose vCPU threads' stacks are each a mapping and its guard
+/// another (pthread_attr_setguardsize(3)): a host of more CPUs counts two more for each.
+const VM_OWN_MAPPINGS_CPUS: u64 = 32;
+
+/// How long each of a VM's `windows` DAX windows may be, in MiB, so that every range of
+/// them mapped at once keeps its VM process within `limit` mappings, Linux's
+/// `vm.max_map_count`, on a host of `cpus` CPUs (D189): a guest maps all of a window's
+/// ranges when it has to (fs/fuse/dax.c reclaims ranges once a fifth are free, and takes the
+/// rest meanwhile), and the host refuses every mapping past the limit, its guest's access
+/// failing with it. Linux's default, 65,530, holds a VM of one volume (two windows, the
+/// join share's the other) to 16,286 ranges a window, 31.8 GiB, on 32 CPUs; Fedora's
+/// 1,048,576 to more than its host's memory.
+fn share_window_bound_mib(limit: u64, windows: u64, cpus: u64) -> u64 {
+    let own = VM_OWN_MAPPINGS.saturating_add(2 * cpus.saturating_sub(VM_OWN_MAPPINGS_CPUS));
+    let ranges = limit.saturating_sub(own) / MAPPINGS_A_RANGE.saturating_mul(windows.max(1));
+    ranges.saturating_mul(2)
+}
+
+/// Linux's `vm.max_map_count` (/proc/sys/vm/max_map_count); none on hosts with no such limit.
+#[cfg(target_os = "linux")]
+fn max_map_count() -> Option<u64> {
+    std::fs::read_to_string("/proc/sys/vm/max_map_count")
+        .ok()
+        .and_then(|n| n.trim().parse().ok())
+}
+
+/// Linux's `vm.max_map_count`; none on hosts with no such limit.
+#[cfg(not(target_os = "linux"))]
+fn max_map_count() -> Option<u64> {
+    None
 }
 
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
@@ -1286,6 +1333,7 @@ fn settings() -> Result<Settings, String> {
         max_clients,
         bridge: elect_bridge(),
         share_window_mib,
+        max_map_count: max_map_count(),
     })
 }
 
@@ -1567,6 +1615,7 @@ impl<D: Disk> Daemon<D> {
             warm_max: settings.warm_max,
             idle: settings.idle,
             share_window_mib: settings.share_window_mib,
+            max_map_count: settings.max_map_count,
             keep: settings.keep,
             logs: settings.logs,
             request_timeout: REQUEST_TIMEOUT,
@@ -6021,8 +6070,17 @@ impl<D: Disk> Daemon<D> {
             }
             // A slot for each directory it shares (D38), which its run fills.
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
-            // And each share's DAX window, where the daemon gives one (D189).
+            // And each share's DAX window, where the daemon gives one (D189), as its join
+            // share's, every range of all of them within the host's mappings where it limits
+            // them.
             cfg.share_window_mib = self.share_window_mib;
+            if let Some(limit) = self.max_map_count {
+                let windows = u64::try_from(cfg.shares.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1);
+                let bound = share_window_bound_mib(limit, windows, u64::from(cfg.vcpus));
+                cfg.share_window_mib = cfg.share_window_mib.min(bound);
+            }
             if let Some(bridge) = &bridge {
                 cfg.cmdline.push(' ');
                 cfg.cmdline.push_str(&bridge.cmdline());
@@ -7541,6 +7599,7 @@ mod tests {
                     max_clients: most_clients(),
                     bridge: shards_net::bridge::Bridge::elect(&[]),
                     share_window_mib: 0,
+                    max_map_count: None,
                 },
                 containers,
                 disk,
@@ -9058,6 +9117,39 @@ mod tests {
         // A flag that only begins with the word is another.
         let other = "vendor_id\t: AuthenticAMD\nflags\t\t: hypervisorlike\n";
         assert_eq!(share_window_default(16384, &host_cpu_of(other)), 16384);
+    }
+
+    /// A VM's windows are each no longer than lets every range of them be mapped at once
+    /// within Linux's `vm.max_map_count` (D189): Linux's default, 65,530, holds a VM of one
+    /// volume (its window and its join share's) on 32 CPUs to 16,286 ranges a window, and
+    /// of three volumes to 8,143; a host of 192 CPUs counts each further vCPU thread's two
+    /// mappings; Fedora's 1,048,576 to more than that host's 64 GiB. Its basis is what
+    /// PM M338 measured: a range of a file shorter than it two mappings, a VM's own 385.
+    #[test]
+    fn a_vms_windows_keep_every_range_within_the_hosts_mappings() {
+        assert_eq!(
+            (MAPPINGS_A_RANGE, VM_OWN_MAPPINGS, VM_OWN_MAPPINGS_CPUS),
+            (2, 385, 32),
+            "PM M338"
+        );
+        assert_eq!(share_window_bound_mib(65_530, 2, 32), 16_286 * 2);
+        assert_eq!(share_window_bound_mib(65_530, 4, 32), 8_143 * 2);
+        assert_eq!(
+            share_window_bound_mib(65_530, 2, 192),
+            (65_530 - 385 - 320) / 4 * 2
+        );
+        assert!(share_window_bound_mib(1_048_576, 2, 32) > 64 << 10);
+        // Every range of them mapped at once stays within the limit.
+        for (limit, windows, cpus) in [(65_530, 2, 32), (65_530, 7, 18), (262_144, 3, 64)] {
+            let ranges = share_window_bound_mib(limit, windows, cpus) / 2;
+            let own = VM_OWN_MAPPINGS + 2 * cpus.saturating_sub(VM_OWN_MAPPINGS_CPUS);
+            assert!(
+                own + ranges * windows * MAPPINGS_A_RANGE <= limit,
+                "{limit} {windows} {cpus}"
+            );
+        }
+        // No window at all where the VM's own mappings fill the limit.
+        assert_eq!(share_window_bound_mib(300, 2, 32), 0);
     }
 
     /// A warm VM whose end closed with its run still unread surely never had it, whether

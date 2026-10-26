@@ -274,18 +274,14 @@ fn read_frame_into(from: &mut UnixStream, bytes: &mut Vec<u8>) -> io::Result<boo
 }
 
 /// The bytes of the host's storage a request reads or writes, which its microVM's I/O
-/// limits charge (D178): a READ's asked for, a WRITE's given, a DAX mapping's length (D189);
-/// none of anything else it asks.
+/// limits charge before it is asked (D178): a READ's asked for, a WRITE's given; none of
+/// anything else it asks. A DAX mapping is charged as it is made, its file's bytes in its
+/// range (`mapping`, D189).
 fn io_bytes(req: &[u8]) -> u64 {
     let word = |at: usize| {
         req.get(at..at.saturating_add(4))
             .and_then(|b| <[u8; 4]>::try_from(b).ok())
             .map(u32::from_le_bytes)
-    };
-    let long = |at: usize| {
-        req.get(at..at.saturating_add(8))
-            .and_then(|b| <[u8; 8]>::try_from(b).ok())
-            .map(u64::from_le_bytes)
     };
     match word(4) {
         // fuse_read_in after the header: fh, offset, then size.
@@ -294,10 +290,10 @@ fn io_bytes(req: &[u8]) -> u64 {
         Some(server::op::WRITE) => {
             u64::try_from(req.len().saturating_sub(server::IN_HEADER_BYTES + 40)).unwrap_or(u64::MAX)
         }
-        // A DAX window's range (D189), which the guest then reads and writes as memory: the
-        // I/O it stands for, its length, charged as it is mapped (fuse_setupmapping_in: fh,
-        // foffset, then len).
-        Some(SETUPMAPPING) => long(server::IN_HEADER_BYTES + 16).unwrap_or(0),
+        // A DAX window's range among them (D189), which the guest then reads and writes as
+        // memory: the I/O it stands for is its file's bytes in the range, which its file's
+        // size decides as it is mapped (`mapping`), not the range's length, 2 MiB for a
+        // small file's too.
         _ => 0,
     }
 }
@@ -645,8 +641,15 @@ fn serve_with(
         let failed = req.get(..read).and_then(server::unreachable);
         return failed.map_or(0, |reply| scatter(chain, mem, &reply).unwrap_or(0));
     }
-    // Charged to its microVM's I/O limits before it is asked (D178).
-    if let (Some(limit), Some(_)) = (limit, total) {
+    // Charged to its microVM's I/O limits before it is asked (D178); a DAX mapping its
+    // window makes as it is made, once its file's bytes in its range are known (D189).
+    let maps = window.is_some()
+        && req
+            .get(4..8)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+            == Some(SETUPMAPPING);
+    if let (Some(limit), Some(_), false) = (limit, total, maps) {
         limit.take(io_bytes(req));
     }
     // A reply of the device's own, into the buffer, which keeps what it holds room for.
@@ -660,7 +663,12 @@ fn serve_with(
         // server's. No directory, or its server gone: the guest is told so (ENODEV), as
         // for a share it may not mount.
         Some(_) => match window.and_then(|w| mapping(req, w, slot)) {
-            Some(mapped) => put(reply, mapped),
+            Some((mapped, bytes)) => {
+                if let Some(limit) = limit.filter(|_| maps) {
+                    limit.take(bytes);
+                }
+                put(reply, mapped)
+            }
             None => {
                 let asked = match slot.ask_into(req, reply) {
                     Ok(asked) => asked,
@@ -710,8 +718,9 @@ fn scatter(chain: &Chain, mem: &GuestMemory, reply: &[u8]) -> Result<u32, ()> {
 /// A FUSE_SETUPMAPPING or FUSE_REMOVEMAPPING, answered from `window` (D189): a range of the
 /// file of the request's node mapped there, from a descriptor its server opens, or ranges
 /// unmapped; none where `req` is neither. Answered with its out header alone, its error 0
-/// or an errno.
-fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>> {
+/// or an errno, and the file's bytes the range it mapped holds, which its microVM's I/O
+/// limits charge it (D178): none where it mapped none.
+fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>, u64)> {
     let word = |at: usize| {
         req.get(at..at.checked_add(4)?)
             .and_then(|b| <[u8; 4]>::try_from(b).ok())
@@ -754,22 +763,25 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>> 
     } else {
         // fuse_removemapping_in's count, then each fuse_removemapping_one: moffset, len.
         match word(at) {
-            Some(count) => (0..count as usize).try_for_each(|i| {
-                let one = at + 4 + i * 16;
-                match (long(one), long(one + 8)) {
-                    (Some(moffset), Some(len)) => window.unmap(moffset, len),
-                    _ => Err(libc::EINVAL),
-                }
-            }),
+            Some(count) => (0..count as usize)
+                .try_for_each(|i| {
+                    let one = at + 4 + i * 16;
+                    match (long(one), long(one + 8)) {
+                        (Some(moffset), Some(len)) => window.unmap(moffset, len),
+                        _ => Err(libc::EINVAL),
+                    }
+                })
+                .map(|()| 0),
             None => Err(libc::EINVAL),
         }
     };
+    let bytes = done.unwrap_or(0);
     let error = done.err().map_or(0, |errno| errno.saturating_neg());
     let mut reply = Vec::with_capacity(16);
     reply.extend_from_slice(&16u32.to_le_bytes());
     reply.extend_from_slice(&error.to_le_bytes());
     reply.extend_from_slice(&unique.to_le_bytes());
-    Some(reply)
+    Some((reply, bytes))
 }
 
 /// The nodes whose files' sizes `reply`, the server's to `req`, may tell the guest
@@ -1149,9 +1161,10 @@ mod tests {
         )
     }
 
-    /// What a request costs its microVM's I/O limits (D178): a READ the bytes it asks for,
-    /// after its 40-byte header; a WRITE the bytes it gives; a DAX mapping its length (D189);
-    /// anything else nothing.
+    /// What a request costs its microVM's I/O limits before it is asked (D178): a READ the
+    /// bytes it asks for, after its 40-byte header; a WRITE the bytes it gives; anything else
+    /// nothing, a DAX mapping among them, charged as it is made its file's bytes in its range
+    /// (`a_dax_mapping_maps_the_file_of_its_node`, D189).
     #[test]
     fn requests_are_charged_what_they_read_and_write() {
         let request = |opcode: u32, args: &[u8]| {
@@ -1179,15 +1192,17 @@ mod tests {
         for v in [7u64, 0, 2 << 20, 2, 0] {
             setup.extend(v.to_le_bytes());
         }
-        assert_eq!(io_bytes(&request(SETUPMAPPING, &setup)), 2 << 20);
+        assert_eq!(io_bytes(&request(SETUPMAPPING, &setup)), 0);
         assert_eq!(io_bytes(&request(1, b"f\0")), 0);
     }
 
     /// A DAX window's mappings are the device's (D189): a FUSE_SETUPMAPPING, which names its
     /// file by its node alone as Linux's guest sends it, maps the range of that file into
     /// the window, from a descriptor its share's server opens and sends, writable where it
-    /// asks; a directory's is refused; a FUSE_REMOVEMAPPING unmaps; anything else goes to
-    /// the server.
+    /// asks, charged its microVM's I/O limits the file's bytes in the range (D178): a file
+    /// shorter than its range, 5,000 bytes of 2 MiB, its 5,000, and a range past its file's
+    /// end nothing; a directory's is refused, and charged nothing; a FUSE_REMOVEMAPPING
+    /// unmaps; anything else goes to the server.
     #[test]
     fn a_dax_mapping_maps_the_file_of_its_node() {
         struct Nothing;
@@ -1203,6 +1218,7 @@ mod tests {
         let dir = shards_testdir::TempDir::new("fs-dax").unwrap();
         let bytes: Vec<u8> = (0..4 * MIB).map(|i| (i / 4096 % 251) as u8).collect();
         std::fs::write(dir.join("big"), &bytes).unwrap();
+        std::fs::write(dir.join("small"), &bytes[..5000]).unwrap();
         let server = server::Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
         let (ours, theirs) = UnixStream::pair().unwrap();
         let t = std::thread::spawn(move || answer(&server, theirs).unwrap());
@@ -1225,49 +1241,138 @@ mod tests {
             "{looked:?}"
         );
         let node = u64::from_le_bytes(looked[16..24].try_into().unwrap());
+        let small = slot.ask(&request(1, 1, b"small\0")).unwrap().unwrap();
+        let small = u64::from_le_bytes(small[16..24].try_into().unwrap());
         let w = window::Window::new(1 << 32, 8 * MIB, |_| {
             Ok(Box::new(Nothing) as Box<dyn window::Stage2>)
         })
         .unwrap();
         // fuse_setupmapping_in as Linux's guest sends it: no handle, 2 MiB of the file from
-        // 2 MiB; FUSE_SETUPMAPPING_FLAG_READ, and _WRITE where asked.
-        let setup = |node: u64, write: bool, moffset: u64| {
+        // `foffset`; FUSE_SETUPMAPPING_FLAG_READ, and _WRITE where asked.
+        let setup_at = |node: u64, write: bool, moffset: u64, foffset: u64| {
             let mut body = Vec::new();
             let flags = 2 | if write { MAP_WRITE } else { 0 };
-            for v in [u64::MAX, 2 * MIB, 2 * MIB, flags, moffset] {
+            for v in [u64::MAX, foffset, 2 * MIB, flags, moffset] {
                 body.extend(v.to_le_bytes());
             }
             request(SETUPMAPPING, node, &body)
         };
+        let setup = |node: u64, write: bool, moffset: u64| setup_at(node, write, moffset, 2 * MIB);
         let error = |reply: Vec<u8>| i32::from_le_bytes(reply[4..8].try_into().unwrap());
-        assert_eq!(
-            error(mapping(&setup(node, false, 4 * MIB), &w, &slot).unwrap()),
-            0
-        );
+        let (reply, charged) = mapping(&setup(node, false, 4 * MIB), &w, &slot).unwrap();
+        assert_eq!((error(reply), charged), (0, 2 * MIB));
         // SAFETY: the window's own range, the file mapped there, for as long as `w` is.
         let seen = unsafe { std::slice::from_raw_parts(w.host().add(4 << 20), 2 << 20) };
         assert_eq!(seen, &bytes[2 << 20..4 << 20]);
         assert_eq!(w.mappings().len(), 1);
         // Writable: what the guest writes there is the file's.
-        assert_eq!(error(mapping(&setup(node, true, 0), &w, &slot).unwrap()), 0);
+        assert_eq!(error(mapping(&setup(node, true, 0), &w, &slot).unwrap().0), 0);
         // SAFETY: the window's own range, mapped writable above.
         unsafe { w.host().write_volatile(!bytes[2 << 20]) };
         assert_eq!(std::fs::read(dir.join("big")).unwrap()[2 << 20], !bytes[2 << 20]);
-        assert_eq!(
-            error(mapping(&setup(1, false, 6 * MIB), &w, &slot).unwrap()),
-            -libc::EISDIR
-        );
-        let mut gone = 2u32.to_le_bytes().to_vec();
-        for moffset in [4 * MIB, 0] {
+        let (reply, charged) = mapping(&setup(1, false, 6 * MIB), &w, &slot).unwrap();
+        assert_eq!((error(reply), charged), (-libc::EISDIR, 0));
+        let (reply, charged) = mapping(&setup_at(small, false, 6 * MIB, 0), &w, &slot).unwrap();
+        assert_eq!((error(reply), charged), (0, 5000));
+        let (reply, charged) = mapping(&setup_at(node, false, 6 * MIB, 4 * MIB), &w, &slot).unwrap();
+        assert_eq!((error(reply), charged), (0, 0));
+        let mut gone = 3u32.to_le_bytes().to_vec();
+        for moffset in [4 * MIB, 0, 6 * MIB] {
             gone.extend(moffset.to_le_bytes());
             gone.extend((2 * MIB).to_le_bytes());
         }
-        assert_eq!(
-            error(mapping(&request(REMOVEMAPPING, node, &gone), &w, &slot).unwrap()),
-            0
-        );
+        let (reply, charged) = mapping(&request(REMOVEMAPPING, node, &gone), &w, &slot).unwrap();
+        assert_eq!((error(reply), charged), (0, 0));
         assert!(w.mappings().is_empty());
         assert!(mapping(&request(1, 1, b"big\0"), &w, &slot).is_none());
+        drop(slot);
+        t.join().unwrap();
+    }
+
+    /// A DAX mapping is charged its microVM's I/O limits as it is made, its file's bytes in
+    /// its range, once (D178, D189): at 1 MiB a second, ten mappings of a 5,000-byte file's
+    /// range pass in milliseconds, where the range's 2 MiB each would hold them 18 s, and a
+    /// request after a whole range's mapping waits the 2 s its 2 MiB take.
+    #[test]
+    fn a_dax_mapping_is_charged_its_files_bytes_as_it_is_made() {
+        struct Nothing;
+        impl window::Stage2 for Nothing {
+            unsafe fn map(&self, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn unmap(&self, _: u64, _: usize) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        const MIB: u64 = 1 << 20;
+        let dir = shards_testdir::TempDir::new("fs-dax-charge").unwrap();
+        std::fs::write(dir.join("big"), vec![1u8; 4 << 20]).unwrap();
+        std::fs::write(dir.join("small"), [1u8; 5000]).unwrap();
+        let server = server::Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || answer(&server, theirs).unwrap());
+        let slot = Slot::new();
+        slot.attach(ours).unwrap();
+        let request = |opcode: u32, nodeid: u64, body: &[u8]| {
+            let mut r = Vec::new();
+            r.extend((40 + body.len() as u32).to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(nodeid.to_le_bytes());
+            r.extend([0u8; 16]);
+            r.extend(body);
+            r
+        };
+        let node = |name: &[u8]| {
+            let looked = slot.ask(&request(1, 1, name)).unwrap().unwrap();
+            u64::from_le_bytes(looked[16..24].try_into().unwrap())
+        };
+        let (big, small) = (node(b"big\0"), node(b"small\0"));
+        let w = window::Window::new(1 << 32, 64 * MIB, |_| {
+            Ok(Box::new(Nothing) as Box<dyn window::Stage2>)
+        })
+        .unwrap();
+        let mem = guest();
+        let limit = Limiter::new();
+        limit.set(MIB, 0);
+        // fuse_setupmapping_in: no handle, 2 MiB of the file from 0, to read, at `moffset`.
+        let map = |node: u64, moffset: u64| {
+            let mut body = Vec::new();
+            for v in [u64::MAX, 0, 2 * MIB, 2, moffset] {
+                body.extend(v.to_le_bytes());
+            }
+            let req = request(SETUPMAPPING, node, &body);
+            mem.access().unwrap().write(REQUEST, &req).unwrap();
+            let len = u32::try_from(req.len()).unwrap();
+            assert_eq!(
+                serve(
+                    &chain(vec![readable(REQUEST, len)]),
+                    &mem,
+                    &slot,
+                    Some(&limit),
+                    Some(&w)
+                ),
+                16
+            );
+            assert_eq!(reply(&mem).1, 0);
+        };
+        let start = std::time::Instant::now();
+        for i in 0..10 {
+            map(small, i * 2 * MIB);
+        }
+        let ten = start.elapsed();
+        assert!(
+            ten < std::time::Duration::from_secs(2),
+            "ten 5,000-byte mappings took {ten:?}"
+        );
+        map(big, 20 * MIB);
+        let after = std::time::Instant::now();
+        map(small, 22 * MIB);
+        let waited = after.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_millis(1900),
+            "waited {waited:?} after 2 MiB"
+        );
         drop(slot);
         t.join().unwrap();
     }

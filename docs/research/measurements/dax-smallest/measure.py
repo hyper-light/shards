@@ -20,12 +20,18 @@ whose lines give each phase's n, p50, p90, p99 and max in µs, how many files st
 DAX, and the guest's Cached and MemFree before and after. The daemon's log, which the
 patch's VM process writes to, gives each FUSE_SETUPMAPPING's parts (DAX-SETUP, DAX-MAP)
 and removal (DAX-REMOVE), and at the run's end its windows' ranges now and at their peak,
-its host mappings, its descriptors and its memory (DAX-END); each run's are kept beside
-its own lines in OUT. With --sets, the many-small-files sets too: SETS' files (the cargo
+its host mappings, its descriptors and its memory (DAX-END); on Linux the daemon's open
+descriptors and inotify watches at their peak while each run ran, sampled every 100 ms
+(DAX-DAEMON: the daemon watches each file a window maps); each run's are kept beside its
+own lines in OUT. With --sets, the many-small-files sets too: SETS' files (the cargo
 registry's size mix, --mix FILE of one size in bytes a line), and --small N files of 4 KiB
 (more than a window has ranges), each under the default window and under --set-window MIB
-(1,024: 512 ranges), through both arms, read once each (`first`); --mix-from DIR writes
---mix from the sizes of DIR's regular files of 2 MiB or less (a cargo registry's sources).
+(1,024: 512 ranges), through both arms, read once each (`first`), --set-rounds times, the
+arms' order turning each round: the window arm once for each threshold of --set-smallest
+(bytes, a comma list; SHARDS_DAX_SMALLEST, the files of that size and more mapped; 0,
+every file), the rule's sets at S being its window arm at S. --mix-from DIR writes --mix
+from the sizes of DIR's regular files of 2 MiB or less (a cargo registry's sources). An
+empty --sizes runs the sets alone.
 A run that fails is said, with what it and the daemon said, and counted; the rest go on.
 
 Each run's header: host, OS, kernel, CPU model, revision, the host's load,
@@ -43,14 +49,15 @@ size under 2 MiB meets it, 2 MiB stays, now measured.
 
     measure.py SHARDS --fuse HOME --window HOME --dir DIR [--sizes 4k,16k,...]
                [--files N] [--rounds N] [--window-mib MIB] [--image IMAGE] [--out OUT]
-               [--sets [--mix FILE | --mix-from DIR] [--small N] [--set-window MIB]]
+               [--sets [--mix FILE | --mix-from DIR] [--small N] [--set-window MIB]
+                       [--set-smallest BYTES,...] [--set-rounds N]]
 
 Each home holds IMAGE already (`SHARDS_HOME=HOME shards pull IMAGE` once): runs never pull.
 Each home's daemon is stopped first and last, so that each starts with its arm's settings,
 and the window arm's again as a set's window changes; a daemon's log is read from where it
 stood before each run.
 """
-import argparse, os, platform, shutil, statistics, subprocess, sys, tempfile, time
+import argparse, os, platform, shutil, statistics, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 p = argparse.ArgumentParser()
@@ -70,6 +77,8 @@ p.add_argument("--mix", default="")
 p.add_argument("--mix-from", default="")
 p.add_argument("--small", type=int, default=0)
 p.add_argument("--set-window", type=int, default=1024)
+p.add_argument("--set-smallest", default="0")
+p.add_argument("--set-rounds", type=int, default=1)
 a = p.parse_args()
 
 here = Path(__file__).resolve().parent
@@ -102,12 +111,12 @@ def label(size):
     return f"{size >> 10}k" if size % 1024 == 0 else str(size)
 
 
-SIZES = [size_of(s) for s in a.sizes.split(",")]
+SIZES = [size_of(s) for s in a.sizes.split(",") if s]
 CACHES = a.caches.split(",")
 ARMS = ["fuse", "window"]
 
 
-def env(arm, window_mib=None):
+def env(arm, window_mib=None, smallest=0):
     home = a.fuse if arm == "fuse" else a.window
     e = dict(os.environ, SHARDS_HOME=str(Path(home).resolve()), DOCKER_CONFIG=str(config))
     for k in ("SHARDS_SHARE_WINDOW_MIB", "SHARDS_DAX_SMALLEST"):
@@ -115,7 +124,7 @@ def env(arm, window_mib=None):
     if arm == "fuse":
         e["SHARDS_SHARE_WINDOW_MIB"] = "0"
     else:
-        e["SHARDS_DAX_SMALLEST"] = "0"
+        e["SHARDS_DAX_SMALLEST"] = str(smallest)
         mib = window_mib if window_mib is not None else a.window_mib
         if mib:
             e["SHARDS_SHARE_WINDOW_MIB"] = str(mib)
@@ -229,22 +238,63 @@ def log_of(arm):
 FAILED = []
 
 
-def run(arm, dirname, phases, window_mib=None):
-    """One run's lines: guestsmall's, and the daemon log's DAX lines it wrote meanwhile;
-    none of guestsmall's where it failed, which is said and counted."""
+def daemon_counts(home):
+    """The home's daemon's open descriptors and inotify watches, Linux's (/proc/PID/fd, and
+    the `inotify wd:` lines of its inotify descriptors' fdinfo); None where it has none
+    running or there is no /proc."""
+    try:
+        pid = int((Path(home).resolve() / "daemon.pid").read_text().split()[0])
+        names = os.listdir(f"/proc/{pid}/fd")
+    except (OSError, ValueError, IndexError):
+        return None
+    watches = 0
+    for n in names:
+        try:
+            if os.readlink(f"/proc/{pid}/fd/{n}") == "anon_inode:inotify":
+                info = Path(f"/proc/{pid}/fdinfo/{n}").read_text()
+                watches += sum(1 for l in info.splitlines() if l.startswith("inotify wd:"))
+        except OSError:
+            continue
+    return len(names), watches
+
+
+def run(arm, dirname, phases, window_mib=None, smallest=0):
+    """One run's lines: guestsmall's, and the daemon log's DAX lines it wrote meanwhile,
+    and on Linux a DAX-DAEMON line of the daemon's descriptors and inotify watches at their
+    peak while it ran (sampled every 100 ms); none of guestsmall's where it failed, which is
+    said and counted."""
     log = log_of(arm)
     before = log.stat().st_size if log.exists() else 0
+    home = a.fuse if arm == "fuse" else a.window
+    peaks = [0, 0]
+    stopped = threading.Event()
+
+    def sample():
+        while not stopped.is_set():
+            got = daemon_counts(home)
+            if got:
+                peaks[0], peaks[1] = max(peaks[0], got[0]), max(peaks[1], got[1])
+            stopped.wait(0.1)
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    if not macos:
+        sampler.start()
     t = time.monotonic()
     done = subprocess.run([a.shards, "run", "--rm", "--pull", "never", "-v", f"{data}:/data", a.image,
                            "/data/guestsmall", f"/data/{dirname}"] + phases,
-                          env=env(arm, window_mib), capture_output=True, text=True)
+                          env=env(arm, window_mib, smallest), capture_output=True, text=True)
     took = time.monotonic() - t
+    stopped.set()
+    if not macos:
+        sampler.join()
     said = []
     if log.exists():
         with open(log, "rb") as f:
             f.seek(before)
             said = [l.decode(errors="replace").rstrip() for l in f]
     dax = [l.strip() for l in said if "DAX-" in l]
+    if not macos:
+        dax.append(f"DAX-DAEMON fds_peak {peaks[0]} inotify_watches_peak {peaks[1]}")
     if done.returncode != 0:
         FAILED.append((arm, dirname))
         say(f"FAILED {arm} {dirname}: status {done.returncode}")
@@ -273,6 +323,7 @@ def dax_summary(lines):
     setups = [l for l in lines if "DAX-SETUP " in l]
     removes = [l for l in lines if "DAX-REMOVE " in l]
     ends = [l for l in lines if "DAX-END " in l]
+    daemon = [l.split("DAX-DAEMON ", 1)[1] for l in lines if "DAX-DAEMON " in l]
     refused = sum(1 for l in setups if not l.endswith("errno 0"))
 
     def field(l, name):
@@ -292,7 +343,8 @@ def dax_summary(lines):
             parts[name] = statistics.median(v)
     end = " | ".join(l.split("DAX-END ", 1)[1] for l in ends)
     p50s = " ".join(f"{k} {v:.0f}" for k, v in parts.items())
-    return f"setups {len(setups)} refused {refused} removes {len(removes)} p50s: {p50s or '-'}; end: {end or '-'}"
+    said = f"; daemon {daemon[0]}" if daemon else ""
+    return f"setups {len(setups)} refused {refused} removes {len(removes)} p50s: {p50s or '-'}; end: {end or '-'}{said}"
 
 
 if not shutil.which("zig"):
@@ -316,8 +368,9 @@ for s in SIZES:
     lay_out(f"s{label(s)}", [s] * a.files)
 cells = [(arm, s, c) for s in SIZES for arm in ARMS for c in CACHES]
 got = {}
+set_runs = {}
 try:
-    for r in range(a.rounds):
+    for r in range(a.rounds if cells else 0):
         k = r % len(cells)
         order = cells[k:] + cells[:k]
         if r % 2:
@@ -350,26 +403,39 @@ try:
         if a.small:
             lay_out("small", [4096] * a.small)
             sets.append(("small", a.small))
-        for name, n in sets:
-            for window_mib in (a.window_mib, a.set_window):
-                for arm in ARMS:
-                    # The window arm's daemon started again with this set's window.
-                    if arm == "window":
-                        stop(arm)
-                    leave(name, "cold")
-                    load = os.getloadavg()[0]
-                    lines, dax, took = run(arm, name, ["first"], window_mib if arm == "window" else None)
-                    if not lines:
-                        continue
-                    phases, statx, _ = parse(lines)
-                    row = phases.get("first", [0, 0, 0, 0, 0])
-                    say(f"set {name} ({n} files) {arm} window {window_mib or 'default'} load {load:.2f} run {took:.2f}s "
-                        f"first p50 {row[1]:.1f} p90 {row[2]:.1f} p99 {row[3]:.1f} max {row[4]:.1f}; {dax_summary(dax)}")
+        thresholds = [int(t) for t in a.set_smallest.split(",") if t]
+        variants = [("fuse", None)] + [("window", t) for t in thresholds]
+        for r in range(a.set_rounds):
+            k = r % len(variants)
+            order = variants[k:] + variants[:k]
+            for name, n in sets:
+                for window_mib in (a.window_mib, a.set_window):
+                    for arm, smallest in (order if r % 2 == 0 else order[::-1]):
+                        # The window arm's daemon started again with this set's window and
+                        # threshold.
+                        if arm == "window":
+                            stop(arm)
+                        leave(name, "cold")
+                        load = os.getloadavg()[0]
+                        lines, dax, took = run(arm, name, ["first"], window_mib if arm == "window" else None,
+                                               smallest or 0)
+                        if not lines:
+                            continue
+                        phases, statx, _ = parse(lines)
+                        row = phases.get("first", [0, 0, 0, 0, 0])
+                        set_runs.setdefault((name, window_mib or 0, arm, smallest), []).append(took)
+                        say(f"set {name} ({n} files) round {r} {arm} window {window_mib or 'default'} smallest "
+                            f"{'-' if smallest is None else smallest} load {load:.2f} run {took:.2f}s "
+                            f"statx-dax {statx[0] if statx else '?'} of {statx[1] if statx else '?'} "
+                            f"first p50 {row[1]:.1f} p90 {row[2]:.1f} p99 {row[3]:.1f} max {row[4]:.1f}; {dax_summary(dax)}")
 finally:
     for arm in ARMS:
         stop(arm)
     shutil.rmtree(config, ignore_errors=True)
 say(f"load {os.getloadavg()[0]:.2f} at the end; runs failed {len(FAILED)}: {FAILED or '-'}")
+for (name, window_mib, arm, smallest), took in sorted(set_runs.items(), key=lambda kv: (kv[0][:3], kv[0][3] or 0)):
+    say(f"set {name} window {window_mib or 'default'} {arm:6} smallest {'-' if smallest is None else smallest} "
+        f"runs {len(took)}: run p50 {statistics.median(took):.2f}s [{min(took):.2f}, {max(took):.2f}]")
 say("of each cell's rounds: the median of its p50s and p99s, and their ranges (the rounds' spread)")
 for (arm, s, cache, ph), rows in sorted(got.items(), key=lambda kv: (kv[0][1], kv[0][3], kv[0][2], kv[0][0])):
     p50s = [r[1] for r in rows]

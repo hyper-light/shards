@@ -41,6 +41,8 @@ pub fn main() {
             "pci-dma" => pci_dma(),
             "host" => host(),
             "daemon" => daemon(),
+            "slates_fs" => slates_fs(),
+            "slates_fs_dax" => slates_fs_dax(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -72,6 +74,144 @@ fn setup() -> Result<(), String> {
             return Err(format!("mount {target:?}: {}", io::Error::last_os_error()));
         }
     }
+    Ok(())
+}
+
+/// Mounts the share a slates daemon serves (tag `shards0`, `run --kernel … --slates-fs-fd N`,
+/// D38), reads `/hello` from it, then writes `/from-guest`, syncs it and reads it back: a
+/// microVM reaching a slates volume through virtio-fs with no host mount and no DAX window.
+fn slates_fs() -> Result<(), String> {
+    std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
+    let (src, target, fs) = (cstr("shards0")?, cstr("/mnt")?, cstr("virtiofs")?);
+    // SAFETY: NUL-terminated strings and no data argument, as setup() mounts the
+    // pseudo-filesystems.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!(
+            "mount shards0 (virtiofs): {}",
+            io::Error::last_os_error()
+        ));
+    }
+    let got = std::fs::read_to_string("/mnt/hello").map_err(|e| format!("read /mnt/hello: {e}"))?;
+    let want = "hello from slates over shards virtio-fs\n";
+    if got != want {
+        return Err(format!("slates served {got:?}, expected {want:?}"));
+    }
+    // What the host reads back through slates' own read once the VM is gone: written,
+    // synced, and read here first through the guest's own mount.
+    let wrote = "written by a shards guest through its slates share\n";
+    {
+        let mut file =
+            std::fs::File::create("/mnt/from-guest").map_err(|e| format!("create /mnt/from-guest: {e}"))?;
+        file.write_all(wrote.as_bytes())
+            .map_err(|e| format!("write /mnt/from-guest: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("fsync /mnt/from-guest: {e}"))?;
+    }
+    let back =
+        std::fs::read_to_string("/mnt/from-guest").map_err(|e| format!("read /mnt/from-guest: {e}"))?;
+    if back != wrote {
+        return Err(format!("the share read back {back:?} after writing {wrote:?}"));
+    }
+    Ok(())
+}
+
+/// Maps a slates file with DAX through the slates-backed share (slates' Shards part 3,
+/// `docs/wip/shards/dax-protocol.md`). Mounts tag `shards0` with `dax=inode`, the mode slates'
+/// answers steer: slates marks a regular file of 2 MiB or more `FUSE_ATTR_DAX`, so `/mnt/big`
+/// (3 MiB, byte `i` being `i mod 251`, as the host wrote it) must be DAX. Maps its first 2 MiB
+/// shared and writable, checks the bytes through the map, stores through it and fsyncs: slates
+/// writes the store into the volume before the fsync returns. Says so on the console
+/// (`SLATES-DAX STORED`); the host then reads the volume and rewrites the file through another
+/// path, keeping the store and changing other bytes, and slates writes that change into the map
+/// before the host's write returns. So the guest waits, with no deadline of its own (the host
+/// bounds the test), for both to show in its same map. The bytes and offsets are those of
+/// crates/shards/tests/slates_fs.rs.
+fn slates_fs_dax() -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    const BIG: &str = "/mnt/big";
+    // The first DAX range of the file: what a guest's window maps at once (FUSE_DAX_SZ).
+    const RANGE: usize = 2 << 20;
+    const GUEST_AT: usize = 4096;
+    const GUEST: &[u8] = b"stored by a shards guest through its DAX map\n";
+    const HOST_AT: usize = 1 << 20;
+    const HOST: &[u8] = b"written by the host through slates while the guest held its map\n";
+    std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
+    let (src, target, fs, opts) = (
+        cstr("shards0")?,
+        cstr("/mnt")?,
+        cstr("virtiofs")?,
+        cstr("dax=inode")?,
+    );
+    // SAFETY: NUL-terminated strings, the options as the data argument, as erofs() mounts.
+    if unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fs.as_ptr(),
+            0,
+            opts.as_ptr().cast(),
+        )
+    } != 0
+    {
+        return Err(format!(
+            "mount shards0 (virtiofs, dax=inode): {}",
+            io::Error::last_os_error()
+        ));
+    }
+    if !is_dax(BIG)? {
+        return Err(format!("{BIG} is not DAX"));
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(BIG)
+        .map_err(|e| format!("open {BIG}: {e}"))?;
+    // SAFETY: a fresh shared mapping of the file's first range, read and write, reached below
+    // only by volatile accesses inside it and unmapped at the end.
+    let map = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            RANGE,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if map == libc::MAP_FAILED {
+        return Err(format!("mmap {BIG}: {}", io::Error::last_os_error()));
+    }
+    let map = map.cast::<u8>();
+    let read = |at: usize, len: usize| -> Vec<u8> {
+        (at..at + len)
+            // SAFETY: every caller's span lies inside the mapping (constants within RANGE).
+            .map(|i| unsafe { map.add(i).read_volatile() })
+            .collect()
+    };
+    let written: Vec<u8> = (0..4096).map(|i: usize| (i % 251) as u8).collect();
+    if read(0, written.len()) != written {
+        return Err("the map does not hold the file's bytes".into());
+    }
+    for (i, byte) in GUEST.iter().enumerate() {
+        // SAFETY: inside the mapping (GUEST_AT + GUEST.len() < RANGE).
+        unsafe { map.add(GUEST_AT + i).write_volatile(*byte) };
+    }
+    file.sync_all().map_err(|e| format!("fsync {BIG}: {e}"))?;
+    let _ = writeln!(io::stdout(), "SLATES-DAX STORED");
+    waiting("the host's change in the map", || {
+        let (host, own) = (read(HOST_AT, HOST.len()), read(GUEST_AT, GUEST.len()));
+        if host == HOST && own == GUEST {
+            Ok(())
+        } else {
+            Err(format!(
+                "host bytes {:?}, own store {:?}",
+                String::from_utf8_lossy(&host),
+                String::from_utf8_lossy(&own)
+            ))
+        }
+    });
+    // SAFETY: the mapping made above, unmapped once.
+    unsafe { libc::munmap(map.cast(), RANGE) };
     Ok(())
 }
 

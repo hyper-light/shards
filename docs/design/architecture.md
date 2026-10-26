@@ -2744,6 +2744,18 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
   a template is made for each number of shares (`run::template`). A guest that mounts
   a share before its run has one is told ENODEV.
+- **A share another server serves** (`shards run --kernel … --slates-fs-fd N`): a direct
+  run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
+  hands it, which a server answers in this device's framing, as `slates shards VOLUME --fd
+  N -- shards run …` hands it one the slates daemon serves a volume on (slates' A-161). The
+  VM process takes it as it takes `--grants` (`warm::inherited_socket`: a socket, not
+  stdio, closed on exec), each descriptor once, and never beside `--warm` or `--shares`: a
+  daemon's VM is given its shares by its daemon. With `--share-window` the share has a DAX
+  window, whose mappings its server answers (D189): slates since its ba0f8ef0, a
+  shared-memory object of each file, the range each mapping asks filled. Tests
+  (tests/slates_fs.rs, where `SLATES_BIN` names a slates binary): a guest mounts, reads and
+  writes a slates volume, and one maps a slates file through its window, its fsynced
+  stores in the volume at slates' first read and slates' write of the file in its map.
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
@@ -5988,10 +6000,26 @@ stores.
   (`window::SHARED_NEEDS_WRITE`); a read-only volume's files go through FUSE.
 - Which files: init mounts each volume `dax=inode` (a kernel without FUSE's DAX refuses the
   option, and the volume is mounted without it), and its server says which files to map
-  (FUSE_HAS_INODE_DAX, FUSE_ATTR_DAX): regular files of a range or more, 2 MiB, that it may
-  read. A smaller one goes through FUSE, where a mapping would cost a round trip to the
-  share process and a host mmap for less than a range. FUSE_INIT says the host's page
-  size (map_alignment).
+  (FUSE_HAS_INODE_DAX, FUSE_ATTR_DAX): regular files of 1 MiB or more that it may read
+  (`DAX_SMALLEST`, PM M338). Measured from 4 KiB to 2 MiB through a window and through
+  FUSE on the Mac and on Fedora's performance and efficient cores (first reads cold and
+  warm, re-reads, overwrites, memory, a working tree's 66,357 files and 70,000 of 4 KiB),
+  1 MiB is the smallest size from which the window is no worse on every host: from
+  256 KiB on the Mac and Fedora's efficient cores, from 1 MiB on its performance cores,
+  where a 256 KiB file's cold overwrite took 251 to 258 µs through a window (the host
+  reads the page a guest's store lands in) and 202 to 209 through FUSE. A smaller file
+  goes through FUSE: below 64 KiB a mapping's round trip to the share process and host
+  mmap cost a first read more than it saves, and a 4 KiB file's mapping held 23 to 28 KiB
+  more of its VM's memory than FUSE's page. Linux on arm64 is unmeasured: no host here
+  runs KVM on it. FUSE_INIT says the host's page size (map_alignment).
+- On Linux each of a VM's windows (its shares' and its join share's) is no longer than
+  lets every range of them be mapped at once within the host's `vm.max_map_count`
+  (`share_window_bound_mib`): a range of a file shorter than it takes two of its VM
+  process's mappings (the file's and the zeros past it), a whole range one, a VM 385 of
+  its own on 32 CPUs and a stack and its guard for each further vCPU (PM M338), and the
+  guest maps every range when it must, the host refusing a mapping past the limit and the
+  guest's access failing. Linux's default, 65,530, holds a VM of one volume to 31.8 GiB a
+  window; Fedora's 1,048,576 to more than its host's memory.
 - A range never holds a page of its file wholly past the file's end, which the host cannot
   give: HVF ends the vCPU's run at an access there (M271), and x86 KVM retries it without
   end, its vCPU spinning in KVM_RUN (M273). A range is the file's pages to the one that
@@ -6016,9 +6044,12 @@ stores.
   attributes, takes the same path in the guest kernel, which shards' kernel's patch 0007
   closes (resources/kernel/patches): a DAX file's entries left to its layouts' own
   breaking.
-- A mapping is charged its range's bytes against the microVM's I/O limits (D178) as it is
-  made: the guest's loads and stores through it are memory, which the host's page cache
-  serves and writes back.
+- A mapping is charged its file's bytes in its range against the microVM's I/O limits
+  (D178) as it is made, once its file's size says them: a 5,000-byte file's range 5,000
+  bytes, not the range's 2 MiB, which every file's last range was charged before, and a
+  range past its file's end nothing (`a_dax_mapping_maps_the_file_of_its_node`). The
+  guest's loads and stores through it are memory, which the host's page cache serves and
+  writes back.
 - A save (D176) keeps each mapping (snapshot format 23), and its restore maps each range
   again from its new share process, as the run gives the share its server, once that
   server has the tables the guest's node IDs are in, and before the guest runs; a range
@@ -6253,8 +6284,8 @@ template pays it once; what its restores pay is to be measured with mappings.
   third faster written (2.36 against 3.52), an AMD virtual machine no faster; what each
   first touch of a range costs random 4 KiB reads (a 2 MiB read where 4 KiB, a 2 MiB folio
   held) is measured before they are taken.
-- From what size a file is mapped: a range, 2 MiB, not measured below it. How long a
-  window was decided (above, PM M306), after this. Measured against FUSE (PM
+- From what size a file is mapped: 1 MiB, decided by measurement (Which files, above, PM
+  M338), as how long a window is (above, PM M306). Measured against FUSE (PM
   M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
   reads through it (4 GiB under fio's 2 GiB file) reads 17 to 62 times as fast and writes
   whole MiBs 2 to 2.8 times as fast, the guest holding 28 MiB of memory where 2.1 GiB

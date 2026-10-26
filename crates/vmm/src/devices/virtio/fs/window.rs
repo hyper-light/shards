@@ -535,8 +535,9 @@ impl Window {
 
     /// Maps `len` bytes of `file` from `foffset` at window offset `moffset`, writable by
     /// the guest only if `writable`, replacing what was there: a FUSE_SETUPMAPPING's. The
-    /// file's pages go to the one that holds its end, zeros past it. An errno where the
-    /// range lies outside the window or the host refuses the mapping.
+    /// file's pages go to the one that holds its end, zeros past it. How many of the file's
+    /// bytes the range holds, which its microVM's I/O limits charge the mapping (D178); an
+    /// errno where the range lies outside the window or the host refuses the mapping.
     pub fn map(
         &self,
         file: OwnedFd,
@@ -545,12 +546,13 @@ impl Window {
         moffset: u64,
         len: u64,
         writable: bool,
-    ) -> Result<(), i32> {
+    ) -> Result<u64, i32> {
         let (host, size) = self.place(moffset, len).ok_or(libc::EINVAL)?;
         let gpa = self.gpa.checked_add(moffset).ok_or(libc::EINVAL)?;
         let page = page().ok_or(libc::EINVAL)?;
         let file_size = size_of(&file).ok_or(libc::EIO)?;
         let file_to = file_end(file_size, foffset, len, page);
+        let file_bytes = file_size.saturating_sub(foffset).min(len);
         let mut mapped = self.lock();
         let watched = mapped.maps(node);
         let gone = self.forget(&mut mapped, moffset, len);
@@ -612,7 +614,7 @@ impl Window {
             self.clear_held(moffset, size);
         }
         self.settle(mapped, gone, watch);
-        Ok(())
+        Ok(file_bytes)
     }
 
     /// Zeros over `len` bytes at window offset `moffset`, which the guest holds as node
