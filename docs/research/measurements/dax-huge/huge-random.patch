@@ -1,0 +1,19 @@
+diff --git a/crates/vmm/src/devices/virtio/fs/window.rs b/crates/vmm/src/devices/virtio/fs/window.rs
+index 01e2637b..78905562 100644
+--- a/crates/vmm/src/devices/virtio/fs/window.rs
++++ b/crates/vmm/src/devices/virtio/fs/window.rs
+@@ -278,7 +278,13 @@ fn file_range(
+     let at = std::ptr::NonNull::new(at).ok_or(std::io::ErrorKind::InvalidInput)?;
+     // SAFETY: within the window's reservation, which nothing else uses; what was there is
+     // replaced, unmapped at stage 2 first.
+-    unsafe { crate::platform::map_file_range(file, foffset, len, at, writable) }
++    unsafe { crate::platform::map_file_range(file, foffset, len, at, writable) }?;
++    // Its file's pages in 2 MiB folios where its file system makes them, each mapped
++    // whole, a fault's readahead one folio where two (mm/filemap.c
++    // do_sync_mmap_readahead, VM_RAND_READ).
++    crate::platform::huge_pages(at, len);
++    crate::platform::reads_at_random(at, len);
++    Ok(())
+ }
+ 
+ // How many times this thread has looked at a file's size ([`size_of`]), and had a range

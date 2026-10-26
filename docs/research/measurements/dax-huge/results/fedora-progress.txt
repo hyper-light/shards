@@ -1,0 +1,9 @@
+2026-10-26T01:06:32Z start; free: 34550 MiB available; load 21.16
+2026-10-26T01:15:33Z built window: shards version 0.6.0, build unknown-commit
+2026-10-26T01:20:52Z built huge: shards version 0.6.0, build unknown-commit
+2026-10-26T01:25:25Z built huge-random: shards version 0.6.0, build unknown-commit
+2026-10-26T01:25:25Z pass p on CPUs 0-15
+2026-10-26T01:29:01Z pass p: exit 0
+2026-10-26T01:29:01Z pass e on CPUs 16-31
+2026-10-26T01:33:54Z pass e: exit 0
+2026-10-26T01:33:54Z done

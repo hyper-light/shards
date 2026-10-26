@@ -1,0 +1,64 @@
+== docs/research/measurements/dax-huge/results/fedora-e-cores-i9-14900hx.out.txt
+host fedora-2; Fedora Linux 44 (KDE Plasma Desktop Edition); kernel 6.19.10-300.fc44.x86_64; x86_64; Intel(R) Core(TM) i9-14900HX; vendor GenuineIntel; hypervisor no; shards dd1bc78d; memory 64018 MiB; cpus 32 (this run's 16)
+thp enabled always [madvise] never; defrag always defer defer+madvise [madvise] never; shmem_enabled always within_size advise [never] deny force; khugepaged/defrag 1
+volume /home/adalundhe/dax-huge/work/vol: btrfs on /dev/nvme0n1p3 (device nvme0n1p3, read_ahead_kb 128); CONFIG_BTRFS_EXPERIMENTAL n
+arms window,huge,huge-random; cells seq-sparse,seq-written,touch,write,rewrite,partial,budget-seq,budget-touch; rounds 6; n 1000; touch 4 GiB; seq 1024 MiB; high 384M; window 64018 MiB; image mirror.gcr.io/library/alpine
+kind arm: rounds; per read or write, n, p50 median [range], p90 median, p99 median [range], max (µs); or seconds median [range]
+  seq-sparse   window     : 6; s 1.3 [1.2, 1.4]
+      peak_file 1450405888; peak_file_thp 0; peak_dirty 0; held 1073741824; pmd_kib 0; maps 512; hg 0; rr 0; high 0; oom_kill 0
+  seq-sparse   huge       : 6; s 1.3 [1.2, 1.4]
+      peak_file 1288140800; peak_file_thp 0; peak_dirty 0; held 1073741824; pmd_kib 0; maps 512; hg 512; rr 0; high 0; oom_kill 0
+  seq-sparse   huge-random: 6; s 1.2 [1.1, 1.2]
+      peak_file 1051428864; peak_file_thp 0; peak_dirty 0; held 1073741824; pmd_kib 0; maps 512; hg 512; rr 512; high 0; oom_kill 0
+  seq-written  window     : 6; s 1.1 [1.0, 1.2]
+      peak_file 2253242368; peak_file_thp 0; peak_dirty 0; held 1073741824; pmd_kib 0; maps 512; hg 0; rr 0; high 0; oom_kill 0
+  seq-written  huge       : 6; s 1.1 [1.0, 1.6]
+      peak_file 2464468992; peak_file_thp 0; peak_dirty 0; held 1073741824; pmd_kib 0; maps 512; hg 512; rr 0; high 0; oom_kill 0
+  seq-written  huge-random: 6; s 1.3 [1.2, 2.7]
+      peak_file 2189672448; peak_file_thp 0; peak_dirty 0; held 1073741824; pmd_kib 0; maps 512; hg 512; rr 512; high 0; oom_kill 0
+  touch        window     : 6; first n 6000, p50 1383.8 [1351.0, 1672.6], p90 1740.2, p99 2249.1 [1907.6, 3484.0], max 17547.6
+  touch        window     : 6; second n 6000, p50 7.6 [6.8, 8.9], p90 10.9, p99 1179.8 [1016.2, 1284.1], max 1651.6
+      peak_file 3919620096; peak_file_thp 0; peak_dirty 0; held 2982039552; pmd_kib 0; maps 1000; hg 0; rr 0; high 0; oom_kill 0
+  touch        huge       : 6; first n 6000, p50 1302.0 [1250.9, 1357.3], p90 1609.9, p99 1978.0 [1764.8, 2568.6], max 16974.3
+  touch        huge       : 6; second n 6000, p50 8.1 [6.8, 8.4], p90 8.9, p99 16.8 [13.1, 20.2], max 806.9
+      peak_file 4496543744; peak_file_thp 0; peak_dirty 0; held 2936012800; pmd_kib 0; maps 1000; hg 1000; rr 0; high 0; oom_kill 0
+  touch        huge-random: 6; first n 6000, p50 939.7 [899.6, 980.5], p90 1170.6, p99 1521.7 [1388.0, 1748.4], max 15583.4
+  touch        huge-random: 6; second n 6000, p50 7.5 [6.6, 8.3], p90 8.5, p99 14.9 [11.5, 16.5], max 25.0
+      peak_file 3603564544; peak_file_thp 0; peak_dirty 0; held 2097152000; pmd_kib 0; maps 1000; hg 1000; rr 1000; high 0; oom_kill 0
+  write        window     : 6; write n 6000, p50 280.6 [239.1, 284.0], p90 314.9, p99 712.0 [528.2, 801.4], max 1926.9
+      written_per_write 54882; peak_file 2445649920; peak_file_thp 0; peak_dirty 3844096; held 4096000; pmd_kib 0; maps 1000; hg 0; rr 0; high 0; oom_kill 0
+  write        huge       : 6; write n 6000, p50 275.8 [238.9, 292.3], p90 312.9, p99 782.8 [392.2, 1194.7], max 2259.4
+      written_per_write 54290; peak_file 2446282752; peak_file_thp 0; peak_dirty 3891200; held 4096000; pmd_kib 0; maps 1000; hg 1000; rr 0; high 0; oom_kill 0
+  write        huge-random: 6; write n 6000, p50 277.0 [242.9, 281.0], p90 315.4, p99 816.2 [737.6, 901.8], max 2180.3
+      written_per_write 61511; peak_file 2446227456; peak_file_thp 0; peak_dirty 3876864; held 4096000; pmd_kib 0; maps 1000; hg 1000; rr 1000; high 0; oom_kill 0
+  rewrite      window     : 6; rewrite n 6000, p50 271.6 [259.3, 291.1], p90 433.1, p99 840.8 [759.4, 983.1], max 1405.6
+      written_per_write 79869; peak_file 5018718208; peak_file_thp 0; peak_dirty 3491840; held 2880438272; pmd_kib 0; maps 1000; hg 0; rr 0; high 0; oom_kill 0
+  rewrite      huge       : 6; rewrite n 6000, p50 277.9 [261.9, 290.0], p90 434.4, p99 787.9 [629.4, 971.5], max 1301.2
+      written_per_write 89412; peak_file 4307691520; peak_file_thp 0; peak_dirty 3045376; held 2938109952; pmd_kib 0; maps 1000; hg 1000; rr 0; high 0; oom_kill 0
+  rewrite      huge-random: 6; rewrite n 6000, p50 278.8 [267.7, 295.2], p90 427.5, p99 766.2 [620.9, 923.7], max 1628.6
+      written_per_write 82493; peak_file 3443367936; peak_file_thp 0; peak_dirty 2957312; held 2097152000; pmd_kib 0; maps 1000; hg 1000; rr 1000; high 0; oom_kill 0
+  partial      window     : 6; partial n 6000, p50 1477.2 [1470.4, 1566.4], p90 1837.5, p99 2369.8 [2032.2, 3053.1], max 17396.4
+      written_per_write 100753; peak_file 4956751872; peak_file_thp 0; peak_dirty 3280896; held 2877718528; pmd_kib 0; maps 1000; hg 0; rr 0; high 0; oom_kill 0
+  partial      huge       : 6; partial n 6000, p50 1365.7 [1307.0, 1426.0], p90 1761.1, p99 2308.6 [1966.5, 2795.1], max 16536.0
+      written_per_write 93921; peak_file 4339927040; peak_file_thp 0; peak_dirty 2707456; held 2936012800; pmd_kib 0; maps 1000; hg 1000; rr 0; high 0; oom_kill 0
+  partial      huge-random: 6; partial n 6000, p50 1006.2 [968.6, 1050.9], p90 1230.8, p99 1689.5 [1394.9, 2153.1], max 15807.5
+      written_per_write 82210; peak_file 3876829184; peak_file_thp 0; peak_dirty 3229696; held 2097152000; pmd_kib 0; maps 1000; hg 1000; rr 1000; high 0; oom_kill 0
+  budget-seq   window     : 6; s 2.4 [2.4, 2.7]
+      peak_file 374411264; peak_file_thp 0; peak_dirty 0; held 258664448; pmd_kib 0; maps 374; hg 0; rr 0; high 1831; oom_kill 0
+  budget-seq   huge       : 6; s 2.5 [2.5, 2.6]
+      peak_file 373172224; peak_file_thp 0; peak_dirty 0; held 281905152; pmd_kib 0; maps 456; hg 456; rr 0; high 1584; oom_kill 0
+  budget-seq   huge-random: 6; s 1.9 [1.9, 2.0]
+      peak_file 374032384; peak_file_thp 0; peak_dirty 0; held 227827712; pmd_kib 0; maps 314; hg 314; rr 314; high 1342; oom_kill 0
+  budget-touch window     : 6; first n 6000, p50 2038.1 [2005.8, 2131.0], p90 2458.8, p99 4583.6 [4534.3, 4891.6], max 13078.8
+  budget-touch window     : 6; second n 6000, p50 2163.6 [2101.4, 2248.6], p90 2548.6, p99 4122.9 [3807.3, 4266.6], max 16250.0
+      peak_file 373716992; peak_file_thp 0; peak_dirty 20480; held 245874688; pmd_kib 0; maps 1000; hg 0; rr 0; high 12506; oom_kill 0
+  budget-touch huge       : 6; first n 6000, p50 1879.0 [1831.5, 1933.4], p90 2227.7, p99 3864.6 [3555.1, 4020.7], max 9023.9
+  budget-touch huge       : 6; second n 6000, p50 2001.3 [1934.6, 2081.8], p90 2395.1, p99 3106.9 [2922.0, 3388.7], max 7080.3
+      peak_file 375349248; peak_file_thp 0; peak_dirty 20480; held 288266240; pmd_kib 0; maps 1000; hg 1000; rr 0; high 11760; oom_kill 0
+  budget-touch huge-random: 6; first n 6000, p50 1172.8 [1143.6, 1272.9], p90 1508.6, p99 1997.7 [1802.4, 2749.8], max 6629.0
+  budget-touch huge-random: 6; second n 6000, p50 1241.2 [1205.9, 1253.6], p90 1580.8, p99 1953.7 [1811.6, 2007.8], max 2726.5
+      peak_file 373641216; peak_file_thp 0; peak_dirty 0; held 230072320; pmd_kib 0; maps 1000; hg 1000; rr 1000; high 5335; oom_kill 0
+  huge: fails: seq: neither file faster than window's beyond the spread
+  huge-random: fails: seq-written s: [1.2, 2.7] above window's [1.0, 1.2]
+== classes
+  GenuineIntel bare metal on btrfs (1 hosts): takes none
