@@ -1,0 +1,64 @@
+== /Users/adalundhe/Projects/shards/.claude/worktrees/g121/docs/research/measurements/dax-huge/results/ci-40252359284-1-b-epyc-7763.out.txt
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 7763 64-Core Processor; vendor AuthenticAMD; hypervisor yes; shards dd1bc78; memory 15988 MiB; cpus 4 (this run's 4)
+thp enabled [always] madvise never; defrag always defer defer+madvise [madvise] never; shmem_enabled always within_size advise [never] deny force; khugepaged/defrag 1
+volume /home/runner/work/shards/shards/.dax-huge-kim1g_cy/vol: ext4 on /dev/root (device sda1, read_ahead_kb 128)
+arms window,huge,huge-random; cells seq-sparse,seq-written,touch,write,rewrite,partial,budget-seq,budget-touch; rounds 6; n 1000; touch 4 GiB; seq 1024 MiB; high 384M; window 15988 MiB; image mirror.gcr.io/library/alpine
+kind arm: rounds; per read or write, n, p50 median [range], p90 median, p99 median [range], max (µs); or seconds median [range]
+  seq-sparse   window     : 6; s 131.0 [124.3, 134.0]
+      peak_file 1443078144; peak_file_thp 136314880; peak_dirty 86016; held 1073741824; pmd_kib 0; maps 512; hg 0; rr 0; kvm_pf_taken 266998; kvm_pages_2m 0; kvm_pages_4k 271842; high 0; oom_kill 0
+  seq-sparse   huge       : 6; s 122.5 [119.9, 128.6]
+      peak_file 1450958848; peak_file_thp 1210056704; peak_dirty 86016; held 1073741824; pmd_kib 1048576; maps 512; hg 512; rr 0; kvm_pf_taken 5478; kvm_pages_2m 512; kvm_pages_4k 9754; high 0; oom_kill 0
+  seq-sparse   huge-random: 6; s 112.9 [102.4, 116.7]
+      peak_file 1429426176; peak_file_thp 1210056704; peak_dirty 86016; held 1073741824; pmd_kib 1048576; maps 512; hg 512; rr 512; kvm_pf_taken 5548; kvm_pages_2m 512; kvm_pages_4k 9763; high 0; oom_kill 0
+  seq-written  window     : 6; s 137.4 [136.8, 138.4]
+      peak_file 2545586176; peak_file_thp 1073741824; peak_dirty 86016; held 1073741824; pmd_kib 0; maps 512; hg 0; rr 0; kvm_pf_taken 266992; kvm_pages_2m 0; kvm_pages_4k 271846; high 0; oom_kill 0
+  seq-written  huge       : 6; s 134.6 [134.0, 136.9]
+      peak_file 2545840128; peak_file_thp 2147483648; peak_dirty 86016; held 1073741824; pmd_kib 1048576; maps 512; hg 512; rr 0; kvm_pf_taken 5496; kvm_pages_2m 512; kvm_pages_4k 9762; high 0; oom_kill 0
+  seq-written  huge-random: 6; s 135.6 [134.1, 135.8]
+      peak_file 2545469440; peak_file_thp 2147483648; peak_dirty 86016; held 1073741824; pmd_kib 1048576; maps 512; hg 512; rr 512; kvm_pf_taken 5576; kvm_pages_2m 512; kvm_pages_4k 9780; high 0; oom_kill 0
+  touch        window     : 6; first n 6000, p50 1125.9 [1116.6, 1143.2], p90 1213.3, p99 1652.7 [1536.2, 1752.9], max 5651.0
+  touch        window     : 6; second n 6000, p50 792.1 [784.5, 812.2], p90 848.5, p99 966.5 [940.6, 1040.6], max 3967.4
+      peak_file 2533441536; peak_file_thp 2147483648; peak_dirty 0; held 252061696; pmd_kib 0; maps 1000; hg 0; rr 0; kvm_pf_taken 10286; kvm_pages_2m 0; kvm_pages_4k 15294; high 0; oom_kill 0
+  touch        huge       : 6; first n 6000, p50 2072.3 [2046.4, 2088.8], p90 35507.3, p99 53356.8 [52374.0, 53687.9], max 56252.3
+  touch        huge       : 6; second n 6000, p50 519.3 [512.1, 523.7], p90 554.8, p99 590.0 [569.5, 610.2], max 673.4
+      peak_file 5226237952; peak_file_thp 5071962112; peak_dirty 0; held 2936782848; pmd_kib 2042880; maps 1000; hg 1000; rr 0; kvm_pf_taken 9634; kvm_pages_2m 998; kvm_pages_4k 13453; high 0; oom_kill 0
+  touch        huge-random: 6; first n 6000, p50 1593.2 [1573.7, 1618.3], p90 2238.4, p99 48182.7 [47574.3, 48836.7], max 53960.9
+  touch        huge-random: 6; second n 6000, p50 519.7 [510.7, 526.2], p90 555.5, p99 599.7 [575.6, 631.6], max 1390.4
+      peak_file 4388319232; peak_file_thp 4244635648; peak_dirty 0; held 2097152000; pmd_kib 2048000; maps 1000; hg 1000; rr 1000; kvm_pf_taken 9583; kvm_pages_2m 1000; kvm_pages_4k 13400; high 0; oom_kill 0
+  write        window     : 6; write n 6000, p50 738.5 [716.3, 743.6], p90 820.3, p99 1071.8 [999.5, 1150.7], max 1574.1
+      written_per_write 5873; peak_file 2295191552; peak_file_thp 2147483648; peak_dirty 3682304; held 4096000; pmd_kib 0; maps 1000; hg 0; rr 0; kvm_pf_taken 8272; kvm_pages_2m 0; kvm_pages_4k 13296; high 0; oom_kill 0
+  write        huge       : 6; write n 6000, p50 743.7 [731.5, 752.6], p90 824.5, p99 1049.6 [975.5, 1090.3], max 1461.6
+      written_per_write 5832; peak_file 2295379968; peak_file_thp 2147483648; peak_dirty 3649536; held 4096000; pmd_kib 0; maps 1000; hg 1000; rr 0; kvm_pf_taken 8300; kvm_pages_2m 0; kvm_pages_4k 13226; high 0; oom_kill 0
+  write        huge-random: 6; write n 6000, p50 740.8 [733.9, 744.7], p90 820.6, p99 1072.2 [1034.7, 1084.4], max 1533.3
+      written_per_write 5874; peak_file 2295379968; peak_file_thp 2147483648; peak_dirty 3670016; held 4096000; pmd_kib 0; maps 1000; hg 1000; rr 1000; kvm_pf_taken 8264; kvm_pages_2m 0; kvm_pages_4k 13183; high 0; oom_kill 0
+  rewrite      window     : 6; rewrite n 6000, p50 970.7 [960.9, 992.8], p90 1127.9, p99 1370.8 [1327.3, 1397.7], max 2102.0
+      written_per_write 5882; peak_file 2425329664; peak_file_thp 2147483648; peak_dirty 3985408; held 135168000; pmd_kib 0; maps 1000; hg 0; rr 0; kvm_pf_taken 9356; kvm_pages_2m 0; kvm_pages_4k 13292; high 0; oom_kill 0
+  rewrite      huge       : 6; rewrite n 6000, p50 1342.2 [1315.5, 1407.3], p90 1664.7, p99 2601.2 [1855.0, 2795.4], max 47332.6
+      written_per_write 2095004; peak_file 5226401792; peak_file_thp 5071962112; peak_dirty 1538267136; held 2936782848; pmd_kib 2042880; maps 1000; hg 1000; rr 0; kvm_pf_taken 10652; kvm_pages_2m 0; kvm_pages_4k 13454; high 0; oom_kill 0
+  rewrite      huge-random: 6; rewrite n 6000, p50 1346.3 [1306.1, 1376.3], p90 1562.2, p99 1862.8 [1719.7, 2264.2], max 3790.3
+      written_per_write 2099400; peak_file 4389058560; peak_file_thp 4244635648; peak_dirty 2088763392; held 2097152000; pmd_kib 2048000; maps 1000; hg 1000; rr 1000; kvm_pf_taken 10676; kvm_pages_2m 0; kvm_pages_4k 13432; high 0; oom_kill 0
+  partial      window     : 6; partial n 6000, p50 903.7 [891.4, 927.6], p90 978.3, p99 1312.4 [1239.5, 1524.1], max 6327.2
+      written_per_write 5918; peak_file 2418165760; peak_file_thp 2147483648; peak_dirty 3909632; held 131055616; pmd_kib 0; maps 1000; hg 0; rr 0; kvm_pf_taken 9330; kvm_pages_2m 0; kvm_pages_4k 13298; high 0; oom_kill 0
+  partial      huge       : 6; partial n 6000, p50 1982.6 [1964.2, 2040.7], p90 37605.9, p99 62770.9 [59657.5, 63386.3], max 339729.7
+      written_per_write 2094638; peak_file 5226633216; peak_file_thp 5071962112; peak_dirty 1541414912; held 2936782848; pmd_kib 2042880; maps 1000; hg 1000; rr 0; kvm_pf_taken 11582; kvm_pages_2m 0; kvm_pages_4k 13458; high 0; oom_kill 0
+  partial      huge-random: 6; partial n 6000, p50 1522.0 [1501.6, 1546.7], p90 2261.9, p99 49184.3 [48868.7, 49451.4], max 52927.9
+      written_per_write 2099394; peak_file 4389091328; peak_file_thp 4244635648; peak_dirty 2090860544; held 2097152000; pmd_kib 2048000; maps 1000; hg 1000; rr 1000; kvm_pf_taken 10660; kvm_pages_2m 0; kvm_pages_4k 13420; high 0; oom_kill 0
+  budget-seq   window     : 6; s 144.8 [143.5, 149.1]
+      peak_file 379232256; peak_file_thp 2097152; peak_dirty 86016; held 322084864; pmd_kib 0; maps 272; hg 0; rr 0; kvm_pf_taken 270482; kvm_pages_2m 0; kvm_pages_4k 41120; high 2850; oom_kill 0
+  budget-seq   huge       : 6; s 136.5 [134.7, 140.1]
+      peak_file 380553216; peak_file_thp 339738624; peak_dirty 86016; held 330301440; pmd_kib 318464; maps 512; hg 512; rr 0; kvm_pf_taken 7546; kvm_pages_2m 156; kvm_pages_4k 10637; high 390; oom_kill 0
+  budget-seq   huge-random: 6; s 136.4 [134.9, 139.9]
+      peak_file 380880896; peak_file_thp 315621376; peak_dirty 86016; held 294649856; pmd_kib 287744; maps 512; hg 512; rr 512; kvm_pf_taken 7689; kvm_pages_2m 140; kvm_pages_4k 11260; high 376; oom_kill 0
+  budget-touch window     : 6; first n 6000, p50 1132.2 [1111.9, 1137.9], p90 1237.3, p99 1655.8 [1490.7, 2034.0], max 6276.3
+  budget-touch window     : 6; second n 6000, p50 795.2 [788.0, 801.3], p90 858.0, p99 1108.5 [984.2, 1371.0], max 18753.0
+      peak_file 343928832; peak_file_thp 18874368; peak_dirty 0; held 252061696; pmd_kib 0; maps 1000; hg 0; rr 0; kvm_pf_taken 10308; kvm_pages_2m 0; kvm_pages_4k 15364; high 78; oom_kill 0
+  budget-touch huge       : 6; first n 6000, p50 3187.4 [3024.5, 3479.4], p90 34771.2, p99 50716.8 [50192.3, 51696.3], max 57019.6
+  budget-touch huge       : 6; second n 6000, p50 2078.8 [2058.7, 2437.9], p90 39233.6, p99 55077.1 [54179.7, 55437.2], max 58877.1
+      peak_file 384536576; peak_file_thp 314572800; peak_dirty 73728; held 308281344; pmd_kib 72704; maps 430; hg 430; rr 0; kvm_pf_taken 17328; kvm_pages_2m 80; kvm_pages_4k 17087; high 3712; oom_kill 0
+  budget-touch huge-random: 6; first n 6000, p50 2516.4 [2323.8, 2638.6], p90 5457.4, p99 37353.8 [34713.8, 38744.7], max 50687.5
+  budget-touch huge-random: 6; second n 6000, p50 1693.4 [1637.5, 1773.1], p90 26794.8, p99 47918.6 [46957.0, 48750.6], max 51866.9
+      peak_file 380876800; peak_file_thp 315621376; peak_dirty 77824; held 254803968; pmd_kib 80896; maps 470; hg 470; rr 470; kvm_pf_taken 16366; kvm_pages_2m 94; kvm_pages_4k 18073; high 1880; oom_kill 0
+  huge: fails: seq: neither file faster than window's beyond the spread; touch first_p50: [2046.4, 2088.8] above window's [1116.6, 1143.2]; touch first_p99: [52374.0, 53687.9] above window's [1536.2, 1752.9]; rewrite rewrite_p50: [1315.5, 1407.3] above window's [960.9, 992.8]; rewrite rewrite_p99: [1855.0, 2795.4] above window's [1327.3, 1397.7]; partial partial_p50: [1964.2, 2040.7] above window's [891.4, 927.6]; partial partial_p99: [59657.5, 63386.3] above window's [1239.5, 1524.1]; rewrite written_per_write: [2089005.0, 2097541.0] above window's [5582.0, 6291.0]; partial written_per_write: [2088419.0, 2097049.0] above window's [5464.0, 6156.0]; budget-touch first_p50: [3024.5, 3479.4] above window's [1111.9, 1137.9]; budget-touch first_p99: [50192.3, 51696.3] above window's [1490.7, 2034.0]
+  huge-random: fails: touch first_p50: [1573.7, 1618.3] above window's [1116.6, 1143.2]; touch first_p99: [47574.3, 48836.7] above window's [1536.2, 1752.9]; rewrite rewrite_p50: [1306.1, 1376.3] above window's [960.9, 992.8]; rewrite rewrite_p99: [1719.7, 2264.2] above window's [1327.3, 1397.7]; partial partial_p50: [1501.6, 1546.7] above window's [891.4, 927.6]; partial partial_p99: [48868.7, 49451.4] above window's [1239.5, 1524.1]; rewrite written_per_write: [2098884.0, 2100170.0] above window's [5582.0, 6291.0]; partial written_per_write: [2098950.0, 2100002.0] above window's [5464.0, 6156.0]; budget-touch first_p50: [2323.8, 2638.6] above window's [1111.9, 1137.9]; budget-touch first_p99: [34713.8, 38744.7] above window's [1490.7, 2034.0]
+== classes
+  AuthenticAMD virtual machine on ext4 (1 hosts): takes none

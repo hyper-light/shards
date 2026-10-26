@@ -307,6 +307,12 @@ def header():
     # system's backing device's, else its block device's queue's (a partition's, its disk's).
     st = os.stat(vol)
     ra = read(f"/sys/class/bdi/{os.major(st.st_dev)}:{os.minor(st.st_dev)}/read_ahead_kb")
+    # Btrfs' own backing device, which it reads ahead at least 4 MiB through (fs/btrfs/
+    # disk-io.c, open_ctree), its device numbers anonymous: the file system's whose devices
+    # hold the volume's.
+    if ra == "-" and fstype == "btrfs" and dev:
+        ra = next((read(os.path.join(os.path.dirname(os.path.dirname(d)), "bdi", "read_ahead_kb"))
+                   for d in glob.glob(f"/sys/fs/btrfs/*/devices/{dev}")), "-")
     if ra == "-" and dev:
         ra = read(f"/sys/class/block/{dev}/queue/read_ahead_kb")
         if ra == "-":
