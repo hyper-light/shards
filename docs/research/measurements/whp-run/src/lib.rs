@@ -1,6 +1,6 @@
 //! WinHvPlatform and WinHvEmulation, bound at run time (LoadLibraryExW, GetProcAddress) as
 //! shards binds them, so that a probe starts where they are not; and what the probes share.
-//! The probes: `main.rs` (PM M197) and `bin/m*.rs` (PM M198 on).
+//! The probes: `main.rs` (PM M197) and `bin/m*.rs` (PM M198 on, M341 the DAX window's).
 
 pub mod confine;
 
@@ -22,6 +22,15 @@ pub type SetupPartition = unsafe extern "system" fn(WHV_PARTITION_HANDLE) -> HRE
 pub type DeletePartition = unsafe extern "system" fn(WHV_PARTITION_HANDLE) -> HRESULT;
 pub type MapGpaRange =
     unsafe extern "system" fn(WHV_PARTITION_HANDLE, *const c_void, u64, u64, WHV_MAP_GPA_RANGE_FLAGS) -> HRESULT;
+pub type UnmapGpaRange = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u64, u64) -> HRESULT;
+pub type AdviseGpaRange = unsafe extern "system" fn(
+    WHV_PARTITION_HANDLE,
+    *const WHV_MEMORY_RANGE_ENTRY,
+    u32,
+    WHV_ADVISE_GPA_RANGE_CODE,
+    *const c_void,
+    u32,
+) -> HRESULT;
 pub type CreateVp = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32, u32) -> HRESULT;
 pub type DeleteVp = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32) -> HRESULT;
 pub type SetRegs = unsafe extern "system" fn(
@@ -84,6 +93,9 @@ pub struct Api {
     pub setup_partition: SetupPartition,
     pub delete_partition: DeletePartition,
     pub map: MapGpaRange,
+    pub unmap: UnmapGpaRange,
+    /// Where the host offers it (Windows 10 2004 on).
+    pub advise: Option<AdviseGpaRange>,
     pub create_vp: CreateVp,
     pub delete_vp: DeleteVp,
     pub set_regs: SetRegs,
@@ -136,6 +148,8 @@ pub fn bind() -> Result<Api, String> {
             setup_partition: sym(p, "WHvSetupPartition")?,
             delete_partition: sym(p, "WHvDeletePartition")?,
             map: sym(p, "WHvMapGpaRange")?,
+            unmap: sym(p, "WHvUnmapGpaRange")?,
+            advise: sym(p, "WHvAdviseGpaRange").ok(),
             create_vp: sym(p, "WHvCreateVirtualProcessor")?,
             delete_vp: sym(p, "WHvDeleteVirtualProcessor")?,
             set_regs: sym(p, "WHvSetVirtualProcessorRegisters")?,

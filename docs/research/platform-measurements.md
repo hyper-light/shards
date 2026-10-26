@@ -14462,3 +14462,306 @@ revision before comparing a changed API/implementation.
   no huge-page advice, on every host measured. No code changes: the tree's window arm is
   what the rule keeps. D189 says so, and its Next item is closed, decided by measurement.
   Linux on arm64 stays unmeasured.
+
+### M340. A Windows named pipe as the stream of a share another server serves, beside AF_UNIX and loopback TCP (D38)
+
+- **Questions.** A share another server serves reaches a direct run as a connected stream
+  its spawner hands in (`--slates-fs-fd N` on Unix: slates' `slates shards VOLUME -- shards
+  run …`, A-161). On Windows that server is slates' daemon, which writes nothing to disk
+  outside a granted landing (slates' R1), so the stream must be made without a path in the
+  filesystem. Windows has no socketpair() (M199). Can an AF_UNIX socket at an abstract
+  address be connected to, which a pair without a path would need? If not, what does a
+  duplex named pipe offer instead?
+  - What does a pair cost, made under a fresh name as the name's first instance and its
+    only one, remote clients refused?
+  - Is a second client or a second server instance of the name refused once the pair is
+    connected?
+  - What name does each handle to an end report: the server end's, the client end's, a
+    duplicate's, a child's inherited copy? A server could then check which stream a handle
+    another process holds is.
+  - What does a reader get after its writer closes, and after its writer's process exits
+    holding its end? M199 found an AF_UNIX peer loses what it had not read.
+  - What are its throughput and a one-byte round trip, beside loopback TCP's?
+- **Method.** `docs/research/measurements/windows-pipe` (397f7a71), `cargo run --release`.
+  Host: jupiter, an AMD Ryzen AI Max+ 395 (16 cores, 32 threads), Windows 10.0.26200.9711,
+  2026-10-26, with other work using 71% of its CPU as the run began.
+  - Abstract AF_UNIX: bind, listen and connect, `sun_path` a NUL then the name, its
+    length covering the name (20) and the whole `sockaddr_un` (110).
+  - Pairs: 1,000, each made and timed (CreateNamedPipeW with PIPE_ACCESS_DUPLEX,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, one instance, PIPE_TYPE_BYTE and
+    PIPE_REJECT_REMOTE_CLIENTS; CreateFileW of the name; ConnectNamedPipe answering
+    ERROR_PIPE_CONNECTED). Then a second CreateFileW of a connected pair's name, and a
+    second CreateNamedPipeW of it.
+  - Names: GetFileInformationByHandleEx(FileNameInfo) on each end, on a DuplicateHandle
+    copy, and in a child process that inherited the client end.
+  - End of stream: 1 MiB written then the end closed; 1 MiB written by a child that then
+    exits without closing it. The reader reads until a read fails.
+  - Three rounds, in order: 1 GiB in 64 KiB writes between two threads through 64 KiB and
+    1 MiB pipe buffers, and over loopback TCP with TCP_NODELAY; 10,000 one-byte round trips
+    over each.
+- **Found.**
+  - An abstract address binds and listens, but its connect is refused WSAEINVAL (10022)
+    at either length. So no AF_UNIX pair can be made without a path in the filesystem.
+  - A pair costs (µs): n=1000 p50=9.90 p90=13.00 p99=20.30 max=109.90. M199's AF_UNIX
+    pair through a path cost 609.5 / 699.8 at p50 on the runners.
+  - Once the pair is connected, a second client is refused ERROR_PIPE_BUSY (231), and so
+    is a second server instance of the name.
+  - Every handle reports the pipe's name, `\shards-m340-…`: the server end, the client
+    end, a duplicate and a child's inherited copy.
+  - The reader gets all 1,048,576 bytes and then ERROR_BROKEN_PIPE (109), when its writer
+    closed and when its writer's process exited holding its end. Nothing is lost at an exit.
+  - Throughput (MB/s), rounds 1 / 2 / 3: the pipe through 64 KiB buffers 8,844 / 9,114 /
+    13,372; through 1 MiB buffers 10,001 / 15,130 / 14,325; loopback TCP 1,295 / 4,176 /
+    4,847.
+  - One-byte round trip (µs):
+
+    | round | pipe | loopback TCP |
+    |---|---|---|
+    | 1 | n=10000 p50=11.70 p90=21.70 p99=42.30 max=1118.80 | n=10000 p50=24.80 p90=48.00 p99=82.70 max=438.00 |
+    | 2 | n=10000 p50=5.80 p90=9.90 p99=21.00 max=518.40 | n=10000 p50=15.80 p90=18.90 p99=58.40 max=336.50 |
+    | 3 | n=10000 p50=5.80 p90=7.80 p99=18.80 max=293.10 | n=10000 p50=15.70 p90=21.30 p99=58.00 max=352.70 |
+
+- **Found on the runners.** `windows-pipe.yml` run 40274764295 at 274a2161, 2026-10-26:
+  windows-2025 (AMD EPYC 7763, Windows 10.0.26100.0, image win25-vs2026 20261021.278) and
+  windows-2022 (Intel Xeon Platinum 8573C, Windows 10.0.20348.0, image win22 20261022.344).
+  - Both answered every question as jupiter did. The abstract connect was refused WSAEINVAL
+    at addrlen 19 and 110. A second client and a second server instance were refused
+    ERROR_PIPE_BUSY. Every handle named the pipe. The reader got 1,048,576 of 1,048,576
+    bytes, then ERROR_BROKEN_PIPE, after a close and after an exit.
+  - A pair costs (µs):
+
+    | runner | pair |
+    |---|---|
+    | windows-2025 | n=1000 p50=14.30 p90=32.50 p99=61.60 max=149.70 |
+    | windows-2022 | n=1000 p50=10.30 p90=10.60 p99=16.40 max=23.40 |
+
+  - Throughput (MB/s), rounds 1 / 2 / 3. On windows-2022, loopback TCP moved more than the
+    pipe; on windows-2025, the pipe moved more:
+
+    | runner | pipe, 64 KiB buffers | pipe, 1 MiB buffers | loopback TCP |
+    |---|---|---|---|
+    | windows-2025 | 4,153 / 3,427 / 4,721 | 5,487 / 5,102 / 5,457 | 3,026 / 2,921 / 3,174 |
+    | windows-2022 | 3,653 / 3,338 / 3,820 | 4,397 / 4,131 / 4,234 | 4,534 / 4,794 / 4,664 |
+
+  - One-byte round trip (µs). The pipe's was the shorter on both:
+
+    | runner | round | pipe | loopback TCP |
+    |---|---|---|---|
+    | windows-2025 | 1 | n=10000 p50=27.40 p90=41.00 p99=61.90 max=369.00 | n=10000 p50=46.30 p90=65.90 p99=94.50 max=508.40 |
+    | windows-2025 | 2 | n=10000 p50=27.20 p90=40.90 p99=115.20 max=312.60 | n=10000 p50=40.50 p90=53.70 p99=84.00 max=535.80 |
+    | windows-2025 | 3 | n=10000 p50=26.90 p90=29.40 p99=47.40 max=188.90 | n=10000 p50=39.60 p90=46.40 p99=69.80 max=210.50 |
+    | windows-2022 | 1 | n=10000 p50=35.40 p90=48.40 p99=59.90 max=148.50 | n=10000 p50=44.10 p90=56.60 p99=68.10 max=326.30 |
+    | windows-2022 | 2 | n=10000 p50=37.70 p90=51.70 p99=63.60 max=334.30 | n=10000 p50=44.30 p90=58.40 p99=78.90 max=1175.70 |
+    | windows-2022 | 3 | n=10000 p50=36.10 p90=50.00 p99=71.00 max=275.10 | n=10000 p50=40.10 p90=55.90 p99=73.70 max=165.50 |
+
+- **Consequence (D38).** On Windows the stream of a share another server serves is a
+  duplex named pipe handle the spawner duplicates into the VM process, as it hands files
+  (D141, M203).
+  - It is made without a path, which AF_UNIX cannot be.
+  - It costs a fiftieth to a seventieth of an AF_UNIX pair: 9.9 µs at p50 on jupiter,
+    10.3 and 14.3 on the runners, against M199's 609.5 and 699.8.
+  - Its round trip is the shorter on every host: half loopback TCP's or less on jupiter,
+    0.6 to 0.9 times on the runners.
+  - It loses nothing when its writer exits.
+  - A server that hands out the client end can check that a handle another process names
+    is that stream, by the pipe's name.
+  - Throughput is not why: the pipe moved two to eight times TCP's on jupiter, 1.2 to 1.8
+    times on windows-2025, and 0.7 to 1.0 times on windows-2022, where TCP moved more.
+    Once connected, a pipe pair is reachable only by its handles' holders, refusing a
+    second client by name. A loopback TCP pair's listener is open to any local process
+    until its accept. That last is by construction, not measured here.
+
+### M341. A DAX window's ranges on WHP: views of a section placed into a placeholder reservation and mapped at stage 2, and what replacing one costs (D189)
+
+- **Questions.** Before the DAX window (D189) is written for WHP, for a share another server
+  serves (slates' daemon, whose DAX objects are pagefile-backed sections it duplicates into
+  the VM process, its A-175):
+  - A range is a view of the section placed into the window's placeholder reservation
+    (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER) and mapped at stage 2 (WHvMapGpaRange). Does
+    the guest see a host store into the section, through the placed view and through the
+    server's own view? Does the host see the guest's store, through both?
+  - With the view freed back to its placeholder (UnmapViewOfFile2, MEM_PRESERVE_PLACEHOLDER)
+    and another placed in the host alone, no stage-2 remap, what does the guest read, and
+    where does its store land? On HVF a range replaced in the host alone keeps its old pages
+    at stage 2 (M193), so off KVM the window unmaps at stage 2 before it replaces.
+  - Can a range be mapped at stage 2 over a bare placeholder, before any view is placed?
+  - What does each step of a replace cost, made four ways? What does the guest's first
+    access to a range cost after each?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m341.rs` (85e9d899):
+  - A partition of one vCPU in long mode, 2 MiB of RAM. Its guest runs an interpreter: at
+    each port exit the host names a load, a store, or a load of each 4 KiB page of a range
+    (a touch) in its registers, and the next port exit carries the result in RAX. A load
+    or store the hypervisor exits on is stepped over and counted, and a load answers a
+    poison value.
+  - The window: two 2 MiB ranges (FUSE_DAX_SZ) of a placeholder reservation, split, at GPA
+    1 GiB. Three sections, A, B and C, each 2 MiB, pagefile-backed, filled with their own
+    byte, each with a second, ordinary view (the server's). A placed and mapped in range
+    0, C in range 1, left there throughout.
+  - The questions in order, then 1,000 replaces of range 0 alternating B and A, each of
+    four ways, each step timed from the host:
+    - remap: stage-2 unmap, free, place, stage-2 map;
+    - remap-populated: the same, then WHvAdviseGpaRange(Populate, write) over the range;
+    - standing: free and place under a stage-2 mapping left standing;
+    - populated: standing, then the populate.
+  - Every round, before the replace, the server writes a stamp of its own into the section
+    to come. After the replace the guest's first load must read it, and the guest's store
+    must be read back through the server's view. Stale reads and lost stores are counted
+    (the non-vacuity check). Then the guest's first load, its next load, a load from its
+    RAM, its first touch of the range's 512 pages and its next touch are timed. Each is a
+    round trip through a port exit.
+  - Last, range 0 is unmapped and freed, mapped over its bare placeholder, loaded, then
+    given a view and loaded again; and range 1 is loaded, C's still.
+  - Hosts:
+    - jupiter, an AMD Ryzen AI Max+ 395, Windows 10.0.26200, 2026-10-25, three runs, with
+      other work using 18-22% of its CPU;
+    - `whp-run.yml` run 40276832213 at 85e9d899, 2026-10-26: windows-2025 (AMD EPYC 9V45,
+      Windows 10.0.26100, image windows-2025-vs2026 20261021.278.1) and windows-2022 (AMD
+      EPYC 7763, Windows 10.0.20348, image windows-2022 20261022.344.1).
+- **Found, alike on all three hosts.**
+  - **Coherent each way after a stage-2 map.** The guest read the section's fill
+    (0xa1a1…), a host store through the placed view (0x1111222233334444) and one through
+    the server's view (0x5555666677778888). The host read the guest's store
+    (0x9999aaaabbbbcccc) through both views.
+  - In every round of every way, the guest read the server's stamp and the server read the
+    guest's store: 0 stale and 0 lost of 4,000 rounds a run (5 runs).
+  - **Stage 2 follows the host's view, and M193 does not hold on WHP.** The view was freed
+    with stage 2 left mapped (taken). The guest's load of a byte stored before the free
+    exited to the VMM, a memory access at its GPA (0x40000100). So did its load of a byte
+    the server stored into the old section afterwards. It never read the old pages.
+  - Once B's view was placed there, still with no remap, the guest read B's fill and the
+    server's later store into B (0xfedcba9876543210). Its store landed in B, not in A.
+  - **A stage-2 map over a bare placeholder is taken.** The guest's load there exits (GPA
+    0x40000000) until a view is placed; then it reads the view's section with no further
+    call.
+  - C's range, beside 4,000 replaces, still read C's fill.
+- **What a replace costs** (µs, p50 / p99; jupiter as the range over its three runs):
+
+  | host | way | free | place | stage-2 unmap | stage-2 map | populate | whole replace |
+  |---|---|---|---|---|---|---|---|
+  | windows-2025 | remap | 44.2 / 82.5 | 1.9 / 7.9 | 41.6 / 85.4 | 33.5 / 76.0 | | 122.1 / 259.9 |
+  | windows-2025 | remap-populated | 43.6 / 66.6 | 1.4 / 4.7 | 40.9 / 72.4 | 32.7 / 57.9 | 212.0 / 308.2 | 333.1 / 502.6 |
+  | windows-2025 | standing | 78.9 / 158.1 | 2.7 / 6.3 | | | | 82.1 / 162.7 |
+  | windows-2025 | populated | 74.8 / 118.6 | 1.4 / 4.1 | | | 203.1 / 309.6 | 281.6 / 430.5 |
+  | windows-2022 | remap | 64.3 / 95.2 | 5.0 / 8.2 | 76.2 / 101.3 | 43.4 / 56.7 | | 189.8 / 250.2 |
+  | windows-2022 | remap-populated | 58.6 / 93.5 | 3.6 / 8.0 | 66.6 / 115.5 | 40.7 / 69.2 | 285.8 / 380.2 | 456.3 / 576.1 |
+  | windows-2022 | standing | 126.0 / 189.2 | 5.1 / 9.1 | | | | 131.2 / 196.3 |
+  | windows-2022 | populated | 113.4 / 182.5 | 3.3 / 6.1 | | | 284.4 / 383.4 | 402.0 / 542.4 |
+  | jupiter | remap | 41.7-47.8 / 117-146 | 2.6-4.3 / 9.1-13.6 | 29.6-36.5 / 96-108 | 270-281 / 852-968 | | 387-412 / 1036-1115 |
+  | jupiter | remap-populated | 62.6-82.3 / 101-106 | 2.5-3.1 / 7.7-8.4 | 44.6-67.5 / 86-95 | 59.2-64.4 / 124-141 | 276-369 / 410-427 | 448-592 / 686-723 |
+  | jupiter | standing | 112-160 / 189-240 | 3.7-7.9 / 10.8-16.0 | | | | 119-166 / 200-252 |
+  | jupiter | populated | 99.0-146 / 168-214 | 2.3-3.4 / 7.5-9.8 | | | 267-382 / 411-433 | 371-533 / 566-637 |
+
+  - Freeing a view costs about twice as much under a standing stage-2 mapping as after a
+    stage-2 unmap. The hypervisor takes the range out of stage 2 itself.
+- **What the guest's first access costs after a replace** (µs, p50 / p99; each a round
+  trip through a port exit, a load from RAM the baseline):
+
+  | host | way | first load | next load | load from RAM | first touch of 512 pages | next touch |
+  |---|---|---|---|---|---|---|
+  | windows-2025 | remap | 36.7 / 72.4 | 13.4 / 19.0 | 13.3 / 18.3 | 10,315 / 15,299 | 15.2 / 27.9 |
+  | windows-2025 | remap-populated | 26.0 / 47.7 | 12.3 / 24.3 | 12.3 / 24.8 | 14.0 / 22.8 | 13.9 / 25.4 |
+  | windows-2025 | standing | 37.0 / 94.0 | 13.3 / 30.5 | 13.3 / 30.9 | 10,448 / 14,344 | 15.5 / 31.2 |
+  | windows-2025 | populated | 25.0 / 47.6 | 13.1 / 19.0 | 13.1 / 19.7 | 14.7 / 20.1 | 14.5 / 21.8 |
+  | windows-2022 | remap | 55.4 / 75.1 | 15.3 / 20.1 | 14.8 / 19.1 | 11,946 / 12,924 | 19.4 / 23.3 |
+  | windows-2022 | remap-populated | 48.5 / 83.1 | 16.9 / 28.6 | 16.3 / 26.0 | 18.8 / 30.4 | 19.1 / 29.2 |
+  | windows-2022 | standing | 52.2 / 92.4 | 16.4 / 23.7 | 16.1 / 20.6 | 12,501 / 13,004 | 19.6 / 25.4 |
+  | windows-2022 | populated | 45.2 / 83.0 | 16.6 / 29.7 | 16.2 / 28.9 | 18.8 / 28.0 | 18.9 / 31.4 |
+  | jupiter | remap | 11.0-11.9 / 35-45 | 3.4-3.5 / 7.6-9.1 | 3.3-3.5 / 8.0-9.6 | 3,018-3,141 / 6,796-6,956 | 7.5-8.7 / 17.7-18.7 |
+  | jupiter | remap-populated | 7.1-8.9 / 13-23 | 5.8-6.8 / 9.3-10.8 | 5.7-6.7 / 10.1-11.5 | 10.9-11.3 / 16.0-16.6 | 11.7-12.2 / 16.1-18.1 |
+  | jupiter | standing | 17.0-22.1 / 42-51 | 5.6-7.0 / 8.9-10.8 | 5.6-6.9 / 8.5-12.9 | 5,116-6,071 / 7,030-7,344 | 10.8-14.0 / 18.4-23.5 |
+  | jupiter | populated | 6.4-9.3 / 16-22 | 5.6-7.2 / 10.0-13.2 | 5.6-7.0 / 10.4-12.8 | 9.0-11.6 / 15.8-23.3 | 9.7-12.2 / 16.8-23.5 |
+
+  - Without a populate, each page's first access is taken into stage 2 one at a time:
+    about 20 µs a page on windows-2025, 23 on windows-2022, and 6 to 12 on jupiter. A
+    populate takes the whole 2 MiB in 0.4 to 0.7 µs a page.
+  - A replace and a first pass over the range together, at p50:
+    - windows-2025: remap 10.4 ms, standing 10.5, remap-populated 0.35, populated 0.30;
+    - windows-2022: remap 12.1, standing 12.6, remap-populated 0.48, populated 0.42;
+    - jupiter: remap 3.4, standing 5.2 to 6.2, remap-populated 0.46 to 0.60, populated
+      0.38 to 0.54.
+  - The populate pays for itself once the guest touches about 10 of a range's 512 pages on
+    the runners, and about 40 on jupiter.
+- **Consequence (D189 on WHP).**
+  - The window is a placeholder reservation, split one placeholder a range. It is mapped at
+    stage 2 once, whole, as the VM is made. A stage-2 map over a placeholder is taken, and
+    stage 2 follows whatever view the host places there.
+  - A range is placed with MapViewOfFile3 (MEM_REPLACE_PLACEHOLDER) and then populated
+    (WHvAdviseGpaRange, Populate, write).
+  - A range is freed with UnmapViewOfFile2 (MEM_PRESERVE_PLACEHOLDER).
+  - A replace makes no stage-2 map or unmap call. M193's rule (unmap at stage 2 before
+    replacing) is an HVF rule and does not apply on WHP. Its cost buys nothing: the guest
+    is no safer, and remap-populated cost 51.5 and 54.3 µs more at p50 than populated on
+    windows-2025 and windows-2022. On jupiter it cost 55.7 µs less in one run and 113.4
+    and 59.2 µs more in the other two.
+  - The guest cannot read a freed view's pages. An access between the free and the place,
+    or to a range with no view, exits as a memory access at its GPA, so the window answers
+    it as `memory_fault` does on the other hosts: it places the range's view (or zeros)
+    and resumes the vCPU.
+  - Placing and populating costs 282 / 431, 402 / 542 and 371-533 / 566-637 µs (p50 /
+    p99) on windows-2025, windows-2022 and jupiter. After that the guest reads the range
+    at its RAM's speed.
+  - Not measured here, and owed before the window relies on them:
+    - a view of a section shorter than its range (a file's end inside a range);
+    - views of 64 KiB granules of a 2 MiB placeholder;
+    - more than one vCPU touching a range while it is replaced.
+
+### M343. A section handed to a confined VM process by a process that did not spawn it (D189, D38)
+
+- **Questions.** M341 found a WHP DAX window works with any section placed into its placeholder. For a share another
+  server serves, that section is the server's: slates' daemon answers a mapping with a section of the file. On Unix
+  that is a descriptor, which Windows cannot pass on a stream (M340). The server is not the VM's spawner. Can it put a
+  section into the VM process at all?
+  - Knowing only the VM process's pid, can a same-user process open a VM process confined as D141 confines one (M201)
+    for PROCESS_DUP_HANDLE, and duplicate a section into it? What does a duplication cost?
+  - Can the VM process map the section, read what the server wrote, and write what the server then reads?
+  - Can the VM process open the server likewise? It must not.
+  - Do the answers hold for a server running as a standard user at medium integrity, as slates' daemon does, rather
+    than as the runner's administrator?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m343.rs`, `cargo run --release --bin m343`, by
+  `whp-run.yml`.
+  - The probe spawns the VM process as M203 spawns one (its own AppContainer profile, VidExo's capabilities, a Job of
+    one process, the mitigations), suspended, with a pipe for its instructions.
+  - It then spawns the server, an ordinary child told only the VM's pid. The server opens the VM process for
+    PROCESS_DUP_HANDLE and makes a pagefile-backed section of 2 MiB, writing into it. It times 200 duplications into
+    the VM process, each closed there again (DUPLICATE_CLOSE_SOURCE), then duplicates one more and gives its value.
+  - The probe passes the value to the VM process and resumes it. The VM process maps the section, reads it, writes
+    into it, and tries to open the server for PROCESS_DUP_HANDLE. Then the server reads the section.
+  - Where the workflow makes a standard user (`SHARDS_PROBE_USER`, as M200 does), the whole hand-off runs again as that
+    user (CreateProcessWithLogonW, the probe copied to C:\Users\Public\shards-m343, its output gathered from a file
+    there).
+  - Every run prints whether its account's token is elevated.
+- **Found on jupiter** (AMD Ryzen AI Max+ 395, Windows 10.0.26200.9711, 2026-10-26, 3 runs). The account is elevated
+  there (`elevated: Some(true)`), and the hand-off ran with an ordinary child in the VM's place (`--plain`), since these
+  runs make no AppContainer profile on that host.
+  - The server opened the child for PROCESS_DUP_HANDLE in 7.30 to 7.80 µs.
+  - A duplication costs (µs) n=200 p50=0.90 p90=1.00 p99=1.10 max=2.40; p50=0.90 p90=1.00 p99=1.20 max=3.10; and
+    p50=1.00 p90=1.10 p99=1.30 max=2.80.
+  - The child mapped the section and read "written by the server", and the server read what the child wrote.
+  - The child could open the server, as an unconfined child of one user can. The confined VM's answer and a standard
+    user's are the runners'.
+- **Found on the runners.** `whp-run.yml` run 40279807075 at d73052db, 2026-10-26: windows-2022 (AMD EPYC 7763,
+  Windows 10.0.20348) and windows-2025 (AMD EPYC 9V45, Windows 10.0.26100). Each ran the hand-off twice: as the
+  runner's account (`elevated: Some(true)`) and as the workflow's standard user (`elevated: Some(false)`). Both answered
+  the same way, as both accounts:
+  - The server opened the confined VM process for PROCESS_DUP_HANDLE and duplicated a section into it.
+  - The VM mapped the section, read "written by the server" and wrote back, and the server read "written by the
+    VM....".
+  - The VM's own open of the server for PROCESS_DUP_HANDLE was refused: "Access is denied. (os error 5)".
+  - Every process exited 0 (wait 0).
+
+  | | windows-2022 | windows-2025 |
+  |---|---|---|
+  | runner's account: PROCESS_DUP_HANDLE open | 4.20 µs | 5.90 µs |
+  | runner's account: a duplication (µs) | n=200 p50=0.80 p90=1.20 p99=2.10 max=5.70 | n=200 p50=1.00 p90=1.30 p99=3.20 max=6.50 |
+  | standard user: PROCESS_DUP_HANDLE open | 4.70 µs | 5.20 µs |
+  | standard user: a duplication (µs) | n=200 p50=0.80 p90=0.90 p99=1.40 max=2.40 | n=200 p50=1.00 p90=1.10 p99=3.70 max=7.20 |
+
+- **Consequence (D189).**
+  - A server running as a standard user at medium integrity, which did not spawn the VM, can give a VM process
+    confined as D141 confines one a section by DuplicateHandle, knowing only its pid. A duplication costs about 1 µs
+    at p50. The value must reach the VM by other means, as M203's handles do.
+  - The confined VM cannot open the server in return. So the duplication goes one way only, from the server into
+    the VM.
+  - slates' daemon answers a DAX mapping with the section's value in the VM process. Before that it checks that the
+    asking process holds the attachment's stream (M340: every handle to an end names its pipe), keeping the process
+    handle so that the pid cannot be reused under it.
