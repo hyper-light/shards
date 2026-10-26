@@ -5,6 +5,9 @@
 # this one are refused (ECR Public's data limit, on CI's runners).
 ARG BASE=public.ecr.aws/docker/library
 FROM ${BASE}/rust:1-slim
+# Its steps run again in each round, which ROUND names (measure.py), their cache mounts
+# kept: --no-cache would have each start its caches empty (PM M141).
+ARG ROUND
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/cache/target \
     CARGO_TARGET_DIR=/cache/target cargo install ripgrep --version 14.1.1 --locked --root /out

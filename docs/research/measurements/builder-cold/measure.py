@@ -3,7 +3,9 @@
 and unplug under memory pressure"), measured on real builds: builds/rust (a Rust crate,
 cargo's registry and target as cache mounts), builds/npm (npm ci of a lockfile, npm's cache
 mounted) and builds/apt (an apt-get install, apt's archives and lists mounted), each built
---no-cache in rounds, the builds' order turning each round, by a build of shards with
+in rounds, its steps run again each round (its ROUND build argument, a new value each round:
+--no-cache would start every step's caches empty, PM M141), the builds' order turning each
+round, by a build of shards with
 cold.patch: its builder's console in a file of its own (SHARDS_BUILDER_CONSOLE), where no
 other writer cuts its lines as the build's progress cut them on the build's stderr, and
 where its init writes a `builder-cold` line each second and one at each step's end: its build cgroup's
@@ -161,6 +163,9 @@ def sample_host(build_pid, tag, stop):
 
 
 GUEST = re.compile(r"builder-cold (.*)$")
+# This run's own, in each round's ROUND: no step of a run before in the same home answers
+# one of this run's from its cache.
+RUN = int(time.time())
 STEP = re.compile(r"^#(\d+) \[")
 
 
@@ -198,9 +203,9 @@ def one(r, name):
     raw = open(os.path.join(out, "raw", f"{r}-{name}.txt"), "w")
     # Its output and its progress one stream, as each line comes, wherever shards writes it.
     base = ["--build-arg", f"BASE={a.base}"] if a.base else []
-    proc = subprocess.Popen([shards, "build", "--no-cache", "--progress", "plain", "-t", f"builder-cold-{name}",
-                             *base, "-f", os.path.join(ctx, "Dockerfile"), ctx], env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, errors="replace")
+    proc = subprocess.Popen([shards, "build", "--progress", "plain", "-t", f"builder-cold-{name}",
+                             "--build-arg", f"ROUND={RUN}-{r}", *base, "-f", os.path.join(ctx, "Dockerfile"), ctx],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     stop = threading.Event()
     step = ["-"]
     sampler = threading.Thread(target=sample_host, args=(proc.pid, tag, stop))

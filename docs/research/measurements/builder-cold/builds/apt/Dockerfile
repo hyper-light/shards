@@ -5,6 +5,9 @@
 # this one are refused (ECR Public's data limit, on CI's runners).
 ARG BASE=public.ecr.aws/docker/library
 FROM ${BASE}/debian:stable-slim
+# Its steps run again in each round, which ROUND names (measure.py), their cache mounts
+# kept: --no-cache would have each start its caches empty (PM M141).
+ARG ROUND
 RUN rm -f /etc/apt/apt.conf.d/docker-clean
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \

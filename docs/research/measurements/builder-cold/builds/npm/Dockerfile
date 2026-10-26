@@ -6,4 +6,7 @@ ARG BASE=public.ecr.aws/docker/library
 FROM ${BASE}/node:22-slim
 WORKDIR /app
 COPY package.json package-lock.json ./
+# Its steps run again in each round, which ROUND names (measure.py), their cache mounts
+# kept: --no-cache would have each start its caches empty (PM M141).
+ARG ROUND
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
