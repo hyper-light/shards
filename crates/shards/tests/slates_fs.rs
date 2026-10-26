@@ -17,6 +17,14 @@
 //! the host reads the store through slates and rewrites the file through another attachment; the guest waits to see the
 //! host's change in its same map.
 //!
+//! The third test takes Shards' own route instead: slates mounts the volume on the host (`slates mount`, NFS over
+//! loopback on macOS), and a microVM under a Shards daemon gets that mount as an ordinary volume (`-v MOUNT:/v`) with
+//! its own DAX window (D189). Shards' server shares the host directory, and slates is only the file system beneath it.
+//! The guest maps an 8 MiB file into the window and reads it whole through it; a byte the host then rewrites through
+//! another slates attachment reaches a fresh open and read in the guest, and the run prints how soon. The mount is
+//! unmounted before slates' anchor stops, whatever the test's outcome, since a daemon that dies under a live macOS NFS
+//! mount leaves the mount hung.
+//!
 //! Unix-only (fd-passing); a Windows microVM would be handed a HANDLE, which slates has no route for yet. It skips loudly
 //! (prints and passes) where the host cannot run VMs or `SLATES_BIN` is unset, as the other VM tests do.
 
@@ -30,7 +38,10 @@ use std::io::Write;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{as_tests_run, cannot_run_vms, kernel, run_command, shards, test_guest};
+use common::{
+    TempDir, as_tests_run, cannot_run_vms, guest_init, kernel, run_command, run_shards_env, served, shards,
+    test_guest,
+};
 
 /// The host bounds the run; the guest's own waits are unbounded (it powers off on done).
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -364,4 +375,150 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
     assert!(read.status.success(), "slates read: {read:?}");
     assert_eq!(&read.stdout[GUEST_AT..GUEST_AT + GUEST_STORE.len()], GUEST_STORE);
     assert_eq!(&read.stdout[HOST_AT..HOST_AT + HOST_CHANGE.len()], HOST_CHANGE);
+}
+
+/// The file a guest maps through Shards' own DAX window over a slates mount: 8 MiB, past the 1 MiB from which a volume's
+/// files go through its microVM's window (D189), byte `i` being `i mod 251`.
+const MOUNTED_BYTES: usize = 8 << 20;
+/// Where the host's change through another slates attachment lands in that file: inside its second 2 MiB range.
+const MOUNTED_AT: usize = 3 << 20;
+/// The name of the microVM the mount test runs under its Shards daemon.
+const MOUNTED_VM: &str = "slatesmount";
+
+/// A volume mounted on this host with `slates mount` at a directory, unmounted when dropped (asked until slates answers,
+/// then forced), so that slates' daemon never dies under a live mount: declared after the anchor, it is dropped before.
+struct Mounted<'a> {
+    bin: &'a OsStr,
+    instance: String,
+    point: std::path::PathBuf,
+}
+
+impl<'a> Mounted<'a> {
+    fn new(bin: &'a OsStr, instance: &str, id: &str, point: &std::path::Path) -> Mounted<'a> {
+        let at = point.to_str().unwrap();
+        slates_ok(bin, instance, &["mount", id, at], b"", "");
+        Mounted {
+            bin,
+            instance: instance.to_owned(),
+            point: point.to_owned(),
+        }
+    }
+}
+
+impl Drop for Mounted<'_> {
+    fn drop(&mut self) {
+        let at = self.point.to_str().unwrap_or_default();
+        let deadline = Instant::now() + START;
+        while Instant::now() < deadline {
+            if slates(self.bin, &self.instance, &["unmount", at], b"")
+                .status
+                .success()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = Command::new("umount").args(["-f", at]).status();
+    }
+}
+
+/// A microVM under a Shards daemon, removed when dropped: declared after the mount it shares, it is removed first.
+struct Removed<'a> {
+    env: &'a [(&'a str, &'a OsStr)],
+}
+
+impl Drop for Removed<'_> {
+    fn drop(&mut self) {
+        let _ = run_shards_env(&[], &["rm", "-f", MOUNTED_VM], self.env, TIMEOUT);
+    }
+}
+
+/// Do: start slates' anchor, make a volume holding `big` (8 MiB), and mount it on this host with `slates mount` (NFS over
+/// loopback on macOS); run a microVM under a Shards daemon whose volume is that mount, with a DAX window of its own (`-v
+/// MOUNT:/v`, `SHARDS_SHARE_WINDOW_MIB`, D189). That is the host-share route: Shards' own server shares the host
+/// directory, and slates is the file system beneath it. Then rewrite one byte of `big` through another slates attachment.
+/// Expect: the guest's kernel maps `big` into the window (`dax /v/big yes`) and reads it whole through it; and a fresh
+/// open and read in the guest shows the host's byte within `TIMEOUT`, since each open makes Shards' server open the host
+/// file, which revalidates it on the host side.
+#[test]
+fn a_microvm_maps_a_slates_mount_file_through_its_own_dax_window() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(bin) = std::env::var_os("SLATES_BIN") else {
+        eprintln!("SKIP: SLATES_BIN is not set (the built `slates` binary)");
+        return;
+    };
+    let big: Vec<u8> = (0..MOUNTED_BYTES).map(|i| (i % 251) as u8).collect();
+    let (_anchor, instance, id) = volume(&bin, "mounted", &[("big", &big)]);
+    let dir = TempDir::new("slates-mount");
+    let point = dir.join("v");
+    std::fs::create_dir(&point).unwrap();
+    let _mounted = Mounted::new(&bin, &instance, &id, &point);
+    assert_eq!(
+        std::fs::read(point.join("big")).unwrap(),
+        big,
+        "the host's slates mount serves the volume"
+    );
+
+    let home = TempDir::new("slates-mount-home");
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", SHARE_WINDOW_MIB.as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let (image, _) = served();
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let volume = format!("{}:/v", point.display());
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", MOUNTED_VM, "-u", "0", "-v", &volume, &image, "sleep",
+    ]);
+    let _vm = Removed { env: &env };
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", MOUNTED_VM, "/bin/testguest"];
+        all.extend_from_slice(args);
+        let r = shards(&all);
+        assert_eq!(r.status, Some(0), "{args:?}: {r}");
+        r.stdout
+    };
+    assert_eq!(
+        exec(&["fs", "dax:/v/big"]),
+        "dax /v/big yes\n",
+        "the guest maps the slates file into Shards' own window"
+    );
+    assert_eq!(
+        exec(&["digest", "/v/big"]),
+        format!("digest /v/big {:016x}\n", shards_testguest::fnv1a(&big)),
+        "the guest reads the slates file whole through the window"
+    );
+
+    let mut changed = big.clone();
+    changed[MOUNTED_AT] = changed[MOUNTED_AT].wrapping_add(1);
+    write(&bin, &instance, &id, "big", &changed);
+    let want = format!("peek /v/big {MOUNTED_AT} {}\n", changed[MOUNTED_AT]);
+    let started = Instant::now();
+    let (followed, last) = loop {
+        let got = exec(&["fs", &format!("peek:/v/big:{MOUNTED_AT}")]);
+        if got == want {
+            break (Some(started.elapsed()), got);
+        }
+        if started.elapsed() >= TIMEOUT {
+            break (None, got);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    // Measured, not asserted: the goal is the map; whether a change through another path reaches the window is the
+    // finding this run records (Shards' M193: a range replaced in the host alone keeps the old pages at stage 2).
+    eprintln!(
+        "SLATES MOUNT WINDOW: dax yes, digest whole; after the host's write, {}",
+        followed.map_or_else(
+            || format!("the guest kept the old byte for {TIMEOUT:?} ({})", last.trim()),
+            |took| format!("a fresh open and read in the guest saw the new byte after {took:?}"),
+        )
+    );
 }
