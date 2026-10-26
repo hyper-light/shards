@@ -21,12 +21,14 @@ RssAnon and RssShmem on Linux (smaps_rollup, status).
     measure.py SHARDS OUT [--builds rust,npm,apt] [--rounds 3] [--home HOME]
 
 Each build runs in HOME (default OUT/home, kept), with an empty DOCKER_CONFIG; a round's
-first build of each kind fills its cache mounts, its later ones read them back. Into
+first build of each kind fills its cache mounts, its later ones read them back. Where the
+room left on OUT's or HOME's volume falls under 5 GiB, the build under way is ended and the
+run with it. Into
 OUT/out.txt: a header (host, OS, kernel, CPU, revision, memory), then `guest`, `host` and
 `build` lines, KEY=VALUE each, for tables.py and check.py; into OUT/raw/, each build's
 stderr and its builder's console.
 """
-import argparse, ctypes, os, platform, re, subprocess, sys, threading, time
+import argparse, ctypes, os, platform, re, signal, subprocess, sys, threading, time
 
 here = os.path.dirname(os.path.realpath(__file__))
 p = argparse.ArgumentParser()
@@ -121,9 +123,33 @@ def descendants(root):
     return found
 
 
+# The room the run leaves its volume: under it, the build under way is ended and no other
+# starts (a full disk ended a round on the Mac, 2026-10-26, and every other program there
+# with it).
+ROOM = 5 << 30
+short = threading.Event()
+
+
+def room():
+    """The free bytes of the volumes the run writes to: its output's and its home's."""
+    def free(path):
+        while not os.path.exists(path):
+            path = os.path.dirname(path)
+        st = os.statvfs(path)
+        return st.f_bavail * st.f_frsize
+    return min(free(out), free(home))
+
+
 def sample_host(build_pid, tag, stop):
-    """The builder's VM process's memory each second, until `stop`."""
+    """The builder's VM process's memory each second, until `stop`; the build ended where
+    its volume's room runs short."""
     while not stop.wait(1):
+        left = room()
+        if left < ROOM:
+            say(f"room {left >> 20} MiB: ending the run")
+            short.set()
+            os.kill(build_pid, signal.SIGTERM)
+            return
         vm = next((pid for pid, name in descendants(build_pid) if name == "shards-vm"), None)
         if vm is None:
             continue
@@ -200,5 +226,8 @@ builds = a.builds.split(",")
 for r in range(1, a.rounds + 1):
     order = builds[(r - 1) % len(builds):] + builds[:(r - 1) % len(builds)]
     for name in order:
+        if short.is_set() or room() < ROOM:
+            say(f"room {room() >> 20} MiB: ending the run")
+            sys.exit(1)
         one(r, name)
 say("done")
