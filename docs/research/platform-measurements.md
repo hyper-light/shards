@@ -14739,8 +14739,29 @@ revision before comparing a changed API/implementation.
   - The child mapped the section and read "written by the server", and the server read what the child wrote.
   - The child could open the server, as an unconfined child of one user can. The confined VM's answer and a standard
     user's are the runners'.
-- **Consequence (D189), provisional until the runners answer.** If the runners' confined VM and standard user agree,
-  a server can give a VM process a section by DuplicateHandle, knowing only its pid, at about 1 µs a duplication. Its
-  value must reach the VM by other means, as M203's handles do. slates' daemon would then answer a DAX mapping with the
-  section's value in the VM process, after checking that the asking process holds the attachment's stream (M340: every
-  handle to an end names its pipe).
+- **Found on the runners.** `whp-run.yml` run 40279807075 at d73052db, 2026-10-26: windows-2022 (AMD EPYC 7763,
+  Windows 10.0.20348) and windows-2025 (AMD EPYC 9V45, Windows 10.0.26100). Each ran the hand-off twice: as the
+  runner's account (`elevated: Some(true)`) and as the workflow's standard user (`elevated: Some(false)`). Both answered
+  the same way, as both accounts:
+  - The server opened the confined VM process for PROCESS_DUP_HANDLE and duplicated a section into it.
+  - The VM mapped the section, read "written by the server" and wrote back, and the server read "written by the
+    VM....".
+  - The VM's own open of the server for PROCESS_DUP_HANDLE was refused: "Access is denied. (os error 5)".
+  - Every process exited 0 (wait 0).
+
+  | | windows-2022 | windows-2025 |
+  |---|---|---|
+  | runner's account: PROCESS_DUP_HANDLE open | 4.20 µs | 5.90 µs |
+  | runner's account: a duplication (µs) | n=200 p50=0.80 p90=1.20 p99=2.10 max=5.70 | n=200 p50=1.00 p90=1.30 p99=3.20 max=6.50 |
+  | standard user: PROCESS_DUP_HANDLE open | 4.70 µs | 5.20 µs |
+  | standard user: a duplication (µs) | n=200 p50=0.80 p90=0.90 p99=1.40 max=2.40 | n=200 p50=1.00 p90=1.10 p99=3.70 max=7.20 |
+
+- **Consequence (D189).**
+  - A server running as a standard user at medium integrity, which did not spawn the VM, can give a VM process
+    confined as D141 confines one a section by DuplicateHandle, knowing only its pid. A duplication costs about 1 µs
+    at p50. The value must reach the VM by other means, as M203's handles do.
+  - The confined VM cannot open the server in return. So the duplication goes one way only, from the server into
+    the VM.
+  - slates' daemon answers a DAX mapping with the section's value in the VM process. Before that it checks that the
+    asking process holds the attachment's stream (M340: every handle to an end names its pipe), keeping the process
+    handle so that the pid cannot be reused under it.
