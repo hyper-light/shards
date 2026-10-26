@@ -2468,8 +2468,10 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 
 /// A microVM held to a budget short of what it holds gives back what it holds cold of its
 /// files, and reads on within it (D188): under a slice of the user's manager, a microVM
-/// that read 512 MiB through FUSE (a file of a DAX window's range or more is its host's
-/// page cache, mapped into it: D189) holds it in its guest's page cache; a `MemoryHigh` set
+/// that read 512 MiB through FUSE holds it in its guest's page cache (its daemon gives its
+/// share no window, `SHARDS_SHARE_WINDOW_MIB` 0, on any host: a window maps files of
+/// DAX_SMALLEST, a MiB, or more from its host's page cache, D189, and a host that gives a
+/// window by default, an Intel runner's, left its guest nothing to give back); a `MemoryHigh` set
 /// short of it, the daemon, watching the slice's budget, has it reclaim what it holds cold
 /// and report it free at once, idle as it is, which raises no pressure, says what it gave
 /// back and what it asked to unplug, and holds it within the budget's room, in which it
@@ -2480,10 +2482,23 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if !cfg!(target_os = "linux") {
         return;
     }
-    let Some((home, image)) = home("containers-budget") else {
+    if cannot_run_vms() {
         return;
-    };
-    let shards = |args: &[&str]| shards_in(&home, args);
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-budget");
+    let (kernel, init) = (kernel(), guest_init());
+    // Its daemon, started by the pull, gives its share no window: the files come through
+    // FUSE into the guest's page cache, which is what it holds cold.
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
     let bus = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         // SAFETY: getuid(2) takes nothing and cannot fail.
@@ -2519,12 +2534,12 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     }
     let _budget = Budget(&slice);
     let mount = format!("{}:/vol", vol.display());
-    let started = run_in(
-        &home,
+    let args = run_args(
         &image,
         &["-d", "--name", "budget", "--cgroup-parent", &slice, "-v", &mount],
         &["sleep"],
     );
+    let started = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
     assert_eq!(started.status, Some(0), "{started}");
     let log = home.join("daemon.log");
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
