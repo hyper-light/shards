@@ -24,7 +24,7 @@ env:
   ARGS: --rounds 6
   # The CPU vendor whose runners measure (/proc/cpuinfo's vendor_id); the others end at once,
   # before building: empty, every runner's.
-  VENDOR: ""
+  VENDOR: GenuineIntel
 
 jobs:
   measure:
