@@ -1299,10 +1299,11 @@ type ServedPipe = (String, std::os::windows::io::BorrowedHandle<'static>);
 /// VM is given each through its grants as `slates-fs-<i>`, in its order, and told the name
 /// with `--slates-fs`, as `--net`'s handles are given: no handle's value crosses as a flag,
 /// since none is known in the child before the spawn duplicates it there. Each must be a
-/// pipe this process holds, given once. The arguments the VM is given, and the pipes.
+/// pipe this process holds of its own, given once ([`served_pipe`]). `restore` takes none,
+/// as Unix's takes no `--slates-fs-fd`. The arguments the VM is given, and the pipes.
 #[cfg(windows)]
 fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), String> {
-    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    let restoring = args.first().is_some_and(|a| a == "restore");
     let mut kept = Vec::with_capacity(args.len());
     let mut pipes: Vec<ServedPipe> = Vec::new();
     let mut values: Vec<usize> = Vec::new();
@@ -1311,6 +1312,11 @@ fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), S
         if arg != "--slates-fs-handle" {
             kept.push(arg.clone());
             continue;
+        }
+        // Refused under its own name, as Unix's parse_restore refuses --slates-fs-fd, not
+        // under the `--slates-fs` it would become.
+        if restoring {
+            return Err(format!("unexpected argument {arg:?}"));
         }
         let given = rest
             .next()
@@ -1322,17 +1328,7 @@ fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), S
         if values.contains(&value) {
             return Err(format!("--slates-fs-handle {value}: given twice"));
         }
-        let raw = value as std::os::windows::io::RawHandle;
-        // SAFETY: GetFileType reads a handle's type and touches no memory; a value this
-        // process holds no handle at answers FILE_TYPE_UNKNOWN.
-        if value == 0 || unsafe { GetFileType(raw) } != FILE_TYPE_PIPE {
-            return Err(format!(
-                "--slates-fs-handle {value}: not a pipe this process holds"
-            ));
-        }
-        // SAFETY: a handle this process inherited for this share and never closes: it stays
-        // open while the spawn duplicates it into the VM, and until this process ends.
-        let handle = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) };
+        let handle = served_pipe(value)?;
         let name = format!("slates-fs-{}", pipes.len());
         kept.push("--slates-fs".into());
         kept.push(name.clone().into());
@@ -1340,6 +1336,50 @@ fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), S
         pipes.push((name, handle));
     }
     Ok((kept, pipes))
+}
+
+/// The pipe at `value`, which this process inherited for a share: never one of its standard
+/// handles, refused as Unix refuses descriptors 0 to 2 (a piped stdin passes GetFileType,
+/// and would be the share's stream and the VM's stdin at once), and a pipe. Its inherit
+/// flag is cleared: an inherited handle stays inheritable, and a spawn by std, which passes
+/// every inheritable handle on, would hand it to that child too. It reaches the VM by
+/// DuplicateHandle alone.
+#[cfg(windows)]
+fn served_pipe(value: usize) -> Result<std::os::windows::io::BorrowedHandle<'static>, String> {
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    let raw = value as std::os::windows::io::RawHandle;
+    let standard = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+        .into_iter()
+        .any(|which| {
+            // SAFETY: GetStdHandle reads one of this process's standard handles and touches no
+            // memory.
+            let held = unsafe { GetStdHandle(which) };
+            !held.is_null() && held != INVALID_HANDLE_VALUE && held == raw
+        });
+    if standard {
+        return Err(format!("--slates-fs-handle {value}: not a handle of its own"));
+    }
+    // SAFETY: GetFileType reads a handle's type and touches no memory; a value this
+    // process holds no handle at answers FILE_TYPE_UNKNOWN.
+    if value == 0 || unsafe { GetFileType(raw) } != FILE_TYPE_PIPE {
+        return Err(format!(
+            "--slates-fs-handle {value}: not a pipe this process holds"
+        ));
+    }
+    // SAFETY: changes one flag of a pipe this process holds, as GetFileType just answered.
+    if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(format!(
+            "--slates-fs-handle {value}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: a handle this process inherited for this share and never closes: it stays
+    // open while the spawn duplicates it into the VM, and until this process ends.
+    Ok(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) })
 }
 
 fn failed(message: &str) -> ExitCode {
@@ -1354,17 +1394,34 @@ mod served_pipes_tests {
     use std::ffi::OsString;
     use std::os::windows::io::AsRawHandle as _;
 
+    use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation};
+
     use super::served_pipes;
 
     fn args(of: &[&str]) -> Vec<OsString> {
         of.iter().map(OsString::from).collect()
     }
 
+    /// Whether `handle` is inheritable, as a spawn by std would hand it on.
+    fn inheritable(handle: &impl std::os::windows::io::AsRawHandle) -> bool {
+        let mut flags = 0;
+        // SAFETY: reads the flags of a handle this test holds into a local.
+        let read = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+        assert_ne!(read, 0);
+        flags & HANDLE_FLAG_INHERIT != 0
+    }
+
     /// A pipe this process holds goes to the VM as `slates-fs-0`, named with
-    /// `--slates-fs`, the rest of the arguments kept in order.
+    /// `--slates-fs`, the rest of the arguments kept in order; inherited inheritable, as a
+    /// server hands it, it is no longer so, and no spawn by std hands it on.
     #[test]
     fn a_pipe_it_holds_goes_by_name() {
         let (read, _write) = std::io::pipe().unwrap();
+        // SAFETY: sets one flag of a handle this test holds.
+        let set =
+            unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        assert_ne!(set, 0);
+        assert!(inheritable(&read), "as a handle inherited is");
         let value = (read.as_raw_handle() as usize).to_string();
         let (kept, pipes) = served_pipes(&args(&[
             "run",
@@ -1390,10 +1447,11 @@ mod served_pipes_tests {
         );
         assert_eq!(pipes.len(), 1);
         assert_eq!(pipes[0].0, "slates-fs-0");
+        assert!(!inheritable(&read), "no spawn by std hands it on");
     }
 
-    /// No value, one that is no number, a handle that is no pipe, and a pipe given twice
-    /// are each refused, the flag named.
+    /// No value, one that is no number, a handle that is no pipe, a pipe given twice, and
+    /// one given to `restore` are each refused, the flag named.
     #[test]
     fn what_is_no_pipe_it_holds_is_refused() {
         let (read, _write) = std::io::pipe().unwrap();
@@ -1421,6 +1479,10 @@ mod served_pipes_tests {
                 ],
                 "given twice",
             ),
+            (
+                vec!["restore", "/snapshot", "--slates-fs-handle", pipe.as_str()],
+                "unexpected argument",
+            ),
         ] {
             let e = served_pipes(&args(&given)).err().unwrap();
             assert!(
@@ -1428,5 +1490,31 @@ mod served_pipes_tests {
                 "{given:?}: {e}"
             );
         }
+    }
+
+    /// Each of this process's standard handles is refused as none of its own, whatever its
+    /// type: a piped stdin is a pipe, and would be the share's stream and the VM's stdin at
+    /// once.
+    #[test]
+    fn its_standard_handles_are_refused() {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        let mut refused = 0;
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: reads one of this process's standard handles.
+            let held = unsafe { GetStdHandle(which) };
+            if held.is_null() || held == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            let value = (held as usize).to_string();
+            let e = served_pipes(&args(&["run", "--slates-fs-handle", &value]))
+                .err()
+                .unwrap();
+            assert!(e.contains("not a handle of its own"), "{value}: {e}");
+            refused += 1;
+        }
+        assert!(refused > 0, "a test process has a standard handle to offer");
     }
 }

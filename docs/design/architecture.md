@@ -2760,14 +2760,18 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     named pipe, since AF_UNIX makes no pair without a socket file and the pipe loses
     nothing at its writer's exit (PM M340).
     - **Handing it in.** V is a handle the spawner inherited from the server. It checks V
-      is a pipe it holds (GetFileType), refusing a value given twice. It gives V to the VM
-      through its grants as `slates-fs-<i>`, in order, and names it with `--slates-fs`, as
-      `--net`'s handles are given. No handle's value crosses as a flag.
+      is a pipe it holds (GetFileType) and none of its standard handles, as Unix refuses
+      descriptors 0 to 2, refusing a value given twice. It clears V's inherit flag, since an
+      inherited handle stays inheritable and a spawn by std would hand it on. It gives V to
+      the VM through its grants as `slates-fs-<i>`, in order, and names it with
+      `--slates-fs`, as `--net`'s handles are given. No handle's value crosses as a flag.
+      `shards restore` takes none, as Unix's takes no `--slates-fs-fd`.
     - **The VM.** It takes each pipe from its grants by name, once, beside no `--warm` or
       `--shares`, as on Unix. Its device reads and writes the pipe as it does the socket,
       blocking, one request at a time. Every call is an overlapped one waited for at once
-      (`platform::PipeStream`), so the VM need not know how its server opened the end. A
-      read past the server's going is the end, as the socket's is.
+      (`platform::PipeStream`), so the VM need not know how its server opened the end, nor
+      in which mode: a message longer than a read comes in pieces, ERROR_MORE_DATA taken as
+      the bytes that fitted. A read past the server's going is the end, as the socket's is.
     - **What the device builds on.** The FUSE wire it needs is `fs/proto.rs`, which every
       host builds. `server.rs`, the share process and its budgets stay Unix's.
     - **No DAX window yet.** A machine that asks a share for one is refused. `window_none.rs`

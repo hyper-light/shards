@@ -771,23 +771,31 @@ impl PipeStream {
     }
 
     /// Waits for the call `started` began on `overlapped`: the bytes it moved, or its error.
+    /// A read of a message longer than its buffer, from an end in message-read mode, moves
+    /// what fits and leaves the rest of the message for the next read, failing with
+    /// ERROR_MORE_DATA (ReadFile's documentation). That is a read of those bytes here, so the
+    /// device reads an end in either mode as it reads a byte stream.
     fn finish(&self, started: i32, overlapped: &mut OVERLAPPED) -> io::Result<usize> {
-        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, GetLastError};
+        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_MORE_DATA, GetLastError};
         use windows_sys::Win32::System::IO::GetOverlappedResult;
+        let failed = |error: u32| io::Error::from_raw_os_error(i32::try_from(error).unwrap_or(i32::MAX));
         if started == 0 {
             // SAFETY: no arguments.
             let error = unsafe { GetLastError() };
-            if error != ERROR_IO_PENDING {
-                return Err(io::Error::from_raw_os_error(
-                    i32::try_from(error).unwrap_or(i32::MAX),
-                ));
+            if error != ERROR_IO_PENDING && error != ERROR_MORE_DATA {
+                return Err(failed(error));
             }
         }
         let mut moved = 0u32;
         // SAFETY: the OVERLAPPED of the call just begun on this handle, waited for here (bWait),
-        // so neither it nor the call's buffer is touched once this returns.
+        // so neither it nor the call's buffer is touched once this returns. A call already
+        // finished, ERROR_MORE_DATA's among them, is answered at once with what it moved.
         if unsafe { GetOverlappedResult(self.pipe.as_raw_handle(), overlapped, &mut moved, 1) } == 0 {
-            return Err(io::Error::last_os_error());
+            // SAFETY: no arguments.
+            let error = unsafe { GetLastError() };
+            if error != ERROR_MORE_DATA {
+                return Err(failed(error));
+            }
         }
         Ok(usize::try_from(moved).unwrap_or(usize::MAX))
     }
@@ -856,13 +864,20 @@ mod pipe_stream {
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
     };
     use windows_sys::Win32::System::Pipes::{
-        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
     };
 
     use super::PipeStream;
 
-    /// A connected pair: the server's end and the VM's, each overlapped (`overlapped`) or not.
+    /// A connected byte-mode pair: the server's end and the VM's, each overlapped
+    /// (`overlapped`) or not.
     fn pair(overlapped: bool) -> (PipeStream, PipeStream) {
+        pair_in(overlapped, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE)
+    }
+
+    /// A connected pair whose server end is made in `mode`, a pipe type and read mode.
+    fn pair_in(overlapped: bool, mode: u32) -> (PipeStream, PipeStream) {
         static MADE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let name: Vec<u16> = format!(
             r"\\.\pipe\shards-vmm-test-{}-{}",
@@ -878,7 +893,7 @@ mod pipe_stream {
             CreateNamedPipeW(
                 name.as_ptr(),
                 PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | flag,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                mode | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 4096,
                 4096,
@@ -911,6 +926,29 @@ mod pipe_stream {
             PipeStream::from_handle(server).unwrap(),
             PipeStream::from_handle(client).unwrap(),
         )
+    }
+
+    /// A message longer than a read, from an end in message-read mode, comes in pieces of a
+    /// read's worth that join into it whole: ERROR_MORE_DATA is a read of what fitted, on
+    /// overlapped ends and synchronous ones alike.
+    #[test]
+    fn a_message_longer_than_a_read_comes_in_pieces() {
+        for overlapped in [true, false] {
+            let (mut server, mut vm) = pair_in(overlapped, PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE);
+            let message: Vec<u8> = (0..100u8).collect();
+            vm.write_all(&message).unwrap();
+            let mut got = Vec::new();
+            let mut piece = [0u8; 16];
+            while got.len() < message.len() {
+                let read = server.read(&mut piece).unwrap();
+                assert!(
+                    read > 0 && read <= piece.len(),
+                    "overlapped {overlapped}: a piece of {read}"
+                );
+                got.extend_from_slice(&piece[..read]);
+            }
+            assert_eq!(got, message, "overlapped {overlapped}: the message whole");
+        }
     }
 
     /// Frames go each way whole, on overlapped ends and on synchronous ones alike, and a
