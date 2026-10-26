@@ -14521,13 +14521,52 @@ revision before comparing a changed API/implementation.
     | 2 | n=10000 p50=5.80 p90=9.90 p99=21.00 max=518.40 | n=10000 p50=15.80 p90=18.90 p99=58.40 max=336.50 |
     | 3 | n=10000 p50=5.80 p90=7.80 p99=18.80 max=293.10 | n=10000 p50=15.70 p90=21.30 p99=58.00 max=352.70 |
 
+- **Found on the runners.** `windows-pipe.yml` run 40274764295 at 274a2161, 2026-10-26:
+  windows-2025 (AMD EPYC 7763, Windows 10.0.26100.0, image win25-vs2026 20261021.278) and
+  windows-2022 (Intel Xeon Platinum 8573C, Windows 10.0.20348.0, image win22 20261022.344).
+  - Both answered every question as jupiter did. The abstract connect was refused WSAEINVAL
+    at addrlen 19 and 110. A second client and a second server instance were refused
+    ERROR_PIPE_BUSY. Every handle named the pipe. The reader got 1,048,576 of 1,048,576
+    bytes, then ERROR_BROKEN_PIPE, after a close and after an exit.
+  - A pair costs (µs):
+
+    | runner | pair |
+    |---|---|
+    | windows-2025 | n=1000 p50=14.30 p90=32.50 p99=61.60 max=149.70 |
+    | windows-2022 | n=1000 p50=10.30 p90=10.60 p99=16.40 max=23.40 |
+
+  - Throughput (MB/s), rounds 1 / 2 / 3. On windows-2022, loopback TCP moved more than the
+    pipe; on windows-2025, the pipe moved more:
+
+    | runner | pipe, 64 KiB buffers | pipe, 1 MiB buffers | loopback TCP |
+    |---|---|---|---|
+    | windows-2025 | 4,153 / 3,427 / 4,721 | 5,487 / 5,102 / 5,457 | 3,026 / 2,921 / 3,174 |
+    | windows-2022 | 3,653 / 3,338 / 3,820 | 4,397 / 4,131 / 4,234 | 4,534 / 4,794 / 4,664 |
+
+  - One-byte round trip (µs). The pipe's was the shorter on both:
+
+    | runner | round | pipe | loopback TCP |
+    |---|---|---|---|
+    | windows-2025 | 1 | n=10000 p50=27.40 p90=41.00 p99=61.90 max=369.00 | n=10000 p50=46.30 p90=65.90 p99=94.50 max=508.40 |
+    | windows-2025 | 2 | n=10000 p50=27.20 p90=40.90 p99=115.20 max=312.60 | n=10000 p50=40.50 p90=53.70 p99=84.00 max=535.80 |
+    | windows-2025 | 3 | n=10000 p50=26.90 p90=29.40 p99=47.40 max=188.90 | n=10000 p50=39.60 p90=46.40 p99=69.80 max=210.50 |
+    | windows-2022 | 1 | n=10000 p50=35.40 p90=48.40 p99=59.90 max=148.50 | n=10000 p50=44.10 p90=56.60 p99=68.10 max=326.30 |
+    | windows-2022 | 2 | n=10000 p50=37.70 p90=51.70 p99=63.60 max=334.30 | n=10000 p50=44.30 p90=58.40 p99=78.90 max=1175.70 |
+    | windows-2022 | 3 | n=10000 p50=36.10 p90=50.00 p99=71.00 max=275.10 | n=10000 p50=40.10 p90=55.90 p99=73.70 max=165.50 |
+
 - **Consequence (D38).** On Windows the stream of a share another server serves is a
   duplex named pipe handle the spawner duplicates into the VM process, as it hands files
   (D141, M203).
   - It is made without a path, which AF_UNIX cannot be.
-  - It costs about a sixtieth of an AF_UNIX pair. Its throughput is two to eight times
-    loopback TCP's, and its round trip half TCP's or less.
+  - It costs a fiftieth to a seventieth of an AF_UNIX pair: 9.9 µs at p50 on jupiter,
+    10.3 and 14.3 on the runners, against M199's 609.5 and 699.8.
+  - Its round trip is the shorter on every host: half loopback TCP's or less on jupiter,
+    0.6 to 0.9 times on the runners.
   - It loses nothing when its writer exits.
   - A server that hands out the client end can check that a handle another process names
     is that stream, by the pipe's name.
-  - The numbers are one host's, under load. The workflow runners are unmeasured.
+  - Throughput is not why: the pipe moved two to eight times TCP's on jupiter, 1.2 to 1.8
+    times on windows-2025, and 0.7 to 1.0 times on windows-2022, where TCP moved more.
+    Once connected, a pipe pair is reachable only by its handles' holders, refusing a
+    second client by name. A loopback TCP pair's listener is open to any local process
+    until its accept. That last is by construction, not measured here.
