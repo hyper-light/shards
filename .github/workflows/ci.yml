@@ -14,6 +14,7 @@ on:
       - "!docs/research/measurements/**/*.md"
       - "!docs/research/measurements/**/*.json"
       - "!docs/research/measurements/**/*.c"
+      - "!docs/research/measurements/**/Dockerfile"
       - "!.github/workflows/builder-cold.yml"
       - "!.github/workflows/dax-budget.yml"
       - "!.github/workflows/dax-huge.yml"
