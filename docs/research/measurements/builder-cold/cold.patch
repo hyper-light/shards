@@ -74,10 +74,35 @@ index ef8f442a9..a47951ae5 100644
  /// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
  /// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses and
 diff --git a/crates/shards/src/build/builder.rs b/crates/shards/src/build/builder.rs
-index 11dd733aa..675e992c2 100644
 --- a/crates/shards/src/build/builder.rs
 +++ b/crates/shards/src/build/builder.rs
-@@ -627,7 +627,6 @@ impl Builder {
+@@ -417,10 +417,23 @@
+     };
+     let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+     let err = io::stderr();
++    // builder-cold: the builder's console in a file of its own, where no other writer cuts
++    // its lines.
++    let console = match std::env::var_os("SHARDS_BUILDER_CONSOLE") {
++        Some(path) => Some(
++            std::fs::OpenOptions::new()
++                .append(true)
++                .create(true)
++                .open(&path)
++                .map_err(|e| format!("{}: {e}", path.to_string_lossy()))?,
++        ),
++        None => None,
++    };
++    let out = console.as_ref().map_or(err.as_fd(), |c| c.as_fd());
+     let fds: Vec<_> = [
+         (null.as_fd(), 0),
+-        (err.as_fd(), 1),
+-        (err.as_fd(), 2),
++        (out, 1),
++        (out, 2),
+         (side.region.as_fd(), crate::netproc::VM_FDS[0]),
+         (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
+         (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
+@@ -627,7 +640,6 @@
              vsock.clone().into(),
              "--net".into(),
              crate::netproc::VmSide::arg(&mac).into(),

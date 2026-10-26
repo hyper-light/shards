@@ -14,6 +14,7 @@ on:
       - "!docs/research/measurements/**/*.md"
       - "!docs/research/measurements/**/*.json"
       - "!docs/research/measurements/**/*.c"
+      - "!.github/workflows/builder-cold.yml"
       - "!.github/workflows/dax-budget.yml"
       - "!.github/workflows/dax-huge.yml"
       - "!.github/workflows/dax-boot-memory.yml"

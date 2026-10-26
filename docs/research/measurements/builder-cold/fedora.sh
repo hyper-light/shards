@@ -1,9 +1,10 @@
 #!/bin/sh
 # What a builder holds cold, on Fedora: a release build of REV's tree with cold.patch, then
 # measure.py's rounds of the real builds, its home kept in ~/builder-cold/home (the home's
-# Btrfs) between runs. Run as a transient unit (systemd-run --user, a MemoryMax of its own),
-# its results in ~/builder-cold. The build's sources are REV's, whatever the mirror's working
-# tree holds beyond it; the harness is the mirror's. Usage: fedora.sh MIRROR REV [ROUNDS]
+# Btrfs) between runs, then check.py's test of its output and tables.py's tables. Run as a
+# transient unit (systemd-run --user, a MemoryMax of its own), its results in
+# ~/builder-cold. The build's sources are REV's, whatever the mirror's working tree holds
+# beyond it; the harness is the mirror's. Usage: fedora.sh MIRROR REV [ROUNDS]
 set -eu
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 mirror=$1 rev=$2 rounds=${3:-5}
@@ -26,5 +27,6 @@ st=0
 python3 -I "$src/docs/research/measurements/builder-cold/measure.py" "$out/shards" "$out/run" --rounds "$rounds" \
     --home "$out/home" > "$out/measure.log" 2>&1 || st=$?
 say "measure: exit $st"
+python3 -I "$src/docs/research/measurements/builder-cold/check.py" "$out/run/out.txt" > "$out/check.txt" 2>&1 || true
 python3 -I "$src/docs/research/measurements/builder-cold/tables.py" "$out/run/out.txt" > "$out/tables.txt" 2>&1 || true
 say "done"

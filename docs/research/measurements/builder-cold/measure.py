@@ -4,13 +4,15 @@ and unplug under memory pressure"), measured on real builds: builds/rust (a Rust
 cargo's registry and target as cache mounts), builds/npm (npm ci of a lockfile, npm's cache
 mounted) and builds/apt (an apt-get install, apt's archives and lists mounted), each built
 --no-cache in rounds, the builds' order turning each round, by a build of shards with
-cold.patch: its builder's console on the build's stderr, where its init writes a
-`builder-cold` line each second and one at each step's end: its build cgroup's
+cold.patch: its builder's console in a file of its own (SHARDS_BUILDER_CONSOLE), where no
+other writer cuts its lines as the build's progress cut them on the build's stderr, and
+where its init writes a `builder-cold` line each second and one at each step's end: its build cgroup's
 memory.current, memory.peak, memory.stat's file, active_file, inactive_file, anon and
 shmem, its swap, what the guest has (MemTotal, MemFree) of what it booted with and has
 plugged, what it asked to have and the most it may, and what of what is plugged lies past
 twice what it uses (in whole memory blocks, as a run's give-back keeps twice its use,
-init's `to_keep`). Each line is stamped with this host's time as it arrives.
+init's `to_keep`). Each line is stamped with this host's time as it is read, the file read
+every 10 ms.
 
 Beside it, each second, the builder's VM process on this host (the build's descendant
 named shards-vm): its phys_footprint on macOS (proc_pid_rusage), its Pss, Rss and RssFile,
@@ -21,7 +23,8 @@ RssAnon and RssShmem on Linux (smaps_rollup, status).
 Each build runs in HOME (default OUT/home, kept), with an empty DOCKER_CONFIG; a round's
 first build of each kind fills its cache mounts, its later ones read them back. Into
 OUT/out.txt: a header (host, OS, kernel, CPU, revision, memory), then `guest`, `host` and
-`build` lines, KEY=VALUE each, for tables.py; into OUT/raw/, each build's stderr.
+`build` lines, KEY=VALUE each, for tables.py and check.py; into OUT/raw/, each build's
+stderr and its builder's console.
 """
 import argparse, ctypes, os, platform, re, subprocess, sys, threading, time
 
@@ -133,10 +136,36 @@ GUEST = re.compile(r"builder-cold (.*)$")
 STEP = re.compile(r"^#(\d+) \[")
 
 
+def tail(path, tag, stop, now_step):
+    """The builder's console as it is written, each whole line stamped as it is read, until
+    `stop` and the file's end."""
+    part = ""
+    with open(path, errors="replace") as f:
+        while True:
+            chunk = f.read()
+            if not chunk:
+                if stop.is_set():
+                    return
+                time.sleep(0.01)
+                continue
+            *lines, part = (part + chunk).split("\n")
+            now = time.time()
+            for line in lines:
+                m = GUEST.search(line)
+                if m:
+                    words = m.group(1).split()
+                    end = words[-1] == "step_end"
+                    pairs = words[:-1] if end else words
+                    fields = " ".join(f"{k}={v}" for k, v in zip(pairs[::2], pairs[1::2]))
+                    say(f"guest t={now:.3f} {tag} step={now_step[0]} step_end={int(end)} {fields}")
+
+
 def one(r, name):
     tag = f"round={r} build={name}"
     ctx = os.path.join(here, "builds", name)
-    env = dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config)
+    console = os.path.join(out, "raw", f"{r}-{name}-console.txt")
+    open(console, "w").close()
+    env = dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config, SHARDS_BUILDER_CONSOLE=console)
     started = time.time()
     raw = open(os.path.join(out, "raw", f"{r}-{name}.txt"), "w")
     # Its output and its progress one stream, as each line comes, wherever shards writes it.
@@ -144,27 +173,26 @@ def one(r, name):
                              "-f", os.path.join(ctx, "Dockerfile"), ctx], env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace")
     stop = threading.Event()
+    step = ["-"]
     sampler = threading.Thread(target=sample_host, args=(proc.pid, tag, stop))
+    reader = threading.Thread(target=tail, args=(console, tag, stop, step))
     sampler.start()
-    step = "-"
+    reader.start()
     for line in proc.stdout:
-        now = time.time()
-        raw.write(f"{now:.3f} {line}")
+        raw.write(f"{time.time():.3f} {line}")
         m = STEP.match(line)
         if m:
-            step = m.group(1)
-        m = GUEST.search(line)
-        if m:
-            words = m.group(1).split()
-            end = words[-1] == "step_end"
-            pairs = words[:-1] if end else words
-            fields = " ".join(f"{k}={v}" for k, v in zip(pairs[::2], pairs[1::2]))
-            say(f"guest t={now:.3f} {tag} step={step} step_end={int(end)} {fields}")
+            step[0] = m.group(1)
     code = proc.wait()
     stop.set()
     sampler.join()
+    reader.join()
     raw.close()
     say(f"build {tag} exit={code} s={time.time() - started:.1f}")
+    # The image it made let go of, and the layers no image holds, so that the home holds
+    # each round's no more than its caches (a full disk ended a round, 2026-10-26).
+    for args in (["rmi", "-f", f"builder-cold-{name}"], ["image", "prune", "-f"]):
+        subprocess.run([shards, *args], env=env, capture_output=True)
 
 
 header()
