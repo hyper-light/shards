@@ -30,8 +30,10 @@ shards-syscall-filter = { path = "../syscall-filter" }
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
 windows-sys = { workspace = true, features = [
+  "Win32_Security",
   "Win32_System_Hypervisor",
   "Win32_System_LibraryLoader",
+  "Win32_System_Pipes",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }

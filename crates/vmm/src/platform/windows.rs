@@ -728,3 +728,235 @@ impl Drop for ThreadClock {
         unsafe { CloseHandle(self.0) };
     }
 }
+
+/// The stream of a share another server serves (D38) on Windows: an end of a duplex named
+/// pipe the server made (slates' daemon) and this process's spawner duplicated into it, as
+/// AF_UNIX can make no pair without a socket file and the pipe loses nothing at its
+/// writer's exit (PM M340). The device reads and writes it blocking, one request at a time
+/// under its slot's lock, as it does a Unix socket. So every call is an overlapped
+/// ReadFile or WriteFile waited for at once (GetOverlappedResult): a handle opened for
+/// overlapped I/O, as slates opens its end, requires an OVERLAPPED, and a synchronous one
+/// completes the call before it returns, so the VM need not know how its server opened the
+/// end. One event serves every call, since each comes through `&mut self`. A read past the
+/// server's going is the end, `Ok(0)`, as a Unix socket's: every byte it wrote is read
+/// first, then ERROR_BROKEN_PIPE (M340).
+#[derive(Debug)]
+pub struct PipeStream {
+    pipe: std::os::windows::io::OwnedHandle,
+    /// The manual-reset event every call's OVERLAPPED carries.
+    event: std::os::windows::io::OwnedHandle,
+}
+
+impl PipeStream {
+    /// Takes `pipe`, an end of a pipe, as a share's stream.
+    pub fn from_handle(pipe: std::os::windows::io::OwnedHandle) -> io::Result<PipeStream> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        // SAFETY: an unnamed manual-reset event, not signaled, which this value owns.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the event just made, owned from here on.
+        let event = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(event) };
+        Ok(PipeStream { pipe, event })
+    }
+
+    /// An OVERLAPPED that signals this stream's event.
+    fn overlapped(&self) -> OVERLAPPED {
+        OVERLAPPED {
+            hEvent: self.event.as_raw_handle(),
+            ..OVERLAPPED::default()
+        }
+    }
+
+    /// Waits for the call `started` began on `overlapped`: the bytes it moved, or its error.
+    fn finish(&self, started: i32, overlapped: &mut OVERLAPPED) -> io::Result<usize> {
+        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, GetLastError};
+        use windows_sys::Win32::System::IO::GetOverlappedResult;
+        if started == 0 {
+            // SAFETY: no arguments.
+            let error = unsafe { GetLastError() };
+            if error != ERROR_IO_PENDING {
+                return Err(io::Error::from_raw_os_error(
+                    i32::try_from(error).unwrap_or(i32::MAX),
+                ));
+            }
+        }
+        let mut moved = 0u32;
+        // SAFETY: the OVERLAPPED of the call just begun on this handle, waited for here (bWait),
+        // so neither it nor the call's buffer is touched once this returns.
+        if unsafe { GetOverlappedResult(self.pipe.as_raw_handle(), overlapped, &mut moved, 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(usize::try_from(moved).unwrap_or(usize::MAX))
+    }
+}
+
+impl io::Read for PipeStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED};
+        let mut overlapped = self.overlapped();
+        let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        // SAFETY: a buffer of `len` bytes and an OVERLAPPED, each kept until `finish` has waited
+        // for the call.
+        let started = unsafe {
+            ReadFile(
+                self.pipe.as_raw_handle(),
+                buf.as_mut_ptr(),
+                len,
+                std::ptr::null_mut(),
+                &mut overlapped,
+            )
+        };
+        match self.finish(started, &mut overlapped) {
+            Err(e)
+                if e.raw_os_error().is_some_and(|code| {
+                    u32::try_from(code)
+                        .is_ok_and(|code| code == ERROR_BROKEN_PIPE || code == ERROR_PIPE_NOT_CONNECTED)
+                }) =>
+            {
+                Ok(0)
+            }
+            other => other,
+        }
+    }
+}
+
+impl io::Write for PipeStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut overlapped = self.overlapped();
+        let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        // SAFETY: as `read`'s.
+        let started = unsafe {
+            WriteFile(
+                self.pipe.as_raw_handle(),
+                buf.as_ptr(),
+                len,
+                std::ptr::null_mut(),
+                &mut overlapped,
+            )
+        };
+        self.finish(started, &mut overlapped)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pipe_stream {
+    //! A share's stream over a real pipe pair, made as a server makes one for a VM (PM M340).
+    use std::io::{Read as _, Write as _};
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    };
+    use windows_sys::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+
+    use super::PipeStream;
+
+    /// A connected pair: the server's end and the VM's, each overlapped (`overlapped`) or not.
+    fn pair(overlapped: bool) -> (PipeStream, PipeStream) {
+        static MADE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let name: Vec<u16> = format!(
+            r"\\.\pipe\shards-vmm-test-{}-{}",
+            std::process::id(),
+            MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+        .encode_utf16()
+        .chain([0])
+        .collect();
+        let flag = if overlapped { FILE_FLAG_OVERLAPPED } else { 0 };
+        // SAFETY: a NUL-terminated name and plain arguments; checked below.
+        let server = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | flag,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                4096,
+                4096,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_ne!(server, INVALID_HANDLE_VALUE);
+        // SAFETY: as above.
+        let client = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                flag,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(client, INVALID_HANDLE_VALUE);
+        // SAFETY: each handle just made, owned from here on.
+        let (server, client) = unsafe {
+            (
+                OwnedHandle::from_raw_handle(server),
+                OwnedHandle::from_raw_handle(client),
+            )
+        };
+        (
+            PipeStream::from_handle(server).unwrap(),
+            PipeStream::from_handle(client).unwrap(),
+        )
+    }
+
+    /// Frames go each way whole, on overlapped ends and on synchronous ones alike, and a
+    /// frame longer than the pipe's buffers arrives whole.
+    #[test]
+    fn frames_go_each_way_whole_on_either_kind_of_end() {
+        for overlapped in [true, false] {
+            let (mut server, mut vm) = pair(overlapped);
+            let request: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
+            let sent = request.clone();
+            let writer = std::thread::spawn(move || {
+                vm.write_all(&sent).unwrap();
+                vm
+            });
+            let mut got = vec![0u8; request.len()];
+            server.read_exact(&mut got).unwrap();
+            assert_eq!(got, request, "overlapped {overlapped}: the request whole");
+            let mut vm = writer.join().unwrap();
+            server.write_all(b"reply").unwrap();
+            let mut reply = [0u8; 5];
+            vm.read_exact(&mut reply).unwrap();
+            assert_eq!(&reply, b"reply", "overlapped {overlapped}: the reply whole");
+        }
+    }
+
+    /// A server that writes and goes is read whole, then its end: Ok(0), so read_exact's
+    /// UnexpectedEof is the end of the stream, as a Unix socket's (M340).
+    #[test]
+    fn a_server_that_goes_is_read_whole_then_ends() {
+        let (mut server, mut vm) = pair(true);
+        server.write_all(b"last words").unwrap();
+        drop(server);
+        let mut got = [0u8; 10];
+        vm.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"last words");
+        let mut more = [0u8; 1];
+        assert_eq!(vm.read(&mut more).unwrap(), 0, "the end, as Ok(0)");
+        let error = vm.read_exact(&mut more).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    /// A write to a server that has gone is an error, as a Unix socket's.
+    #[test]
+    fn a_write_to_a_server_that_went_fails() {
+        let (server, mut vm) = pair(true);
+        drop(server);
+        assert!(vm.write_all(b"anyone").is_err());
+    }
+}

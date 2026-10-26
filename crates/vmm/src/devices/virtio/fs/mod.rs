@@ -1,18 +1,42 @@
 //! virtio-fs (virtio 1.3 §5.11): a host directory the guest mounts by its tag, its FUSE
-//! requests answered by [`server::Server`] in a process of its own (the share process,
+//! requests answered by `server::Server` in a process of its own (the share process,
 //! D38), reached over a Unix socket: the VM process, confined to its own files (D30),
 //! reaches no directory it is given after it starts. Two queues, as Linux's driver takes
 //! one high priority queue and the request queues the device says it has (here one):
 //! FORGETs and INTERRUPTs come on the first, everything else on the second.
+//!
+//! A share another server serves is reached over that server's stream ([`Stream`]): a
+//! Unix socket on Unix, a duplex named pipe on Windows (PM M340). On Windows the device
+//! answers no share of its own: the share process, its server and budgets, and the DAX
+//! window are Unix's alone for now, and the FUSE wire the device needs is `proto`'s.
 
+#[cfg(unix)]
 pub mod headroom;
+#[cfg(unix)]
 pub mod host;
+pub mod proto;
+#[cfg(unix)]
 pub mod server;
+#[cfg(unix)]
+pub mod window;
+/// No DAX window is built on Windows yet (D189): its API, around a window none can make.
+#[cfg(windows)]
+#[path = "window_none.rs"]
 pub mod window;
 
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+
+/// The stream a share's server is reached over: a Unix socket on Unix, a duplex named pipe
+/// on Windows (`crate::platform::ShareStream`).
+pub use crate::platform::ShareStream as Stream;
+
+/// What a DAX window's mapping of a file is made from (D189): a descriptor of its object on
+/// Unix, a section's handle on Windows.
+#[cfg(unix)]
+pub type MapObject = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub type MapObject = std::os::windows::io::OwnedHandle;
 
 use super::limit::Limiter;
 use super::queue::{Chain, Queue};
@@ -31,7 +55,7 @@ pub const TAG_BYTES: usize = 36;
 /// its run has its devices, and learns its directories with the run (D38).
 #[derive(Debug, Default)]
 pub struct Slot {
-    conn: std::sync::Mutex<Option<UnixStream>>,
+    conn: std::sync::Mutex<Option<Stream>>,
     /// The tables of the server a restored device's guest was served by (D176), for the
     /// server it is given next.
     pending: std::sync::Mutex<Option<Vec<u8>>>,
@@ -65,7 +89,7 @@ impl std::ops::Deref for SlotOf {
 }
 
 /// The most a request or reply frame holds: a write's data and its headers.
-pub const MAX_FRAME: usize = server::MAX_WRITE as usize + 4096;
+pub const MAX_FRAME: usize = proto::MAX_WRITE as usize + 4096;
 
 /// A frame of the VM process's own, never of a guest's (D176): its length word's top bit,
 /// which no guest's request (at most [`MAX_FRAME`]) sets, as the device sends what the
@@ -76,6 +100,7 @@ const CONTROL: u32 = 1 << 31;
 /// shards_ipc message, the descriptor with it.
 const SAVE: u8 = 1;
 const RESTORE: u8 = 2;
+#[cfg(unix)]
 const DESCRIPTOR: u8 = 3;
 /// The requests a device with a DAX window answers itself (include/uapi/linux/fuse.h), and
 /// a mapping's flag that it may be written.
@@ -83,7 +108,7 @@ const SETUPMAPPING: u32 = 48;
 const REMOVEMAPPING: u32 = 49;
 const MAP_WRITE: u64 = 1 << 0;
 /// The most a control frame holds: a share's tables, which a snapshot's state holds.
-const MAX_CONTROL: usize = server::MAX_TABLES;
+const MAX_CONTROL: usize = proto::MAX_TABLES;
 
 impl Slot {
     /// A slot no server is in yet.
@@ -99,7 +124,7 @@ impl Slot {
     /// Asks the server at the other end of `conn` from here on, which first takes the tables
     /// a restored device brought (D176): Err where it does not, its guest's every file of
     /// the share then unknown to it.
-    pub fn attach(&self, mut conn: UnixStream) -> Result<(), String> {
+    pub fn attach(&self, mut conn: Stream) -> Result<(), String> {
         let pending = self
             .pending
             .lock()
@@ -163,23 +188,17 @@ impl Slot {
     /// A descriptor of the file of its server's node `node`, for a DAX window's mapping of
     /// `len` bytes of it from `foffset` (D189), writable only if `writable`: an errno where
     /// the server refuses it, or there is none.
-    fn descriptor(
-        &self,
-        node: u64,
-        writable: bool,
-        foffset: u64,
-        len: u64,
-    ) -> Result<std::os::fd::OwnedFd, i32> {
+    fn descriptor(&self, node: u64, writable: bool, foffset: u64, len: u64) -> Result<MapObject, i32> {
         let mut conn = self
             .conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        descriptor_on(conn.as_mut().ok_or(libc::ENODEV)?, node, writable, foffset, len)
+        descriptor_on(conn.as_mut().ok_or(proto::ENODEV)?, node, writable, foffset, len)
     }
 
     /// The server's reply to `req`, none for one that takes none; Err with no server, or
     /// with one that has gone. One request at a time: each queue's worker asks in turn.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn ask(&self, req: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let mut reply = Vec::new();
         Ok(self.ask_into(req, &mut reply)?.then_some(reply))
@@ -204,29 +223,44 @@ impl Slot {
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
 /// for a DAX window's mapping of `len` bytes of it from `foffset` (D189), writable only if
 /// `writable`: an errno where the server refuses it.
+#[cfg(unix)]
 fn descriptor_on(
-    conn: &mut UnixStream,
+    conn: &mut Stream,
     node: u64,
     writable: bool,
     foffset: u64,
     len: u64,
-) -> Result<std::os::fd::OwnedFd, i32> {
-    write_control(conn, &descriptor_ask(node, writable, foffset, len)).map_err(|_| libc::EIO)?;
+) -> Result<MapObject, i32> {
+    write_control(conn, &descriptor_ask(node, writable, foffset, len)).map_err(|_| proto::EIO)?;
     match shards_ipc::recv(conn) {
-        Ok(Some(m)) if m.kind == 0 => m.fds.into_iter().next().ok_or(libc::EIO),
+        Ok(Some(m)) if m.kind == 0 => m.fds.into_iter().next().ok_or(proto::EIO),
         Ok(Some(m)) => Err(m
             .payload
             .get(..4)
             .and_then(|b| <[u8; 4]>::try_from(b).ok())
-            .map_or(libc::EIO, i32::from_le_bytes)),
-        _ => Err(libc::EIO),
+            .map_or(proto::EIO, i32::from_le_bytes)),
+        _ => Err(proto::EIO),
     }
+}
+
+/// No file's object reaches a Windows device yet: none has a DAX window to map it into
+/// (D189), so none asks.
+#[cfg(windows)]
+fn descriptor_on(
+    _conn: &mut Stream,
+    _node: u64,
+    _writable: bool,
+    _foffset: u64,
+    _len: u64,
+) -> Result<MapObject, i32> {
+    Err(proto::EIO)
 }
 
 /// A `DESCRIPTOR` ask: the node (le64), whether the mapping is writable (one byte), then
 /// the range of the file it maps, its offset and length (le64 each). A server that keeps
 /// a file's bytes in an object of its own for each mapping (slates' shares) answers for
 /// that range; shards' own reads the node and the flag alone.
+#[cfg(unix)]
 fn descriptor_ask(node: u64, writable: bool, foffset: u64, len: u64) -> Vec<u8> {
     let mut ask = Vec::with_capacity(26);
     ask.push(DESCRIPTOR);
@@ -238,14 +272,14 @@ fn descriptor_ask(node: u64, writable: bool, foffset: u64, len: u64) -> Vec<u8> 
 }
 
 /// Sends `bytes` as a frame: its length (le32), then itself, from where they are.
-pub fn write_frame(to: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
+pub fn write_frame(to: &mut Stream, bytes: &[u8]) -> io::Result<()> {
     let len = u32::try_from(bytes.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
     to.write_all(&len.to_le_bytes())?;
     to.write_all(bytes)
 }
 
 /// The next frame, none at the end; Err for one past [`MAX_FRAME`].
-pub fn read_frame(from: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
+pub fn read_frame(from: &mut Stream) -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     Ok(read_frame_into(from, &mut bytes)?.then_some(bytes))
 }
@@ -253,7 +287,7 @@ pub fn read_frame(from: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
 /// [`read_frame`] into `bytes`, which it empties first, a buffer its caller keeps: false at
 /// the end. A MiB read through the share otherwise made a MiB of fresh memory a reply,
 /// which its host charged its run (PM M314).
-fn read_frame_into(from: &mut UnixStream, bytes: &mut Vec<u8>) -> io::Result<bool> {
+fn read_frame_into(from: &mut Stream, bytes: &mut Vec<u8>) -> io::Result<bool> {
     let mut len = [0u8; 4];
     match from.read_exact(&mut len) {
         Ok(()) => {}
@@ -285,10 +319,10 @@ fn io_bytes(req: &[u8]) -> u64 {
     };
     match word(4) {
         // fuse_read_in after the header: fh, offset, then size.
-        Some(server::op::READ) => word(server::IN_HEADER_BYTES + 16).map_or(0, u64::from),
+        Some(proto::op::READ) => word(proto::IN_HEADER_BYTES + 16).map_or(0, u64::from),
         // fuse_write_in's 40 bytes after the header, then the data.
-        Some(server::op::WRITE) => {
-            u64::try_from(req.len().saturating_sub(server::IN_HEADER_BYTES + 40)).unwrap_or(u64::MAX)
+        Some(proto::op::WRITE) => {
+            u64::try_from(req.len().saturating_sub(proto::IN_HEADER_BYTES + 40)).unwrap_or(u64::MAX)
         }
         // A DAX window's range among them (D189), which the guest then reads and writes as
         // memory: the I/O it stands for is its file's bytes in the range, which its file's
@@ -300,7 +334,7 @@ fn io_bytes(req: &[u8]) -> u64 {
 
 /// Sends `ask` and `bytes` as a control frame, and reads its answer: what it brings, or the
 /// server's why not.
-fn control(conn: &mut UnixStream, ask: u8, bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn control(conn: &mut Stream, ask: u8, bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut frame = Vec::with_capacity(1 + bytes.len());
     frame.push(ask);
     frame.extend_from_slice(bytes);
@@ -316,7 +350,7 @@ fn control(conn: &mut UnixStream, ask: u8, bytes: &[u8]) -> Result<Vec<u8>, Stri
     }
 }
 
-fn write_control(to: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
+fn write_control(to: &mut Stream, bytes: &[u8]) -> io::Result<()> {
     if bytes.len() > MAX_CONTROL {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -335,7 +369,7 @@ enum Frame {
 }
 
 /// The next frame, none at the end; Err for one past its kind's most.
-fn read_any(from: &mut UnixStream) -> io::Result<Option<Frame>> {
+fn read_any(from: &mut Stream) -> io::Result<Option<Frame>> {
     let mut bytes = Vec::new();
     Ok(read_any_into(from, &mut bytes)?.map(|control| {
         if control {
@@ -348,7 +382,7 @@ fn read_any(from: &mut UnixStream) -> io::Result<Option<Frame>> {
 
 /// [`read_any`] into `bytes`, which it empties first, a buffer its caller keeps: whether
 /// the frame is a control frame, none at the end.
-fn read_any_into(from: &mut UnixStream, bytes: &mut Vec<u8>) -> io::Result<Option<bool>> {
+fn read_any_into(from: &mut Stream, bytes: &mut Vec<u8>) -> io::Result<Option<bool>> {
     let mut len = [0u8; 4];
     match from.read_exact(&mut len) {
         Ok(()) => {}
@@ -382,7 +416,8 @@ fn read_any_into(from: &mut UnixStream, bytes: &mut Vec<u8>) -> io::Result<Optio
 /// (D176), and is answered with one: 0 then what it asked for, or 1 then why not; or asks
 /// for a file's descriptor (D189), answered as a shards_ipc message: 0 and the
 /// descriptor, or 1 and the errno that refused it.
-pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
+#[cfg(unix)]
+pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
     // Each request read into, and each reply built in, a buffer kept from one to the next
     // (`Server::handle_into`).
     let (mut frame, mut reply) = (Vec::new(), Vec::new());
@@ -404,7 +439,7 @@ pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
                     .map(u64::from_le_bytes);
                 let writable = asked.get(9).is_some_and(|&w| w != 0);
                 match node
-                    .ok_or(libc::EINVAL)
+                    .ok_or(proto::EINVAL)
                     .and_then(|node| server.descriptor(node, writable))
                 {
                     Ok(fd) => {
@@ -589,7 +624,7 @@ impl Fs {
 /// the reply, never while the share answers (D29): a share slow to answer, or never
 /// answering, held every other device's queue work, and a snapshot, off guest memory for
 /// as long (audit V04).
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn serve(
     chain: &Chain,
     mem: &GuestMemory,
@@ -627,7 +662,7 @@ fn serve_with(
         .filter(|&n| n <= MAX_FRAME);
     let Buffers { req, reply } = buffers;
     req.clear();
-    req.resize(total.unwrap_or(server::HEADER_BYTES), 0);
+    req.resize(total.unwrap_or(proto::HEADER_BYTES), 0);
     let Ok(access) = mem.access() else {
         return 0;
     };
@@ -638,7 +673,7 @@ fn serve_with(
         // memory, or device memory whose pages are gone): told EIO where its header was
         // read, as a device whose DMA failed, never served short.
         debug!("virtio-fs: a request outside guest memory");
-        let failed = req.get(..read).and_then(server::unreachable);
+        let failed = req.get(..read).and_then(proto::unreachable);
         return failed.map_or(0, |reply| scatter(chain, mem, &reply).unwrap_or(0));
     }
     // Charged to its microVM's I/O limits before it is asked (D178); a DAX mapping its
@@ -672,7 +707,7 @@ fn serve_with(
             None => {
                 let asked = match slot.ask_into(req, reply) {
                     Ok(asked) => asked,
-                    Err(_) => server::unattached(req).is_some_and(|r| put(reply, r)),
+                    Err(_) => proto::unattached(req).is_some_and(|r| put(reply, r)),
                 };
                 // The files whose sizes the reply tells the guest are what its window maps
                 // of them before it hears: grown, the file's pages; cut short, zeros.
@@ -684,7 +719,7 @@ fn serve_with(
                 asked
             }
         },
-        None => server::too_long(req).is_some_and(|r| put(reply, r)),
+        None => proto::too_long(req).is_some_and(|r| put(reply, r)),
     };
     if !replied {
         return 0;
@@ -692,7 +727,7 @@ fn serve_with(
     // A reply its device could not write whole where the guest said (device memory whose
     // pages are gone, say): EIO in its place, never a success whose bytes are not there.
     scatter(chain, mem, reply)
-        .or_else(|_| server::unreachable(req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
+        .or_else(|_| proto::unreachable(req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
         .unwrap_or(0)
 }
 
@@ -736,7 +771,7 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>,
         return None;
     }
     let unique = long(8).unwrap_or(0);
-    let at = server::IN_HEADER_BYTES;
+    let at = proto::IN_HEADER_BYTES;
     let done = if opcode == SETUPMAPPING {
         // fuse_setupmapping_in: fh, foffset, len, flags, moffset. Linux's guest gives no
         // handle (-1), the file its header's node (fs/fuse/dax.c).
@@ -758,7 +793,7 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>,
                 slot.descriptor(node, writable, foffset, len)
                     .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
             }
-            _ => Err(libc::EINVAL),
+            _ => Err(proto::EINVAL),
         }
     } else {
         // fuse_removemapping_in's count, then each fuse_removemapping_one: moffset, len.
@@ -768,11 +803,11 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>,
                     let one = at + 4 + i * 16;
                     match (long(one), long(one + 8)) {
                         (Some(moffset), Some(len)) => window.unmap(moffset, len),
-                        _ => Err(libc::EINVAL),
+                        _ => Err(proto::EINVAL),
                     }
                 })
                 .map(|()| 0),
-            None => Err(libc::EINVAL),
+            None => Err(proto::EINVAL),
         }
     };
     let bytes = done.unwrap_or(0);
@@ -790,7 +825,7 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>,
 /// READDIRPLUS entry's. The server serves no COPY_FILE_RANGE, TMPFILE nor STATX, whose
 /// replies would tell more (ENOSYS: the guest copies, makes and asks otherwise).
 fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
-    use server::op::{CREATE, LINK, LOOKUP, MKDIR, MKNOD, READDIRPLUS, SYMLINK};
+    use proto::op::{CREATE, LINK, LOOKUP, MKDIR, MKNOD, READDIRPLUS, SYMLINK};
     let long = |b: &[u8], at: usize| {
         b.get(at..at.checked_add(8)?)
             .and_then(|b| <[u8; 8]>::try_from(b).ok())
@@ -862,8 +897,8 @@ fn keep_mapped(req: &[u8], reply: &mut [u8], window: &window::Window) {
         return;
     }
     let (node, at) = match opcode {
-        Some(server::op::OPEN) => (long(req, 16), OPEN_FLAGS),
-        Some(server::op::CREATE) => (long(reply, 16), ENTRY_OUT + OPEN_FLAGS),
+        Some(proto::op::OPEN) => (long(req, 16), OPEN_FLAGS),
+        Some(proto::op::CREATE) => (long(reply, 16), ENTRY_OUT + OPEN_FLAGS),
         _ => return,
     };
     let Some(flags) = reply.get_mut(at..at.saturating_add(4)) else {
@@ -893,7 +928,7 @@ fn rerecord_written(req: &[u8], reply: &[u8], window: &window::Window) {
             .and_then(|b| <[u8; 4]>::try_from(b).ok())
             .map(u32::from_le_bytes)
     };
-    if word(req, 4) != Some(server::op::WRITE) || word(reply, 4) != Some(0) {
+    if word(req, 4) != Some(proto::op::WRITE) || word(reply, 4) != Some(0) {
         return;
     }
     if let (Some(node), Some(offset), Some(size)) = (long(16), long(IN_HEADER + 8), word(req, IN_HEADER + 16))
@@ -1102,9 +1137,10 @@ impl Drop for Fs {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1184,10 +1220,10 @@ mod tests {
         read.extend(0u64.to_le_bytes());
         read.extend(65536u32.to_le_bytes());
         read.extend([0u8; 20]);
-        assert_eq!(io_bytes(&request(server::op::READ, &read)), 65536);
+        assert_eq!(io_bytes(&request(proto::op::READ, &read)), 65536);
         let mut write = vec![0u8; 40];
         write.extend([7u8; 4096]);
-        assert_eq!(io_bytes(&request(server::op::WRITE, &write)), 4096);
+        assert_eq!(io_bytes(&request(proto::op::WRITE, &write)), 4096);
         let mut setup = Vec::new();
         for v in [7u64, 0, 2 << 20, 2, 0] {
             setup.extend(v.to_le_bytes());
@@ -1420,29 +1456,27 @@ mod tests {
             )
         };
         let node_of = |reply: &[u8]| u64::from_le_bytes(reply[16..24].try_into().unwrap());
-        let (looked, nodes) = ask(&request(server::op::LOOKUP, 1, b"bb\0"));
+        let (looked, nodes) = ask(&request(proto::op::LOOKUP, 1, b"bb\0"));
         assert_eq!(nodes, [1, node_of(&looked)]);
-        let (_, nodes) = ask(&request(server::op::LOOKUP, 1, b"none\0"));
+        let (_, nodes) = ask(&request(proto::op::LOOKUP, 1, b"none\0"));
         assert_eq!(nodes, [1], "a LOOKUP that failed");
-        let (_, nodes) = ask(&request(server::op::GETATTR, node_of(&looked), &[0u8; 16]));
+        let (_, nodes) = ask(&request(proto::op::GETATTR, node_of(&looked), &[0u8; 16]));
         assert_eq!(nodes, [node_of(&looked)]);
         // fuse_open_in, then fuse_read_in: fh, offset, size, read_flags, lock_owner, flags.
-        let opened = server
-            .handle(&request(server::op::OPENDIR, 1, &[0u8; 8]))
-            .unwrap();
+        let opened = server.handle(&request(proto::op::OPENDIR, 1, &[0u8; 8])).unwrap();
         let fh = node_of(&opened);
         let mut read = Vec::new();
         read.extend(fh.to_le_bytes());
         read.extend(0u64.to_le_bytes());
         read.extend(4096u32.to_le_bytes());
         read.extend([0u8; 20]);
-        let req = request(server::op::READDIRPLUS, 1, &read);
+        let req = request(proto::op::READDIRPLUS, 1, &read);
         let listed = server.handle(&req).unwrap();
         let nodes = told(&req, &listed);
         let mut want = vec![1];
         for name in ["a", "bb", "a-longer-name-past-eight"] {
             let looked = server
-                .handle(&request(server::op::LOOKUP, 1, format!("{name}\0").as_bytes()))
+                .handle(&request(proto::op::LOOKUP, 1, format!("{name}\0").as_bytes()))
                 .unwrap();
             want.push(node_of(&looked));
         }
@@ -1498,12 +1532,12 @@ mod tests {
         };
         let flags = |r: &[u8], at: usize| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
         let mut r = open_reply(0);
-        keep_mapped(&request(server::op::OPEN, 7), &mut r, &w);
+        keep_mapped(&request(proto::op::OPEN, 7), &mut r, &w);
         assert_eq!(flags(&r, 24), 1 | 2, "kept, its own flag too");
         for (req, mut r) in [
-            (request(server::op::OPEN, 8), open_reply(0)),
-            (request(server::op::OPEN, 7), open_reply(-libc::ENOENT)),
-            (request(server::op::GETATTR, 7), open_reply(0)),
+            (request(proto::op::OPEN, 8), open_reply(0)),
+            (request(proto::op::OPEN, 7), open_reply(-libc::ENOENT)),
+            (request(proto::op::GETATTR, 7), open_reply(0)),
         ] {
             keep_mapped(&req, &mut r, &w);
             assert_eq!(flags(&r, 24), 1);
@@ -1513,7 +1547,7 @@ mod tests {
         created.extend(7u64.to_le_bytes());
         created.extend([0u8; 120]);
         created.extend(open_reply(0)[16..].iter());
-        keep_mapped(&request(server::op::CREATE, 1), &mut created, &w);
+        keep_mapped(&request(proto::op::CREATE, 1), &mut created, &w);
         assert_eq!(flags(&created, 16 + 128 + 8), 1 | 2);
     }
 

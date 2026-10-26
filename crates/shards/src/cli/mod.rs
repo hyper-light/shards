@@ -1196,6 +1196,11 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
+    let (args, served) = match served_pipes(args) {
+        Ok(served) => served,
+        Err(e) => return failed(&e),
+    };
+    let args = args.as_slice();
     let bin = match vm_binary(args) {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
@@ -1225,20 +1230,25 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.extend(args.iter().skip(1).map(OsString::as_os_str));
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
     let env = crate::netproc::child_env();
+    let mut given = vec![
+        shards_ipc::Given {
+            name: "ask",
+            handle: asks_to.as_handle(),
+        },
+        shards_ipc::Given {
+            name: "answer",
+            handle: answers_from.as_handle(),
+        },
+    ];
+    given.extend(served.iter().map(|(name, handle)| shards_ipc::Given {
+        name,
+        handle: *handle,
+    }));
     let spawned = shards_ipc::spawn(&shards_ipc::Spawn {
         program: &bin,
         args: &with,
         grants_at: 1,
-        given: &[
-            shards_ipc::Given {
-                name: "ask",
-                handle: asks_to.as_handle(),
-            },
-            shards_ipc::Given {
-                name: "answer",
-                handle: answers_from.as_handle(),
-            },
-        ],
+        given: &given,
         stdin: Some(std::io::stdin().as_handle()),
         stdout: std::io::stdout().as_handle(),
         stderr: std::io::stderr().as_handle(),
@@ -1279,7 +1289,144 @@ fn vm(args: &[OsString]) -> ExitCode {
     }
 }
 
+/// A pipe a share another server serves rides (Windows): its name in the VM's grants, and
+/// the handle this process inherited.
+#[cfg(windows)]
+type ServedPipe = (String, std::os::windows::io::BorrowedHandle<'static>);
+
+/// The pipes `shards run … --slates-fs-handle V` names (D38, PM M340): each a handle this
+/// process inherited from the server that serves its share (slates' `slates shards`). The
+/// VM is given each through its grants as `slates-fs-<i>`, in its order, and told the name
+/// with `--slates-fs`, as `--net`'s handles are given: no handle's value crosses as a flag,
+/// since none is known in the child before the spawn duplicates it there. Each must be a
+/// pipe this process holds, given once. The arguments the VM is given, and the pipes.
+#[cfg(windows)]
+fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), String> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    let mut kept = Vec::with_capacity(args.len());
+    let mut pipes: Vec<ServedPipe> = Vec::new();
+    let mut values: Vec<usize> = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg != "--slates-fs-handle" {
+            kept.push(arg.clone());
+            continue;
+        }
+        let given = rest
+            .next()
+            .and_then(|v| v.to_str())
+            .ok_or("--slates-fs-handle: no handle given")?;
+        let value: usize = given
+            .parse()
+            .map_err(|_| format!("--slates-fs-handle {given:?}: not a handle"))?;
+        if values.contains(&value) {
+            return Err(format!("--slates-fs-handle {value}: given twice"));
+        }
+        let raw = value as std::os::windows::io::RawHandle;
+        // SAFETY: GetFileType reads a handle's type and touches no memory; a value this
+        // process holds no handle at answers FILE_TYPE_UNKNOWN.
+        if value == 0 || unsafe { GetFileType(raw) } != FILE_TYPE_PIPE {
+            return Err(format!(
+                "--slates-fs-handle {value}: not a pipe this process holds"
+            ));
+        }
+        // SAFETY: a handle this process inherited for this share and never closes: it stays
+        // open while the spawn duplicates it into the VM, and until this process ends.
+        let handle = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) };
+        let name = format!("slates-fs-{}", pipes.len());
+        kept.push("--slates-fs".into());
+        kept.push(name.clone().into());
+        values.push(value);
+        pipes.push((name, handle));
+    }
+    Ok((kept, pipes))
+}
+
 fn failed(message: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "shards: {message}");
     ExitCode::FAILURE
+}
+
+#[cfg(all(test, windows))]
+mod served_pipes_tests {
+    //! `shards run … --slates-fs-handle V` on Windows (D38, PM M340): each pipe the spawner
+    //! holds goes to the VM through its grants by name, never by value.
+    use std::ffi::OsString;
+    use std::os::windows::io::AsRawHandle as _;
+
+    use super::served_pipes;
+
+    fn args(of: &[&str]) -> Vec<OsString> {
+        of.iter().map(OsString::from).collect()
+    }
+
+    /// A pipe this process holds goes to the VM as `slates-fs-0`, named with
+    /// `--slates-fs`, the rest of the arguments kept in order.
+    #[test]
+    fn a_pipe_it_holds_goes_by_name() {
+        let (read, _write) = std::io::pipe().unwrap();
+        let value = (read.as_raw_handle() as usize).to_string();
+        let (kept, pipes) = served_pipes(&args(&[
+            "run",
+            "--kernel",
+            "/k",
+            "--slates-fs-handle",
+            &value,
+            "--cpus",
+            "2",
+        ]))
+        .unwrap();
+        assert_eq!(
+            kept,
+            args(&[
+                "run",
+                "--kernel",
+                "/k",
+                "--slates-fs",
+                "slates-fs-0",
+                "--cpus",
+                "2"
+            ])
+        );
+        assert_eq!(pipes.len(), 1);
+        assert_eq!(pipes[0].0, "slates-fs-0");
+    }
+
+    /// No value, one that is no number, a handle that is no pipe, and a pipe given twice
+    /// are each refused, the flag named.
+    #[test]
+    fn what_is_no_pipe_it_holds_is_refused() {
+        let (read, _write) = std::io::pipe().unwrap();
+        let pipe = (read.as_raw_handle() as usize).to_string();
+        let file = std::fs::File::open("NUL").unwrap();
+        let not_pipe = (file.as_raw_handle() as usize).to_string();
+        for (given, why) in [
+            (vec!["run", "--slates-fs-handle"], "no handle given"),
+            (vec!["run", "--slates-fs-handle", "x"], "not a handle"),
+            (
+                vec!["run", "--slates-fs-handle", not_pipe.as_str()],
+                "not a pipe this process holds",
+            ),
+            (
+                vec!["run", "--slates-fs-handle", "0"],
+                "not a pipe this process holds",
+            ),
+            (
+                vec![
+                    "run",
+                    "--slates-fs-handle",
+                    pipe.as_str(),
+                    "--slates-fs-handle",
+                    pipe.as_str(),
+                ],
+                "given twice",
+            ),
+        ] {
+            let e = served_pipes(&args(&given)).err().unwrap();
+            assert!(
+                e.contains("--slates-fs-handle") && e.contains(why),
+                "{given:?}: {e}"
+            );
+        }
+    }
 }

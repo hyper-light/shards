@@ -65,7 +65,6 @@ pub(crate) struct Hosts<'a> {
     pub vsock: Option<&'a VsockHost>,
     pub net: Option<&'a crate::devices::virtio::net::NetHost>,
     /// Each virtio-fs device's slot, in order (D38).
-    #[cfg(unix)]
     pub shares: &'a [crate::devices::virtio::fs::Share],
     /// The join disk's ranges, which its VM process gives joining containers' images
     /// (D119).
@@ -106,7 +105,6 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
         (None, Some(_)) => return Err("the snapshot has no network device for a network process".into()),
         _ => {}
     }
-    #[cfg(unix)]
     if snap.config.shares as usize != hosts.shares.len() {
         return Err(format!(
             "the snapshot has {} shared directories; the restore gives {}",
@@ -687,7 +685,7 @@ fn virtio_devices(
     config: &crate::snapshot::MachineConfig,
     regions: &[(Arc<pmem::Region>, u64)],
     layer: Option<&Placed>,
-    // The shares' alone, which only Unix hosts have, and the VM their windows map into.
+    // The shares' windows, which only Unix hosts build, and the VM they map into.
     #[cfg_attr(not(unix), allow(unused_variables))] windows: &[WindowAt],
     #[cfg_attr(not(unix), allow(unused_variables))] vm: Option<&crate::hv::Vm>,
     hosts: Hosts<'_>,
@@ -748,17 +746,24 @@ fn virtio_devices(
         devices.push(Box::new(crate::devices::virtio::net::Net::new(host)?));
     }
     // Then its shared directories, each mounted by its tag, `shards0` and on.
-    #[cfg(unix)]
     for i in 0..config.shares as usize {
         let slot = hosts
             .shares
             .get(i)
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
+        #[cfg(unix)]
         let window = windows
             .get(i)
             .map(|w| dax_window(vm, w).map(|window| (window, w.head, w.held)))
             .transpose()?;
+        // No DAX window is built on Windows yet (D189): a machine that asks a share for one
+        // is refused, where elsewhere it would be given one.
+        #[cfg(not(unix))]
+        let window = match windows.get(i) {
+            Some(_) => return Err("a DAX window is not built on Windows yet (D189)".into()),
+            None => None,
+        };
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
                 .with_limit(hosts.io)
@@ -844,10 +849,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
             .collect::<Result<_, String>>()?,
         vsock: cfg.vsock.is_some(),
         net: cfg.net.as_ref().map(|n| n.mac),
-        #[cfg(unix)]
         shares: u32::try_from(cfg.shares.len()).map_err(|_| "too many shared directories")?,
-        #[cfg(not(unix))]
-        shares: 0,
         join: cfg.join.is_some(),
         #[cfg(unix)]
         join_share: cfg.join_share.is_some(),
@@ -917,7 +919,6 @@ pub struct Config {
     /// A virtio-net device, and the network process's side of it (D31).
     pub net: Option<crate::devices::virtio::net::NetHost>,
     /// virtio-fs devices, each a slot its directory's server is put in (D38).
-    #[cfg(unix)]
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// A join disk, after the disks: empty until the VM process gives a joining
     /// container's image a range of it (D119).
@@ -1674,7 +1675,6 @@ impl Config {
             pmem: Vec::new(),
             vsock: None,
             net: None,
-            #[cfg(unix)]
             shares: Vec::new(),
             join: None,
             #[cfg(unix)]
@@ -1711,7 +1711,6 @@ pub struct RestoreConfig {
     /// one: a network process serves one VM alone.
     pub net: Option<crate::devices::virtio::net::NetHost>,
     /// The slots of the snapshot's shared directories, one each (D38).
-    #[cfg(unix)]
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// The restored VM's own join disk, where the snapshot has one (D119): empty, as the
     /// snapshot's was.

@@ -768,7 +768,6 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             vsock: cfg.vsock.as_ref(),
             #[cfg(unix)]
             net: cfg.net.as_ref(),
-            #[cfg(unix)]
             shares: &cfg.shares,
             join: cfg.join,
             #[cfg(unix)]

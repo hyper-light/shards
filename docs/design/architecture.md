@@ -2756,6 +2756,24 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   (tests/slates_fs.rs, where `SLATES_BIN` names a slates binary): a guest mounts, reads and
   writes a slates volume, and one maps a slates file through its window, its fsynced
   stores in the volume at slates' first read and slates' write of the file in its map.
+  - **On Windows** (`shards run --kernel … --slates-fs-handle V`): the stream is a duplex
+    named pipe, since AF_UNIX makes no pair without a socket file and the pipe loses
+    nothing at its writer's exit (PM M340).
+    - **Handing it in.** V is a handle the spawner inherited from the server. It checks V
+      is a pipe it holds (GetFileType), refusing a value given twice. It gives V to the VM
+      through its grants as `slates-fs-<i>`, in order, and names it with `--slates-fs`, as
+      `--net`'s handles are given. No handle's value crosses as a flag.
+    - **The VM.** It takes each pipe from its grants by name, once, beside no `--warm` or
+      `--shares`, as on Unix. Its device reads and writes the pipe as it does the socket,
+      blocking, one request at a time. Every call is an overlapped one waited for at once
+      (`platform::PipeStream`), so the VM need not know how its server opened the end. A
+      read past the server's going is the end, as the socket's is.
+    - **What the device builds on.** The FUSE wire it needs is `fs/proto.rs`, which every
+      host builds. `server.rs`, the share process and its budgets stay Unix's.
+    - **No DAX window yet.** A machine that asks a share for one is refused. `window_none.rs`
+      keeps the window's API around a type none can make, until the window is built on
+      WHP's placeholders (PM M341). A server hands that window its sections by
+      DuplicateHandle (PM M343).
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that

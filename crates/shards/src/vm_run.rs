@@ -298,6 +298,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut attach = None;
     #[cfg(unix)]
     let mut served: Vec<i32> = Vec::new();
+    #[cfg(windows)]
+    let mut served: Vec<String> = Vec::new();
     while let Some(arg) = args.next() {
         let arg = text(arg)?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -348,6 +350,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                         .map_err(|_| format!("--slates-fs-fd: {fd:?} is not a descriptor"))?,
                 );
             }
+            // The same on Windows (PM M340): the name its spawner gave a pipe it duplicated
+            // into this process from `shards run … --slates-fs-handle V`, as `--net`'s are
+            // given; no handle's value crosses as a flag. Taken once its flags are all read.
+            #[cfg(windows)]
+            "--slates-fs" => served.push(text(value("--slates-fs")?)?),
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
             // A DAX window of this many MiB for each shared directory (D189).
@@ -406,7 +413,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
     }
     common.check_workload()?;
-    #[cfg(unix)]
     served_shares(&mut cfg, &served, warm)?;
     if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
         return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
@@ -586,7 +592,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         vsock: common.vsock.map(VsockHost::at),
         net: common.net.take(),
         // Its slots are made once its snapshot is read (`restore_vm`).
-        #[cfg(unix)]
         shares: Vec::new(),
         // As its join disk and join share are, where the snapshot has them.
         join: None,
@@ -2124,6 +2129,17 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     })
 }
 
+/// Refuses a share another server serves beside the shares a daemon gives its VM (`--warm`,
+/// `--shares`): such a VM is given its shares by its daemon, never these. Both hosts' alike.
+fn served_beside_daemon(cfg: &Config, warm: Option<i32>, flag: &str) -> Result<(), String> {
+    if warm.is_some() || !cfg.shares.is_empty() {
+        return Err(format!(
+            "{flag} with --warm or --shares: a daemon's VM is given its shares by its daemon"
+        ));
+    }
+    Ok(())
+}
+
 /// The shares other servers serve (`--slates-fs-fd`, D38), after the VM's own: each a
 /// socket its spawner handed this process alone, as it hands `--grants` its, taken once.
 /// A daemon's VM is given its shares by its daemon (`--warm`, `--shares`), never these.
@@ -2132,11 +2148,7 @@ fn served_shares(cfg: &mut Config, served: &[i32], warm: Option<i32>) -> Result<
     if served.is_empty() {
         return Ok(());
     }
-    if warm.is_some() || !cfg.shares.is_empty() {
-        return Err(
-            "--slates-fs-fd with --warm or --shares: a daemon's VM is given its shares by its daemon".into(),
-        );
-    }
+    served_beside_daemon(cfg, warm, "--slates-fs-fd")?;
     // The socket `--grants` took, where the VM process asks a broker for access (macOS).
     #[cfg(target_os = "macos")]
     let grants = {
@@ -2154,6 +2166,44 @@ fn served_shares(cfg: &mut Config, served: &[i32], warm: Option<i32>) -> Result<
         let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
         slot.attach(crate::warm::inherited_socket("--slates-fs-fd", fd)?)
             .map_err(|e| format!("--slates-fs-fd {fd}: {e}"))?;
+        cfg.shares.push(slot);
+    }
+    Ok(())
+}
+
+/// The shares other servers serve on Windows (`--slates-fs`, D38, PM M340), after the VM's
+/// own: each a pipe its spawner duplicated into this process and named in its grants, taken
+/// from them once, as `--net`'s are. A daemon's VM is given its shares by its daemon, never
+/// these.
+#[cfg(windows)]
+fn served_shares(cfg: &mut Config, served: &[String], warm: Option<i32>) -> Result<(), String> {
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    if served.is_empty() {
+        return Ok(());
+    }
+    served_beside_daemon(cfg, warm, "--slates-fs")?;
+    for (i, name) in served.iter().enumerate() {
+        if served.iter().take(i).any(|other| other == name) {
+            return Err(format!("--slates-fs {name}: given twice"));
+        }
+    }
+    let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for name in served {
+        let at = given
+            .iter()
+            .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
+            .ok_or_else(|| format!("--slates-fs {name}: no such pipe was given"))?;
+        let shards_ipc::Handed::Handle(value) = given.swap_remove(at).1 else {
+            return Err(format!("--slates-fs {name}: no handle"));
+        };
+        // SAFETY: a handle the spawner duplicated into this process for this share alone,
+        // owned from here on.
+        let pipe = unsafe { OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle) };
+        let stream = shards_vmm::platform::ShareStream::from_handle(pipe)
+            .map_err(|e| format!("--slates-fs {name}: {e}"))?;
+        let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
+        slot.attach(stream)
+            .map_err(|e| format!("--slates-fs {name}: {e}"))?;
         cfg.shares.push(slot);
     }
     Ok(())
@@ -2606,5 +2656,55 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.starts_with("--memory-max: "), "{e}");
+    }
+}
+
+/// The served-share test on Windows, apart from `tests`, which is Unix's alone (its helpers
+/// take arguments as bytes, as Unix gives them).
+#[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used)]
+mod served_pipe_tests {
+    use super::*;
+
+    /// A share another server serves on Windows (`--slates-fs`, PM M340) takes a pipe its
+    /// spawner named in its grants, once, as the VM's last share: never a name given twice,
+    /// a name no grant holds, nor beside the shares a daemon gives its VM.
+    #[test]
+    fn a_served_share_takes_its_named_pipe_once() {
+        use std::os::windows::io::{IntoRawHandle as _, OwnedHandle};
+        let with = |extra: &[&str]| {
+            let all: Vec<OsString> = ["--kernel", "/k"]
+                .iter()
+                .chain(extra)
+                .map(|a| OsString::from(*a))
+                .collect();
+            parse_run(all.into_iter())
+        };
+        for (extra, why) in [
+            (vec!["--slates-fs", "test-none"], "no such pipe was given"),
+            (
+                vec!["--slates-fs", "test-twice", "--slates-fs", "test-twice"],
+                "given twice",
+            ),
+            (
+                vec!["--slates-fs", "test-warm", "--warm", "9"],
+                "with --warm or --shares",
+            ),
+        ] {
+            let e = with(&extra).err().unwrap();
+            assert!(e.contains(why), "{extra:?}: {e}");
+        }
+        // Taken from the grants under its name, and owned by its share from here on: any
+        // handle stands for the pipe here, as the share asks nothing of it until its guest does.
+        let handle = OwnedHandle::from(std::fs::File::open("NUL").unwrap());
+        let value = handle.into_raw_handle() as usize;
+        GIVEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(("test-pipe".into(), shards_ipc::Handed::Handle(value)));
+        let run = with(&["--slates-fs", "test-pipe"]).unwrap();
+        assert_eq!(run.cfg.shares.len(), 1);
+        let left = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!left.iter().any(|(n, _)| n == "test-pipe"), "taken once");
     }
 }

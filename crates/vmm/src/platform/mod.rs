@@ -31,6 +31,13 @@ pub use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 pub type RawSocket = std::os::fd::RawFd;
 
+/// The stream of a share another server serves (D38): a Unix stream socket on Unix
+/// (`--slates-fs-fd`), a duplex named pipe on Windows (`--slates-fs-handle`, PM M340).
+#[cfg(unix)]
+pub type ShareStream = std::os::unix::net::UnixStream;
+#[cfg(windows)]
+pub type ShareStream = windows::PipeStream;
+
 /// A socket's [`RawSocket`], on every host.
 pub trait AsRawSocket {
     fn raw_socket(&self) -> RawSocket;

@@ -727,7 +727,6 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         super::Hosts {
             vsock: cfg.vsock.as_ref(),
             net: cfg.net.as_ref(),
-            #[cfg(unix)]
             shares: &cfg.shares,
             join: cfg.join,
             #[cfg(unix)]
