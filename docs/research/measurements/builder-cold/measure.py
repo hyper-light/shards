@@ -18,7 +18,7 @@ Beside it, each second, the builder's VM process on this host (the build's desce
 named shards-vm): its phys_footprint on macOS (proc_pid_rusage), its Pss, Rss and RssFile,
 RssAnon and RssShmem on Linux (smaps_rollup, status).
 
-    measure.py SHARDS OUT [--builds rust,npm,apt] [--rounds 3] [--home HOME]
+    measure.py SHARDS OUT [--builds rust,npm,apt] [--rounds 3] [--home HOME] [--base REGISTRY]
 
 Each build runs in HOME (default OUT/home, kept), with an empty DOCKER_CONFIG; a round's
 first build of each kind fills its cache mounts, its later ones read them back. Where the
@@ -37,6 +37,7 @@ p.add_argument("out")
 p.add_argument("--builds", default="rust,npm,apt")
 p.add_argument("--rounds", type=int, default=3)
 p.add_argument("--home")
+p.add_argument("--base", help="the registry and repository the builds' bases come from (their BASE)")
 a = p.parse_args()
 
 shards = os.path.realpath(a.shards)
@@ -69,7 +70,8 @@ def header():
         mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     say(f"host {platform.node()}; {osname}; kernel {platform.release()}; {platform.machine()}; {cpu}; "
         f"shards {rev}; memory {mem >> 20} MiB; cpus {os.cpu_count()}")
-    say(f"builds {a.builds}; rounds {a.rounds}; home {home}")
+    bases = a.base or "each Dockerfile's own"
+    say(f"builds {a.builds}; rounds {a.rounds}; home {home}; bases {bases}")
 
 
 class RusageInfoV2(ctypes.Structure):
@@ -195,8 +197,9 @@ def one(r, name):
     started = time.time()
     raw = open(os.path.join(out, "raw", f"{r}-{name}.txt"), "w")
     # Its output and its progress one stream, as each line comes, wherever shards writes it.
+    base = ["--build-arg", f"BASE={a.base}"] if a.base else []
     proc = subprocess.Popen([shards, "build", "--no-cache", "--progress", "plain", "-t", f"builder-cold-{name}",
-                             "-f", os.path.join(ctx, "Dockerfile"), ctx], env=env, stdout=subprocess.PIPE,
+                             *base, "-f", os.path.join(ctx, "Dockerfile"), ctx], env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace")
     stop = threading.Event()
     step = ["-"]
