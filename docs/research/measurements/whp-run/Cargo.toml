@@ -10,7 +10,8 @@
 # src/bin/m208.rs); what waking a network process's loop costs, by how it waits (PM M213,
 # src/bin/m213.rs); what changing a socket's registration with a completion port does (PM
 # M215, src/bin/m215.rs); a DAX window's ranges placed and replaced, and what each step costs
-# (PM M341, src/bin/m341.rs).
+# (PM M341, src/bin/m341.rs); a section handed to a confined VM process by a process that did
+# not spawn it (PM M343, src/bin/m343.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"

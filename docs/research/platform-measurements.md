@@ -14704,3 +14704,43 @@ revision before comparing a changed API/implementation.
     - a view of a section shorter than its range (a file's end inside a range);
     - views of 64 KiB granules of a 2 MiB placeholder;
     - more than one vCPU touching a range while it is replaced.
+
+### M343. A section handed to a confined VM process by a process that did not spawn it (D189, D38)
+
+- **Questions.** M341 found a WHP DAX window works with any section placed into its placeholder. For a share another
+  server serves, that section is the server's: slates' daemon answers a mapping with a section of the file. On Unix
+  that is a descriptor, which Windows cannot pass on a stream (M340). The server is not the VM's spawner. Can it put a
+  section into the VM process at all?
+  - Knowing only the VM process's pid, can a same-user process open a VM process confined as D141 confines one (M201)
+    for PROCESS_DUP_HANDLE, and duplicate a section into it? What does a duplication cost?
+  - Can the VM process map the section, read what the server wrote, and write what the server then reads?
+  - Can the VM process open the server likewise? It must not.
+  - Do the answers hold for a server running as a standard user at medium integrity, as slates' daemon does, rather
+    than as the runner's administrator?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m343.rs`, `cargo run --release --bin m343`, by
+  `whp-run.yml`.
+  - The probe spawns the VM process as M203 spawns one (its own AppContainer profile, VidExo's capabilities, a Job of
+    one process, the mitigations), suspended, with a pipe for its instructions.
+  - It then spawns the server, an ordinary child told only the VM's pid. The server opens the VM process for
+    PROCESS_DUP_HANDLE and makes a pagefile-backed section of 2 MiB, writing into it. It times 200 duplications into
+    the VM process, each closed there again (DUPLICATE_CLOSE_SOURCE), then duplicates one more and gives its value.
+  - The probe passes the value to the VM process and resumes it. The VM process maps the section, reads it, writes
+    into it, and tries to open the server for PROCESS_DUP_HANDLE. Then the server reads the section.
+  - Where the workflow makes a standard user (`SHARDS_PROBE_USER`, as M200 does), the whole hand-off runs again as that
+    user (CreateProcessWithLogonW, the probe copied to C:\Users\Public\shards-m343, its output gathered from a file
+    there).
+  - Every run prints whether its account's token is elevated.
+- **Found on jupiter** (AMD Ryzen AI Max+ 395, Windows 10.0.26200.9711, 2026-10-26, 3 runs). The account is elevated
+  there (`elevated: Some(true)`), and the hand-off ran with an ordinary child in the VM's place (`--plain`), since these
+  runs make no AppContainer profile on that host.
+  - The server opened the child for PROCESS_DUP_HANDLE in 7.30 to 7.80 µs.
+  - A duplication costs (µs) n=200 p50=0.90 p90=1.00 p99=1.10 max=2.40; p50=0.90 p90=1.00 p99=1.20 max=3.10; and
+    p50=1.00 p90=1.10 p99=1.30 max=2.80.
+  - The child mapped the section and read "written by the server", and the server read what the child wrote.
+  - The child could open the server, as an unconfined child of one user can. The confined VM's answer and a standard
+    user's are the runners'.
+- **Consequence (D189), provisional until the runners answer.** If the runners' confined VM and standard user agree,
+  a server can give a VM process a section by DuplicateHandle, knowing only its pid, at about 1 µs a duplication. Its
+  value must reach the VM by other means, as M203's handles do. slates' daemon would then answer a DAX mapping with the
+  section's value in the VM process, after checking that the asking process holds the attachment's stream (M340: every
+  handle to an end names its pipe).
