@@ -20,6 +20,7 @@ on:
       - "!.github/workflows/envelope.yml"
       - "!.github/workflows/budget-e2e.yml"
       - "!.github/workflows/restore-faults.yml"
+      - "!.github/workflows/windows-pipe.yml"
   pull_request:
 
 permissions:
