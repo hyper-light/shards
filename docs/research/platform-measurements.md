@@ -14482,8 +14482,8 @@ revision before comparing a changed API/implementation.
   - What does a reader get after its writer closes, and after its writer's process exits
     holding its end? M199 found an AF_UNIX peer loses what it had not read.
   - What are its throughput and a one-byte round trip, beside loopback TCP's?
-- **Method.** `docs/research/measurements/windows-pipe`, `cargo run --release`. Host:
-  jupiter, an AMD Ryzen AI Max+ 395 (16 cores, 32 threads), Windows 10.0.26200.9711,
+- **Method.** `docs/research/measurements/windows-pipe` (397f7a71), `cargo run --release`.
+  Host: jupiter, an AMD Ryzen AI Max+ 395 (16 cores, 32 threads), Windows 10.0.26200.9711,
   2026-10-26, with other work using 71% of its CPU as the run began.
   - Abstract AF_UNIX: bind, listen and connect, `sun_path` a NUL then the name, its
     length covering the name (20) and the whole `sockaddr_un` (110).
