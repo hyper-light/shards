@@ -6,9 +6,9 @@ index 4057309b2..590fa6989 100644
          crate::net::configure(addr, prefix, gateway)?;
      }
      let conn = dial(build::PORT, true)?;
-+    // builder-cold: the build's memory each second, on the console.
++    // builder-cold: the build's memory each second, on the console, each line one write.
 +    let _ = std::thread::Builder::new().name("builder-cold".into()).spawn(|| loop {
-+        let _ = writeln!(io::stderr(), "{}", crate::plug::measure_line(crate::plug::BUILD));
++        let _ = io::stderr().write_all(format!("{}\n", crate::plug::measure_line(crate::plug::BUILD)).as_bytes());
 +        std::thread::sleep(std::time::Duration::from_secs(1));
 +    });
      let mut b = Builder {
@@ -18,7 +18,7 @@ index 4057309b2..590fa6989 100644
              kind::STEP => {
                  let step = Step::decode(&payload).ok_or_else(|| err("a malformed step"))?;
                  b.step(&step)?;
-+                let _ = writeln!(io::stderr(), "{} step_end", crate::plug::measure_line(crate::plug::BUILD));
++                let _ = io::stderr().write_all(format!("{} step_end\n", crate::plug::measure_line(crate::plug::BUILD)).as_bytes());
              }
              kind::EMULATE => {
                  let why = b
