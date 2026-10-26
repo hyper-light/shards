@@ -1,0 +1,69 @@
+== docs/research/measurements/builder-cold/results/ci-40419013405-a-epyc-9v45.out.txt + docs/research/measurements/builder-cold/results/ci-40419013405-b-epyc-7763.out.txt + docs/research/measurements/builder-cold/results/ci-40419013405-c-epyc-9v45.out.txt + docs/research/measurements/builder-cold/results/ci-40419013405-d-epyc-9v45.out.txt
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 9V45 96-Core Processor; shards fe745ff; memory 15989 MiB; cpus 4
+builds rust,npm,apt; rounds 6; home /home/runner/work/_temp/home; bases docker.io/library
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 7763 64-Core Processor; shards fe745ff; memory 15989 MiB; cpus 4
+builds rust,npm,apt; rounds 6; home /home/runner/work/_temp/home; bases docker.io/library
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 9V45 96-Core Processor; shards fe745ff; memory 15989 MiB; cpus 4
+builds rust,npm,apt; rounds 6; home /home/runner/work/_temp/home; bases docker.io/library
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 9V45 96-Core Processor; shards fe745ff; memory 15989 MiB; cpus 4
+builds rust,npm,apt; rounds 6; home /home/runner/work/_temp/home; bases docker.io/library
+-- apt: rounds ['0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6']; s ['35.2', '32.0', '32.7', '34.4', '34.7', '33.4', '39.1', '36.1', '36.1', '36.2', '36.2', '36.7', '35.7', '33.0', '31.1', '32.4', '30.7', '30.6', '34.2', '30.8', '30.1', '30.9', '30.3', '29.4']
+   peak inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 77 p90 85 p99 86 max 86 MiB
+   peak file            round 1: n 4 p50 606 p90 607 p99 607 max 607 MiB; rounds 2+: n 20 p50 563 p90 588 p99 589 max 589 MiB
+   peak anon            round 1: n 4 p50 93 p90 116 p99 116 max 116 MiB; rounds 2+: n 20 p50 90 p90 116 p99 122 max 122 MiB
+   peak shmem           round 1: n 4 p50 606 p90 606 p99 606 max 606 MiB; rounds 2+: n 20 p50 480 p90 481 p99 481 max 481 MiB
+   peak plugged         round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 512 p90 512 p99 512 max 512 MiB
+   peak past_twice_used round 1: n 4 p50 128 p90 128 p99 128 max 128 MiB; rounds 2+: n 20 p50 0 p90 256 p99 256 max 256 MiB
+   peak current         round 1: n 4 p50 657 p90 701 p99 701 max 701 MiB; rounds 2+: n 20 p50 619 p90 651 p99 671 max 671 MiB
+   end  inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 77 p90 83 p99 86 max 86 MiB
+   end  file            round 1: n 4 p50 394 p90 394 p99 394 max 394 MiB; rounds 2+: n 20 p50 477 p90 500 p99 500 max 500 MiB
+   end  anon            round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   end  shmem           round 1: n 4 p50 394 p90 394 p99 394 max 394 MiB; rounds 2+: n 20 p50 394 p90 394 p99 394 max 394 MiB
+   end  plugged         round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 512 p90 512 p99 512 max 512 MiB
+   end  past_twice_used round 1: n 4 p50 128 p90 128 p99 128 max 128 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   end  current         round 1: n 4 p50 408 p90 409 p99 409 max 409 MiB; rounds 2+: n 20 p50 492 p90 515 p99 515 max 515 MiB
+   step end 1 (#6) inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   step end 1 (#6) past_twice_used round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   step end 1 (#6) plugged         round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   step end 2 (#6) inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 77 p90 83 p99 86 max 86 MiB
+   step end 2 (#6) past_twice_used round 1: n 4 p50 128 p90 128 p99 128 max 128 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   step end 2 (#6) plugged         round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 512 p90 512 p99 512 max 512 MiB
+   host pss         peak: round 1: n 4 p50 1060 p90 1060 p99 1060 max 1060 MiB; rounds 2+: n 20 p50 1058 p90 1062 p99 1062 max 1062 MiB; end: n 20 p50 858 p90 932 p99 932 max 932 MiB
+-- npm: rounds ['0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6']; s ['11.5', '9.0', '8.9', '8.7', '8.5', '8.7', '13.6', '10.8', '10.8', '10.7', '10.7', '11.0', '12.1', '9.1', '8.2', '8.5', '8.2', '8.2', '11.0', '8.4', '8.0', '8.1', '8.0', '8.0']
+   peak inactive_file   round 1: n 4 p50 0 p90 24 p99 24 max 24 MiB; rounds 2+: n 20 p50 9 p90 22 p99 23 max 23 MiB
+   peak file            round 1: n 4 p50 134 p90 159 p99 159 max 159 MiB; rounds 2+: n 20 p50 347 p90 359 p99 359 max 359 MiB
+   peak anon            round 1: n 4 p50 195 p90 195 p99 195 max 195 MiB; rounds 2+: n 20 p50 229 p90 238 p99 240 max 240 MiB
+   peak shmem           round 1: n 4 p50 133 p90 133 p99 133 max 133 MiB; rounds 2+: n 20 p50 336 p90 336 p99 336 max 336 MiB
+   peak plugged         round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 512 p90 512 p99 512 max 512 MiB
+   peak past_twice_used round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 128 p90 256 p99 256 max 256 MiB
+   peak current         round 1: n 4 p50 340 p90 363 p99 363 max 363 MiB; rounds 2+: n 20 p50 590 p90 630 p99 635 max 635 MiB
+   end  inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 9 p90 22 p99 22 max 22 MiB
+   end  file            round 1: n 4 p50 110 p90 110 p99 110 max 110 MiB; rounds 2+: n 20 p50 347 p90 359 p99 359 max 359 MiB
+   end  anon            round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 1 p90 1 p99 1 max 1 MiB
+   end  shmem           round 1: n 4 p50 109 p90 109 p99 109 max 109 MiB; rounds 2+: n 20 p50 336 p90 336 p99 336 max 336 MiB
+   end  plugged         round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 512 p90 512 p99 512 max 512 MiB
+   end  past_twice_used round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 128 p90 256 p99 256 max 256 MiB
+   end  current         round 1: n 4 p50 125 p90 125 p99 125 max 125 MiB; rounds 2+: n 20 p50 371 p90 383 p99 383 max 383 MiB
+   step end 1 (#8) inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 9 p90 22 p99 22 max 22 MiB
+   step end 1 (#8) past_twice_used round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 128 p90 256 p99 256 max 256 MiB
+   step end 1 (#8) plugged         round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 512 p90 512 p99 512 max 512 MiB
+   host pss         peak: round 1: n 4 p50 518 p90 518 p99 518 max 518 MiB; rounds 2+: n 20 p50 780 p90 796 p99 802 max 802 MiB; end: n 20 p50 630 p90 664 p99 702 max 702 MiB
+-- rust: rounds ['0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6']; s ['43.9', '9.6', '9.8', '8.3', '9.5', '10.1', '47.4', '8.1', '8.5', '8.1', '8.2', '8.3', '44.8', '9.5', '9.8', '8.2', '9.7', '10.0', '41.4', '9.2', '9.4', '9.0', '10.1', '9.8']
+   peak inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 3 p90 3 p99 3 max 3 MiB
+   peak file            round 1: n 4 p50 183 p90 200 p99 200 max 200 MiB; rounds 2+: n 20 p50 63 p90 63 p99 63 max 63 MiB
+   peak anon            round 1: n 4 p50 613 p90 619 p99 619 max 619 MiB; rounds 2+: n 20 p50 0 p90 9 p99 11 max 11 MiB
+   peak shmem           round 1: n 4 p50 183 p90 199 p99 199 max 199 MiB; rounds 2+: n 20 p50 29 p90 29 p99 29 max 29 MiB
+   peak plugged         round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   peak past_twice_used round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   peak current         round 1: n 4 p50 701 p90 703 p99 703 max 703 MiB; rounds 2+: n 20 p50 64 p90 66 p99 66 max 66 MiB
+   end  inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 3 p90 3 p99 3 max 3 MiB
+   end  file            round 1: n 4 p50 29 p90 29 p99 29 max 29 MiB; rounds 2+: n 20 p50 63 p90 63 p99 63 max 63 MiB
+   end  anon            round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   end  shmem           round 1: n 4 p50 29 p90 29 p99 29 max 29 MiB; rounds 2+: n 20 p50 29 p90 29 p99 29 max 29 MiB
+   end  plugged         round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   end  past_twice_used round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   end  current         round 1: n 4 p50 31 p90 31 p99 31 max 31 MiB; rounds 2+: n 20 p50 64 p90 64 p99 64 max 64 MiB
+   step end 1 (#5) inactive_file   round 1: n 4 p50 0 p90 0 p99 0 max 0 MiB; rounds 2+: n 20 p50 3 p90 3 p99 3 max 3 MiB
+   step end 1 (#5) past_twice_used round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   step end 1 (#5) plugged         round 1: n 4 p50 512 p90 512 p99 512 max 512 MiB; rounds 2+: n 20 p50 0 p90 0 p99 0 max 0 MiB
+   host pss         peak: round 1: n 4 p50 1202 p90 1231 p99 1231 max 1231 MiB; rounds 2+: n 20 p50 269 p90 273 p99 273 max 273 MiB; end: n 20 p50 269 p90 271 p99 273 max 273 MiB

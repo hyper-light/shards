@@ -48,7 +48,8 @@ os.makedirs(os.path.join(out, "raw"), exist_ok=True)
 home = os.path.realpath(a.home) if a.home else os.path.join(out, "home")
 config = os.path.join(out, "docker-config")
 os.makedirs(config, exist_ok=True)
-OUT = open(os.path.join(out, "out.txt"), "a")
+# One run an output: its rounds keyed by their number (tables.py, check.py).
+OUT = open(os.path.join(out, "out.txt"), "w")
 macos = sys.platform == "darwin"
 
 
