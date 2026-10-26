@@ -21,7 +21,10 @@ permissions:
 env:
   TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
   # The experiment now: measure.py's arguments after its output and builds.
-  ARGS: --rounds 1 --n 100 --touch-gib 1 --seq-mib 256
+  ARGS: --rounds 6
+  # The CPU vendor whose runners measure (/proc/cpuinfo's vendor_id); the others end at once,
+  # before building: empty, every runner's.
+  VENDOR: ""
 
 jobs:
   measure:
@@ -33,14 +36,25 @@ jobs:
       matrix:
         copy: [a, b, c, d, e, f, g, h]
     steps:
+      - name: Vendor
+        id: vendor
+        run: |
+          v=$(sed -n 's/^vendor_id[[:space:]]*: //p' /proc/cpuinfo | head -1)
+          echo "this runner's CPU vendor: $v; measured: ${VENDOR:-every vendor}"
+          if [ -z "$VENDOR" ] || [ "$v" = "$VENDOR" ]; then echo "measure=yes" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/checkout@v7.0.1
+        if: steps.vendor.outputs.measure == 'yes'
       - name: Install pinned Rust
+        if: steps.vendor.outputs.measure == 'yes'
         run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
       - name: zig
+        if: steps.vendor.outputs.measure == 'yes'
         run: scripts/install-zig
       - name: KVM access
+        if: steps.vendor.outputs.measure == 'yes'
         run: sudo chmod 666 /dev/kvm
       - name: User manager
+        if: steps.vendor.outputs.measure == 'yes'
         run: |
           sudo loginctl enable-linger "$USER"
           bus="/run/user/$(id -u)/bus"
@@ -50,6 +64,7 @@ jobs:
       # The tree's shards and the tree's with each patch, each kept apart (the tree made
       # again after each); then the build's own files removed, for the volume's room.
       - name: Build
+        if: steps.vendor.outputs.measure == 'yes'
         run: |
           cargo build --locked -p shards --release
           cp target/release/shards "$RUNNER_TEMP/shards"
@@ -62,6 +77,7 @@ jobs:
           rm -rf target
           df -h .
       - name: Measure
+        if: steps.vendor.outputs.measure == 'yes'
         run: |
           lscpu | grep -E 'Model name|Vendor ID|Hypervisor vendor' || true
           # Which of Hyper-V's enlightenments this runner's KVM took (svm_onhyperv.c, vmx.c).
@@ -70,7 +86,7 @@ jobs:
             --huge "$RUNNER_TEMP/shards-huge" --huge-random "$RUNNER_TEMP/shards-huge-random" $ARGS
           python3 -I docs/research/measurements/dax-huge/rule.py dax-huge/out.txt | tee dax-huge/rule.txt
       - uses: actions/upload-artifact@v7.0.1
-        if: always()
+        if: always() && steps.vendor.outputs.measure == 'yes'
         with:
           name: dax-huge-${{ matrix.copy }}-${{ github.run_attempt }}
           path: dax-huge
