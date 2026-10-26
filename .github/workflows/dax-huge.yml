@@ -34,7 +34,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        copy: [a, b, c, d, e, f, g, h]
+        # Twenty while VENDOR asks for Intel's alone, about one runner in eight (the smoke runs'
+        # and d706c372's draws); eight for every vendor's.
+        copy: [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t]
     steps:
       - name: Vendor
         id: vendor
