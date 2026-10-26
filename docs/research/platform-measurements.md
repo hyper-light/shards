@@ -14570,3 +14570,137 @@ revision before comparing a changed API/implementation.
     Once connected, a pipe pair is reachable only by its handles' holders, refusing a
     second client by name. A loopback TCP pair's listener is open to any local process
     until its accept. That last is by construction, not measured here.
+
+### M341. A DAX window's ranges on WHP: views of a section placed into a placeholder reservation and mapped at stage 2, and what replacing one costs (D189)
+
+- **Questions.** Before the DAX window (D189) is written for WHP, for a share another server
+  serves (slates' daemon, whose DAX objects are pagefile-backed sections it duplicates into
+  the VM process, its A-175):
+  - A range is a view of the section placed into the window's placeholder reservation
+    (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER) and mapped at stage 2 (WHvMapGpaRange). Does
+    the guest see a host store into the section, through the placed view and through the
+    server's own view? Does the host see the guest's store, through both?
+  - With the view freed back to its placeholder (UnmapViewOfFile2, MEM_PRESERVE_PLACEHOLDER)
+    and another placed in the host alone, no stage-2 remap, what does the guest read, and
+    where does its store land? On HVF a range replaced in the host alone keeps its old pages
+    at stage 2 (M193), so off KVM the window unmaps at stage 2 before it replaces.
+  - Can a range be mapped at stage 2 over a bare placeholder, before any view is placed?
+  - What does each step of a replace cost, made four ways? What does the guest's first
+    access to a range cost after each?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m341.rs` (85e9d899):
+  - A partition of one vCPU in long mode, 2 MiB of RAM. Its guest runs an interpreter: at
+    each port exit the host names a load, a store, or a load of each 4 KiB page of a range
+    (a touch) in its registers, and the next port exit carries the result in RAX. A load
+    or store the hypervisor exits on is stepped over and counted, and a load answers a
+    poison value.
+  - The window: two 2 MiB ranges (FUSE_DAX_SZ) of a placeholder reservation, split, at GPA
+    1 GiB. Three sections, A, B and C, each 2 MiB, pagefile-backed, filled with their own
+    byte, each with a second, ordinary view (the server's). A placed and mapped in range
+    0, C in range 1, left there throughout.
+  - The questions in order, then 1,000 replaces of range 0 alternating B and A, each of
+    four ways, each step timed from the host:
+    - remap: stage-2 unmap, free, place, stage-2 map;
+    - remap-populated: the same, then WHvAdviseGpaRange(Populate, write) over the range;
+    - standing: free and place under a stage-2 mapping left standing;
+    - populated: standing, then the populate.
+  - Every round, before the replace, the server writes a stamp of its own into the section
+    to come. After the replace the guest's first load must read it, and the guest's store
+    must be read back through the server's view. Stale reads and lost stores are counted
+    (the non-vacuity check). Then the guest's first load, its next load, a load from its
+    RAM, its first touch of the range's 512 pages and its next touch are timed. Each is a
+    round trip through a port exit.
+  - Last, range 0 is unmapped and freed, mapped over its bare placeholder, loaded, then
+    given a view and loaded again; and range 1 is loaded, C's still.
+  - Hosts:
+    - jupiter, an AMD Ryzen AI Max+ 395, Windows 10.0.26200, 2026-10-25, three runs, with
+      other work using 18-22% of its CPU;
+    - `whp-run.yml` run 40276832213 at 85e9d899, 2026-10-26: windows-2025 (AMD EPYC 9V45,
+      Windows 10.0.26100, image windows-2025-vs2026 20261021.278.1) and windows-2022 (AMD
+      EPYC 7763, Windows 10.0.20348, image windows-2022 20261022.344.1).
+- **Found, alike on all three hosts.**
+  - **Coherent each way after a stage-2 map.** The guest read the section's fill
+    (0xa1a1…), a host store through the placed view (0x1111222233334444) and one through
+    the server's view (0x5555666677778888). The host read the guest's store
+    (0x9999aaaabbbbcccc) through both views.
+  - In every round of every way, the guest read the server's stamp and the server read the
+    guest's store: 0 stale and 0 lost of 4,000 rounds a run (5 runs).
+  - **Stage 2 follows the host's view, and M193 does not hold on WHP.** The view was freed
+    with stage 2 left mapped (taken). The guest's load of a byte stored before the free
+    exited to the VMM, a memory access at its GPA (0x40000100). So did its load of a byte
+    the server stored into the old section afterwards. It never read the old pages.
+  - Once B's view was placed there, still with no remap, the guest read B's fill and the
+    server's later store into B (0xfedcba9876543210). Its store landed in B, not in A.
+  - **A stage-2 map over a bare placeholder is taken.** The guest's load there exits (GPA
+    0x40000000) until a view is placed; then it reads the view's section with no further
+    call.
+  - C's range, beside 4,000 replaces, still read C's fill.
+- **What a replace costs** (µs, p50 / p99; jupiter as the range over its three runs):
+
+  | host | way | free | place | stage-2 unmap | stage-2 map | populate | whole replace |
+  |---|---|---|---|---|---|---|---|
+  | windows-2025 | remap | 44.2 / 82.5 | 1.9 / 7.9 | 41.6 / 85.4 | 33.5 / 76.0 | | 122.1 / 259.9 |
+  | windows-2025 | remap-populated | 43.6 / 66.6 | 1.4 / 4.7 | 40.9 / 72.4 | 32.7 / 57.9 | 212.0 / 308.2 | 333.1 / 502.6 |
+  | windows-2025 | standing | 78.9 / 158.1 | 2.7 / 6.3 | | | | 82.1 / 162.7 |
+  | windows-2025 | populated | 74.8 / 118.6 | 1.4 / 4.1 | | | 203.1 / 309.6 | 281.6 / 430.5 |
+  | windows-2022 | remap | 64.3 / 95.2 | 5.0 / 8.2 | 76.2 / 101.3 | 43.4 / 56.7 | | 189.8 / 250.2 |
+  | windows-2022 | remap-populated | 58.6 / 93.5 | 3.6 / 8.0 | 66.6 / 115.5 | 40.7 / 69.2 | 285.8 / 380.2 | 456.3 / 576.1 |
+  | windows-2022 | standing | 126.0 / 189.2 | 5.1 / 9.1 | | | | 131.2 / 196.3 |
+  | windows-2022 | populated | 113.4 / 182.5 | 3.3 / 6.1 | | | 284.4 / 383.4 | 402.0 / 542.4 |
+  | jupiter | remap | 41.7-47.8 / 117-146 | 2.6-4.3 / 9.1-13.6 | 29.6-36.5 / 96-108 | 270-281 / 852-968 | | 387-412 / 1036-1115 |
+  | jupiter | remap-populated | 62.6-82.3 / 101-106 | 2.5-3.1 / 7.7-8.4 | 44.6-67.5 / 86-95 | 59.2-64.4 / 124-141 | 276-369 / 410-427 | 448-592 / 686-723 |
+  | jupiter | standing | 112-160 / 189-240 | 3.7-7.9 / 10.8-16.0 | | | | 119-166 / 200-252 |
+  | jupiter | populated | 99.0-146 / 168-214 | 2.3-3.4 / 7.5-9.8 | | | 267-382 / 411-433 | 371-533 / 566-637 |
+
+  - Freeing a view costs about twice as much under a standing stage-2 mapping as after a
+    stage-2 unmap. The hypervisor takes the range out of stage 2 itself.
+- **What the guest's first access costs after a replace** (µs, p50 / p99; each a round
+  trip through a port exit, a load from RAM the baseline):
+
+  | host | way | first load | next load | load from RAM | first touch of 512 pages | next touch |
+  |---|---|---|---|---|---|---|
+  | windows-2025 | remap | 36.7 / 72.4 | 13.4 / 19.0 | 13.3 / 18.3 | 10,315 / 15,299 | 15.2 / 27.9 |
+  | windows-2025 | remap-populated | 26.0 / 47.7 | 12.3 / 24.3 | 12.3 / 24.8 | 14.0 / 22.8 | 13.9 / 25.4 |
+  | windows-2025 | standing | 37.0 / 94.0 | 13.3 / 30.5 | 13.3 / 30.9 | 10,448 / 14,344 | 15.5 / 31.2 |
+  | windows-2025 | populated | 25.0 / 47.6 | 13.1 / 19.0 | 13.1 / 19.7 | 14.7 / 20.1 | 14.5 / 21.8 |
+  | windows-2022 | remap | 55.4 / 75.1 | 15.3 / 20.1 | 14.8 / 19.1 | 11,946 / 12,924 | 19.4 / 23.3 |
+  | windows-2022 | remap-populated | 48.5 / 83.1 | 16.9 / 28.6 | 16.3 / 26.0 | 18.8 / 30.4 | 19.1 / 29.2 |
+  | windows-2022 | standing | 52.2 / 92.4 | 16.4 / 23.7 | 16.1 / 20.6 | 12,501 / 13,004 | 19.6 / 25.4 |
+  | windows-2022 | populated | 45.2 / 83.0 | 16.6 / 29.7 | 16.2 / 28.9 | 18.8 / 28.0 | 18.9 / 31.4 |
+  | jupiter | remap | 11.0-11.9 / 35-45 | 3.4-3.5 / 7.6-9.1 | 3.3-3.5 / 8.0-9.6 | 3,018-3,141 / 6,796-6,956 | 7.5-8.7 / 17.7-18.7 |
+  | jupiter | remap-populated | 7.1-8.9 / 13-23 | 5.8-6.8 / 9.3-10.8 | 5.7-6.7 / 10.1-11.5 | 10.9-11.3 / 16.0-16.6 | 11.7-12.2 / 16.1-18.1 |
+  | jupiter | standing | 17.0-22.1 / 42-51 | 5.6-7.0 / 8.9-10.8 | 5.6-6.9 / 8.5-12.9 | 5,116-6,071 / 7,030-7,344 | 10.8-14.0 / 18.4-23.5 |
+  | jupiter | populated | 6.4-9.3 / 16-22 | 5.6-7.2 / 10.0-13.2 | 5.6-7.0 / 10.4-12.8 | 9.0-11.6 / 15.8-23.3 | 9.7-12.2 / 16.8-23.5 |
+
+  - Without a populate, each page's first access is taken into stage 2 one at a time:
+    about 20 µs a page on windows-2025, 23 on windows-2022, and 6 to 12 on jupiter. A
+    populate takes the whole 2 MiB in 0.4 to 0.7 µs a page.
+  - A replace and a first pass over the range together, at p50:
+    - windows-2025: remap 10.4 ms, standing 10.5, remap-populated 0.35, populated 0.30;
+    - windows-2022: remap 12.1, standing 12.6, remap-populated 0.48, populated 0.42;
+    - jupiter: remap 3.4, standing 5.2 to 6.2, remap-populated 0.46 to 0.60, populated
+      0.38 to 0.54.
+  - The populate pays for itself once the guest touches about 10 of a range's 512 pages on
+    the runners, and about 40 on jupiter.
+- **Consequence (D189 on WHP).**
+  - The window is a placeholder reservation, split one placeholder a range. It is mapped at
+    stage 2 once, whole, as the VM is made. A stage-2 map over a placeholder is taken, and
+    stage 2 follows whatever view the host places there.
+  - A range is placed with MapViewOfFile3 (MEM_REPLACE_PLACEHOLDER) and then populated
+    (WHvAdviseGpaRange, Populate, write).
+  - A range is freed with UnmapViewOfFile2 (MEM_PRESERVE_PLACEHOLDER).
+  - A replace makes no stage-2 map or unmap call. M193's rule (unmap at stage 2 before
+    replacing) is an HVF rule and does not apply on WHP. Its cost buys nothing: the guest
+    is no safer, and remap-populated cost 51.5 and 54.3 µs more at p50 than populated on
+    windows-2025 and windows-2022. On jupiter it cost 55.7 µs less in one run and 113.4
+    and 59.2 µs more in the other two.
+  - The guest cannot read a freed view's pages. An access between the free and the place,
+    or to a range with no view, exits as a memory access at its GPA, so the window answers
+    it as `memory_fault` does on the other hosts: it places the range's view (or zeros)
+    and resumes the vCPU.
+  - Placing and populating costs 282 / 431, 402 / 542 and 371-533 / 566-637 µs (p50 /
+    p99) on windows-2025, windows-2022 and jupiter. After that the guest reads the range
+    at its RAM's speed.
+  - Not measured here, and owed before the window relies on them:
+    - a view of a section shorter than its range (a file's end inside a range);
+    - views of 64 KiB granules of a 2 MiB placeholder;
+    - more than one vCPU touching a range while it is replaced.
