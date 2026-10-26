@@ -14462,3 +14462,72 @@ revision before comparing a changed API/implementation.
   no huge-page advice, on every host measured. No code changes: the tree's window arm is
   what the rule keeps. D189 says so, and its Next item is closed, decided by measurement.
   Linux on arm64 stays unmeasured.
+
+### M340. A Windows named pipe as the stream of a share another server serves, beside AF_UNIX and loopback TCP (D38)
+
+- **Questions.** A share another server serves reaches a direct run as a connected stream
+  its spawner hands in (`--slates-fs-fd N` on Unix: slates' `slates shards VOLUME -- shards
+  run …`, A-161). On Windows that server is slates' daemon, which writes nothing to disk
+  outside a granted landing (slates' R1), so the stream must be made without a path in the
+  filesystem. Windows has no socketpair() (M199). Can an AF_UNIX socket at an abstract
+  address be connected to, which a pair without a path would need? If not, what does a
+  duplex named pipe offer instead?
+  - What does a pair cost, made under a fresh name as the name's first instance and its
+    only one, remote clients refused?
+  - Is a second client or a second server instance of the name refused once the pair is
+    connected?
+  - What name does each handle to an end report: the server end's, the client end's, a
+    duplicate's, a child's inherited copy? A server could then check which stream a handle
+    another process holds is.
+  - What does a reader get after its writer closes, and after its writer's process exits
+    holding its end? M199 found an AF_UNIX peer loses what it had not read.
+  - What are its throughput and a one-byte round trip, beside loopback TCP's?
+- **Method.** `docs/research/measurements/windows-pipe`, `cargo run --release`. Host:
+  jupiter, an AMD Ryzen AI Max+ 395 (16 cores, 32 threads), Windows 10.0.26200.9711,
+  2026-10-26, with other work using 71% of its CPU as the run began.
+  - Abstract AF_UNIX: bind, listen and connect, `sun_path` a NUL then the name, its
+    length covering the name (20) and the whole `sockaddr_un` (110).
+  - Pairs: 1,000, each made and timed (CreateNamedPipeW with PIPE_ACCESS_DUPLEX,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, one instance, PIPE_TYPE_BYTE and
+    PIPE_REJECT_REMOTE_CLIENTS; CreateFileW of the name; ConnectNamedPipe answering
+    ERROR_PIPE_CONNECTED). Then a second CreateFileW of a connected pair's name, and a
+    second CreateNamedPipeW of it.
+  - Names: GetFileInformationByHandleEx(FileNameInfo) on each end, on a DuplicateHandle
+    copy, and in a child process that inherited the client end.
+  - End of stream: 1 MiB written then the end closed; 1 MiB written by a child that then
+    exits without closing it. The reader reads until a read fails.
+  - Three rounds, in order: 1 GiB in 64 KiB writes between two threads through 64 KiB and
+    1 MiB pipe buffers, and over loopback TCP with TCP_NODELAY; 10,000 one-byte round trips
+    over each.
+- **Found.**
+  - An abstract address binds and listens, but its connect is refused WSAEINVAL (10022)
+    at either length. So no AF_UNIX pair can be made without a path in the filesystem.
+  - A pair costs (µs): n=1000 p50=9.90 p90=13.00 p99=20.30 max=109.90. M199's AF_UNIX
+    pair through a path cost 609.5 / 699.8 at p50 on the runners.
+  - Once the pair is connected, a second client is refused ERROR_PIPE_BUSY (231), and so
+    is a second server instance of the name.
+  - Every handle reports the pipe's name, `\shards-m340-…`: the server end, the client
+    end, a duplicate and a child's inherited copy.
+  - The reader gets all 1,048,576 bytes and then ERROR_BROKEN_PIPE (109), when its writer
+    closed and when its writer's process exited holding its end. Nothing is lost at an exit.
+  - Throughput (MB/s), rounds 1 / 2 / 3: the pipe through 64 KiB buffers 8,844 / 9,114 /
+    13,372; through 1 MiB buffers 10,001 / 15,130 / 14,325; loopback TCP 1,295 / 4,176 /
+    4,847.
+  - One-byte round trip (µs):
+
+    | round | pipe | loopback TCP |
+    |---|---|---|
+    | 1 | n=10000 p50=11.70 p90=21.70 p99=42.30 max=1118.80 | n=10000 p50=24.80 p90=48.00 p99=82.70 max=438.00 |
+    | 2 | n=10000 p50=5.80 p90=9.90 p99=21.00 max=518.40 | n=10000 p50=15.80 p90=18.90 p99=58.40 max=336.50 |
+    | 3 | n=10000 p50=5.80 p90=7.80 p99=18.80 max=293.10 | n=10000 p50=15.70 p90=21.30 p99=58.00 max=352.70 |
+
+- **Consequence (D38).** On Windows the stream of a share another server serves is a
+  duplex named pipe handle the spawner duplicates into the VM process, as it hands files
+  (D141, M203).
+  - It is made without a path, which AF_UNIX cannot be.
+  - It costs about a sixtieth of an AF_UNIX pair. Its throughput is two to eight times
+    loopback TCP's, and its round trip half TCP's or less.
+  - It loses nothing when its writer exits.
+  - A server that hands out the client end can check that a handle another process names
+    is that stream, by the pipe's name.
+  - The numbers are one host's, under load. The workflow runners are unmeasured.
