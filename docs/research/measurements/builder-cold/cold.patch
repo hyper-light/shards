@@ -1,0 +1,87 @@
+diff --git a/crates/init/src/build.rs b/crates/init/src/build.rs
+index 4057309b2..590fa6989 100644
+--- a/crates/init/src/build.rs
++++ b/crates/init/src/build.rs
+@@ -228,6 +228,11 @@ fn serve() -> io::Result<()> {
+         crate::net::configure(addr, prefix, gateway)?;
+     }
+     let conn = dial(build::PORT, true)?;
++    // builder-cold: the build's memory each second, on the console.
++    let _ = std::thread::Builder::new().name("builder-cold".into()).spawn(|| loop {
++        let _ = writeln!(io::stderr(), "{}", crate::plug::measure_line(crate::plug::BUILD));
++        std::thread::sleep(std::time::Duration::from_secs(1));
++    });
+     let mut b = Builder {
+         conn,
+         bases: HashMap::new(),
+@@ -256,6 +261,7 @@ fn serve() -> io::Result<()> {
+             kind::STEP => {
+                 let step = Step::decode(&payload).ok_or_else(|| err("a malformed step"))?;
+                 b.step(&step)?;
++                let _ = writeln!(io::stderr(), "{} step_end", crate::plug::measure_line(crate::plug::BUILD));
+             }
+             kind::EMULATE => {
+                 let why = b
+diff --git a/crates/init/src/plug.rs b/crates/init/src/plug.rs
+index ef8f442a9..a47951ae5 100644
+--- a/crates/init/src/plug.rs
++++ b/crates/init/src/plug.rs
+@@ -674,6 +674,46 @@ fn peak_since(used: u64) -> u64 {
+     peak.max(used)
+ }
+ 
++/// The build's memory now, a line for docs/research/measurements/builder-cold: its
++/// cgroup's charge, peak, files and anonymous memory, what is plugged and asked for, and
++/// what of what is plugged lies past twice what it uses, in whole memory blocks.
++pub fn measure_line(cgroup: &str) -> String {
++    let stat = std::fs::read_to_string(format!("{cgroup}/memory.stat")).unwrap_or_default();
++    let field = |k: &str| {
++        stat.lines()
++            .find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix(' ')))
++            .and_then(|v| v.trim().parse::<u64>().ok())
++            .unwrap_or(0)
++    };
++    let current = number(&format!("{cgroup}/memory.current")).unwrap_or(0);
++    let peak = number(&format!("{cgroup}/memory.peak")).unwrap_or(0);
++    let swap = number(&format!("{cgroup}/memory.swap.current")).unwrap_or(0);
++    let boot = BOOT.get().copied().unwrap_or(0);
++    let (total, free) = memory().unwrap_or((0, 0));
++    let plugged = total.saturating_sub(boot);
++    let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(0);
++    let most = control_read64(control::HOTPLUG_SIZE).unwrap_or(0);
++    let keep = current
++        .saturating_mul(2)
++        .saturating_sub(boot)
++        .checked_next_multiple_of(ALIGN)
++        .unwrap_or(u64::MAX)
++        .min(most);
++    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++    // SAFETY: clock_gettime(2) writes `t`.
++    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
++    format!(
++        "builder-cold t_ms {} current {current} peak {peak} file {} active_file {} inactive_file {} anon {} shmem {} swap {swap} total {total} free {free} boot {boot} plugged {plugged} asked {asked} most {most} past_twice_used {}",
++        t.tv_sec * 1000 + t.tv_nsec / 1_000_000,
++        field("file"),
++        field("active_file"),
++        field("inactive_file"),
++        field("anon"),
++        field("shmem"),
++        plugged.saturating_sub(keep)
++    )
++}
++
+ /// What a run keeps plugged past what its microVM booted with as its host asks for memory
+ /// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
+ /// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses and
+diff --git a/crates/shards/src/build/builder.rs b/crates/shards/src/build/builder.rs
+index 11dd733aa..675e992c2 100644
+--- a/crates/shards/src/build/builder.rs
++++ b/crates/shards/src/build/builder.rs
+@@ -627,7 +627,6 @@ impl Builder {
+             vsock.clone().into(),
+             "--net".into(),
+             crate::netproc::VmSide::arg(&mac).into(),
+-            "--no-console".into(),
+         ];
+         for base in boot.bases {
+             args.extend(["--pmem".into(), base.into()]);
