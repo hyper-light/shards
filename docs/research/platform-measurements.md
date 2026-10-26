@@ -14318,3 +14318,147 @@ revision before comparing a changed API/implementation.
   32 (`share_window_bound_mib`): Linux's default holds a VM of one volume to 31.8 GiB a
   window. D189 says so. The window's cold first reads' tail, and whether a range read
   ahead as it is mapped would cut it (a writer's cost, D189), stay with D189's next items.
+
+### M339. A DAX window's ranges on 2 MiB folios: what huge pages buy a window's reads, and what a range's first touch, a store into a folio and a budget cost, on CI's runners and on Fedora (D189)
+
+- **Question.** D189's Next: an Intel runner read 1 GiB five times faster sparse through
+  a window whose ranges were advised onto huge pages (0.39 s against 2.03, M308), and an
+  AMD virtual machine no faster. What each range's first touch costs on huge pages was
+  unmeasured: a 2 or 4 MiB read where a page's (mm/filemap.c `do_sync_mmap_readahead`),
+  and a 2 MiB folio held. So was a store into such a folio, which dirties all of it
+  (ext4's `block_page_mkwrite`, `iomap_dirty_folio`), and a run held to a budget. On
+  which hosts, if any, are a window's ranges better on 2 MiB folios?
+- **Method.** docs/research/measurements/dax-huge/ (46d285fb, 3c2585ef, 958eb5b7,
+  dd1bc78d; its results/ hold every host's output and tables in full).
+  - **Arms.** Three release builds of the tree: window (the tree's: each range as its
+    host's kernel faults it); huge (dax-budget's huge.patch: MADV_HUGEPAGE on each range
+    as it is mapped); huge-random (huge-random.patch: MADV_HUGEPAGE and MADV_RANDOM, one
+    folio a fault where two).
+  - **Cells.** guestrand.c, in each run's guest over a volume:
+    - seq-sparse and seq-written: a 1 GiB file read whole, a MiB a read(2).
+    - touch: a 4 KiB pread at a random page of each of 1,000 distinct ranges of a written
+      4 GiB file, then at another page of each.
+    - write: a 4 KiB pwrite at a random page of each of 1,000 ranges, then fsync. A whole
+      page its host does not hold goes as a FUSE_WRITE on every arm (M301).
+    - rewrite: each range's page read, then another of its pages written. This is a store
+      into what the read brought in.
+    - partial: 512 bytes at a random 512-byte offset of each page, through the window on
+      every arm.
+    - budget-seq and budget-touch: seq-written and touch with the slice's MemoryHigh at
+      384 MiB, as M308.
+  - **Runs.** measure.py runs each cell as a run of its own, restored from its arm's
+    template, in a slice of the user's manager, with no pool. Each window is as long as
+    the host's memory (given, since none is the default on an AMD virtual machine). The
+    cell's file is out of the host's page cache first. Every cell runs six rounds, the
+    arms' order turning each round.
+  - **Samples.** Around each cell: the VM process's mappings of the file (FilePmdMapped,
+    VmFlags hg and rr); KVM's pf_taken and pages_2m, where `sudo -n` reads debugfs; the
+    slice's file, file_thp and dirty peaks; for a write cell, the volume's device's bytes
+    written over its run and a syncfs after; and the file's bytes in the page cache after.
+  - **Rule.** Fixed in measure.py's docstring before any number (rule.py). An arm passes
+    on a host where all four hold:
+    1. Its seq is slower than window's beyond the rounds' spread for neither file, and
+       faster beyond it for at least one.
+    2. Its touch (first and second), write, rewrite and partial p50 and p99 are no worse
+       beyond the spread.
+    3. Its bytes written back per write are no more beyond the spread.
+    4. Every budgeted run finished, none killed, and budget-seq and budget-touch's first
+       reads are no worse beyond the spread.
+
+    Worse beyond the spread means the arm's whole range of per-round values lies above
+    window's. A class of hosts takes the arm that passes on every host of it measured,
+    and none where none does; a class not measured keeps none.
+  - **Smoke runs.** Two runs of one round, 100 touches of a 1 GiB file (46d285fb on eight
+    runners, 958eb5b7), checked the harness alone. The first found every arm's whole-page
+    writes going as FUSE_WRITEs, which is why rewrite and partial were added.
+  - **Hosts.** Run 2026-10-26.
+    - CI's ubuntu-24.04 runners: Azure virtual machines, Ubuntu 24.04.5, Linux
+      6.17.0-1022-azure, THP `always`, 4 CPUs, 16 GiB, ext4 on NVMe. Three Xeon Platinum
+      8573C (runs 40252784770 and 40252961713's second attempt, VENDOR GenuineIntel; d706c372,
+      3a659450) and eight EPYC: two 9V45, five 7763 and a 9V74 (run 40252359284, dd1bc78d).
+      The harness and tree are the same at all three revisions.
+    - Fedora: Intel i9-14900HX, 32 CPUs, 64 GiB, Fedora 44, Linux 6.19.10-300.fc44.x86_64,
+      THP `madvise`, Btrfs on NVMe, CONFIG_BTRFS_EXPERIMENTAL n. One transient unit
+      (MemoryMax 16G, its microVMs in a slice held to 12G), dd1bc78d. A pass ran on the
+      performance cores (taskset 0-15, 01:25 to 01:29 UTC) and one on the efficient cores
+      (16-31, 01:29 to 01:34), at load 4 to 21, eight of kiln's CI jobs beside them. Its
+      header's read_ahead_kb, 128, is the disk's queue's: Btrfs reads 4 MiB around a fault
+      (fs/btrfs/disk-io.c raises its read-ahead to 4 MiB).
+    - Linux on arm64 has no host here (no /dev/kvm on hosted arm64 runners): unmeasured.
+      macOS's madvise(2) has no huge-page advice: not applicable.
+- **Results.** Medians of each host's rounds, as a class's range over its hosts; µs a read
+  or write, s a whole read; window | huge | huge-random. n: every host's six rounds of
+  1,000 reads or writes an arm. p90 and max for the cells that decide; results/ has them
+  for every cell.
+  - **Intel virtual machines** (3 × Xeon 8573C, ext4; n 18,000 a cell and arm):
+    - seq-sparse 1.91–2.15 | 0.38–0.42 | 0.36–0.39 s. seq-written 2.67–4.30 | 2.32–4.29 |
+      2.44–4.29. budget-seq 3.97–4.80 | 2.39–4.43 | 2.44–4.33.
+    - touch, first: p50 520–550 | 4,014–10,220 | 1,356–9,875; p90 611–645 | 18,459–19,951 |
+      8,590–10,007; p99 1,009–1,065 | 20,085–38,223 | 10,130–34,822; max 3,743 | 49,875 |
+      71,055.
+    - touch, second: p50 313–337 | 2.2–2.4 | 2.2–2.4; p90 372–404 | 2.5–2.9 | 2.7–2.9; p99
+      498–4,353 | 8.8–15 | 5.2–9.9; max 4,835 | 330 | 253.
+    - partial: p50 688–727 | 7,917–10,266 | 1,679–9,879; p90 797–858 | 17,639–19,982 |
+      8,273–10,005; p99 1,241–1,479 | 36,364–81,496 | 10,076–33,437; max 4,630 | 120,667 |
+      58,922.
+    - write p50 433–450 | 438–452 | 428–458; rewrite p50 784–883 | 710–856 | 717–811.
+    - Bytes written back a write, rewrite and partial: 5.6–5.9 KiB | 2,045–2,046 KiB |
+      2,050–2,051 KiB.
+    - budget-touch first p99 1,036–1,057 | 20,803–39,062 | 10,463–33,428.
+    - Page cache the 1,000 touches left of the file: 240 | 2,801 | 2,000 MiB, the huge
+      arms' ranges mapped by PMD (FilePmdMapped 2,000 MiB).
+  - **AMD virtual machines** (8 × EPYC, ext4, a window given; n 48,000):
+    - seq-sparse 23–138 | 51–140 | 23–127 s. seq-written 137–172 | 135–167 | 136–167.
+      budget-seq 145–178 | 137–169 | 136–170.
+    - touch, first: p50 1,052–1,289 | 2,024–6,122 | 1,593–3,935; p90 1,142–1,451 |
+      9,927–35,507 | 2,238–8,090; p99 1,653–3,201 | 36,820–53,357 | 32,084–48,183; max
+      246,657 | 337,175 | 195,365.
+    - touch, second: p50 792–950 | 519–630 | 520–627; p99 966–2,289 | 590–681 | 600–729.
+    - partial: p50 638–1,018 | 1,951–7,780 | 1,522–3,943; p99 1,107–2,646 | 34,534–97,377 |
+      31,891–49,184.
+    - Bytes written back a rewrite or partial write: 5.7–6.0 KiB | 2,045–2,046 | 2,050–2,051.
+    - budget-touch first p99 1,656–15,758 | 37,372–107,430 | 27,938–38,787.
+  - **Fedora** (bare metal, Btrfs; n 6,000; performance cores, then efficient):
+    - seq-sparse 0.74 | 0.71 | 0.68 s and 1.26 | 1.28 | 1.18. seq-written 0.62 | 0.61 |
+      0.95 and 1.08 | 1.10 | 1.32.
+    - touch, first: p50 1,076 | 958 | 802 and 1,384 | 1,302 | 940; p90 1,508 | 1,340 |
+      1,023 and 1,740 | 1,610 | 1,171; p99 2,284 | 2,074 | 1,698 and 2,249 | 1,978 | 1,522;
+      max 16,587 | 3,307 | 5,718 and 17,548 | 16,974 | 15,583.
+    - touch, second: p50 4.4 | 3.9 | 4.1 and 7.6 | 8.1 | 7.5; p99 925 | 8.8 | 9.5 and 1,180
+      | 17 | 15.
+    - No 2 MiB folio and no 2 MiB mapping on any arm (file_thp 0, FilePmdMapped 0).
+  - **The rule's verdicts** (rule.py over every host's output):
+    - Intel: on each runner both arms fail first touches (p50 and p99), partial writes,
+      bytes written back per rewrite and partial write, and budget-touch.
+    - AMD: both arms fail those too. Seq passed on two 7763s, huge-random on both and huge
+      on one. On the rest no file was faster beyond the spread, and on the 9V74 sparse
+      reads were slower beyond it (huge 111–125 s, huge-random 72–97, against 36–43). The
+      9V45s' sparse reads, slower at the median (139.5 and 51.2 s against 23.0 and 24.0),
+      spread across the rounds from 20 to 161 s.
+    - Fedora: huge fails seq alone (neither file faster), huge-random seq-written (slower).
+    - No class takes an arm: Intel virtual machines on ext4 (3 hosts), AMD virtual
+      machines on ext4 (8), Intel bare metal on Btrfs (2 passes).
+- **Reading.**
+  - On the Intel runners, huge pages buy what M308 saw: a range on a 2 MiB folio is read,
+    and mapped at stage 2, once. A sparse read is five times faster, and a range's later
+    touches are hits, 2.2 µs where 313. But the folio is read whole at its first touch. On
+    two runners (f and q) that took about 10 ms whatever its size, 10.2 for huge's 4 MiB
+    and 9.9 for huge-random's 2; their disk also bounds a written read at 4.3 s on every
+    arm. So a random reader pays 2.5 to 20 times a page's first touch at p50 and 9 to 38
+    times at p99. The page cache holds 8 to 12 times
+    what the window's reads bring in, and a store anywhere in a folio writes back all
+    2 MiB: 350 times a page's.
+  - The AMD virtual machines gain no read for that cost, as M308 found: the hypervisor
+    beneath pages 4 KiB at a time whatever the host maps, so a second touch still takes
+    over 500 µs.
+  - Fedora's Btrfs makes no folio larger than a page, so the advice only changes how far
+    a fault reads ahead. Btrfs already reads 4 MiB around every fault. That is why the
+    window arm's second touches are hits there (4.4 µs) and why its 1,000 touches left
+    2.8 GiB of the file in the page cache, like huge's.
+  - huge-random's 2 MiB a fault read first touches a quarter to a third sooner than
+    Btrfs' own 4 MiB, but lost the read-ahead a sequential read needs (0.95 s against 0.62). That
+    is a read-ahead's size, not a folio's, and is unmeasured as a policy (D189's Next).
+- **Consequence.** A window's ranges stay mapped as their host's kernel faults them, with
+  no huge-page advice, on every host measured. No code changes: the tree's window arm is
+  what the rule keeps. D189 says so, and its Next item is closed, decided by measurement.
+  Linux on arm64 stays unmeasured.

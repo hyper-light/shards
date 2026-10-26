@@ -6265,12 +6265,30 @@ stores.
   vendor and `hypervisor` flag); an Intel runner there read 1 GiB through a window in 2.0
   s (3.5 written) against FUSE's 2.6 (2.9), 14 µs a fault, and under the budget in 2.6 s
   against 6.1, and Fedora's bare metal in 1.37 against 1.23, both with windows as before;
-  there 2 MiB folios read five times faster sparse (0.39 s), which random reads' cost
-  decides (Next). Held by daemon's `a_shares_window_by_default_follows_its_host`,
+  there 2 MiB folios read five times faster sparse (0.39 s), and are not taken (below).
+  Held by daemon's `a_shares_window_by_default_follows_its_host`,
   containers' `a_volumes_large_files_go_through_a_dax_window_by_default` (the host's
   default, none with 0, one given on any host) and
   `a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end` (512 MiB
   past a 384 MiB `MemoryHigh` through a window given, the budget met, to its end).
+- **A range is mapped as its host's kernel faults it, not advised onto 2 MiB folios** (PM
+  M339). Advised onto huge pages (`MADV_HUGEPAGE`, with `MADV_RANDOM` or without), a
+  range's first touch reads a 2 MiB folio, two without `MADV_RANDOM` (mm/filemap.c
+  `do_sync_mmap_readahead`), where its host's file system makes large folios (ext4 since
+  6.16), and KVM maps it with one stage-2 entry. On three Intel CI runners (Xeon 8573C)
+  that read 1 GiB sparse in 0.36 to 0.42 s against 1.91 to 2.15 and a range's second page
+  in 2.2 to 2.4 µs against 313 to 337. But a range's first touch took 1.4 to 10.2 ms at p50
+  against 0.52 to 0.55, and 10 to 38 ms at p99 against 1.0 to 1.1. A store into the folio
+  dirtied all of it, 2 MiB written back where 6 KiB (ext4's `block_page_mkwrite`,
+  `iomap_dirty_folio`). And 1,000 touches left 2.0 to 2.8 GiB of the file in the page cache
+  where 240 MiB. On eight AMD runners (EPYC 9V45, 7763, 9V74) first touches took 1.6 to
+  6.1 ms where 1.05 to 1.29; sparse reads were faster beyond the rounds' spread on two
+  7763s and slower beyond it on the 9V74. On Fedora's Btrfs, which makes no large folios but
+  in an experimental build, the advice made none, and its faults read 4 MiB around them
+  already (fs/btrfs/disk-io.c).
+  By the rule fixed before any number (docs/research/measurements/dax-huge/measure.py),
+  neither arm passed on any host, so no class of host takes one. Linux on arm64 is
+  unmeasured: no host here runs KVM on it. macOS's madvise(2) has no such advice.
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -6279,11 +6297,12 @@ it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 Gi
 template pays it once; what its restores pay is to be measured with mappings.
 
 **Next.**
-- A window's ranges on 2 MiB folios where the host pays per fault (PM M308): an Intel
-  runner read 1 GiB five times faster sparse through them (0.39 s against 2.03) and a
-  third faster written (2.36 against 3.52), an AMD virtual machine no faster; what each
-  first touch of a range costs random 4 KiB reads (a 2 MiB read where 4 KiB, a 2 MiB folio
-  held) is measured before they are taken.
+- A window's ranges on 2 MiB folios: not taken, decided by measurement (above, PM M339).
+- What a fault reads around it on Btrfs, 4 MiB (its read-ahead): on Fedora a range's
+  first touch that read 2 MiB (`MADV_HUGEPAGE` with `MADV_RANDOM`) took 802 µs at p50
+  against 1,076 and 1,698 at p99 against 2,284, but read 1 GiB written in 0.95 s against
+  0.62 (PM M339). Whether a range's read-ahead should follow how its file is read is
+  unmeasured.
 - From what size a file is mapped: 1 MiB, decided by measurement (Which files, above, PM
   M338), as how long a window is (above, PM M306). Measured against FUSE (PM
   M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
