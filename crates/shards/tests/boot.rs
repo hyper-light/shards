@@ -1272,3 +1272,111 @@ fn a_guest_grows_and_gives_back_its_memory() {
         "the VM process held {held} KiB of the memory it gave back"
     );
 }
+
+/// PROBE (scratch, ci-smp-probe): for each count of vCPUs, a VM alone, how long its guest
+/// takes from "Booting SMP configuration" to "smp: Brought up", or the 60 s it is given,
+/// and what its VM process spent of the host's CPUs meanwhile (GetProcessTimes): whether
+/// vCPUs that wait for their SIPI spin.
+#[cfg(windows)]
+#[test]
+#[ignore]
+#[allow(clippy::unwrap_used)]
+fn probe_smp_sweep() {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::Stdio;
+    use std::time::Instant;
+    let k = kernel();
+    for n in [4u32, 8, 16, 32, 48, 64, 128, 240] {
+        let cpus = n.to_string();
+        let mut child = common::command()
+            .args(["run", "--kernel"])
+            .arg(k)
+            .args(["--cpus", &cpus, "--memory", "1024", "--cmdline", "console=ttyS0 panic=-1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let t0 = Instant::now();
+        let out = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if tx.send((t0.elapsed(), line)).is_err() {
+                    return;
+                }
+            }
+        });
+        let (mut booting, mut up, mut cpu_at_booting, mut last) = (None, None, None, String::new());
+        let deadline = t0 + Duration::from_secs(60);
+        while let Ok((at, line)) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            if line.contains("Booting SMP configuration") {
+                booting = Some(at);
+                cpu_at_booting = vm_cpu(child.id());
+            }
+            let done = line.contains("smp: Brought up");
+            last = line;
+            if done {
+                up = Some(at);
+                break;
+            }
+        }
+        let cpu_end = vm_cpu(child.id());
+        let wall = t0.elapsed();
+        let _ = child.kill();
+        let _ = child.wait();
+        let rate = match (booting, cpu_at_booting, cpu_end) {
+            (Some(b), Some(c0), Some(c1)) => Some((c1 - c0) / (wall.saturating_sub(b)).as_secs_f64().max(0.001)),
+            _ => None,
+        };
+        eprintln!(
+            "PROBE n={n} booting_smp={booting:?} brought_up={up:?} wall={wall:?} cpu_at_booting={cpu_at_booting:?} cpu_end={cpu_end:?} host_cpus_used_after_booting={rate:?} last={last}"
+        );
+    }
+}
+
+/// The CPU time in seconds, user and kernel, of the VM process `cli` (`shards`) started.
+#[cfg(windows)]
+fn vm_cpu(cli: u32) -> Option<f64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a snapshot of every process, closed below.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snap == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut vm = None;
+    // SAFETY: the snapshot, and an entry of its own size.
+    let mut more = unsafe { Process32FirstW(snap, &raw mut entry) } != 0;
+    while more {
+        if entry.th32ParentProcessID == cli {
+            vm = Some(entry.th32ProcessID);
+        }
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snap, &raw mut entry) } != 0;
+    }
+    // SAFETY: the snapshot taken above.
+    unsafe { CloseHandle(snap) };
+    // SAFETY: a process handle of the one right asked, closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, vm?) };
+    if process.is_null() {
+        return None;
+    }
+    let (mut c, mut e, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    // SAFETY: the process, and four times to fill.
+    let ok = unsafe { GetProcessTimes(process, &mut c, &mut e, &mut k, &mut u) };
+    // SAFETY: as above.
+    unsafe { CloseHandle(process) };
+    if ok == 0 {
+        return None;
+    }
+    let s = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime)) as f64 / 1e7;
+    Some(s(k) + s(u))
+}
