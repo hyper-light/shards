@@ -838,22 +838,29 @@ impl Stream {
         true
     }
 
-    /// Ends the read [`Stream::watch`] started with `ov`, where it is under way, and waits
-    /// for it to finish: `ov` is its caller's again.
+    /// Ends the read [`Stream::watch`] started with `ov`, where it is under way (`under_way`:
+    /// `watch` said so, and its finish has not been seen), and waits for it to finish: `ov`
+    /// is its caller's again. One `watch` saw fail at once is not waited for: ReadFile set
+    /// its status to STATUS_PENDING before the call, and a request failed as it is made
+    /// writes none back, so that a wait for it never ended (a broken pipe's, on jupiter).
     ///
     /// # Safety
     /// `ov` is the one of a read `watch` started, or of none, and `event` its event.
-    unsafe fn unwatch(&self, ov: *mut OVERLAPPED, event: &Event) {
+    unsafe fn unwatch(&self, ov: *mut OVERLAPPED, event: &Event, under_way: bool) {
         let end = &*self.0;
         {
             let guard = end.pipe.read().unwrap_or_else(PoisonError::into_inner);
             lock(&end.watching).retain(|&at| at != ov as usize);
+            if !under_way {
+                return;
+            }
             if let Some(handle) = &*guard {
                 // SAFETY: the caller's OVERLAPPED; a read finished already is no error.
                 unsafe { CancelIoEx(handle.as_raw_handle(), ov) };
             }
         }
-        // Cancelled here, or as the stream's reads were shut: it finishes.
+        // Cancelled here, or as the stream's reads were shut: it finishes, and the system
+        // writes its status.
         // SAFETY: the caller's OVERLAPPED, whose status the system writes as the read ends.
         while unsafe { std::ptr::read_volatile(&raw const (*ov).Internal) } == STATUS_PENDING as usize {
             // SAFETY: an event this process holds, set as the read finishes.

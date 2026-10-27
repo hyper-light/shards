@@ -159,8 +159,11 @@ impl Drop for Watched {
     fn drop(&mut self) {
         // Its read ended before its fields go. Its wait, which the read's end may set off,
         // posts for a watch no longer there.
-        // SAFETY: the OVERLAPPED of its read, with its event.
-        unsafe { self.stream.unwatch(self.read.ov.get(), &self.read.event) };
+        // SAFETY: the OVERLAPPED of its read, with its event; under way while armed.
+        unsafe {
+            self.stream
+                .unwatch(self.read.ov.get(), &self.read.event, self.armed)
+        };
     }
 }
 
