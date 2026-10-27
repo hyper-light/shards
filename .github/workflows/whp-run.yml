@@ -121,16 +121,7 @@ jobs:
           $env:SHARDS_PROBE_PASSWORD = $p
           cargo run --release --bin m343
           Remove-LocalUser -Name shards-m343
-      - name: M215
-        if: ${{ !cancelled() }}
-        shell: bash
-        working-directory: docs/research/measurements/whp-run
-        run: cargo run --release --bin m215
-      - name: M213
-        if: ${{ !cancelled() }}
-        shell: bash
-        working-directory: docs/research/measurements/whp-run
-        run: cargo run --release --bin m213
+      # Before M213 too, which ran the job past 50 minutes before them (run 40505676815).
       - name: M345
         if: ${{ !cancelled() }}
         shell: bash
@@ -147,3 +138,13 @@ jobs:
           Get-MpComputerStatus -ErrorAction SilentlyContinue |
             Select-Object AMRunningMode, RealTimeProtectionEnabled, OnAccessProtectionEnabled | Format-List
           cargo run --release --bin m345_rename -- "$env:RUNNER_TEMP\m345-rename"
+      - name: M215
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m215
+      - name: M213
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m213
