@@ -132,7 +132,7 @@ impl Journal {
     fn resume(&mut self, dir: &Path) -> io::Result<(u64, File, u64)> {
         std::fs::create_dir_all(dir)?;
         if let Some(&seq) = segments(dir)?.last() {
-            use std::os::unix::fs::FileExt as _;
+            use crate::os::ReadAt as _;
             let path = dir.join(seq.to_string());
             let file = std::fs::OpenOptions::new().append(true).read(true).open(&path)?;
             let len = file.metadata()?.len();

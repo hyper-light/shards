@@ -1897,7 +1897,10 @@ pub use unix::*;
 #[cfg(windows)]
 mod pipe;
 #[cfg(windows)]
-pub use pipe::{Event, Message, Pipe, Stream, await_streams, end, readable_raw, recv, recv_by, send};
+pub use pipe::{
+    Event, ExitWatch, Message, Pipe, Poller, Stream, await_any, await_streams, end, readable_raw, recv,
+    recv_by, send,
+};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -1951,7 +1954,7 @@ pub mod fd {
 /// one of as its status (`Child::kill`), as a Unix child a signal ended does.
 pub mod signal {
     #[cfg(unix)]
-    pub use libc::{SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGTERM};
+    pub use libc::{SIGCONT, SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGSTOP, SIGTERM};
     #[cfg(windows)]
     pub const SIGHUP: i32 = 1;
     #[cfg(windows)]
@@ -1962,6 +1965,25 @@ pub mod signal {
     pub const SIGKILL: i32 = 9;
     #[cfg(windows)]
     pub const SIGTERM: i32 = 15;
+    #[cfg(windows)]
+    pub const SIGCONT: i32 = 18;
+    #[cfg(windows)]
+    pub const SIGSTOP: i32 = 19;
+}
+
+/// `stream`'s end, to hand on in a message ([`send`]): borrowed on Unix; on Windows a handle
+/// of its own, as a [`Stream`] lends none (its end closes as it is ended, whatever borrows
+/// it), which the message duplicates for its receiver.
+#[cfg(unix)]
+pub fn handed(stream: &Stream) -> std::io::Result<std::os::fd::BorrowedFd<'_>> {
+    use std::os::fd::AsFd as _;
+    Ok(stream.as_fd())
+}
+
+/// `stream`'s end, to hand on in a message ([`send`]): see Unix's.
+#[cfg(windows)]
+pub fn handed(stream: &Stream) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+    stream.share()
 }
 
 /// What one thread sets, once, for others to see, and a wait can wake on: the daemon's end

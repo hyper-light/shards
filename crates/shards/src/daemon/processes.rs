@@ -5,7 +5,6 @@
 //! processes` shows it, `shards watch processes` follows it as it grows.
 
 use std::io::{self, Write as _};
-use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 
 use super::commands::{Reply, wait_readable};
@@ -252,11 +251,9 @@ impl<D: Disk> Daemon<D> {
                         }
                     }
                     let ready = wait_readable(
-                        &[
-                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
-                            Some(end.as_fd()),
-                            Some(reply.0.as_fd()),
-                        ],
+                        watch.as_ref(),
+                        &end,
+                        reply.0,
                         watch.is_none().then_some(super::RETRY),
                     )?;
                     if ready[1] {

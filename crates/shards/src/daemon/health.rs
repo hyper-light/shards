@@ -13,9 +13,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use std::io::Read as _;
-use std::os::fd::AsFd as _;
 
 use shards_ipc::Health as Config;
+use shards_ipc::fd::AsFd as _;
 
 use super::{RunState, Threads, lock};
 
@@ -450,7 +450,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         id: &str,
         spec: &shards_abi::run::Spec,
         input: bool,
-        stdio: [std::os::fd::BorrowedFd<'_>; 3],
+        stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
     ) -> std::io::Result<Ended> {
         let ours = self.send_exec(id, spec, None, input, stdio)?;
         Ok(await_exit(&ours, None))
@@ -464,10 +464,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         spec: &shards_abi::run::Spec,
         argv: Option<&[String]>,
         input: bool,
-        stdio: [std::os::fd::BorrowedFd<'_>; 3],
-    ) -> std::io::Result<std::os::unix::net::UnixStream> {
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+    ) -> std::io::Result<shards_ipc::Stream> {
+        let (ours, theirs) = shards_ipc::Stream::pair()?;
         let held = theirs.try_clone()?;
+        let handed = shards_ipc::handed(&theirs)?;
         // Taken out of `runs` before the inbox is locked (commands.rs, exec).
         let (socket, inbox) = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(run)) => (run.socket.clone(), run.inbox.clone()),
@@ -487,7 +488,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
         }
         let [stdin, stdout, stderr] = stdio;
-        let fds = [theirs.as_fd(), stdin, stdout, stderr];
+        let fds = [handed.as_fd(), stdin, stdout, stderr];
         if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
             let mut held = lock(&inbox);
             held.execs_in_flight.retain(|(n, _)| *n != number);
@@ -499,13 +500,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 }
 
 /// Ends an exec run by the daemon: SIGKILL, on the connection its end is told on.
-fn kill(conn: &std::os::unix::net::UnixStream) {
+fn kill(conn: &shards_ipc::Stream) {
     let _ = shards_ipc::send(conn, shards_ipc::kind::SIGNAL, &9u32.to_be_bytes(), &[]);
 }
 
 /// Waits on `ours` for an exec's end, killing it once `timeout` (if any) has passed and
 /// waiting on for that.
-fn await_exit(ours: &std::os::unix::net::UnixStream, timeout: Option<Duration>) -> Ended {
+fn await_exit(ours: &shards_ipc::Stream, timeout: Option<Duration>) -> Ended {
     let _ = ours.set_read_timeout(timeout);
     let mut timed_out = false;
     let status = loop {

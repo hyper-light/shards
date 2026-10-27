@@ -4,12 +4,12 @@
 //! VM process fills, as it writes only what it is handed (D30), and the daemon commits.
 
 use std::ffi::OsString;
-use std::os::fd::{AsFd as _, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use serde::{Deserialize, Serialize};
 use shards_cmdline::flags::Parsed;
+use shards_ipc::fd::{AsFd as _, BorrowedFd};
 use shards_ipc::kind;
 
 use super::commands::Reply;
@@ -210,7 +210,9 @@ pub(super) fn remove_unsaved(dir: &std::path::Path, note: &mut dyn FnMut(String)
 
 /// Removes from the home's private directory `dir` the files share processes made for
 /// restored guests (D176) that a crash left before removing them, as a daemon starts, no
-/// share process of its own running yet.
+/// share process of its own running yet. Unix's alone: Windows runs no share process yet
+/// (D38).
+#[cfg(unix)]
 pub(super) fn remove_ghosts(dir: &std::path::Path, note: &mut dyn FnMut(String)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -300,19 +302,19 @@ pub(super) fn resume_interface(run: &mut shards_ipc::Run, resume: &Resume) {
 /// A copy of the swap a snapshot's `generation` kept (D176), at `at`, for a run resumed
 /// from it, only this user's and as sparse as the swap was; none where it kept none.
 pub(super) fn copy_swap(generation: &Path, at: &Path) -> std::io::Result<Option<std::fs::File>> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     let kept = std::fs::File::open(shards_vmm::snapshot::swap_of(generation))?;
     let len = kept.metadata()?.len();
     if len == 0 {
         return Ok(None);
     }
-    let copy = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(at)?;
+    let copy = crate::os::owner_only(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
+    .open(at)?;
     shards_vmm::platform::copy_used(&kept, &copy, len)?;
     Ok(Some(copy))
 }
@@ -326,13 +328,11 @@ fn saved_at(name: &str) -> Option<i64> {
 
 /// The disk the files in `generation` take: their blocks, as sparse as each is.
 fn on_disk(generation: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt as _;
     std::fs::read_dir(generation)
         .map(|entries| {
             entries
                 .flatten()
-                .filter_map(|e| e.metadata().ok())
-                .map(|m| m.blocks().saturating_mul(512))
+                .filter_map(|e| Some(crate::os::on_disk(&e.path(), &e.metadata().ok()?)))
                 .fold(0, u64::saturating_add)
         })
         .unwrap_or(0)
@@ -777,7 +777,7 @@ impl<D: Disk> Daemon<D> {
         }
         let frozen = lock(&self.paused).contains(id);
         if frozen {
-            let _ = vm.kill(libc::SIGCONT);
+            let _ = vm.kill(shards_ipc::signal::SIGCONT);
         }
         // As long as the save takes, which is its memory's writing: its VM answers, or
         // ends, and the run's end tells this then.
@@ -785,7 +785,7 @@ impl<D: Disk> Daemon<D> {
             .recv()
             .unwrap_or_else(|_| Err("its microVM stopped".into()));
         if frozen && leave_running && lock(&self.paused).contains(id) {
-            let _ = vm.kill(libc::SIGSTOP);
+            let _ = vm.kill(shards_ipc::signal::SIGSTOP);
         }
         answered
     }

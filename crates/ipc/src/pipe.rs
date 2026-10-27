@@ -32,8 +32,8 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
     ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ,
-    GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, STATUS_PENDING, WAIT_FAILED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -57,6 +57,9 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::{MAX_FDS, MAX_PAYLOAD};
+
+mod poll;
+pub use poll::{ExitWatch, Poller};
 
 /// What each direction of a pipe of shards' holds before a writer waits: M340's larger
 /// buffer, at which its throughput was the more even (64 KiB moved 3.3 to 13.4 GB/s, 1 MiB
@@ -634,6 +637,9 @@ struct End {
     way: Mutex<Way>,
     /// One message at a time: its handles' turn in the queue is its bytes' in the pipe.
     sending: Mutex<()>,
+    /// The OVERLAPPEDs of pollers' reads of no bytes on it ([`Stream::watch`]), by address:
+    /// each cancelled as its reads are shut, before its handle is closed.
+    watching: Mutex<Vec<usize>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -657,6 +663,7 @@ impl Stream {
             nonblocking: AtomicBool::new(false),
             way: Mutex::new(way),
             sending: Mutex::new(()),
+            watching: Mutex::new(Vec::new()),
         })))
     }
 
@@ -730,6 +737,16 @@ impl Stream {
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         if matches!(how, Shutdown::Read | Shutdown::Both) {
             self.0.reads_shut.set();
+            // A poller's read ends too, which its poller then names: none starts from now.
+            let guard = self.0.pipe.read().unwrap_or_else(PoisonError::into_inner);
+            let watching = lock(&self.0.watching);
+            if let Some(handle) = &*guard {
+                for &at in watching.iter() {
+                    // SAFETY: a poller's OVERLAPPED, which it keeps while it is listed; a
+                    // read finished already is no error (ERROR_NOT_FOUND).
+                    unsafe { CancelIoEx(handle.as_raw_handle(), at as *const OVERLAPPED) };
+                }
+            }
         }
         if matches!(how, Shutdown::Write | Shutdown::Both) {
             self.0.writes_shut.set();
@@ -788,6 +805,65 @@ impl Stream {
             Called::Cancelled => Ok(end.reads_shut.is_set()),
             Called::Late => Ok(false),
         }
+    }
+
+    /// Starts a poller's read of no bytes with `ov`, whose event is set as it finishes:
+    /// whether it is under way, then listed for the stream's shutdown to cancel. Where it
+    /// is not, a read would not wait: something has come, or the stream has ended.
+    ///
+    /// # Safety
+    /// `ov` is a fresh OVERLAPPED of an event, and `ov` and `into` stay where they are,
+    /// neither used nor freed, until [`Stream::unwatch`] has returned.
+    unsafe fn watch(&self, ov: *mut OVERLAPPED, into: *mut u8) -> bool {
+        let end = &*self.0;
+        let guard = end.pipe.read().unwrap_or_else(PoisonError::into_inner);
+        let Some(handle) = &*guard else {
+            return false;
+        };
+        let mut watching = lock(&end.watching);
+        // Under the lock a shutdown cancels under: none starts once its reads are shut.
+        if end.reads_shut.is_set() {
+            return false;
+        }
+        // SAFETY: a read of no bytes, its OVERLAPPED and buffer the caller's to keep.
+        let started = unsafe { ReadFile(handle.as_raw_handle(), into, 0, std::ptr::null_mut(), ov) };
+        // SAFETY: no arguments.
+        if started != 0 || unsafe { GetLastError() } != ERROR_IO_PENDING {
+            return false;
+        }
+        let at = ov as usize;
+        if !watching.contains(&at) {
+            watching.push(at);
+        }
+        true
+    }
+
+    /// Ends the read [`Stream::watch`] started with `ov`, where it is under way, and waits
+    /// for it to finish: `ov` is its caller's again.
+    ///
+    /// # Safety
+    /// `ov` is the one of a read `watch` started, or of none, and `event` its event.
+    unsafe fn unwatch(&self, ov: *mut OVERLAPPED, event: &Event) {
+        let end = &*self.0;
+        {
+            let guard = end.pipe.read().unwrap_or_else(PoisonError::into_inner);
+            lock(&end.watching).retain(|&at| at != ov as usize);
+            if let Some(handle) = &*guard {
+                // SAFETY: the caller's OVERLAPPED; a read finished already is no error.
+                unsafe { CancelIoEx(handle.as_raw_handle(), ov) };
+            }
+        }
+        // Cancelled here, or as the stream's reads were shut: it finishes.
+        // SAFETY: the caller's OVERLAPPED, whose status the system writes as the read ends.
+        while unsafe { std::ptr::read_volatile(&raw const (*ov).Internal) } == STATUS_PENDING as usize {
+            // SAFETY: an event this process holds, set as the read finishes.
+            unsafe { WaitForSingleObject(event.raw(), INFINITE) };
+        }
+    }
+
+    /// A key its clones share, while one lives.
+    fn key(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
     }
 
     /// A read into `buf` by `deadline`, if one is given (`TimedOut` past it), else within
@@ -873,21 +949,48 @@ pub fn readable_raw(handle: std::os::windows::io::RawHandle) -> bool {
 /// come: which have, each looked at as the wait ends, as poll(2) answers. Each is waited on
 /// by a read of no bytes (M348), every one cancelled and finished before this returns.
 pub fn await_streams(streams: &[&Stream], deadline: Option<Instant>) -> io::Result<Vec<bool>> {
-    let ready = |streams: &[&Stream]| streams.iter().map(|s| s.readable()).collect::<Vec<bool>>();
+    Ok(await_any(streams, &[], deadline)?.0)
+}
+
+/// Waits as [`await_streams`] does, and for one of `events` (waitable objects: an event, a
+/// process) to be signalled: which streams are ready, and which events are signalled.
+pub fn await_any(
+    streams: &[&Stream],
+    events: &[BorrowedHandle<'_>],
+    deadline: Option<Instant>,
+) -> io::Result<(Vec<bool>, Vec<bool>)> {
+    // Its wait takes MAXIMUM_WAIT_OBJECTS (64) at most: a read's event and the stream's own
+    // for each stream, and each of `events`.
+    if streams.len().saturating_mul(2).saturating_add(events.len()) > 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "more streams and events than one wait takes",
+        ));
+    }
+    let signalled = |event: &BorrowedHandle<'_>| {
+        // SAFETY: a waitable object the caller holds, not waited for.
+        unsafe { WaitForSingleObject(event.as_raw_handle(), 0) == WAIT_OBJECT_0 }
+    };
+    let ready = |streams: &[&Stream]| {
+        (
+            streams.iter().map(|s| s.readable()).collect::<Vec<bool>>(),
+            events.iter().map(signalled).collect::<Vec<bool>>(),
+        )
+    };
     let now = ready(streams);
-    if now.iter().any(|&r| r) {
+    if now.0.iter().chain(&now.1).any(|&r| r) {
         return Ok(now);
     }
     let guards: Vec<_> = streams
         .iter()
         .map(|s| s.0.pipe.read().unwrap_or_else(PoisonError::into_inner))
         .collect();
-    let mut events = Vec::with_capacity(streams.len());
+    let mut reads = Vec::with_capacity(streams.len());
     for _ in streams {
-        events.push(Event::new()?);
+        reads.push(Event::new()?);
     }
     // Each read's OVERLAPPED, where it stays until the read has finished.
-    let mut overlapped: Vec<OVERLAPPED> = events
+    let mut overlapped: Vec<OVERLAPPED> = reads
         .iter()
         .map(|e| OVERLAPPED {
             hEvent: e.raw(),
@@ -910,10 +1013,11 @@ pub fn await_streams(streams: &[&Stream], deadline: Option<Instant>) -> io::Resu
         let pending = ok != 0 || unsafe { GetLastError() } == ERROR_IO_PENDING;
         started.push(pending.then_some(raw));
     }
-    let waited: Vec<HANDLE> = events
+    let waited: Vec<HANDLE> = reads
         .iter()
         .map(Event::raw)
         .chain(streams.iter().map(|s| s.0.reads_shut.raw()))
+        .chain(events.iter().map(|e| e.as_raw_handle()))
         .collect();
     let ms = deadline.map_or(INFINITE, |d| {
         let left = d.saturating_duration_since(Instant::now());

@@ -470,7 +470,7 @@ impl<D: Disk> Daemon<D> {
                     key.dir.display(),
                     level.display()
                 ));
-                let _ = warm.vm.kill(libc::SIGKILL);
+                let _ = warm.vm.kill(shards_ipc::signal::SIGKILL);
                 ended += 1;
             }
         }

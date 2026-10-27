@@ -8,12 +8,16 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::io::{self, Read as _, Write as _};
-use std::os::fd::AsFd as _;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
+use shards_ipc::Stream as UnixStream;
+// What Windows' daemon waits on together is its own streams (D195), which shards_ipc
+// watches, beside processes' ends.
+#[cfg(windows)]
+use shards_ipc::{ExitWatch, Poller};
+#[cfg(unix)]
 use shards_vmm::platform::{ExitWatch, Poller};
 
 use super::{Daemon, Inbox, Threads, lock, log};
@@ -79,7 +83,7 @@ impl Followers {
         let (tell, heard) = UnixStream::pair()?;
         heard.set_nonblocking(true)?;
         tell.set_nonblocking(true)?;
-        poller.add(heard.as_fd(), WAKE)?;
+        poller.add(&heard, WAKE)?;
         Ok(Followers {
             poller,
             runs: Mutex::new(HashMap::new()),
@@ -119,7 +123,7 @@ impl Followers {
         for process in lock(&self.processes).values() {
             let (Process::Vm { vm: child, .. } | Process::Net { child, .. } | Process::Share { child, .. }) =
                 process;
-            let _ = child.kill(libc::SIGKILL);
+            let _ = child.kill(shards_ipc::signal::SIGKILL);
         }
     }
 }
@@ -169,7 +173,7 @@ impl<D: Disk> Daemon<D> {
         let added = {
             let held = lock(&inbox);
             lock(&f.runs).insert(token, (id.clone(), inbox.clone()));
-            f.poller.add(held.socket.stream.as_fd(), token)
+            f.poller.add(&held.socket.stream, token)
         };
         // The files its VM asks for are made on a thread of their own (files.rs), and its
         // log's rotated segments compressed on another (packed.rs).
@@ -226,7 +230,7 @@ impl<D: Disk> Daemon<D> {
                     continue;
                 };
                 if self.take_messages(&id, &inbox) {
-                    let _ = f.poller.remove(lock(&inbox).socket.stream.as_fd());
+                    let _ = f.poller.remove(&lock(&inbox).socket.stream);
                     lock(&f.runs).remove(&token);
                 }
             }
@@ -252,7 +256,7 @@ impl<D: Disk> Daemon<D> {
                 }
                 // Its end follows, which frees its VM's ports.
                 if let Some(Process::Net { child, .. }) = lock(&f.processes).get(&token) {
-                    let _ = child.kill(libc::SIGKILL);
+                    let _ = child.kill(shards_ipc::signal::SIGKILL);
                 }
             }
         }
@@ -322,7 +326,9 @@ impl<D: Disk> Daemon<D> {
                     *kept = Some(watch);
                 }
             }
-            // Ended already: macOS watches only ends to come.
+            // Ended already: macOS watches only ends to come. Windows tells such an end at
+            // once, as Linux does.
+            #[cfg(unix)]
             Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.process_ended(threads, token),
             Err(e) => {
                 let pid = child.id();
@@ -433,17 +439,36 @@ impl<D: Disk> Daemon<D> {
     /// Follows run `id` on this thread, waiting on its socket alone: where the poller
     /// could not take it.
     fn follow_alone(&self, id: &str, inbox: &Mutex<Inbox>) {
-        use std::os::fd::AsRawFd as _;
-        let fd = lock(inbox).socket.stream.as_raw_fd();
+        #[cfg(unix)]
+        let fd = {
+            use std::os::fd::AsRawFd as _;
+            lock(inbox).socket.stream.as_raw_fd()
+        };
+        // Its end, `inbox`'s still: what a read of it waits on.
+        #[cfg(windows)]
+        let stream = match lock(inbox).socket.stream.try_clone() {
+            Ok(stream) => stream,
+            Err(e) => {
+                log(format!("container {id}: following its run alone: {e}"));
+                return;
+            }
+        };
         while !self.take_messages(id, inbox) {
-            let mut pfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: poll(2) on one descriptor `inbox` holds open; no timeout: the run's
-            // end, whoever takes it, comes as its VM's end, which makes it readable.
-            unsafe { libc::poll(&mut pfd, 1, -1) };
+            #[cfg(unix)]
+            {
+                let mut pfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: poll(2) on one descriptor `inbox` holds open; no timeout: the
+                // run's end, whoever takes it, comes as its VM's end, which makes it
+                // readable.
+                unsafe { libc::poll(&mut pfd, 1, -1) };
+            }
+            // No timeout, as above.
+            #[cfg(windows)]
+            let _ = stream.wait_readable(None, None);
         }
     }
 

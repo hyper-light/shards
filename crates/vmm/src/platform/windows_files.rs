@@ -29,19 +29,22 @@ use std::path::{Path, PathBuf};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-    FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, FileRenameInformationEx, NtCreateFile,
-    NtSetInformationFile,
+    FILE_OPEN_REPARSE_POINT, FILE_OVERWRITE_IF, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
+    FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation,
+    FileRenameInformationEx, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_NO_MORE_FILES, NTSTATUS, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_INVALID_INFO_CLASS,
-    STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
+    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, NTSTATUS, OBJ_CASE_INSENSITIVE,
+    RtlNtStatusToDosError, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED,
+    UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileDispositionInfo, FileFullDirectoryInfo,
+    DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
+    FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx, FileFullDirectoryInfo,
     FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
@@ -260,6 +263,85 @@ fn nt_error(status: NTSTATUS) -> io::Error {
 /// directory was renamed or replaced since (unix.rs `open_in`).
 pub fn open_in(dir: &File, name: &str) -> io::Result<File> {
     open_relative(dir, name, FILE_GENERIC_READ, FILE_OPEN, FILE_NON_DIRECTORY_FILE)
+}
+
+/// Makes `name` in the directory `dir` holds open, to write anew: one there is emptied
+/// (unix.rs `create_in`). This user's alone as its directory's files are: NTFS gives it the
+/// DACL its directory passes on, where unix.rs makes it 0600.
+pub fn create_in(dir: &File, name: &str) -> io::Result<File> {
+    open_relative(
+        dir,
+        name,
+        FILE_GENERIC_WRITE,
+        FILE_OVERWRITE_IF,
+        FILE_NON_DIRECTORY_FILE,
+    )
+}
+
+/// Makes `name` in the directory `dir` holds open, to append to; refused where it is there
+/// (unix.rs `append_new_in`). Opened to append alone, as std opens a file to append: every
+/// write goes to its end.
+pub fn append_new_in(dir: &File, name: &str) -> io::Result<File> {
+    open_relative(
+        dir,
+        name,
+        (FILE_GENERIC_WRITE & !FILE_WRITE_DATA) | FILE_APPEND_DATA,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE,
+    )
+}
+
+/// Removes `name` from the directory `dir` holds open (unix.rs `unlink_in`): its name at
+/// once, whoever holds it open, as unlink(2) removes it (FileDispositionInfoEx, POSIX
+/// semantics); on a file system without them (FAT), as its last handle closes. A link
+/// itself is removed, not what it names.
+pub fn unlink_in(dir: &File, name: &str) -> io::Result<()> {
+    let file = open_relative(
+        dir,
+        name,
+        DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+    )?;
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    };
+    let size = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).map_err(io::Error::other)?;
+    // SAFETY: a handle `file` holds open with DELETE, and a FILE_DISPOSITION_INFO_EX of
+    // `size` bytes.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            size,
+        )
+    } != 0
+    {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if !matches!(
+        e.raw_os_error().and_then(|c| u32::try_from(c).ok()),
+        Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED)
+    ) {
+        return Err(e);
+    }
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let size = u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).map_err(io::Error::other)?;
+    // SAFETY: as above, with a FILE_DISPOSITION_INFO of `size` bytes.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            (&raw const info).cast(),
+            size,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Creates `name` in the directory `dir` holds open, durably: written to a temporary

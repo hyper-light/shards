@@ -252,8 +252,15 @@ impl Child {
 
     /// Ends it, and anything of its Job, its status 128 and `signal`, as a Unix child's that
     /// `signal` ended: Windows sends a process no signal but its end. One ended already is
-    /// no error.
+    /// no error. SIGSTOP and SIGCONT, which end no process, are refused: Windows stops a
+    /// process no documented way.
     pub fn kill(&self, signal: i32) -> io::Result<()> {
+        if matches!(signal, crate::signal::SIGSTOP | crate::signal::SIGCONT) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a process is not stopped or continued on Windows",
+            ));
+        }
         let code = 128u32.saturating_add(u32::try_from(signal).unwrap_or(0));
         // SAFETY: our own job, and our own process.
         let ended = unsafe {

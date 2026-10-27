@@ -10,10 +10,10 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 
+use shards_ipc::Stream as UnixStream;
 use shards_ipc::kind;
 
 use super::{Daemon, Threads, lock, log};

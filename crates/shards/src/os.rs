@@ -37,6 +37,50 @@ pub(crate) fn owner_only_dir(builder: &mut std::fs::DirBuilder) -> &mut std::fs:
     builder
 }
 
+/// Reads at an offset, whatever the file's own: pread(2) on Unix (std's `FileExt`), ReadFile
+/// at an offset on Windows (`platform::read_exact_at`), which moves the file's own offset
+/// too: shards reads files at offsets that it reads no other way, or appends to.
+pub(crate) trait ReadAt {
+    /// Fills `buf` from the file at `at`, failing past its end.
+    fn read_exact_at(&self, buf: &mut [u8], at: u64) -> io::Result<()>;
+}
+
+impl ReadAt for File {
+    fn read_exact_at(&self, buf: &mut [u8], at: u64) -> io::Result<()> {
+        #[cfg(unix)]
+        return std::os::unix::fs::FileExt::read_exact_at(self, buf, at);
+        #[cfg(windows)]
+        return shards_vmm::platform::read_exact_at(self, buf, at);
+    }
+}
+
+/// The disk the file at `path`, of metadata `meta`, takes, as `du` counts it: on Unix its
+/// blocks, as sparse as it is; on Windows the bytes its clusters hold where it is sparse or
+/// compressed, else its length (GetCompressedFileSizeW).
+pub(crate) fn on_disk(path: &std::path::Path, meta: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let _ = path;
+        meta.blocks().saturating_mul(512)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows_sys::Win32::Foundation::{GetLastError, NO_ERROR};
+        use windows_sys::Win32::Storage::FileSystem::{GetCompressedFileSizeW, INVALID_FILE_SIZE};
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut high = 0u32;
+        // SAFETY: a NUL-terminated wide path, and a word for the size's high half.
+        let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &raw mut high) };
+        // SAFETY: no arguments; read at once, as the size is.
+        if low == INVALID_FILE_SIZE && unsafe { GetLastError() } != NO_ERROR {
+            return meta.len();
+        }
+        (u64::from(high) << 32) | u64::from(low)
+    }
+}
+
 /// The OS errors that say a process, or the system, has no descriptor left to open: EMFILE
 /// and ENFILE on Unix.
 #[cfg(unix)]

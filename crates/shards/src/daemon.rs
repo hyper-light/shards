@@ -75,6 +75,8 @@ mod reclaim;
 mod record;
 mod refill;
 mod relay;
+// Other machines' clients (D180): Unix's alone as yet.
+#[cfg(unix)]
 mod remote;
 mod restart;
 mod rmi;
@@ -1531,6 +1533,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     for c in containers.all() {
         snapshots::remove_unsaved(&containers.dir(&c.id), &mut |note| log(note));
     }
+    #[cfg(unix)]
     snapshots::remove_ghosts(&home.join(PRIVATE), &mut |note| log(note));
     let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
         .map_err(|e| format!("following runs: {e}"))?;
@@ -1542,9 +1545,15 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
     // Other machines' clients (D180), before it says it serves: an address it cannot bind
-    // is its starter's to hear.
+    // is its starter's to hear. Unix's alone as yet: what they run here (their contexts,
+    // secrets and agents) is Unix's.
     if let Some(at) = listen {
+        #[cfg(unix)]
         remote::listen(daemon.home.clone(), exe.clone(), at)?;
+        #[cfg(windows)]
+        return Err(format!(
+            "listening at {at}: other machines' clients are not served on Windows yet"
+        ));
     }
     // Its starter returns once it hears this: its slots are offered from now on.
     if let Some(mut ready) = ready {

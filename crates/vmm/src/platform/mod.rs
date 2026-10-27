@@ -29,7 +29,8 @@ mod windows_process;
 mod windows_watch;
 #[cfg(windows)]
 pub use windows_files::{
-    names_in, open_beneath, open_dir_beneath, open_in, punch_hole, sync_entries, write_in,
+    append_new_in, create_in, names_in, open_beneath, open_dir_beneath, open_in, punch_hole, sync_entries,
+    unlink_in, write_in,
 };
 #[cfg(windows)]
 pub use windows_process::{
@@ -90,9 +91,7 @@ impl AsRawSocket for UnixListener {
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
-#[cfg(unix)]
 mod pressure;
-#[cfg(unix)]
 pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
 
 mod granted;
@@ -403,7 +402,6 @@ mod tests {
     #[test]
     fn a_poller_names_what_is_ready() {
         use std::io::Read as _;
-        use std::os::fd::AsFd as _;
         use std::os::unix::net::UnixStream;
         use std::time::{Duration, Instant};
         // Its 150 pairs past the 256 descriptors a macOS terminal starts a process with.
@@ -411,8 +409,8 @@ mod tests {
         let poller = Poller::new().unwrap();
         let (mut a, a_peer) = UnixStream::pair().unwrap();
         let (b, b_peer) = UnixStream::pair().unwrap();
-        poller.add(a_peer.as_fd(), 7).unwrap();
-        poller.add(b_peer.as_fd(), 9).unwrap();
+        poller.add(&a_peer, 7).unwrap();
+        poller.add(&b_peer, 9).unwrap();
         let mut ready = Vec::new();
         let t0 = Instant::now();
         poller.wait(&mut ready, Some(Duration::from_millis(50))).unwrap();
@@ -431,13 +429,13 @@ mod tests {
         b.shutdown(std::net::Shutdown::Write).unwrap();
         poller.wait(&mut ready, None).unwrap();
         assert_eq!(ready, [9]);
-        poller.remove(b_peer.as_fd()).unwrap();
+        poller.remove(&b_peer).unwrap();
         poller.wait(&mut ready, Some(Duration::ZERO)).unwrap();
         assert!(ready.is_empty());
         // More ready than one wait holds: each comes, as what is read stops being ready.
         let pairs: Vec<(UnixStream, UnixStream)> = (0..150).map(|_| UnixStream::pair().unwrap()).collect();
         for (i, (_, theirs)) in pairs.iter().enumerate() {
-            poller.add(theirs.as_fd(), 100 + i as u64).unwrap();
+            poller.add(theirs, 100 + i as u64).unwrap();
         }
         for (mut ours, _) in pairs.iter().map(|(o, t)| (o, t)) {
             ours.write_all(b"y").unwrap();

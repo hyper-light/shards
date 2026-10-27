@@ -17,9 +17,9 @@
 //! one image's content so holds up that image alone. A microVM the engine holds already,
 //! by its manifest's digest, is not sent again.
 
+use shards_vmm::platform::UnixStream;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -311,7 +311,7 @@ mod tests {
     fn fake_engine(answers: Vec<String>) -> (Gone, std::thread::JoinHandle<Vec<String>>) {
         let dir = shards_testdir::TempDir::new("ls").unwrap();
         let socket = dir.join("s.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let listener = shards_vmm::platform::UnixListener::bind(&socket).unwrap();
         let served = std::thread::spawn(move || {
             let mut asked = Vec::new();
             for answer in answers {
@@ -395,7 +395,7 @@ mod tests {
         let (slow, slow_served) = fake_engine(vec![gone.clone(), gone.clone()]);
         // Beside the engine's socket, in its directory.
         let gate = slow.with_extension("gate");
-        let gate_listener = std::os::unix::net::UnixListener::bind(&gate).unwrap();
+        let gate_listener = shards_vmm::platform::UnixListener::bind(&gate).unwrap();
         let (asked, heard) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let held = std::thread::spawn(move || {

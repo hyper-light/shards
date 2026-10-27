@@ -6,8 +6,6 @@
 
 use std::io::Read as _;
 use std::io::{self, Write as _};
-use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
-use std::os::unix::net::UnixStream;
 use std::sync::MutexGuard;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -19,7 +17,15 @@ use shards_cmdline::commands::{
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{gotime, width};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd as _, OwnedFd};
+// What Windows' daemon waits on together is its own streams (D195), which shards_ipc
+// watches.
+#[cfg(windows)]
+use shards_ipc::Poller;
 use shards_ipc::kind;
+#[cfg(unix)]
+use shards_vmm::platform::Poller;
 
 use super::logs::{self, LogFile, Piece, Reader};
 use super::{Daemon, RunState, STOP_GRACE, lock};
@@ -248,7 +254,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let Some(exec) = shards_ipc::Exec::decode(&message.payload) else {
             return refuse("shards: a malformed exec");
         };
-        let [stdin, stdout, stderr] = match <&[std::os::fd::OwnedFd; 3]>::try_from(message.fds.as_slice()) {
+        let [stdin, stdout, stderr] = match <&[OwnedFd; 3]>::try_from(message.fds.as_slice()) {
             Ok(fds) => fds,
             Err(_) => return refuse("shards: an exec without the client's stdio"),
         };
@@ -341,6 +347,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return refuse(&format!("shards: holding the connection: {e}"));
             }
         };
+        let handed = match shards_ipc::handed(conn) {
+            Ok(handed) => handed,
+            Err(e) => return refuse(&format!("shards: handing on the connection: {e}")),
+        };
         let exec_id = self.exec_events(&id, &options.argv);
         {
             let mut inbox = lock(&inbox);
@@ -349,7 +359,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 inbox.exec_ids.push((number, exec_id));
             }
         }
-        let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        let fds = [handed.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
         if let Err(e) = socket.send(kind::EXEC_RUN, &payload, &fds) {
             let mut held = lock(&inbox);
             held.execs_in_flight.retain(|(n, _)| *n != number);
@@ -378,7 +388,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let Some(attach) = shards_ipc::Attach::decode(&message.payload) else {
             return refuse("shards: a malformed attach");
         };
-        let [stdin, stdout, stderr] = match <&[std::os::fd::OwnedFd; 3]>::try_from(message.fds.as_slice()) {
+        let [stdin, stdout, stderr] = match <&[OwnedFd; 3]>::try_from(message.fds.as_slice()) {
             Ok(fds) => fds,
             Err(_) => return refuse("shards: an attach without the client's stdio"),
         };
@@ -414,8 +424,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return refuse(&format!("shards: holding the connection: {e}"));
             }
         };
+        let handed = match shards_ipc::handed(conn) {
+            Ok(handed) => handed,
+            Err(e) => return refuse(&format!("shards: handing on the connection: {e}")),
+        };
         lock(&inbox).execs_in_flight.push((number, held));
-        let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        let fds = [handed.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
         if let Err(e) = socket.send(kind::ATTACH_RUN, &payload, &fds) {
             lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
             refuse(&format!("shards: the container's microVM: {e}"));
@@ -1571,7 +1585,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.freeze(id, false).is_ok()
         } else {
             match lock(&self.runs).get(id) {
-                Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGCONT).is_ok(),
+                Some(RunState::Tracked(t)) => t.vm.kill(shards_ipc::signal::SIGCONT).is_ok(),
                 _ => false,
             }
         };
@@ -1614,7 +1628,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         self.freeze(&id, true).map_err(io::Error::other)
                     } else {
                         match lock(&self.runs).get(&id) {
-                            Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGSTOP),
+                            Some(RunState::Tracked(t)) => t.vm.kill(shards_ipc::signal::SIGSTOP),
                             _ => Err(io::Error::from(io::ErrorKind::NotFound)),
                         }
                     };
@@ -1838,7 +1852,27 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 deadline,
             });
         }
-        let mut polled: Vec<libc::pollfd> = Vec::with_capacity(going.len());
+        // Their ends, waited on together by their indices, however many: a wait of Windows'
+        // takes 64 handles at most, where its poller takes any number, as Unix's poll(2) does.
+        let poller = Poller::new().and_then(|poller| {
+            for e in &going {
+                poller.add(&e.told, e.index as u64)?;
+            }
+            Ok(poller)
+        });
+        let poller = match poller {
+            Ok(poller) => poller,
+            Err(e) => {
+                super::log(format!("waiting for containers' ends: {e}"));
+                // Nothing to wait on: what is left is given up, as its time would be.
+                for gone in going.drain(..) {
+                    self.forget_waiter(&gone.id, gone.waiter);
+                    done(gone.index, false, How::Lost);
+                }
+                return;
+            }
+        };
+        let mut ready = Vec::new();
         while !going.is_empty() {
             // Escalate whatever is due.
             let now = Instant::now();
@@ -1856,7 +1890,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             // not take: its own SIGKILL again, on its own connection.
                             let socket = match lock(&self.runs).get(&e.id) {
                                 Some(RunState::Tracked(t)) if t.joined.is_none() => {
-                                    let _ = t.vm.kill(libc::SIGKILL);
+                                    let _ = t.vm.kill(shards_ipc::signal::SIGKILL);
                                     None
                                 }
                                 Some(RunState::Tracked(t)) => Some(t.socket.clone()),
@@ -1870,6 +1904,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         }
                         Phase::VmKilled => {
                             let gone = going.swap_remove(i);
+                            let _ = poller.remove(&gone.told);
                             self.forget_waiter(&gone.id, gone.waiter);
                             // Its end may have come as it was given up.
                             let _ = gone.told.set_nonblocking(true);
@@ -1885,21 +1920,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if going.is_empty() {
                 break;
             }
-            let wait = going.iter().filter_map(|e| e.deadline).min().map_or(-1, |d| {
-                let left = d.saturating_duration_since(Instant::now());
-                libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
-            });
-            polled.clear();
-            polled.extend(going.iter().map(|e| libc::pollfd {
-                fd: e.told.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            }));
-            let n = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
-            // SAFETY: poll(2) on pollfds of sockets `going` holds open.
-            if unsafe { libc::poll(polled.as_mut_ptr(), n, wait) } < 0
-                && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
-            {
+            let timeout = going
+                .iter()
+                .filter_map(|e| e.deadline)
+                .min()
+                .map(|d| d.saturating_duration_since(Instant::now()));
+            if let Err(e) = poller.wait(&mut ready, timeout) {
+                super::log(format!("waiting for containers' ends: {e}"));
                 // Nothing to wait on: what is left is given up, as its time would be.
                 for gone in going.drain(..) {
                     self.forget_waiter(&gone.id, gone.waiter);
@@ -1907,21 +1934,23 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 }
                 break;
             }
-            // Those whose end came, from the back, so the indices stay good.
-            for k in (0..polled.len()).rev() {
-                if polled.get(k).is_some_and(|p| p.revents != 0) {
-                    let gone = going.swap_remove(k);
-                    let mut byte = [0u8; 1];
-                    let ended = matches!((&gone.told).read(&mut byte), Ok(1));
-                    if !ended {
-                        self.forget_waiter(&gone.id, gone.waiter);
-                    }
-                    done(
-                        gone.index,
-                        ended,
-                        if ended { how(&gone.phase) } else { How::Lost },
-                    );
+            // Those whose end came.
+            for &token in &ready {
+                let Some(k) = going.iter().position(|e| e.index as u64 == token) else {
+                    continue;
+                };
+                let gone = going.swap_remove(k);
+                let _ = poller.remove(&gone.told);
+                let mut byte = [0u8; 1];
+                let ended = matches!((&gone.told).read(&mut byte), Ok(1));
+                if !ended {
+                    self.forget_waiter(&gone.id, gone.waiter);
                 }
+                done(
+                    gone.index,
+                    ended,
+                    if ended { how(&gone.phase) } else { How::Lost },
+                );
             }
         }
     }
@@ -2583,11 +2612,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         continue;
                     }
                     let ready = wait_readable(
-                        &[
-                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
-                            Some(end.as_fd()),
-                            Some(reply.0.as_fd()),
-                        ],
+                        watch.as_ref(),
+                        &end,
+                        reply.0,
                         watch.is_none().then_some(super::RETRY),
                     )?;
                     // Once the container has ended, what is left of a line is all of it.
@@ -3518,11 +3545,22 @@ impl Window {
     }
 }
 
-/// Waits until one of `fds` is readable, or hung up; which are.
+/// Waits, for `timeout` at most, until a follow has more to do: its log's `watch` has seen
+/// a change, the run has ended (`end`), or its `client` has said more or hung up; which
+/// have.
+#[cfg(unix)]
 pub(super) fn wait_readable(
-    fds: &[Option<BorrowedFd<'_>>; 3],
+    watch: Option<&shards_vmm::platform::FileWatch>,
+    end: &UnixStream,
+    client: &UnixStream,
     timeout: Option<Duration>,
 ) -> io::Result<[bool; 3]> {
+    use std::os::fd::AsRawFd as _;
+    let fds = [
+        watch.map(shards_vmm::platform::FileWatch::fd),
+        Some(end.as_fd()),
+        Some(client.as_fd()),
+    ];
     // One not given is no descriptor, which poll(2) passes over.
     let mut polled = fds.map(|fd| libc::pollfd {
         fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
@@ -3545,6 +3583,28 @@ pub(super) fn wait_readable(
         }
     }
     Ok(polled.map(|p| p.revents != 0))
+}
+
+/// Waits, for `timeout` at most, until a follow has more to do, as Unix's does: the watch's
+/// event, and the streams by reads of no bytes (`shards_ipc::await_any`).
+#[cfg(windows)]
+pub(super) fn wait_readable(
+    watch: Option<&shards_vmm::platform::FileWatch>,
+    end: &UnixStream,
+    client: &UnixStream,
+    timeout: Option<Duration>,
+) -> io::Result<[bool; 3]> {
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+    let events: Vec<_> = watch
+        .map(shards_vmm::platform::FileWatch::fd)
+        .into_iter()
+        .collect();
+    let (streams, signalled) = shards_ipc::await_any(&[end, client], &events, deadline)?;
+    Ok([
+        signalled.first().copied().unwrap_or(false),
+        streams.first().copied().unwrap_or(false),
+        streams.get(1).copied().unwrap_or(false),
+    ])
 }
 
 /// What `docker logs` puts before each line: its time with `-t`, and with `--details` its

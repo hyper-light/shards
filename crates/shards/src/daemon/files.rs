@@ -7,11 +7,11 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::os::fd::AsFd as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
+use shards_ipc::fd::AsFd as _;
 use shards_ipc::kind;
 
 use super::{Daemon, RunSocket, Threads, lock, log};

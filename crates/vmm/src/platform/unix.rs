@@ -1139,6 +1139,55 @@ pub fn open_in(dir: &File, name: &str) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
+/// `name` in the directory `dir` holds open, opened with `flags` beside close-on-exec, made
+/// this user's alone where it is made.
+fn make_in(dir: &File, name: &str, flags: libc::c_int) -> io::Result<File> {
+    use std::os::fd::FromRawFd as _;
+    let name = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL"))?;
+    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory we hold open.
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC,
+            0o600 as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor we just opened, and nothing else owns.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Makes `name` in the directory `dir` holds open, this user's alone, to write anew: one
+/// there is emptied.
+pub fn create_in(dir: &File, name: &str) -> io::Result<File> {
+    make_in(dir, name, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC)
+}
+
+/// Makes `name` in the directory `dir` holds open, this user's alone, to append to;
+/// refused where it is there.
+pub fn append_new_in(dir: &File, name: &str) -> io::Result<File> {
+    make_in(
+        dir,
+        name,
+        libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT | libc::O_EXCL,
+    )
+}
+
+/// Removes `name` from the directory `dir` holds open.
+pub fn unlink_in(dir: &File, name: &str) -> io::Result<()> {
+    let name = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL"))?;
+    // SAFETY: unlinkat(2) with a NUL-terminated name, relative to a directory we hold open.
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Creates `name` in the directory `dir` holds open, durably: written to a temporary
 /// sibling of its own, synced, renamed over `name`, and the directory synced. It lands
 /// there even if the directory was renamed since it was opened, and of writers racing to
@@ -1541,7 +1590,8 @@ impl Poller {
     }
 
     /// Watches `fd`, named `token`, until it is [`remove`](Self::remove)d or closed.
-    pub fn add(&self, fd: std::os::fd::BorrowedFd<'_>, token: u64) -> io::Result<()> {
+    pub fn add(&self, fd: &impl std::os::fd::AsFd, token: u64) -> io::Result<()> {
+        let fd = fd.as_fd();
         #[cfg(target_os = "macos")]
         {
             self.change(fd, libc::EV_ADD, token)
@@ -1605,7 +1655,7 @@ impl Poller {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            use std::os::fd::{AsFd as _, FromRawFd as _};
+            use std::os::fd::FromRawFd as _;
             // SAFETY: pidfd_open(2) of a process, without flags: its descriptor is
             // close-on-exec.
             let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -1616,13 +1666,14 @@ impl Poller {
                 .map_err(|_| io::Error::other("a descriptor out of range"))?;
             // SAFETY: a descriptor just made, owned by nothing else.
             let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-            self.add(pidfd.as_fd(), token)?;
+            self.add(&pidfd, token)?;
             Ok(ExitWatch { _pidfd: pidfd })
         }
     }
 
     /// Stops watching `fd`.
-    pub fn remove(&self, fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    pub fn remove(&self, fd: &impl std::os::fd::AsFd) -> io::Result<()> {
+        let fd = fd.as_fd();
         #[cfg(target_os = "macos")]
         {
             self.change(fd, libc::EV_DELETE, 0)
