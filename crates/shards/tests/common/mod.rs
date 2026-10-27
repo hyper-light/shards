@@ -538,10 +538,181 @@ fn carried() -> PathBuf {
     PathBuf::from(env!("SHARDS_HELPERS_CARRIED"))
 }
 
+#[cfg(unix)]
+pub fn alive(pid: i32) -> bool {
+    // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Whether process `pid` has yet to end: its exit code still STILL_ACTIVE
+/// (GetExitCodeProcess), which a process that ended with that code would be taken for.
+#[cfg(windows)]
+pub fn alive(pid: i32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let Ok(pid) = u32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: a process's handle opened, read and closed here.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let read = GetExitCodeProcess(process, &raw mut code) != 0;
+        CloseHandle(process);
+        read && code == STILL_ACTIVE.cast_unsigned()
+    }
+}
+
+/// Ends process `pid` outright: SIGKILL on Unix; on Windows TerminateProcess, its status
+/// 128 and 9 as a Unix child's.
+pub fn kill_now(pid: i32) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of a process this test started.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+        let pid = u32::try_from(pid).unwrap();
+        // SAFETY: a process's handle opened, used and closed here.
+        unsafe {
+            let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            assert!(!process.is_null(), "process {pid} could not be opened");
+            TerminateProcess(process, 128 + 9);
+            CloseHandle(process);
+        }
+    }
+}
+
+/// This host's physical memory, in bytes: sysconf(3)'s pages on Unix; on Windows
+/// GlobalMemoryStatusEx's total.
+pub fn host_memory() -> u64 {
+    #[cfg(unix)]
+    // SAFETY: sysconf(3) with constant arguments.
+    unsafe {
+        u64::try_from(libc::sysconf(libc::_SC_PHYS_PAGES)).unwrap()
+            * u64::try_from(libc::sysconf(libc::_SC_PAGESIZE)).unwrap()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).unwrap(),
+            ..MEMORYSTATUSEX::default()
+        };
+        // SAFETY: a structure on this stack, its length set as the call asks.
+        assert_ne!(unsafe { GlobalMemoryStatusEx(&raw mut status) }, 0);
+        status.ullTotalPhys
+    }
+}
+
+/// This host's name, as the daemon reads it (daemon/info.rs `host_name`): gethostname(2)
+/// on Unix; on Windows its DNS host name (GetComputerNameExW,
+/// ComputerNamePhysicalDnsHostname), as Go's `os.Hostname` reads it.
+pub fn host_name() -> String {
+    #[cfg(unix)]
+    {
+        let mut name = [0u8; 256];
+        // SAFETY: gethostname(2) into our own buffer, of its length.
+        let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
+        assert_eq!(got, 0);
+        String::from_utf8_lossy(name.split(|&b| b == 0).next().unwrap()).into_owned()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{
+            ComputerNamePhysicalDnsHostname, GetComputerNameExW,
+        };
+        let mut name = [0u16; 256];
+        let mut len = u32::try_from(name.len()).unwrap();
+        // SAFETY: at most `len` units written into `name`, and its length back.
+        let got =
+            unsafe { GetComputerNameExW(ComputerNamePhysicalDnsHostname, name.as_mut_ptr(), &raw mut len) };
+        assert_ne!(got, 0, "{}", std::io::Error::last_os_error());
+        String::from_utf16(&name[..usize::try_from(len).unwrap()]).unwrap()
+    }
+}
+
+/// Whether this host serves `what` only once the platform parity plan's step `step` has
+/// landed (docs/audit/2026-10-27_platform-parity.md): Windows, until then, which says so
+/// with a SKIP line, as a host without a backend does.
+pub fn later_on_windows(step: u32, what: &str) -> bool {
+    if cfg!(windows) {
+        let _ = writeln!(
+            io::stderr(),
+            "SKIP: Windows serves {what} with the platform parity plan's step {step}"
+        );
+        return true;
+    }
+    false
+}
+
+/// `cmd` started so that [`interrupt`] reaches it: on Windows in a process group of its own,
+/// which a console's events reach by its leader's id (CREATE_NEW_PROCESS_GROUP).
+pub fn interruptible(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
+    }
+    cmd
+}
+
+/// Interrupts `child`, started [`interruptible`], as a terminal's interrupt does: SIGINT on
+/// Unix; on Windows CTRL_BREAK_EVENT to its group, the one console event a process can send
+/// one group (GenerateConsoleCtrlEvent), which the client takes as Go's runtime takes it,
+/// for SIGINT.
+pub fn interrupt(child: &std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of a child of this test's.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+        // SAFETY: an event sent to the group the child leads.
+        let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+        assert_ne!(sent, 0, "CTRL_BREAK_EVENT: {}", std::io::Error::last_os_error());
+    }
+}
+
+/// Ends `child`, started [`interruptible`], as a signal it takes no hold of ends a client:
+/// SIGTERM on Unix; on Windows its interrupt, which the console's own handler takes where
+/// the client took none, ending it with STATUS_CONTROL_C_EXIT ([`TERMINATED`]).
+pub fn terminate(child: &std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of a child of this test's.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    interrupt(child);
+}
+
+/// The status of a client [`terminate`] ended: none on Unix, where a signal ended it; on
+/// Windows STATUS_CONTROL_C_EXIT (0xC000013A), the console's handler's.
+pub const TERMINATED: Option<i32> = if cfg!(windows) {
+    Some(0xC000_013A_u32.cast_signed())
+} else {
+    None
+};
+
+/// The signal a client that proxies its signals passes on as [`terminate`] ends it, by
+/// name and Linux's number: SIGTERM on Unix; on Windows, where its interrupt is the event,
+/// SIGINT.
+pub const PROXIED: (&str, u8) = if cfg!(windows) { ("INT", 2) } else { ("TERM", 15) };
+
 /// Waits until no daemon serves `home`'s slots: a daemon killed holds its lists until the
 /// kernel has closed all its descriptors, which may be after a client sees its own slot
 /// end, as the kernel closes the dead process's descriptors one by one.
-#[cfg(unix)]
 pub fn until_unserved(home: &Path) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while shards_ipc::slots::served(home) {
@@ -555,9 +726,8 @@ pub fn until_unserved(home: &Path) {
 }
 
 /// The processes under the daemon whose log is `log` (its first line names its PID), each
-/// as `ps` shows it: whether a run's VM and network processes still live, for a failure
-/// to say.
-#[cfg(unix)]
+/// as `ps` shows it, or Windows' table of processes: whether a run's VM and network
+/// processes still live, for a failure to say.
 pub fn processes_under(log: &str) -> String {
     let Some(daemon) = log.lines().find_map(|l| {
         l.strip_prefix("shards daemon ")?
@@ -568,11 +738,18 @@ pub fn processes_under(log: &str) -> String {
     }) else {
         return "(no daemon named in its log)".into();
     };
-    let listed = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let listed = if cfg!(windows) {
+        let each = r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }"#;
+        Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", each])
+            .output()
+    } else {
+        Command::new("ps")
+            .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
+            .output()
+    }
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    .unwrap_or_default();
     let rows: Vec<(u32, u32, &str)> = listed
         .lines()
         .filter_map(|l| {
@@ -606,7 +783,6 @@ pub fn processes_under(log: &str) -> String {
 
 /// Docker's default bridge as the daemon and the builder elect it on this host
 /// (shards_net::bridge): its gateway and guest addresses are what a run sees.
-#[cfg(unix)]
 pub fn bridge() -> shards_net::bridge::Bridge {
     shards_net::bridge::elected_here(&mut |note| panic!("{note}")).expect("a subnet for the default bridge")
 }

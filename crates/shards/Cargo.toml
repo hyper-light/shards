@@ -88,14 +88,18 @@ windows-sys = { workspace = true, features = [
 sha2 = "0.11"
 
 [target.'cfg(windows)'.dev-dependencies]
-# What tests/confined.rs reads of a running VM process.
+# What tests/confined.rs reads of a running VM process; how tests/daemon.rs interrupts a
+# client (Console) and takes a slot (Storage_FileSystem).
 windows-sys = { workspace = true, features = [
   "Win32_Security",
   "Win32_Security_Isolation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Pipes",
   "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
 ] }
 

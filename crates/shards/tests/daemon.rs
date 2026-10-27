@@ -1,9 +1,13 @@
 //! The daemon, end to end (crates/shards/src/daemon.rs): `shards run` through the daemon
 //! its first run starts, served from pools of warm VMs of the image's template. Real VMs;
 //! the image comes from a loopback registry (tests/common, `served`), and its entrypoint
-//! is the test guest, so a command is one of its modes. Needs vsock and snapshots.
+//! is the test guest, so a command is one of its modes. Needs vsock; its template and pool
+//! tests need snapshots too, and print SKIP where a host takes none (`cannot_snapshot`):
+//! on Windows until the parity plan's steps 3 and 4. The rest run there as on Unix, a
+//! recorded guest booted cold. Tests of what Windows serves with a later step are Unix's
+//! until then, each naming it; tests of a Unix mechanism Windows has no counterpart of say
+//! so.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -15,22 +19,26 @@ mod common;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, registry_of, rootfs_dir, run_shards_env,
-    run_shards_env_in, served, served_variant, shards, test_image, test_image_with,
+    TempDir, alive, cannot_run_vms, cannot_snapshot, guest_init, interrupt, interruptible, kernel, kill_now,
+    registry_of, rootfs_dir, run_shards_env, run_shards_env_in, served, served_variant, shards, test_image,
+    test_image_with,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// A home with the image pulled, the guest recorded, and the image's template saved by a
-/// first run, whose daemon now serves it.
+/// A home with the image pulled, the guest recorded, and, where this host takes snapshots,
+/// the image's template saved by a first run, whose daemon now serves it.
 fn home(name: &str, image: &str) -> TempDir {
     let home = recorded(name);
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -121,8 +129,25 @@ fn processes_with(needle: &str) -> Vec<u32> {
 }
 
 /// The processes whose command line mentions `needle`, and the command lines: from /proc
-/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere.
+/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere;
+/// on Windows from its own table of processes (CIM's Win32_Process).
 fn commands_with(needle: &str) -> Vec<(u32, String)> {
+    if cfg!(windows) {
+        let listed =
+            r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }"#;
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", listed])
+            .output()
+            .unwrap();
+        return String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(needle))
+            .filter_map(|l| {
+                let (pid, args) = l.trim_start().split_once(' ')?;
+                Some((pid.parse().ok()?, args.to_string()))
+            })
+            .collect();
+    }
     if cfg!(target_os = "linux") {
         return std::fs::read_dir("/proc")
             .unwrap()
@@ -164,7 +189,12 @@ fn daemon_pid(home: &Path) -> Option<i32> {
 }
 
 /// The files process `pid` holds open, by path: from /proc on Linux, from lsof elsewhere.
+/// Windows lists a process's handles by no tool of its own; the one test that asks, a
+/// pool's, waits for the parity plan's step 4 there.
 fn open_files(pid: i32) -> Vec<String> {
+    if cfg!(windows) {
+        panic!("a process's open files are not listed on Windows yet (the parity plan's step 4)");
+    }
     if cfg!(target_os = "linux") {
         return std::fs::read_dir(format!("/proc/{pid}/fd"))
             .unwrap()
@@ -183,17 +213,20 @@ fn open_files(pid: i32) -> Vec<String> {
         .collect()
 }
 
-/// Whether no daemon holds `home`'s lock.
+/// Whether no daemon holds `home`'s lock: std's, which is flock(2) on Unix and LockFileEx
+/// on Windows, as the daemon takes it, released as it closes.
 fn home_is_free(home: &Path) -> bool {
-    use std::os::fd::AsRawFd;
     let lock = std::fs::File::open(home.join("daemon.lock")).unwrap();
-    // SAFETY: flock(2) on a descriptor we own, released as it closes.
-    unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    lock.try_lock().is_ok()
 }
 
 /// Each thread of process `pid`: its name, state and what it waits in (/proc/PID/task/*/
-/// stat and wchan), on one line; elsewhere `ps -M`'s.
+/// stat and wchan), on one line; elsewhere `ps -M`'s; on Windows, which shows them by no
+/// tool of its own, none.
 fn threads_of(pid: i32) -> String {
+    if cfg!(windows) {
+        return format!("process {pid}'s threads are not listed on Windows");
+    }
     if !cfg!(target_os = "linux") {
         let ps = Command::new("ps").args(["-M", "-p", &pid.to_string()]).output();
         return ps
@@ -221,26 +254,31 @@ fn threads_of(pid: i32) -> String {
         .join(" ")
 }
 
-fn alive(pid: i32) -> bool {
-    // SAFETY: kill(2) with signal 0 only asks whether the process exists.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
 /// A client that must wait for its daemon to start ends of SIGTERM at once, as the Docker
 /// CLI ends before its container is made: with 128 and the signal's number, nothing said
 /// (docker/cli cmd/docker/docker.go, notifyContext). Its daemon cannot start here, the
 /// home's lock held; then it goes, seeing one listen (`take_lock`), before anything is
-/// asserted, so that a failing test leaves no process behind.
+/// asserted, so that a failing test leaves no process behind. Windows sends a console
+/// process no SIGTERM: there its interrupt ([`interrupt`]) ends it so, with 128 and
+/// SIGINT's number, and its daemon, which no daemon of an older build listens beside, is
+/// ended by its pid, which its log's lines begin with.
 #[test]
 fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
-    use std::os::fd::AsRawFd;
     // Named short: a socket is bound in it by its whole path (sockaddr_un).
     let home = TempDir::new("client-waits");
     let lock = std::fs::File::create(home.join("daemon.lock")).unwrap();
-    // SAFETY: flock(2) on a descriptor this test holds, released as it closes.
-    let locked = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    assert_eq!(locked, 0);
-    let mut client = spawn_run(&home, &["--pull", "never", "nope"]);
+    // flock(2) on Unix, LockFileEx on Windows, as the daemon takes it: released as it closes.
+    lock.try_lock().unwrap();
+    let mut client = interruptible(
+        common::command()
+            .args(["run", "--pull", "never", "nope"])
+            .env("SHARDS_HOME", &*home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .spawn()
+    .unwrap();
     // Waiting for its daemon, which it started once its signals were taken: the daemon
     // has said something before it waits for the lock.
     let log = home.join("daemon.log");
@@ -248,8 +286,14 @@ fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
     while !std::fs::metadata(&log).is_ok_and(|m| m.len() > 0) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
+    #[cfg(unix)]
     // SAFETY: kill(2) of our own child, not yet waited for.
-    unsafe { libc::kill(client.id() as libc::pid_t, libc::SIGTERM) };
+    unsafe {
+        libc::kill(client.id() as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    interrupt(&client);
+    let ended = 128 + if cfg!(windows) { 2 } else { 15 };
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
         if let Some(status) = client.try_wait().unwrap() {
@@ -265,22 +309,39 @@ fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
     let mut said = String::new();
     let _ = client.stderr.take().unwrap().read_to_string(&mut said);
     // Its daemon, waiting for the lock, sees one listen and goes.
-    let listener = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let deadline = Instant::now() + TIMEOUT;
-    let mut looked = false;
-    while !looked && Instant::now() < deadline {
-        looked = listener.accept().is_ok();
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let status = status.expect("the client waited on past SIGTERM");
-    assert_eq!((status.code(), said.as_str()), (Some(143), ""), "{status:?}");
+    #[cfg(unix)]
+    let looked = {
+        let listener = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + TIMEOUT;
+        let mut looked = false;
+        while !looked && Instant::now() < deadline {
+            looked = listener.accept().is_ok();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        looked
+    };
+    // Its daemon, named by its log's lines (`shards daemon PID: ...`), ended.
+    #[cfg(windows)]
+    let looked = {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        let pid = log.lines().find_map(|l| {
+            l.strip_prefix("shards daemon ")?
+                .split_once(':')?
+                .0
+                .parse::<i32>()
+                .ok()
+        });
+        pid.inspect(|&pid| kill_now(pid)).is_some()
+    };
+    let status = status.expect("the client waited on past its signal");
+    assert_eq!((status.code(), said.as_str()), (Some(ended), ""), "{status:?}");
     assert!(looked, "the client's daemon never looked");
 }
 
 #[test]
 fn parallel_runs_keep_their_own_stdio() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -316,12 +377,19 @@ fn signals_reach_a_warm_run() {
     let (image, _) = served();
     let home = home("daemon-signals", &image);
     for ignored in [false, true] {
+        // A Windows console starts no process with its break ignored, as a shell's `cmd &`
+        // starts its command ignoring SIGINT and SIGQUIT.
+        if ignored && cfg!(windows) {
+            continue;
+        }
         let mut run = common::command();
         run.args(["run", "--pull", "never", &image, "trap", "INT"])
             .env("SHARDS_HOME", &*home)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        interruptible(&mut run);
+        #[cfg(unix)]
         if ignored {
             // As a non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1).
             // SAFETY: signal(2) only, between fork and exec.
@@ -338,8 +406,7 @@ fn signals_reach_a_warm_run() {
         let mut line = String::new();
         out.read_line(&mut line).unwrap();
         assert_eq!(line, "ready\n");
-        // SAFETY: kill(2) of our own child.
-        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+        interrupt(&child);
         // Within a run's time: a signal lost leaves its command waiting, and a read of its
         // output would wait with it (2 hours in budget E2E 40170179004, cancelled).
         let (read, rest) = std::sync::mpsc::channel();
@@ -359,7 +426,7 @@ fn signals_reach_a_warm_run() {
 
 #[test]
 fn errors_reach_the_client() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -383,7 +450,7 @@ fn errors_reach_the_client() {
 /// PID 1, which would not hear it and would be killed at the stop timeout instead (D115).
 #[test]
 fn stop_ends_runs_and_waiting_vms() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -416,7 +483,7 @@ fn stop_ends_runs_and_waiting_vms() {
 /// its own stop signal, and SIGKILL once its own stop timeout is up.
 #[test]
 fn a_stop_gives_each_run_its_own_signal_and_time() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -473,7 +540,7 @@ fn a_stop_gives_each_run_its_own_signal_and_time() {
 /// asked for meanwhile is served by the next daemon once it is gone.
 #[test]
 fn a_daemon_ending_its_runs_is_waited_for() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -533,8 +600,7 @@ fn a_dead_daemons_waiting_vms_end() {
     let templates = home.join("templates").to_string_lossy().into_owned();
     eventually("the pool did not fill", || !processes_with(&templates).is_empty());
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    // SAFETY: kill(2) of the daemon this test's run started.
-    unsafe { libc::kill(daemon, libc::SIGKILL) };
+    kill_now(daemon);
     eventually("warm VMs outlived their daemon", || {
         processes_with(&templates).is_empty()
     });
@@ -545,19 +611,25 @@ fn a_dead_daemons_waiting_vms_end() {
 /// build: the daemon knows `shards` by its file's identity.
 #[test]
 fn a_rebuilt_binary_replaces_the_daemon() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
     let home = home("daemon-rebuilt", &image);
     let before = daemon_pid(&home).expect("a daemon pid");
     let bin = TempDir::new("daemon-rebuilt-bin");
-    let other = bin.join("shards");
+    let other = bin.join(format!("shards{}", std::env::consts::EXE_SUFFIX));
     // Copied by a process of its own: a copy this process wrote would be open for writing
     // in each child another test's thread forks meanwhile, until that child execs, and
     // running it then fails with ETXTBSY (x86_64 CI, 2026-10-11).
-    let copied = Command::new("cp").arg(shards()).arg(&other).status().unwrap();
-    assert!(copied.success(), "{copied}");
+    #[cfg(unix)]
+    {
+        let copied = Command::new("cp").arg(shards()).arg(&other).status().unwrap();
+        assert!(copied.success(), "{copied}");
+    }
+    // A Windows child has no handle it is not given, std's being uninheritable: copied here.
+    #[cfg(windows)]
+    std::fs::copy(shards(), &other).unwrap();
     let mut run = Command::new(&other)
         .args(["run", "-i", "--pull", "never", &image, "cat"])
         .env("SHARDS_HOME", &*home)
@@ -607,7 +679,7 @@ fn a_rebuilt_binary_replaces_the_daemon() {
 
 #[test]
 fn idle_daemons_exit() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -628,7 +700,9 @@ fn idle_daemons_exit() {
 
 /// A stream the Engine API answers ends with its client: an events stream whose client
 /// leaves while nothing happens ends then, not at the next event, which may never come, and
-/// the daemon, kept while the stream was open, goes idle after it.
+/// the daemon, kept while the stream was open, goes idle after it. Windows' Engine API, a
+/// named pipe, comes with the parity plan's step 8.
+#[cfg(unix)]
 #[test]
 fn an_engine_stream_ends_with_its_client() {
     let home = TempDir::new("engine-gone");
@@ -662,7 +736,7 @@ fn an_engine_stream_ends_with_its_client() {
 /// the image's template already, so the run changes nothing there the daemon watches.
 #[test]
 fn a_daemon_idles_from_its_last_runs_end() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -785,7 +859,9 @@ fn timing_reaches_the_client() {
 /// applies: in the background, the run stops for input as any reader does. The test
 /// binary runs itself as the shell: it leads a session on a new pseudo-terminal, keeps
 /// the foreground, and starts the client in a group of its own, then reports how the
-/// client stopped.
+/// client stopped. Job control is Unix's: a Windows console has no background group, nor a
+/// stop for its input (SIGTTIN).
+#[cfg(unix)]
 #[test]
 fn a_background_run_stops_to_read_its_terminal() {
     if let Some(args) = std::env::var_os("SHARDS_TEST_SHELL") {
@@ -824,6 +900,7 @@ fn a_background_run_stops_to_read_its_terminal() {
 
 /// The shell of `a_background_run_stops_to_read_its_terminal`: `args` is the shards
 /// binary and the image, a line each.
+#[cfg(unix)]
 fn shell(args: &OsStr) {
     use std::os::unix::process::CommandExt;
     let args = args.to_string_lossy();
@@ -907,7 +984,11 @@ fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
 
 /// Raises this process's soft limit on open descriptors as far as it goes, up to macOS's
 /// OPEN_MAX: a test holding hundreds of connections needs more than the 256 macOS starts
-/// a process with.
+/// a process with. Windows has none to raise ([`a_daemon_raises_its_descriptor_limit`]).
+#[cfg(windows)]
+fn more_descriptors() {}
+
+#[cfg(unix)]
 fn more_descriptors() {
     let mut lim = libc::rlimit {
         rlim_cur: 0,
@@ -925,13 +1006,59 @@ fn more_descriptors() {
 /// names the streams it opened (none): its `say`, held, and its `answer`, where the daemon
 /// tells it what it tells it.
 struct Silent {
-    _say: std::fs::File,
-    answer: std::fs::File,
+    _say: shards_ipc::slots::Line,
+    answer: shards_ipc::slots::Line,
 }
 
 /// A slot of `home`'s daemon taken by hand, as a client takes one (shards_ipc::slots), its
 /// first byte written and nothing after: patient, as a client is, while none is offered;
-/// `None` where none is within `patience`.
+/// `None` where none is within `patience`. On Windows a slot is an instance of the pipe the
+/// list's file names, overlapped, as a client opens it, which says its number first.
+#[cfg(windows)]
+fn silent_slot(home: &Path, patience: Duration) -> Option<Silent> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+    let list = home.join("requests").join("free");
+    let deadline = Instant::now() + patience;
+    let pipe = loop {
+        // No list: no daemon.
+        let name = std::fs::read_to_string(&list).ok()?;
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED)
+            .open(name.trim());
+        match opened {
+            Ok(file) => break shards_ipc::Pipe::from_handle(file.into()),
+            // Every instance taken, or the list made again: patient, as a client is.
+            Err(e)
+                if e.raw_os_error() == i32::try_from(ERROR_PIPE_BUSY).ok()
+                    || e.kind() == std::io::ErrorKind::NotFound =>
+            {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => panic!("{}: {e}", name.trim()),
+        }
+    };
+    let mut record = [0u8; 16];
+    (&pipe).read_exact(&mut record).ok()?;
+    std::str::from_utf8(&record)
+        .unwrap()
+        .trim_end()
+        .parse::<u64>()
+        .unwrap();
+    (&pipe).write_all(&[0]).unwrap();
+    Some(Silent {
+        _say: pipe.try_clone().unwrap(),
+        answer: pipe,
+    })
+}
+
+#[cfg(unix)]
 fn silent_slot(home: &Path, patience: Duration) -> Option<Silent> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let dir = home.join("requests");
@@ -968,7 +1095,65 @@ fn silent_slot(home: &Path, patience: Duration) -> Option<Silent> {
     Some(Silent { _say: say, answer })
 }
 
+/// How many bytes wait in the pipe `out` reads: FIONREAD on Unix, PeekNamedPipe on Windows.
+fn waiting_in(out: &std::process::ChildStdout) -> usize {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let mut waiting: libc::c_int = 0;
+        // SAFETY: FIONREAD of the pipe's end this test holds, into an int on this stack.
+        let asked = unsafe { libc::ioctl(out.as_raw_fd(), libc::FIONREAD, &mut waiting) };
+        assert_eq!(asked, 0);
+        usize::try_from(waiting).unwrap()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let mut waiting = 0u32;
+        // SAFETY: a peek of no bytes at the pipe's end this test holds, its count on this stack.
+        let asked = unsafe {
+            windows_sys::Win32::System::Pipes::PeekNamedPipe(
+                out.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &raw mut waiting,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(asked, 0, "{}", std::io::Error::last_os_error());
+        usize::try_from(waiting).unwrap()
+    }
+}
+
+/// The CPU time process `pid` has used, on Windows: its kernel and user times
+/// (GetProcessTimes), in 100 ns.
+#[cfg(windows)]
+fn cpu_time(pid: i32) -> Duration {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    let (mut made, mut ended, mut kernel, mut user) = Default::default();
+    // SAFETY: a process's handle opened, read and closed here; four FILETIMEs on this stack.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, u32::try_from(pid).unwrap());
+        assert!(!process.is_null(), "process {pid} could not be opened");
+        let read = GetProcessTimes(process, &mut made, &mut ended, &mut kernel, &mut user);
+        CloseHandle(process);
+        assert_ne!(
+            read,
+            0,
+            "process {pid}'s times: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+}
+
 /// The CPU time process `pid` has used: from /proc on Linux, from `ps` elsewhere.
+#[cfg(unix)]
 fn cpu_time(pid: i32) -> Duration {
     if cfg!(target_os = "linux") {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
@@ -999,7 +1184,10 @@ fn cpu_time(pid: i32) -> Duration {
 }
 
 /// A daemon raises its soft limit on open descriptors to its hard limit, as Go's runtime
-/// raises its own: macOS starts processes with 256 (audit A07). No VM needed.
+/// raises its own: macOS starts processes with 256 (audit A07). No VM needed. A limit on a
+/// process's descriptors is Unix's (RLIMIT_NOFILE): Windows' quota of handles, 2^24 a
+/// process (Microsoft, "Kernel Objects"), is none a process raises or a shell lowers.
+#[cfg(unix)]
 #[test]
 fn a_daemon_raises_its_descriptor_limit() {
     let mut lim = libc::rlimit {
@@ -1071,6 +1259,24 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
 fn a_request_past_a_sockets_buffer_is_served() {
     let home = TempDir::new("daemon-large");
     let env = [("SHARDS_HOME", home.as_os_str())];
+    // Windows takes a command line of 32,767 characters (CreateProcessW), and a slot's pipe
+    // takes 1 MiB, as much as a message holds (ipc pipe.rs `BUFFER`, `MAX_PAYLOAD`): there
+    // its request is nearly the most a message holds, ten labels of 100 KB from a file.
+    if cfg!(windows) {
+        let file = home.join("labels");
+        let labels: String = (1..=10)
+            .map(|n| format!("big{n}={}\n", "x".repeat(100_000)))
+            .collect();
+        std::fs::write(&file, labels).unwrap();
+        let file = file.to_string_lossy().into_owned();
+        let args = ["--pull", "never", "--label-file", file.as_str(), "no/such:image"];
+        let made = run_shards_env(&["create"], &args, &env, TIMEOUT);
+        assert_ne!(made.status, Some(0), "{made}");
+        assert!(made.stderr.contains("No such image"), "{made}");
+        let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+        assert_eq!(stopped.status, Some(0), "{stopped}");
+        return;
+    }
     let labels: Vec<String> = (1..=3)
         .map(|n| format!("label=big{n}={}", "x".repeat(100_000)))
         .collect();
@@ -1231,10 +1437,11 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 /// a name nothing has follows, its error a message of 120 KiB, more than the slot's FIFO
 /// takes (8 KiB on macOS, 64 KiB on Linux, PM M261), whose write waits; the other's answer
 /// ends there, all written. Before, the daemon waited for both for ever, its slots counted
-/// until each had passed all on and its client had ended. No VM needed.
+/// until each had passed all on and its client had ended. No VM needed. On Windows a slot's
+/// pipe takes 1 MiB, as much as a message holds (ipc pipe.rs `BUFFER`, `MAX_PAYLOAD`): each
+/// answer is all written there, and neither client holds up the stop.
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
-    use std::os::fd::AsRawFd;
     let home = TempDir::new("daemon-unread");
     start_daemon(&home, None);
     let env = [
@@ -1266,11 +1473,7 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     for out in [&cut.1, &whole.1] {
         let deadline = Instant::now() + TIMEOUT;
         loop {
-            let mut waiting: libc::c_int = 0;
-            // SAFETY: FIONREAD of the pipe's end this test holds, into an int on this stack.
-            let asked = unsafe { libc::ioctl(out.as_raw_fd(), libc::FIONREAD, &mut waiting) };
-            assert_eq!(asked, 0);
-            if waiting > 0 {
+            if waiting_in(out) > 0 {
                 break;
             }
             assert!(Instant::now() < deadline, "a client showed nothing");
@@ -1383,7 +1586,7 @@ fn an_idle_daemon_wakes_for_nothing() {
 /// out no other, however few the daemon serves at once: here one (review 7.9).
 #[test]
 fn waiters_shut_out_no_client() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -1434,11 +1637,14 @@ fn waiters_shut_out_no_client() {
     assert_eq!(after.status, Some(0), "{}", after.stderr);
 }
 
+// A daemon is run out of descriptors by its limit, which Windows has none of to lower
+// ([`a_daemon_raises_its_descriptor_limit`]).
 /// A daemon out of descriptors makes no more slots and waits for room, rather than spin,
 /// its clients waiting on their list, and serves again once clients leave (audit A07). Its
 /// limit here is above what it holds idle, its four slots offered, which take 40
 /// descriptors of their FIFOs' ends and stop pipes (shards_ipc::slots): each client that
 /// begins its request then holds two more of it, its slot replaced. No VM needed.
+#[cfg(unix)]
 #[test]
 fn a_daemon_out_of_descriptors_waits_for_room() {
     more_descriptors();
@@ -1612,7 +1818,9 @@ fn home_with(name: &str) -> TempDir {
 /// it, as its user may, or its manager does of its own accord (systemd-oomd's
 /// `ManagedOOMMemoryPressure=kill`), ends the spawner the daemon placed there and the warm
 /// microVM its pool keeps there for the slice's next run; the next runs under it start all
-/// the same, and the pool is warm there again.
+/// the same, and the pool is warm there again. Linux's: `--cgroup-parent` on Windows, a
+/// job object, comes with the parity plan's step 12.
+#[cfg(unix)]
 #[test]
 fn runs_under_a_slice_start_after_it_was_stopped() {
     if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_snapshot() {
@@ -1713,6 +1921,8 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
 /// file pages: 400 to 600 s a read on CI's AMD runners, 3 to 5 s with none (PM M308, M309).
 /// A budget set as a run goes holds it too; and one short of what a run alone in the
 /// slice holds holds it within the least room a run goes on in, which reads as fast.
+// Linux's: FUSE's shares and budgets on Windows come with the parity plan's steps 6 and 7.
+#[cfg(unix)]
 #[test]
 fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one() {
     if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_snapshot() {
@@ -2094,6 +2304,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
 /// `cgroup` and the processes in it are doing ([`slice_state`]): a read held short takes
 /// seconds, and one that stalls (40079524601's (d): 600 s, its guest answering nothing)
 /// leaves in CI's log where its time went.
+#[cfg(unix)]
 fn watching<T>(cgroup: &Path, what: &str, f: impl FnOnce() -> T) -> T {
     /// Set as `f` returns or unwinds, which ends the watch.
     struct Done<'a>(&'a AtomicBool);
@@ -2127,6 +2338,7 @@ fn watching<T>(cgroup: &Path, what: &str, f: impl FnOnce() -> T) -> T {
 
 /// The slice's memory, its events and pressure, and for each process in its tree its
 /// memory and each thread's state and wait channel (/proc/PID/task/TID/wchan).
+#[cfg(unix)]
 fn slice_state(cgroup: &Path) -> String {
     let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
     let stat = read(&cgroup.join("memory.stat"));
@@ -2677,7 +2889,7 @@ fn what_a_moved_tag_named_is_collected() {
 /// daemon and VM going with no container left to reach them by.
 #[test]
 fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -2777,25 +2989,30 @@ fn a_restored_microvm_ends_with_its_home() {
 /// restored microVM of a failed test's for a day and a half.
 #[test]
 fn a_killed_daemons_runs_end_with_it() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
     let home = home("daemon-killed-runs", &image);
     let env = [("SHARDS_HOME", home.as_os_str())];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    for name in ["plain", "back"] {
+    // The restored run where this host takes snapshots: on Windows with the parity plan's
+    // step 3.
+    let snapshots = shards_vmm::vm::SNAPSHOTS;
+    let names: &[&str] = if snapshots { &["plain", "back"] } else { &["plain"] };
+    for name in names {
         let up = shards(&[
             "run", "-d", "--init", "--name", name, "--pull", "never", &image, "sleep",
         ]);
         assert_eq!(up.status, Some(0), "{}", up.stderr);
     }
-    assert_eq!(shards(&["save", "vm", "back", "snap"]).status, Some(0));
-    assert_eq!(shards(&["restore", "vm", "back"]).status, Some(0));
+    if snapshots {
+        assert_eq!(shards(&["save", "vm", "back", "snap"]).status, Some(0));
+        assert_eq!(shards(&["restore", "vm", "back"]).status, Some(0));
+    }
     let named = home.to_string_lossy().into_owned();
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    // SAFETY: kill(2) of this test's daemon.
-    unsafe { libc::kill(daemon, libc::SIGKILL) };
+    kill_now(daemon);
     // Within five seconds, and those that outlive it named, for a failure to say which.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -2897,7 +3114,7 @@ fn a_home_named_relatively_is_one_home() {
 /// A12: before, each looked for output 50 times a second).
 #[test]
 fn idle_followers_cost_nothing_and_end_with_their_container() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();

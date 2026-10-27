@@ -2,10 +2,8 @@
 //! (a loopback one here, which containerd's rules reach over plain HTTP), builds its root
 //! filesystem, boots a real VM into it, and runs the image's command as `docker run`
 //! would, through the daemon each test's first run starts. The image's program is the
-//! test guest (crates/testguest/src/workload.rs). Runs need vsock, which shards has on
-//! Unix hosts.
+//! test guest (crates/testguest/src/workload.rs).
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -626,16 +624,19 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
     // 132 for SIGILL: the emulator sends itself the signal to die by, which a namespace's
     // PID 1 is never sent, so the command runs under shards' reaper (PM M251), where as PID
     // 1 its run never ended.
-    let crashing = TempDir::new("emulated-crash");
-    let crash = crashing.join("crash");
-    std::fs::write(&crash, common::crashing_program(other)).unwrap();
+    // Bound from a host's directory, which Windows shares with the platform parity plan's
+    // step 6.
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
+        let crashing = TempDir::new("emulated-crash");
+        let crash = crashing.join("crash");
+        std::fs::write(&crash, common::crashing_program(other)).unwrap();
         std::fs::set_permissions(&crash, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bound = format!("{}:/t:ro", crashing.display());
+        let crashed = run(&["--rm", "-v", &bound, lone, "/t/crash"]);
+        assert_eq!(crashed.status, Some(132), "{}", shown(&crashed));
     }
-    let bound = format!("{}:/t:ro", crashing.display());
-    let crashed = run(&["--rm", "-v", &bound, lone, "/t/crash"]);
-    assert_eq!(crashed.status, Some(132), "{}", shown(&crashed));
     // A lone manifest is pulled whatever its platform, and run for its own alone.
     let asked = format!("linux/{ours}");
     let strict = run(&["--rm", "--platform", &asked, lone, "true"]);
@@ -911,6 +912,7 @@ fn an_agentfiles_image_restores_its_template_too() {
 
 /// The guest `kernel()` and `guest_init()` recorded in `home`, as users run, so that runs
 /// save and restore templates.
+#[cfg(unix)]
 fn record_guest(env: &[(&str, &std::ffi::OsStr)]) {
     let args = [
         "use".as_ref(),
@@ -924,6 +926,7 @@ fn record_guest(env: &[(&str, &std::ffi::OsStr)]) {
 }
 
 /// The one template in `home`.
+#[cfg(unix)]
 fn the_template(home: &std::path::Path) -> std::path::PathBuf {
     let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(home.join("templates"))
         .unwrap()
@@ -939,7 +942,9 @@ fn the_template(home: &std::path::Path) -> std::path::PathBuf {
 /// the daemon's record to a file of the user's (a VM process wrapped by
 /// `SHARDS_VM_BINARY`, which plants it and becomes this build's). The daemon writes its
 /// record beside the template, through nothing the VM left: the file is untouched, and the
-/// template still restores.
+/// template still restores. Unix's: its wrapper is a script that execs the VM process, and
+/// Windows' templates come with the platform parity plan's step 4.
+#[cfg(unix)]
 #[test]
 fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
     if cannot_run_vms() || !shards_vmm::vm::SNAPSHOTS {
@@ -992,6 +997,8 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
 /// restore to meet (PM M165): its memory a link to a FIFO outside the template, and its
 /// working set a FIFO. A restore opens neither, nor waits on either: no reader ever holds
 /// either FIFO while the next run happens, which boots instead, the template refused.
+/// Unix's: FIFOs are, and Windows' templates come with the platform parity plan's step 4.
+#[cfg(unix)]
 #[test]
 fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
     use std::os::unix::fs::OpenOptionsExt as _;
