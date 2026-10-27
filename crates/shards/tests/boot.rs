@@ -280,6 +280,8 @@ fn boots_the_hosts_maximum_vcpu_count() {
         "console=ttyS0 panic=-1".as_ref(),
     ]);
     let up = max.min(KERNEL_NR_CPUS);
+    // PROBE (scratch): the count asked for.
+    eprintln!("PROBE max_vcpus {max}, the kernel's NR_CPUS {KERNEL_NR_CPUS}");
     let plural = if up == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
     // A count other than the one asked for fails at once, with what the guest said.

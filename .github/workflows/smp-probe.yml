@@ -13,7 +13,7 @@ env:
   TOOLCHAIN: 1.98.1
 jobs:
   probe:
-    name: windows-2022 job messages
+    name: windows-2022 alone and together
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -35,12 +35,26 @@ jobs:
           echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
       - name: Build
         shell: bash
-        run: cargo test --locked -p shards --profile test-release --test boot --no-run
-      - name: Two vCPUs, confined, the job's limit 1 then 2
+        run: cargo test --locked -p shards --profile test-release --test boot --test daemon --no-run
+      - name: The runner
+        shell: bash
+        run: |
+          echo "NUMBER_OF_PROCESSORS=$NUMBER_OF_PROCESSORS"
+          powershell -NoProfile -Command "Get-CimInstance Win32_ComputerSystem | Select-Object NumberOfProcessors,NumberOfLogicalProcessors,TotalPhysicalMemory | Format-List; Get-CimInstance Win32_OperatingSystem | Select-Object Caption,BuildNumber | Format-List" || true
+      - name: Each alone, then together, then one at a time
         shell: bash
         run: |
           export SHARDS_REQUIRE_VMS=1
-          for limit in 1 2; do
-            echo "=== limit $limit"
-            SHARDS_PROBE_JOB_LIMIT=$limit cargo test --locked -p shards --profile test-release --test boot -- --exact brings_up_every_vcpu --nocapture 2>&1 | grep -a -E "PROBE|JOBMSG|test |Brought up|Booting SMP|did not exit" | cut -c1-600 | head -30 || true
-          done
+          run() {
+            echo "=== $1"
+            shift
+            start=$(date +%s)
+            cargo test --locked -p shards --profile test-release "$@" 2>&1 | grep -a -E "PROBE max|^test |test result|Brought up|Booting SMP|smpboot|did not exit|panicked|137|status" | grep -a -v JOBMSG | cut -c1-400 | head -40 || true
+            echo "--- $(( $(date +%s) - start )) s"
+          }
+          for i in 1 2 3; do run "maximum alone $i" --test boot -- --exact boots_the_hosts_maximum_vcpu_count --nocapture; done
+          for i in 1 2; do run "every vcpu alone $i" --test boot -- --exact brings_up_every_vcpu; done
+          for i in 1 2 3; do run "the pair together $i" --test boot -- --exact brings_up_every_vcpu boots_the_hosts_maximum_vcpu_count; done
+          run "the pair one at a time" --test boot -- --exact brings_up_every_vcpu boots_the_hosts_maximum_vcpu_count --test-threads=1
+          for i in 1 2; do run "a daemon test alone $i" --test daemon -- --exact errors_reach_the_client; done
+          run "two daemon tests together" --test daemon -- --exact errors_reach_the_client idle_daemons_exit
