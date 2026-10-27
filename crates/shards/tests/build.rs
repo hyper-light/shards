@@ -590,9 +590,10 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
 /// can swap nothing (`MemorySwapMax=0`), reads a 512 MiB file of a cache mount into its
 /// builder's page cache; then the scope's `MemoryHigh` is set 256 MiB under what it holds,
 /// its memory stalls (PSI) as its host reclaims what it cannot swap, and the build's watcher,
-/// which watches its own cgroup's pressure, asks its builder to give back. Its log says what
-/// it gave back and asked to unplug, and it succeeds, its layers those of the same build
-/// held to nothing. Linux alone, with a user's manager, as the budget test of runs.
+/// which watches its own cgroup's pressure, asks its builder to give back and tells it the
+/// room the budget leaves (`ROOM`). Its log says what it gave back and asked to unplug, and
+/// what its guest held the build within, and it succeeds, its layers those of the same
+/// build held to nothing. Linux alone, with a user's manager, as the budget test of runs.
 #[test]
 fn a_build_held_short_of_memory_has_its_builder_give_back() {
     use std::io::BufRead as _;
@@ -734,6 +735,10 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
         .unwrap_or(0);
     assert!(mib > 0, "{gave}");
     assert!(gave.contains("asked to unplug "), "{gave}");
+    assert!(
+        gave.contains("past what they use, by their budget's room"),
+        "its guest held the build within no room: {gave}"
+    );
     let free_out = TempDir::new("build-psi-free");
     let free = build(false, &free_out).wait_with_output().unwrap();
     assert!(free.status.success(), "{}", String::from_utf8_lossy(&free.stderr));

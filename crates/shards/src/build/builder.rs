@@ -123,15 +123,30 @@ pub struct Builder {
 }
 
 /// A builder's give-back connection, as its build's memory pressure watcher asks through it
-/// (build::GIVE_PORT, D188): one ask out at a time, its answer read whole however it comes.
+/// (build::GIVE_PORT, D188): one ask out at a time, a give-back or its budget's room, its
+/// answer read whole however it comes.
 #[cfg(unix)]
 #[derive(Debug)]
 pub struct Giver {
     conn: UnixStream,
-    /// An ask is out that its answer has not yet come for.
-    asked: bool,
+    /// The kind of the ask that is out, whose answer has not yet come: the next answer is
+    /// its own, as the builder answers its asks in turn.
+    out: Option<u8>,
     /// What has come of an answer not yet whole.
     held: Vec<u8>,
+}
+
+/// What a builder answered an ask with (build::GIVE_PORT).
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    /// What its files freed, and what it asked to unplug (`GAVE`).
+    Gave(u64, u64),
+    /// What its build is held within past what it uses, none with no budget (`HELD`).
+    Held(Option<u64>),
+    /// Why it gave nothing back, or holds its build within nothing, in its own words: an
+    /// answer all the same, its builder asked again at the next word.
+    Refused(String),
 }
 
 #[cfg(unix)]
@@ -140,32 +155,63 @@ impl Giver {
     pub(super) fn new(conn: UnixStream) -> Giver {
         Giver {
             conn,
-            asked: false,
+            out: None,
             held: Vec::new(),
         }
     }
 
     /// Asks the builder to give back what it holds cold of its files and what it holds
-    /// plugged past what it keeps, unless an ask before is still unanswered: then it is
-    /// asked nothing more until that answer has come ([`answer`](Self::answer)).
-    pub fn ask(&mut self) -> Result<(), String> {
-        if self.asked {
-            return Ok(());
-        }
-        let mut w = &self.conn;
-        io::Write::write_all(&mut w, &run::header(build::kind::GIVE_BACK, 0))
-            .map_err(|e| format!("asking the builder to give back: {e}"))?;
-        self.asked = true;
-        Ok(())
+    /// plugged past what it keeps, unless an ask is out: then it is asked nothing until that
+    /// answer has come ([`answer`](Self::answer)). Whether this ask went.
+    pub fn ask(&mut self) -> Result<bool, String> {
+        self.send(build::kind::GIVE_BACK, b"")
     }
 
-    /// The answer to the ask that is out, if all of it comes by `until`: the bytes its
-    /// files freed and those it asked to unplug; none while it has not come, or with no
-    /// ask out. Err once its connection has ended, or for an answer of why it gave nothing.
-    pub fn answer(&mut self, until: Instant) -> Result<Option<(u64, u64)>, String> {
-        if !self.asked {
-            return Ok(None);
+    /// Tells the builder the room its build's budget leaves it, `room` bytes past what it
+    /// uses, none for no budget, which it holds its build within; unless an ask is out, as
+    /// [`ask`](Self::ask). Whether this went.
+    pub fn tell(&mut self, room: Option<i64>) -> Result<bool, String> {
+        let payload = room.map(|r| r.to_string()).unwrap_or_default();
+        self.send(build::kind::ROOM, payload.as_bytes())
+    }
+
+    /// Tells the builder its budget's room before anything is asked of it, so that its
+    /// guest holds the build within it from its first step, waiting for nothing: its answer
+    /// is passed over, as one of another kind than the ask out is, the room told again at
+    /// each word.
+    pub fn tell_first(&mut self, room: i64) -> Result<(), String> {
+        self.write(build::kind::ROOM, room.to_string().as_bytes())
+    }
+
+    fn send(&mut self, kind: u8, payload: &[u8]) -> Result<bool, String> {
+        if self.out.is_some() {
+            return Ok(false);
         }
+        self.write(kind, payload)?;
+        self.out = Some(kind);
+        Ok(true)
+    }
+
+    fn write(&self, kind: u8, payload: &[u8]) -> Result<(), String> {
+        let len = u32::try_from(payload.len()).map_err(|_| "an ask too long".to_string())?;
+        let mut frame = run::header(kind, len).to_vec();
+        frame.extend_from_slice(payload);
+        let mut w = &self.conn;
+        io::Write::write_all(&mut w, &frame).map_err(|e| format!("asking the builder: {e}"))
+    }
+
+    /// The answer to the ask that is out, if all of it comes by `until`; none while it has
+    /// not come, or with no ask out. Err once its connection has ended, or for a frame that
+    /// is none.
+    pub fn answer(&mut self, until: Instant) -> Result<Option<Answer>, String> {
+        let Some(out) = self.out else {
+            return Ok(None);
+        };
+        let answers = if out == build::kind::ROOM {
+            build::kind::HELD
+        } else {
+            build::kind::GAVE
+        };
         loop {
             if let Some(header) = self
                 .held
@@ -180,22 +226,18 @@ impl Giver {
                 if let Some(payload) = self.held.get(run::HEADER..end) {
                     let said = String::from_utf8_lossy(payload).into_owned();
                     self.held.drain(..end);
-                    if which != build::kind::GAVE {
+                    if which != answers {
                         continue;
                     }
-                    self.asked = false;
-                    let mut amounts = said.split_whitespace().map(str::parse::<u64>);
-                    return match (amounts.next(), amounts.next(), amounts.next()) {
-                        (Some(Ok(freed)), Some(Ok(unplugging)), None) => Ok(Some((freed, unplugging))),
-                        _ => Err(format!("the builder gave nothing back: {said}")),
-                    };
+                    self.out = None;
+                    return Ok(Some(parse_answer(which, &said)));
                 }
             }
             // A read that waits for nothing where the time is spent: what has come alone.
             let left = until.saturating_duration_since(Instant::now());
             self.conn
                 .set_read_timeout(Some(left.max(Duration::from_millis(1))))
-                .map_err(|e| format!("hearing the builder's give-back: {e}"))?;
+                .map_err(|e| format!("hearing the builder: {e}"))?;
             let mut chunk = [0u8; 256];
             match io::Read::read(&mut super::reading(&self.conn), &mut chunk) {
                 Ok(0) => return Err("the builder's give-back connection ended".into()),
@@ -203,9 +245,22 @@ impl Giver {
                 Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
                     return Ok(None);
                 }
-                Err(e) => return Err(format!("hearing the builder's give-back: {e}")),
+                Err(e) => return Err(format!("hearing the builder: {e}")),
             }
         }
+    }
+}
+
+/// A builder's answer of kind `which` saying `said`: `GAVE`'s bytes freed and asked to
+/// unplug, `HELD`'s bytes held within or nothing; else its words of why not.
+#[cfg(unix)]
+fn parse_answer(which: u8, said: &str) -> Answer {
+    let mut amounts = said.split_whitespace().map(str::parse::<u64>);
+    match (which, amounts.next(), amounts.next(), amounts.next()) {
+        (build::kind::GAVE, Some(Ok(freed)), Some(Ok(unplugging)), None) => Answer::Gave(freed, unplugging),
+        (build::kind::HELD, None, ..) => Answer::Held(None),
+        (build::kind::HELD, Some(Ok(held)), None, _) => Answer::Held(Some(held)),
+        _ => Answer::Refused(said.to_string()),
     }
 }
 
@@ -1420,7 +1475,8 @@ mod tests {
     /// A giver asks once and hears its answer whole however it comes: an answer not come
     /// by its time is none, and while it is out no other ask is sent; the late answer is
     /// heard next, past any frame of another kind before it, and the ask after that is sent
-    /// anew. An answer of why nothing was given back is an error.
+    /// anew. An answer of why nothing was given back is heard as such, its builder asked
+    /// again after; a connection ended is an error.
     #[cfg(unix)]
     #[test]
     fn a_giver_asks_once_and_hears_its_answer_whole() {
@@ -1433,10 +1489,10 @@ mod tests {
             None,
             "nothing asked, nothing heard"
         );
-        giver.ask().unwrap();
+        assert!(giver.ask().unwrap());
         assert_eq!(giver.answer(soon()).unwrap(), None);
         assert_eq!(asked(&theirs), (build::kind::GIVE_BACK, 0));
-        giver.ask().unwrap();
+        assert!(!giver.ask().unwrap(), "nothing more asked while an ask is out");
         assert_eq!(giver.answer(soon()).unwrap(), None);
         let said = b"5242880 134217728";
         let mut late = run::header(build::kind::EMULATED, 2).to_vec();
@@ -1450,7 +1506,10 @@ mod tests {
         (&theirs).write_all(head).unwrap();
         assert_eq!(giver.answer(soon()).unwrap(), None);
         (&theirs).write_all(tail).unwrap();
-        assert_eq!(giver.answer(soon()).unwrap(), Some((5 << 20, 128 << 20)));
+        assert_eq!(
+            giver.answer(soon()).unwrap(),
+            Some(Answer::Gave(5 << 20, 128 << 20))
+        );
         // Nothing more was asked while the ask was out.
         theirs.set_nonblocking(true).unwrap();
         let mut more = [0u8; 1];
@@ -1459,23 +1518,74 @@ mod tests {
             io::ErrorKind::WouldBlock
         );
         theirs.set_nonblocking(false).unwrap();
-        giver.ask().unwrap();
+        assert!(giver.ask().unwrap());
         assert_eq!(asked(&theirs), (build::kind::GIVE_BACK, 0));
         let why = b"nothing given back: no cgroup";
         (&theirs)
             .write_all(&run::header(build::kind::GAVE, u32::try_from(why.len()).unwrap()))
             .unwrap();
         (&theirs).write_all(why).unwrap();
-        let refused = giver
-            .answer(Instant::now() + Duration::from_secs(10))
-            .unwrap_err();
-        assert!(refused.contains("nothing given back: no cgroup"), "{refused}");
-        giver.ask().unwrap();
+        assert_eq!(
+            giver.answer(Instant::now() + Duration::from_secs(10)).unwrap(),
+            Some(Answer::Refused("nothing given back: no cgroup".into()))
+        );
+        assert!(giver.ask().unwrap());
         drop(theirs);
         assert!(
             giver.answer(Instant::now() + Duration::from_secs(10)).is_err(),
             "its connection ended"
         );
+    }
+
+    /// A giver tells its builder its budget's room once no ask is out, and hears what its
+    /// build is held within, none with no budget, or why not; no give-back is asked while a
+    /// room is out, and an answer of another kind before its own is passed over. A room
+    /// told first is asked nothing of: its answer passed over likewise.
+    #[cfg(unix)]
+    #[test]
+    fn a_giver_tells_its_room_and_hears_what_it_is_held_within() {
+        use std::io::Write as _;
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let mut giver = Giver::new(ours);
+        let until = || Instant::now() + Duration::from_secs(10);
+        let room = |theirs: &UnixStream| -> Vec<u8> {
+            let (kind, len) = asked(theirs);
+            assert_eq!(kind, build::kind::ROOM);
+            let mut payload = vec![0u8; len as usize];
+            (&*theirs).read_exact(&mut payload).unwrap();
+            payload
+        };
+        let answer = |theirs: &UnixStream, kind: u8, said: &[u8]| {
+            (&*theirs)
+                .write_all(&run::header(kind, u32::try_from(said.len()).unwrap()))
+                .unwrap();
+            (&*theirs).write_all(said).unwrap();
+        };
+        giver.tell_first(1 << 30).unwrap();
+        assert_eq!(room(&theirs), b"1073741824");
+        assert!(giver.ask().unwrap(), "a room told first is no ask out");
+        assert_eq!(asked(&theirs), (build::kind::GIVE_BACK, 0));
+        answer(&theirs, build::kind::HELD, b"8192");
+        answer(&theirs, build::kind::GAVE, b"3 4");
+        assert_eq!(giver.answer(until()).unwrap(), Some(Answer::Gave(3, 4)));
+        assert!(giver.tell(Some(64 << 20)).unwrap());
+        assert_eq!(room(&theirs), b"67108864");
+        assert!(!giver.ask().unwrap(), "no give-back while a room is out");
+        answer(&theirs, build::kind::GAVE, b"1 2");
+        answer(&theirs, build::kind::HELD, b"4096");
+        assert_eq!(giver.answer(until()).unwrap(), Some(Answer::Held(Some(4096))));
+        assert!(giver.tell(None).unwrap());
+        assert_eq!(room(&theirs), b"");
+        answer(&theirs, build::kind::HELD, b"");
+        assert_eq!(giver.answer(until()).unwrap(), Some(Answer::Held(None)));
+        assert!(giver.tell(Some(-1)).unwrap());
+        assert_eq!(room(&theirs), b"-1");
+        answer(&theirs, build::kind::HELD, b"not held: no memory.high");
+        assert_eq!(
+            giver.answer(until()).unwrap(),
+            Some(Answer::Refused("not held: no memory.high".into()))
+        );
+        assert!(giver.tell(None).unwrap(), "told again after a refusal");
     }
 
     /// A sweep removes the directories builds gone before left, each whose lock no one
