@@ -802,8 +802,12 @@ struct Inbox {
     /// [`Keep::restarted`].
     restarted: bool,
     /// What has come of the VM's next message: a VM that stops partway through one holds
-    /// up no reader (`take_messages`).
+    /// up no reader (`take_messages`). Its socket's messages on Unix; on Windows its
+    /// stream's, whose handles come apart from its bytes.
+    #[cfg(unix)]
     incoming: shards_ipc::Incoming,
+    #[cfg(windows)]
+    incoming: shards_ipc::Arriving,
     /// [`Keep::visit`].
     visit: bool,
     /// A joiner's exec's id in its provider's guest, from its start on (D119).
@@ -4870,7 +4874,7 @@ impl<D: Disk> Daemon<D> {
             layer,
             named,
             restarted,
-            incoming: shards_ipc::Incoming::default(),
+            incoming: Default::default(),
             visit,
             guest: None,
             host_net,

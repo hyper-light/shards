@@ -1898,8 +1898,8 @@ pub use unix::*;
 mod pipe;
 #[cfg(windows)]
 pub use pipe::{
-    Event, ExitWatch, Message, Pipe, Poller, Stream, await_any, await_streams, end, readable_raw, recv,
-    recv_by, send,
+    Arriving, Event, ExitWatch, Message, Pipe, Poller, Stream, await_any, await_streams, end, readable_raw,
+    recv, recv_by, send,
 };
 #[cfg(windows)]
 mod windows;

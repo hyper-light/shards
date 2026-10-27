@@ -878,6 +878,39 @@ impl Stream {
         Arc::as_ptr(&self.0) as usize
     }
 
+    /// A read of what has come, waiting for nothing: `WouldBlock` where nothing has, 0 once
+    /// it has ended, as a socket's read with MSG_DONTWAIT answers.
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let end = &*self.0;
+        if end.reads_shut.is_set() {
+            return Ok(0);
+        }
+        let guard = end.pipe.read().unwrap_or_else(PoisonError::into_inner);
+        let Some(handle) = &*guard else {
+            return Ok(0);
+        };
+        let handle = handle.as_raw_handle();
+        let come = match available(handle, None)? {
+            None => return Ok(0),
+            Some(0) => return Err(io::ErrorKind::WouldBlock.into()),
+            Some(n) => usize::try_from(n).unwrap_or(usize::MAX),
+        };
+        let len = buf.len().min(come);
+        // What has come is read at once: no wait.
+        match read_into(
+            handle,
+            buf.get_mut(..len).unwrap_or_default(),
+            &[&end.reads_shut],
+            None,
+        ) {
+            Called::Done(Ok(n)) => Ok(n),
+            Called::Done(Err(e)) if ended(&e) => Ok(0),
+            Called::Done(Err(e)) => Err(e),
+            Called::Cancelled => Ok(0),
+            Called::Late => Err(io::ErrorKind::WouldBlock.into()),
+        }
+    }
+
     /// A read into `buf` by `deadline`, if one is given (`TimedOut` past it), else within
     /// its read timeout (`WouldBlock` past that).
     fn read_by(&self, buf: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
@@ -1244,7 +1277,16 @@ fn recv_until(sock: &Stream, deadline: Option<Instant>) -> io::Result<Option<Mes
         return Ok(None);
     }
     fill(sock, header.get_mut(got..).unwrap_or_default(), deadline)?;
-    let [kind, l0, l1, l2, l3, count] = header;
+    let (len, values) = rest_of(sock, &header)?;
+    let mut rest = vec![0u8; len + values];
+    fill(sock, &mut rest, deadline)?;
+    message(sock, &header, rest).map(Some)
+}
+
+/// What follows a message's `header` on `sock`: its payload's bytes, and its handles'
+/// values' where its peer's spawner gives them ([`Way::Given`]).
+fn rest_of(sock: &Stream, header: &[u8; HEADER]) -> io::Result<(usize, usize)> {
+    let [_, l0, l1, l2, l3, count] = *header;
     let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
     if len > MAX_PAYLOAD {
         return Err(io::Error::new(
@@ -1259,8 +1301,21 @@ fn recv_until(sock: &Stream, deadline: Option<Instant>) -> io::Result<Option<Mes
             "more descriptors than a message may carry",
         ));
     }
-    let mut payload = vec![0u8; len];
-    fill(sock, &mut payload, deadline)?;
+    let values = if matches!(*lock(&sock.0.way), Way::Given) {
+        count * 8
+    } else {
+        0
+    };
+    Ok((len, values))
+}
+
+/// The message of `header` and `rest`, all of it come ([`rest_of`]), with its handles:
+/// from the pair's queue, or the values its spawner put in this process.
+fn message(sock: &Stream, header: &[u8; HEADER], mut rest: Vec<u8>) -> io::Result<Message> {
+    let [kind, l0, l1, l2, l3, count] = *header;
+    let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
+    let count = usize::from(count);
+    let values = rest.split_off(len.min(rest.len()));
     let way = lock(&sock.0.way);
     let fds = match &*way {
         Way::Here { pair, side } => {
@@ -1274,22 +1329,17 @@ fn recv_until(sock: &Stream, deadline: Option<Instant>) -> io::Result<Option<Mes
             }
             queued.drain(..count).collect()
         }
-        Way::Given => {
-            let mut values = vec![0u8; count * 8];
-            drop(way);
-            fill(sock, &mut values, deadline)?;
-            values
-                .as_chunks::<8>()
-                .0
-                .iter()
-                .map(|v| {
-                    let raw = u64::from_le_bytes(*v);
-                    // SAFETY: a handle this process's spawner put here for this message,
-                    // owned from here on, as Unix owns a descriptor SCM_RIGHTS brings.
-                    unsafe { OwnedHandle::from_raw_handle(raw as HANDLE) }
-                })
-                .collect()
-        }
+        Way::Given => values
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|v| {
+                let raw = u64::from_le_bytes(*v);
+                // SAFETY: a handle this process's spawner put here for this message,
+                // owned from here on, as Unix owns a descriptor SCM_RIGHTS brings.
+                unsafe { OwnedHandle::from_raw_handle(raw as HANDLE) }
+            })
+            .collect(),
         Way::Gives(_) if count == 0 => Vec::new(),
         Way::Gives(_) => {
             return Err(io::Error::new(
@@ -1298,7 +1348,57 @@ fn recv_until(sock: &Stream, deadline: Option<Instant>) -> io::Result<Option<Mes
             ));
         }
     };
-    Ok(Some(Message { kind, payload, fds }))
+    Ok(Message {
+        kind,
+        payload: rest,
+        fds,
+    })
+}
+
+/// Messages from a stream's peer, taken as each comes in whole, as Unix's `Incoming` takes
+/// a socket's: what has come of one is kept until the rest does, so that a reader never
+/// waits on a peer that stops partway through one, and reads nothing past it. Its handles
+/// come with it, as [`recv`]'s do.
+#[derive(Debug, Default)]
+pub struct Arriving {
+    header: [u8; HEADER],
+    /// Bytes of the header that have come, then of the rest.
+    have: usize,
+    /// Once the header has come, its payload and its handles' values, as long as they are.
+    rest: Option<Vec<u8>>,
+}
+
+impl Arriving {
+    /// The next message whole, from what `sock` has now: it waits for nothing.
+    pub fn take(&mut self, sock: &Stream) -> io::Result<crate::Took> {
+        loop {
+            let (buf, whole) = match &mut self.rest {
+                None => (self.header.get_mut(self.have..).unwrap_or_default(), HEADER),
+                Some(rest) => {
+                    let len = rest.len();
+                    (rest.get_mut(self.have..).unwrap_or_default(), len)
+                }
+            };
+            if self.have < whole {
+                match sock.read_now(buf) {
+                    Ok(0) if self.have == 0 && self.rest.is_none() => return Ok(crate::Took::Ended),
+                    Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                    Ok(n) => self.have += n,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(crate::Took::Partial),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+                continue;
+            }
+            self.have = 0;
+            let Some(rest) = self.rest.take() else {
+                let (len, values) = rest_of(sock, &self.header)?;
+                self.rest = Some(vec![0u8; len + values]);
+                continue;
+            };
+            return message(sock, &self.header, rest).map(crate::Took::Message);
+        }
+    }
 }
 
 /// Reads exactly `buf.len()` more bytes of a message.
@@ -1587,6 +1687,33 @@ mod tests {
             assert_eq!(code(&e), ERROR_FILE_NOT_FOUND);
             assert!(took < Duration::from_secs(1), "a wait ended {took:?} in");
         });
+    }
+
+    /// Messages are taken as each comes whole, waiting for nothing, as Unix's `Incoming`
+    /// takes a socket's: none come is partial; one with handles comes with them; one cut
+    /// short after its header is kept until its rest comes; and the peer's end is the end.
+    #[test]
+    fn messages_are_taken_as_each_comes_whole() {
+        let (a, b) = Stream::pair().unwrap();
+        let mut arriving = Arriving::default();
+        assert!(matches!(arriving.take(&b).unwrap(), crate::Took::Partial));
+        let event = Event::new().unwrap();
+        send(&a, 7, b"hello", &[event.as_handle()]).unwrap();
+        let crate::Took::Message(m) = arriving.take(&b).unwrap() else {
+            panic!("no message")
+        };
+        assert_eq!((m.kind, m.payload.as_slice(), m.fds.len()), (7, &b"hello"[..], 1));
+        (&a).write_all(&[9, 0, 0, 0, 2, 0]).unwrap();
+        assert!(matches!(arriving.take(&b).unwrap(), crate::Took::Partial));
+        (&a).write_all(b"ok").unwrap();
+        let crate::Took::Message(m) = arriving.take(&b).unwrap() else {
+            panic!("no message")
+        };
+        assert_eq!((m.kind, m.payload.as_slice()), (9, &b"ok"[..]));
+        assert!(matches!(arriving.take(&b).unwrap(), crate::Took::Partial));
+        end(&a);
+        drop(a);
+        assert!(matches!(arriving.take(&b).unwrap(), crate::Took::Ended));
     }
 
     /// An event set wakes a thread waiting on another handle to it; reset, it is not set.
