@@ -1172,6 +1172,20 @@ mod tests {
         });
     }
 
+    /// A home whose slot waits for its client is served: its list's pipe has an instance no
+    /// client opened, which WaitNamedPipe answers at once, and which looking leaves for a
+    /// client. A serving daemon keeps slots offered on each list, so this is how it is
+    /// mostly found; its lists' own instances alone, every instance taken, are the rest.
+    #[test]
+    fn a_home_whose_slot_waits_for_its_client_is_served() {
+        let home = home("slot-served-free");
+        let mut requests = Requests::open(&home).unwrap();
+        let slot = requests.make(false).unwrap();
+        requests.offer(slot.number(), false).unwrap();
+        assert!(served(&home), "a slot waits for its client, yet not served");
+        assert_eq!(requests.waiting(false).unwrap(), 1, "looking took the slot");
+    }
+
     /// A daemon process killed, its lists' names left, is heard of by a client waiting on
     /// its list at once: its instances close with it, and a wait ends as the last does (PM
     /// M348). fifo.rs's macOS twin: a list whose daemon is gone, its PID no help.

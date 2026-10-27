@@ -357,6 +357,25 @@ mod tests {
         }
     }
 
+    /// What a daemon before left in its slots' directory goes as the next opens it: a killed
+    /// daemon's names, a list it had yet to put in its place among them, which nothing after
+    /// would take (Unix makes its lists anew under their names, which none may hold).
+    #[test]
+    fn what_a_daemon_before_left_goes_as_the_next_opens_its_slots() {
+        let home = home("slot-left");
+        let dir = home.join(DIR);
+        std::fs::create_dir(&dir).unwrap();
+        let left = ["free.new", "7", "7.out"].map(|name| dir.join(name));
+        for path in &left {
+            std::fs::write(path, "left").unwrap();
+        }
+        let requests = Requests::open(&home).unwrap();
+        for path in &left {
+            assert!(!path.exists(), "{} kept", path.display());
+        }
+        assert!(requests.listed() && served(&home));
+    }
+
     /// A client waits no longer for its answer than it asks, and takes one that comes in
     /// time.
     #[test]
