@@ -588,10 +588,10 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
 /// A build held short of memory has its builder give back what it holds cold at its host's
 /// word (D188 for D133's builders): `shards build` in a scope of the user's manager, which
 /// can swap nothing (`MemorySwapMax=0`), reads a 512 MiB file of a cache mount into its
-/// builder's page cache; then the scope's `MemoryHigh` is set 256 MiB under what it holds,
-/// its memory stalls (PSI) as its host reclaims what it cannot swap, and the build's watcher,
-/// which watches its own cgroup's pressure, asks its builder to give back and tells it the
-/// room the budget leaves (`ROOM`). Its log says what it gave back and asked to unplug, and
+/// builder's page cache, the scope's `MemoryHigh` set as the read begins to what it holds
+/// then and half the file; past that its memory stalls (PSI) as its host reclaims what it
+/// cannot swap, and the build's watcher, which watches its own cgroup's pressure, asks its
+/// builder to give back and tells it the room the budget leaves (`ROOM`). Its log says what it gave back and asked to unplug, and
 /// what its guest held the build within, as the answers came, and it succeeds, its layers
 /// those of the same build held to nothing. Linux alone, with a user's manager, as the
 /// budget test of runs.
@@ -689,7 +689,7 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
     let mut set = false;
     for line in stderr.lines() {
         let line = line.unwrap();
-        if !set && line.contains(&format!("read /c/big {}", MIB << 20)) {
+        if !set && line.contains("reading /c/big") {
             // The scope's process is the build's (systemd-run --scope execs it): its cgroup.
             let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", held.id())).unwrap();
             let dir = cgroup
@@ -702,7 +702,13 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
                 .trim()
                 .parse()
                 .unwrap();
-            let high = current.saturating_sub(256 << 20);
+            // Held, as its step begins to read, to what it holds then and half the file, the
+            // drop its reader waits for: past that, what its builders hold of the file is
+            // theirs to give back. Set 256 MiB under what it held as the read ended, it was
+            // held to nothing where its builders had given the file back already, with the
+            // host short of memory as the other builds ran (`MemoryHigh=0`, which systemd
+            // refuses: CI 40580565374).
+            let high = current + (MIB << 20) / 2;
             let budget = std::process::Command::new("systemctl")
                 .args(["--user", "set-property", "--runtime", &scope])
                 .arg(format!("MemoryHigh={high}"))
@@ -719,7 +725,7 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
     }
     let status = held.wait().unwrap();
     let shown = lines.join("\n");
-    assert!(set, "its step never read the file:\n{shown}");
+    assert!(set, "its step never began to read the file:\n{shown}");
     assert!(status.success(), "{shown}");
     // What each line said they gave back: a pass's, and what came past its patience, said as
     // it came (a guest its host throttles answers late, PM M350).

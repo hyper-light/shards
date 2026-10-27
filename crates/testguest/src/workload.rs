@@ -188,10 +188,11 @@ pub fn main() -> ! {
         // Reads each file named through, a megabyte at a time, and says how much: what it
         // read stays in the page cache, the reader's own memory one megabyte.
         "read" => read_through(args.get(1..).unwrap_or_default()),
-        // Reads a file through, as `read` does, then waits up to N seconds for the guest's
-        // page cache to hold at least half of it less, as its builder gives back what it
-        // holds cold (D188), and says whether it did; then reads it again and writes what it
-        // read, a checksum of its bytes, to OUT: a build's result the same, given back or not.
+        // Says it begins, reads a file through, as `read` does, then waits up to N seconds
+        // for the guest's page cache to hold at least half of it less, as its builder gives
+        // back what it holds cold (D188), and says whether it did; then reads it again and
+        // writes what it read, a checksum of its bytes, to OUT: a build's result the same,
+        // given back or not.
         "read-dropped" => read_dropped(arg(1), arg(2).parse().unwrap_or(0), arg(3)),
         // Touches N MiB, a page at a time, then says so: what a memory limit stops.
         "alloc" => {
@@ -3278,8 +3279,9 @@ fn checksum(path: &str) -> io::Result<(u64, u64)> {
     }
 }
 
-/// `read-dropped PATH SECONDS OUT`.
+/// `read-dropped PATH SECONDS OUT`: says `reading PATH` as it begins.
 fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
+    let _ = writeln!(io::stdout(), "reading {path}");
     let (total, first) = match checksum(path) {
         Ok(read) => read,
         Err(e) => {
