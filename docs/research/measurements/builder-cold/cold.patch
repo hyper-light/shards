@@ -1,8 +1,8 @@
 diff --git a/crates/init/src/build.rs b/crates/init/src/build.rs
 --- a/crates/init/src/build.rs
 +++ b/crates/init/src/build.rs
-@@ -228,6 +228,14 @@
-         crate::net::configure(addr, prefix, gateway)?;
+@@ -238,6 +238,14 @@
+         crate::plug::answer_give_backs(give)?;
      }
      let conn = dial(build::PORT, true)?;
 +    // builder-cold: the build's memory each second, on the console, each line one write;
@@ -16,7 +16,7 @@ diff --git a/crates/init/src/build.rs b/crates/init/src/build.rs
      let mut b = Builder {
          conn,
          bases: HashMap::new(),
-@@ -256,6 +264,7 @@
+@@ -266,6 +274,7 @@
              kind::STEP => {
                  let step = Step::decode(&payload).ok_or_else(|| err("a malformed step"))?;
                  b.step(&step)?;

@@ -188,6 +188,11 @@ pub fn main() -> ! {
         // Reads each file named through, a megabyte at a time, and says how much: what it
         // read stays in the page cache, the reader's own memory one megabyte.
         "read" => read_through(args.get(1..).unwrap_or_default()),
+        // Reads a file through, as `read` does, then waits up to N seconds for the guest's
+        // page cache to hold at least half of it less, as its builder gives back what it
+        // holds cold (D188), and says whether it did; then reads it again and writes what it
+        // read, a checksum of its bytes, to OUT: a build's result the same, given back or not.
+        "read-dropped" => read_dropped(arg(1), arg(2).parse().unwrap_or(0), arg(3)),
         // Touches N MiB, a page at a time, then says so: what a memory limit stops.
         "alloc" => {
             let mib: usize = arg(1).parse().unwrap_or(0);
@@ -3245,6 +3250,78 @@ fn cat() -> i32 {
 }
 
 /// `read`'s: each file of `paths` read to its end, then `read PATH BYTES in MS ms` said.
+/// The guest's page cache, in KiB (/proc/meminfo's `Cached`).
+fn cached_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("Cached:"))
+        .and_then(|v| v.split_whitespace().next()?.parse().ok())
+}
+
+/// The bytes of the file at `path` and their FNV-1a checksum.
+fn checksum(path: &str) -> io::Result<(u64, u64)> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 1 << 20];
+    let (mut total, mut sum) = (0u64, 0xcbf2_9ce4_8422_2325u64);
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => return Ok((total, sum)),
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        for &b in buf.get(..n).unwrap_or_default() {
+            sum = (sum ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        total += n as u64;
+    }
+}
+
+/// `read-dropped PATH SECONDS OUT`.
+fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
+    let (total, first) = match checksum(path) {
+        Ok(read) => read,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            return 1;
+        }
+    };
+    let _ = writeln!(io::stdout(), "read {path} {total}");
+    let held = cached_kib().unwrap_or(0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        let now = cached_kib().unwrap_or(held);
+        if held.saturating_sub(now) >= total / 2 / 1024 {
+            let _ = writeln!(io::stdout(), "dropped {} MiB", held.saturating_sub(now) >> 10);
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = writeln!(io::stdout(), "kept");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let again = match checksum(path) {
+        Ok((_, sum)) => sum,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            return 1;
+        }
+    };
+    if again != first {
+        let _ = writeln!(io::stderr(), "{path}: read {first:016x}, then {again:016x}");
+        return 1;
+    }
+    match std::fs::write(out, format!("{total} {again:016x}\n")) {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{out}: {e}");
+            1
+        }
+    }
+}
+
 fn read_through(paths: &[String]) -> i32 {
     let mut buf = vec![0u8; 1 << 20];
     for path in paths {

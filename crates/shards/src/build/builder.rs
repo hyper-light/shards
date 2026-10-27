@@ -101,6 +101,11 @@ pub struct Builder {
     #[cfg(windows)]
     _container: shards_ipc::AppContainer,
     conn: UnixStream,
+    /// Where its host asks it to give back what it holds cold (build::GIVE_PORT, D188),
+    /// where its init dialed it. Unix's alone: a Windows host has no memory pressure
+    /// watched and no free page reporting under WHP (D188), so asks nothing.
+    #[cfg(unix)]
+    give: Option<UnixStream>,
     /// Where its steps' SSH agent sockets are relayed to (build::SSH_PORT).
     ssh: UnixListener,
     /// Where its vsock socket is: removed with the builder, after its VM.
@@ -115,6 +120,93 @@ pub struct Builder {
     attach: UnixStream,
     /// The range of its join disk each cache layer's file was given, by the layer.
     attached: HashMap<String, (u64, u64)>,
+}
+
+/// A builder's give-back connection, as its build's memory pressure watcher asks through it
+/// (build::GIVE_PORT, D188): one ask out at a time, its answer read whole however it comes.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct Giver {
+    conn: UnixStream,
+    /// An ask is out that its answer has not yet come for.
+    asked: bool,
+    /// What has come of an answer not yet whole.
+    held: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl Giver {
+    /// The giver of the builder at the other end of `conn`, nothing asked of it yet.
+    pub(super) fn new(conn: UnixStream) -> Giver {
+        Giver {
+            conn,
+            asked: false,
+            held: Vec::new(),
+        }
+    }
+
+    /// Asks the builder to give back what it holds cold of its files and what it holds
+    /// plugged past what it keeps, unless an ask before is still unanswered: then it is
+    /// asked nothing more until that answer has come ([`answer`](Self::answer)).
+    pub fn ask(&mut self) -> Result<(), String> {
+        if self.asked {
+            return Ok(());
+        }
+        let mut w = &self.conn;
+        io::Write::write_all(&mut w, &run::header(build::kind::GIVE_BACK, 0))
+            .map_err(|e| format!("asking the builder to give back: {e}"))?;
+        self.asked = true;
+        Ok(())
+    }
+
+    /// The answer to the ask that is out, if all of it comes by `until`: the bytes its
+    /// files freed and those it asked to unplug; none while it has not come, or with no
+    /// ask out. Err once its connection has ended, or for an answer of why it gave nothing.
+    pub fn answer(&mut self, until: Instant) -> Result<Option<(u64, u64)>, String> {
+        if !self.asked {
+            return Ok(None);
+        }
+        loop {
+            if let Some(header) = self
+                .held
+                .get(..run::HEADER)
+                .and_then(|h| <[u8; run::HEADER]>::try_from(h).ok())
+            {
+                let (which, len) = run::parse_header(header).ok_or("the builder sent a malformed answer")?;
+                let end = usize::try_from(len)
+                    .ok()
+                    .and_then(|len| run::HEADER.checked_add(len))
+                    .ok_or("the builder sent a malformed answer")?;
+                if let Some(payload) = self.held.get(run::HEADER..end) {
+                    let said = String::from_utf8_lossy(payload).into_owned();
+                    self.held.drain(..end);
+                    if which != build::kind::GAVE {
+                        continue;
+                    }
+                    self.asked = false;
+                    let mut amounts = said.split_whitespace().map(str::parse::<u64>);
+                    return match (amounts.next(), amounts.next(), amounts.next()) {
+                        (Some(Ok(freed)), Some(Ok(unplugging)), None) => Ok(Some((freed, unplugging))),
+                        _ => Err(format!("the builder gave nothing back: {said}")),
+                    };
+                }
+            }
+            // A read that waits for nothing where the time is spent: what has come alone.
+            let left = until.saturating_duration_since(Instant::now());
+            self.conn
+                .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+                .map_err(|e| format!("hearing the builder's give-back: {e}"))?;
+            let mut chunk = [0u8; 256];
+            match io::Read::read(&mut super::reading(&self.conn), &mut chunk) {
+                Ok(0) => return Err("the builder's give-back connection ended".into()),
+                Ok(n) => self.held.extend_from_slice(chunk.get(..n).unwrap_or_default()),
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(format!("hearing the builder's give-back: {e}")),
+            }
+        }
+    }
 }
 
 /// A step's proxy, where it has one (D110): the build's, and what answers its requests'
@@ -564,6 +656,18 @@ fn kill(vm: &shards_ipc::Child) {
     let _ = vm.kill();
 }
 
+/// The connection `listener` holds, the first its peer made, its listening ended with it,
+/// so that it takes no other (build::GIVE_PORT, which a builder's init dials before any step
+/// runs): none where none was made.
+#[cfg(unix)]
+fn take_first(listener: UnixListener) -> Option<UnixStream> {
+    let taken = listener.accept();
+    drop(listener);
+    let (conn, _) = taken.ok()?;
+    conn.set_nonblocking(false).ok()?;
+    Some(conn)
+}
+
 impl Builder {
     pub fn start(boot: &Boot<'_>) -> Result<Builder, String> {
         // Removed if the builder does not start; the builder removes it once it does.
@@ -575,6 +679,17 @@ impl Builder {
         listener
             .set_nonblocking(true)
             .map_err(|e| format!("the builder's port: {e}"))?;
+        // Where its init dials its give-back connection (build::GIVE_PORT, D188), before the
+        // build's: taken as the build's is, or never.
+        #[cfg(unix)]
+        let give = {
+            let mut at = vsock.clone().into_os_string();
+            at.push(format!("_{}", build::GIVE_PORT));
+            let give = UnixListener::bind(&at).map_err(|e| format!("the builder's give-back port: {e}"))?;
+            give.set_nonblocking(true)
+                .map_err(|e| format!("the builder's give-back port: {e}"))?;
+            give
+        };
         let mut ssh_at = vsock.clone().into_os_string();
         ssh_at.push(format!("_{}", build::SSH_PORT));
         let ssh = UnixListener::bind(&ssh_at).map_err(|e| format!("the builder's SSH port: {e}"))?;
@@ -682,12 +797,18 @@ impl Builder {
         };
         conn.set_nonblocking(false)
             .map_err(|e| format!("the builder's connection: {e}"))?;
+        // Its init dialed its give-back connection before the build's, so it waits now, or
+        // there is none (an init that gives nothing back).
+        #[cfg(unix)]
+        let give = take_first(give);
         let mut builder = Builder {
             vm,
             net: launched.net,
             #[cfg(windows)]
             _container: launched.container,
             conn,
+            #[cfg(unix)]
+            give,
             ssh,
             _dir: dir,
             layers: HashMap::new(),
@@ -808,6 +929,14 @@ impl Builder {
     /// The URL its steps reach the build's proxy at, where it has one (D110).
     pub fn proxy_url(&self) -> Option<&str> {
         self.proxy_url.as_deref()
+    }
+
+    /// What its build's memory pressure watcher asks it to give back through (D188), on
+    /// its give-back connection, while the build goes on over the build's: none where its
+    /// init dialed none.
+    #[cfg(unix)]
+    pub fn giver(&self) -> Option<Giver> {
+        Some(Giver::new(self.give.as_ref()?.try_clone().ok()?))
     }
 
     fn frame(&self, which: u8, payload: &[u8]) -> Result<(), String> {
@@ -1246,6 +1375,108 @@ impl Drop for Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The give-back port takes its peer's first connection, blocking, and refuses any after
+    /// it, so that no step's process reaches it (build::GIVE_PORT, D188); where none was
+    /// made, it has none.
+    #[cfg(unix)]
+    #[test]
+    fn the_give_back_port_takes_its_first_connection_alone() {
+        use std::io::Write as _;
+        let dir = shards_testdir::TempDir::new("give").unwrap();
+        let at = dir.join("v_1030");
+        let listener = UnixListener::bind(&at).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let first = UnixStream::connect(&at).unwrap();
+        let taken = take_first(listener).unwrap();
+        (&first).write_all(b"x").unwrap();
+        let mut got = [0u8; 1];
+        (&taken).read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"x");
+        // It waits for what has not come, as a blocking read does, up to its timeout.
+        taken.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let waited = Instant::now();
+        assert!((&taken).read(&mut got).is_err());
+        assert!(
+            waited.elapsed() >= Duration::from_millis(40),
+            "{:?}",
+            waited.elapsed()
+        );
+        let second = UnixStream::connect(&at).map(drop);
+        assert_eq!(second.unwrap_err().kind(), io::ErrorKind::ConnectionRefused);
+        let none = UnixListener::bind(dir.join("w_1030")).unwrap();
+        none.set_nonblocking(true).unwrap();
+        assert!(take_first(none).is_none());
+    }
+
+    /// The next frame a giver sent: its kind and length.
+    #[cfg(unix)]
+    fn asked(theirs: &UnixStream) -> (u8, u32) {
+        let mut h = [0u8; run::HEADER];
+        (&*theirs).read_exact(&mut h).unwrap();
+        run::parse_header(h).unwrap()
+    }
+
+    /// A giver asks once and hears its answer whole however it comes: an answer not come
+    /// by its time is none, and while it is out no other ask is sent; the late answer is
+    /// heard next, past any frame of another kind before it, and the ask after that is sent
+    /// anew. An answer of why nothing was given back is an error.
+    #[cfg(unix)]
+    #[test]
+    fn a_giver_asks_once_and_hears_its_answer_whole() {
+        use std::io::Write as _;
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let mut giver = Giver::new(ours);
+        let soon = || Instant::now() + Duration::from_millis(20);
+        assert_eq!(
+            giver.answer(soon()).unwrap(),
+            None,
+            "nothing asked, nothing heard"
+        );
+        giver.ask().unwrap();
+        assert_eq!(giver.answer(soon()).unwrap(), None);
+        assert_eq!(asked(&theirs), (build::kind::GIVE_BACK, 0));
+        giver.ask().unwrap();
+        assert_eq!(giver.answer(soon()).unwrap(), None);
+        let said = b"5242880 134217728";
+        let mut late = run::header(build::kind::EMULATED, 2).to_vec();
+        late.extend_from_slice(b"no");
+        late.extend_from_slice(&run::header(
+            build::kind::GAVE,
+            u32::try_from(said.len()).unwrap(),
+        ));
+        late.extend_from_slice(said);
+        let (head, tail) = late.split_at(13);
+        (&theirs).write_all(head).unwrap();
+        assert_eq!(giver.answer(soon()).unwrap(), None);
+        (&theirs).write_all(tail).unwrap();
+        assert_eq!(giver.answer(soon()).unwrap(), Some((5 << 20, 128 << 20)));
+        // Nothing more was asked while the ask was out.
+        theirs.set_nonblocking(true).unwrap();
+        let mut more = [0u8; 1];
+        assert_eq!(
+            (&theirs).read(&mut more).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        theirs.set_nonblocking(false).unwrap();
+        giver.ask().unwrap();
+        assert_eq!(asked(&theirs), (build::kind::GIVE_BACK, 0));
+        let why = b"nothing given back: no cgroup";
+        (&theirs)
+            .write_all(&run::header(build::kind::GAVE, u32::try_from(why.len()).unwrap()))
+            .unwrap();
+        (&theirs).write_all(why).unwrap();
+        let refused = giver
+            .answer(Instant::now() + Duration::from_secs(10))
+            .unwrap_err();
+        assert!(refused.contains("nothing given back: no cgroup"), "{refused}");
+        giver.ask().unwrap();
+        drop(theirs);
+        assert!(
+            giver.answer(Instant::now() + Duration::from_secs(10)).is_err(),
+            "its connection ended"
+        );
+    }
 
     /// A sweep removes the directories builds gone before left, each whose lock no one
     /// holds, and none whose build lives, nor one whose lock is not yet in place, nor

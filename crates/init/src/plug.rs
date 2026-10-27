@@ -399,6 +399,15 @@ impl Plug {
         }
         enable(BUILD)?;
         enable(&format!("{BUILD}/steps"))?;
+        // Its peak, counted afresh by each giving back through this descriptor
+        // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
+        if let Ok(peak) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{BUILD}/memory.peak"))
+        {
+            let _ = PEAK.set(peak);
+        }
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         let mut fds = [0; 2];
@@ -724,6 +733,76 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     )?;
     control_write64(control::HOTPLUG_REQUEST, keep)?;
     Ok(plugged.saturating_sub(keep))
+}
+
+/// Answers its host's asks for what the builder holds cold back, on `conn`
+/// (shards_abi::build::GIVE_PORT, D188), from a process of PID 1's in the root cgroup,
+/// which no `memory.high` slows, as the grower is: the host asks as it runs short, when the
+/// build may be held at its own. At each `GIVE_BACK`, what the build's cgroup holds cold of
+/// its files reclaimed and reported free at once, then what the builder holds plugged past
+/// what it keeps asked to be unplugged ([`shrink_run`]), as a run's init answers `RECLAIM`;
+/// else why it gave nothing back. It ends as its connection does. Called by PID 1 before it
+/// starts any thread.
+pub fn answer_give_backs(conn: std::fs::File) -> io::Result<()> {
+    // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy of a
+    // process with no other thread, whose locks no one holds.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(err(format!(
+            "starting the give-back's answerer: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    if pid == 0 {
+        // Out of the build's cgroup, where PID 1 is: the root's ("0", the writer itself).
+        let _ = std::fs::write("/sys/fs/cgroup/cgroup.procs", "0");
+        answer(&conn, || {
+            crate::run::reclaim_cold(BUILD).and_then(|freed| Ok((freed, shrink_run(BUILD)?)))
+        });
+        // SAFETY: _exit(2) ends this process alone.
+        unsafe { libc::_exit(0) };
+    }
+    Ok(())
+}
+
+/// The most a frame on the give-back connection holds: a `GIVE_BACK` holds nothing, and a
+/// frame past this ends the connection rather than have its answerer hold it.
+const GIVE_FRAME: usize = 4096;
+
+/// What [`answer_give_backs`]'s process does until its connection ends: each frame read
+/// whole, each `GIVE_BACK` answered with a `GAVE` of what `give` gave back (the bytes its
+/// files freed and those it asked to unplug), or of why nothing, any other frame passed
+/// over.
+fn answer(conn: &std::fs::File, mut give: impl FnMut() -> io::Result<(u64, u64)>) {
+    use shards_abi::{build::kind, run};
+    let mut h = [0u8; run::HEADER];
+    let mut payload = Vec::new();
+    loop {
+        let mut r = conn;
+        if r.read_exact(&mut h).is_err() {
+            return;
+        }
+        let Some((which, len)) = run::parse_header(h) else {
+            return;
+        };
+        let Some(len) = usize::try_from(len).ok().filter(|&len| len <= GIVE_FRAME) else {
+            return;
+        };
+        payload.resize(len, 0);
+        if r.read_exact(&mut payload).is_err() {
+            return;
+        }
+        if which != kind::GIVE_BACK {
+            continue;
+        }
+        let said = match give() {
+            Ok((freed, unplugging)) => format!("{freed} {unplugging}"),
+            Err(e) => format!("nothing given back: {e}"),
+        };
+        if crate::run::send(conn, kind::GAVE, said.as_bytes()).is_err() {
+            return;
+        }
+    }
 }
 
 /// Holds a run's processes in `cgroup` at what is plugged so far again, as [`Plug::hold_run`]
@@ -1624,5 +1703,83 @@ mod tests {
             "{:?}",
             g.clock
         );
+    }
+
+    /// The give-back connection's two ends: the host's, and the answerer's as init holds it.
+    fn give_pair() -> (std::os::unix::net::UnixStream, std::fs::File) {
+        let (host, guest) = std::os::unix::net::UnixStream::pair().unwrap();
+        (host, std::fs::File::from(std::os::fd::OwnedFd::from(guest)))
+    }
+
+    /// The host's end of a give-back connection, shut both ways as it drops: a test that
+    /// fails still ends its answerer, which would otherwise wait on it for ever.
+    struct Shut<'a>(&'a std::os::unix::net::UnixStream);
+
+    impl Drop for Shut<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// The next frame the answerer sent the host: its kind and payload.
+    fn heard(host: &std::os::unix::net::UnixStream) -> (u8, String) {
+        use shards_abi::run;
+        let mut r = host;
+        let mut h = [0u8; run::HEADER];
+        r.read_exact(&mut h).unwrap();
+        let (which, len) = run::parse_header(h).unwrap();
+        let mut payload = vec![0u8; len as usize];
+        r.read_exact(&mut payload).unwrap();
+        (which, String::from_utf8(payload).unwrap())
+    }
+
+    /// Each `GIVE_BACK` is answered with a `GAVE` of what was given back, the bytes its
+    /// files freed and those it asked to unplug, in decimal, or of why nothing was; a frame of
+    /// any other kind is passed over, and its answerer ends as its connection does.
+    #[test]
+    fn a_give_back_is_answered_with_what_was_given_back() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let gave = std::sync::Mutex::new(vec![Err(io::Error::other("no cgroup")), Ok((5 * MIB, 128 * MIB))]);
+        std::thread::scope(|s| {
+            let answerer = s.spawn(|| answer(&guest, || gave.lock().unwrap().pop().unwrap()));
+            let _shut = Shut(&host);
+            let mut w = &host;
+            w.write_all(&run::header(kind::EMULATE, 3)).unwrap();
+            w.write_all(b"abc").unwrap();
+            w.write_all(&run::header(kind::GIVE_BACK, 0)).unwrap();
+            assert_eq!(heard(&host), (kind::GAVE, "5242880 134217728".into()));
+            w.write_all(&run::header(kind::GIVE_BACK, 0)).unwrap();
+            assert_eq!(heard(&host), (kind::GAVE, "nothing given back: no cgroup".into()));
+            host.shutdown(std::net::Shutdown::Write).unwrap();
+            answerer.join().unwrap();
+        });
+        assert!(gave.lock().unwrap().is_empty());
+    }
+
+    /// A frame longer than any its host sends ends the connection, unread and unanswered,
+    /// rather than have its answerer hold it.
+    #[test]
+    fn a_give_back_frame_past_its_most_ends_the_connection() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                answer(&guest, || {
+                    asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Ok((0, 0))
+                });
+                ended.send(()).unwrap();
+            });
+            let len = u32::try_from(GIVE_FRAME + 1).unwrap();
+            (&host).write_all(&run::header(kind::GIVE_BACK, len)).unwrap();
+            let gone = end.recv_timeout(Duration::from_secs(10));
+            // Ends a mutant's read, which waits for the frame's bytes.
+            host.shutdown(std::net::Shutdown::Both).unwrap();
+            gone.unwrap();
+        });
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 }

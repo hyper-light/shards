@@ -48,11 +48,12 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 
 /// `page_reporting.flush` (resources/kernel/patches/0005), where the kernel has it: opened
 /// by a template's init before its root is the container's, whose sysfs is read-only, and
-/// kept for [`flush_page_reports`].
+/// by a builder's before it answers its host's asks to give back (D188); kept for
+/// [`flush_page_reports`].
 static FLUSH: std::sync::OnceLock<File> = std::sync::OnceLock::new();
 
 /// Opens [`FLUSH`] through a sysfs of init's own, mounted for the moment it takes.
-fn open_flush() {
+pub(crate) fn open_flush() {
     const AT: &str = "/flush";
     if std::fs::create_dir_all(AT).is_err() {
         return;
@@ -88,7 +89,7 @@ fn open_flush() {
 /// would, where a clean file page the guest drops is one the host could only have swapped.
 /// Then what that freed is reported at once (D151), so that the host has it back before
 /// this answers. The bytes the cgroup holds less after.
-fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
+pub(crate) fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
     let read = |file: &str| std::fs::read_to_string(format!("{cgroup}/{file}"));
     let cold = read("memory.stat")?
         .lines()

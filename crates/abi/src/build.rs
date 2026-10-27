@@ -22,6 +22,14 @@ pub const PORT: u32 = 1026;
 /// the port alone.
 pub const SSH_PORT: u32 = 1028;
 
+/// The host port the guest dials before [`PORT`], over which its host asks it to give back
+/// what it holds cold (D188 for builders): [`kind::GIVE_BACK`] asks and [`kind::GAVE`]
+/// answers, one at a time, on a connection of their own, so that an ask is answered while
+/// a step runs. Dialed before [`PORT`], it waits for the host as the build's connection is
+/// taken, which no step precedes: the host takes it then or never, its first connection
+/// alone, so that no process of a step's reaches it.
+pub const GIVE_PORT: u32 = 1030;
+
 /// Frame kinds, beside the run protocol's `STDOUT`, `STDERR`, `SYSTEM_ERR` and `EXIT`.
 pub mod kind {
     /// Host to guest: a big-endian u32 layer id, then the next bytes of that layer's
@@ -47,6 +55,14 @@ pub mod kind {
     pub const EMULATE: u8 = 38;
     /// Guest to host: the emulators are registered, or, as its payload, why not.
     pub const EMULATED: u8 = 39;
+    /// Host to guest, on [`GIVE_PORT`](super::GIVE_PORT): give back what the build holds
+    /// cold of its files and what the builder holds plugged past what it keeps, as a run's
+    /// init does at `RECLAIM` (D188). No payload.
+    pub const GIVE_BACK: u8 = 40;
+    /// Guest to host, on [`GIVE_PORT`](super::GIVE_PORT), a `GIVE_BACK`'s answer: the bytes
+    /// the build's cgroup holds less of its files, and the bytes it asked to be unplugged,
+    /// in decimal, a space between, as `RECLAIM` answers; else why it gave nothing back.
+    pub const GAVE: u8 = 41;
 }
 
 /// A cache's root directory: what overlayfs shows of the directory its upper layer is,

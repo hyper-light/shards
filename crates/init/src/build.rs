@@ -227,6 +227,16 @@ fn serve() -> io::Result<()> {
     if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
         crate::net::configure(addr, prefix, gateway)?;
     }
+    // Its host's asks for what it holds cold back (D188), on a connection of their own,
+    // dialed before the build's so that its host takes it before any step could dial
+    // its port, and answered by a process of init's outside the build's cgroup. A host
+    // that listens on none asks nothing.
+    if let Ok(give) = dial(build::GIVE_PORT, true) {
+        // What a give-back frees reported at once, so that its host has it back before the
+        // answer says so (D151).
+        crate::run::open_flush();
+        crate::plug::answer_give_backs(give)?;
+    }
     let conn = dial(build::PORT, true)?;
     let mut b = Builder {
         conn,

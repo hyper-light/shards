@@ -45,6 +45,8 @@ mod exec;
 pub mod gc;
 mod gha;
 mod git;
+#[cfg(unix)]
+mod give;
 pub(crate) mod http;
 mod live;
 pub(crate) mod multi;
@@ -3987,6 +3989,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
                     step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;
                     builder = Some(builder::Builder::start(&boot).map_err(|e| fail(&v, &e))?);
+                    // Asked to give back what it holds cold as its host runs short of memory
+                    // (D188), what its builders gave back said where the plain display's
+                    // lines go.
+                    #[cfg(unix)]
+                    if let Some(giver) = builder.as_ref().and_then(builder::Builder::giver) {
+                        let p = progress.borrow();
+                        give::watch(giver, p.live.is_none() && !p.quiet);
+                    }
                 }
                 let Some(b) = builder.as_mut() else {
                     return Err(fail(&v, "the builder is gone"));

@@ -448,6 +448,347 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     );
 }
 
+/// A builder gives back what it holds cold at its build's word (D188 for D133's builders):
+/// a step reads a 256 MiB file of a cache mount, which an earlier build wrote, into its
+/// builder's page cache, then waits; the build is told once that its host is short of
+/// memory (SHARDS_BUILD_PRESSURE's FIFO, as no unprivileged process may raise macOS's
+/// system pressure), and its builder gives back most of the file, its VM process then
+/// holding that much less on its host, the step going on to its end; and the build's
+/// layers are the same as the same build's not told, byte for byte. Each build runs its
+/// step again for a build argument of its own, its cache kept, as `--no-cache` would start
+/// the step's cache empty (PM M141).
+#[test]
+fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
+    use std::io::{BufRead as _, Write as _};
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-give-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    const MIB: u64 = 256;
+    let fill = context(
+        "build-give-fill",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"{MIB}\"]\n"
+        ),
+    );
+    let filled = run_shards_env(
+        &["build"],
+        &["--progress=plain", fill.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(filled.status, Some(0), "{filled}");
+    let ctx = context(
+        "build-give-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nARG TOLD\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"read-dropped\", \"/c/big\", \"20\", \"/sum\"]\n"
+        ),
+    );
+    let fifo = home.join("pressure");
+    let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: mkfifo(3) of a NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let build = |told: bool, out: &std::path::Path| {
+        let mut cmd = common::command();
+        cmd.args([
+            "build",
+            "--progress=plain",
+            "--build-arg",
+            "SOURCE_DATE_EPOCH=0",
+            "--build-arg",
+        ])
+        .arg(format!("TOLD={told}"))
+        .arg("-o")
+        .arg(format!(
+            "type=oci,dest={},tar=false,rewrite-timestamp=true",
+            out.display()
+        ))
+        .arg(ctx.as_os_str())
+        .envs(env)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+        if told {
+            cmd.env("SHARDS_BUILD_PRESSURE", &fifo);
+        }
+        cmd.spawn().unwrap()
+    };
+    // What the VM process holds of this host's memory, in KiB, as boot.rs reads a guest's.
+    let held_kib = |vm: u32| {
+        shards_vmm::platform::process_usage(vm)
+            .ok()
+            .map(|u| u.footprint >> 10)
+    };
+    // Told, once its step has read the file, that its host is short of memory.
+    let told_out = TempDir::new("build-give-told");
+    let mut told = build(true, &told_out);
+    let stderr = std::io::BufReader::new(told.stderr.take().unwrap());
+    let (mut lines, mut before, mut gave, mut after) = (Vec::new(), None, None, None);
+    for line in stderr.lines() {
+        let line = line.unwrap();
+        if before.is_none() && line.contains(&format!("read /c/big {}", MIB << 20)) {
+            let vm = builder_vm(told.id()).unwrap_or_else(|| panic!("no builder VM under {}", told.id()));
+            before = Some((vm, held_kib(vm)));
+            // Its reader is the build's watcher, which opened it as its builder started.
+            let mut word = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo)
+                .unwrap();
+            word.write_all(b"\n").unwrap();
+        }
+        if let Some((_, rest)) = line.split_once("the build's builders gave back ") {
+            gave = rest
+                .split_whitespace()
+                .next()
+                .and_then(|mib| mib.parse::<u64>().ok());
+            after = before.map(|(vm, _)| held_kib(vm));
+        }
+        lines.push(line);
+    }
+    let status = told.wait().unwrap();
+    let shown = lines.join("\n");
+    assert!(status.success(), "{shown}");
+    let gave = gave.unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
+    assert!(
+        gave >= MIB / 2,
+        "gave back {gave} MiB of the {MIB} MiB file:\n{shown}"
+    );
+    assert!(
+        shown.contains("dropped "),
+        "its step's page cache kept the file:\n{shown}"
+    );
+    let (Some((_, Some(before))), Some(Some(after))) = (before, after) else {
+        panic!("its builder's VM process's memory not read:\n{shown}");
+    };
+    eprintln!(
+        "its builder gave back {gave} MiB of the {MIB} MiB file; its VM process held {before} KiB, then {after} KiB"
+    );
+    assert!(
+        before.saturating_sub(after) >= (gave << 10) / 2,
+        "its builder's VM process held {before} KiB, then {after} KiB, having given back {gave} MiB:\n{shown}"
+    );
+    // Not told: the same result.
+    let untold_out = TempDir::new("build-give-untold");
+    let untold = build(false, &untold_out).wait_with_output().unwrap();
+    assert!(
+        untold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&untold.stderr)
+    );
+    assert_eq!(layers(&told_out), layers(&untold_out), "{shown}");
+}
+
+/// A build held short of memory has its builder give back what it holds cold at its host's
+/// word (D188 for D133's builders): `shards build` in a scope of the user's manager, which
+/// can swap nothing (`MemorySwapMax=0`), reads a 512 MiB file of a cache mount into its
+/// builder's page cache; then the scope's `MemoryHigh` is set 256 MiB under what it holds,
+/// its memory stalls (PSI) as its host reclaims what it cannot swap, and the build's watcher,
+/// which watches its own cgroup's pressure, asks its builder to give back. Its log says what
+/// it gave back and asked to unplug, and it succeeds, its layers those of the same build
+/// held to nothing. Linux alone, with a user's manager, as the budget test of runs.
+#[test]
+fn a_build_held_short_of_memory_has_its_builder_give_back() {
+    use std::io::BufRead as _;
+    if !cfg!(target_os = "linux") || cannot_run_vms() {
+        return;
+    }
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-psi-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    const MIB: u64 = 512;
+    let fill = context(
+        "build-psi-fill",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"{MIB}\"]\n"
+        ),
+    );
+    let filled = run_shards_env(
+        &["build"],
+        &["--progress=plain", fill.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(filled.status, Some(0), "{filled}");
+    let ctx = context(
+        "build-psi-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nARG HELD\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"read-dropped\", \"/c/big\", \"120\", \"/sum\"]\n"
+        ),
+    );
+    let scope = format!("shardsbuild{}.scope", std::process::id());
+    /// The scope's budget taken off and the scope stopped, however the test ends.
+    struct Scope<'a>(&'a str);
+    impl Drop for Scope<'_> {
+        fn drop(&mut self) {
+            for verb in ["revert", "stop"] {
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", verb, self.0])
+                    .status();
+            }
+        }
+    }
+    let build = |held: bool, out: &std::path::Path| {
+        let mut cmd = std::process::Command::new("systemd-run");
+        cmd.args(["--user", "--scope", "--quiet", "-p", "MemorySwapMax=0"]);
+        if held {
+            cmd.arg(format!("--unit={scope}"));
+        }
+        cmd.arg(common::shards())
+            .args([
+                "build",
+                "--progress=plain",
+                "--build-arg",
+                "SOURCE_DATE_EPOCH=0",
+                "--build-arg",
+            ])
+            .arg(format!("HELD={held}"))
+            .arg("-o")
+            .arg(format!(
+                "type=oci,dest={},tar=false,rewrite-timestamp=true",
+                out.display()
+            ))
+            .arg(ctx.as_os_str())
+            .envs(env)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        common::as_tests_run(&mut cmd);
+        cmd.spawn().unwrap()
+    };
+    let held_out = TempDir::new("build-psi-held");
+    let mut held = build(true, &held_out);
+    let _scope = Scope(&scope);
+    let stderr = std::io::BufReader::new(held.stderr.take().unwrap());
+    let mut lines = Vec::new();
+    let mut set = false;
+    for line in stderr.lines() {
+        let line = line.unwrap();
+        if !set && line.contains(&format!("read /c/big {}", MIB << 20)) {
+            // The scope's process is the build's (systemd-run --scope execs it): its cgroup.
+            let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", held.id())).unwrap();
+            let dir = cgroup
+                .lines()
+                .find_map(|l| l.strip_prefix("0::"))
+                .unwrap()
+                .to_string();
+            let current: u64 = std::fs::read_to_string(format!("/sys/fs/cgroup{dir}/memory.current"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let high = current.saturating_sub(256 << 20);
+            let budget = std::process::Command::new("systemctl")
+                .args(["--user", "set-property", "--runtime", &scope])
+                .arg(format!("MemoryHigh={high}"))
+                .output()
+                .unwrap();
+            assert!(
+                budget.status.success(),
+                "{}",
+                String::from_utf8_lossy(&budget.stderr)
+            );
+            set = true;
+        }
+        lines.push(line);
+    }
+    let status = held.wait().unwrap();
+    let shown = lines.join("\n");
+    assert!(set, "its step never read the file:\n{shown}");
+    assert!(status.success(), "{shown}");
+    let gave = shown
+        .lines()
+        .find_map(|l| {
+            l.split_once("the build's builders gave back ")
+                .map(|(_, rest)| rest.to_string())
+        })
+        .unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
+    eprintln!("held short of memory, the build's builders gave back {gave}");
+    let mib: u64 = gave
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(mib > 0, "{gave}");
+    assert!(gave.contains("asked to unplug "), "{gave}");
+    let free_out = TempDir::new("build-psi-free");
+    let free = build(false, &free_out).wait_with_output().unwrap();
+    assert!(free.status.success(), "{}", String::from_utf8_lossy(&free.stderr));
+    assert_eq!(layers(&held_out), layers(&free_out), "{shown}");
+}
+
+/// The layers of the image an OCI layout `out` holds, as its config lists them
+/// (`rootfs.diff_ids`): two builds whose results are the same bytes, whatever their history
+/// says, have the same.
+fn layers(out: &std::path::Path) -> serde_json::Value {
+    let blob = |digest: &str| -> serde_json::Value {
+        let path = out
+            .join("blobs/sha256")
+            .join(digest.trim_start_matches("sha256:"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    let top: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("index.json")).unwrap()).unwrap();
+    let manifest = blob(top["manifests"][0]["digest"].as_str().unwrap());
+    blob(manifest["config"]["digest"].as_str().unwrap())["rootfs"]["diff_ids"].clone()
+}
+
+/// The VM process of the builder under `build`, a build's process: its descendant named
+/// shards-vm.
+fn builder_vm(build: u32) -> Option<u32> {
+    let ps = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,comm="])
+        .output()
+        .ok()?;
+    let listed: Vec<(u32, u32, String)> = String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut w = line.split_whitespace();
+            Some((
+                w.next()?.parse().ok()?,
+                w.next()?.parse().ok()?,
+                w.collect::<Vec<_>>().join(" "),
+            ))
+        })
+        .collect();
+    let mut todo = vec![build];
+    while let Some(parent) = todo.pop() {
+        for (pid, ppid, comm) in &listed {
+            if *ppid != parent {
+                continue;
+            }
+            if comm.rsplit('/').next() == Some("shards-vm") {
+                return Some(*pid);
+            }
+            todo.push(*pid);
+        }
+    }
+    None
+}
+
 /// A build killed as a step runs takes its builder with it (D137): its VM ends as its
 /// socket to the build closes, whatever its guest is doing, which nothing else would end;
 /// and the next build removes the directory of sockets the killed one left.
