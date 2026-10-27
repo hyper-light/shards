@@ -6439,7 +6439,11 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   first 1 or 2 KiB too (E_INVALIDARG), where builds 26100 (windows-2025) and 26200 (jupiter)
   take it whole and in part (M345). The function it supersedes stays unused, deprecated as
   Microsoft marks it, so a snapshot taken there restores nowhere there, and a restore says
-  why rather than an HRESULT alone; builds between 20348 and 26100 are unmeasured.
+  why rather than an HRESULT alone; builds between 20348 and 26100 are unmeasured. Whether
+  a host restores is asked of its hypervisor once a process, only where it is asked, so that
+  no VM's start pays for it (`vm::restores_here`: the same page set back on a partition of
+  one, and only that refusal says no): a daemon there keeps no template or warm pool and
+  boots every run cold (D25, D26), and the tests of snapshots skip there, saying why.
 - **A confined VM writes its snapshot through its spawner.** An AppContainer writes in no
   directory of its user's (D141), and a directory handle would give it every name in it: the
   spawner makes the snapshot's directory the VM asks to write in, stages each generation there
