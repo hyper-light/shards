@@ -185,11 +185,20 @@ pub struct Child {
     pid: u32,
     /// A confined child's Job; none for one of [`spawn`]'s.
     job: Option<Job>,
+    /// Its AppContainer, where it holds one ([`Child::hold`]): its profile goes as this
+    /// drops, after its Job has ended it (fields drop in order).
+    container: Option<AppContainer>,
 }
 
 impl Child {
     pub fn id(&self) -> u32 {
         self.pid
+    }
+
+    /// Keeps `container`, the one it runs in, as long as it is held: whoever follows it to
+    /// its end lets go of its profile then too.
+    pub fn hold(&mut self, container: AppContainer) {
+        self.container = Some(container);
     }
 
     /// Waits for the child to end. Its ID stays its own while this value holds its handle,
@@ -322,6 +331,12 @@ pub struct Process {
 impl Process {
     pub fn id(&self) -> u32 {
         self.pid
+    }
+
+    /// Its handle, which may give the child handles and no more: what a [`crate::Stream`]
+    /// whose peer's end is the child's sends handles to ([`crate::Stream::gives_to`]).
+    pub fn into_handle(self) -> OwnedHandle {
+        self.handle
     }
 
     /// As [`Child::give`].
@@ -925,19 +940,18 @@ pub(crate) fn alive(pid: u32) -> bool {
 }
 
 impl crate::Identity {
-    /// A file's identity: its volume's serial number and its index there, Windows' device
-    /// and inode (GetFileInformationByHandle's), its size and its last write.
+    /// A file's identity, or a directory's: its volume's serial number and its index there,
+    /// Windows' device and inode (GetFileInformationByHandle's), its size and its last write.
     pub fn of(path: &Path) -> io::Result<crate::Identity> {
         use windows_sys::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_READ_ATTRIBUTES, GetFileInformationByHandle,
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+            GetFileInformationByHandle,
         };
+        // A directory opens only with backup semantics (CreateFileW's documentation).
         let file = std::fs::OpenOptions::new()
             .access_mode(FILE_READ_ATTRIBUTES)
-            .share_mode(
-                FILE_SHARE_READ
-                    | FILE_SHARE_WRITE
-                    | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE,
-            )
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path)?;
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: a file this function holds open, and a structure for the call to fill.
@@ -1232,6 +1246,7 @@ fn spawn_env(
         process,
         pid: made.dwProcessId,
         job: None,
+        container: None,
     };
     if let Some((read, write)) = grants {
         drop(read);
@@ -1432,6 +1447,7 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         process,
         pid: made.dwProcessId,
         job: Some(job),
+        container: None,
     };
     drop(pipe_read);
     let mut told = String::new();

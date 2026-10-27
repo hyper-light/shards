@@ -1897,7 +1897,7 @@ pub use unix::*;
 #[cfg(windows)]
 mod pipe;
 #[cfg(windows)]
-pub use pipe::{Event, Message, Pipe, Stream, end, recv, recv_by, send};
+pub use pipe::{Event, Message, Pipe, Stream, await_streams, end, readable_raw, recv, recv_by, send};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -1982,6 +1982,16 @@ impl Latch {
             pipe: std::io::pipe()?,
             #[cfg(windows)]
             event: Event::new()?,
+        })
+    }
+
+    /// Another handle to it: set through either, it is set for both.
+    pub fn try_clone(&self) -> std::io::Result<Latch> {
+        Ok(Latch {
+            #[cfg(unix)]
+            pipe: (self.pipe.0.try_clone()?, self.pipe.1.try_clone()?),
+            #[cfg(windows)]
+            event: self.event.try_clone()?,
         })
     }
 

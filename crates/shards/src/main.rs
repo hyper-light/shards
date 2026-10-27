@@ -14,14 +14,10 @@ mod alloc_count;
 mod aws;
 mod build;
 mod cli;
-#[cfg(unix)]
 mod containers;
 mod context;
-#[cfg(unix)]
 mod daemon;
 mod disk;
-// The daemon's (Unix's alone as yet) and a search's.
-#[cfg_attr(not(unix), allow(dead_code))]
 mod filters;
 mod from_image;
 mod frontend;
@@ -37,22 +33,18 @@ mod guest;
 mod helpers;
 mod kernel;
 mod keyless;
-#[cfg(unix)]
 mod local_store;
-#[cfg(unix)]
 mod logging;
 mod login;
-#[cfg(unix)]
 mod names;
 mod netproc;
-#[cfg(unix)]
 mod networks;
 mod oidc;
+mod os;
 mod pull;
 mod resources;
 mod run;
 mod search;
-#[cfg(unix)]
 mod segments;
 mod setup;
 #[cfg(unix)]
@@ -60,7 +52,6 @@ mod share;
 mod spec;
 mod spiffe;
 mod synced;
-#[cfg(unix)]
 mod volumes;
 #[cfg(target_os = "linux")]
 mod working_set;
@@ -88,12 +79,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
     let mut args = args.into_iter();
     let command = args.next();
     match command.as_ref().and_then(|c| c.to_str()) {
-        #[cfg(unix)]
         Some("daemon") => daemon::daemon(args),
-        #[cfg(not(unix))]
-        Some("daemon") => {
-            usage_error("the daemon needs Unix sockets, which shards does not support on this platform yet")
-        }
         Some("guest") => guest::guest(args),
         Some("disk") => disk::command(args),
         Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),

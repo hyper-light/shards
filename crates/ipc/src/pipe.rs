@@ -851,6 +851,91 @@ impl Stream {
     }
 }
 
+/// Its end's handle's value, as a Unix socket's descriptor is given: one that names its
+/// end only while it is open, as its holder's to make sure of. None is borrowed
+/// (`AsHandle`): ending it both ways closes the end whatever borrows it.
+impl std::os::windows::io::AsRawHandle for Stream {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        let guard = self.0.pipe.read().unwrap_or_else(PoisonError::into_inner);
+        guard
+            .as_ref()
+            .map_or(INVALID_HANDLE_VALUE, |handle| handle.as_raw_handle())
+    }
+}
+
+/// Whether the pipe end `handle` has something to read now, or has ended: a read would not
+/// wait. One that is no pipe's end now reads as ended.
+pub fn readable_raw(handle: std::os::windows::io::RawHandle) -> bool {
+    !matches!(available(handle, None), Ok(Some(0)))
+}
+
+/// Waits until one of `streams` has something to read, or has ended, or `deadline` has
+/// come: which have, each looked at as the wait ends, as poll(2) answers. Each is waited on
+/// by a read of no bytes (M348), every one cancelled and finished before this returns.
+pub fn await_streams(streams: &[&Stream], deadline: Option<Instant>) -> io::Result<Vec<bool>> {
+    let ready = |streams: &[&Stream]| streams.iter().map(|s| s.readable()).collect::<Vec<bool>>();
+    let now = ready(streams);
+    if now.iter().any(|&r| r) {
+        return Ok(now);
+    }
+    let guards: Vec<_> = streams
+        .iter()
+        .map(|s| s.0.pipe.read().unwrap_or_else(PoisonError::into_inner))
+        .collect();
+    let mut events = Vec::with_capacity(streams.len());
+    for _ in streams {
+        events.push(Event::new()?);
+    }
+    // Each read's OVERLAPPED, where it stays until the read has finished.
+    let mut overlapped: Vec<OVERLAPPED> = events
+        .iter()
+        .map(|e| OVERLAPPED {
+            hEvent: e.raw(),
+            ..OVERLAPPED::default()
+        })
+        .collect();
+    // What the reads of no bytes are given to read into, kept until each has finished.
+    let mut none = [0u8; 1];
+    let mut started = Vec::with_capacity(streams.len());
+    for (guard, ov) in guards.iter().zip(overlapped.iter_mut()) {
+        let Some(handle) = guard.as_ref() else {
+            started.push(None);
+            continue;
+        };
+        let raw = handle.as_raw_handle();
+        // SAFETY: a read of no bytes into `none`, its OVERLAPPED kept in `overlapped`, each
+        // neither moved nor dropped until the read has finished, below.
+        let ok = unsafe { ReadFile(raw, none.as_mut_ptr(), 0, std::ptr::null_mut(), ov) };
+        // SAFETY: no arguments.
+        let pending = ok != 0 || unsafe { GetLastError() } == ERROR_IO_PENDING;
+        started.push(pending.then_some(raw));
+    }
+    let waited: Vec<HANDLE> = events
+        .iter()
+        .map(Event::raw)
+        .chain(streams.iter().map(|s| s.0.reads_shut.raw()))
+        .collect();
+    let ms = deadline.map_or(INFINITE, |d| {
+        let left = d.saturating_duration_since(Instant::now());
+        u32::try_from(left.as_micros().div_ceil(1000))
+            .unwrap_or(INFINITE - 1)
+            .min(INFINITE - 1)
+    });
+    // Every read not started has ended or failed at once, which a look sees.
+    if started.iter().all(Option::is_some) {
+        let n = u32::try_from(waited.len()).unwrap_or(1);
+        // SAFETY: events this function and the streams hold, `n` of them.
+        unsafe { WaitForMultipleObjects(n, waited.as_ptr(), 0, ms) };
+    }
+    for (raw, ov) in started.iter().zip(overlapped.iter()) {
+        if let Some(raw) = raw {
+            let _ = cancelled(*raw, ov, Called::Cancelled);
+        }
+    }
+    drop(guards);
+    Ok(ready(streams))
+}
+
 /// A timeout as a socket takes one: none for `None`, refused for zero (std's
 /// `set_read_timeout`).
 fn nonzero(timeout: Option<Duration>) -> io::Result<Option<Duration>> {

@@ -29,14 +29,12 @@ const USAGE: &str = "usage: shards configure guest --kernel FILE --init FILE
 const INIT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shards-init"));
 
 /// The in-VM server this build carries (D60), built for this host's guests by build.rs.
-#[cfg(unix)]
 const SERVER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shards-server"));
 
 /// The in-VM server's device (D60): an EROFS image of its binary alone, which the daemon
 /// attaches read-only to microVMs whose image has agents, so that its pages are mapped
 /// from the host (DAX) and not copied into guest memory. Kept by content in the store,
 /// as `server-<sha256 of the binary>.erofs`, written once.
-#[cfg(unix)]
 pub fn server_device(home: &Path) -> Result<PathBuf, String> {
     let bytes = SERVER;
     let dir = home.join("guest");
@@ -53,7 +51,6 @@ pub fn server_device(home: &Path) -> Result<PathBuf, String> {
 }
 
 /// An EROFS image whose root holds `binary` as `shards-server`, owned by root, mode 0755.
-#[cfg(unix)]
 fn server_image(binary: &[u8]) -> Result<Vec<u8>, String> {
     use shards_image::erofs::{self, DataRef, Kind, Meta, Node, Source, Tree};
     struct Bytes<'a>(&'a [u8]);
@@ -473,7 +470,6 @@ fn pinned(home: &Path) -> Result<Guest, String> {
 
 /// The guest runs of `home` boot: the one recorded, else the pinned one; `None` where
 /// there is neither.
-#[cfg(unix)]
 pub fn in_use(home: &Path) -> Result<Option<Guest>, String> {
     match current(home)? {
         Some(recorded) => Ok(Some(recorded)),

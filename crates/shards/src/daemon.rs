@@ -17,9 +17,14 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+
+// shards' own streams: a Unix socket's end on Unix, a pipe's on Windows (D195), named as
+// this code has named them since it was Unix's.
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
@@ -133,17 +138,27 @@ const LAYER_NEW: &str = "layer.new";
 /// A running container's swap (D159), in its directory until its microVM holds it.
 const SWAP: &str = "swap";
 
+/// A VM process's link to its daemon, as `--warm` and `--resume` name it: its descriptor 3
+/// on Unix; on Windows the handle given it as `daemon` (`start`).
+const VM_LINK: &str = if cfg!(windows) { "daemon" } else { "3" };
+
+/// Why a run on Windows is refused its volumes and binds: the share process that serves a
+/// host's directories into a microVM (D38) is Unix's alone as yet.
+#[cfg(windows)]
+const NO_SHARES: &str =
+    "a host's directories (volumes and binds) are not shared into a microVM on Windows yet";
+
 /// A new, empty swap file of `bytes` at `at`, sparse, in place of any before it: only this
 /// user's.
 fn open_swap(at: &Path, bytes: u64) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(at)?;
+    let file = crate::os::owner_only(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
+    .open(at)?;
     file.set_len(bytes)?;
     Ok(file)
 }
@@ -159,13 +174,13 @@ fn remove_if_there(at: &Path) -> io::Result<()> {
 /// A new file for a container's layer to be written to, in place of any half-written
 /// one: only this user's.
 fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(at)
+    crate::os::owner_only(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
+    .open(at)
 }
 
 /// How long a warm VM may take to say it has taken a run: it does so right after it
@@ -343,11 +358,111 @@ fn joined(list: &[Vec<u8>]) -> String {
     String::from_utf8_lossy(&list.join(&b","[..])).into_owned()
 }
 
+/// What wakes the listener (`wake_listener`): on Unix a byte on a socket pair, written
+/// without waiting (a full buffer is a wake pending already), whose other end it polls
+/// beside its other descriptors; on Windows an event, which it waits on beside its watches'
+/// (D195).
+#[derive(Debug)]
+struct Wake {
+    #[cfg(unix)]
+    pair: (UnixStream, UnixStream),
+    #[cfg(windows)]
+    event: shards_ipc::Event,
+}
+
+impl Wake {
+    fn new() -> io::Result<Wake> {
+        #[cfg(unix)]
+        {
+            let (tell, heard) = UnixStream::pair()?;
+            tell.set_nonblocking(true)?;
+            heard.set_nonblocking(true)?;
+            Ok(Wake { pair: (tell, heard) })
+        }
+        #[cfg(windows)]
+        Ok(Wake {
+            event: shards_ipc::Event::new()?,
+        })
+    }
+
+    fn wake(&self) {
+        #[cfg(unix)]
+        {
+            let _ = (&self.pair.0).write(&[0]);
+        }
+        #[cfg(windows)]
+        self.event.set();
+    }
+
+    /// Whether a wake is pending: Windows' listener asks; Unix's polls.
+    #[cfg_attr(all(unix, not(test)), allow(dead_code))]
+    fn pending(&self) -> bool {
+        #[cfg(unix)]
+        {
+            readable(&self.pair.1)
+        }
+        #[cfg(windows)]
+        self.event.is_set()
+    }
+
+    /// Takes the wakes pending: one that comes after is the next wait's.
+    fn drain(&self) {
+        #[cfg(unix)]
+        {
+            let mut drained = [0u8; 64];
+            while matches!((&self.pair.1).read(&mut drained), Ok(n) if n > 0) {}
+        }
+        #[cfg(windows)]
+        self.event.reset();
+    }
+
+    /// What the listener polls.
+    #[cfg(unix)]
+    fn fd(&self) -> RawFd {
+        self.pair.1.as_raw_fd()
+    }
+
+    /// What the listener waits on.
+    #[cfg(windows)]
+    fn event(&self) -> &shards_ipc::Event {
+        &self.event
+    }
+}
+
+/// The Engine API's listener (D170): a Unix socket's, on Unix.
+#[cfg(unix)]
+type ApiListener = UnixListener;
+
+/// The Engine API's listener on Windows, which has none yet: its own path for it, a named
+/// pipe as Docker's clients on Windows reach their engine, comes after the daemon's own
+/// clients (D195). A daemon that has none says so as it starts, as one that could not bind
+/// its socket does, and serves its CLI.
+#[cfg(windows)]
+#[derive(Debug)]
+enum ApiListener {}
+
+#[cfg(windows)]
+impl ApiListener {
+    fn accept(&self) -> io::Result<(UnixStream, ())> {
+        match *self {}
+    }
+}
+
+/// The Engine API's listener at `path` on Windows: none yet ([`ApiListener`]).
+#[cfg(windows)]
+fn listening_at(_path: &Path) -> std::io::Result<ApiListener> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the Engine API is not served on Windows yet",
+    ))
+}
+
 /// A listener at `path` that a client finds listening once it finds the name, not blocking:
 /// bound beside it and renamed there once it listens, where a client that found the name
 /// between bind(2) and listen(2) was refused (ECONNREFUSED), as Docker's clients, which do
 /// not ask again, would be as the daemon starts. The rename replaces what was there, in one
 /// step.
+#[cfg(unix)]
 fn listening_at(path: &Path) -> std::io::Result<UnixListener> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let unnamed = path.with_file_name(format!("~{name}"));
@@ -395,7 +510,7 @@ impl Ready {
     /// serving its own run, and only the joiner's connection goes, with `self`.
     fn end(&self) {
         if self.joined.is_none() {
-            let _ = self.vm.kill(libc::SIGKILL);
+            let _ = self.vm.kill(shards_ipc::signal::SIGKILL);
         }
     }
 }
@@ -860,9 +975,8 @@ struct Daemon<D: Disk = Real> {
     /// steps aside first, with RESTART (`end_clients`), never both nor neither.
     unread: Mutex<std::collections::HashSet<u64>>,
     next_client: AtomicU64,
-    /// Written to wake the listener: a client left, a run ended (`wake_listener`). Its
-    /// other end, which the listener waits on, read.
-    listener_wake: (UnixStream, UnixStream),
+    /// What wakes the listener: a client left, a run ended (`wake_listener`).
+    listener_wake: Wake,
     /// What runs still being prepared are downloading, by client: a shutdown cancels it.
     preparing: Mutex<HashMap<u64, Cancel>>,
     last: Mutex<Instant>,
@@ -1033,6 +1147,7 @@ impl<D: Disk> Drop for Busy<'_, D> {
 }
 
 /// Takes the descriptor `fd` its starter left this process to say on that it serves.
+#[cfg(unix)]
 fn ready_link(fd: i32) -> Result<File, String> {
     use std::os::fd::FromRawFd;
     // SAFETY: fcntl(2) asks whether the descriptor is open.
@@ -1046,6 +1161,17 @@ fn ready_link(fd: i32) -> Result<File, String> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
+/// Takes the handle its starter gave this process at `fd` to say on that it serves: one past
+/// its standard handles, by its number (`shards_ipc::given_fd`).
+#[cfg(windows)]
+fn ready_link(fd: i32) -> Result<File, String> {
+    match shards_ipc::given_fd(fd) {
+        Ok(Some(handle)) if fd > 2 => Ok(File::from(handle)),
+        Ok(_) => Err(format!("--ready: {fd} is not a handle of its own")),
+        Err(e) => Err(format!("--ready: {e}")),
+    }
+}
+
 /// Starts the daemon in the background, and returns once it serves: in a session of its
 /// own, writing to the log in its home, and orphaned as this process exits, so that init
 /// adopts it (or the nearest subreaper) and reaps it when it exits. A daemon left the
@@ -1055,20 +1181,15 @@ fn ready_link(fd: i32) -> Result<File, String> {
 /// which this says with its log's path, rather than leave its client to wait for it
 /// (review 8.14).
 fn detach(listen: Option<std::net::SocketAddr>) -> Result<(), String> {
-    use std::os::fd::AsFd;
-    use std::os::unix::fs::OpenOptionsExt;
     // Settings it cannot keep are its starter's to hear, at once.
     settings()?;
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
     let path = shards_ipc::log(&home);
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
+    let log = crate::os::owner_only(std::fs::OpenOptions::new().create(true).append(true))
         .open(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+    let null = crate::os::null().map_err(|e| format!("{}: {e}", crate::os::NULL))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let (mut ready, says) = io::pipe().map_err(|e| format!("a pipe for the daemon's start: {e}"))?;
     let listening = listen.map(|at| at.to_string());
@@ -1374,8 +1495,10 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // works in the home, with the daemon's limits, as the children it makes do.
     shards_ipc::start_spawner(&exe, &[OsStr::new("spawner")])
         .map_err(|e| format!("the daemon's spawner: {e}"))?;
-    // Its daemon is gone, since this one holds the lock: an older build's socket with it,
-    // and the writable layers made for its microVMs that none took (D190).
+    // Its daemon is gone, since this one holds the lock: an older build's socket with it
+    // (Unix's: no daemon ran on Windows before slots), and the writable layers made for its
+    // microVMs that none took (D190).
+    #[cfg(unix)]
     let _ = std::fs::remove_file(shards_ipc::SOCKET);
     layers::clear(&home);
     let _ = std::fs::remove_file(crate::context::LISTENING);
@@ -1449,7 +1572,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
 /// std writes an OS error's code after its text, `(os error N)`, whatever the C library
 /// calls it, and the image store passes its errors on as text.
 fn short_of_descriptors(why: &str) -> bool {
-    [libc::EMFILE, libc::ENFILE]
+    crate::os::OUT_OF_DESCRIPTORS
         .iter()
         .any(|code| why.ends_with(&format!("(os error {code})")))
 }
@@ -1465,13 +1588,14 @@ enum Watched {
     Interrupted,
 }
 
-/// Watches `conn`, a client's, until `ended`'s peer goes: says whether the client went
-/// first, or asked to be ended by a signal (`INTERRUPT`, D26), which is answered here
+/// Watches `conn`, a client's, until `ended` is set: says whether the client went first, or
+/// asked to be ended by a signal (`INTERRUPT`, D26), which is answered here
 /// (`INTERRUPTED`). The signals and terminal sizes it sends meanwhile are for a command yet
 /// to run, and go with the watch, as a Docker CLI passes none on before its container is
 /// made; anything else ends the watch, kept for what reads `conn` next.
-fn watch_client(conn: &UnixStream, ended: &UnixStream) -> Watched {
-    let mut polled = [conn.as_raw_fd(), ended.as_raw_fd()].map(|fd| libc::pollfd {
+#[cfg(unix)]
+fn watch_client(conn: &UnixStream, ended: &shards_ipc::Latch) -> Watched {
+    let mut polled = [conn.as_raw_fd(), ended.fd().as_raw_fd()].map(|fd| libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
@@ -1525,12 +1649,59 @@ fn watch_client(conn: &UnixStream, ended: &UnixStream) -> Watched {
     }
 }
 
+/// [`watch_client`] on Windows: `conn` waited on by a read of no bytes, which comes back as
+/// something comes or the client goes (PM M348), and its next message's kind peeked.
+#[cfg(windows)]
+fn watch_client(conn: &UnixStream, ended: &shards_ipc::Latch) -> Watched {
+    loop {
+        match conn.wait_readable(Some(ended.event()), None) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => return Watched::Stayed,
+        }
+        if ended.event().is_set() {
+            return Watched::Stayed;
+        }
+        // The next message's kind, its first byte, not taken: a message not the watch's
+        // stays for whoever reads the connection. Nothing there, once a read came back, is
+        // the client's end.
+        let next = match conn.peek() {
+            Ok(Some(next)) => next,
+            Ok(None) | Err(_) => return Watched::Gone,
+        };
+        if ![kind::SIGNAL, kind::RESIZE, kind::INTERRUPT].contains(&next) {
+            return Watched::Stayed;
+        }
+        match shards_ipc::recv(conn) {
+            Ok(Some(m)) if m.kind == kind::INTERRUPT => {
+                let _ = shards_ipc::send(conn, kind::INTERRUPTED, &m.payload, &[]);
+                return Watched::Interrupted;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => return Watched::Gone,
+        }
+    }
+}
+
 /// Whether `socket` has something to read now: a message, or its end.
+#[cfg(unix)]
 fn readable(socket: &UnixStream) -> bool {
     readable_fd(socket.as_raw_fd())
 }
 
+/// Whether `socket` has something to read now: a message, or its end.
+#[cfg(windows)]
+fn readable(socket: &UnixStream) -> bool {
+    socket.readable()
+}
+
+/// Whether the pipe end `fd` has something to read, or has ended, now.
+#[cfg(windows)]
+fn readable_fd(fd: RawFd) -> bool {
+    shards_ipc::readable_raw(fd)
+}
+
 /// Whether `fd` has something to read, or has ended, now.
+#[cfg(unix)]
 fn readable_fd(fd: RawFd) -> bool {
     let mut pfd = libc::pollfd {
         fd,
@@ -1542,31 +1713,34 @@ fn readable_fd(fd: RawFd) -> bool {
 }
 
 /// The home's lock, or `None` if another daemon serves the home. One that finds no
-/// daemon serving waits a while for the lock: the last daemon may be exiting.
+/// daemon serving waits a while for the lock: the last daemon may be exiting. The lock is
+/// its file's (`File::try_lock`): flock(2) on Unix, LockFileEx on Windows, each exclusive
+/// and refused at once where another holds it.
 fn take_lock(home: &Path) -> Result<Option<File>, String> {
-    use std::os::unix::fs::OpenOptionsExt;
     let path = home.join("daemon.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = crate::os::owner_only(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true),
+    )
+    .open(&path)
+    .map_err(|e| format!("{}: {e}", path.display()))?;
     let mut deadline = Instant::now() + TAKEOVER;
     let mut said = false;
     loop {
-        // SAFETY: flock(2) on a descriptor we own.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(Some(file));
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
         }
-        let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::WouldBlock {
-            return Err(format!("{}: {e}", path.display()));
-        }
-        // Its holder serves: its slots, or an older build's socket, whose client then has it
-        // step aside for its own.
-        if shards_ipc::slots::served(home) || UnixStream::connect(shards_ipc::SOCKET).is_ok() {
+        // Its holder serves: its slots, or (Unix's) an older build's socket, whose client
+        // then has it step aside for its own.
+        #[cfg(unix)]
+        let older = UnixStream::connect(shards_ipc::SOCKET).is_ok();
+        #[cfg(windows)]
+        let older = false;
+        if shards_ipc::slots::served(home) || older {
             return Ok(None);
         }
         // Held and offering nothing: its lists may have been removed by hand, which its
@@ -1603,8 +1777,7 @@ impl<D: Disk> Daemon<D> {
         disk: D,
         home_lock: File,
     ) -> io::Result<Daemon<D>> {
-        use std::os::unix::fs::MetadataExt as _;
-        let home_id = std::fs::symlink_metadata(&home).ok().map(|m| (m.dev(), m.ino()));
+        let home_id = crate::os::path_id(&home);
         let events = events::Events::kept_in(&home);
         Ok(Daemon {
             home,
@@ -1627,12 +1800,7 @@ impl<D: Disk> Daemon<D> {
             clients: Mutex::default(),
             unread: Mutex::default(),
             next_client: AtomicU64::new(0),
-            listener_wake: {
-                let (tell, heard) = UnixStream::pair()?;
-                tell.set_nonblocking(true)?;
-                heard.set_nonblocking(true)?;
-                (tell, heard)
-            },
+            listener_wake: Wake::new()?,
             preparing: Mutex::default(),
             last: Mutex::new(Instant::now()),
             stopping: AtomicBool::new(false),
@@ -1731,7 +1899,7 @@ impl<D: Disk> Daemon<D> {
     /// whether it has is asked again under `socket_at`, which [`close`](Self::close)
     /// holds: read once, a stopping daemon took its own removal for another's and
     /// listened again (PM M188, of the daemon's socket that slots replaced).
-    fn relisten_api(&self, closing: bool, api: &mut Option<UnixListener>) {
+    fn relisten_api(&self, closing: bool, api: &mut Option<ApiListener>) {
         let path = Path::new(engine::SOCKET);
         if closing || api.is_none() || std::fs::symlink_metadata(path).is_ok() {
             return;
@@ -1756,7 +1924,7 @@ impl<D: Disk> Daemon<D> {
     /// (no slot offered, the Engine API's socket gone), so that no client arrives after,
     /// serves any that already did, and exits. Its own clients come through its slots
     /// (slots.rs); here, the Engine API's, the contexts' relays, and its duties.
-    fn listen<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut api: Option<UnixListener>) {
+    fn listen<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut api: Option<ApiListener>) {
         // The home, whose removal the listener must see, and its images,
         // where a pull leaves a collection due (pull.rs, `collect_due`). Where a watch
         // cannot be made, the listener looks again every RETRY.
@@ -1888,27 +2056,20 @@ impl<D: Disk> Daemon<D> {
     /// A removal takes a directory's names before the directory: one that took the
     /// socket, which the listener made again, and then the lock, is seen once it has.
     fn home_going(&self) -> bool {
-        use std::os::unix::fs::MetadataExt as _;
-        std::fs::symlink_metadata(&self.home).is_err()
-            || self.home_lock.metadata().is_ok_and(|m| m.nlink() == 0)
+        std::fs::symlink_metadata(&self.home).is_err() || crate::os::unlinked(&self.home_lock)
     }
 
     /// Whether the home this daemon took is being removed where it is: its lock unlinked,
     /// and its path still the directory this daemon started in.
     fn removed_here(&self) -> bool {
-        use std::os::unix::fs::MetadataExt as _;
-        self.home_lock.metadata().is_ok_and(|m| m.nlink() == 0)
+        crate::os::unlinked(&self.home_lock)
             && self.home_id.is_some()
-            && std::fs::symlink_metadata(&self.home)
-                .ok()
-                .map(|m| (m.dev(), m.ino()))
-                == self.home_id
+            && crate::os::path_id(&self.home) == self.home_id
     }
 
     /// Wakes the listener: something it waits for may have happened.
     fn wake_listener(&self) {
-        // A full buffer is a wakeup already pending.
-        let _ = (&self.listener_wake.0).write(&[0]);
+        self.listener_wake.wake();
         self.tell_slots(slots::Event::Room);
         let (held, room) = &self.room;
         let _held = lock(held);
@@ -1942,9 +2103,10 @@ impl<D: Disk> Daemon<D> {
     /// (`relays`), a wake, a change a watch sees, or `timeout` (for ever if `None`):
     /// whether a name of the home came or went, and whether the contexts the home joined
     /// may have changed.
+    #[cfg(unix)]
     fn wait_for_work(
         &self,
-        api: Option<&UnixListener>,
+        api: Option<&ApiListener>,
         relays: Option<&relay::Relays>,
         watches: &[Option<FileWatch>; 3],
         timeout: Option<Duration>,
@@ -1956,7 +2118,7 @@ impl<D: Disk> Daemon<D> {
         };
         let watched = |w: &Option<FileWatch>| w.as_ref().map_or(-1, |w| w.fd().as_raw_fd());
         let mut polled: Vec<libc::pollfd> = [
-            self.listener_wake.1.as_raw_fd(),
+            self.listener_wake.fd(),
             watched(&watches[0]),
             watched(&watches[1]),
             watched(&watches[2]),
@@ -1976,17 +2138,58 @@ impl<D: Disk> Daemon<D> {
         unsafe { libc::poll(polled.as_mut_ptr(), n, ms) };
         let ready = |i: usize| polled.get(i).is_some_and(|p| p.revents != 0);
         if ready(0) {
-            let mut drained = [0u8; 64];
-            while matches!((&self.listener_wake.1).read(&mut drained), Ok(n) if n > 0) {}
+            self.listener_wake.drain();
         }
+        self.clear_watches(watches, |i| ready(i + 1))
+    }
+
+    /// [`wait_for_work`](Self::wait_for_work) on Windows: its wake and its watches are
+    /// events, waited on together (WaitForMultipleObjects), each looked at as the wait ends,
+    /// as a wait names the first alone. Windows has no Engine API nor contexts' engines yet
+    /// (`ApiListener`, relay.rs), so `api` and `relays` are none.
+    #[cfg(windows)]
+    fn wait_for_work(
+        &self,
+        api: Option<&ApiListener>,
+        relays: Option<&relay::Relays>,
+        watches: &[Option<FileWatch>; 3],
+        timeout: Option<Duration>,
+    ) -> (bool, bool) {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects, WaitForSingleObject};
+        let _ = (api, relays);
+        let waited: Vec<_> = std::iter::once(self.listener_wake.event().raw())
+            .chain(watches.iter().flatten().map(|w| w.fd().as_raw_handle()))
+            .collect();
+        // Rounded up: a wait of 0 ms would return at once, and spin.
+        let ms = timeout.map_or(INFINITE, |t| {
+            u32::try_from(t.as_micros().div_ceil(1000)).map_or(INFINITE - 1, |ms| ms.min(INFINITE - 1))
+        });
+        let n = u32::try_from(waited.len()).unwrap_or(1);
+        // SAFETY: events this daemon holds, `n` of them.
+        unsafe { WaitForMultipleObjects(n, waited.as_ptr(), 0, ms) };
+        if self.listener_wake.pending() {
+            self.listener_wake.drain();
+        }
+        // SAFETY: an event a watch of this daemon's holds, not waited for.
+        let set = |w: &FileWatch| unsafe { WaitForSingleObject(w.fd().as_raw_handle(), 0) } == WAIT_OBJECT_0;
+        self.clear_watches(watches, |i| {
+            watches.get(i).and_then(Option::as_ref).is_some_and(set)
+        })
+    }
+
+    /// Clears each of `watches` that `ready` says saw a change, by its place among them:
+    /// whether the home's (the first) did, and the contexts' (the third).
+    fn clear_watches(&self, watches: &[Option<FileWatch>; 3], ready: impl Fn(usize) -> bool) -> (bool, bool) {
         for (i, watch) in watches.iter().enumerate() {
-            if ready(i + 1)
+            if ready(i)
                 && let Some(watch) = watch
             {
                 watch.clear();
             }
         }
-        (ready(1), ready(3))
+        (ready(0), ready(2))
     }
 
     pub(super) fn take<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
@@ -2004,13 +2207,18 @@ impl<D: Disk> Daemon<D> {
         };
         // Only this user's processes: a home in a shared directory would let others' reach
         // the daemon (its slots are this user's alone, 0600 in a 0700 directory; a
-        // connection's peer is checked besides), and a run acts as this user.
-        // SAFETY: geteuid(2) cannot fail.
-        let ours = unsafe { libc::geteuid() };
-        match shards_ipc::peer_uid(&conn) {
-            Ok(uid) if uid == ours => {}
-            Ok(uid) => return refused(format!("refused a client of user {uid}")),
-            Err(e) => return refused(format!("a client's credentials: {e}")),
+        // connection's peer is checked besides), and a run acts as this user. On Windows
+        // every connection taken here is a pair of this process's, bridged from a slot
+        // whose pipes' DACLs admit this user alone (shards_ipc's slots, D195).
+        #[cfg(unix)]
+        {
+            // SAFETY: geteuid(2) cannot fail.
+            let ours = unsafe { libc::geteuid() };
+            match shards_ipc::peer_uid(&conn) {
+                Ok(uid) if uid == ours => {}
+                Ok(uid) => return refused(format!("refused a client of user {uid}")),
+                Err(e) => return refused(format!("a client's credentials: {e}")),
+            }
         }
         if let Err(e) = conn.set_nonblocking(false) {
             return refused(format!("a client's connection: {e}"));
@@ -2103,9 +2311,10 @@ impl<D: Disk> Daemon<D> {
         if self.stopping.load(Ordering::SeqCst) {
             cancel.cancel();
         }
-        // The watch ends once `done` goes: its peer then reads its end.
+        // The watch ends once `done` is set.
         let watch = (|| -> io::Result<_> {
-            let (done, ended) = UnixStream::pair()?;
+            let done = shards_ipc::Latch::new()?;
+            let ended = done.try_clone()?;
             let watched = conn.try_clone()?;
             let cancel = cancel.clone();
             let thread = std::thread::Builder::new().name("hangup".into()).spawn(move || {
@@ -2123,7 +2332,7 @@ impl<D: Disk> Daemon<D> {
         let out = work(&cancel);
         lock(&self.preparing).remove(&client);
         let watched = watch.map_or(Watched::Stayed, |(done, thread)| {
-            drop(done);
+            done.set();
             thread.join().unwrap_or(Watched::Stayed)
         });
         (out, watched)
@@ -2147,7 +2356,7 @@ impl<D: Disk> Daemon<D> {
         let state = lock(&self.state);
         let waiting = state.pools.values().flat_map(|p| p.ready.iter().map(|r| &r.vm));
         for vm in waiting.chain(state.starting.values()) {
-            let _ = vm.kill(libc::SIGTERM);
+            let _ = vm.kill(shards_ipc::signal::SIGTERM);
         }
         // The removals of runs that ended with `--rm`, done, their `destroy` kept: a
         // daemon stopped as one is pending lost the event, and left its files for the
@@ -2166,8 +2375,8 @@ impl<D: Disk> Daemon<D> {
         if self.home_gone.load(Ordering::SeqCst) && self.removed_here() {
             let _ = std::fs::remove_dir_all(&self.home);
         }
-        // SAFETY: flock(2) on the lock's own descriptor.
-        unsafe { libc::flock(self.home_lock.as_raw_fd(), libc::LOCK_UN) };
+        // Let go of before its file closes (M244): flock(2)'s LOCK_UN, UnlockFile.
+        let _ = self.home_lock.unlock();
         lock(&self.stoppers).clear();
     }
 
@@ -3816,9 +4025,8 @@ impl<D: Disk> Daemon<D> {
     /// The home's private directory (`tmp`, 0700), made if it is not there: where a share
     /// process keeps the files a restored guest holds that no path reaches (D176).
     fn private_dir(&self) -> Result<File, String> {
-        use std::os::unix::fs::DirBuilderExt as _;
         let at = self.home.join(PRIVATE);
-        match std::fs::DirBuilder::new().mode(0o700).create(&at) {
+        match crate::os::owner_only_dir(&mut std::fs::DirBuilder::new()).create(&at) {
             Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
                 return Err(format!("{}: {e}", at.display()));
             }
@@ -3839,6 +4047,23 @@ impl<D: Disk> Daemon<D> {
         if dirs.is_empty() {
             return Ok(None);
         }
+        #[cfg(windows)]
+        {
+            let _ = (threads, parent);
+            Err(NO_SHARES.into())
+        }
+        #[cfg(unix)]
+        self.started_shares(threads, dirs, parent).map(Some)
+    }
+
+    /// [`start_shares`](Self::start_shares)'s process, for `dirs`, some.
+    #[cfg(unix)]
+    fn started_shares<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        dirs: &[(OwnedFd, bool, OsString)],
+        parent: &str,
+    ) -> Result<UnixStream, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
@@ -3861,7 +4086,7 @@ impl<D: Disk> Daemon<D> {
         let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
         self.follow_share(threads, child);
-        Ok(Some(vm))
+        Ok(vm)
     }
 
     /// Container `id` of `run`, with the name the run gave, or one made for it, as dockerd
@@ -4458,7 +4683,7 @@ impl<D: Disk> Daemon<D> {
                 self.changed.notify_all();
             }
             _ => {
-                let _ = ready.vm.kill(libc::SIGKILL);
+                let _ = ready.vm.kill(shards_ipc::signal::SIGKILL);
             }
         }
         self.refill_soon(threads, None);
@@ -4888,7 +5113,7 @@ impl<D: Disk> Daemon<D> {
                 }
             })
             .map_err(|e| format!("a thread to pack it: {e}"))?;
-        Ok(Some(File::from(std::os::fd::OwnedFd::from(reader))))
+        Ok(Some(File::from(OwnedFd::from(reader))))
     }
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
@@ -5367,6 +5592,26 @@ impl<D: Disk> Daemon<D> {
         let deadline = limit.and_then(|l| Instant::now().checked_add(l));
         // Its code, its client's end (a command's client sends nothing after its request:
         // anything to read is its end), or the limit: nothing else wakes it.
+        #[cfg(windows)]
+        loop {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                break;
+            }
+            let waited: Vec<&UnixStream> = std::iter::once(&told).chain(client).collect();
+            let Ok(ready) = shards_ipc::await_streams(&waited, deadline) else {
+                break;
+            };
+            if ready.first().copied().unwrap_or(false) {
+                let mut byte = [0u8; 1];
+                if matches!((&told).read(&mut byte), Ok(1)) {
+                    return Some(byte[0]);
+                }
+            }
+            if ready.get(1).copied().unwrap_or(false) {
+                break;
+            }
+        }
+        #[cfg(unix)]
         loop {
             let ms = deadline.map_or(-1, |d| {
                 let left = d.saturating_duration_since(Instant::now());
@@ -5563,7 +5808,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 if stop.killed {
                     if let Some(vm) = &stop.vm {
-                        let _ = vm.kill(libc::SIGKILL);
+                        let _ = vm.kill(shards_ipc::signal::SIGKILL);
                     }
                     stop.kill = None;
                 } else {
@@ -5857,7 +6102,10 @@ impl<D: Disk> Daemon<D> {
             .get(id)
             .is_some_and(|(to, _)| *to == provider);
         if !volumes.is_empty() && !given {
+            #[cfg(unix)]
             self.give_join_volumes(threads, id, &provider, &socket, &inbox, volumes)?;
+            #[cfg(windows)]
+            return Err(NO_SHARES.into());
         }
         let image =
             File::open(&prepared.rootfs).map_err(|e| format!("{}: {e}", prepared.rootfs.display()))?;
@@ -5893,6 +6141,7 @@ impl<D: Disk> Daemon<D> {
     /// joiner's link to the share closes, as it ends. The share's process is started with
     /// the first joiner to bring any, and its VM given the connection to it then, before
     /// that joiner's `JOIN`, so before its guest mounts the share.
+    #[cfg(unix)]
     fn give_join_volumes<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -5956,6 +6205,7 @@ impl<D: Disk> Daemon<D> {
     /// home's, and gives the VM `socket` reaches its connection to it, held until the VM
     /// says it has it (M24). Returns the daemon's connection to the process, on which each
     /// joiner's link to it goes.
+    #[cfg(unix)]
     fn start_join_share<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -6431,7 +6681,7 @@ impl<D: Disk> Daemon<D> {
             };
             for mut pool in ended {
                 for ready in pool.ready.drain(..) {
-                    let _ = ready.vm.kill(libc::SIGKILL);
+                    let _ = ready.vm.kill(shards_ipc::signal::SIGKILL);
                 }
             }
             self.let_go_template(&dir);
@@ -6475,7 +6725,7 @@ impl<D: Disk> Daemon<D> {
                     key.dir.display(),
                     self.keep
                 ));
-                let _ = aged.vm.kill(libc::SIGKILL);
+                let _ = aged.vm.kill(shards_ipc::signal::SIGKILL);
             }
             pool.starting > 0
         });
@@ -6526,7 +6776,7 @@ impl<D: Disk> Daemon<D> {
                     cold.dir.display(),
                     self.warm_max
                 ));
-                let _ = evicted.vm.kill(libc::SIGKILL);
+                let _ = evicted.vm.kill(shards_ipc::signal::SIGKILL);
             }
         }
         self.warm_max.saturating_sub(held(state)).min(want)
@@ -6599,7 +6849,7 @@ impl<D: Disk> Daemon<D> {
         // container joins its network (D119): its templates have them, and so every restore
         // of them.
         args.extend(["--join".into(), "--join-share".into()]);
-        args.extend(["--warm".into(), "3".into()]);
+        args.extend(["--warm".into(), VM_LINK.into()]);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
         let net = if cfg.cmdline.contains("shards_net=") {
             Some(shards_net::random_mac().map_err(|e| format!("a guest's MAC: {e}"))?)
@@ -6672,6 +6922,7 @@ impl<D: Disk> Daemon<D> {
     /// on a network of its own if `net` names its MAC, with `layer` as its writable layer's
     /// file where it has one (D190), unlinked once it is ready or has failed to start; and
     /// watches it.
+    #[cfg(unix)]
     fn start<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -6819,7 +7070,161 @@ impl<D: Disk> Daemon<D> {
             if pooled {
                 lock(&self.state).starting.remove(&vm.id());
             }
-            let _ = vm.kill(libc::SIGKILL);
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            return Err(format!("watching VM {}: {e}", vm.id()));
+        }
+        Ok(())
+    }
+
+    /// [`start`](Self::start) on Windows (D141, D142, D195): the VM process confined in an
+    /// AppContainer of its own, made suspended, given by name its link to the daemon
+    /// (`daemon`, the other end of a pair of this process's) and its network's ring and
+    /// doorbells; its network process started next, given the VM's process to watch; then
+    /// the VM runs, and the daemon answers what it asks for (its files, its vsock path) on a
+    /// thread of its own, which ends as the VM does. Its writable layer goes by its path,
+    /// which it asks for.
+    #[cfg(windows)]
+    fn start<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        args: &[OsString],
+        net: Option<[u8; 6]>,
+        dest: For,
+        parent: &str,
+        layer: Option<layers::LayerFile>,
+    ) -> Result<(), String> {
+        use std::os::windows::io::{AsHandle as _, OwnedHandle};
+        // None but the daemon's own place on Windows yet (D183): one under a parent is
+        // refused here.
+        let _ = self.group_of(parent)?;
+        let network = match &net {
+            Some(mac) => {
+                let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
+                Some(crate::netproc::prepare(shards_net::Policy::DenyAll, mac, bridge)?)
+            }
+            None => None,
+        };
+        let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's link: {e}"))?;
+        // Its end, the VM's alone once given it: the daemon's copy goes, so that the VM's
+        // end is the end the daemon reads.
+        let link = theirs.share().map_err(|e| format!("a VM's link: {e}"))?;
+        drop(theirs);
+        let container = crate::helpers::containers().and_then(|records| {
+            shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("a VM's AppContainer: {e}"))
+        })?;
+        // A pipe each way: the VM's requests, and the answers.
+        let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
+        let ((asks_from, asks_to), (answers_from, answers_to)) =
+            pipes.map_err(|e| format!("a VM's grants: {e}"))?;
+        let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
+        let mut given = vec![
+            shards_ipc::Given {
+                name: "ask",
+                handle: asks_to.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "answer",
+                handle: answers_from.as_handle(),
+            },
+            shards_ipc::Given {
+                name: VM_LINK,
+                handle: link.as_handle(),
+            },
+        ];
+        let mut sockets = Vec::new();
+        if let Some((_, side)) = &network {
+            given.extend(side.given());
+            sockets.push(side.shared());
+        }
+        let net_arg = net.map(|mac| OsString::from(crate::netproc::VmSide::arg(&mac)));
+        let args: Vec<&OsStr> = args
+            .iter()
+            .map(OsString::as_os_str)
+            .chain(net_arg.iter().flat_map(|a| [OsStr::new("--net"), a.as_os_str()]))
+            .chain(
+                layer
+                    .iter()
+                    .flat_map(|l| [OsStr::new("--layer"), l.path().as_os_str()]),
+            )
+            .chain(
+                layer
+                    .iter()
+                    .filter_map(|l| l.cloned_of())
+                    .flat_map(|g| [OsStr::new("--layer-cloned"), OsStr::new(g)]),
+            )
+            .collect();
+        let err = io::stderr();
+        let env = crate::netproc::child_env();
+        let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
+            program: &self.vm,
+            args: &args,
+            grants_at: 1,
+            given: &given,
+            stdin: None,
+            stdout: err.as_handle(),
+            stderr: err.as_handle(),
+            sockets: &sockets,
+            env: &crate::netproc::env_pairs(&env),
+            container: Some(&container),
+            holds: shards_ipc::Holds::Hypervisor,
+        })
+        .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+        // Shared with it already, and its handles duplicated into it.
+        drop((given, sockets));
+        // Its network process, given the VM's process to watch, before the VM runs: ended
+        // with the suspended VM, a Job's, where it cannot start.
+        let net_process = match network {
+            Some((ready, side)) => {
+                let started = crate::netproc::start(ready, &suspended);
+                drop(side);
+                Some(started?)
+            }
+            None => None,
+        };
+        let giver = suspended.giver().map_err(|e| format!("answering a VM: {e}"))?;
+        let gives = suspended
+            .giver()
+            .map_err(|e| format!("a VM's link: {e}"))?
+            .into_handle();
+        let mut child = suspended
+            .resume()
+            .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+        // Its AppContainer's profile goes once it has, as its follower lets it go.
+        child.hold(container);
+        // What the daemon sends on its link goes to the VM: handles duplicated into it.
+        ours.gives_to(gives);
+        drop((asks_to, answers_from, link));
+        let grants = crate::grant::Link {
+            from: File::from(OwnedHandle::from(asks_from)),
+            to: File::from(OwnedHandle::from(answers_to)),
+        };
+        let vm = Arc::new(child);
+        // Its grants answered while it runs.
+        let answering =
+            std::thread::Builder::new()
+                .name("vm grants".into())
+                .spawn_scoped(threads, move || {
+                    let _ = crate::grant_answer::serve(&grants, &giver);
+                });
+        if let Err(e) = answering {
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            return Err(format!("answering VM {}: {e}", vm.id()));
+        }
+        let pooled = matches!(dest, For::Pool(_));
+        if pooled {
+            lock(&self.state).starting.insert(vm.id(), vm.clone());
+        }
+        let watched = vm.clone();
+        let watching = std::thread::Builder::new()
+            .name("warm vm".into())
+            .spawn_scoped(threads, move || {
+                self.watch(threads, watched, ours, None, None, dest, net_process, layer);
+            });
+        if let Err(e) = watching {
+            if pooled {
+                lock(&self.state).starting.remove(&vm.id());
+            }
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
             return Err(format!("watching VM {}: {e}", vm.id()));
         }
         Ok(())
@@ -6838,7 +7243,7 @@ impl<D: Disk> Daemon<D> {
         grants: Option<UnixStream>,
         net: Option<(UnixStream, Option<[u8; 6]>)>,
         dest: For,
-        net_process: Option<shards_ipc::Child>,
+        net_process: Option<crate::netproc::NetProcess>,
         layer: Option<layers::LayerFile>,
     ) {
         // Its network process's control socket, and the guest's MAC on it.
@@ -6900,7 +7305,7 @@ impl<D: Disk> Daemon<D> {
                         if !unstarted {
                             pool.failures += 1;
                         }
-                        let _ = child.kill(libc::SIGKILL);
+                        let _ = child.kill(shards_ipc::signal::SIGKILL);
                     }
                 }
                 self.changed.notify_all();
@@ -6925,7 +7330,7 @@ impl<D: Disk> Daemon<D> {
                     }));
                 }
                 Err(e) => {
-                    let _ = child.kill(libc::SIGKILL);
+                    let _ = child.kill(shards_ipc::signal::SIGKILL);
                     let _ = tx.send(Err(e));
                 }
             },
@@ -7008,18 +7413,13 @@ struct Log {
 /// The newest segment of the log in container directory `dir`, to go on writing: the
 /// last whose index is there (segments.rs).
 fn newest_log(dir: &Path) -> io::Result<Log> {
-    use std::os::unix::fs::OpenOptionsExt;
     let mut seq = 0;
     while dir.join(log_segment(seq + 1).1).exists() {
         seq += 1;
     }
     let (log, index) = log_segment(seq);
     let open = |name: String| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(dir.join(name))
+        crate::os::owner_only(std::fs::OpenOptions::new().create(true).append(true)).open(dir.join(name))
     };
     Ok(Log {
         log: open(log)?,
@@ -7161,18 +7561,13 @@ pub(super) fn validate_restart_policy((name, max): &(String, i64)) -> Result<(),
 /// A new container's directory `dir`, with its log's first segment and that segment's
 /// index, for this user alone and written by appends.
 fn new_log(dir: &Path) -> io::Result<Log> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     // In the home's `containers`, which is there while the home is: a daemon whose home
     // was removed never makes it again.
-    std::fs::DirBuilder::new().mode(0o700).create(dir)?;
+    crate::os::owner_only_dir(&mut std::fs::DirBuilder::new()).create(dir)?;
     // Its log, then its index, which says the segment is there (segments.rs).
     let (log, index) = log_segment(0);
     let made = |name: String| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(dir.join(name))
+        crate::os::owner_only(std::fs::OpenOptions::new().create(true).append(true)).open(dir.join(name))
     };
     let log = made(log)?;
     Ok(Log {
@@ -7351,7 +7746,7 @@ mod tests {
     /// watch ends when told to, though the client stays (D26).
     #[test]
     fn a_clients_end_and_interrupt_are_seen_and_nothing_else_it_sent_is_taken() {
-        let (_done, ended) = UnixStream::pair().unwrap();
+        let ended = shards_ipc::Latch::new().unwrap();
         let (conn, client) = UnixStream::pair().unwrap();
         drop(client);
         assert_eq!(watch_client(&conn, &ended), Watched::Gone);
@@ -7384,8 +7779,7 @@ mod tests {
             (kind::INTERRUPT, 15u32.to_be_bytes().to_vec())
         );
         let (conn, _client) = UnixStream::pair().unwrap();
-        let (done, ended) = UnixStream::pair().unwrap();
-        drop(done);
+        ended.set();
         assert_eq!(watch_client(&conn, &ended), Watched::Stayed);
     }
 
@@ -7673,7 +8067,7 @@ mod tests {
     impl<D: Disk + Opens> Drop for Test<D> {
         fn drop(&mut self) {
             for vm in lock(&self.vms).drain(..) {
-                let _ = vm.kill(libc::SIGKILL);
+                let _ = vm.kill(shards_ipc::signal::SIGKILL);
                 let _ = vm.wait();
             }
             // A spare being made as the home is removed fails its removal (ENOTEMPTY); once
@@ -7855,12 +8249,12 @@ mod tests {
             daemon.collecting.end();
             daemon.end_clients();
             for vm in lock(&self.test.vms).iter() {
-                let _ = vm.kill(libc::SIGKILL);
+                let _ = vm.kill(shards_ipc::signal::SIGKILL);
             }
             // And those the daemon started, as it ends them as it exits, whose watchers
             // return once they have gone.
             for vm in lock(&daemon.state).starting.values() {
-                let _ = vm.kill(libc::SIGKILL);
+                let _ = vm.kill(shards_ipc::signal::SIGKILL);
             }
             if let Some(joining) = self.joining.take() {
                 // Named, as libtest names the test's thread: the test's own output, and
@@ -8328,7 +8722,7 @@ mod tests {
             starting.warm.send(ready).unwrap();
             assert_eq!(joined(starting.run), Err("the daemon is shutting down".into()));
             assert_eq!(heard_nothing(&vm), 0, "the warm VM heard of the run");
-            assert_eq!(child.wait().unwrap(), 128 + libc::SIGKILL);
+            assert_eq!(child.wait().unwrap(), 128 + shards_ipc::signal::SIGKILL);
             assert_eq!(joined(waiting), (0, "128\n".into(), String::new()));
             let record = t.record(&id).unwrap();
             assert_eq!((record.state, record.exit_code), (Life::Created, Some(128)));
@@ -8506,7 +8900,7 @@ mod tests {
                 lock(&d.state).pools[&own(&cold)].ready.is_empty()
             });
             // Ended: its wait returns, as it would not for a sleep of 600 s.
-            assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
+            assert_eq!(vm.wait().unwrap(), 128 + shards_ipc::signal::SIGKILL);
         });
     }
 
@@ -8995,7 +9389,7 @@ mod tests {
                 pool.demand.begin(Instant::now());
                 pool.working_set_limit = Some(Some(4096));
             }
-            assert!(!readable(&t.daemon.listener_wake.1));
+            assert!(!t.daemon.listener_wake.pending());
             let watched = vm.clone();
             let (daemon, threads) = (&t.t.daemon, t.threads);
             let watching = dir.clone();
@@ -9012,7 +9406,7 @@ mod tests {
                 )
             });
             shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
-            t.until("the listener woken", |d| readable(&d.listener_wake.1));
+            t.until("the listener woken", |d| d.listener_wake.pending());
             assert!(t.daemon.next_duty(false).is_some());
             let records = lock(&t.daemon.state).pools.get(&own(&dir)).and_then(|p| {
                 p.ready
@@ -9020,7 +9414,7 @@ mod tests {
                     .and_then(|r| r.records.as_ref().map(|r| (r.dir.clone(), r.limit)))
             });
             assert_eq!(records, Some((dir.clone(), 4096)));
-            let _ = vm.kill(libc::SIGKILL);
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
         });
     }
 
@@ -9500,7 +9894,7 @@ mod tests {
             assert_eq!(heard(&vm).0, kind::RUN);
             // It ends without a word.
             drop(vm);
-            assert_eq!(first.wait().unwrap(), 128 + libc::SIGKILL);
+            assert_eq!(first.wait().unwrap(), 128 + shards_ipc::signal::SIGKILL);
             let (ready, vm) = t.warm_vm(None);
             starting.warm.send(ready).unwrap();
             serve(&vm, 0);
@@ -9518,7 +9912,7 @@ mod tests {
             starting.warm.send(ready).unwrap();
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::OUT, b"?");
-            assert_eq!(child.wait().unwrap(), 128 + libc::SIGKILL);
+            assert_eq!(child.wait().unwrap(), 128 + shards_ipc::signal::SIGKILL);
             drop(vm);
             joined(starting.run).unwrap();
             assert_eq!(count_asks(&starting.asks, &starting.asked), 1);
@@ -10096,7 +10490,7 @@ mod tests {
                 .ready
                 .push_back(ready);
             t.t.daemon.follow_vm(t.threads, vm.clone(), Some(own(&dir)), None);
-            let _ = vm.kill(libc::SIGKILL);
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the VM did not leave its pool", |d| {
                 lock(&d.state)
                     .pools
@@ -10294,7 +10688,7 @@ mod tests {
             });
             t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
             let ended = Instant::now();
-            let _ = vm.kill(libc::SIGKILL);
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(ended.elapsed() >= crate::netproc::GRACE, "freed within the grace");
             assert!(reaped(net_pid), "the network process was not reaped");
@@ -10322,11 +10716,11 @@ mod tests {
             });
             t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
             // SAFETY: kill(2) of the test's own child.
-            unsafe { libc::kill(net_pid as libc::pid_t, libc::SIGKILL) };
+            unsafe { libc::kill(net_pid as libc::pid_t, shards_ipc::signal::SIGKILL) };
             t.until("the network process was not reaped", |_| reaped(net_pid));
             assert_eq!(lock(&t.daemon.ports_held).len(), 1, "freed with the VM running");
             let ended = Instant::now();
-            let _ = vm.kill(libc::SIGKILL);
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(ended.elapsed() < crate::netproc::GRACE, "{:?}", ended.elapsed());
         });
@@ -10350,7 +10744,7 @@ mod tests {
                 listeners: Vec::new(),
             });
             t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
-            let _ = vm.kill(libc::SIGKILL);
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
             vm.ended().unwrap();
             // Its end handled: the network process given its grace, which a deadline holds.
             t.until("the VM's end was not handled", |d| {
@@ -10359,7 +10753,7 @@ mod tests {
             assert!(!reaped(vm.id()), "reaped while its ports were held");
             assert_eq!(lock(&t.daemon.ports_held).len(), 1);
             // SAFETY: kill(2) of the test's own child.
-            unsafe { libc::kill(net_pid as libc::pid_t, libc::SIGKILL) };
+            unsafe { libc::kill(net_pid as libc::pid_t, shards_ipc::signal::SIGKILL) };
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             t.until("the VM was not reaped", |_| reaped(vm.id()));
         });

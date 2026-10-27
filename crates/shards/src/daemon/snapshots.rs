@@ -420,7 +420,7 @@ impl<D: Disk> Daemon<D> {
             "restore".into(),
             r.dir.clone().into_os_string(),
             "--resume".into(),
-            "3".into(),
+            super::VM_LINK.into(),
         ];
         for (path, read_only) in shards_vmm::snapshot::backing_of(&pinned) {
             let mut backing = path.into_os_string();

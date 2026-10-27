@@ -398,14 +398,9 @@ pub fn prepare(
     ))
 }
 
-/// A started network process (Windows): it, and the AppContainer it runs in, whose profile
-/// goes once it has.
-#[cfg(windows)]
-#[derive(Debug)]
-pub struct NetProcess {
-    pub child: shards_ipc::Child,
-    _container: shards_ipc::AppContainer,
-}
+/// A started network process: on Windows holding the AppContainer it runs in, whose profile
+/// goes once it has (`shards_ipc::Child::hold`).
+pub type NetProcess = shards_ipc::Child;
 
 /// Starts `ready`, the network process of the VM `vm`, made and not yet running: given a
 /// handle to it that may only wait for its end, in an AppContainer holding the network's
@@ -436,7 +431,7 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
     let args: Vec<&std::ffi::OsStr> = ready.args.iter().map(std::ffi::OsString::as_os_str).collect();
     let err = std::io::stderr();
     let env = child_env();
-    let child = shards_ipc::spawn_confined(&shards_ipc::Spawn {
+    let mut child = shards_ipc::spawn_confined(&shards_ipc::Spawn {
         program: &binary,
         args: &args,
         grants_at: 0,
@@ -472,10 +467,8 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         .name("network dialer".into())
         .spawn(move || serve_dials(&ours, proxy.as_deref(), pid))
         .map_err(|e| format!("a network process's dialer: {e}"))?;
-    Ok(NetProcess {
-        child,
-        _container: container,
-    })
+    child.hold(container);
+    Ok(child)
 }
 
 /// Dials for the network process `pid`, in an AppContainer, as it asks over `link`
@@ -629,8 +622,8 @@ fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
 #[cfg(windows)]
 pub fn reap(net: &NetProcess) {
     let grace = u32::try_from(GRACE.as_millis()).unwrap_or(u32::MAX);
-    if !net.child.ended_within(grace) {
-        let _ = net.child.kill(shards_ipc::signal::SIGKILL);
-        let _ = net.child.wait();
+    if !net.ended_within(grace) {
+        let _ = net.kill(shards_ipc::signal::SIGKILL);
+        let _ = net.wait();
     }
 }
