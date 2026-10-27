@@ -89,8 +89,8 @@ sha2 = "0.11"
 
 [target.'cfg(windows)'.dev-dependencies]
 # What tests/confined.rs reads of a running VM process; how tests/daemon.rs interrupts a
-# client (Console), takes a slot (Storage_FileSystem) and reads the daemon's threads' cycles
-# (WindowsProgramming).
+# client (Console), takes a slot (Storage_FileSystem), reads the daemon's threads' cycles
+# (WindowsProgramming) and the files it holds (RestartManager).
 windows-sys = { workspace = true, features = [
   "Win32_Security",
   "Win32_Security_Isolation",
@@ -100,6 +100,7 @@ windows-sys = { workspace = true, features = [
   "Win32_System_JobObjects",
   "Win32_System_Pipes",
   "Win32_System_ProcessStatus",
+  "Win32_System_RestartManager",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_System_WindowsProgramming",

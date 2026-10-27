@@ -2,9 +2,10 @@
 //! image, lets its guest connect, and serves one request that arrives on FD
 //! (crates/shards/src/warm.rs). Here the test is both the daemon, which hands over a
 //! command with a client's connection and stdio, and that client. Needs vsock and
-//! snapshots.
+//! snapshots. On Windows FD is a pipe's handle `shards` inherits and gives the VM process it
+//! starts confined by name, as the daemon gives its VMs their links, and the test gives the
+//! VM process its request's handles as the daemon does, duplicated into it.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -14,47 +15,64 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, shards_vm, workload_image};
+use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
 use shards_abi::run::Spec;
+use shards_ipc::Stream;
+use shards_ipc::fd::{AsFd as _, OwnedFd};
 use shards_ipc::kind;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// A pipe's ends, read and write: closed on exec, handed on by message alone.
 fn pipe() -> (File, File) {
-    let mut fds = [0; 2];
-    // SAFETY: pipe(2) fills both descriptors.
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-    // SAFETY: fresh descriptors nothing else owns.
-    unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) }
+    let (read, write) = std::io::pipe().unwrap();
+    (File::from(OwnedFd::from(read)), File::from(OwnedFd::from(write)))
+}
+
+/// Every process this binary starts is started under it: on Windows a warm VM's link is
+/// inheritable while its `shards` starts, and a spawn by std hands every inheritable handle
+/// on, so that a process another test started meanwhile would hold the link, and the VM's
+/// end would outlive it.
+static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn spawning() -> std::sync::MutexGuard<'static, ()> {
+    SPAWNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What `cmd` says, run under [`SPAWNING`].
+fn output(cmd: &mut Command) -> std::process::Output {
+    let _turn = spawning();
+    cmd.output().unwrap()
 }
 
 /// Saves a template of the test image, booted and mounted.
 fn template(dir: &Path) -> PathBuf {
     let image = workload_image(dir);
     let template = dir.join("template");
-    let saved = common::command()
-        .args(["run", "--kernel"])
-        .arg(kernel())
-        .arg("--init")
-        .arg(guest_init())
-        .arg("--rootfs")
-        .arg(&image)
-        .arg("--snapshot-dir")
-        .arg(&template)
-        .arg("--no-console")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+    let saved = output(
+        common::command()
+            .args(["run", "--kernel"])
+            .arg(kernel())
+            .arg("--init")
+            .arg(guest_init())
+            .arg("--rootfs")
+            .arg(&image)
+            .arg("--snapshot-dir")
+            .arg(&template)
+            .arg("--no-console")
+            .stdin(Stdio::null()),
+    );
     assert!(
         saved.status.success(),
         "{}",
@@ -63,10 +81,13 @@ fn template(dir: &Path) -> PathBuf {
     template
 }
 
-/// A warm VM, and the daemon's end of its socket.
+/// A warm VM, and the daemon's end of its link.
 struct Warm {
+    /// The VM process on Unix; on Windows the `shards` that started it, and waits for it.
     child: Child,
-    daemon: UnixStream,
+    daemon: Stream,
+    /// The VM process's ID, once it is ready: on Windows the child's child.
+    vm: Option<u32>,
     /// On macOS, what grants the VM its files, as the daemon does.
     #[cfg(target_os = "macos")]
     _broker: Broker,
@@ -79,8 +100,8 @@ struct Broker(Child);
 #[cfg(target_os = "macos")]
 impl Broker {
     /// A broker on one end of a new pair; the VM's end is returned.
-    fn spawn() -> (Broker, UnixStream) {
-        let (vm, theirs) = UnixStream::pair().unwrap();
+    fn spawn() -> (Broker, Stream) {
+        let (vm, theirs) = Stream::pair().unwrap();
         let fd = theirs.as_raw_fd();
         let mut command = common::command();
         command.arg("grants").stdin(Stdio::null()).stdout(Stdio::null());
@@ -110,11 +131,15 @@ impl Drop for Broker {
 
 /// What the client holds while its command runs.
 struct Client {
-    conn: UnixStream,
+    conn: Stream,
     stdin: Option<File>,
     stdout: BufReader<File>,
     stderr: File,
 }
+
+/// The value `--warm` takes in `args`, the VM's end of its link: a descriptor number on
+/// Unix ([`Warm::spawn_with`] places it at 3), a handle's value on Windows.
+const LINK: &str = "LINK";
 
 impl Warm {
     fn spawn(template: &Path) -> Warm {
@@ -127,7 +152,7 @@ impl Warm {
             "restore".as_ref(),
             template.as_os_str(),
             "--warm".as_ref(),
-            "3".as_ref(),
+            LINK.as_ref(),
         ];
         Warm::spawn_with(&args, env)
     }
@@ -146,19 +171,20 @@ impl Warm {
             "--snapshot-dir".as_ref(),
             save.as_os_str(),
             "--warm".as_ref(),
-            "3".as_ref(),
+            LINK.as_ref(),
         ];
         Warm::spawn_with(&args, &[])
     }
 
     /// shards-vm with `args`, its daemon's socket at descriptor 3, and `env`.
-    fn spawn_with(args: &[&std::ffi::OsStr], env: &[(&str, &str)]) -> Warm {
-        let (daemon, theirs) = UnixStream::pair().unwrap();
+    #[cfg(unix)]
+    fn spawn_with(args: &[&OsStr], env: &[(&str, &str)]) -> Warm {
+        let (daemon, theirs) = Stream::pair().unwrap();
         let fd = theirs.as_raw_fd();
         // What the daemon runs.
-        let mut command = Command::new(shards_vm());
+        let mut command = Command::new(common::shards_vm());
         command
-            .args(args)
+            .args(args.iter().map(|a| if *a == LINK { OsStr::new("3") } else { *a }))
             .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -192,14 +218,58 @@ impl Warm {
                 Ok(())
             });
         }
-        let child = command.spawn().unwrap();
+        let child = {
+            let _turn = spawning();
+            command.spawn().unwrap()
+        };
         drop(theirs);
+        daemon.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let vm = Some(child.id());
+        Warm {
+            child,
+            daemon,
+            vm,
+            #[cfg(target_os = "macos")]
+            _broker: broker,
+        }
+    }
+
+    /// `shards` with `args`, which starts the VM process confined and gives it its end of
+    /// the link, a handle `shards` inherits, by name (cli `served_pipes`), and `env`.
+    #[cfg(windows)]
+    fn spawn_with(args: &[&OsStr], env: &[(&str, &str)]) -> Warm {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        // Each made once, by what may start processes of its own, before any link is
+        // inheritable.
+        let _ = (kernel(), guest_init());
+        let (daemon, theirs) = Stream::pair().unwrap();
+        let link = theirs.share().unwrap();
+        drop(theirs);
+        let value = (link.as_raw_handle() as usize).to_string();
+        let mut command = common::command();
+        command
+            .args(args.iter().map(|a| if *a == LINK { OsStr::new(&value) } else { *a }))
+            .envs(env.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let child = {
+            let _turn = spawning();
+            // SAFETY: sets one flag of a handle this test holds, for the spawn below alone.
+            let set = unsafe { SetHandleInformation(link.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+            assert_ne!(set, 0);
+            let spawned = command.spawn();
+            // SAFETY: as above, cleared again.
+            unsafe { SetHandleInformation(link.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) };
+            spawned.unwrap()
+        };
+        drop(link);
         daemon.set_read_timeout(Some(TIMEOUT)).unwrap();
         Warm {
             child,
             daemon,
-            #[cfg(target_os = "macos")]
-            _broker: broker,
+            vm: None,
         }
     }
 
@@ -218,6 +288,15 @@ impl Warm {
                 panic!("no READY ({other:?}); the warm VM said:\n{err}");
             }
         }
+        // The VM process its `shards` started, which the request's handles go to, as the
+        // daemon gives its VMs theirs.
+        #[cfg(windows)]
+        {
+            let found = common::vm_processes(self.child.id());
+            assert_eq!(found.len(), 1, "the VM processes of shards {}: {found:?}", self.child.id());
+            self.daemon.gives_to(common::giver(found[0]));
+            self.vm = Some(found[0]);
+        }
     }
 
     /// Hands `argv` to the warm VM, which must not take it: it ends without TAKEN, as a
@@ -231,7 +310,7 @@ impl Warm {
             hostname: b"warm".to_vec(),
             ..Spec::default()
         };
-        let (_conn, theirs) = UnixStream::pair().unwrap();
+        let (_conn, theirs) = Stream::pair().unwrap();
         let (stdin_r, _stdin_w) = pipe();
         let (_stdout_r, stdout_w) = pipe();
         let (_stderr_r, stderr_w) = pipe();
@@ -244,16 +323,12 @@ impl Warm {
         }
         .encode_into(&mut payload);
         payload.extend(spec.encode());
+        let conn = shards_ipc::handed(&theirs).unwrap();
         shards_ipc::send(
             &self.daemon,
             kind::RUN,
             &payload,
-            &[
-                theirs.as_fd(),
-                stdin_r.as_fd(),
-                stdout_w.as_fd(),
-                stderr_w.as_fd(),
-            ],
+            &[conn, stdin_r.as_fd(), stdout_w.as_fd(), stderr_w.as_fd()],
         )
         .unwrap();
         assert!(
@@ -295,7 +370,7 @@ impl Warm {
             setup,
             terms: Vec::new(),
         };
-        let (conn, theirs) = UnixStream::pair().unwrap();
+        let (conn, theirs) = Stream::pair().unwrap();
         let (stdin_r, stdin_w) = pipe();
         let (stdout_r, stdout_w) = pipe();
         let (stderr_r, stderr_w) = pipe();
@@ -314,12 +389,13 @@ impl Warm {
         }
         .encode_into(&mut payload);
         payload.extend(spec.encode());
+        let handed = shards_ipc::handed(&theirs).unwrap();
         shards_ipc::send(
             &self.daemon,
             kind::RUN,
             &payload,
             &[
-                theirs.as_fd(),
+                handed.as_fd(),
                 stdin_r.as_fd(),
                 stdout_w.as_fd(),
                 stderr_w.as_fd(),
@@ -344,16 +420,17 @@ impl Warm {
     /// leaving the daemon's socket.
     fn ends(mut self, status: u8, not_run: Option<&str>) {
         let started = not_run.is_none();
-        let (tx, rx) = mpsc::channel();
-        let pid = self.child.id() as libc::pid_t;
-        std::thread::spawn(move || {
-            if rx.recv_timeout(TIMEOUT).is_err() {
-                // SAFETY: kill(2) of our own child, reaped only after `tx` is sent.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+        let deadline = Instant::now() + TIMEOUT;
+        let exited = loop {
+            if let Some(exited) = self.child.try_wait().unwrap() {
+                break exited;
             }
-        });
-        let exited = self.child.wait().unwrap();
-        let _ = tx.send(());
+            if Instant::now() >= deadline {
+                let _ = self.child.kill();
+                break self.child.wait().unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
         assert!(exited.success(), "the warm VM exited with {exited}");
         let mut said = Vec::new();
         let mut done = false;
@@ -430,17 +507,57 @@ impl Client {
 
 /// Whether `stdout` reads end of file within a second: the warm VM holds no copy of it.
 /// The client's copies went once the VM took them.
+#[cfg(unix)]
 fn ends(stdout: &mut BufReader<File>) -> bool {
     let fd = stdout.get_ref().as_raw_fd();
     // SAFETY: fcntl(2) on a descriptor this test owns.
     unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(1);
     let mut sink = Vec::new();
     loop {
         match stdout.read_to_end(&mut sink) {
             Ok(_) => return true,
-            Err(_) if std::time::Instant::now() >= deadline => return false,
+            Err(_) if Instant::now() >= deadline => return false,
             Err(_) => std::thread::sleep(Duration::from_millis(1)),
+        }
+    }
+}
+
+/// [`ends`] of an anonymous pipe, which Windows reads without blocking by no flag: its end
+/// is a peek that finds it broken (ERROR_BROKEN_PIPE, every writer gone), what it holds read
+/// meanwhile.
+#[cfg(windows)]
+fn ends(stdout: &mut BufReader<File>) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let handle = stdout.get_ref().as_raw_handle();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut sink = vec![0u8; 64 << 10];
+    loop {
+        let mut held = 0u32;
+        // SAFETY: a pipe this test owns, peeked for its count of bytes alone.
+        let peeked = unsafe {
+            PeekNamedPipe(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut held,
+                std::ptr::null_mut(),
+            )
+        };
+        if peeked == 0 {
+            // SAFETY: no arguments.
+            return unsafe { GetLastError() } == ERROR_BROKEN_PIPE;
+        }
+        if held > 0 {
+            let n = usize::try_from(held).unwrap().min(sink.len());
+            stdout.get_mut().read_exact(&mut sink[..n]).unwrap();
+        } else if Instant::now() >= deadline {
+            return false;
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -530,10 +647,11 @@ fn a_warm_vms_log_stays_out_of_its_clients_stderr() {
 /// A warm VM that saves a template takes its run only out of the template's reach (review
 /// 8.2): every later run of the image restores what it saved. On Linux it gives the
 /// template's directory up once the template is committed (a Landlock layer, checked); on
-/// macOS, whose grants cannot be given up and name paths (PM M102), its template must have
-/// been moved from where it was granted, as the daemon moves one into place before it
-/// hands over a run. One left there takes no run, which the daemon then gives to another
-/// VM, and says why.
+/// Windows its spawner, which wrote the template on its word, gives the directory up as it
+/// commits it (D196); on macOS, whose grants cannot be given up and name paths (PM M102),
+/// its template must have been moved from where it was granted, as the daemon moves one
+/// into place before it hands over a run. One left there takes no run, which the daemon
+/// then gives to another VM, and says why.
 #[test]
 fn a_template_saver_takes_a_run_only_out_of_the_templates_reach() {
     if cannot_run_vms() || cannot_pool() {
@@ -603,13 +721,13 @@ fn warm_needs_a_socket_of_its_own() {
     let dir = TempDir::new("warm-bad");
     let template = template(&dir);
     for fd in ["0", "2", "9"] {
-        let out = common::command()
-            .args(["restore"])
-            .arg(&template)
-            .args(["--warm", fd])
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+        let out = output(
+            common::command()
+                .args(["restore"])
+                .arg(&template)
+                .args(["--warm", fd])
+                .stdin(Stdio::null()),
+        );
         assert!(!out.status.success(), "--warm {fd} was accepted");
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("--warm"),
@@ -635,12 +753,10 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
     let mut client = warm.run(&["/bin/testguest", "exit", "0"], false);
     assert_eq!(client.exit(), 0);
     // Frozen before it can tear down: whatever it still held, it would hold now.
-    let pid = warm.child.id() as libc::pid_t;
-    // SAFETY: kill(2) of our own child, reaped only in `ends`.
-    unsafe { libc::kill(pid, libc::SIGSTOP) };
-    let ended = client.stdout_ends();
-    // SAFETY: as above.
-    unsafe { libc::kill(pid, libc::SIGCONT) };
+    let ended = {
+        let _frozen = freeze(warm.vm.unwrap());
+        client.stdout_ends()
+    };
     assert!(ended, "the warm VM held the client's stdout past its exit status");
     warm.ends(0, None);
 
@@ -660,4 +776,26 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
     );
     warm.child.kill().unwrap();
     warm.child.wait().unwrap();
+}
+
+/// Process `pid` stopped until the value drops: SIGSTOP, then SIGCONT, on Unix; each of its
+/// threads suspended on Windows ([`common::Frozen`]).
+#[cfg(unix)]
+fn freeze(pid: u32) -> impl Drop {
+    struct Stopped(libc::pid_t);
+    impl Drop for Stopped {
+        fn drop(&mut self) {
+            // SAFETY: kill(2) of our own child, reaped only after this.
+            unsafe { libc::kill(self.0, libc::SIGCONT) };
+        }
+    }
+    let pid = libc::pid_t::try_from(pid).unwrap();
+    // SAFETY: kill(2) of our own child, reaped only in `ends`.
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    Stopped(pid)
+}
+
+#[cfg(windows)]
+fn freeze(pid: u32) -> common::Frozen {
+    common::Frozen::new(pid)
 }

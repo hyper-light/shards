@@ -1256,7 +1256,10 @@ type ServedPipe = (String, std::os::windows::io::BorrowedHandle<'static>);
 /// with `--slates-fs`, as `--net`'s handles are given: no handle's value crosses as a flag,
 /// since none is known in the child before the spawn duplicates it there. Each must be a
 /// pipe this process holds of its own, given once ([`served_pipe`]). `restore` takes none,
-/// as Unix's takes no `--slates-fs-fd`. The arguments the VM is given, and the pipes.
+/// as Unix's takes no `--slates-fs-fd`. `--warm V`, a warm VM's link to the daemon that
+/// serves it its request (D26), as Unix's `--warm FD` names its socket, goes so too, as
+/// [`WARM`], once. What follows `--` is the workload's, kept as it is. The arguments the VM
+/// is given, and the pipes.
 #[cfg(windows)]
 fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), String> {
     let restoring = args.first().is_some_and(|a| a == "restore");
@@ -1265,28 +1268,43 @@ fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), S
     let mut values: Vec<usize> = Vec::new();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
-        if arg != "--slates-fs-handle" {
+        if arg == "--" {
             kept.push(arg.clone());
-            continue;
+            kept.extend(rest.cloned());
+            break;
         }
+        let flag = match arg.to_str() {
+            Some(flag @ ("--slates-fs-handle" | "--warm")) => flag,
+            _ => {
+                kept.push(arg.clone());
+                continue;
+            }
+        };
         // Refused under its own name, as Unix's parse_restore refuses --slates-fs-fd, not
         // under the `--slates-fs` it would become.
-        if restoring {
+        if restoring && flag == "--slates-fs-handle" {
             return Err(format!("unexpected argument {arg:?}"));
         }
         let given = rest
             .next()
             .and_then(|v| v.to_str())
-            .ok_or("--slates-fs-handle: no handle given")?;
+            .ok_or(format!("{flag}: no handle given"))?;
         let value: usize = given
             .parse()
-            .map_err(|_| format!("--slates-fs-handle {given:?}: not a handle"))?;
+            .map_err(|_| format!("{flag} {given:?}: not a handle"))?;
         if values.contains(&value) {
-            return Err(format!("--slates-fs-handle {value}: given twice"));
+            return Err(format!("{flag} {value}: given twice"));
         }
-        let handle = served_pipe(value)?;
-        let name = format!("slates-fs-{}", pipes.len());
-        kept.push("--slates-fs".into());
+        let name = if flag == "--warm" {
+            if pipes.iter().any(|(name, _)| name == WARM) {
+                return Err(format!("{flag}: given twice"));
+            }
+            WARM.to_string()
+        } else {
+            format!("slates-fs-{}", pipes.len())
+        };
+        let handle = served_pipe(flag, value)?;
+        kept.push(if flag == "--warm" { "--warm" } else { "--slates-fs" }.into());
         kept.push(name.clone().into());
         values.push(value);
         pipes.push((name, handle));
@@ -1294,14 +1312,18 @@ fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), S
     Ok((kept, pipes))
 }
 
-/// The pipe at `value`, which this process inherited for a share: never one of its standard
-/// handles, refused as Unix refuses descriptors 0 to 2 (a piped stdin passes GetFileType,
-/// and would be the share's stream and the VM's stdin at once), and a pipe. Its inherit
-/// flag is cleared: an inherited handle stays inheritable, and a spawn by std, which passes
-/// every inheritable handle on, would hand it to that child too. It reaches the VM by
-/// DuplicateHandle alone.
+/// The name a warm VM's link to its daemon goes to it by in its grants (`--warm V`).
 #[cfg(windows)]
-fn served_pipe(value: usize) -> Result<std::os::windows::io::BorrowedHandle<'static>, String> {
+const WARM: &str = "warm";
+
+/// The pipe at `value`, which this process inherited for a share or a warm VM's link (named
+/// by `flag`): never one of its standard handles, refused as Unix refuses descriptors 0 to
+/// 2 (a piped stdin passes GetFileType, and would be the share's stream and the VM's stdin
+/// at once), and a pipe. Its inherit flag is cleared: an inherited handle stays
+/// inheritable, and a spawn by std, which passes every inheritable handle on, would hand it
+/// to that child too. It reaches the VM by DuplicateHandle alone.
+#[cfg(windows)]
+fn served_pipe(flag: &str, value: usize) -> Result<std::os::windows::io::BorrowedHandle<'static>, String> {
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
     use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
     use windows_sys::Win32::System::Console::{
@@ -1317,21 +1339,16 @@ fn served_pipe(value: usize) -> Result<std::os::windows::io::BorrowedHandle<'sta
             !held.is_null() && held != INVALID_HANDLE_VALUE && held == raw
         });
     if standard {
-        return Err(format!("--slates-fs-handle {value}: not a handle of its own"));
+        return Err(format!("{flag} {value}: not a handle of its own"));
     }
     // SAFETY: GetFileType reads a handle's type and touches no memory; a value this
     // process holds no handle at answers FILE_TYPE_UNKNOWN.
     if value == 0 || unsafe { GetFileType(raw) } != FILE_TYPE_PIPE {
-        return Err(format!(
-            "--slates-fs-handle {value}: not a pipe this process holds"
-        ));
+        return Err(format!("{flag} {value}: not a pipe this process holds"));
     }
     // SAFETY: changes one flag of a pipe this process holds, as GetFileType just answered.
     if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, 0) } == 0 {
-        return Err(format!(
-            "--slates-fs-handle {value}: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(format!("{flag} {value}: {}", std::io::Error::last_os_error()));
     }
     // SAFETY: a handle this process inherited for this share and never closes: it stays
     // open while the spawn duplicates it into the VM, and until this process ends.
@@ -1445,6 +1462,39 @@ mod served_pipes_tests {
                 e.contains("--slates-fs-handle") && e.contains(why),
                 "{given:?}: {e}"
             );
+        }
+    }
+
+    /// A warm VM's link (`--warm V`) goes to `restore` and `run` as `warm`, once; what
+    /// follows `--` is the workload's, its `--warm` and `--slates-fs-handle` among it.
+    #[test]
+    fn a_warm_vms_link_goes_by_name_once() {
+        let (read, _write) = std::io::pipe().unwrap();
+        let value = (read.as_raw_handle() as usize).to_string();
+        for command in ["restore", "run"] {
+            let (kept, pipes) =
+                served_pipes(&args(&[command, "/t", "--warm", value.as_str(), "--", "/bin/x", "--warm", "5"]))
+                    .unwrap();
+            assert_eq!(
+                kept,
+                args(&[command, "/t", "--warm", "warm", "--", "/bin/x", "--warm", "5"])
+            );
+            assert_eq!(pipes.len(), 1);
+            assert_eq!(pipes[0].0, "warm");
+        }
+        let (second, _w) = std::io::pipe().unwrap();
+        let other = (second.as_raw_handle() as usize).to_string();
+        for (given, why) in [
+            (
+                vec!["restore", "/t", "--warm", value.as_str(), "--warm", other.as_str()],
+                "given twice",
+            ),
+            (vec!["restore", "/t", "--warm", "0"], "not a pipe this process holds"),
+            (vec!["restore", "/t", "--warm", "x"], "not a handle"),
+            (vec!["restore", "/t", "--warm"], "no handle given"),
+        ] {
+            let e = served_pipes(&args(&given)).err().unwrap();
+            assert!(e.contains("--warm") && e.contains(why), "{given:?}: {e}");
         }
     }
 

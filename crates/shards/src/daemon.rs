@@ -6491,9 +6491,7 @@ impl<D: Disk> Daemon<D> {
         let mut cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
         on_network(&mut cfg);
         cfg.gpu = prepared.gpu.is_some();
-        // Templates and warm pools on Windows, which WHP's snapshots (D196) make possible,
-        // come with the platform parity plan's step 4: its runs boot cold until then.
-        if !shards_vmm::vm::SNAPSHOTS || cfg!(windows) {
+        if !shards_vmm::vm::SNAPSHOTS {
             return self.cold(
                 threads,
                 &cfg,

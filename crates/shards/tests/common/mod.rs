@@ -133,23 +133,12 @@ pub fn cannot_snapshot() -> bool {
 }
 
 /// Whether the daemon here keeps the snapshots it keeps, its templates, warm pools and saves
-/// (D25, D26, D176): where there are snapshots, but not on Windows yet, whose daemon boots
-/// every run cold until the platform parity plan's step 4 brings them there.
-pub const POOLS: bool = shards_vmm::vm::SNAPSHOTS && !cfg!(windows);
+/// (D25, D26, D176): wherever there are snapshots.
+pub const POOLS: bool = shards_vmm::vm::SNAPSHOTS;
 
 /// Whether tests of the snapshots a daemon keeps skip here ([`POOLS`]), saying why.
 pub fn cannot_pool() -> bool {
-    if cannot_snapshot() {
-        return true;
-    }
-    if !POOLS {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIP: templates and warm pools on Windows come with the platform parity plan's step 4"
-        );
-        return true;
-    }
-    false
+    cannot_snapshot()
 }
 
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
@@ -694,6 +683,114 @@ fn carried() -> PathBuf {
 pub fn alive(pid: i32) -> bool {
     // SAFETY: kill(2) with signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// The IDs of the VM processes `parent` started: its children named shards-vm. On Windows
+/// `shards run --kernel` and `shards restore` start the VM process as a child, confined,
+/// and answer what it asks for, where Unix's become it.
+#[cfg(windows)]
+pub fn vm_processes(parent: u32) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: a snapshot of every process, closed below.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    assert_ne!(snap, INVALID_HANDLE_VALUE);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = Vec::new();
+    // SAFETY: the snapshot, and an entry of its own size.
+    let mut more = unsafe { Process32FirstW(snap, &raw mut entry) } != 0;
+    while more {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+        if entry.th32ParentProcessID == parent && name.eq_ignore_ascii_case("shards-vm.exe") {
+            found.push(entry.th32ProcessID);
+        }
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snap, &raw mut entry) } != 0;
+    }
+    // SAFETY: the snapshot taken above, closed once.
+    unsafe { CloseHandle(snap) };
+    found
+}
+
+/// A handle to process `pid` that may give it handles (PROCESS_DUP_HANDLE), as a VM's
+/// spawner holds one: what `shards_ipc::Stream::gives_to` takes.
+#[cfg(windows)]
+pub fn giver(pid: u32) -> std::os::windows::io::OwnedHandle {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_DUP_HANDLE};
+    // SAFETY: a process handle of the one right asked, owned from here on.
+    let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, pid) };
+    assert!(!raw.is_null(), "process {pid}: {}", io::Error::last_os_error());
+    // SAFETY: the handle just opened, which nothing else owns.
+    unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) }
+}
+
+/// Process `pid`'s threads, each suspended until the value drops (SuspendThread, as
+/// SIGSTOP stops a Unix process): what it holds, it holds while they are.
+#[cfg(windows)]
+pub struct Frozen(Vec<std::os::windows::io::OwnedHandle>);
+
+#[cfg(windows)]
+impl Frozen {
+    pub fn new(pid: u32) -> Frozen {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+        };
+        use windows_sys::Win32::System::Threading::{OpenThread, SuspendThread, THREAD_SUSPEND_RESUME};
+        // SAFETY: a snapshot of every thread, closed below.
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        assert_ne!(snap, INVALID_HANDLE_VALUE);
+        let mut entry = THREADENTRY32 {
+            dwSize: size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut threads = Vec::new();
+        // SAFETY: the snapshot, and an entry of its own size.
+        let mut more = unsafe { Thread32First(snap, &raw mut entry) } != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: a thread's handle of the one right asked, owned below.
+                let raw = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if !raw.is_null() {
+                    // SAFETY: the handle just opened, which nothing else owns.
+                    let thread = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) };
+                    // SAFETY: a thread of ours to suspend, resumed as the value drops.
+                    if unsafe { SuspendThread(raw) } != u32::MAX {
+                        threads.push(thread);
+                    }
+                }
+            }
+            // SAFETY: as above.
+            more = unsafe { Thread32Next(snap, &raw mut entry) } != 0;
+        }
+        // SAFETY: the snapshot taken above, closed once.
+        unsafe { CloseHandle(snap) };
+        assert!(!threads.is_empty(), "process {pid} has no thread to suspend");
+        Frozen(threads)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Frozen {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle as _;
+        for thread in &self.0 {
+            // SAFETY: a thread this value suspended, resumed once.
+            unsafe { windows_sys::Win32::System::Threading::ResumeThread(thread.as_raw_handle()) };
+        }
+    }
 }
 
 /// Whether process `pid` has yet to end: its exit code still STILL_ACTIVE

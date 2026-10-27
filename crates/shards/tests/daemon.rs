@@ -2,11 +2,9 @@
 //! its first run starts, served from pools of warm VMs of the image's template. Real VMs;
 //! the image comes from a loopback registry (tests/common, `served`), and its entrypoint
 //! is the test guest, so a command is one of its modes. Needs vsock; its template and pool
-//! tests need snapshots too, and print SKIP where the daemon keeps none (`cannot_pool`):
-//! on Windows until the parity plan's step 4. The rest run there as on Unix, a
-//! recorded guest booted cold. Tests of what Windows serves with a later step are Unix's
-//! until then, each naming it; tests of a Unix mechanism Windows has no counterpart of say
-//! so.
+//! tests need snapshots too, and print SKIP where the daemon keeps none (`cannot_pool`).
+//! Tests of what Windows serves with a later step are Unix's until then, each naming it;
+//! tests of a Unix mechanism Windows has no counterpart of say so.
 
 #![allow(
     clippy::panic,
@@ -188,13 +186,80 @@ fn daemon_pid(home: &Path) -> Option<i32> {
         .ok()
 }
 
-/// The files process `pid` holds open, by path: from /proc on Linux, from lsof elsewhere.
-/// Windows lists a process's handles by no tool of its own; the one test that asks, a
-/// pool's, waits for the parity plan's step 4 there.
-fn open_files(pid: i32) -> Vec<String> {
-    if cfg!(windows) {
-        panic!("a process's open files are not listed on Windows yet (the parity plan's step 4)");
+/// The files under `dir` whose names `named` takes that process `pid` holds open: of those
+/// it lists open, from /proc on Linux and lsof elsewhere; on Windows, which lists no
+/// process's files, of the files under `dir`, those its Restart Manager says the process
+/// uses (RmGetList: a file open or mapped).
+fn held_under(pid: i32, dir: &Path, named: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+    let named = |p: &Path| p.file_name().and_then(|n| n.to_str()).is_some_and(&named);
+    #[cfg(windows)]
+    {
+        files_under(dir)
+            .into_iter()
+            .filter(|f| named(f) && users(f).iter().any(|&u| i64::from(u) == i64::from(pid)))
+            .collect()
     }
+    #[cfg(not(windows))]
+    {
+        open_files(pid)
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| p.starts_with(dir) && named(p))
+            .collect()
+    }
+}
+
+/// Every file under `dir`, its subdirectories' among them.
+#[cfg(windows)]
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => dirs.push(e.path()),
+                Ok(t) if t.is_file() => files.push(e.path()),
+                _ => {}
+            }
+        }
+    }
+    files
+}
+
+/// The processes that use `file`, open or mapped, as Windows' Restart Manager says
+/// (RmStartSession, RmRegisterResources, RmGetList).
+#[cfg(windows)]
+fn users(file: &Path) -> Vec<u32> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::RestartManager::{
+        CCH_RM_SESSION_KEY, RM_PROCESS_INFO, RmEndSession, RmGetList, RmRegisterResources, RmStartSession,
+    };
+    let mut session = 0u32;
+    let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
+    // SAFETY: a session's handle and key, into locals of their size.
+    assert_eq!(unsafe { RmStartSession(&mut session, 0, key.as_mut_ptr()) }, ERROR_SUCCESS);
+    let wide: Vec<u16> = file.as_os_str().encode_wide().chain([0]).collect();
+    let names = [wide.as_ptr()];
+    // SAFETY: one file's NUL-terminated name, for the session just started.
+    let registered = unsafe {
+        RmRegisterResources(session, 1, names.as_ptr(), 0, std::ptr::null(), 0, std::ptr::null())
+    };
+    let mut found = vec![RM_PROCESS_INFO::default(); 64];
+    let (mut needed, mut listed, mut reasons) = (0u32, found.len() as u32, 0u32);
+    // SAFETY: room for `listed` entries, which it says how many it filled.
+    let got = unsafe { RmGetList(session, &mut needed, &mut listed, found.as_mut_ptr(), &mut reasons) };
+    // SAFETY: the session started above, ended once.
+    unsafe { RmEndSession(session) };
+    assert_eq!(registered, ERROR_SUCCESS, "{}", file.display());
+    assert_eq!(got, ERROR_SUCCESS, "{} processes use {}", needed, file.display());
+    found.truncate(listed as usize);
+    found.iter().map(|p| p.Process.dwProcessId).collect()
+}
+
+/// The files process `pid` holds open, by path: from /proc on Linux, from lsof elsewhere.
+#[cfg(not(windows))]
+fn open_files(pid: i32) -> Vec<String> {
     if cfg!(target_os = "linux") {
         return std::fs::read_dir(format!("/proc/{pid}/fd"))
             .unwrap()
@@ -2552,20 +2617,16 @@ fn a_pool_of_none_serves_every_run() {
     // Where no VM is kept, its daemon holds its template's memory and root filesystem open
     // between its runs, so that its host keeps their pages (PM M315).
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    let real = std::fs::canonicalize(&*home)
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let open = open_files(daemon);
-    let held = |end: &str| {
-        open.iter()
-            .any(|p| p.starts_with(&real) && p.contains("/templates/") && p.ends_with(end))
+    // As the daemon names them: through links on Unix, as lsof and /proc resolve them.
+    let real = if cfg!(windows) {
+        home.to_path_buf()
+    } else {
+        std::fs::canonicalize(&*home).unwrap()
     };
-    assert!(held("/memory"), "{open:?}");
-    assert!(
-        open.iter().any(|p| p.starts_with(&real) && p.ends_with(".erofs")),
-        "{open:?}"
-    );
+    let memory = held_under(daemon, &real.join("templates"), |n| n == "memory");
+    assert!(!memory.is_empty(), "its template's memory");
+    let roots = held_under(daemon, &real, |n| n.ends_with(".erofs"));
+    assert!(!roots.is_empty(), "its template's root filesystem");
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }

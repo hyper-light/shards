@@ -943,7 +943,8 @@ fn the_template(home: &std::path::Path) -> std::path::PathBuf {
 /// `SHARDS_VM_BINARY`, which plants it and becomes this build's). The daemon writes its
 /// record beside the template, through nothing the VM left: the file is untouched, and the
 /// template still restores. Unix's: its wrapper is a script that execs the VM process, and
-/// Windows' templates come with the platform parity plan's step 4.
+/// on Windows a VM writes nothing of the template it saves, which its spawner stages and
+/// commits on its word, then gives up (D196): a VM taken over leaves nothing there.
 #[cfg(unix)]
 #[test]
 fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
@@ -997,7 +998,8 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
 /// restore to meet (PM M165): its memory a link to a FIFO outside the template, and its
 /// working set a FIFO. A restore opens neither, nor waits on either: no reader ever holds
 /// either FIFO while the next run happens, which boots instead, the template refused.
-/// Unix's: FIFOs are, and Windows' templates come with the platform parity plan's step 4.
+/// Unix's: FIFOs are, and on Windows a VM writes nothing of the template it saves, which its
+/// spawner stages (D196).
 #[cfg(unix)]
 #[test]
 fn a_restore_reaches_nothing_its_saver_left_in_its_template() {

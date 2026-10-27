@@ -12,12 +12,9 @@ mod common;
 use std::time::Duration;
 
 use common::{Vm, cannot_run_vms, kernel, test_guest, vm_run};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile};
 use windows_sys::Win32::Security::{FreeSid, GetTokenInformation, PSID, TOKEN_QUERY, TokenIsAppContainer};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
-};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
     GetProcessMitigationPolicy, OpenProcess, OpenProcessToken, PROCESS_MITIGATION_POLICY,
@@ -40,29 +37,7 @@ impl Drop for Handle {
 
 /// The ID of the VM process `shards` (`parent`) started: shards-vm, its child.
 fn vm_process(parent: u32) -> u32 {
-    // SAFETY: a snapshot of every process, closed as it drops.
-    let snap = Handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) });
-    assert_ne!(snap.0, INVALID_HANDLE_VALUE);
-    let mut entry = PROCESSENTRY32W {
-        dwSize: size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-    let mut found = Vec::new();
-    // SAFETY: the snapshot, and an entry of its own size.
-    let mut more = unsafe { Process32FirstW(snap.0, &raw mut entry) } != 0;
-    while more {
-        let end = entry
-            .szExeFile
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(entry.szExeFile.len());
-        let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
-        if entry.th32ParentProcessID == parent && name.eq_ignore_ascii_case("shards-vm.exe") {
-            found.push(entry.th32ProcessID);
-        }
-        // SAFETY: as above.
-        more = unsafe { Process32NextW(snap.0, &raw mut entry) } != 0;
-    }
+    let found = common::vm_processes(parent);
     assert_eq!(found.len(), 1, "shards {parent}'s VM processes: {found:?}");
     found[0]
 }
