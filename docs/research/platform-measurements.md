@@ -15051,6 +15051,15 @@ revision before comparing a changed API/implementation.
     it will, the client ended 0 s after the kill, as on macOS
     (`a_client_hears_its_session_end_though_it_says_nothing`, which fails on jupiter with
     that read kept).
+  - A run given an interactive stdin that stays open and says nothing (`sleep 60 | shards
+    run -i --rm alpine echo hi`): the command printed, then the client did not end until a
+    timeout killed it 40 s on, its run's VM process still there; on macOS the client ended
+    2 s on. At the run's end the VM process gives its client's standard handles up, and the
+    close of its old standard input, which another of its threads was reading, waited for
+    that read to end, which the client's open stdin never did, so its output's handles,
+    closed after, never were. Its output closed first, and its input's read cancelled
+    (CancelIoEx) and the handle closed on a thread of its own, the client ended as its
+    command did, status 0.
 - **Consequence (D195).**
   - The daemon waits on its slots, and its clients on its answers, by reads of no bytes
     (`pipe::Poller`, `await_any`); it sees a client's open by PeekNamedPipe; a client waits

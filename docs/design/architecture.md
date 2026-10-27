@@ -6415,7 +6415,9 @@ forked.
   A slot's `say` and `answer` being one instance, which its client hears end only once
   every handle of the daemon's has closed, the daemon reads what the client says only
   until its side has said all it will: a run whose microVM was killed left its client
-  waiting for ever before (M348).
+  waiting for ever before (M348). Likewise a run's VM gives up its client's stdio at the
+  run's end with its output first and without waiting on a read of its input, which an
+  interactive client's open stdin never ends (M348).
 - **Waits.** A read of no bytes on an overlapped pipe waits for what comes without taking
   it (M348): the daemon's followers wait on its runs' streams, and on processes' ends and
   events, through `pipe::Poller` (an I/O completion port, and a thread-pool wait on each
