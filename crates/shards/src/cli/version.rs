@@ -170,7 +170,6 @@ pub fn run(args: &[OsString]) -> ExitCode {
         Err(answered) => return answered,
     };
     let format = parsed.string("format");
-    #[cfg(unix)]
     if format.is_empty()
         && let Some(p) = super::look::styled()
     {

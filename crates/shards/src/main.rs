@@ -48,6 +48,8 @@ mod netproc;
 #[cfg(unix)]
 mod networks;
 mod oidc;
+// The daemon's, Unix's alone as yet (D195).
+#[cfg_attr(not(unix), allow(dead_code))]
 mod pull;
 mod resources;
 mod run;

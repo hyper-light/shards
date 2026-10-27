@@ -16,8 +16,8 @@
 //! It needs only `shards_ipc` and the OS: it is the thin `shards` binary's (main.rs).
 
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::io::{self, IsTerminal as _, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
@@ -25,9 +25,26 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_cmdline::term::{EscapeProxy, Read as Typed};
-use shards_ipc::{Command, Run, SOCKET, kind, log};
+#[cfg(unix)]
+use shards_ipc::SOCKET;
+#[cfg(unix)]
+use shards_ipc::fd::OwnedFd;
+use shards_ipc::fd::{AsFd, BorrowedFd};
+use shards_ipc::{Command, Run, kind, log};
 
 use crate::cli::{NOT_RUN, terminal};
+
+/// A signal as this client takes it: the host's own number on Unix; on Windows, Linux's,
+/// as which the console's events are taken ([`console_signal`]).
+#[cfg(unix)]
+type Sig = libc::c_int;
+#[cfg(windows)]
+type Sig = i32;
+
+#[cfg(unix)]
+const SIGINT: Sig = libc::SIGINT;
+#[cfg(windows)]
+const SIGINT: Sig = shards_ipc::signal::SIGINT;
 
 /// How many times a client asks before it gives up on daemons asking it to ask again
 /// (RESTART): a daemon of another build answers so the request that makes it step aside,
@@ -151,8 +168,7 @@ fn serve(
         Ok(started) => started,
         Err(e) => return failed(&e),
     };
-    // SAFETY: isatty(3) on this process's stdin and stdout.
-    let (in_terminal, out_terminal) = unsafe { (libc::isatty(0) == 1, libc::isatty(1) == 1) };
+    let (in_terminal, out_terminal) = (io::stdin().is_terminal(), io::stdout().is_terminal());
     let attached = request.interactive && !request.detach;
     let reads_terminal = request.interactive && in_terminal;
     // A terminal's size follows the client's stdout's, when it is one (docker/cli
@@ -232,15 +248,12 @@ fn serve(
                     // Its stdout and stderr, shown as they come: all of them before this
                     // client ends.
                     let mut shows = Vec::new();
-                    for (from, to) in [
-                        (client.output.take(), io::stdout().as_fd()),
-                        (client.errors.take(), io::stderr().as_fd()),
-                    ] {
+                    for (from, which) in [(client.output.take(), 1), (client.errors.take(), 2)] {
                         let Some(from) = from else {
                             continue;
                         };
-                        let to = match to.try_clone_to_owned() {
-                            Ok(to) => File::from(to),
+                        let to = match own_stdio(which) {
+                            Ok(to) => to,
                             Err(e) => return Ran::Failed(format!("this client's stdio: {e}")),
                         };
                         match std::thread::Builder::new()
@@ -256,7 +269,8 @@ fn serve(
                             match slot_message(&client)? {
                                 Some(m) if m.kind == kind::HEARD => {
                                     if let (Some(input), Some(proxy)) = (input.take(), filling.take())
-                                        && let Err(e) = fill_stdin(input, proxy, request.detach_said)
+                                        && let Err(e) =
+                                            fill_stdin(input, proxy, request.detach_said, current, resizes)
                                     {
                                         unfilled = Some(e);
                                         return Ok(None);
@@ -275,6 +289,7 @@ fn serve(
                     ran
                 })
             }
+            #[cfg(unix)]
             Asked::Socket(conn) => {
                 let (stdin, filler) = match command_stdin(attached) {
                     Ok(stdin) => stdin,
@@ -311,7 +326,13 @@ fn serve(
                 }
                 if let Some(filler) = filler
                     && let Some(proxy) = filling.take()
-                    && let Err(e) = fill_stdin(File::from(OwnedFd::from(filler)), proxy, request.detach_said)
+                    && let Err(e) = fill_stdin(
+                        File::from(OwnedFd::from(filler)),
+                        proxy,
+                        request.detach_said,
+                        current,
+                        resizes,
+                    )
                 {
                     return failed(&e);
                 }
@@ -360,7 +381,7 @@ struct Current {
     /// command's.
     made: bool,
     /// The first INTERRUPT it sent before it heard its run was made.
-    interrupted: Option<libc::c_int>,
+    interrupted: Option<Sig>,
 }
 
 impl Current {
@@ -404,7 +425,7 @@ fn made(current: &Mutex<Current>, resizes: bool, attach: bool) {
 
 /// Lets go of the run's connection, whose daemon went or asked for a restart: says the
 /// INTERRUPT the client sent before its run was made, which none will answer now.
-fn let_go(current: &Mutex<Current>) -> Option<libc::c_int> {
+fn let_go(current: &Mutex<Current>) -> Option<Sig> {
     let mut c = lock_current(current);
     c.says = None;
     c.interrupted.take()
@@ -413,7 +434,7 @@ fn let_go(current: &Mutex<Current>) -> Option<libc::c_int> {
 /// Sends Linux signal `linux` on the run's connection in `current`, as INTERRUPT where it
 /// would end the client (`ending`, the signal), else as SIGNAL: whether it went. With
 /// `resize_first`, the command's terminal is resized first (SIGWINCH).
-fn hand(current: &Mutex<Current>, linux: u32, ending: Option<libc::c_int>, resize_first: bool) -> bool {
+fn hand(current: &Mutex<Current>, linux: u32, ending: Option<Sig>, resize_first: bool) -> bool {
     let mut c = lock_current(current);
     let Some(conn) = &c.says else {
         return false;
@@ -438,8 +459,11 @@ fn hand(current: &Mutex<Current>, linux: u32, ending: Option<libc::c_int>, resiz
 /// Ends this client as signal `sig` ends the Docker CLI before its container is made, the
 /// terminal restored first: SIGINT and SIGTERM with 128 and their number and nothing said
 /// (docker/cli cmd/docker/docker.go, notifyContext); SIGHUP and SIGQUIT as they would have.
-fn end_by(sig: libc::c_int) -> ! {
+/// On Windows the console's events are SIGINT and SIGTERM alone ([`console_signal`]), and
+/// Go numbers them so there too, as the Docker CLI exits by them.
+fn end_by(sig: Sig) -> ! {
     terminal::restore();
+    #[cfg(unix)]
     if sig != libc::SIGINT && sig != libc::SIGTERM {
         // SAFETY: the default action of a terminating signal, on this process.
         unsafe {
@@ -459,6 +483,7 @@ fn end_by(sig: libc::c_int) -> ! {
 #[derive(Debug)]
 enum Says {
     Slot(shards_ipc::slots::Sender),
+    #[cfg(unix)]
     Socket(UnixStream),
 }
 
@@ -466,6 +491,7 @@ impl Says {
     fn send(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
         match self {
             Says::Slot(say) => say.send(kind, payload),
+            #[cfg(unix)]
             Says::Socket(conn) => shards_ipc::send(conn, kind, payload, &[]),
         }
     }
@@ -514,7 +540,7 @@ fn ran_on(
                     .payload
                     .first_chunk::<4>()
                     .and_then(|linux| shards_ipc::local_signal(u32::from_be_bytes(*linux)))
-                    .unwrap_or(libc::SIGINT);
+                    .unwrap_or(SIGINT);
                 end_by(sig);
             }
             Ok(Some(m)) if m.kind == kind::EXIT => {
@@ -522,11 +548,12 @@ fn ran_on(
                     return Ran::Failed("the command's microVM sent no status".into());
                 };
                 let timing = (!timing.is_empty()).then(|| with_client_rss(&String::from_utf8_lossy(timing)));
-                // A microVM given a host's devices (D154) sends its process's pidfd: the
-                // run is over once that has ended, and the devices are free. (Through a
-                // slot, its daemon waits for it before it says the run's end.)
-                if let Some(pidfd) = m.fds.first() {
-                    ended(pidfd);
+                // A microVM given a host's devices (D154) sends its process's pidfd, or on
+                // Windows its process's handle: the run is over once that has ended, and the
+                // devices are free. (Through a slot, its daemon waits for it before it says
+                // the run's end.)
+                if let Some(process) = m.fds.first() {
+                    ended(process);
                 }
                 return Ran::Ended(ExitCode::from(status), timing);
             }
@@ -563,12 +590,65 @@ fn ran_on(
 /// Shows what the command writes to its slot's `from`, its stdout's or stderr's, on `to`,
 /// this client's own, as it comes and unbuffered: a terminal shows a prompt with no newline
 /// at once.
-fn show(from: &File, mut to: File) -> io::Result<u64> {
+fn show(from: &File, mut to: Box<dyn Write + Send>) -> io::Result<u64> {
     io::copy(&mut shards_ipc::slots::Reader(from), &mut to)
+}
+
+/// This process's stdout (1) or stderr (2), for what the command writes to it as it comes:
+/// on Unix a descriptor of its own, which writes unbuffered; on Windows std's own, which
+/// writes a console in UTF-16 (WriteConsoleW), as a console takes text whatever its code
+/// page, each write flushed.
+fn own_stdio(which: u8) -> io::Result<Box<dyn Write + Send>> {
+    #[cfg(unix)]
+    {
+        let fd = if which == 2 {
+            io::stderr().as_fd().try_clone_to_owned()?
+        } else {
+            io::stdout().as_fd().try_clone_to_owned()?
+        };
+        Ok(Box::new(File::from(fd)))
+    }
+    #[cfg(windows)]
+    {
+        Ok(if which == 2 {
+            Box::new(Flushed(io::stderr()))
+        } else {
+            Box::new(Flushed(io::stdout()))
+        })
+    }
+}
+
+/// A writer each of whose writes is flushed at once: a terminal shows a prompt with no
+/// newline as it comes.
+#[cfg(windows)]
+struct Flushed<W: Write>(W);
+
+#[cfg(windows)]
+impl<W: Write> Write for Flushed<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.0.write(buf)?;
+        self.0.flush()?;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// Waits for the process `process`, its handle, to end. Whatever stops the wait short, it is
+/// over.
+#[cfg(windows)]
+fn ended(process: &shards_ipc::fd::OwnedFd) {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+    // SAFETY: a process handle the message holds, waited for.
+    unsafe { WaitForSingleObject(process.as_raw_handle(), INFINITE) };
 }
 
 /// Waits for the process whose pidfd `pidfd` is to end: it polls readable then
 /// (pidfd_open(2)). Whatever stops the wait short, it is over.
+#[cfg(unix)]
 fn ended(pidfd: &std::os::fd::OwnedFd) {
     use std::os::fd::AsRawFd as _;
     let mut poll = libc::pollfd {
@@ -606,6 +686,7 @@ impl Stream<'_> {
 /// slots, which asked there steps aside for this client's.
 enum Asked {
     Slot(shards_ipc::slots::Client),
+    #[cfg(unix)]
     Socket(UnixStream),
 }
 
@@ -638,6 +719,7 @@ fn ask_slot(
                 Err(e) => return Err(format!("asking the daemon: {e}")),
             },
             Ok(slots::Taken::NoDaemon) => {
+                #[cfg(unix)]
                 if let Ok(conn) = UnixStream::connect(SOCKET) {
                     return Ok(Asked::Socket(conn));
                 }
@@ -770,6 +852,7 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[Stream<'_
                 }
                 Ok(status)
             }),
+            #[cfg(unix)]
             Asked::Socket(conn) => {
                 let raw: Vec<BorrowedFd<'_>> = fds.iter().map(Stream::fd).collect();
                 match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &raw) {
@@ -814,6 +897,7 @@ pub fn ask(
             &mut || Ok(()),
         )? {
             Asked::Slot(client) => answered_whole(client, fds)?,
+            #[cfg(unix)]
             Asked::Socket(conn) => {
                 let raw: Vec<BorrowedFd<'_>> = fds.iter().map(Stream::fd).collect();
                 match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &raw) {
@@ -834,6 +918,8 @@ pub fn ask(
 /// Asks the daemon whose home is this process's working directory for `command`, with
 /// `fds`, and takes its answer whole, as [`ask`] does: what a daemon asks of itself (a
 /// context's steps, daemon/remote.rs), which starts no daemon where its own has closed.
+// The daemon's, Unix's alone as yet (D195).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn ask_here(command: &Command, fds: &[Stream<'_>]) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
     use shards_ipc::slots;
     for _ in 0..RESTARTS {
@@ -1018,6 +1104,7 @@ fn answer<'s>(
 
 /// Whether a request's send failed as on a connection the daemon shut without reading
 /// it: it steps aside for another build's client, and the next daemon takes the request.
+#[cfg(unix)]
 fn unread(e: &io::Error) -> bool {
     matches!(
         e.kind(),
@@ -1042,7 +1129,11 @@ pub fn stop(home: &Path) -> ExitCode {
         let client = match slots::take(Path::new("."), 0) {
             Ok(slots::Taken::Slot(client)) => client,
             // No slot offered: a daemon of a build from before slots, or none.
+            #[cfg(unix)]
             Ok(slots::Taken::NoDaemon) => return stop_socket(home),
+            // No slot offered: no daemon, Windows' first having slots.
+            #[cfg(windows)]
+            Ok(slots::Taken::NoDaemon) => return ExitCode::SUCCESS,
             Err(e) => return failed(&format!("{}: {e}", home.join(slots::DIR).display())),
         };
         match client.ask(kind::STOP, &[], &[]) {
@@ -1064,6 +1155,7 @@ pub fn stop(home: &Path) -> ExitCode {
 }
 
 /// [`stop`] of a daemon of a build from before slots (D185), through its socket.
+#[cfg(unix)]
 fn stop_socket(home: &Path) -> ExitCode {
     match UnixStream::connect(SOCKET) {
         Ok(conn) => {
@@ -1144,8 +1236,14 @@ fn enter(home: &Path, daemon: &Path) -> Result<bool, String> {
 /// started at once, one takes the home's lock and the rest exit. What the starter says
 /// when it fails, a setting the daemon cannot keep, is what this says.
 fn start(daemon: &Path, home: &Path) -> Result<(), String> {
-    use std::os::fd::AsFd;
+    #[cfg(unix)]
     let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+    #[cfg(windows)]
+    let null = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open("NUL")
+        .map_err(|e| format!("NUL: {e}"))?;
     let starting = |e: io::Error| format!("starting the daemon {}: {e}", daemon.display());
     let (mut said, speaks) = io::pipe().map_err(starting)?;
     // The home this client resolved, before it made the home its working directory
@@ -1189,6 +1287,7 @@ fn start(daemon: &Path, home: &Path) -> Result<(), String> {
 
 /// The command's stdin: /dev/null, or with `interactive` a pipe [`fill_stdin`] fills from
 /// this process's stdin, whose writing end is returned for it.
+#[cfg(unix)]
 fn command_stdin(interactive: bool) -> Result<(OwnedFd, Option<io::PipeWriter>), String> {
     if !interactive {
         return File::open("/dev/null")
@@ -1202,19 +1301,40 @@ fn command_stdin(interactive: bool) -> Result<(OwnedFd, Option<io::PipeWriter>),
 /// Fills `writer`, the command's stdin, from this process's stdin on a thread of its own,
 /// closing it when that ends or this process exits. With a `proxy`, the detach keys end
 /// the client instead, with status 0 and the terminal restored, and the command runs on,
-/// as a container outlives the `docker run` that detached from it.
+/// as a container outlives the `docker run` that detached from it. On Windows a console is
+/// read for its records ([`terminal::ConsoleInput`]), which say its resizes too: with
+/// `resizes` each goes on the run's connection in `current`, as SIGWINCH does on Unix.
 fn fill_stdin(
     mut writer: File,
     mut proxy: Option<EscapeProxy>,
     detach_said: Option<(&'static str, u8)>,
+    current: &'static Mutex<Current>,
+    resizes: bool,
 ) -> Result<(), String> {
     std::thread::Builder::new()
         .name("stdin".into())
         .spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
-            let stdin = io::stdin().lock();
+            #[cfg(unix)]
+            let take = {
+                let _ = (current, resizes);
+                let stdin = io::stdin().lock();
+                move |buf: &mut [u8]| shards_ipc::read(&stdin, buf)
+            };
+            #[cfg(windows)]
+            let mut take = {
+                let mut console = terminal::ConsoleInput::new(move || {
+                    if resizes && let Some(conn) = lock_current(current).says.as_ref() {
+                        resize(conn);
+                    }
+                });
+                move |buf: &mut [u8]| match console.as_mut() {
+                    Some(console) => console.read(buf),
+                    None => io::stdin().read(buf),
+                }
+            };
             loop {
-                let read = match shards_ipc::read(&stdin, &mut buf) {
+                let read = match take(&mut buf) {
                     Ok(0) => return,
                     Ok(n) => buf.get(..n).unwrap_or_default(),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -1280,6 +1400,7 @@ fn resize_by(conn: &Says, more: u16) {
 /// reach a Docker container's (docker/cli tty.go, signals.go). Without `proxies`, only
 /// SIGWINCH is taken, to resize the command's terminal with `resizes`, and the rest act on
 /// the client as they would.
+#[cfg(unix)]
 fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Option<Signals>, String> {
     if !proxies {
         if !resizes {
@@ -1316,6 +1437,7 @@ fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Op
 
 /// The signals [`take_signals`] took, for [`forward`]: the set blocked, those that were
 /// ignored, and what is done with them.
+#[cfg(unix)]
 struct Signals {
     set: libc::sigset_t,
     ignored: Vec<libc::c_int>,
@@ -1325,6 +1447,7 @@ struct Signals {
 
 /// Starts the thread that receives `signals`, as [`take_signals`] says, on the run's
 /// connection in `current` once there is one.
+#[cfg(unix)]
 fn forward(signals: Option<Signals>, current: &'static Mutex<Current>) -> Result<(), String> {
     let Some(Signals {
         set,
@@ -1381,9 +1504,127 @@ fn forward(signals: Option<Signals>, current: &'static Mutex<Current>) -> Result
     Ok(())
 }
 
+/// What Windows' [`forward`] does: with `proxies`, the console's events go on the run's
+/// connection; with `resizes`, its size follows the console's.
+#[cfg(windows)]
+struct Signals {
+    reads_terminal: bool,
+    resizes: bool,
+    proxies: bool,
+}
+
+/// Windows' [`take_signals`]: nothing to block, the console's events coming to a handler
+/// ([`on_console_event`]) on a thread of the system's.
+#[cfg(windows)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Unix's, which can fail, has the same signature"
+)]
+fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Option<Signals>, String> {
+    Ok((proxies || resizes).then_some(Signals {
+        reads_terminal,
+        resizes,
+        proxies,
+    }))
+}
+
+/// The run's connection the console's events go on ([`on_console_event`]): the client's one
+/// [`Current`], set as it starts to forward them.
+#[cfg(windows)]
+static CONSOLE_CURRENT: std::sync::OnceLock<&'static Mutex<Current>> = std::sync::OnceLock::new();
+
+/// The signal a console event is taken as, as Go's runtime takes them, which the Docker CLI's
+/// forwarding sees (src/runtime/os_windows.go, ctrlHandler): Ctrl-C and Ctrl-Break SIGINT;
+/// the console's close, the user's logoff and the system's shutdown SIGTERM; any other none.
+#[cfg(windows)]
+fn console_signal(event: u32) -> Option<Sig> {
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+    match event {
+        CTRL_C_EVENT | CTRL_BREAK_EVENT => Some(shards_ipc::signal::SIGINT),
+        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => Some(shards_ipc::signal::SIGTERM),
+        _ => None,
+    }
+}
+
+/// The console's handler: an event goes on the run's connection as its signal does
+/// ([`hand`], INTERRUPT, each ending the client), or, with none to go on, ends the client as
+/// that signal does ([`end_by`]). In raw mode Ctrl-C is a key the command reads, as on Unix;
+/// Ctrl-Break stays an event.
+#[cfg(windows)]
+unsafe extern "system" fn on_console_event(event: u32) -> windows_sys::core::BOOL {
+    let (Some(sig), Some(current)) = (console_signal(event), CONSOLE_CURRENT.get()) else {
+        return 0;
+    };
+    if !hand(current, u32::try_from(sig).unwrap_or(0), Some(sig), false) {
+        end_by(sig);
+    }
+    1
+}
+
+/// Windows' [`forward`]: with `proxies`, the console's events go to [`on_console_event`];
+/// with `resizes`, where no stdin filler reads the console (a `-t` run without `-i`), its
+/// records are read on a thread of their own for the resizes they say, its keys going to no
+/// command.
+#[cfg(windows)]
+fn forward(signals: Option<Signals>, current: &'static Mutex<Current>) -> Result<(), String> {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    let Some(Signals {
+        reads_terminal,
+        resizes,
+        proxies,
+    }) = signals
+    else {
+        return Ok(());
+    };
+    if proxies {
+        let _ = CONSOLE_CURRENT.set(current);
+        // SAFETY: a handler this process keeps for its life.
+        if unsafe { SetConsoleCtrlHandler(Some(on_console_event), 1) } == 0 {
+            return Err(format!(
+                "taking the console's events: {}",
+                io::Error::last_os_error()
+            ));
+        }
+    }
+    if resizes
+        && !reads_terminal
+        && let Some(mut console) = terminal::ConsoleInput::new(move || {
+            if let Some(conn) = lock_current(current).says.as_ref() {
+                resize(conn);
+            }
+        })
+    {
+        std::thread::Builder::new()
+            .name("resizes".into())
+            .spawn(move || {
+                let mut buf = [0u8; 256];
+                while console.read(&mut buf).is_ok_and(|n| n > 0) {}
+            })
+            .map_err(|e| format!("resize thread: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The console's events are the signals Go's runtime takes them as, and no others.
+    #[cfg(windows)]
+    #[test]
+    fn console_events_are_go_runtimes_signals() {
+        use windows_sys::Win32::System::Console::{
+            CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+        };
+        assert_eq!(console_signal(CTRL_C_EVENT), Some(2));
+        assert_eq!(console_signal(CTRL_BREAK_EVENT), Some(2));
+        for event in [CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT] {
+            assert_eq!(console_signal(event), Some(15));
+        }
+        assert_eq!(console_signal(3), None);
+    }
 
     /// Once its request is on its way, a client's signals go on its run's connection, one
     /// that would end it as INTERRUPT, which its daemon takes as its end before its run is
@@ -1392,6 +1633,7 @@ mod tests {
     /// let go of once the run is made. Taken before it heard its run was made, a signal had
     /// no connection to go on, and one the client was started ignoring went nowhere while
     /// the command waited for it (PM M332).
+    #[cfg(unix)]
     #[test]
     fn a_runs_signals_go_on_its_connection_from_its_request() {
         let current = Mutex::new(Current::new());

@@ -2800,12 +2800,9 @@ pub(crate) fn asks_help(words: &[&str], valued: &[&str]) -> bool {
 
 /// `usage`, a command's page, as its help: on a colour terminal laid out as `name`'s.
 pub(crate) fn help_page(name: &str, usage: &str) -> ExitCode {
-    #[cfg(unix)]
     if crate::cli::look::usage_page(name, usage) {
         return ExitCode::SUCCESS;
     }
-    #[cfg(not(unix))]
-    let _ = name;
     let _ = writeln!(io::stdout(), "{usage}");
     ExitCode::SUCCESS
 }
