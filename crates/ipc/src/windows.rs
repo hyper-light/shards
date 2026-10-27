@@ -924,6 +924,159 @@ pub(crate) fn alive(pid: u32) -> bool {
     unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_TIMEOUT }
 }
 
+impl crate::Identity {
+    /// A file's identity: its volume's serial number and its index there, Windows' device
+    /// and inode (GetFileInformationByHandle's), its size and its last write.
+    pub fn of(path: &Path) -> io::Result<crate::Identity> {
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_READ_ATTRIBUTES, GetFileInformationByHandle,
+        };
+        let file = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(
+                FILE_SHARE_READ
+                    | FILE_SHARE_WRITE
+                    | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE,
+            )
+            .open(path)?;
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: a file this function holds open, and a structure for the call to fill.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } == 0 {
+            return Err(last());
+        }
+        let wide = |high: u32, low: u32| (u64::from(high) << 32) | u64::from(low);
+        // In 100 ns units since 1601, 11,644,473,600 s before 1970.
+        let written = wide(
+            info.ftLastWriteTime.dwHighDateTime,
+            info.ftLastWriteTime.dwLowDateTime,
+        );
+        let seconds = i64::try_from(written / 10_000_000).unwrap_or(i64::MAX) - 11_644_473_600;
+        Ok(crate::Identity {
+            dev: u64::from(info.dwVolumeSerialNumber),
+            ino: wide(info.nFileIndexHigh, info.nFileIndexLow),
+            size: wide(info.nFileSizeHigh, info.nFileSizeLow),
+            mtime_s: seconds,
+            mtime_ns: u32::try_from(written % 10_000_000).unwrap_or(0) * 100,
+        })
+    }
+}
+
+/// A child's resource group (D183's `--cgroup-parent`): none on Windows yet, where a run
+/// that names one is refused before anything starts. It has no value, so that what takes
+/// one is written once.
+#[derive(Debug, Clone, Copy)]
+pub enum Group {}
+
+impl Group {
+    pub fn pid(self) -> u32 {
+        match self {}
+    }
+}
+
+/// A group of its own for this process's children: none on Windows yet (D183).
+pub fn start_group() -> io::Result<Group> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no resource group of its own for a process on Windows yet",
+    ))
+}
+
+/// [`spawn_in`], in `group`: Windows has none yet.
+pub fn spawn_in_group(
+    group: Option<Group>,
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    detach: bool,
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    match group {
+        Some(group) => match group {},
+        None => spawn_in(program, args, fds, detach, env),
+    }
+}
+
+pub fn end_group(group: Group) {
+    match group {}
+}
+
+pub fn group_ended(group: Group) -> bool {
+    match group {}
+}
+
+/// The daemon's spawner (PM M158), which on Windows is none. A Unix child is forked with
+/// every descriptor its parent holds, closed only as it executes, so the daemon's children
+/// are made by a process made before it held any; a Windows child is made with the handles
+/// named for it alone (PROC_THREAD_ATTRIBUTE_HANDLE_LIST, [`spawn`]), and inherits nothing
+/// else the daemon holds.
+pub fn start_spawner(_program: &Path, _args: &[&OsStr]) -> io::Result<()> {
+    Ok(())
+}
+
+/// The Linux signal `sig` is, shards' own being Linux's numbers on Windows
+/// ([`crate::signal`]).
+pub fn linux_signal(sig: i32) -> Option<u32> {
+    u32::try_from(sig).ok()
+}
+
+/// The signal of this host's Linux signal `linux` is: the same number on Windows.
+pub fn local_signal(linux: u32) -> Option<i32> {
+    i32::try_from(linux).ok()
+}
+
+/// Reads what `from` has into `buf`, as it reads: on Windows a read waits as it reads, and
+/// a pipe's writer's end ends it at once after all it wrote (PM M340), as a FIFO's read sees
+/// its writer's end on Linux.
+pub fn read<T: ?Sized>(from: &T, buf: &mut [u8]) -> io::Result<usize>
+where
+    for<'a> &'a T: Read,
+{
+    let mut from = from;
+    loop {
+        match from.read(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            got => return got,
+        }
+    }
+}
+
+/// What reads through [`read`]: a stream, a pipe or a file read with
+/// `BufReader::new(Polled(&conn))`, `io::copy(&mut Polled(&conn), …)` and the like.
+#[derive(Debug)]
+pub struct Polled<S>(pub S);
+
+impl<T: ?Sized> Read for Polled<&T>
+where
+    for<'a> &'a T: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read(self.0, buf)
+    }
+}
+
+/// What this process's memory counters say (GetProcessMemoryInfo).
+fn memory() -> Option<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS_EX> {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+    let size = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).ok()?;
+    // SAFETY: this process, and counters of the size given, for the call to fill.
+    if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), size) } == 0 {
+        return None;
+    }
+    Some(counters)
+}
+
+/// This process's peak working set so far, in KiB, Windows' resident set; 0 where unknown.
+pub fn peak_rss_kib() -> u64 {
+    memory().map_or(0, |m| (m.PeakWorkingSetSize / 1024) as u64)
+}
+
+/// This process's own memory now, in KiB: its private bytes committed (PrivateUsage), what
+/// no other process shares; 0 where unknown.
+pub fn footprint_kib() -> u64 {
+    memory().map_or(0, |m| (m.PrivateUsage / 1024) as u64)
+}
+
 /// The variable a child of [`spawn`]'s finds its grants pipe by: the handles it was given
 /// past its standard ones ([`given_fd`]).
 const GIVEN: &str = "SHARDS_GIVEN";

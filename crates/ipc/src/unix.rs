@@ -297,26 +297,7 @@ pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<l
 }
 
 impl Identity {
-    /// The build a daemon binary belongs to, as clients and the daemon tell builds apart:
-    /// its file's identity, folded with that of the VM binary `SHARDS_VM_BINARY` names in
-    /// its place, if it names one. The binaries it starts are otherwise carried inside it
-    /// (shards' helpers.rs), so any of them rebuilt is this file changed; a daemon given
-    /// another VM binary is another build, which a client with its own replaces.
-    pub fn of_build(daemon: &Path) -> io::Result<Identity> {
-        let d = Identity::of(daemon)?;
-        let Some(vm) = std::env::var_os("SHARDS_VM_BINARY").filter(|v| !v.is_empty()) else {
-            return Ok(d);
-        };
-        let v = Identity::of(Path::new(&vm))?;
-        Ok(Identity {
-            dev: d.dev ^ v.dev.rotate_left(17),
-            ino: d.ino ^ v.ino.rotate_left(29),
-            size: d.size ^ v.size.rotate_left(37),
-            mtime_s: d.mtime_s ^ v.mtime_s.rotate_left(41),
-            mtime_ns: d.mtime_ns ^ v.mtime_ns.rotate_left(13),
-        })
-    }
-
+    /// A file's identity: its device and inode, its size and its last change.
     pub fn of(path: &Path) -> io::Result<Identity> {
         use std::os::unix::fs::MetadataExt;
         let m = std::fs::metadata(path)?;

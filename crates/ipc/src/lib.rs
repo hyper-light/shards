@@ -562,6 +562,28 @@ pub struct Identity {
     pub mtime_ns: u32,
 }
 
+impl Identity {
+    /// The build a daemon binary belongs to, as clients and the daemon tell builds apart:
+    /// its file's identity, folded with that of the VM binary `SHARDS_VM_BINARY` names in
+    /// its place, if it names one. The binaries it starts are otherwise carried inside it
+    /// (shards' helpers.rs), so any of them rebuilt is this file changed; a daemon given
+    /// another VM binary is another build, which a client with its own replaces.
+    pub fn of_build(daemon: &Path) -> std::io::Result<Identity> {
+        let d = Identity::of(daemon)?;
+        let Some(vm) = std::env::var_os("SHARDS_VM_BINARY").filter(|v| !v.is_empty()) else {
+            return Ok(d);
+        };
+        let v = Identity::of(Path::new(&vm))?;
+        Ok(Identity {
+            dev: d.dev ^ v.dev.rotate_left(17),
+            ino: d.ino ^ v.ino.rotate_left(29),
+            size: d.size ^ v.size.rotate_left(37),
+            mtime_s: d.mtime_s ^ v.mtime_s.rotate_left(41),
+            mtime_ns: d.mtime_ns ^ v.mtime_ns.rotate_left(13),
+        })
+    }
+}
+
 /// `--pull`, as `docker run` takes it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Pull {
@@ -1880,6 +1902,49 @@ pub use pipe::{Event, Message, Pipe, Stream, end, recv, recv_by, send};
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+
+/// What carries shards' own messages between its processes: a Unix socket on Unix; on
+/// Windows a pipe's end ([`pipe::Stream`]), which Unix's code takes as it takes the socket.
+#[cfg(unix)]
+pub type Stream = std::os::unix::net::UnixStream;
+
+/// Descriptors, as shards' processes hand them on: a file descriptor on Unix, a handle on
+/// Windows, named by Unix's names, so that code that hands them on is written once.
+pub mod fd {
+    #[cfg(unix)]
+    pub use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+    #[cfg(windows)]
+    pub use std::os::windows::io::{
+        BorrowedHandle as BorrowedFd, FromRawHandle as FromRawFd, IntoRawHandle as IntoRawFd,
+        OwnedHandle as OwnedFd, RawHandle as RawFd,
+    };
+
+    /// A handle's borrow, as Unix's `AsFd` gives a descriptor's.
+    #[cfg(windows)]
+    pub trait AsFd {
+        fn as_fd(&self) -> BorrowedFd<'_>;
+    }
+
+    #[cfg(windows)]
+    impl<T: std::os::windows::io::AsHandle + ?Sized> AsFd for T {
+        fn as_fd(&self) -> BorrowedFd<'_> {
+            self.as_handle()
+        }
+    }
+
+    /// A handle's value, as Unix's `AsRawFd` gives a descriptor's.
+    #[cfg(windows)]
+    pub trait AsRawFd {
+        fn as_raw_fd(&self) -> RawFd;
+    }
+
+    #[cfg(windows)]
+    impl<T: std::os::windows::io::AsRawHandle + ?Sized> AsRawFd for T {
+        fn as_raw_fd(&self) -> RawFd {
+            self.as_raw_handle()
+        }
+    }
+}
 
 /// The signals shards names a process's end by: this host's own on Unix; on Windows, which
 /// sends a process none but its end, Linux's numbers, which a child it ends takes 128 and
