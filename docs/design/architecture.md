@@ -6631,8 +6631,15 @@ the guest keeps their metadata alone.
   (mm/sparse-vmemmap.c), so the head
   is two blocks more than a block a section, and the device starts at a section
   (`layer_head`). Init finds it by the address the control page gives (`control::LAYER`)
-  and mounts its ext4 `dax=always,noinit_itable` where it mounted the tmpfs. A machine
-  without one, a joiner's root among them (D119), keeps its tmpfs.
+  and mounts its ext4 `dax=always,noinit_itable,no_prefetch_block_bitmaps` where it
+  mounted the tmpfs. A machine without one, a joiner's root among them (D119), keeps its
+  tmpfs. `no_prefetch_block_bitmaps`: ext4lazyinit reads every group's block bitmap and
+  builds its buddy cache in the background after a mount (fs/ext4/super.c,
+  `ext4_run_li_request`), so that a first allocation does not wait on a disk, where a DAX
+  device's bitmap is memory; and as a template mounts its layer before its snapshot,
+  every restored guest did that work again, which in a nested arm64 guest under load
+  held a CPU 22 to 27 s (soft lockups in the logs of each of 5 failing rounds before, of
+  none of 6 after; PM M346). What it saves a warm VM's memory is unmeasured.
 - **Mounted in the template.** A mount took 0.4 to 0.65 ms at p50 and an overlay over it
   0.2 to 0.32 ms more on a guest that had mounted it before, 1 to 80 ms the first time (PM
   M277), where a run's whole start is 0.73 ms at p50 (M230): so the template mounts it
