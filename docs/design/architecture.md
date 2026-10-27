@@ -6438,21 +6438,27 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   the snapshot's state names (`snapshot::backing_named`), has them granted, then reads the
   generation, and refuses one whose backing files changed between, a snapshot saved again as
   it was read.
-- **A rename over a file Windows will not yet let go of.** The store replaces its pointer and a
+- **A rename over a file Windows will not yet let go of.** The store replaced its pointer and a
   generation's working set by renaming a new file over the old (`write_in`, a POSIX rename,
   M344). On jupiter Windows refused such renames (STATUS_ACCESS_DENIED): a single writer's once
   in 8,000, and eight writers' at once in episodes of a minute and more, Restart Manager naming
   no process holding the file (M345; Microsoft Defender's real-time protection was on, and
-  logged nothing). A file linked under a second name is not deleted by a rename over it, and
-  a refused rename over a target so linked was taken, 9 times of 9 where the link was; in the
-  holds of a minute the link was refused too. So a refused rename links the file at the name
-  aside (`.{name}.….old`, removed once Windows lets it go, else by the directory's tidy) and
-  is asked again, again while each refusal is of another writer's file that took the name in
-  between; one whose link is refused fails, as it did before, the snapshot before it still
-  the one in use. `point` writes the pointer by `write_in` on every host. A commit's rename of
-  its generation's directory was never refused (M345: 2,000 commits, alone and beside churn).
-  What would take the rest away is a pointer never renamed over, a new name a commit: not
-  built, as a commit replaces one pointer, one writer at a time.
+  logged nothing); in those holds it refused too the link and the move that might have
+  stepped around one, while a rename of a file to a name no file had was never refused. So on
+  Windows no write replaces a file: `write_in` lands each as its name's next version
+  (`name.~N`, one past the highest listed, by a rename that replaces nothing; a writer that
+  finds its version's name taken lists again), flushes the directory, then removes the
+  versions before it, and a file at the name itself, where Windows lets them go. Versions
+  count from those listed, never from a clock, which may step back. Readers take the newest
+  (`platform::newest_in`): the store's pointer and working set, a template's record, and a
+  confined VM's, through its spawner, which opens the newest for the path it asks
+  (`grant::Access::ReadNewestIfThere`). The store's tidy removes the pointers a newer one
+  superseded, and with no pointer to read keeps every generation; the daemon's sweep of
+  templates takes every version of a record. Elsewhere `write_in` renames over the file, as
+  rename(2) does. In five passes of the probe's writers on jupiter, 30,000 writes, none was
+  refused (M345, 6). `point` writes the pointer by `write_in` on every host. A commit's rename
+  of its generation's directory was never refused (M345: 2,000 commits, alone and beside
+  churn).
 - **What a restore costs** (M345, `benches/restore.rs`, jupiter, 256 MiB, n=100): a cold
   restore runs its guest again 69.8 ms after its process starts at p50, 84.8 at p99, a
   `shards restore` start to exit 171 ms; a warm one 59.6 ms after its release at p50, 71.6 at
@@ -6476,9 +6482,11 @@ its spawner reading back once committed, and the store's every on-disk test, whi
 Windows now (`snapshot`), among them eight writers saving working sets into one generation at
 once, which on jupiter failed in 3 runs of 10 with no fallback, in 3 of 10 with one retry
 after a link, and in none of 25 with each refusal of another writer's file linked in turn; a
-file linked aside and renamed over (`windows_files`); on Windows, a spawner staging and
-committing a VM's snapshots over real pipes, refusing a stage elsewhere and a commit of what
-is not staged, giving the directory up, and removing what is never committed
+write landing as a version beside one held open that shares no delete, eight writers' at once
+each landing whole, and a version one past the highest listed (`windows_files`); a spawner
+granting a pointer written twice as its newest version (`grant_answer`); on Windows, a spawner
+staging and committing a VM's snapshots over real pipes, refusing a stage elsewhere and a
+commit of what is not staged, giving the directory up, and removing what is never committed
 (`grant_answer`). On real WHP guests (jupiter and CI's windows-2025):
 tests/snapshot.rs, every test, the storms of busy machines among them, which run on Windows
 now, and the unwritable directory by an access list there; tests/restore.rs, cold restores of

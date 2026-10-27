@@ -14878,6 +14878,13 @@ revision before comparing a changed API/implementation.
      windows-2025 (build 26100) runners, runs 40519967461 and 40523208206: 1's and 2's
      probes, 1's with the APIC page and XSAVE area set back as read after the first run, and
      the page's first 1 and 2 KiB, each answer recorded; and on jupiter the same.
+  6. `docs/research/measurements/write-in-versions/run.sh` (the vmm test
+     `write_in_as_the_rename_probes_writers`, release profile), on jupiter at 76d80231, five
+     passes: platform `write_in` as each write now lands, as its name's next version (D196),
+     written as 2.'s writers write (8 KiB of their own bytes; one writer 2,000 times, eight
+     side by side 250 each, eight beside eight threads writing and removing files of their
+     own); each write timed, every error said. Another session's work ran beside them (12
+     of 32 CPUs idle as the first pass began, the CPUs 47% busy as the last ended).
 - **Found.**
   - **The vCPU's state** (1). Its APIC page, 4,096 bytes, and its XSAVE area, 2,472, set
     into a new partition, read back with no byte apart. 74 architectural registers read,
@@ -15004,6 +15011,13 @@ revision before comparing a changed API/implementation.
     test's own process, and the same rename asked again at once was taken); in 3 of 10 with
     a refused rename linking its target aside and asking once more; and in none of 25 with
     a refusal of another writer's file linked in turn.
+  - **Versions** (6). No write was refused or failed: 30,000 in five passes. Each pass left
+    its newest version alone, 6,000 landed (the fifth's newest `~5999`: a writer whose
+    listing came before another's version went landed under that version's number once it
+    had gone). A write, µs, n=2,000 a pass, the five passes' p50 / p90 / p99 / max: one
+    writer 1,201–1,340 / 1,428–1,685 / 1,875–2,360 / 11,081–24,309; eight side by side
+    3,460–3,659 / 19,468–23,400 / 60,882–70,447 / 102,743–176,153; eight beside churn
+    9,280–12,794 / 30,514–32,445 / 56,817–62,848 / 112,718–138,891.
   - **GitHub's runners** (5). Microsoft Defender's real-time protection was off on both
     (Get-MpComputerStatus), and the rename probe was refused nothing, in any pass, in either
     place; a directory with a file open in it refused its rename there too.
@@ -15032,9 +15046,9 @@ revision before comparing a changed API/implementation.
     path, with templates on Windows (the parity plan's step 4); its recording is WHP's to
     find, which reads back no access bit at stage 2.
   - A commit closes its files before its directory's rename (NTFS refuses one with a file
-    open in it), and `write_in` links aside a file Windows refuses to have renamed over,
-    which rescued every refusal its link was taken in; a hold that refuses the link too
-    fails the write, the snapshot before it still in use. One pointer is replaced a save, by
-    one writer at a time under the store's lock, as the probe's single writer replaced its
-    target: refused once in 8,000. A pointer never renamed over, a new name a commit, is
-    what would take the rest away.
+    open in it). On Windows `write_in` replaces no file: each write lands as its name's next
+    version, by a rename to a name no file has, which no hold refused (2.'s writers renamed
+    their own files to new names every time, and 30,000 writes landed so, 6); then the
+    versions before it go where Windows lets them. Readers take the newest, a confined VM
+    through its spawner; the store's tidy and the daemon's sweep of templates remove what
+    Windows kept. The link-aside fallback went with the replace it rescued.
