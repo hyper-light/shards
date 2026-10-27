@@ -208,10 +208,6 @@ pub fn valid_name(name: &str) -> bool {
 /// A container's record, in its directory, and the name it is written under first.
 const RECORD: &str = "config.json";
 const NEW_RECORD: &str = "config.json.new";
-/// What marks a container's directory removed on Windows ([`Removal::set_aside`]): the next
-/// start deletes a directory that holds it, as it deletes one set aside on Unix.
-#[cfg(windows)]
-const REMOVING: &str = ".removing";
 /// The largest record read. A run's command arrives in one message
 /// (`shards_ipc::MAX_PAYLOAD`), and JSON writes a byte as at most 6.
 const MAX_RECORD: u64 = 8 << 20;
@@ -359,22 +355,31 @@ impl Registry {
             arriving: BTreeMap::new(),
         };
         let mut removed = false;
-        for name in disk.list(&registry.root)? {
-            let dir = registry.root.join(&name);
+        let names = disk.list(&registry.root)?;
+        for name in &names {
+            let dir = registry.root.join(name);
             if name.starts_with('.') {
-                if name.ends_with(".removing") {
-                    removed |= Registry::gone(disk, &dir, note);
+                if let Some(id) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".removing")) {
+                    // Windows' set-aside is a mark beside the directory, which goes once
+                    // the directory has (`Removal::set_aside`).
+                    #[cfg(windows)]
+                    {
+                        removed |= Registry::gone_marked(disk, &registry.root.join(id), &dir, note);
+                    }
+                    #[cfg(unix)]
+                    {
+                        let _ = id;
+                        removed |= Registry::gone(disk, &dir, note);
+                    }
                 }
                 continue;
             }
-            // Marked removed, Windows' set-aside (`Removal::set_aside`): deleted, whatever
-            // record a write made meanwhile.
-            #[cfg(windows)]
-            if disk.read(&dir.join(REMOVING), 0).is_ok() {
-                removed |= Registry::gone(disk, &dir, note);
+            // Marked removed (Windows), whatever record a write made meanwhile: gone with
+            // its mark, above.
+            if cfg!(windows) && names.contains(&format!(".{name}.removing")) {
                 continue;
             }
-            let c = match load(disk, &dir, &name, RECORD) {
+            let c = match load(disk, &dir, name, RECORD) {
                 Loaded::Record(c) => {
                     // A next version a crash kept from its rename: never seen.
                     match disk.remove_file(&dir.join(NEW_RECORD)) {
@@ -391,7 +396,7 @@ impl Registry {
                 // A record whose rename outlasted a power loss, and its bytes did not: the
                 // next version, whole, is the container's, if a power loss kept it from
                 // its rename.
-                Loaded::Unreadable(why) => match load(disk, &dir, &name, NEW_RECORD) {
+                Loaded::Unreadable(why) => match load(disk, &dir, name, NEW_RECORD) {
                     Loaded::Record(c) => {
                         note(format!("{}: {why}; its next version is taken", dir.display()));
                         if let Err(e) = disk.rename(&dir.join(NEW_RECORD), &dir.join(RECORD)) {
@@ -444,6 +449,26 @@ impl Registry {
                 note(format!("{}: {e}", dir.display()));
                 false
             }
+        }
+    }
+
+    /// Removes `dir`, marked removed by `mark` (Windows' set-aside), then the mark; whether
+    /// both went. A directory gone already leaves only its mark.
+    #[cfg(windows)]
+    fn gone_marked(disk: &dyn Disk, dir: &Path, mark: &Path, note: &mut dyn FnMut(String)) -> bool {
+        match disk.remove_dir_all(dir) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                note(format!("{}: {e}", dir.display()));
+                return false;
+            }
+            _ => {}
+        }
+        match disk.remove_file(mark) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                note(format!("{}: {e}", mark.display()));
+                false
+            }
+            _ => true,
         }
     }
 
@@ -731,8 +756,7 @@ fn write(disk: &dyn Disk, root: &Path, c: &Container) -> io::Result<()> {
 pub struct Removal {
     pub container: Container,
     root: PathBuf,
-    /// Where its directory goes, `.ID.removing`: on Unix, as Windows marks it where it is.
-    #[cfg_attr(windows, allow(dead_code))]
+    /// Where its directory goes, `.ID.removing`, on Unix; on Windows a mark of that name.
     aside: PathBuf,
 }
 
@@ -742,16 +766,16 @@ impl Removal {
     /// nothing to set aside. A write of its record meanwhile lands in what is set aside, or
     /// fails: none makes the directory again.
     ///
-    /// On Windows its directory is marked instead ([`REMOVING`]): NTFS renames no directory
-    /// while a file in it is open, by any rename (vmm windows_files.rs,
-    /// `a_directory_holding_an_open_file_is_renamed_by_no_rename`), and its VM, or a reader
-    /// of its log, may hold one. A record written meanwhile is passed by as the mark is
-    /// found.
+    /// On Windows `.ID.removing` is a mark beside the directory instead, an empty file
+    /// written whole: NTFS renames no directory while a file in it is open, by any rename
+    /// (vmm windows_files.rs, `a_directory_holding_an_open_file_is_renamed_by_no_rename`),
+    /// and its VM, or a reader of its log, may hold one. The next start deletes a marked
+    /// directory whatever record a write made in it meanwhile, then the mark.
     pub fn set_aside(&self, disk: &dyn Disk) -> io::Result<()> {
         #[cfg(unix)]
         let set = disk.rename(&self.root.join(&self.container.id), &self.aside);
         #[cfg(windows)]
-        let set = disk.write(&self.root.join(&self.container.id).join(REMOVING), b"");
+        let set = disk.write(&self.aside, b"");
         match set {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -759,26 +783,25 @@ impl Removal {
     }
 
     /// Makes the removal durable: the containers' directory is synced, so that no crash
-    /// brings the container back; on Windows the container's own, which holds its mark.
-    /// Slow (PM M46), so done outside the registry's lock.
+    /// brings the container back. Slow (PM M46), so done outside the registry's lock.
     pub fn sync(&self, disk: &dyn Disk) -> io::Result<()> {
-        #[cfg(windows)]
-        match disk.sync_dir(&self.root.join(&self.container.id)) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
         disk.sync_dir(&self.root)
     }
 
     /// Deletes what was set aside: on Windows the directory where it is, its files deleted
-    /// as POSIX deletes them where they are open (std's `remove_dir_all`). What a failure
-    /// leaves, the next start deletes.
+    /// as POSIX deletes them where they are open (std's `remove_dir_all`), then its mark.
+    /// What a failure leaves, the next start deletes.
     pub fn delete(&self, disk: &dyn Disk) -> io::Result<()> {
-        #[cfg(unix)]
-        let at = self.aside.clone();
         #[cfg(windows)]
-        let at = self.root.join(&self.container.id);
-        match disk.remove_dir_all(&at) {
+        match disk.remove_dir_all(&self.root.join(&self.container.id)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        #[cfg(unix)]
+        let deleted = disk.remove_dir_all(&self.aside);
+        #[cfg(windows)]
+        let deleted = disk.remove_file(&self.aside);
+        match deleted {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }
@@ -798,7 +821,7 @@ mod tests {
     }
 
     /// Where container `id`'s directory is once set aside: `.ID.removing` on Unix; on
-    /// Windows where it was, marked ([`REMOVING`]).
+    /// Windows where it was, beside its mark.
     fn aside_dir(home: &Path, id: &str) -> PathBuf {
         #[cfg(unix)]
         return home.join("containers").join(format!(".{id}.removing"));
@@ -811,7 +834,7 @@ mod tests {
         #[cfg(unix)]
         return aside_dir(home, id).is_dir();
         #[cfg(windows)]
-        return aside_dir(home, id).join(REMOVING).is_file();
+        return home.join("containers").join(format!(".{id}.removing")).is_file();
     }
 
     fn container(id: &str, name: &str, state: State) -> Container {
@@ -1212,7 +1235,8 @@ mod tests {
         let disk = Faulty::at(4, false);
         let mut r = faulty(&home, &disk);
         let e = remove(&mut r, &disk, "aa").unwrap_err();
-        assert!(e.to_string().contains("injected at rename"), "{e}");
+        let set_aside = if cfg!(windows) { "write" } else { "rename" };
+        assert!(e.to_string().contains(&format!("injected at {set_aside}")), "{e}");
         assert!(r.get("aa").is_some());
         assert!(r.name_taken("one").is_some());
         assert!(open(&home).get("aa").is_some());
@@ -1422,7 +1446,7 @@ mod tests {
             let exited = at("rename config.json", if auto_remove { 1 } else { 2 });
             let set_aside = at(
                 if cfg!(windows) {
-                    "write .removing"
+                    "write .life.removing"
                 } else {
                     "rename .life.removing"
                 },

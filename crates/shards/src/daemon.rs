@@ -2403,6 +2403,13 @@ impl<D: Disk> Daemon<D> {
         // but a removal of the home does: a home moved away, or one made anew at its
         // path, stays as it is.
         if self.home_gone.load(Ordering::SeqCst) && self.removed_here() {
+            // Windows removes no directory a process stands in (ERROR_SHARING_VIOLATION,
+            // g121-bc's probe on jupiter): the daemon leaves it first, none of its names
+            // relative to it there (named.rs names the slots' lists by the whole home).
+            #[cfg(windows)]
+            if let Some(parent) = self.home.parent() {
+                let _ = std::env::set_current_dir(parent);
+            }
             let _ = std::fs::remove_dir_all(&self.home);
         }
         // Let go of before its file closes (M244): flock(2)'s LOCK_UN, UnlockFile.
@@ -10227,13 +10234,16 @@ mod tests {
             say(&vm, kind::TAKEN, &[]);
             say(&vm, kind::DONE, &[127]);
             let ended = finishes(&starting.run);
-            // Set aside before the record's write goes on, which then finds no directory.
+            // Set aside before the record's write goes on, which then finds no directory: or
+            // on Windows its directory marked, whatever the write makes in it.
             let dir = t.home.join("containers").join(&id);
+            let aside = t.home.join("containers").join(format!(".{id}.removing"));
+            let set = || aside.exists() || !dir.exists();
             let deadline = Instant::now() + PATIENCE;
-            while dir.exists() && Instant::now() < deadline {
+            while !set() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
-            let set_aside = !dir.exists();
+            let set_aside = set();
             let (arriving, seen, holder) = {
                 let registry = lock(&t.daemon.containers);
                 (
@@ -10255,9 +10265,11 @@ mod tests {
                 lock(&d.containers).name_taken("racer").is_none()
             });
             assert!(t.record(&id).is_none());
-            assert!(!t.home.join("containers").join(&id).exists());
-            let aside = t.home.join("containers").join(format!(".{id}.removing"));
-            t.until("what was set aside was not deleted", |_| !aside.exists());
+            #[cfg(unix)]
+            assert!(!dir.exists());
+            t.until("what was set aside was not deleted", |_| {
+                !aside.exists() && !dir.exists()
+            });
             // Its record's write, which found its directory set aside, failed for nothing.
             t.daemon.await_recorded();
             assert_eq!(
@@ -10320,9 +10332,14 @@ mod tests {
             t.until("its name was never let go", |d| {
                 lock(&d.containers).name_taken("racer").is_none()
             });
-            assert!(!t.home.join("containers").join(&id).exists());
+            // Set aside by now: on Windows marked, where it is until it is deleted.
+            let dir = t.home.join("containers").join(&id);
+            #[cfg(unix)]
+            assert!(!dir.exists());
             let aside = t.home.join("containers").join(format!(".{id}.removing"));
-            t.until("what was set aside was not deleted", |_| !aside.exists());
+            t.until("what was set aside was not deleted", |_| {
+                !aside.exists() && !dir.exists()
+            });
         });
     }
 
