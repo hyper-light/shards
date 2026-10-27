@@ -158,17 +158,32 @@ fn watch_budgets(word: mpsc::Sender<Woke>) {
 }
 
 /// Asks its builders to give back each time its host is short of memory, and as a budget
-/// over the build is written ([`budget_written`]), until neither can be heard.
+/// over the build is written ([`budget_written`]), until neither can be heard; while an
+/// answer is out past its pass's patience, it looks for it once a pressure window
+/// ([`late`]).
 fn watch_words(woke: &mpsc::Receiver<Woke>, givers: &mpsc::Receiver<Giver>, plain: bool) {
     let mut held: Vec<Giver> = Vec::new();
     let mut unsaid = Unsaid::default();
-    while let Ok(why) = woke.recv() {
+    loop {
+        let why = if held.iter().any(Giver::awaiting) {
+            match woke.recv_timeout(shards_vmm::platform::PRESSURE_WINDOW) {
+                Ok(why) => Some(why),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            let Ok(why) = woke.recv() else {
+                return;
+            };
+            Some(why)
+        };
         held.extend(givers.try_iter());
         let now = Instant::now();
         let until = now.checked_add(PATIENCE).unwrap_or(now);
         let said = match why {
-            Woke::Pressure => pass(&mut held, &mut unsaid, until, now, &room),
-            Woke::Budget => budget_written(&mut held, &mut unsaid, until, now, &room),
+            Some(Woke::Pressure) => pass(&mut held, &mut unsaid, until, now, &room),
+            Some(Woke::Budget) => budget_written(&mut held, &mut unsaid, until, now, &room),
+            None => late(&mut held, &mut unsaid, until, now, &room),
         };
         if let (Some(said), true) = (said, plain) {
             use std::io::Write as _;
@@ -218,6 +233,46 @@ fn pass(
     unsaid.say(now)
 }
 
+/// The answers out past their pass's patience, as far as they have come by `now`: each
+/// counted as its pass would have counted it, a builder whose connection has ended let go
+/// of; and where a give-back came, each builder told its share of the room a budget leaves,
+/// as its pass would have told it, heard by `until`. A builder held by its host's throttle
+/// answered in 9 s and more, past its pass (CI's ubuntu-24.04, PM M350). Said at once,
+/// whatever was said a moment before: their pass's line went out without them.
+fn late(
+    held: &mut Vec<Giver>,
+    unsaid: &mut Unsaid,
+    until: Instant,
+    now: Instant,
+    room: &dyn Fn() -> Option<i64>,
+) -> Option<String> {
+    let mut came = false;
+    let mut gave = false;
+    held.retain_mut(|g| {
+        if !g.awaiting() {
+            return true;
+        }
+        match g.answer(now) {
+            Ok(Some(answer)) => {
+                came = true;
+                gave |= matches!(answer, Answer::Gave(..));
+                count(unsaid, answer);
+                true
+            }
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    });
+    if !came {
+        return None;
+    }
+    if gave && let Some(r) = room() {
+        tell(held, Some(r), until, unsaid);
+    }
+    unsaid.late = true;
+    unsaid.say(now)
+}
+
 /// Tells each builder in `held` its share of the room `r` a budget leaves them, none where
 /// no budget holds them, each answer heard by `until`: those told alone heard, as one whose
 /// give-back is still out was counted unanswered.
@@ -234,19 +289,8 @@ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsa
 /// kept, which one whose connection has ended is not.
 fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
     match g.answer(until) {
-        Ok(Some(Answer::Gave(freed, unplugging))) => {
-            unsaid.freed = unsaid.freed.saturating_add(freed);
-            unsaid.unplugging = unsaid.unplugging.saturating_add(unplugging);
-            unsaid.answered += 1;
-            true
-        }
-        Ok(Some(Answer::Held(within))) => {
-            unsaid.held = within;
-            true
-        }
-        Ok(Some(Answer::Refused(why))) => {
-            unsaid.refused += 1;
-            unsaid.why = Some(why);
+        Ok(Some(answer)) => {
+            count(unsaid, answer);
             true
         }
         Ok(None) => {
@@ -254,6 +298,22 @@ fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
             true
         }
         Err(_) => false,
+    }
+}
+
+/// A builder's answer counted in `unsaid`.
+fn count(unsaid: &mut Unsaid, answer: Answer) {
+    match answer {
+        Answer::Gave(freed, unplugging) => {
+            unsaid.freed = unsaid.freed.saturating_add(freed);
+            unsaid.unplugging = unsaid.unplugging.saturating_add(unplugging);
+            unsaid.answered += 1;
+        }
+        Answer::Held(within) => unsaid.held = within,
+        Answer::Refused(why) => {
+            unsaid.refused += 1;
+            unsaid.why = Some(why);
+        }
     }
 }
 
@@ -274,6 +334,8 @@ struct Unsaid {
     /// last one's words.
     refused: u32,
     why: Option<String>,
+    /// Whether what it holds came past its pass's patience ([`late`]).
+    late: bool,
     said: Option<Instant>,
 }
 
@@ -282,9 +344,10 @@ impl Unsaid {
     /// any went unanswered or said why not, at most once in [`SAY_EVERY`]; counted afresh
     /// after.
     fn say(&mut self, now: Instant) -> Option<String> {
-        if self
-            .said
-            .is_some_and(|at| now.saturating_duration_since(at) < SAY_EVERY)
+        if !self.late
+            && self
+                .said
+                .is_some_and(|at| now.saturating_duration_since(at) < SAY_EVERY)
         {
             return None;
         }
@@ -295,11 +358,18 @@ impl Unsaid {
             .since
             .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
         let mut said = format!(
-            "the host is short of memory: the build's builders gave back {} MiB they held cold of their files, and asked to unplug {} MiB they held plugged past twice what they use and their peak since, in {} passes over {over:?}",
+            "the host is short of memory: the build's builders gave back {} MiB they held cold of their files, and asked to unplug {} MiB they held plugged past twice what they use and their peak since, ",
             self.freed >> 20,
             self.unplugging >> 20,
-            self.passes,
         );
+        if self.passes == 0 {
+            said.push_str(&format!(
+                "answering past the {} s their pass waited",
+                PATIENCE.as_secs()
+            ));
+        } else {
+            said.push_str(&format!("in {} passes over {over:?}", self.passes));
+        }
         if self.unanswered > 0 {
             said.push_str(&format!(
                 "; {} asks had no answer within {} s",
@@ -624,6 +694,45 @@ mod tests {
         gave(&refusing_end, "0 0");
         pass(&mut held, &mut unsaid, soon(), Instant::now(), &|| None);
         assert!(was_asked(&refusing_end), "the refusing one asked again");
+    }
+
+    /// An answer past its pass's patience is heard as it comes, counted as its pass would
+    /// have counted it and said at once, however lately its pass's line went out, its
+    /// builder then told its share of the room, as its pass would have told it (PM M350).
+    #[test]
+    fn a_late_answer_is_heard_as_it_comes_and_said_at_once() {
+        let (slow, slow_end) = builder();
+        let mut held = vec![slow];
+        let mut unsaid = Unsaid::default();
+        let short = || Some(-(64 * MIB as i64));
+        let said = pass(&mut held, &mut unsaid, soon(), Instant::now(), &short).unwrap();
+        assert!(said.contains("gave back 0 MiB"), "{said}");
+        assert!(said.contains("1 asks had no answer within 10 s"), "{said}");
+        assert!(was_asked(&slow_end));
+        assert!(held[0].awaiting());
+        assert_eq!(
+            late(&mut held, &mut unsaid, soon(), Instant::now(), &short),
+            None,
+            "nothing come, nothing said"
+        );
+        gave(&slow_end, &format!("{} 0", 503 * MIB));
+        (&slow_end).write_all(&run::header(build::kind::HELD, 7)).unwrap();
+        (&slow_end).write_all(b"3407872").unwrap();
+        let said = late(&mut held, &mut unsaid, soon(), Instant::now(), &short).unwrap();
+        assert!(said.contains("gave back 503 MiB"), "{said}");
+        assert!(
+            said.contains("answering past the 10 s their pass waited"),
+            "{said}"
+        );
+        assert!(said.contains("held within 3 MiB past what they use"), "{said}");
+        let mut h = [0u8; run::HEADER];
+        (&slow_end).read_exact(&mut h).unwrap();
+        let (kind, len) = run::parse_header(h).unwrap();
+        assert_eq!(kind, build::kind::ROOM, "told its room once it answered");
+        let mut room = vec![0u8; len as usize];
+        (&slow_end).read_exact(&mut room).unwrap();
+        assert_eq!(room, (-(64 * MIB as i64)).to_string().as_bytes());
+        assert!(!held[0].awaiting());
     }
 
     /// A refusal alone, nothing given back and no ask late, is said all the same.
