@@ -15216,6 +15216,9 @@ revision before comparing a changed API/implementation.
   - dockerd stops a container and logs `die` only once `StreamConfig.Wait` has returned,
     or 2 s have passed (moby v28.5.1 daemon/monitor.go:74-75), and an exec's `exec_die`
     likewise (:210-211): its attaches have its output first.
+  - With its end waiting for the relay (gpu 9a4482dd), compose.rs's whole binary twenty
+    times on each of the eight runners (`ci-compose-probe-2`, CI 40592927773): 0 of 160
+    failed.
 - **Consequence (D170).** A run's end waits for the relays of its output to its Engine
   API attaches under way, up to 2 s from its end, and an exec's `exec_die` likewise
   (daemon/engine.rs `Relaying`, `RELAY_WAIT`); `a_runs_end_waits_for_the_relays_of_its_output`
