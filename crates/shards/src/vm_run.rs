@@ -1702,14 +1702,10 @@ fn footprint_kib() -> u64 {
     0
 }
 
-/// This process's peak resident set so far, in KiB; 0 where unknown.
+/// This process's peak resident set (its peak working set on Windows) so far, in KiB; 0
+/// where unknown.
 fn max_rss_kib() -> u64 {
-    #[cfg(unix)]
-    {
-        shards_ipc::peak_rss_kib()
-    }
-    #[cfg(not(unix))]
-    0
+    shards_ipc::peak_rss_kib()
 }
 
 /// Starts the VM `cfg` describes, once this process is confined to the files it names, the
@@ -1775,8 +1771,8 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     vm::start(cfg)
 }
 
-/// A host whose microVMs take no snapshots says so before a VM starts that would take or
-/// restore one (D140).
+/// A host whose microVMs take no snapshots, arm64 KVM's (D154), says so before a VM starts
+/// that would take or restore one.
 fn snapshots() -> Result<(), String> {
     if vm::SNAPSHOTS {
         return Ok(());
@@ -1798,11 +1794,11 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     vm::check_host()?;
     snapshots()?;
     let mut paths = crate::confine::Paths::default();
-    // The snapshot says which files it restores against: on macOS it is granted first, to
-    // be read for them.
-    #[cfg(target_os = "macos")]
+    // The snapshot says which files it restores against: on macOS and Windows it is granted
+    // first, to be read for them.
+    #[cfg(any(target_os = "macos", windows))]
     granted_template(&cfg.dir)?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     paths.read_under.push(cfg.dir.clone());
     written(
         &mut paths,
@@ -1834,8 +1830,6 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
         Some(given) => {
             add(&mut paths, given);
             confine(&paths)?;
-            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
-            let backing = shards_vmm::snapshot::backing_of(&pinned);
             // Each given file as its snapshot named the files it was taken with: resolved,
             // links and all (vmm platform::input_path), so that one given through a link,
             // macOS's /var to /private/var among them, is the file it names, not another.
@@ -1846,20 +1840,51 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
                     (real, *read_only)
                 })
                 .collect();
-            let unasked: Vec<String> = backing
-                .iter()
-                .filter(|b| !given.contains(b))
-                .map(|(path, read_only)| format!("{}{}", path.display(), if *read_only { ":ro" } else { "" }))
-                .collect();
-            if !unasked.is_empty() {
-                return Err(format!(
+            let refuse_unasked = |backing: &[(PathBuf, bool)]| -> Result<(), String> {
+                let unasked: Vec<String> = backing
+                    .iter()
+                    .filter(|b| !given.contains(b))
+                    .map(|(path, read_only)| {
+                        format!("{}{}", path.display(), if *read_only { ":ro" } else { "" })
+                    })
+                    .collect();
+                if unasked.is_empty() {
+                    return Ok(());
+                }
+                Err(format!(
                     "{}: the template names files it was not given: {}",
                     cfg.dir.display(),
                     unasked.join(", ")
+                ))
+            };
+            // On Windows before the state is read too, which looks at each file it names,
+            // as an AppContainer may not at one it was not handed (PM M345).
+            #[cfg(windows)]
+            refuse_unasked(&shards_vmm::snapshot::backing_named(&cfg.dir)?)?;
+            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            refuse_unasked(&shards_vmm::snapshot::backing_of(&pinned))?;
+            pinned
+        }
+        // On Windows its files are granted it before the state is read: an AppContainer may
+        // not look even at the metadata of a file it was not handed (PM M345), where the
+        // state's check of each is a look. So the files the state names are asked for
+        // first, then the state is read, each checked through its grant, and refused if a
+        // newer generation in between names others.
+        #[cfg(windows)]
+        None => {
+            let named = shards_vmm::snapshot::backing_named(&cfg.dir)?;
+            add(&mut paths, &named);
+            confine(&paths)?;
+            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            if shards_vmm::snapshot::backing_of(&pinned) != named {
+                return Err(format!(
+                    "{}: its snapshot was saved again as it was read",
+                    cfg.dir.display()
                 ));
             }
             pinned
         }
+        #[cfg(not(windows))]
         None => {
             let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
             add(&mut paths, &shards_vmm::snapshot::backing_of(&pinned));
@@ -2369,9 +2394,42 @@ fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
     }))
 }
 
-/// A restore's template, as a VM in App Sandbox is granted it: its pointer, then the
-/// files of the generation it names, never its directory.
-#[cfg(target_os = "macos")]
+/// The spawner, as the stager of this VM's snapshots (D196): an AppContainer writes in no
+/// directory of its user's (D141), so the spawner makes each generation where it granted
+/// this VM to write, and hands it the generation's files to fill, over the grants link, a
+/// request and its answer at a time (the lock held through both).
+#[cfg(windows)]
+#[derive(Debug)]
+struct SpawnerStages;
+
+#[cfg(windows)]
+impl shards_vmm::platform::Stager for SpawnerStages {
+    fn stage(&self, dir: &Path) -> std::io::Result<(String, std::fs::File, std::fs::File)> {
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no spawner to stage a snapshot through",
+            )
+        })?;
+        crate::grant_ask::stage(link, dir)
+    }
+
+    fn commit(&self, _dir: &Path, name: &str) -> std::io::Result<()> {
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no spawner to commit a snapshot through",
+            )
+        })?;
+        crate::grant_ask::commit(link, name)
+    }
+}
+
+/// A restore's template, as a VM in App Sandbox or an AppContainer is granted it: its
+/// pointer, then the files of the generation it names, never its directory.
+#[cfg(any(target_os = "macos", windows))]
 fn granted_template(dir: &Path) -> Result<(), String> {
     use crate::grant::Access;
     ask(&[(Access::ReadIfThere, shards_vmm::snapshot::pointer(dir))])?;
@@ -2405,14 +2463,20 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     return crate::confine::landlock(paths);
     // As on macOS; and once its partition is set up, before anything of its guest's is
-    // read, this process forbids itself dynamic code (D141, PM M202).
+    // read, this process forbids itself dynamic code (D141, PM M202). Its snapshots its
+    // spawner stages, over the link (D196), which stays open for them.
     #[cfg(windows)]
     {
         #[cfg(target_arch = "x86_64")]
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
+        let stages = !paths.write_under.is_empty();
+        if stages {
+            shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
+        }
         match &paths.vsock {
             Some(vsock) => dial_through_spawner(vsock),
+            None if stages => Ok(()),
             None => {
                 drop(
                     GRANTS

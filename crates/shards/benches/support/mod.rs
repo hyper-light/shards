@@ -2,19 +2,19 @@
 //! statistics, and the host/OS/revision stamp every result carries (CLAUDE.md).
 #![allow(dead_code)]
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::process::Stdio;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::mpsc;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::{Duration, Instant};
 
 use crate::common;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct Sample {
@@ -29,8 +29,15 @@ pub fn run(args: &[String], hold: bool) -> Sample {
     measure(common::shards_vm(), args, hold, &[])
 }
 
+/// [`run`] on Windows, where a VM process runs only confined, in the AppContainer `shards`
+/// starts it in (D141): `shards <args>`, its VM process's own timing line passed through.
+#[cfg(windows)]
+pub fn run(args: &[String], hold: bool) -> Sample {
+    measure(common::shards(), args, hold, &[])
+}
+
 /// Runs the `shards` command as a user runs it, with `env` added to its environment.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn run_env(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     measure(common::shards(), args, hold, env)
 }
@@ -86,6 +93,64 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
     let run = common::Run {
         status: libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status)),
         signal: libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status)),
+        stdout: String::new(),
+        stderr: reader.join().unwrap(),
+        elapsed,
+    };
+    assert_eq!(run.status, Some(0), "shards failed: {run}");
+    Sample { run }
+}
+
+/// [`measure`] on Windows: the child waited for, and ended where it outlives [`TIMEOUT`],
+/// by a watchdog holding a handle of its own to the child's process.
+#[cfg(windows)]
+fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    let start = Instant::now();
+    let mut child = Command::new(bin)
+        .args(args)
+        .envs(env.iter().copied())
+        .env("SHARDS_TIMING", "1")
+        .stdin(if hold { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawning shards");
+    let stderr = child.stderr.take().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if line == "shards-ready" {
+                let _ = ready_tx.send(());
+            }
+            all.push_str(&line);
+            all.push('\n');
+        }
+        all
+    });
+    if hold {
+        ready_rx
+            .recv_timeout(TIMEOUT)
+            .expect("shards never reported shards-ready");
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"go\n").unwrap();
+    }
+    let process = child.as_handle().try_clone_to_owned().unwrap();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if done_rx.recv_timeout(TIMEOUT).is_err() {
+            // SAFETY: a handle of the child's process, which this thread holds open.
+            unsafe { windows_sys::Win32::System::Threading::TerminateProcess(process.as_raw_handle(), 1) };
+        }
+    });
+    let status = child.wait().unwrap();
+    let elapsed = start.elapsed();
+    let _ = done_tx.send(());
+    watchdog.join().unwrap();
+    let run = common::Run {
+        status: status.code(),
+        signal: None,
         stdout: String::new(),
         stderr: reader.join().unwrap(),
         elapsed,

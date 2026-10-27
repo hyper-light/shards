@@ -1201,6 +1201,12 @@ pub fn sync_entries(dir: &File) -> io::Result<()> {
     return dir.sync_all();
 }
 
+/// Makes `file` keep what is never written to it as holes: nothing to do, as ext4, btrfs,
+/// XFS and APFS leave a file's unwritten ranges holes by themselves (windows.rs must ask).
+pub fn sparse(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
 /// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)). A filesystem without
 /// `F_FULLFSYNC` gets `fsync` instead, as SQLite falls back (`full_fsync`, os_unix.c):

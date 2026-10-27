@@ -96,9 +96,11 @@ mod pressure;
 pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
 
 mod granted;
+#[cfg(windows)]
+pub use granted::input_file_id;
 pub use granted::{
-    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_beneath_input,
-    open_input, set_dialer,
+    Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix,
+    open_beneath_input, open_input, set_dialer, set_stager, stager,
 };
 
 #[cfg(target_os = "linux")]

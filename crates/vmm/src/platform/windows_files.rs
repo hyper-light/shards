@@ -30,19 +30,20 @@ use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
     FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, FileRenameInformationEx, NtCreateFile,
-    NtSetInformationFile,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileLinkInformation, FileRenameInformation, FileRenameInformationEx,
+    NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_NO_MORE_FILES, NTSTATUS, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_INVALID_INFO_CLASS,
-    STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
+    ERROR_NO_MORE_FILES, NTSTATUS, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_ACCESS_DENIED,
+    STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileDispositionInfo, FileFullDirectoryInfo,
-    FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE, SetFileInformationByHandle,
+    FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FileAttributeTagInfo,
+    FileDispositionInfo, FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE,
+    SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{
@@ -270,7 +271,9 @@ pub fn open_in(dir: &File, name: &str) -> io::Result<File> {
 /// open, as rename(2) does, where without it NTFS refuses (STATUS_ACCESS_DENIED, PM M344).
 /// A holder that shares no delete keeps the file from being replaced either way
 /// (STATUS_SHARING_VIOLATION): Windows' own limit, which std's opens, and so shards' own
-/// readers, never set.
+/// readers, never set. A file at `name` that Windows will not yet delete is linked aside
+/// first, as `.{name}.….old` ([`rename_into`]): removed once the rename is taken if Windows
+/// lets the file go by then, else left for the directory's owner to tidy.
 pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -279,11 +282,12 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let tmp = format!(
-        ".{name}.{nanos:x}-{:x}-{:x}.tmp",
+    let stem = format!(
+        ".{name}.{nanos:x}-{:x}-{:x}",
         std::process::id(),
         COUNT.fetch_add(1, Ordering::Relaxed)
     );
+    let tmp = format!("{stem}.tmp");
     let mut file = open_relative(
         dir,
         &tmp,
@@ -294,7 +298,7 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     let written = file
         .write_all(bytes)
         .and_then(|()| super::sync_durable(&file))
-        .and_then(|()| rename_into(&file, dir, name))
+        .and_then(|()| rename_into(&file, dir, name, &stem))
         // The rename is the file's own metadata: flushed with it.
         .and_then(|()| super::sync_durable(&file));
     if let Err(e) = written {
@@ -333,53 +337,47 @@ fn delete_on_close(file: &File) {
 /// whoever holds it open (NtSetInformationFile, FileRenameInformationEx, POSIX semantics);
 /// on a file system without POSIX renames (FAT), by the plain rename, which replaces a file
 /// no one holds open.
-fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
-    let wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
-    let name_bytes = wide
-        .len()
-        .checked_mul(2)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a name too long"))?;
-    // The structure, whose one unit of name is room for the NUL after it, and the name, as
-    // Microsoft's samples size it: past the structure's head and the name alone, the rename
-    // was refused (ERROR_INVALID_PARAMETER on jupiter, Windows 10.0.26200).
-    let size = size_of::<FILE_RENAME_INFORMATION>()
-        .checked_add(name_bytes)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a name too long"))?;
-    let size32 =
-        u32::try_from(size).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name too long"))?;
-    // Eight-byte words: aligned as the structure's handle is.
-    let mut buf = vec![0u64; size.div_ceil(8)];
-    let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-    let set = |flags: u32| {
-        // SAFETY: `buf` holds `size` bytes, aligned for FILE_RENAME_INFORMATION: its head, and
-        // the name's `wide.len()` units at its FileName, which `size` makes room for.
-        unsafe {
-            (*info).Anonymous.Flags = flags;
-            (*info).RootDirectory = dir.as_raw_handle();
-            (*info).FileNameLength = u32::try_from(name_bytes).unwrap_or(u32::MAX);
-            std::ptr::copy_nonoverlapping(
-                wide.as_ptr(),
-                (&raw mut (*info).FileName).cast::<u16>(),
-                wide.len(),
-            );
+///
+/// Windows may refuse a rename over a file it has lately been given, STATUS_ACCESS_DENIED,
+/// while Restart Manager names no process holding it (PM M345). In a refusal it ended within
+/// milliseconds, it still let the file be linked: linked under a second name, the rename
+/// over it, which then deletes no file, was taken at once, 9 times of 9. In one it held a
+/// minute or more, it refused the link too. So a refused rename links the file at `name` as
+/// `{stem}-N.old` and is asked again, and again while each refusal is of another writer's
+/// file, which took the name in between; it stops refused where the file it linked is still
+/// there, or the link is refused and one more ask is too. Its links are removed once it
+/// ends, those Windows lets go by then; the rest are left for the directory's owner to tidy.
+fn rename_into(file: &File, dir: &File, name: &str, stem: &str) -> io::Result<()> {
+    let mut status = set_name(file, dir, name, FileRenameInformationEx, REPLACE)?;
+    let mut asides = Vec::new();
+    while status == STATUS_ACCESS_DENIED {
+        let aside = format!("{stem}-{}.old", asides.len());
+        let Ok(linked) = link_aside(dir, name, &aside) else {
+            // Gone, or not to be linked: asked once more as it is.
+            status = set_name(file, dir, name, FileRenameInformationEx, REPLACE)?;
+            break;
+        };
+        asides.push(aside);
+        status = set_name(file, dir, name, FileRenameInformationEx, REPLACE)?;
+        let there = open_relative(
+            dir,
+            name,
+            FILE_READ_ATTRIBUTES,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .and_then(|f| super::file_id(&f));
+        // Asked again only where another writer's file has taken the name since: the file it
+        // linked still there, or none it can read, ends it.
+        if status == STATUS_ACCESS_DENIED && !there.is_ok_and(|id| id != linked) {
+            break;
         }
-    };
-    let rename = |class: FILE_INFORMATION_CLASS| {
-        let mut status_block = IO_STATUS_BLOCK::default();
-        // SAFETY: a handle `file` holds open with DELETE, and the FILE_RENAME_INFORMATION
-        // of `size32` bytes `buf` holds.
-        unsafe {
-            NtSetInformationFile(
-                file.as_raw_handle(),
-                &mut status_block,
-                info.cast(),
-                size32,
-                class,
-            )
+    }
+    for aside in &asides {
+        if let Ok(link) = open_relative(dir, aside, DELETE, FILE_OPEN, FILE_NON_DIRECTORY_FILE) {
+            delete_on_close(&link);
         }
-    };
-    set(FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS);
-    let status = rename(FileRenameInformationEx);
+    }
     if status >= 0 {
         return Ok(());
     }
@@ -393,12 +391,84 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
         return Err(nt_error(status));
     }
     // FileRenameInformation's ReplaceIfExists is the first byte of the same word.
-    set(1);
-    let status = rename(FileRenameInformation);
+    let status = set_name(file, dir, name, FileRenameInformation, 1)?;
     if status < 0 {
         return Err(nt_error(status));
     }
     Ok(())
+}
+
+/// A rename's flags: over what is there, whoever holds it open.
+const REPLACE: u32 = FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
+
+/// Links the file at `name` in the directory `dir` holds open as `aside` there too
+/// (FileLinkInformation, replacing nothing), by a handle of its own that may only read and
+/// write its attributes, which a link's count is; which file it linked ([`super::file_id`]).
+fn link_aside(dir: &File, name: &str, aside: &str) -> io::Result<(u64, u64)> {
+    plain_name(aside)?;
+    let target = open_relative(
+        dir,
+        name,
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )?;
+    let status = set_name(&target, dir, aside, FileLinkInformation, 0)?;
+    if status < 0 {
+        return Err(nt_error(status));
+    }
+    super::file_id(&target)
+}
+
+/// Gives the file `file` holds the name `name` in the directory `dir` holds open, as
+/// `class` does (a rename, or a link: FILE_LINK_INFORMATION's layout is
+/// FILE_RENAME_INFORMATION's) with `flags`; the call's status.
+fn set_name(
+    file: &File,
+    dir: &File,
+    name: &str,
+    class: FILE_INFORMATION_CLASS,
+    flags: u32,
+) -> io::Result<NTSTATUS> {
+    let wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
+    let name_bytes = wide
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a name too long"))?;
+    // The structure, whose one unit of name is room for the NUL after it, and the name, as
+    // Microsoft's samples size it: past the structure's head and the name alone, the rename
+    // was refused (ERROR_INVALID_PARAMETER on jupiter, Windows 10.0.26200).
+    let size = size_of::<FILE_RENAME_INFORMATION>()
+        .checked_add(name_bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a name too long"))?;
+    let size32 =
+        u32::try_from(size).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name too long"))?;
+    let name_length = u32::try_from(name_bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name too long"))?;
+    // Eight-byte words: aligned as the structure's handle is.
+    let mut buf = vec![0u64; size.div_ceil(8)];
+    let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: `buf` holds `size` bytes, aligned for FILE_RENAME_INFORMATION: its head, and
+    // the name's `wide.len()` units at its FileName, which `size` makes room for; then a
+    // handle `file` holds open, and the structure of `size32` bytes `buf` holds.
+    Ok(unsafe {
+        (*info).Anonymous.Flags = flags;
+        (*info).RootDirectory = dir.as_raw_handle();
+        (*info).FileNameLength = name_length;
+        std::ptr::copy_nonoverlapping(
+            wide.as_ptr(),
+            (&raw mut (*info).FileName).cast::<u16>(),
+            wide.len(),
+        );
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status_block,
+            info.cast(),
+            size32,
+            class,
+        )
+    })
 }
 
 /// Makes the entries of the directory `dir` holds open durable: the renames into it survive
@@ -677,6 +747,53 @@ mod tests {
         assert_eq!(names, ["other", "state", "sub"]);
         sync_entries(&dir).unwrap();
         assert!(write_in(&dir, "a:b", b"x").is_err(), "a stream's name");
+    }
+
+    /// What a refused rename falls back on: the file at the name, linked aside, is replaced
+    /// by a rename over it, its bytes kept under the aside name until that goes; a link
+    /// asked over a name already there is refused, as is an aside name that is no plain name.
+    #[test]
+    fn a_file_linked_aside_is_renamed_over() {
+        use std::io::Write as _;
+        let base = shards_testdir::TempDir::new("aside").unwrap();
+        std::fs::create_dir(base.join("d")).unwrap();
+        let dir = super::super::open_dir(&base.join("d")).unwrap();
+        write_in(&dir, "current", b"old").unwrap();
+        link_aside(&dir, "current", ".current.1.old").unwrap();
+        let new = open_relative(
+            &dir,
+            "new.tmp",
+            FILE_GENERIC_WRITE | DELETE,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .unwrap();
+        (&new).write_all(b"new").unwrap();
+        rename_into(&new, &dir, "current", ".current.2").unwrap();
+        drop(new);
+        let d = base.join("d");
+        assert_eq!(std::fs::read(d.join("current")).unwrap(), b"new");
+        assert_eq!(std::fs::read(d.join(".current.1.old")).unwrap(), b"old");
+        assert!(
+            !d.join(".current.2-0.old").exists(),
+            "taken at once: nothing set aside"
+        );
+        assert_eq!(link_aside(&dir, "current", ".current.3.old").unwrap(), {
+            let f = open_relative(
+                &dir,
+                "current",
+                FILE_READ_ATTRIBUTES,
+                FILE_OPEN,
+                FILE_NON_DIRECTORY_FILE,
+            )
+            .unwrap();
+            super::super::file_id(&f).unwrap()
+        });
+        assert!(
+            link_aside(&dir, "current", ".current.1.old").is_err(),
+            "a name already there"
+        );
+        assert!(link_aside(&dir, "current", "a:b").is_err(), "a stream's name");
     }
 
     /// A listing longer than one read's buffer is whole.

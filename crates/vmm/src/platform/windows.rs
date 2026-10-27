@@ -13,8 +13,8 @@ use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FlushViewOfFile, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
     MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
-    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile2, VirtualAlloc,
-    VirtualAlloc2, VirtualFree, VirtualProtect,
+    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, UnmapViewOfFile2,
+    VirtualAlloc, VirtualAlloc2, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -72,10 +72,47 @@ pub fn reserve(len: usize) -> io::Result<NonNull<u8>> {
     NonNull::new(p.cast()).ok_or_else(io::Error::last_os_error)
 }
 
-/// Reserves guest RAM. Windows backs large pages only for callers holding
-/// SeLockMemoryPrivilege, which shards does not ask for, so this is `reserve`.
+/// Reserves guest RAM, committed and zero-filled as [`reserve`]'s: a placeholder
+/// (VirtualAlloc2) that committed read/write memory replaces at once, so that a restore can
+/// free it back to its placeholder and place a view of its memory file at the same address,
+/// leaving no moment in which another thread could take the range ([`map_file_private`], PM
+/// M345). Windows backs large pages only for callers holding SeLockMemoryPrivilege, which
+/// shards does not ask for.
 pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
-    reserve(len)
+    // SAFETY: the pseudo-handle of this process, which needs no closing.
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: a fresh placeholder, which only this function references.
+    let base = unsafe {
+        VirtualAlloc2(
+            process,
+            std::ptr::null(),
+            len,
+            MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+            PAGE_NOACCESS,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let base = NonNull::new(base.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
+    // SAFETY: committed memory replacing the whole placeholder, at its base and size.
+    let committed = unsafe {
+        VirtualAlloc2(
+            process,
+            base.as_ptr().cast(),
+            len,
+            MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+            PAGE_READWRITE,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if committed != base.as_ptr().cast() {
+        let e = io::Error::last_os_error();
+        // SAFETY: the placeholder made above, which nothing references.
+        unsafe { VirtualFree(base.as_ptr().cast(), 0, MEM_RELEASE) };
+        return Err(e);
+    }
+    Ok(base)
 }
 
 /// Guest RAM on base pages, as `reserve_ram`'s always is here: nothing to do.
@@ -137,11 +174,37 @@ pub unsafe fn discard(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     unsafe { grant(ptr, len) }
 }
 
+/// Gives back what [`reserve`] or [`reserve_ram`] made at `ptr`: its memory, or the view of
+/// a file [`map_file_private`] placed there since, which is unmapped rather than freed.
+///
 /// # Safety
 /// `ptr` must come from `reserve` or `reserve_ram` and not be used afterwards.
 pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
-    // SAFETY: forwarded caller contract; MEM_RELEASE requires size 0.
-    unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
+    use windows_sys::Win32::System::Memory::{MEM_MAPPED, MEMORY_BASIC_INFORMATION, VirtualQuery};
+    let mut info = MEMORY_BASIC_INFORMATION::default();
+    // SAFETY: a query of this process's own address, into a value of its own size.
+    let queried = unsafe {
+        VirtualQuery(
+            ptr.as_ptr().cast(),
+            &raw mut info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    // SAFETY: forwarded caller contract; a view is unmapped whole, and MEM_RELEASE frees an
+    // allocation or a placeholder whole, given size 0.
+    unsafe {
+        if queried != 0 && info.Type == MEM_MAPPED {
+            UnmapViewOfFile2(
+                GetCurrentProcess(),
+                MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: ptr.as_ptr().cast(),
+                },
+                0,
+            );
+        } else {
+            VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE);
+        }
+    }
 }
 
 /// The path of the file `file` has open, links resolved (GetFinalPathNameByHandleW): what a
@@ -457,13 +520,86 @@ pub unsafe fn unmap_file_shared(ptr: NonNull<u8>, _len: usize) {
     }
 }
 
-/// A file view cannot replace part of a `VirtualAlloc` region without placeholders
-/// (VirtualAlloc2 + MapViewOfFile3), so callers fall back to reading.
+/// Maps `len` bytes of `file` from `offset` copy-on-write at `at`, the whole of a region
+/// [`reserve_ram`] made: its memory freed back to its placeholder (VirtualFree,
+/// MEM_PRESERVE_PLACEHOLDER) and a copy-on-write view of the file placed there
+/// (MapViewOfFile3, PAGE_WRITECOPY, MEM_REPLACE_PLACEHOLDER), whose pages every restore of
+/// the file shares in the cache until one writes a page, its own copy; the file is never
+/// written (PM M345). Unsupported where `offset` is not on the allocation granularity, at
+/// which every view starts: the caller then reads the file in.
 ///
 /// # Safety
-/// None: this never touches memory.
-pub unsafe fn map_file_private(_file: &File, _offset: u64, _len: usize, _at: NonNull<u8>) -> io::Result<()> {
-    Err(io::ErrorKind::Unsupported.into())
+/// `at..at + len` must be a whole region of `reserve_ram`'s, which no hypervisor maps and
+/// nothing references.
+pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull<u8>) -> io::Result<()> {
+    let mut info = SYSTEM_INFO::default();
+    // SAFETY: GetSystemInfo fills the provided struct.
+    unsafe { GetSystemInfo(&mut info) };
+    if !offset.is_multiple_of(u64::from(info.dwAllocationGranularity.max(1))) {
+        return Err(io::ErrorKind::Unsupported.into());
+    }
+    // SAFETY: the pseudo-handle of this process, which needs no closing.
+    let process = unsafe { GetCurrentProcess() };
+    // Committed memory again in the placeholder, as `reserve_ram` left it, where the view
+    // could not be placed.
+    let recommit = || {
+        // SAFETY: the placeholder this function freed the region back to.
+        unsafe {
+            VirtualAlloc2(
+                process,
+                at.as_ptr().cast(),
+                len,
+                MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+                PAGE_READWRITE,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+    };
+    // SAFETY: forwarded caller contract: the whole of an allocation that replaced a
+    // placeholder, freed back to that placeholder.
+    if unsafe { VirtualFree(at.as_ptr().cast(), len, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a copy-on-write section of the whole file, closed once its view holds it.
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            PAGE_WRITECOPY,
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if section.is_null() {
+        let e = io::Error::last_os_error();
+        recommit();
+        return Err(e);
+    }
+    // SAFETY: the view replaces the placeholder, at its base and of its size, within the
+    // section, which the caller's file holds.
+    let view = unsafe {
+        MapViewOfFile3(
+            section,
+            process,
+            at.as_ptr().cast(),
+            offset,
+            len,
+            MEM_REPLACE_PLACEHOLDER,
+            PAGE_WRITECOPY,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let failed = (view.Value != at.as_ptr().cast()).then(io::Error::last_os_error);
+    // SAFETY: the section handle, which the view (if any) keeps alive by itself.
+    unsafe { CloseHandle(section) };
+    if let Some(e) = failed {
+        recommit();
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// File views need placeholders on Windows too (see `map_file_private`).
@@ -560,17 +696,19 @@ pub unsafe fn untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::Resul
     Ok(None)
 }
 
-/// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): no
-/// snapshot is restored on Windows yet (vm::SNAPSHOTS).
+/// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): asked
+/// only for a working set's written pages, which a restore on Windows does not record yet
+/// (vm::WORKING_SETS, D196).
 pub fn populate_writable(_ptr: *mut u8, _len: usize) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "pages are not faulted in ahead on Windows: it restores no snapshot yet",
+        "pages are not faulted in ahead on Windows: its restores record no working set yet",
     ))
 }
 
-/// The host's fault-around held off over ranges (unix.rs `FaultAroundOff`): no snapshot is
-/// restored on Windows yet (vm::SNAPSHOTS), and none is held off.
+/// The host's fault-around held off over ranges (unix.rs `FaultAroundOff`), so that a
+/// working set recorded or mapped ahead holds what the guest touched alone: none on
+/// Windows, whose restores record no working set yet (vm::WORKING_SETS, D196).
 #[derive(Debug)]
 pub struct FaultAroundOff;
 
@@ -578,6 +716,68 @@ impl FaultAroundOff {
     pub fn over(_ranges: &[(*mut u8, usize)]) -> Option<FaultAroundOff> {
         None
     }
+}
+
+/// Which file `file` is: its volume's serial number and its index on that volume
+/// (GetFileInformationByHandle), as a Unix file's device and inode say. A handle opened for
+/// no access may ask it, as `std::fs::metadata`'s is opened, where a confined process may
+/// read nothing of the file (D141).
+pub fn file_id(file: &File) -> io::Result<(u64, u64)> {
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a buffer of its own type, for a handle this process holds.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((
+        u64::from(info.dwVolumeSerialNumber),
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
+/// The file at `path` opened for no access: what may still be asked of it where reading it
+/// is denied, its metadata (CreateFileW: "query certain metadata ... even if GENERIC_READ
+/// access would have been denied"), as `std::fs::metadata` opens one.
+pub fn open_for_metadata(path: &std::path::Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+/// Makes `file` keep what is never written to it as holes (FSCTL_SET_SPARSE): NTFS gives
+/// a file not so marked every byte up to the last it was written, zeros included, and
+/// writes those zeros as it goes. A snapshot's memory file, most of it all-zero pages left
+/// unwritten, so takes the disk its guest used (PM M345). One marked already asks nothing:
+/// a VM process may make no FSCTL (D141's mitigations), and its spawner marks the memory
+/// file it hands it as it makes it (`snapshot::prepare`).
+pub fn sparse(file: &File) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE != 0 {
+        return Ok(());
+    }
+    let mut returned = 0u32;
+    // SAFETY: an FSCTL that takes no buffer, on a handle this process holds.
+    let set = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &raw mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if set == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Flushes file data and metadata to stable storage.

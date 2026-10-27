@@ -12,7 +12,9 @@ name: whp run
 # registration with a completion port does (PM M215); a DAX window's ranges, views of a
 # section placed into a placeholder reservation and mapped at stage 2, and what replacing one
 # costs (PM M341); a section handed to a confined VM process by a process that did not spawn
-# it, as the runner's account and as a standard user (PM M343).
+# it, as the runner's account and as a standard user (PM M343); what a partition's snapshot
+# rests on: its vCPU's state, its time held and set, and a restore's RAM a copy-on-write view of
+# a sparse file, and the renames its commit makes, which Windows may refuse (PM M345).
 # Runs when the probes change, or when asked.
 on:
   push:
@@ -34,7 +36,7 @@ jobs:
       matrix:
         runner: [windows-2022, windows-2025]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -129,3 +131,19 @@ jobs:
         shell: bash
         working-directory: docs/research/measurements/whp-run
         run: cargo run --release --bin m213
+      - name: M345
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m345 -- "$RUNNER_TEMP/m345"
+      # The renames a snapshot's commit makes, beside what Microsoft Defender's real-time
+      # protection is on this runner: on jupiter, with it on, some were refused for a minute.
+      - name: M345, renames
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        shell: pwsh
+        working-directory: docs/research/measurements/whp-run
+        run: |
+          Get-MpComputerStatus -ErrorAction SilentlyContinue |
+            Select-Object AMRunningMode, RealTimeProtectionEnabled, OnAccessProtectionEnabled | Format-List
+          cargo run --release --bin m345_rename -- "$env:RUNNER_TEMP\m345-rename"

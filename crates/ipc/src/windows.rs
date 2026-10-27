@@ -1233,6 +1233,26 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
         .collect()
 }
 
+/// This process's peak working set so far, in KiB (GetProcessMemoryInfo's
+/// PeakWorkingSetSize): the most of its memory resident at once, as `ru_maxrss` says on
+/// Unix (unix.rs); 0 where unknown.
+pub fn peak_rss_kib() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
+    // SAFETY: this process's pseudo-handle, and counters of their own size.
+    let read = unsafe {
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &raw mut counters,
+            size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+    };
+    if read == 0 {
+        return 0;
+    }
+    (counters.PeakWorkingSetSize / 1024) as u64
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

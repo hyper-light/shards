@@ -8,7 +8,10 @@
 //! - warm: a `--hold` process prepares everything, then gets its start request
 //!   - `request`: release → guest running again: the cost of a start request to a warm VM
 //!
-//! Peak RSS includes the guest memory the process touched.
+//! Peak RSS includes the guest memory the process touched. On Windows each sample is
+//! `shards restore`, whose VM process runs only confined, in the AppContainer `shards`
+//! starts it in (D141): `restore` and `request` are its VM process's own clock's, and
+//! `spawn_to_exit` holds the confinement's start too.
 //!
 //! `cargo bench -p shards --bench restore [-- --runs N --cpus N --memory MIB]`
 
@@ -20,19 +23,10 @@
     clippy::print_stdout
 )]
 
-#[cfg(unix)]
 #[path = "../tests/common/mod.rs"]
 mod common;
-#[cfg(unix)]
 mod support;
 
-#[cfg(not(unix))]
-fn main() {
-    use std::io::Write;
-    let _ = writeln!(std::io::stderr(), "SKIP: the restore benchmark needs a Unix host");
-}
-
-#[cfg(unix)]
 fn main() {
     use shards_abi::marker;
     use support::{peak_rss_mib, report, run, stats, us, wall_us};

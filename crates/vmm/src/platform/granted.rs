@@ -112,6 +112,16 @@ pub fn input_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
     }
 }
 
+/// Which file `path` is (windows.rs `file_id`): the granted handle's, or the file's at
+/// `path` opened for no access, as [`input_metadata`] asks of one not granted.
+#[cfg(windows)]
+pub fn input_file_id(path: &Path) -> io::Result<(u64, u64)> {
+    match given(path, false)? {
+        Some(file) => super::file_id(&file),
+        None => super::file_id(&super::open_for_metadata(path)?),
+    }
+}
+
 /// `path` resolved, links and all: the path of the file granted for it, as the OS named
 /// that open file when it was granted, or else `path` canonicalized. A VM in App Sandbox
 /// cannot look up the path it was granted a descriptor for.
@@ -228,6 +238,32 @@ pub fn set_dialer(dialer: Dialer) -> Result<(), String> {
 /// A connection to the socket at `path` through the dialer set, if one is.
 pub fn dial_unix(path: &Path) -> Option<io::Result<super::UnixStream>> {
     DIALER.get().map(|dial| dial(path))
+}
+
+/// What stages this process's snapshots where it writes in no directory of its own, an
+/// AppContainer's on Windows (D141): its spawner, which makes each generation in the
+/// directory it granted, hands this process the generation's memory and state files to
+/// fill, and makes it durable and the one in use on this process's word (D196).
+pub trait Stager: Send + Sync + std::fmt::Debug {
+    /// A new generation in `dir`: its name, then its memory file and its state file, empty
+    /// and open for writing.
+    fn stage(&self, dir: &Path) -> io::Result<(String, File, File)>;
+    /// Makes generation `name` of `dir`, filled, durable and the one in use.
+    fn commit(&self, dir: &Path, name: &str) -> io::Result<()>;
+}
+
+static STAGER: std::sync::OnceLock<Box<dyn Stager>> = std::sync::OnceLock::new();
+
+/// Has `stager` stage every snapshot this process writes from here on. Once.
+pub fn set_stager(stager: Box<dyn Stager>) -> Result<(), String> {
+    STAGER
+        .set(stager)
+        .map_err(|_| "a stager was set already".to_string())
+}
+
+/// The stager set ([`set_stager`]), if one is.
+pub fn stager() -> Option<&'static dyn Stager> {
+    STAGER.get().map(|s| &**s)
 }
 
 #[cfg(test)]

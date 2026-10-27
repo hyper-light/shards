@@ -14,6 +14,7 @@
 #![allow(non_upper_case_globals)]
 
 mod ffi;
+mod state;
 
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -26,8 +27,9 @@ use super::{Exit, Io};
 use crate::arch::x86_64::ioapic::{Ioapic, Message, Sent};
 use crate::arch::x86_64::mmio::{self, Access, Extend, Mode};
 use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
-use crate::snapshot::codec::{self, DecodeError, Reader, Writer};
 use crate::sync::lock;
+
+pub use self::state::{Tsc, TscStart, VcpuState, VmState};
 
 /// A failed WHP call, or guest behavior the VMM does not emulate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +202,10 @@ struct Host {
     cpuid: Vec<cpuid::Leaf>,
     /// Whether the host's processor has an invariant TSC, as its own CPUID says.
     invariant_tsc: bool,
+    /// The CPU as WHP describes it to a guest ([`state::IDENTITY`]), which a snapshot
+    /// records and its restore requires: each leaf as function, index, 0, EAX, EBX, ECX,
+    /// EDX.
+    identity: Vec<[u32; 7]>,
 }
 
 fn host() -> Result<&'static Host> {
@@ -222,9 +228,10 @@ fn host() -> Result<&'static Host> {
     };
     let limits = read(0x4000_0005, 0);
     let leaves = template(&read);
+    let identity = identity(&read);
     // SAFETY: the vCPU made above, which never ran.
     unsafe { WHvDeleteVirtualProcessor(partition.0, 0) };
-    let (limits, leaves) = (limits?, leaves?);
+    let (limits, leaves, identity) = (limits?, leaves?, identity?);
     if limits.Eax == 0 {
         return Err(Error::Guest(
             "the hypervisor gives a partition's guest no limit to its vCPUs (CPUID 0x40000005)".into(),
@@ -236,6 +243,7 @@ fn host() -> Result<&'static Host> {
         cpuid: leaves,
         invariant_tsc: extended >= 0x8000_0007
             && std::arch::x86_64::__cpuid(0x8000_0007).edx & cpuid::INVARIANT_TSC != 0,
+        identity,
     };
     Ok(HOST.get_or_init(|| h))
 }
@@ -296,6 +304,20 @@ fn template(read: &dyn Fn(u32, u32) -> Result<WHV_CPUID_OUTPUT>) -> Result<Vec<c
         leaves.push(leaf(0x8000_001e, 0, 0)?);
     }
     Ok(leaves)
+}
+
+/// The leaves of [`state::IDENTITY`] the hypervisor gives `read`'s vCPU, each up to the
+/// largest basic or extended leaf it has.
+fn identity(read: &dyn Fn(u32, u32) -> Result<WHV_CPUID_OUTPUT>) -> Result<Vec<[u32; 7]>> {
+    let basic = read(0, 0)?.Eax;
+    let extended = read(0x8000_0000, 0)?.Eax;
+    state::IDENTITY
+        .iter()
+        .filter(|&&(function, _)| function <= if function >= 0x8000_0000 { extended } else { basic })
+        .map(|&(function, index)| {
+            read(function, index).map(|o| [function, index, 0, o.Eax, o.Ebx, o.Ecx, o.Edx])
+        })
+        .collect()
 }
 
 /// The CPUID results a VM of `vcpus` vCPUs is given (PM M206): one package of
@@ -402,6 +424,140 @@ impl Partition {
             let offset = gpa.checked_sub(m.gpa)?;
             (offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
         })
+    }
+
+    /// Registers `names` of vCPU `vp`, which is out of the guest.
+    fn registers(&self, vp: u32, names: &[WHV_REGISTER_NAME]) -> Result<Vec<Value>> {
+        let mut values = vec![Value::default(); names.len()];
+        // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
+        check("WHvGetVirtualProcessorRegisters", unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.0,
+                vp,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_mut_ptr().cast(),
+            )
+        })?;
+        Ok(values)
+    }
+
+    /// Sets registers `names` of vCPU `vp` to `values`, in their order. Where the
+    /// hypervisor refuses them, each is set alone, to name the one it refuses.
+    fn set_each(&self, vp: u32, names: &[WHV_REGISTER_NAME], values: &[Value]) -> Result<()> {
+        if names.len() != values.len() {
+            return Err(Error::Guest(format!(
+                "{} register names, {} values",
+                names.len(),
+                values.len()
+            )));
+        }
+        let set = |names: &[WHV_REGISTER_NAME], values: &[Value]| {
+            // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
+            check("WHvSetVirtualProcessorRegisters", unsafe {
+                WHvSetVirtualProcessorRegisters(
+                    self.0,
+                    vp,
+                    names.as_ptr(),
+                    names.len() as u32,
+                    values.as_ptr().cast(),
+                )
+            })
+        };
+        let Err(e) = set(names, values) else {
+            return Ok(());
+        };
+        for (name, value) in names.iter().zip(values) {
+            if let Err(one) = set(std::slice::from_ref(name), std::slice::from_ref(value)) {
+                return Err(Error::Guest(format!("vCPU {vp}'s register {name:#x}: {one}")));
+            }
+        }
+        Err(e)
+    }
+
+    /// State `kind` of vCPU `vp` (WHvGetVirtualProcessorState), as large as the hypervisor
+    /// says it is.
+    fn state(&self, vp: u32, kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE) -> Result<Vec<u8>> {
+        let mut needed = 0u32;
+        // SAFETY: no buffer: the call answers with the size it needs.
+        let sized = unsafe {
+            WHvGetVirtualProcessorState(self.0, vp, kind, std::ptr::null_mut(), 0, &raw mut needed)
+        };
+        if sized != windows_sys::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER {
+            check("WHvGetVirtualProcessorState", sized)?;
+        }
+        let mut buf = vec![0u8; needed as usize];
+        let mut written = 0u32;
+        // SAFETY: a buffer of the size the hypervisor asked for.
+        check("WHvGetVirtualProcessorState", unsafe {
+            WHvGetVirtualProcessorState(
+                self.0,
+                vp,
+                kind,
+                buf.as_mut_ptr().cast(),
+                buf.len() as u32,
+                &raw mut written,
+            )
+        })?;
+        buf.truncate(written as usize);
+        Ok(buf)
+    }
+
+    fn set_state(
+        &self,
+        vp: u32,
+        kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE,
+        bytes: &[u8],
+        op: &'static str,
+    ) -> Result<()> {
+        let len =
+            u32::try_from(bytes.len()).map_err(|_| Error::Guest(format!("{op}: {} bytes", bytes.len())))?;
+        // SAFETY: a buffer of its own length.
+        check(op, unsafe {
+            WHvSetVirtualProcessorState(self.0, vp, kind, bytes.as_ptr().cast(), len)
+        })
+    }
+
+    /// Holds the partition's time: its vCPUs' TSCs and its reference time stand still
+    /// until it is resumed, or until a vCPU runs (WHvSuspendPartitionTime's reference; PM
+    /// M345). No vCPU may be running.
+    fn suspend_time(&self) -> Result<()> {
+        // SAFETY: the partition this value made.
+        check("WHvSuspendPartitionTime", unsafe {
+            WHvSuspendPartitionTime(self.0)
+        })
+    }
+
+    fn resume_time(&self) -> Result<()> {
+        // SAFETY: the partition this value made.
+        check("WHvResumePartitionTime", unsafe {
+            WHvResumePartitionTime(self.0)
+        })
+    }
+
+    /// The partition's reference time, in 100 ns units.
+    fn reference_time(&self) -> Result<u64> {
+        let mut time = 0u64;
+        let mut written = 0u32;
+        // SAFETY: a u64, the property's own type.
+        check("WHvGetPartitionProperty(ReferenceTime)", unsafe {
+            WHvGetPartitionProperty(
+                self.0,
+                WHvPartitionPropertyCodeReferenceTime,
+                (&raw mut time).cast(),
+                size_of::<u64>() as u32,
+                &raw mut written,
+            )
+        })?;
+        Ok(time)
+    }
+
+    fn set_reference_time(&self, time: u64) -> Result<()> {
+        self.set(
+            WHvPartitionPropertyCodeReferenceTime,
+            &time,
+            "WHvSetPartitionProperty(ReferenceTime)",
+        )
     }
 
     /// Sends each of `sent` to its local APICs (WHvRequestInterrupt).
@@ -605,15 +761,6 @@ impl Vm {
         })
     }
 
-    /// Snapshots of WHP VMs are not taken yet.
-    pub fn save_state(&self) -> Result<VmState> {
-        Err(no_snapshots())
-    }
-
-    pub fn restore_state(&self, _: &VmState) -> Result<()> {
-        Err(no_snapshots())
-    }
-
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
     ///
     /// # Safety
@@ -708,53 +855,6 @@ impl Vm {
             index,
             emulator: None,
         })
-    }
-}
-
-fn no_snapshots() -> Error {
-    Error::Guest("snapshots of microVMs are not taken on the Windows Hypervisor Platform yet".into())
-}
-
-/// A snapshot's state of a WHP VM: there is none yet ([`Vm::save_state`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VmState(());
-
-/// A snapshot's state of a WHP vCPU: there is none yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VcpuState(());
-
-impl VmState {
-    pub fn encode(&self, _: &mut Writer) {}
-
-    pub fn decode(_: &mut Reader<'_>) -> codec::Result<VmState> {
-        Err(DecodeError(no_snapshots().to_string()))
-    }
-}
-
-impl VcpuState {
-    pub fn encode(&self, _: &mut Writer) {}
-
-    pub fn decode(_: &mut Reader<'_>) -> codec::Result<VcpuState> {
-        Err(DecodeError(no_snapshots().to_string()))
-    }
-
-    /// Where this vCPU's TSC starts: nowhere, as no snapshot is taken.
-    pub fn tsc_start(&self) -> Option<TscStart> {
-        None
-    }
-}
-
-/// A restored vCPU's TSC: none, as no snapshot is taken.
-#[derive(Debug, Clone)]
-pub struct Tsc(());
-
-/// Where a restored TSC starts.
-#[derive(Debug, Clone, Copy)]
-pub struct TscStart(());
-
-impl Tsc {
-    pub fn restart(&self, _: TscStart) -> Result<Option<u64>> {
-        Ok(None)
     }
 }
 
@@ -971,23 +1071,6 @@ mod emulate {
 }
 
 impl Vcpu {
-    pub fn save_state(&self) -> Result<VcpuState> {
-        Err(no_snapshots())
-    }
-
-    pub fn restore_state(&mut self, _: &VcpuState) -> Result<()> {
-        Err(no_snapshots())
-    }
-
-    /// No restore holds a TSC back.
-    pub fn tsc(&self) -> Option<Tsc> {
-        None
-    }
-
-    pub fn resume_tsc(&mut self, _: u64) -> Result<()> {
-        Ok(())
-    }
-
     /// Memory is not mapped ahead on WHP.
     pub fn pre_fault(&self, _: u64, _: u64) -> Result<bool> {
         Ok(false)
@@ -1022,12 +1105,8 @@ impl Vcpu {
     }
 
     fn get(&self, name: WHV_REGISTER_NAME) -> Result<u64> {
-        let mut v = Value::default();
-        // SAFETY: one name and one 16-aligned value.
-        check("WHvGetVirtualProcessorRegisters", unsafe {
-            WHvGetVirtualProcessorRegisters(self.partition.0, self.index, &raw const name, 1, &raw mut v.0)
-        })?;
-        Ok(v.get())
+        let values = self.partition.registers(self.index, &[name])?;
+        Ok(values.first().map_or(0, Value::get))
     }
 
     /// The boot vCPU's registers for the 64-bit boot protocol: every one the protocol

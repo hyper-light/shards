@@ -587,6 +587,8 @@ impl GuestMemory {
         let page = platform::page_size()?;
         let _held = self.access().map_err(io::Error::other)?;
         file.set_len(0)?;
+        // Its holes holes on every host (NTFS keeps none it is not told to).
+        platform::sparse(file)?;
         let mut offset = 0u64;
         for r in &self.regions {
             // Pages of anonymous RAM the guest never touched hold zeros, and reading them
