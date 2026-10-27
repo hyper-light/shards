@@ -358,13 +358,17 @@ fn fresh(home: &Path) -> Result<PathBuf, String> {
     Ok(dir.join(format!("{}-{n}", std::process::id())))
 }
 
-/// A new file at `path`, read-write, its user's alone.
+/// A new file at `path`, read-write, its user's alone, sparse: a run's layer holds 10 GiB
+/// unless it asks for another size (`run::LAYER_HOLDS`), of which it takes what its guest
+/// writes (PM M349).
 fn create(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)
+    let file = options.open(path)?;
+    shards_vmm::platform::make_sparse(&file)?;
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -395,6 +399,22 @@ mod tests {
         std::fs::write(home.join(LAYERS).join("1-0"), b"").unwrap();
         clear(&home);
         assert!(!home.join(LAYERS).join("1-0").exists() && !empty.path().exists());
+    }
+
+    /// A run's layer takes of its disk what its file system wrote, not what it holds: the
+    /// 10 GiB a run's holds by default took all 10 GiB of an NTFS disk's free space before
+    /// its file was sparse (PM M349), and eight runs at once filled a test host.
+    #[test]
+    fn a_layer_takes_of_its_disk_what_is_written() {
+        let home = shards_testdir::TempDir::new("layers-sparse").unwrap();
+        let made = LayerFile::made(&home, crate::run::LAYER_HOLDS).unwrap();
+        let meta = std::fs::metadata(made.path()).unwrap();
+        let on_disk = crate::os::on_disk(made.path(), &meta);
+        assert!(
+            on_disk < meta.len() / 64,
+            "{on_disk} of {} bytes on disk",
+            meta.len()
+        );
     }
 
     /// A restore's file is a clone of its generation's layer, said to be that generation's,

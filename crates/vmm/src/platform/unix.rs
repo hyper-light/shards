@@ -1284,6 +1284,13 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
     file.sync_data()
 }
 
+/// Makes `file` sparse, so that what it holds past what is written takes none of its disk:
+/// a Unix file extended past what is written (ftruncate(2)) is already, its holes taking no
+/// blocks (windows.rs makes an NTFS file so, PM M349).
+pub fn make_sparse(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
 /// Gives back the file system's blocks under `len` bytes of `file` from `offset`, whole 4
 /// KiB pages, which read as zeros after (fcntl(2) F_PUNCHHOLE): APFS fills the holes a
 /// small file's writes skip as the file is synced (PM M307: a 4 MiB file of 8 KiB written,

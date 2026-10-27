@@ -407,6 +407,42 @@ fn sync_dir(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// Makes `file` sparse, so that what it holds past what is written takes none of its disk,
+/// as the VMM's `platform::make_sparse` does: NTFS takes every cluster up to a file's end as
+/// it is extended unless the file is sparse (FSCTL_SET_SPARSE; PM M349), where a Unix
+/// file's holes take no blocks already.
+fn make_sparse(file: &File) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        use windows_sys::Win32::System::Ioctl::{FILE_SET_SPARSE_BUFFER, FSCTL_SET_SPARSE};
+        let sparse = FILE_SET_SPARSE_BUFFER { SetSparse: true };
+        let size = u32::try_from(size_of::<FILE_SET_SPARSE_BUFFER>()).map_err(io::Error::other)?;
+        let mut returned = 0u32;
+        // SAFETY: a handle `file` holds open for synchronous I/O, `sparse`'s `size` bytes, no
+        // output buffer, and a count to write.
+        if unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_SPARSE,
+                std::ptr::from_ref(&sparse).cast(),
+                size,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(unix)]
+    let _ = file;
+    Ok(())
+}
+
 /// Makes completed writes to `file` durable on stable storage, as the VMM's
 /// `platform::sync_durable` does where it is linked (review 1.13): on macOS `F_FULLFSYNC`,
 /// which flushes the drive's cache where `fsync` does not (fsync(2)), and `fsync` where

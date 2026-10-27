@@ -152,8 +152,8 @@ const VM_LINK: &str = if cfg!(windows) { "daemon" } else { "3" };
 const NO_SHARES: &str =
     "a host's directories (volumes and binds) are not shared into a microVM on Windows yet";
 
-/// A new, empty swap file of `bytes` at `at`, sparse, in place of any before it: only this
-/// user's.
+/// A new, empty swap file of `bytes` at `at`, sparse (PM M349), in place of any before it:
+/// only this user's.
 fn open_swap(at: &Path, bytes: u64) -> std::io::Result<std::fs::File> {
     let file = crate::os::owner_only(
         std::fs::OpenOptions::new()
@@ -163,6 +163,7 @@ fn open_swap(at: &Path, bytes: u64) -> std::io::Result<std::fs::File> {
             .truncate(true),
     )
     .open(at)?;
+    shards_vmm::platform::make_sparse(&file)?;
     file.set_len(bytes)?;
     Ok(file)
 }

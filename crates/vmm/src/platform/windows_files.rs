@@ -599,13 +599,21 @@ pub fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
     let at = |n: u64| {
         i64::try_from(n).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "an offset past i64"))
     };
-    let sparse = FILE_SET_SPARSE_BUFFER { SetSparse: true };
-    control(file, FSCTL_SET_SPARSE, &sparse)?;
+    make_sparse(file)?;
     let zero = FILE_ZERO_DATA_INFORMATION {
         FileOffset: at(offset)?,
         BeyondFinalZero: at(beyond)?,
     };
     control(file, FSCTL_SET_ZERO_DATA, &zero)
+}
+
+/// Makes `file` sparse (FSCTL_SET_SPARSE), so that what it holds past what is written takes
+/// none of its disk, as a Unix file's holes take no blocks: NTFS takes every cluster up to a
+/// file's end as it is extended unless the file is sparse (PM M349: a file set to 10 GiB
+/// took 10 GiB of free space; made sparse first, none).
+pub fn make_sparse(file: &File) -> io::Result<()> {
+    let sparse = FILE_SET_SPARSE_BUFFER { SetSparse: true };
+    control(file, FSCTL_SET_SPARSE, &sparse)
 }
 
 /// DeviceIoControl of `code` on `file`, with `input` and no output.

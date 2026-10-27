@@ -29,8 +29,8 @@ mod windows_process;
 mod windows_watch;
 #[cfg(windows)]
 pub use windows_files::{
-    append_new_in, create_in, names_in, open_beneath, open_dir_beneath, open_in, punch_hole, sync_entries,
-    unlink_in, write_in,
+    append_new_in, create_in, make_sparse, names_in, open_beneath, open_dir_beneath, open_in, punch_hole,
+    sync_entries, unlink_in, write_in,
 };
 #[cfg(windows)]
 pub use windows_process::{

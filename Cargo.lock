@@ -1347,6 +1347,7 @@ dependencies = [
  "sha2",
  "shards-erofs",
  "shards-testdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
