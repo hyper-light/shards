@@ -105,9 +105,11 @@ jobs:
   # linted; the ones a runner can execute are tested. VM tests print SKIP where the host has
   # no backend yet or no hardware virtualization. The tests' step has 41 minutes, a third
   # above the slowest measured, 30.2 on x86_64 Linux, and the job 63, with a third above
-  # its other steps' slowest, 15.8 on Windows (M245).
+  # its other steps' slowest, 15.8 on Windows (M245). x86_64 Windows is tested on Windows
+  # Server 2022 as well as 2025, each with its hypervisor platform (WHP partitions run on
+  # both: PM's windows-2022 and windows-2025 entries), as a daemon's users run both.
   native:
-    name: ${{ matrix.target }}
+    name: ${{ matrix.name || matrix.target }}
     timeout-minutes: 63
     strategy:
       fail-fast: false
@@ -118,6 +120,7 @@ jobs:
           - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true }
           - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
           - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, name: x86_64-pc-windows-msvc (windows-2022) }
           - { target: aarch64-pc-windows-msvc, runner: windows-2025, test: false }
     runs-on: ${{ matrix.runner }}
     steps:

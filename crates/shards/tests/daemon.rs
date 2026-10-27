@@ -1259,12 +1259,12 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
 fn a_request_past_a_sockets_buffer_is_served() {
     let home = TempDir::new("daemon-large");
     let env = [("SHARDS_HOME", home.as_os_str())];
-    // Windows takes a command line of 32,767 characters (CreateProcessW), and a slot's pipe
-    // takes 1 MiB, as much as a message holds (ipc pipe.rs `BUFFER`, `MAX_PAYLOAD`): there
-    // its request is nearly the most a message holds, ten labels of 100 KB from a file.
+    // Windows takes a command line of 32,767 characters (CreateProcessW): there its 300 KB,
+    // past the 64 KiB a slot's line holds (ipc pipe.rs `LINE_BUFFER`, a Linux FIFO's), go
+    // as three labels of 100 KB from a file.
     if cfg!(windows) {
         let file = home.join("labels");
-        let labels: String = (1..=10)
+        let labels: String = (1..=3)
             .map(|n| format!("big{n}={}\n", "x".repeat(100_000)))
             .collect();
         std::fs::write(&file, labels).unwrap();
@@ -1437,9 +1437,8 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 /// a name nothing has follows, its error a message of 120 KiB, more than the slot's FIFO
 /// takes (8 KiB on macOS, 64 KiB on Linux, PM M261), whose write waits; the other's answer
 /// ends there, all written. Before, the daemon waited for both for ever, its slots counted
-/// until each had passed all on and its client had ended. No VM needed. On Windows a slot's
-/// pipe takes 1 MiB, as much as a message holds (ipc pipe.rs `BUFFER`, `MAX_PAYLOAD`): each
-/// answer is all written there, and neither client holds up the stop.
+/// until each had passed all on and its client had ended. No VM needed. A slot's line on
+/// Windows holds a Linux FIFO's 64 KiB (ipc pipe.rs `LINE_BUFFER`).
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");
