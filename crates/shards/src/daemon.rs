@@ -10513,8 +10513,12 @@ mod tests {
         let t = Test::new("partial");
         t.run(|t| {
             let (id, starting, vm) = running(t, "halting");
-            // DONE, status 5, cut after its kind and part of its length.
-            let frame = [kind::DONE, 0, 0, 0, 1, 5];
+            // DONE, status 5, cut after its kind and part of its length; a Windows stream's
+            // says after its length that it brings no handle.
+            #[cfg(unix)]
+            let frame: &[u8] = &[kind::DONE, 0, 0, 0, 1, 5];
+            #[cfg(windows)]
+            let frame: &[u8] = &[kind::DONE, 0, 0, 0, 1, 0, 5];
             (&vm).write_all(&frame[..3]).unwrap();
             let (asked, answer) = mpsc::channel();
             std::thread::scope(|s| {
