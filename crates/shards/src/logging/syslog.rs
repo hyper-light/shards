@@ -171,6 +171,13 @@ fn address(given: &str) -> Result<To, String> {
             if !rest.starts_with('/') {
                 return Err(said("a socket's absolute path, after the scheme's three slashes"));
             }
+            // On Windows a drive's path follows the third slash, as a file URL's does
+            // (RFC 8089): unix:///C:/logs/syslog.sock.
+            #[cfg(windows)]
+            let rest = rest
+                .strip_prefix('/')
+                .filter(|path| path.get(1..2) == Some(":"))
+                .unwrap_or(rest);
             let path = PathBuf::from(rest);
             std::fs::metadata(&path).map_err(|e| said(&e.to_string()))?;
             Ok(if scheme == "unix" {
@@ -574,7 +581,13 @@ mod tests {
         for case in oracle["options"].as_array().unwrap() {
             let option = case["option"].as_str().unwrap();
             let refused = !case["refused"].is_null();
-            let given = option.replace("{dir}", &dir.display().to_string());
+            // A URL's path: Windows' drive after the third slash, its separators forward.
+            let url_path = if cfg!(windows) {
+                format!("/{}", dir.display().to_string().replace('\\', "/"))
+            } else {
+                dir.display().to_string()
+            };
+            let given = option.replace("{dir}", &url_path);
             let run = shards_ipc::Run {
                 log_driver: "syslog".into(),
                 log_opts: vec![given.clone()],

@@ -1064,7 +1064,8 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
         if p.domains && !only.is_empty() {
             return Err(cannot_stand_in("a file", dest));
         }
-        let fd: OwnedFd = std::fs::File::open(dir)
+        // A directory opens on Windows only for backup semantics (`platform::open_dir`).
+        let fd: OwnedFd = shards_vmm::platform::open_dir(dir)
             .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?
             .into();
         let mut flags: Vec<&str> = p.flags.iter().map(String::as_str).collect();

@@ -316,6 +316,10 @@ mod tests {
             let mut asked = Vec::new();
             for answer in answers {
                 let (stream, _) = listener.accept().unwrap();
+                // A request that never comes whole fails the test rather than hangs it.
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+                    .unwrap();
                 let mut reader = BufReader::new(&stream);
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
@@ -338,6 +342,9 @@ mod tests {
                     chunked = n > 0;
                 }
                 (&stream).write_all(answer.as_bytes()).unwrap();
+                // Its end said before it closes: a Windows AF_UNIX socket shut down before it
+                // closes is read whole (PM M199).
+                let _ = stream.shutdown(std::net::Shutdown::Write);
             }
             asked
         });
@@ -480,10 +487,11 @@ mod tests {
             br#"{"currentContext":"desktop-linux"}"#,
         )
         .unwrap_or(());
-        let meta = format!(
-            r#"{{"Endpoints":{{"docker":{{"Host":"unix://{}"}}}}}}"#,
-            sock.display()
-        );
+        // JSON's own escapes: a Windows path's backslashes are a JSON string's escapes.
+        let meta = serde_json::json!({
+            "Endpoints": {"docker": {"Host": format!("unix://{}", sock.display())}}
+        })
+        .to_string();
         std::fs::write(
             dir.join(".docker/contexts/meta/fe9c6bd7a66301f49ca9b6a70b217107cd1284598bfc254700c989b916da791e/meta.json"),
             meta,
