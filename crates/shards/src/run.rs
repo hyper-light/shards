@@ -591,7 +591,6 @@ pub fn find_image(
 /// to (`name@sha256:…`) where it was pulled by a tag, as dockerd's containerd store
 /// resolves one (moby daemon/containerd/image.go, resolveImage). None where it names none:
 /// the name is a reference, to find or pull.
-#[cfg(unix)]
 fn by_id(
     store: &shards_image::store::Store,
     given: &str,
@@ -637,16 +636,6 @@ fn by_id(
         },
         found => found.map_err(|e| e.to_string()),
     }
-}
-
-/// Where no daemon serves, none: an image is found by its reference.
-#[cfg(not(unix))]
-fn by_id(
-    _: &shards_image::store::Store,
-    _: &str,
-    _: &[shards_image::platform::Target],
-) -> Result<Option<shards_registry::pull::Pulled>, String> {
-    Ok(None)
 }
 
 /// The image's labels, with the run's `--label`/`--label-file` over them (opts.
