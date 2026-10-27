@@ -1541,12 +1541,14 @@ mod tests {
         let soon = || Some(Instant::now() + Duration::from_millis(50));
         assert!(!b.wait_readable(None, soon()).unwrap());
         assert!(!b.readable());
+        assert_eq!(b.peek().unwrap(), None, "a byte peeked where none has come");
         (&a).write_all(b"x").unwrap();
         assert!(b.wait_readable(None, soon()).unwrap());
         assert!(b.readable());
         assert_eq!(b.peek().unwrap(), Some(b'x'));
         let mut got = [0u8; 1];
         (&b).read_exact(&mut got).unwrap();
+        assert_eq!(b.peek().unwrap(), None, "a byte peeked once all was read");
         assert!(!b.wait_readable(None, soon()).unwrap());
         // Woken by a cancel of the caller's.
         let cancel = Event::new().unwrap();
@@ -1555,6 +1557,133 @@ mod tests {
         drop(a);
         assert!(b.wait_readable(None, soon()).unwrap());
         assert!(b.readable());
+    }
+
+    /// An event set stays set through every look at it until it is reset: manual-reset, so
+    /// that every waiter on it sees it, where an auto-reset one wakes one and resets itself.
+    #[test]
+    fn a_set_event_stays_set_until_reset() {
+        let event = Event::new().unwrap();
+        assert!(!event.is_set());
+        event.set();
+        assert!(event.is_set());
+        assert!(event.is_set(), "a look at it reset it");
+        event.reset();
+        assert!(!event.is_set());
+    }
+
+    /// One wait takes as many streams as WaitForMultipleObjects takes handles (64, two a
+    /// stream): 32, the last of which has something to read, which it says; 33 are refused.
+    #[test]
+    fn a_wait_takes_streams_to_its_handles_limit() {
+        let pairs: Vec<(Stream, Stream)> = (0..33).map(|_| Stream::pair().unwrap()).collect();
+        let ends: Vec<&Stream> = pairs.iter().map(|(_, end)| end).collect();
+        let soon = Some(Instant::now() + Duration::from_secs(10));
+        assert_eq!(
+            await_any(&ends, &[], soon).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        (&pairs[31].0).write_all(b"x").unwrap();
+        let (ready, _) = await_any(&ends[..32], &[], soon).unwrap();
+        assert_eq!(ready.iter().position(|&r| r), Some(31), "{ready:?}");
+    }
+
+    /// The name of the pipe `handle` is an end of, as `\\.\pipe\…` (FileNameInfo, which a
+    /// pipe's handle answers with its name on its file system).
+    fn pipe_name(handle: &OwnedHandle) -> String {
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_NAME_INFO, FileNameInfo, GetFileInformationByHandleEx,
+        };
+        let mut buf = vec![0u64; 128];
+        let size = u32::try_from(buf.len() * 8).unwrap();
+        // SAFETY: a handle `handle` holds, and `size` bytes of `buf`, aligned for FILE_NAME_INFO.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                handle.as_raw_handle(),
+                FileNameInfo,
+                buf.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        let info = buf.as_ptr().cast::<FILE_NAME_INFO>();
+        // SAFETY: the structure the call filled, its name's length in bytes within `buf`.
+        let name = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const (*info).FileName).cast::<u16>(),
+                (*info).FileNameLength as usize / 2,
+            )
+        };
+        format!(r"\\.\pipe{}", String::from_utf16_lossy(name))
+    }
+
+    /// A pair's name is its one instance's: no other can be made under it, as a process that
+    /// learned it might, to be opened in its place (M340).
+    #[test]
+    fn a_pairs_name_takes_no_second_instance() {
+        let (server, _client) = pair(BUFFER).unwrap();
+        let name = pipe_name(&server);
+        assert!(name.contains(r"\shards-"), "{name}");
+        assert!(
+            instance(&wide(&name), false, false, BUFFER).is_err(),
+            "a second instance made of {name}"
+        );
+    }
+
+    /// A pipe's DACL grants its user alone ([`attributes`]): one entry, its user's; none for
+    /// Everyone, whom the default DACL gives read, nor any other.
+    #[test]
+    fn a_pipe_is_its_users_alone() {
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+        let (server, _client) = pair(BUFFER).unwrap();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: a handle `server` holds, which may read its DACL, and a pointer for the call
+        // to fill, freed below.
+        let status = unsafe {
+            GetSecurityInfo(
+                server.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut descriptor,
+            )
+        };
+        assert_eq!(
+            status,
+            0,
+            "{}",
+            io::Error::from_raw_os_error(i32::try_from(status).unwrap())
+        );
+        let mut text: *mut u16 = std::ptr::null_mut();
+        let mut len = 0u32;
+        // SAFETY: the descriptor the call above made, and pointers for this one to fill.
+        let ok = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &raw mut text,
+                &raw mut len,
+            )
+        };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        // SAFETY: the `len` units the call wrote at `text`.
+        let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) });
+        // SAFETY: what the two calls allocated, freed once each.
+        unsafe {
+            LocalFree(text.cast());
+            LocalFree(descriptor.cast());
+        }
+        let sddl = sddl.trim_end_matches('\0');
+        let sid = user_sid().unwrap();
+        assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
+        assert!(sddl.contains(&format!(";;;{sid})")), "{sddl}");
     }
 
     /// One thread's write goes while another's read of the same end waits: each call is

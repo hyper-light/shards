@@ -1047,6 +1047,63 @@ mod tests {
         });
     }
 
+    /// A slot let go of after its client opened it, before its number was said, is passed
+    /// over: the client reads no number, and takes the next offered.
+    #[test]
+    fn a_slot_let_go_of_once_opened_is_passed_over() {
+        let home = home("slot-let-go");
+        let mut requests = Requests::open(&home).unwrap();
+        let gone = requests.make(false).unwrap();
+        requests.offer(gone.number(), false).unwrap();
+        std::thread::scope(|s| {
+            let stops = Stops::default();
+            let client = s.spawn(|| take(&home, 0));
+            let t0 = Instant::now();
+            while !requests.untaken(false).unwrap().is_empty() {
+                assert!(
+                    t0.elapsed() < Duration::from_secs(10),
+                    "no client opened the slot"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            requests.remove(gone.number());
+            drop(gone);
+            let next = requests.make(false).unwrap();
+            requests.offer(next.number(), false).unwrap();
+            stops.hold(&next);
+            let served = waiting(s, next);
+            let taken = client.join().unwrap();
+            let Ok(Taken::Slot(client)) = taken else {
+                panic!("the slot let go of was not passed over: {taken:?}");
+            };
+            assert_eq!(client.n, 1);
+            drop(client);
+            assert!(matches!(served.join().unwrap().unwrap(), Waited::Gone));
+        });
+    }
+
+    /// A slot's stream is its name's first and only instance: one made under that name
+    /// first, as a process that learned the list's name might, to be opened in the slot's
+    /// place, refuses the slot.
+    #[test]
+    fn a_streams_name_taken_first_refuses_its_slot() {
+        let home = home("slot-squat");
+        let mut requests = Requests::open(&home).unwrap();
+        let list = requests.names[list(true)].clone();
+        let squatter = pipe::instance(
+            &pipe::wide(&stream_name(&list, requests.next, "in")),
+            false,
+            false,
+            pipe::BUFFER,
+        )
+        .unwrap();
+        assert!(
+            requests.make(true).is_err(),
+            "a slot made beside its stream's squatter"
+        );
+        drop(squatter);
+    }
+
     /// A first byte naming a stream its client did not open is refused, as one naming a
     /// stream its slot has not.
     #[test]
@@ -1170,6 +1227,20 @@ mod tests {
             let _ = cut.wait();
             assert!(opened.join().unwrap().is_none(), "a request cut short was taken");
         });
+    }
+
+    /// A home whose slot waits for its client is served: its list's pipe has an instance no
+    /// client opened, which WaitNamedPipe answers at once, and which looking leaves for a
+    /// client. A serving daemon keeps slots offered on each list, so this is how it is
+    /// mostly found; its lists' own instances alone, every instance taken, are the rest.
+    #[test]
+    fn a_home_whose_slot_waits_for_its_client_is_served() {
+        let home = home("slot-served-free");
+        let mut requests = Requests::open(&home).unwrap();
+        let slot = requests.make(false).unwrap();
+        requests.offer(slot.number(), false).unwrap();
+        assert!(served(&home), "a slot waits for its client, yet not served");
+        assert_eq!(requests.waiting(false).unwrap(), 1, "looking took the slot");
     }
 
     /// A daemon process killed, its lists' names left, is heard of by a client waiting on
