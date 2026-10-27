@@ -10288,7 +10288,13 @@ changes.
   the ranges given writable. Ranges are never given twice, so what the guest has cached
   of one is never another's.
 - **The guest** mounts each layer once, from a read-only loop device over its range
-  (LOOP_SET_FD and LOOP_SET_STATUS64, as a joiner's root is made), stacks a cache's layers
+  (LOOP_SET_FD and LOOP_SET_STATUS64, as a joiner's root is made), which reads the range
+  straight from the join disk (LOOP_SET_DIRECT_IO, Linux 4.4), not through the disk's page
+  cache as well as the layer's: read twice so, a build held 256 MiB short of what it held
+  kept the join disk's copy of its reread at the read's pace, in no cgroup its hold holds,
+  its host throttling it for 15 minutes; read once, its step took 27.7 s (PM M350). Every
+  range starts on a mebibyte (virtio `RANGE_ALIGN`), which the kernel's alignment for
+  direct reads takes whatever the disk's block size. It stacks a cache's layers
   with overlayfs under the step's upper directory, and after the step, whatever its
   status, writes an EROFS image of that directory into the cache's writable range, syncs
   it, and says its length (`MOUNT_END`, a `Kept`): the host lets the range go, trims the
@@ -11226,7 +11232,9 @@ the boundary is a container's, which is what the mode asks for.
   file as a range of the disk and raises its capacity; the guest's virtio_blk reads the
   new capacity on the config-change interrupt (Linux drivers/block/virtio_blk.c,
   virtblk_config_changed_work). Init maps the range with a loop device at its offset
-  (`CONFIG_BLK_DEV_LOOP`, in the guest kernel's base config) and mounts it as EROFS,
+  (`CONFIG_BLK_DEV_LOOP`, in the guest kernel's base config), which reads it past the disk's
+  page cache (LOOP_SET_DIRECT_IO: a builder's cache layers' copies there were held in no
+  cgroup a hold holds, PM M350), and mounts it as EROFS,
   under a tmpfs overlay as a run's root is. One disk serves every joiner a microVM has,
   each its own range: no count of slots to run out of.
 - **Its cost to every microVM, measured first** (PM M168): a restore with empty

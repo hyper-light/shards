@@ -14849,3 +14849,56 @@ revision before comparing a changed API/implementation.
   on a trapped system register write) called `Base::report_fixme_and_trap`, as the guest's KVM host wrote
   ICC_EOIR1_EL1 (EXC_BREAKPOINT; crash report, macOS 26.4.1, Mac17,6). The framework's own unfinished case: nothing
   of shards' runs in that thread but `hv_vcpu_run`.
+
+### M350. A held build's reread through a cache layer's loop device: the join disk's copy of what it read, outside the build's hold (D134, D188)
+
+- **Question.** CI's x86_64 Linux tests ran past their 41 minutes from 0554d060 on:
+  `a_build_held_short_of_memory_has_its_builder_give_back`, a build held 256 MiB under what
+  it held, reread a 512 MiB file of a cache mount for 11 to 19 minutes (CI 40455011613,
+  40505101225, 40521211149). Where did its host's budget go, and what held the reread?
+- **Method.** The test alone on GitHub's ubuntu-24.04 runners, `room-probe.yml` on the
+  scratch branch `ci-room-probe` (not for dev), each run's samplers committed there: the
+  build in `systemd-run --user --scope -p MemorySwapMax=0`, its RUN reading `/c/big` (512
+  MiB, a cache mount) and, once its page cache had dropped by half or 120 s had gone,
+  reading it again (testguest `read-dropped`); the scope's `MemoryHigh` set 256 MiB under
+  its `memory.current` as the first read ended. 2026-10-27.
+  1. Run 40525218342 (92960687): the scope every 2 s: memory.current, memory.stat's anon,
+     shmem and file, memory.events' high, memory.pressure's full total, and each of its
+     threads' state and wchan.
+  2. Run 40534106723 (b4844be9): the guest, as the reader read, every 32 MiB:
+     /proc/meminfo and its cgroup's memory files.
+  3. Run 40540767278 (01653d8b): 2, the builder's loop devices reading their ranges past
+     the join disk's page cache (LOOP_SET_DIRECT_IO).
+  4. Run 40544131222 (7b279175): 3, an answer that comes past its pass heard as it comes
+     (build give.rs `late`), and the test summing what each of the build's lines said it
+     gave back.
+- **Found.**
+  - **The host** (1). From the budget on, the scope held no file pages (file 0) and could
+    reclaim none (pgsteal flat at 3,904): what it held was its guest's RAM, anon. Given back
+    to 313 MiB against its high of 277 MiB at 37 s, it rose about 1 MiB a second, to 538
+    MiB, past where it began; memory.events' high rose about 10 a second, its full stall 15
+    s in every 16, and a thread of the VM process was asleep in
+    `mem_cgroup_handle_over_high` in nearly every sample.
+  - **The guest** (2). The first read held 337 MiB of the file's page cache (Cached), and the
+    file LRU some 150 MiB more. On the reread the file's page cache stayed at 5 MiB and the
+    step's cgroup at 4.5 MiB, held within the build's room, while Active(file) grew from 33
+    to 447 MiB at the read's pace: the join disk's own page cache (Buffers), which the loop
+    device's buffered reads of its range fill, in no cgroup the build is held in. The reread
+    went 32 MiB in 30 to 170 s until 352 MiB, the last 160 MiB in 0.4 s; the step took
+    931.7 s.
+  - **Past the disk's cache** (3). Active(file) stayed at 0 and Inactive(file) was the
+    file's page cache, which held at 242 MiB within the build's hold on the reread, read at
+    the first read's pace. The step took 27.7 s, the scope over its high for 26 s as the
+    guest gave back (593 MiB to 329). Throttled meanwhile, the builder answered its
+    give-back 9 s after it was asked, past the 10 s its pass waits from the pass's start:
+    the pass said it gave back 0 MiB and told it no room, and the test, which read the
+    first line, failed.
+  - **Answers heard as they come** (4). The builder answered 0.6 s after the budget was
+    written this time: its pass said 482 MiB given back and 384 MiB asked to unplug, the
+    build held within 211 MiB past what it used. The held step took 2.8 s (835 to 1,047 s
+    before, runs 40493291155 and 40505954840), and the test 178 s alone against 1,043:
+    most of it the build held to nothing waiting its 120 s for a drop that never comes.
+- **Consequence (D134, D119, D188).** A loop device over a range of the join disk reads it
+  directly (LOOP_SET_DIRECT_IO, Linux 4.4): a build's cache layer's, a joiner's root. A
+  builder's answer that comes past its pass's patience is heard as it comes, once a
+  pressure window, and said at once, its builder then told its room as its pass would have.
