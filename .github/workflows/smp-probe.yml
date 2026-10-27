@@ -13,13 +13,16 @@ env:
   TOOLCHAIN: 1.98.1
 jobs:
   probe:
-    name: windows-2022 ${{ matrix.acg }}
+    name: windows-2022 ${{ matrix.variant }}
     runs-on: windows-2022
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        acg: [acg, no-acg]
+        # What the confined VM process is made with, one thing taken away each (ipc
+        # windows.rs spawn_suspended): its mitigations, Win32k's alone, its job's
+        # one-process limit, its AppContainer. ACG was ruled out by the first probe.
+        variant: [no-mitigations, no-win32k, no-job-limit, no-appcontainer]
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -37,25 +40,22 @@ jobs:
           echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
           unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
-      - name: Host
-        shell: bash
-        run: powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).Name; [Environment]::OSVersion.Version; (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors"
-      - name: The VM process allowed dynamic code (no-acg)
-        if: matrix.acg == 'no-acg'
+      - name: The variant
         shell: bash
         run: |
-          sed -i 's/        shards_vmm::hv::forbid_dynamic_code_once_set_up();/        \/\/ probe: dynamic code left allowed/' crates/shards/src/vm_run.rs
-          grep -n "probe: dynamic code left allowed" crates/shards/src/vm_run.rs
+          f=crates/ipc/src/windows.rs
+          case "${{ matrix.variant }}" in
+            no-mitigations) sed -i 's/^const MITIGATIONS: \[u64; 2\] = .*/const MITIGATIONS: [u64; 2] = [0, 0];/' $f ;;
+            no-win32k) sed -i 's/^const MITIGATIONS: \[u64; 2\] = \[(1 << 24) | (1 << 28) | /const MITIGATIONS: [u64; 2] = [(1 << 24) | /' $f ;;
+            no-job-limit) sed -i 's/JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;/JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;/' $f ;;
+            no-appcontainer) sed -i 's/AppContainerSid: s.container.map_or(std::ptr::null_mut(), |c| c.sid.0),/AppContainerSid: std::ptr::null_mut(),/' $f ;;
+          esac
+          git diff --stat; git diff | grep "^[-+][^-+]" | head -6
       - name: Build
         shell: bash
-        run: cargo test --locked -p shards --profile test-release --test boot --test daemon --no-run
-      - name: Boots of more than one vCPU
+        run: cargo test --locked -p shards --profile test-release --test boot --no-run
+      - name: Two vCPUs, confined
         shell: bash
         run: |
           export SHARDS_REQUIRE_VMS=1
-          cargo test --locked -p shards --profile test-release --test boot -- --exact brings_up_every_vcpu boots_the_hosts_maximum_vcpu_count two_vcpus_boot_to_their_end_in_this_process 2>&1 | grep -a -E "^test |test result|Brought up|Booting SMP|panicked|vCPUs:" | cut -c1-300 || true
-      - name: Daemon runs
-        shell: bash
-        run: |
-          export SHARDS_REQUIRE_VMS=1
-          cargo test --locked -p shards --profile test-release --test daemon -- --exact errors_reach_the_client idle_daemons_exit 2>&1 | grep -a -E "^test |test result|panicked|left:|right:|137|status" | cut -c1-400 | head -40 || true
+          cargo test --locked -p shards --profile test-release --test boot -- --exact brings_up_every_vcpu 2>&1 | grep -a -v -E "^\s*(Compiling|Finished|Running)|aws-lc|^warning" | grep -a -E "test |Brought up|Booting SMP|panicked|did not exit|^--- |shards:|error|Error|WHv|failed|HRESULT|0x8" | cut -c1-300 | head -60 || true
