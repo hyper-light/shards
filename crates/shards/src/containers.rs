@@ -789,13 +789,15 @@ impl Removal {
     }
 
     /// Deletes what was set aside: on Windows the directory where it is, its files deleted
-    /// as POSIX deletes them where they are open (std's `remove_dir_all`), then its mark.
-    /// What a failure leaves, the next start deletes.
+    /// as POSIX deletes them where they are open (std's `remove_dir_all`), then, once that
+    /// is durable, its mark: a power loss that kept the mark's deletion but not the
+    /// directory's would bring the container back. What a failure leaves, the next start
+    /// deletes.
     pub fn delete(&self, disk: &dyn Disk) -> io::Result<()> {
         #[cfg(windows)]
         match disk.remove_dir_all(&self.root.join(&self.container.id)) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
+            _ => disk.sync_dir(&self.root)?,
         }
         #[cfg(unix)]
         let deleted = disk.remove_dir_all(&self.aside);
@@ -1385,7 +1387,9 @@ mod tests {
         for dir in ["empty", "torn", "moved"] {
             assert!(root.join(dir).is_dir(), "{dir}: left as it is");
             assert!(
-                notes.iter().any(|n| n.contains(&format!("containers/{dir}"))),
+                notes
+                    .iter()
+                    .any(|n| n.contains(&root.join(dir).display().to_string())),
                 "{notes:?}"
             );
         }

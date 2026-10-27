@@ -41,8 +41,8 @@ struct Queue {
     told: HashMap<String, Vec<UnixStream>>,
     /// Those whose records could not be written, until they are.
     failed: HashSet<String>,
-    /// The number of the write going on, if one is.
-    writing: Option<u64>,
+    /// The number of the write going on, if one is, and its container.
+    writing: Option<(u64, String)>,
     /// The asks so far, numbered: an ask for a container queued already is written with
     /// it, which an earlier number holds its place.
     asked: u64,
@@ -130,7 +130,7 @@ impl<D: Disk> Daemon<D> {
                     return;
                 };
                 let told = queue.told.remove(&id).unwrap_or_default();
-                queue.writing = Some(number);
+                queue.writing = Some((number, id.clone()));
                 (id, told)
             };
             let recorded = self.record(&id);
@@ -185,8 +185,23 @@ impl<D: Disk> Daemon<D> {
         }
         let mut queue = lock(&r.queue);
         let asked = queue.asked;
-        while queue.writing.is_some_and(|n| n <= asked) || queue.ids.front().is_some_and(|(n, _)| *n <= asked)
+        while queue.writing.as_ref().is_some_and(|(n, _)| *n <= asked)
+            || queue.ids.front().is_some_and(|(n, _)| *n <= asked)
         {
+            queue = r.done.wait(queue).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Waits until no record of container `id`, taken out of sight, is being written:
+    /// none starts once it is ([`record`](Self::record)), but one under way when it was
+    /// lands in its directory, which Windows leaves where it is, marked
+    /// (`Removal::set_aside`), and whose deletion it would then outlive, the directory not
+    /// empty. Never on the recorder's thread, which would wait for itself.
+    #[cfg(windows)]
+    pub(super) fn await_unwritten(&self, id: &str) {
+        let r = &self.recording;
+        let mut queue = lock(&r.queue);
+        while queue.writing.as_ref().is_some_and(|(_, w)| w == id) {
             queue = r.done.wait(queue).unwrap_or_else(PoisonError::into_inner);
         }
     }

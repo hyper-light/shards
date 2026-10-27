@@ -386,12 +386,24 @@ fn platform_string(p: &oci::Platform) -> String {
     s
 }
 
-/// Makes the entries of `dir` durable: the renames into it outlast a power loss.
+/// Makes the entries of `dir` durable: the renames into it outlast a power loss. Windows
+/// takes FlushFileBuffers (std's `sync_all`) of a handle to it that may write ("must have
+/// the GENERIC_WRITE access right", its documentation), which a directory opens for only
+/// with backup semantics (CreateFileW), as the VMM's `platform::sync_dir` does.
 fn sync_dir(dir: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     sync_durable(&File::open(dir)?)?;
-    #[cfg(not(unix))]
-    let _ = dir;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(GENERIC_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)?
+            .sync_all()?;
+    }
     Ok(())
 }
 

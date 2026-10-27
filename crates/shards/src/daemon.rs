@@ -4532,11 +4532,7 @@ impl<D: Disk> Daemon<D> {
                 "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
             )),
         }
-        if let Err(e) = removal.delete(&self.disk) {
-            log(format!(
-                "container {id}: deleting its files: {e}; the next start deletes them"
-            ));
-        }
+        self.delete_aside(removal);
         if removal.container.auto_remove {
             self.drop_anonymous(&removal.container);
         }
@@ -4633,14 +4629,24 @@ impl<D: Disk> Daemon<D> {
                     "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
                 )),
             }
-            if let Err(e) = removal.delete(&self.disk) {
-                log(format!(
-                    "container {id}: deleting its files: {e}; the next start deletes them"
-                ));
-            }
+            self.delete_aside(removal);
             if removal.container.auto_remove {
                 self.drop_anonymous(&removal.container);
             }
+        }
+    }
+
+    /// Deletes what `removal` set aside, on Windows once no record of it is being written
+    /// (`await_unwritten`). A failure goes to the log: the next start deletes what it
+    /// leaves.
+    fn delete_aside(&self, removal: &Removal) {
+        let id = &removal.container.id;
+        #[cfg(windows)]
+        self.await_unwritten(id);
+        if let Err(e) = removal.delete(&self.disk) {
+            log(format!(
+                "container {id}: deleting its files: {e}; the next start deletes them"
+            ));
         }
     }
 
@@ -11543,7 +11549,13 @@ mod tests {
                 let registry = lock(&d.containers);
                 (0..3).all(|i| registry.name_taken(&format!("batch{i}")).is_none())
             });
-            assert_eq!(t.daemon.disk.syncs.load(Ordering::SeqCst), 2);
+            // On Windows each deletion takes one more, after its name is let go, before
+            // its mark goes (`Removal::delete`).
+            let syncs = if cfg!(windows) { 2 + 3 } else { 2 };
+            t.until("each deletion synced", |d| {
+                d.disk.syncs.load(Ordering::SeqCst) >= syncs
+            });
+            assert_eq!(t.daemon.disk.syncs.load(Ordering::SeqCst), syncs);
         });
     }
 

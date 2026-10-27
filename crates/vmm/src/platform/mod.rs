@@ -190,15 +190,10 @@ fn read_bounded(opened: io::Result<File>, name: &str, max: u64) -> io::Result<Op
 
 /// Makes the entries of the directory at `path` durable: the renames into it survive a
 /// crash once this returns. Linux takes an fsync of the directory itself (fsync(2)); macOS
-/// takes `sync_durable`'s flush, whose `F_FULLFSYNC` directories accept (PM M46).
+/// takes `sync_durable`'s flush, whose `F_FULLFSYNC` directories accept (PM M46); Windows
+/// takes FlushFileBuffers of a handle to it that may write (windows_files.rs).
 pub fn sync_dir(path: &std::path::Path) -> io::Result<()> {
-    #[cfg(unix)]
-    return sync_entries(&File::open(path)?);
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    sync_entries(&open_dir(path)?)
 }
 
 /// Whether letting go of a file written through a shared mapping, its last writable
