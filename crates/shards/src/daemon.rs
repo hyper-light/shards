@@ -6904,8 +6904,10 @@ impl<D: Disk> Daemon<D> {
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // container joins its network (D119): its templates have them, and so every restore
-        // of them.
-        args.extend(["--join".into(), "--join-share".into()]);
+        // of them. A share is Unix's alone as yet (D38): Windows' microVMs have the disk.
+        args.push("--join".into());
+        #[cfg(unix)]
+        args.push("--join-share".into());
         args.extend(["--warm".into(), VM_LINK.into()]);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
         let net = if cfg.cmdline.contains("shards_net=") {
