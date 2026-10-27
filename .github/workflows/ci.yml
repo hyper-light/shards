@@ -16,6 +16,7 @@ on:
       - "!docs/research/measurements/**/*.c"
       - "!docs/research/measurements/**/Dockerfile"
       - "!.github/workflows/builder-cold.yml"
+      - "!.github/workflows/builder-pressure.yml"
       - "!.github/workflows/dax-budget.yml"
       - "!.github/workflows/dax-huge.yml"
       - "!.github/workflows/dax-boot-memory.yml"

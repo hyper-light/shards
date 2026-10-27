@@ -1,0 +1,79 @@
+name: builder pressure
+
+# What a builder gives back under its host's memory pressure, and what that costs its build
+# (the plan "Builders give back what they hold cold and unplug under memory pressure", step 4;
+# D133, D188), on CI's x86_64 runners: docs/research/measurements/builder-pressure/measure.py
+# over the tree's shards with builder-cold's cold.patch and builder-pressure's give.patch,
+# ROUNDS rounds of each build free and held to a budget (a scope of the user's manager) on
+# each of four runners at once; each runner's output and tables.py's tables of it kept as the
+# run's artifact, its builds' stderr and consoles beside them. Runs when the harness changes
+# (not its results), or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/builder-pressure/**
+      # Its results, what it measured, start nothing.
+      - "!docs/research/measurements/builder-pressure/results/**"
+      - .github/workflows/builder-pressure.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+  ROUNDS: "5"
+
+jobs:
+  measure:
+    name: measure (${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c, d]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      # The runner user's systemd manager, as a login has one (D183).
+      - name: User manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      # The tree's shards with cold.patch; then the build's own files removed, for the
+      # volume's room.
+      - name: Build
+        run: |
+          git apply docs/research/measurements/builder-cold/cold.patch
+          git apply docs/research/measurements/builder-pressure/give.patch
+          cargo build --locked -p shards --release
+          cp target/release/shards "$RUNNER_TEMP/shards"
+          git checkout -- crates
+          rm -rf target
+          df -h .
+      - name: Measure
+        run: |
+          lscpu | grep -E 'Model name|Vendor ID|Hypervisor vendor' || true
+          # The bases from Docker Hub: ECR Public refuses these runners' anonymous pulls ("Data
+          # limit exceeded", run 40281503785).
+          python3 -I docs/research/measurements/builder-pressure/measure.py "$RUNNER_TEMP/shards" builder-pressure \
+            --rounds "$ROUNDS" --home "$RUNNER_TEMP/home" --base docker.io/library
+          df -h .
+      - name: Tables
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python3 -I docs/research/measurements/builder-pressure/tables.py builder-pressure/out.txt | tee builder-pressure/tables.txt
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: builder-pressure-${{ matrix.copy }}-${{ github.run_attempt }}
+          path: builder-pressure
