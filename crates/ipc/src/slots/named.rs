@@ -552,16 +552,22 @@ pub fn take(home: &Path, streams: u8) -> io::Result<Taken> {
     let at = home
         .join(DIR)
         .join(if streams == 0 { FREE } else { FREE_STREAMS });
-    'list: loop {
-        let Some(name) = listed_name(&at)? else {
-            return Ok(Taken::NoDaemon);
-        };
+    match listed_name(&at)? {
+        Some(name) => take_listed(&at, name, streams),
+        None => Ok(Taken::NoDaemon),
+    }
+}
+
+/// [`take`] on the list whose file is `at`, `name` its name as last read there: read again
+/// each time the list is to be looked at anew.
+fn take_listed(at: &Path, mut name: String, streams: u8) -> io::Result<Taken> {
+    loop {
         let wide = pipe::wide(&name);
         loop {
             match pipe::open(&wide, true) {
                 Ok(handle) => match open_slot(&name, Pipe::from_handle(handle), streams)? {
                     Opening::Took(client) => return Ok(Taken::Slot(client)),
-                    Opening::Again => continue 'list,
+                    Opening::Again => break,
                 },
                 Err(e) if code(&e) == Some(ERROR_PIPE_BUSY) => {
                     // SAFETY: a NUL-terminated name.
@@ -577,20 +583,24 @@ pub fn take(home: &Path, streams: u8) -> io::Result<Taken> {
                     let e = io::Error::last_os_error();
                     match code(&e) {
                         // Every one still taken: its name may have changed meanwhile.
-                        Some(ERROR_SEM_TIMEOUT) if listed_name(&at)?.as_ref() == Some(&name) => {}
-                        Some(ERROR_SEM_TIMEOUT | ERROR_FILE_NOT_FOUND) => continue 'list,
+                        Some(ERROR_SEM_TIMEOUT) if listed_name(at)?.as_ref() == Some(&name) => {}
+                        Some(ERROR_SEM_TIMEOUT | ERROR_FILE_NOT_FOUND) => break,
                         _ => return Err(e),
                     }
                 }
                 // No instance: the daemon has gone, unless its lists are named anew.
                 Err(e) if code(&e) == Some(ERROR_FILE_NOT_FOUND) => {
-                    if listed_name(&at)?.is_some_and(|now| now != name) {
-                        continue 'list;
+                    if listed_name(at)?.is_some_and(|now| now != name) {
+                        break;
                     }
                     return Ok(Taken::NoDaemon);
                 }
                 Err(e) => return Err(e),
             }
+        }
+        match listed_name(at)? {
+            Some(now) => name = now,
+            None => return Ok(Taken::NoDaemon),
         }
     }
 }
@@ -1102,6 +1112,33 @@ mod tests {
             "a slot made beside its stream's squatter"
         );
         drop(squatter);
+    }
+
+    /// A client that read its list's name before the daemon made its lists anew, that pipe
+    /// gone with them, takes from the list its file names now: it reads the name again, and
+    /// hears of no daemon gone while one serves. A window of a read and an open in `take`,
+    /// here held open by the name the list had.
+    #[test]
+    fn a_client_holding_a_name_gone_takes_from_the_list_made_anew() {
+        let home = home("slot-renamed");
+        let mut requests = Requests::open(&home).unwrap();
+        let stale = requests.names[list(false)].clone();
+        requests.renew().unwrap();
+        assert_ne!(requests.names[list(false)], stale);
+        let slot = requests.make(false).unwrap();
+        requests.offer(slot.number(), false).unwrap();
+        std::thread::scope(|s| {
+            let stops = Stops::default();
+            stops.hold(&slot);
+            let served = waiting(s, slot);
+            let taken = take_listed(&home.join(DIR).join(FREE), stale, 0);
+            let Ok(Taken::Slot(client)) = taken else {
+                panic!("a client holding a name gone took no slot: {taken:?}");
+            };
+            assert_eq!(client.n, 0);
+            drop(client);
+            assert!(matches!(served.join().unwrap().unwrap(), Waited::Gone));
+        });
     }
 
     /// A first byte naming a stream its client did not open is refused, as one naming a
