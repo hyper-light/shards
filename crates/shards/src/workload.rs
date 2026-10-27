@@ -3,31 +3,21 @@
 //! shards sends the workload, relays its stdio, and returns its exit status as
 //! `docker run` does.
 
-// Where shards has no vsock yet (Windows), only the options are parsed.
-#![cfg_attr(not(unix), allow(dead_code))]
-
-#[cfg(unix)]
 use std::fs;
-#[cfg(unix)]
 use std::io::{self, Read, Write};
-#[cfg(unix)]
-use std::os::fd::{AsFd, AsRawFd};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
-#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-#[cfg(unix)]
 use std::sync::{Condvar, Mutex, PoisonError};
 
-#[cfg(unix)]
 use shards_abi::run::{self, Size, Spec, kind};
+// A connection the guest dialed on the vsock device, as the VMM hands it over: a Unix
+// socket, Winsock's AF_UNIX on Windows (D195). A client's and the daemon's are
+// `shards_ipc::Stream`s, which are Unix sockets too on Unix.
+use shards_vmm::platform::UnixStream;
 
-#[cfg(unix)]
 use crate::spec::{
     INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, LogRetention, now,
 };
 
-#[cfg(unix)]
 /// Where the guest's connections to a host port this process serves arrive
 /// ([`shards_vmm::vm::VsockHost::ports`]).
 pub type Port = std::sync::mpsc::Receiver<UnixStream>;
@@ -35,7 +25,6 @@ pub type Port = std::sync::mpsc::Receiver<UnixStream>;
 /// Signals and terminal sizes on their way to the workload, as frames: sent once the guest
 /// has dialed the signal port, queued before then while the workload runs or is sure to,
 /// and otherwise not sent.
-#[cfg(unix)]
 #[derive(Debug, Default)]
 pub struct Signals {
     conn: Option<UnixStream>,
@@ -44,7 +33,6 @@ pub struct Signals {
     running: bool,
 }
 
-#[cfg(unix)]
 impl Signals {
     pub const fn new() -> Signals {
         Signals {
@@ -57,17 +45,14 @@ impl Signals {
 
 /// Where signals for the workload go. A VM process serves one workload, so its own is a
 /// `static` that the threads relaying signals, which live as long as the process, share.
-#[cfg(unix)]
 pub type ToGuest = Mutex<Signals>;
 
-#[cfg(unix)]
 fn lock(to: &ToGuest) -> std::sync::MutexGuard<'_, Signals> {
     to.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// When a request arrived and when it was answered, on the VMM's clock (for
 /// `SHARDS_TIMING`).
-#[cfg(unix)]
 #[derive(Debug, Default)]
 pub struct Timing {
     pub request_us: std::sync::OnceLock<u128>,
@@ -76,7 +61,6 @@ pub struct Timing {
     pub asked: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(unix)]
 impl Timing {
     pub const fn new() -> Timing {
         Timing {
@@ -88,7 +72,6 @@ impl Timing {
 }
 
 /// The command a served VM runs.
-#[cfg(unix)]
 pub enum Request<'a> {
     /// Known before the guest connects.
     Now { spec: Box<Spec>, interactive: bool },
@@ -98,7 +81,6 @@ pub enum Request<'a> {
 
 /// A request, as served: the command, whether it reads stdin, the container's log if its
 /// output is kept, and what to call once the command runs.
-#[cfg(unix)]
 pub struct Asked<'a> {
     pub spec: Spec,
     pub interactive: bool,
@@ -132,7 +114,6 @@ pub struct Asked<'a> {
 
 /// The connections of a run its microVM was restored from a save of (D176), as its guest
 /// dials them again: the workload's, then the signals'.
-#[cfg(unix)]
 pub struct Resumed {
     run: std::sync::mpsc::Receiver<Result<UnixStream, String>>,
     signals: std::sync::mpsc::Receiver<Result<UnixStream, String>>,
@@ -141,7 +122,6 @@ pub struct Resumed {
 /// Waits for the connections a restored guest dials again with `tokens` (D176), the
 /// workload's and the signals', as an exec's connection is waited for: by its HELLO on the
 /// exec port, which a workload dialing it learns nothing of a token from.
-#[cfg(unix)]
 pub fn await_resumed(tokens: &[u8]) -> Result<Resumed, String> {
     let (Some((run, rest)), true) = (
         tokens.split_first_chunk::<{ run::TOKEN }>(),
@@ -163,21 +143,17 @@ pub fn await_resumed(tokens: &[u8]) -> Result<Resumed, String> {
 
 /// A save of the run, as its relay sees it (D176): the guest has said all it held, or the
 /// run's end came first.
-#[cfg(unix)]
 struct Quiescing {
     quiet: bool,
     ended: bool,
 }
 
-#[cfg(unix)]
 static QUIESCING: Mutex<Quiescing> = Mutex::new(Quiescing {
     quiet: false,
     ended: false,
 });
-#[cfg(unix)]
 static QUIET: std::sync::Condvar = std::sync::Condvar::new();
 
-#[cfg(unix)]
 fn quiescing() -> std::sync::MutexGuard<'static, Quiescing> {
     QUIESCING.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -187,7 +163,6 @@ fn quiescing() -> std::sync::MutexGuard<'static, Quiescing> {
 /// read here, so that none of it is on its way as the save is taken. What the host sends
 /// it meanwhile, its stdin and signals, comes after the save in a restored copy, where it
 /// is not. An error where its command has ended, or has yet to start.
-#[cfg(unix)]
 pub fn quiesce(tokens: &[u8]) -> Result<(), String> {
     {
         let mut q = quiescing();
@@ -212,7 +187,6 @@ pub fn quiesce(tokens: &[u8]) -> Result<(), String> {
 }
 
 /// Lets the guest go on after a save, taken or not (D176).
-#[cfg(unix)]
 pub fn resume_guest() {
     if let Some(conn) = lock_stdin().as_mut() {
         let _ = send(conn, kind::RESUME, &[]);
@@ -220,16 +194,13 @@ pub fn resume_guest() {
 }
 
 /// What hears how a served command ended (`Asked::told`).
-#[cfg(unix)]
 pub type Told<'a> = dyn Fn(&Result<Ended, String>) + Sync + 'a;
 
 /// What is given a run's records of processes as they come (`Asked::processes`, D123).
-#[cfg(unix)]
 pub type Records<'a> = dyn Fn(&[u8]) + Sync + 'a;
 
 /// How a served command ended: its exit status, and if it never ran, why not, in the
 /// guest's words.
-#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ended {
     pub status: u8,
@@ -253,7 +224,6 @@ pub struct Ended {
 /// retention says (segments.rs). A record that cannot be kept, on a full disk
 /// or a log removed, costs the log, not the run: it is taken back, so neither file holds
 /// any of it, and its bytes are counted as lost (audit A12).
-#[cfg(unix)]
 pub struct Logger {
     /// Makes the next segment: in a VM, its daemon, since no VM reaches a container's
     /// directory (D30).
@@ -274,10 +244,8 @@ pub struct Logger {
 
 /// Makes a log's segment `seq`, its log and index to append to, and removes the oldest
 /// past the log's retention ([`new_segment`]).
-#[cfg(unix)]
 pub type NextSegment = Box<dyn FnMut(u64) -> io::Result<(fs::File, fs::File)> + Send>;
 
-#[cfg(unix)]
 impl std::fmt::Debug for Logger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Logger")
@@ -288,7 +256,6 @@ impl std::fmt::Debug for Logger {
     }
 }
 
-#[cfg(unix)]
 impl Logger {
     /// Writes a container's log from its segment `seq`, `log` and `index`, which its
     /// daemon made with the container (or its newest, for one started again), going on in
@@ -396,13 +363,11 @@ impl Logger {
 }
 
 /// Where a run's output goes to be kept: its log, at once; or a non-blocking log's queue.
-#[cfg(unix)]
 enum Sink<'a> {
     Now(&'a mut Logger),
     Queued(&'a Queue),
 }
 
-#[cfg(unix)]
 impl Sink<'_> {
     fn keep(&mut self, stream: u8, bytes: &[u8]) {
         match self {
@@ -417,14 +382,12 @@ impl Sink<'_> {
 /// that falls behind never holds up its run. What comes while it is full is dropped and
 /// counted, as moby's ring logger drops it (daemon/logger/ring.go, `Enqueue`): output that
 /// would pass `max` is taken only into an empty queue.
-#[cfg(unix)]
 struct Queue {
     max: u64,
     state: Mutex<Queued>,
     changed: Condvar,
 }
 
-#[cfg(unix)]
 #[derive(Default)]
 struct Queued {
     items: std::collections::VecDeque<(u8, Vec<u8>)>,
@@ -433,7 +396,6 @@ struct Queued {
     dropped: u64,
 }
 
-#[cfg(unix)]
 impl Queue {
     fn new(max: u64) -> Queue {
         Queue {
@@ -494,7 +456,6 @@ impl Queue {
 /// Runs `relay` with the run's output kept through `log`'s sink: the log itself, or, where
 /// it is non-blocking, its queue, which a thread of its own keeps in it, all of it kept
 /// before this returns. What `relay` returned, then the bytes the log lost and dropped.
-#[cfg(unix)]
 fn with_sink<T>(
     log: Option<&mut Logger>,
     relay: impl FnOnce(Option<&mut Sink<'_>>) -> T,
@@ -531,7 +492,6 @@ fn with_sink<T>(
 /// (shards_abi::control::ABI): an init built for another shards could misread it.
 /// A run its microVM was restored from a save of (D176) has no ports of its own: its
 /// guest dials the exec port again instead ([`Asked::resumed`]).
-#[cfg(unix)]
 pub fn serve(
     ports: Option<(&Port, Port)>,
     request: Request<'_>,
@@ -735,14 +695,22 @@ pub fn serve(
     }
     // The guest powers off once the host closes the run connection: shutting it down
     // closes every copy.
-    shards_ipc::end(&conn);
+    end_guest(&conn);
     status
+}
+
+/// Ends the guest's connection `conn` both ways, every copy of it: as `shards_ipc::end`
+/// ends a socket on Unix (M236); on Windows its Winsock socket shut down both ways.
+fn end_guest(conn: &UnixStream) {
+    #[cfg(unix)]
+    shards_ipc::end(conn);
+    #[cfg(windows)]
+    let _ = conn.shutdown(std::net::Shutdown::Both);
 }
 
 /// Copies the guest's frames to shards' stdout and stderr until the exit status, and to
 /// `log` if the container's output is kept. Why a command never ran is not its output,
 /// and stays out of the log, as dockerd keeps a failed start out of `docker logs`.
-#[cfg(unix)]
 fn relay(
     conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
     timing: &Timing,
@@ -759,7 +727,6 @@ fn relay(
 
 /// [`relay`]'s frames, its output kept through `log`; what its log lost is said by
 /// [`with_sink`].
-#[cfg(unix)]
 fn relay_frames(
     conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
     timing: &Timing,
@@ -879,8 +846,39 @@ fn write_fd(fd: libc::c_int, mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// [`write_fd`] on Windows: to this process's standard output (1) or error (2) handle as
+/// it is now (GetStdHandle), its bytes as they are, where std's console writer would take
+/// them for UTF-8.
+#[cfg(windows)]
+fn write_fd(fd: i32, mut bytes: &[u8]) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+    let which = if fd == 2 {
+        STD_ERROR_HANDLE
+    } else {
+        STD_OUTPUT_HANDLE
+    };
+    // SAFETY: no pointers; the handle is the process's, not ours to close.
+    let handle = unsafe { GetStdHandle(which) };
+    if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(io::ErrorKind::NotConnected.into());
+    }
+    while !bytes.is_empty() {
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        let mut n = 0u32;
+        // SAFETY: a live buffer of at least `len` bytes, and a count to write.
+        if unsafe { WriteFile(handle, bytes.as_ptr(), len, &raw mut n, std::ptr::null_mut()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if n == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        bytes = bytes.get(n as usize..).unwrap_or_default();
+    }
+    Ok(())
+}
+
 /// The head of a log record for `bytes` on `stream`, stamped now: its bytes follow it.
-#[cfg(unix)]
 fn log_head(stream: u8, bytes: &[u8]) -> [u8; LOG_HEAD as usize] {
     let [t0, t1, t2, t3, t4, t5, t6, t7] = u64::try_from(now()).unwrap_or(u64::MAX).to_be_bytes();
     let [l0, l1, l2, l3] = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
@@ -890,7 +888,6 @@ fn log_head(stream: u8, bytes: &[u8]) -> [u8; LOG_HEAD as usize] {
 /// Writes `parts` in order with as few writes as they take, a short or interrupted one
 /// going on from where it stopped: a log record's head and bytes, without copying the
 /// bytes after their head (audit D08).
-#[cfg(unix)]
 fn write_parts(mut w: impl Write, mut rest: &mut [io::IoSlice<'_>]) -> io::Result<()> {
     while !rest.is_empty() {
         match w.write_vectored(rest) {
@@ -904,7 +901,6 @@ fn write_parts(mut w: impl Write, mut rest: &mut [io::IoSlice<'_>]) -> io::Resul
 }
 
 /// Sends `layer` as [`kind::LAYER`] frames, then an empty one.
-#[cfg(unix)]
 fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
     let mut buf = vec![0u8; run::CHUNK];
     loop {
@@ -919,7 +915,6 @@ fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
 /// Asks the guest for the container's writable layer ([`kind::SAVE`]) and writes its
 /// [`kind::LAYER`] frames to `out` until the empty one; an error if it did not come
 /// whole: the guest's reason, where it says why ([`kind::SYSTEM_ERR`]).
-#[cfg(unix)]
 pub(crate) fn receive_layer(conn: &mut UnixStream, out: fs::File) -> io::Result<Option<u64>> {
     let reading = conn.try_clone()?;
     receive_layer_from(
@@ -932,7 +927,6 @@ pub(crate) fn receive_layer(conn: &mut UnixStream, out: fs::File) -> io::Result<
 
 /// [`receive_layer`], its frames read from `reader`, `conn`'s; each other frame the guest
 /// sends meanwhile given to `beyond`, an error where that takes none of it.
-#[cfg(unix)]
 fn receive_layer_from(
     conn: &UnixStream,
     reader: &mut impl Read,
@@ -986,7 +980,6 @@ fn receive_layer_from(
 /// D190) and reads its answer: what the layer uses ([`kind::USAGE`]) and an empty
 /// [`kind::LAYER`] frame; each other frame given to `beyond`, as
 /// [`receive_layer_from`]'s.
-#[cfg(unix)]
 fn keep_layer_from(
     conn: &UnixStream,
     reader: &mut impl Read,
@@ -1022,7 +1015,6 @@ fn keep_layer_from(
 
 /// Passes each frame `reader` has to `beyond` until it ends: what the guest says on a
 /// run's connection once its command's end and layer are had, its joiners going on.
-#[cfg(unix)]
 fn drain(reader: &mut impl Read, beyond: &mut dyn FnMut(u8, &[u8]) -> bool) {
     let mut frame = Vec::new();
     loop {
@@ -1041,7 +1033,6 @@ fn drain(reader: &mut impl Read, beyond: &mut dyn FnMut(u8, &[u8]) -> bool) {
     }
 }
 
-#[cfg(unix)]
 fn send(conn: &mut UnixStream, which: u8, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len()).map_err(|_| io::Error::other("frame too long"))?;
     conn.write_all(&run::header(which, len))?;
@@ -1050,7 +1041,6 @@ fn send(conn: &mut UnixStream, which: u8, payload: &[u8]) -> io::Result<()> {
 
 /// An exec waiting for the guest's connection: its token, its id, and where its
 /// connection goes, or why there is none ([`kind::EXEC_FAILED`]).
-#[cfg(unix)]
 struct Waiting {
     token: [u8; run::TOKEN],
     id: u32,
@@ -1059,18 +1049,14 @@ struct Waiting {
 
 /// The execs waiting for their connections. Emptied when the workload ends, which tells
 /// each still waiting that it never started.
-#[cfg(unix)]
 static PENDING: Mutex<Vec<Waiting>> = Mutex::new(Vec::new());
-#[cfg(unix)]
 static NEXT_EXEC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
-#[cfg(unix)]
 fn pending() -> std::sync::MutexGuard<'static, Vec<Waiting>> {
     PENDING.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Exec `id` will have no connection, for `why`, as the guest said: it fails with it.
-#[cfg(unix)]
 fn exec_failed(payload: &[u8]) {
     let Some((id, why)) = payload.split_first_chunk::<4>() else {
         return;
@@ -1090,7 +1076,6 @@ fn exec_failed(payload: &[u8]) {
 
 /// Takes every guest connection to the exec port ([`run::EXEC_PORT`]): one whose
 /// [`kind::HELLO`] names a pending exec's token becomes that exec's; any other is closed.
-#[cfg(unix)]
 pub fn accept_execs(port: Port) {
     accept_hellos(port, "exec-hellos", heard);
 }
@@ -1101,7 +1086,6 @@ pub fn accept_execs(port: Port) {
 /// them all (review 8.8): one that says nothing costs a descriptor, not a thread, and
 /// holds up no other; the muxer bounds how many there are. They go when the workload's
 /// process does.
-#[cfg(unix)]
 pub fn accept_hellos(
     port: Port,
     name: &'static str,
@@ -1127,7 +1111,6 @@ pub fn accept_hellos(
 }
 
 /// A connection to the exec port, and as much of its hello as has come.
-#[cfg(unix)]
 struct Unheard {
     conn: UnixStream,
     hello: [u8; run::HEADER + run::TOKEN],
@@ -1136,7 +1119,6 @@ struct Unheard {
 
 /// Reads the hellos of the connections that `arrivals` brings, each told of on `woken`,
 /// until the acceptor goes: whole, each goes to `heard`, or is closed.
-#[cfg(unix)]
 fn hellos(
     arrivals: &std::sync::mpsc::Receiver<UnixStream>,
     woken: &UnixStream,
@@ -1145,26 +1127,13 @@ fn hellos(
     let mut unheard: Vec<Unheard> = Vec::new();
     let mut byte = [0u8; 64];
     loop {
-        let mut polled: Vec<libc::pollfd> = std::iter::once(woken.as_raw_fd())
-            .chain(unheard.iter().map(|u| u.conn.as_raw_fd()))
-            .map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            })
-            .collect();
-        let count = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
-        // SAFETY: poll(2) on pollfds of descriptors this thread holds open.
-        if unsafe { libc::poll(polled.as_mut_ptr(), count, -1) } < 0 {
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return;
-        }
-        let Some((wake, rest)) = polled.split_first() else {
+        let Ok(polled) = await_hellos(woken, &unheard) else {
             return;
         };
-        if wake.revents != 0 {
+        let Some((&wake, rest)) = polled.split_first() else {
+            return;
+        };
+        if wake {
             match (&*woken).read(&mut byte) {
                 // The acceptor is gone, and the workload with it.
                 Ok(0) => return,
@@ -1186,7 +1155,7 @@ fn hellos(
         let ready: Vec<usize> = rest
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.revents != 0)
+            .filter(|&(_, &r)| r)
             .map(|(i, _)| i)
             .collect();
         for i in ready.into_iter().rev() {
@@ -1220,16 +1189,49 @@ fn hellos(
     }
 }
 
+/// Waits until `woken` or one of `unheard`'s connections has something to read, or has
+/// ended: which have, `woken` first. poll(2) on Unix; WSAPoll on Windows, whose sockets
+/// they are (`shards_vmm::platform::wait_readable`).
+fn await_hellos(woken: &UnixStream, unheard: &[Unheard]) -> io::Result<Vec<bool>> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        let mut polled: Vec<libc::pollfd> = std::iter::once(woken.as_raw_fd())
+            .chain(unheard.iter().map(|u| u.conn.as_raw_fd()))
+            .map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        let count = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
+        // SAFETY: poll(2) on pollfds of descriptors this thread holds open.
+        while unsafe { libc::poll(polled.as_mut_ptr(), count, -1) } < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+        Ok(polled.iter().map(|p| p.revents != 0).collect())
+    }
+    #[cfg(windows)]
+    {
+        use shards_vmm::platform::AsRawSocket as _;
+        let sockets: Vec<shards_vmm::platform::RawSocket> = std::iter::once(woken.raw_socket())
+            .chain(unheard.iter().map(|u| u.conn.raw_socket()))
+            .collect();
+        shards_vmm::platform::wait_readable(&sockets, None)
+    }
+}
+
 /// Whether tokens `a` and `b` are the same, compared whole, in constant time: a workload
 /// that dials a port learns nothing of a token from how fast it is refused.
-#[cfg(unix)]
 pub fn same_token(a: &[u8; run::TOKEN], b: &[u8; run::TOKEN]) -> bool {
     a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
 /// A connection whose hello, its header checked, has come whole, saying `token`: to the
 /// exec its token names, or closed.
-#[cfg(unix)]
 fn heard(conn: UnixStream, token: &[u8; run::TOKEN]) {
     let to = {
         let mut waiting = pending();
@@ -1247,15 +1249,14 @@ fn heard(conn: UnixStream, token: &[u8; run::TOKEN]) {
 
 /// A command to run beside the workload (`docker exec`), and its client's: the
 /// connection it is answered on, and its stdio.
-#[cfg(unix)]
 pub struct ExecRequest {
     pub spec: Spec,
     pub interactive: bool,
     pub detached: bool,
     /// The daemon's number for it, and its connection, told of its end (`EXEC_ENDED`).
     pub number: u64,
-    pub daemon: Option<UnixStream>,
-    pub client: UnixStream,
+    pub daemon: Option<shards_ipc::Stream>,
+    pub client: shards_ipc::Stream,
     pub stdin: fs::File,
     pub stdout: fs::File,
     pub stderr: fs::File,
@@ -1264,7 +1265,6 @@ pub struct ExecRequest {
 /// Runs `req` beside the workload, on a thread of its own, answering its client as
 /// `docker exec` answers: the command's output, or why it did not start, then `EXIT`
 /// with its status (`-d`: 0 once it starts).
-#[cfg(unix)]
 pub fn exec(to: &'static ToGuest, req: ExecRequest) -> Result<(), String> {
     std::thread::Builder::new()
         .name("exec".into())
@@ -1292,7 +1292,6 @@ pub fn exec(to: &'static ToGuest, req: ExecRequest) -> Result<(), String> {
 /// The [`kind::EXEC`] frame's payload for exec `id`: its token, its id and its spec, within
 /// what a frame may carry (review 8.9). The guest reads no longer frame, and drops the
 /// connection one came on, which carries every signal and exec of the workload.
-#[cfg(unix)]
 fn exec_frame(token: &[u8; run::TOKEN], id: u32, spec: &Spec) -> Result<Vec<u8>, String> {
     let len = spec
         .encoded_len()
@@ -1309,7 +1308,6 @@ fn exec_frame(token: &[u8; run::TOKEN], id: u32, spec: &Spec) -> Result<Vec<u8>,
 /// One exec, from asking the guest for it to its status: a detached one's client is told
 /// once it starts, and it is followed to its end, its output going nowhere. What never
 /// started is said on `req.stderr`.
-#[cfg(unix)]
 fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, String> {
     let mut token = [0u8; run::TOKEN];
     shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("an exec's token: {e}"))?;
@@ -1437,12 +1435,11 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
 /// A container joining the workload's network (D119): its command, as a run's spec says
 /// it, the join entry naming its image's range of the join disk among its setup; its
 /// client's connection and stdio, as a run's, none for a detached one; its log.
-#[cfg(unix)]
 pub struct JoinRequest {
     pub spec: Spec,
     pub interactive: bool,
     pub detached: bool,
-    pub client: Option<UnixStream>,
+    pub client: Option<shards_ipc::Stream>,
     pub stdin: fs::File,
     pub stdout: Option<fs::File>,
     pub stderr: Option<fs::File>,
@@ -1452,21 +1449,17 @@ pub struct JoinRequest {
 /// Clients attached to joiners (D119), each with its joiner's id in the guest, as
 /// [`ATTACHED`] holds the workload's: where a joiner's output goes besides its own client
 /// and log, and whose connections hear its status.
-#[cfg(unix)]
 static JOIN_ATTACHED: Mutex<Vec<(u32, Attacher)>> = Mutex::new(Vec::new());
 
 /// Each running joiner's way in (D119), by its id in the guest: a writer of its connection
 /// to the guest, for its attached clients' stdin; and a socket pair whose first end closes
 /// as the joiner ends, which each copy of an attached stdin waits on with its stdin.
-#[cfg(unix)]
 static JOIN_INPUTS: Mutex<Vec<(u32, UnixStream, UnixStream, UnixStream)>> = Mutex::new(Vec::new());
 
-#[cfg(unix)]
 fn lock_join_attached() -> std::sync::MutexGuard<'static, Vec<(u32, Attacher)>> {
     JOIN_ATTACHED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-#[cfg(unix)]
 fn lock_join_inputs() -> std::sync::MutexGuard<'static, Vec<(u32, UnixStream, UnixStream, UnixStream)>> {
     JOIN_INPUTS.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -1474,7 +1467,6 @@ fn lock_join_inputs() -> std::sync::MutexGuard<'static, Vec<(u32, UnixStream, Un
 /// Attaches `req`'s client to joiner `id` in the guest (D119), as `docker attach` attaches
 /// to a container: its output from now, its stdin where the joiner reads one, its signals
 /// and terminal sizes; told its status as it ends ([`end_joiner`]).
-#[cfg(unix)]
 pub fn attach_joiner(to: &'static ToGuest, id: u32, req: AttachRequest) -> Result<(), String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -1539,6 +1531,7 @@ pub fn attach_joiner(to: &'static ToGuest, id: u32, req: AttachRequest) -> Resul
 /// either ends or the joiner does, which closes `wake`'s peer.
 #[cfg(unix)]
 fn copy_attached_stdin(mut stdin: fs::File, mut input: UnixStream, wake: &UnixStream) {
+    use std::os::fd::AsRawFd as _;
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let mut polled = [stdin.as_raw_fd(), wake.as_raw_fd()].map(|fd| libc::pollfd {
@@ -1570,8 +1563,20 @@ fn copy_attached_stdin(mut stdin: fs::File, mut input: UnixStream, wake: &UnixSt
     }
 }
 
+/// [`copy_attached_stdin`] on Windows, where a client's stdin, a pipe or a file, is waited
+/// on beside no socket: each read blocks, and the copy ends at the stdin's end, or at the
+/// first write the joiner's end refuses. Its client, told the joiner's end, closes it.
+#[cfg(windows)]
+fn copy_attached_stdin(mut stdin: fs::File, mut input: UnixStream, _wake: &UnixStream) {
+    let mut buf = vec![0u8; 64 * 1024];
+    while let Ok(n @ 1..) = stdin.read(&mut buf) {
+        if send(&mut input, kind::STDIN, buf.get(..n).unwrap_or_default()).is_err() {
+            return;
+        }
+    }
+}
+
 /// Joiner `id`'s output to each client attached to it; one gone is let go.
-#[cfg(unix)]
 fn fan_out_joined(id: u32, payload: &[u8], stderr: bool) {
     lock_join_attached().retain_mut(|(j, a)| {
         if *j != id {
@@ -1585,7 +1590,6 @@ fn fan_out_joined(id: u32, payload: &[u8], stderr: bool) {
 /// Joiner `id` has ended with `status` (D119): each client attached to it hears it and is
 /// let go, its connection shut so that its thread ends; its way in goes, which ends the
 /// copies of their stdin.
-#[cfg(unix)]
 pub fn end_joiner(id: u32, status: u8) {
     lock_join_inputs().retain(|(j, ..)| *j != id);
     let attached: Vec<Attacher> = {
@@ -1603,7 +1607,6 @@ pub fn end_joiner(id: u32, status: u8) {
 
 /// Sends Linux signal `linux` to the guest's exec, or joiner, `id` (D119), as the daemon
 /// signals a container: false where the guest has no connection to take it.
-#[cfg(unix)]
 pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> bool {
     to_guest(
         to,
@@ -1618,7 +1621,6 @@ pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> bool {
 /// has one, and `started` hears when its command runs; `told` hears what init says of a
 /// container its microVM's engine made (D181), by its frame's kind: its membership of the
 /// microVM's switch (`MEMBER`) and the ports it was given (`PORTS`).
-#[cfg(unix)]
 pub fn join(
     to: &'static ToGuest,
     req: JoinRequest,
@@ -1775,20 +1777,26 @@ pub fn join(
 
 /// Copies shards' stdin to the workload's, then closes it, where its end is the
 /// workload's ([`STDIN_ONCE`]).
-#[cfg(unix)]
 fn forward_stdin() {
-    copy_stdin(io::stdin());
+    // Looked at before each read on Unix, as macOS can sleep through a peer's end (M236,
+    // `shards_ipc::read`); read as it comes on Windows, a pipe, a file or a console.
+    #[cfg(unix)]
+    {
+        let stdin = io::stdin();
+        copy_stdin(&mut |buf| shards_ipc::read(&stdin, buf));
+    }
+    #[cfg(windows)]
+    copy_stdin(&mut |buf| io::stdin().read(buf));
     if STDIN_ONCE.load(Ordering::Relaxed) {
         close_stdin();
     }
 }
 
-/// Copies `from` to the workload's stdin until its end.
-#[cfg(unix)]
-fn copy_stdin(from: impl AsFd) {
+/// Copies what `read` reads to the workload's stdin until its end.
+fn copy_stdin(read: &mut dyn FnMut(&mut [u8]) -> io::Result<usize>) {
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        match shards_ipc::read(&from, &mut buf) {
+        match read(&mut buf) {
             Ok(0) | Err(_) => return,
             Ok(n) => {
                 let data = buf.get(..n).unwrap_or_default();
@@ -1804,7 +1812,6 @@ fn copy_stdin(from: impl AsFd) {
 }
 
 /// Closes the workload's stdin, once.
-#[cfg(unix)]
 fn close_stdin() {
     if STDIN_OPEN.swap(false, Ordering::Relaxed)
         && let Some(c) = lock_stdin().as_mut()
@@ -1815,44 +1822,36 @@ fn close_stdin() {
 
 /// The run connection's copy that carries the workload's stdin, which every writer of it
 /// shares: its client's, and those attached.
-#[cfg(unix)]
 static STDIN: Mutex<Option<UnixStream>> = Mutex::new(None);
 /// The workload reads a stdin, still open.
-#[cfg(unix)]
 static STDIN_OPEN: AtomicBool = AtomicBool::new(false);
 /// Its stdin closes as a client's ends: the run was attached (StdinOnce), without a
 /// terminal.
-#[cfg(unix)]
 static STDIN_ONCE: AtomicBool = AtomicBool::new(false);
 
-#[cfg(unix)]
 fn lock_stdin() -> std::sync::MutexGuard<'static, Option<UnixStream>> {
     STDIN.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A client attached to the workload (`shards attach`): where its output goes, and its
 /// connection, told the workload's status.
-#[cfg(unix)]
 struct Attacher {
     id: u64,
     out: fs::File,
     err: fs::File,
-    client: UnixStream,
+    client: shards_ipc::Stream,
 }
 
 /// Those attached, which the output's relay writes to: a lock of its own, apart from the
 /// stdin's, so that a guest that has stopped reading stdin stalls no output.
-#[cfg(unix)]
 static ATTACHED: Mutex<Vec<Attacher>> = Mutex::new(Vec::new());
 
-#[cfg(unix)]
 fn lock_attached() -> std::sync::MutexGuard<'static, Vec<Attacher>> {
     ATTACHED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The workload's output to each client attached, as dockerd's attach streams it: as it
 /// comes, waited for as the run's own client is. One that has gone is let go.
-#[cfg(unix)]
 fn fan_out(payload: &[u8], stderr: bool) {
     lock_attached().retain_mut(|a| {
         let to = if stderr { &mut a.err } else { &mut a.out };
@@ -1862,9 +1861,8 @@ fn fan_out(payload: &[u8], stderr: bool) {
 
 /// A client to attach (`kind::ATTACH_RUN`): its connection and stdio, and whether its stdin
 /// is the workload's.
-#[cfg(unix)]
 pub struct AttachRequest {
-    pub client: UnixStream,
+    pub client: shards_ipc::Stream,
     pub stdin: fs::File,
     pub stdout: fs::File,
     pub stderr: fs::File,
@@ -1876,7 +1874,6 @@ pub struct AttachRequest {
 /// terminal's size; told the workload's status as it ends. Its stdin's end closes the
 /// workload's where the run's own client's would ([`STDIN_ONCE`]); where it does not, its
 /// output goes on to the end, where dockerd's attach ends with its stdin and loses it.
-#[cfg(unix)]
 pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -1922,7 +1919,10 @@ pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
         std::thread::Builder::new()
             .name("attached-stdin".into())
             .spawn(move || {
-                copy_stdin(&stdin);
+                #[cfg(unix)]
+                copy_stdin(&mut |buf| shards_ipc::read(&stdin, buf));
+                #[cfg(windows)]
+                copy_stdin(&mut |buf| (&stdin).read(buf));
                 if STDIN_ONCE.load(Ordering::Relaxed) {
                     close_stdin();
                 }
@@ -1974,9 +1974,41 @@ pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(),
     Ok(())
 }
 
+/// [`forward_signals`] on Windows, which sends a console process no signal but its
+/// console's events, taken as Go's os/signal takes them, as the Docker CLI's are: Ctrl+C
+/// and Ctrl+Break as SIGINT; the console's close, a logoff and a shutdown as SIGTERM. One
+/// that comes before the workload runs goes on to the default handler, which ends shards,
+/// as Unix's signal would.
+#[cfg(windows)]
+pub fn forward_signals(to: &'static ToGuest, _reads_terminal: bool) -> Result<(), String> {
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+        SetConsoleCtrlHandler,
+    };
+    static TO: std::sync::OnceLock<&'static ToGuest> = std::sync::OnceLock::new();
+    unsafe extern "system" fn handler(event: u32) -> windows_sys::core::BOOL {
+        let linux = match event {
+            CTRL_C_EVENT | CTRL_BREAK_EVENT => 2,
+            CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => 15,
+            _ => return 0,
+        };
+        i32::from(TO.get().is_some_and(|to| signal_guest(to, linux)))
+    }
+    if TO.set(to).is_err() {
+        return Err("signals forwarded twice".into());
+    }
+    // SAFETY: a handler of this process's that lives as long as it does.
+    if unsafe { SetConsoleCtrlHandler(Some(handler), 1) } == 0 {
+        return Err(format!(
+            "taking the console's events: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
 /// From here on the workload will run, so signals queue for it until the guest dials the
 /// signal port rather than being refused: a warm VM calls it once it has taken a request.
-#[cfg(unix)]
 pub fn will_run(to: &ToGuest) {
     lock(to).running = true;
 }
@@ -1984,25 +2016,21 @@ pub fn will_run(to: &ToGuest) {
 /// Sends Linux signal `linux` to the workload through `to`, or queues it until the guest
 /// dials the signal port. Returns false before the workload runs, when there is no one to
 /// send it to.
-#[cfg(unix)]
 pub fn signal_guest(to: &ToGuest, linux: u32) -> bool {
     to_guest(to, kind::SIGNAL, &linux.to_be_bytes())
 }
 
 /// Gives the guest the host's answer to its ask on the host's network (D124), as
 /// [`signal_guest`] sends a signal.
-#[cfg(unix)]
 pub fn bound_guest(to: &ToGuest, bound: &[u8]) -> bool {
     to_guest(to, kind::BOUND, bound)
 }
 
 /// Sizes the workload's terminal, if it has one, as [`signal_guest`] sends a signal.
-#[cfg(unix)]
 pub fn resize_guest(to: &ToGuest, size: Size) -> bool {
     to_guest(to, kind::RESIZE, &size.encode())
 }
 
-#[cfg(unix)]
 fn to_guest(to: &ToGuest, which: u8, payload: &[u8]) -> bool {
     let mut guard = lock(to);
     let state = &mut *guard;
