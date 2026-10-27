@@ -1692,7 +1692,9 @@ fn create(
         let mut pi = PROCESS_INFORMATION::default();
         let env = environment(s.env);
         // SAFETY: a command line we own and may be written; startup info and its
-        // attributes, and the environment block, alive through the call.
+        // attributes, and the environment block, alive through the call. A spawner with
+        // no console (the daemon) makes its child none either: one made for a confined
+        // child failed it as it started (STATUS_DLL_INIT_FAILED, on jupiter).
         if unsafe {
             CreateProcessW(
                 std::ptr::null(),
@@ -1700,7 +1702,7 @@ fn create(
                 std::ptr::null(),
                 std::ptr::null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | no_window(),
                 env.as_ptr().cast(),
                 std::ptr::null(),
                 (&raw const si).cast(),
