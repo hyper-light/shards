@@ -249,7 +249,10 @@ impl Warm {
         let value = (link.as_raw_handle() as usize).to_string();
         let mut command = common::command();
         command
-            .args(args.iter().map(|a| if *a == LINK { OsStr::new(&value) } else { *a }))
+            .args(
+                args.iter()
+                    .map(|a| if *a == LINK { OsStr::new(&value) } else { *a }),
+            )
             .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -257,7 +260,9 @@ impl Warm {
         let child = {
             let _turn = spawning();
             // SAFETY: sets one flag of a handle this test holds, for the spawn below alone.
-            let set = unsafe { SetHandleInformation(link.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+            let set = unsafe {
+                SetHandleInformation(link.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
+            };
             assert_ne!(set, 0);
             let spawned = command.spawn();
             // SAFETY: as above, cleared again.
@@ -293,7 +298,12 @@ impl Warm {
         #[cfg(windows)]
         {
             let found = common::vm_processes(self.child.id());
-            assert_eq!(found.len(), 1, "the VM processes of shards {}: {found:?}", self.child.id());
+            assert_eq!(
+                found.len(),
+                1,
+                "the VM processes of shards {}: {found:?}",
+                self.child.id()
+            );
             self.daemon.gives_to(common::giver(found[0]));
             self.vm = Some(found[0]);
         }
