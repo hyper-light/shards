@@ -29,27 +29,23 @@ use shards_ipc::kind;
 use crate::spec::NOT_RUN;
 use crate::workload::{self, ToGuest};
 
-/// A warm VM's side of the daemon: the socket its request arrives on, and /dev/null, to
-/// replace the client's stdio when the VM lets go of the client.
+/// A warm VM's side of the daemon: the socket its request arrives on. The null device that
+/// replaces the client's stdio when the VM lets go of the client is held beside it
+/// ([`workload::null`]).
 pub struct Link {
     daemon: UnixStream,
-    null: File,
 }
-
-/// The null device's path.
-const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
 impl Link {
     /// The daemon's link, `--warm`'s `daemon`.
-    pub fn new(daemon: UnixStream) -> Result<Link, String> {
-        let null = File::open(NULL).map_err(|e| format!("{NULL}: {e}"))?;
-        Ok(Link { daemon, null })
+    pub fn new(daemon: UnixStream) -> Link {
+        Link { daemon }
     }
 
     /// The daemon's socket at `fd`, which must be an open Unix socket other than stdio.
     #[cfg(unix)]
     pub fn from_fd(fd: RawFd) -> Result<Link, String> {
-        Link::new(daemon_socket(fd)?)
+        Ok(Link::new(daemon_socket(fd)?))
     }
 }
 
@@ -415,7 +411,7 @@ pub fn receive(
     let stdin = next()?;
     // A detached run's output goes only to its log.
     let (stdout, stderr) = if detached {
-        let null = || link.null.try_clone().map_err(|e| format!("/dev/null: {e}"));
+        let null = || workload::null().map_err(|e| format!("the null device: {e}"));
         (null()?, null()?)
     } else {
         (File::from(next()?), File::from(next()?))
@@ -782,7 +778,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             _ => {}
         }
     }
-    if client && let Ok(null) = File::open(NULL) {
+    if client && let Ok(null) = workload::null() {
         let_go(&null);
     }
     // The daemon gone with the run going: its stop, its signal and then SIGKILL once its
@@ -1406,7 +1402,9 @@ pub fn finish(
         said_status = exits;
         status = *kept;
     }
-    let_go(&link.null);
+    if let Ok(null) = workload::null() {
+        let_go(&null);
+    }
     let mut done = vec![status];
     if let Some((said, _)) = &failed {
         done.extend_from_slice(said.as_bytes());
@@ -1653,23 +1651,32 @@ fn close_input(old: windows_sys::Win32::Foundation::HANDLE) {
 mod tests {
     use super::*;
 
+    /// The null device's path.
+    const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
     /// A request that brings fewer descriptors than it needs, or more, is refused, in words
     /// that say which, before the VM takes it.
     #[test]
     fn a_request_with_the_wrong_descriptors_is_refused() {
         static TO_GUEST: ToGuest = ToGuest::new(workload::Signals::new());
+        workload::hold_null(File::open(NULL).unwrap());
+        // A file, as a log and its index are: CI's Windows Server reads no metadata of NUL
+        // (ERROR_INVALID_FUNCTION), which a log's is read first.
+        let dir = shards_testdir::TempDir::new("warm-fds").unwrap();
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.path().join("f"))
+            .unwrap();
         // A detached run's: its stdin, its log and its index.
         for (given, said) in [
             (1, "a request brings too few descriptors: 1"),
             (4, "a request brings too many descriptors: 4"),
         ] {
             let (ours, daemon) = UnixStream::pair().unwrap();
-            let link = Link {
-                daemon: ours,
-                null: File::open(NULL).unwrap(),
-            };
-            let null = File::open(NULL).unwrap();
-            let fds = vec![null.as_fd(); given];
+            let link = Link::new(ours);
+            let fds = vec![file.as_fd(); given];
             let refused = std::thread::scope(|s| {
                 let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(()), false));
                 assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);

@@ -6558,7 +6558,14 @@ forked.
   the sender duplicates each into its receiver's process (DuplicateHandle), and their
   values follow the message. A child's end takes them only from its spawner, its spawner
   none from it. So the daemon hands a run's VM the client's connection and the slot's
-  streams as it does on Unix.
+  streams as it does on Unix. A VM's AppContainer opens no file by name, NUL included,
+  which Windows Server refused it where Windows 11 let it open it (M351): the daemon opens
+  NUL and gives it beside the VM's link, and the VM holds it for every client's stdio it
+  lets go of, an `exec -d`'s among them.
+- **A VM not ready says why** (M351). Its error closes its link as it returns, before the
+  VM has written it, so the daemon gives a VM whose link closed a second to end of itself
+  before it kills it, and says the status it ended with: its word of why reaches the
+  daemon's log whole.
 - **Lines and streams.** A slot's line holds 64 KiB, what a Linux FIFO holds (pipe(7)), so
   that what a client leaves untaken is what it leaves on Linux (D185, "What it said last");
   a stream's pipe holds 1 MiB, which moved more than 64 KiB in M340.

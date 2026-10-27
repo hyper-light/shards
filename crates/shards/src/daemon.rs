@@ -7213,6 +7213,9 @@ impl<D: Disk> Daemon<D> {
         let ((asks_from, asks_to), (answers_from, answers_to)) =
             pipes.map_err(|e| format!("a VM's grants: {e}"))?;
         let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
+        // The null device, for the clients' stdio it lets go of: its AppContainer opens no
+        // file by name, NUL among them on Windows Server (PM M351).
+        let null = File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let mut given = vec![
             shards_ipc::Given {
                 name: "ask",
@@ -7225,6 +7228,10 @@ impl<D: Disk> Daemon<D> {
             shards_ipc::Given {
                 name: VM_LINK,
                 handle: link.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "null",
+                handle: null.as_handle(),
             },
         ];
         let mut sockets = Vec::new();
@@ -7289,7 +7296,7 @@ impl<D: Disk> Daemon<D> {
         child.hold(container);
         // What the daemon sends on its link goes to the VM: handles duplicated into it.
         ours.gives_to(gives);
-        drop((asks_to, answers_from, link));
+        drop((asks_to, answers_from, link, null));
         let grants = crate::grant::Link {
             from: File::from(OwnedHandle::from(asks_from)),
             to: File::from(OwnedHandle::from(answers_to)),
@@ -7367,6 +7374,9 @@ impl<D: Disk> Daemon<D> {
         // no fault of its template's (PM M166).
         let unstarted = matches!(&granted, Err(e) if !e.started);
         let ready = granted.map_err(|e| e.why).and_then(|()| ready(&socket, pid));
+        // Said with what its process says, which may take a second: before the daemon's
+        // state is held.
+        let ready = ready.map_err(|e| with_its_process(&child, e));
         match &dest {
             For::Pool(key) => {
                 let mut state = lock(&self.state);
@@ -7397,7 +7407,7 @@ impl<D: Disk> Daemon<D> {
                         self.rebalance(threads, &state, key);
                     }
                     Err(e) => {
-                        log(with_its_process(&child, e));
+                        log(e);
                         if !unstarted {
                             pool.failures += 1;
                         }
@@ -7426,7 +7436,6 @@ impl<D: Disk> Daemon<D> {
                     }));
                 }
                 Err(e) => {
-                    let e = with_its_process(&child, e);
                     let _ = child.kill(shards_ipc::signal::SIGKILL);
                     let _ = tx.send(Err(e));
                 }
@@ -7440,12 +7449,23 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
-/// `why` a VM was not ready, said with what its process says as it is ended: the status it
-/// ended with, or that it ran still, its link to the daemon gone.
+/// `why` a VM was not ready, said with what its process says: the status it ended with,
+/// waited for up to a second, since its link closes as its error returns, before it has
+/// said why or ended (PM M351); or that it still ran. Its process is not reaped: its pid
+/// stays its own until its follower reaps it.
 fn with_its_process(child: &shards_ipc::Child, why: String) -> String {
-    match child.try_wait() {
-        Some(status) => format!("{why}; its process ended with status {status} ({status:#x})"),
-        None => format!("{why}; its process ran still, its link to the daemon gone"),
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if child.has_ended() {
+            return match child.ended_status() {
+                Ok(status) => format!("{why}; its process ended with status {status} ({status:#x})"),
+                Err(e) => format!("{why}; its process ended, its status unread: {e}"),
+            };
+        }
+        if Instant::now() >= deadline {
+            return format!("{why}; its process still ran a second after");
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
