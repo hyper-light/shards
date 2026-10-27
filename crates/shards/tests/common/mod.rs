@@ -139,10 +139,10 @@ pub mod pinned;
 #[cfg(unix)]
 pub mod terminal;
 
-/// The file `name` of the snapshot generation `dir` points at (vmm snapshot/mod.rs).
+/// The file `name` of the snapshot generation `dir` points at, as the store reads its
+/// pointer (vmm snapshot/mod.rs: its newest version on Windows, platform `write_in`).
 pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
-    let current = std::fs::read_to_string(dir.join("current")).unwrap();
-    dir.join(current.trim_end()).join(name)
+    shards_vmm::snapshot::generation(dir).unwrap().join(name)
 }
 
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
