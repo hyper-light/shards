@@ -141,6 +141,62 @@ fn command_line(program: &Path, args: &[&OsStr]) -> Vec<u16> {
 }
 
 /// A Job that ends its processes as its last handle closes, and lets them start none.
+/// PROBE (scratch): a completion port associated with `job`, whose messages a thread
+/// prints to stderr with each process's image, for a minute.
+fn probe_job_messages(job: HANDLE) {
+    use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
+    use windows_sys::Win32::System::JobObjects::{
+        JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JobObjectAssociateCompletionPortInformation,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+    if port.is_null() {
+        eprintln!("JOBMSG no port: {}", last());
+        return;
+    }
+    let assoc = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+        CompletionKey: std::ptr::null_mut(),
+        CompletionPort: port,
+    };
+    if unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectAssociateCompletionPortInformation,
+            (&raw const assoc).cast(),
+            size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
+        )
+    } == 0
+    {
+        eprintln!("JOBMSG no association: {}", last());
+        return;
+    }
+    let port = port as usize;
+    let _ = std::thread::Builder::new().name("job messages".into()).spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::time::Instant::now() < deadline {
+            let (mut msg, mut key, mut ov) = (0u32, 0usize, std::ptr::null_mut());
+            let ok = unsafe { GetQueuedCompletionStatus(port as HANDLE, &mut msg, &mut key, &mut ov, 1000) };
+            if ok == 0 && ov.is_null() {
+                continue;
+            }
+            let pid = ov as usize as u32;
+            let mut image = String::from("?");
+            let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if !h.is_null() {
+                let mut buf = [0u16; 512];
+                let mut len = buf.len() as u32;
+                if unsafe { QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) } != 0 {
+                    image = String::from_utf16_lossy(&buf[..len as usize]);
+                }
+                unsafe { windows_sys::Win32::Foundation::CloseHandle(h) };
+            }
+            eprintln!("JOBMSG msg {msg} pid {pid} image {image}");
+        }
+    });
+}
+
 #[derive(Debug)]
 struct Job(OwnedHandle);
 
@@ -156,7 +212,12 @@ impl Job {
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags =
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-        limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        // PROBE (scratch): the limit from the spawner's environment, and every message the
+        // job's completion port gives, said on the spawner's stderr.
+        limits.BasicLimitInformation.ActiveProcessLimit = std::env::var("SHARDS_PROBE_JOB_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
         // SAFETY: limits of their own size, on our job.
         if unsafe {
             SetInformationJobObject(
@@ -169,6 +230,7 @@ impl Job {
         {
             return Err(last());
         }
+        probe_job_messages(job.raw());
         Ok(job)
     }
 

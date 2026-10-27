@@ -218,6 +218,8 @@ fn brings_up_every_vcpu() {
             ],
             TIMEOUT,
         );
+        // PROBE (scratch): every run's output, its spawner's job messages among it.
+        eprintln!("PROBE {n} vCPUs: {}", r.stderr.lines().filter(|l| l.contains("JOBMSG")).collect::<Vec<_>>().join(" | "));
         assert!(
             r.stdout.contains(&format!("smp: Brought up 1 node, {n} CPUs")),
             "{n} vCPUs: {r}"
