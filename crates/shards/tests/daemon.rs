@@ -3192,8 +3192,7 @@ fn a_killed_daemons_runs_end_with_it() {
     let home = home("daemon-killed-runs", &image);
     let env = [("SHARDS_HOME", home.as_os_str())];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    // The restored run where this host takes snapshots: on Windows with the parity plan's
-    // step 3.
+    // The restored run wherever this host's daemon keeps templates ([`common::pools`]).
     let snapshots = common::pools();
     let names: &[&str] = if snapshots { &["plain", "back"] } else { &["plain"] };
     for name in names {
