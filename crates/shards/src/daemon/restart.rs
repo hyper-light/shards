@@ -128,8 +128,8 @@ impl<D: Disk> Daemon<D> {
             std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open("/dev/null")
-                .map_err(|e| format!("/dev/null: {e}"))
+                .open(crate::os::NULL)
+                .map_err(|e| format!("{}: {e}", crate::os::NULL))
         };
         let (stdin, stdout, stderr) = (null()?, null()?, null()?);
         let run = Run {

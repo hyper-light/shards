@@ -179,8 +179,14 @@ impl<D: Disk> Daemon<D> {
                 instance.exit_code = Some(code.unwrap_or(-1));
             }
         };
-        let pipes =
-            (|| -> io::Result<_> { Ok((io::pipe()?, io::pipe()?, io::pipe()?, File::open("/dev/null")?)) })();
+        let pipes = (|| -> io::Result<_> {
+            Ok((
+                io::pipe()?,
+                io::pipe()?,
+                io::pipe()?,
+                File::open(crate::os::NULL)?,
+            ))
+        })();
         let Ok(((out, out_by), (err, err_by), (stdin, mut stdin_by), null)) = pipes else {
             ended(None);
             return Done::Answer(Answer::error(500, "an exec's pipes"));

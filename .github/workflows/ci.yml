@@ -107,10 +107,15 @@ jobs:
   # above the slowest measured, 30.2 on x86_64 Linux, and the job 63, with a third above
   # its other steps' slowest, 15.8 on Windows (M245). x86_64 Windows is tested on Windows
   # Server 2022 as well as 2025, each with its hypervisor platform (WHP partitions run on
-  # both: PM's windows-2022 and windows-2025 entries), as a daemon's users run both.
+  # both: PM's windows-2022 and windows-2025 entries), as a daemon's users run both. Its
+  # tests' step ran out of its 41 minutes once its daemon's microVMs ran (D195): 27 of them
+  # went to building the tests, and the step had taken 36 and 40.5 with every microVM
+  # ending at once. Until its runs say how long its slowest take, as M245's said the
+  # others', its limits are far out, ending a hang and pacing nothing: 120 minutes for the
+  # tests' step, 150 for the job.
   native:
     name: ${{ matrix.name || matrix.target }}
-    timeout-minutes: 63
+    timeout-minutes: ${{ matrix.job_minutes || 63 }}
     strategy:
       fail-fast: false
       matrix:
@@ -119,8 +124,8 @@ jobs:
           - { target: x86_64-apple-darwin, runner: macos-15, test: false }
           - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true }
           - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
-          - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true }
-          - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, name: x86_64-pc-windows-msvc (windows-2022) }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 120, job_minutes: 150 }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, tests_minutes: 120, job_minutes: 150, name: x86_64-pc-windows-msvc (windows-2022) }
           - { target: aarch64-pc-windows-msvc, runner: windows-2025, test: false }
     runs-on: ${{ matrix.runner }}
     steps:
@@ -222,7 +227,7 @@ jobs:
       # runs, whatever fails before it: a failing one hides none after it.
       - name: Tests
         if: matrix.test
-        timeout-minutes: 41
+        timeout-minutes: ${{ matrix.tests_minutes || 41 }}
         shell: bash
         run: |
           case "${{ matrix.target }}" in
