@@ -2774,10 +2774,21 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       the bytes that fitted. A read past the server's going is the end, as the socket's is.
     - **What the device builds on.** The FUSE wire it needs is `fs/proto.rs`, which every
       host builds. `server.rs`, the share process and its budgets stay Unix's.
-    - **No DAX window yet.** A machine that asks a share for one is refused. `window_none.rs`
-      keeps the window's API around a type none can make, until the window is built on
-      WHP's placeholders (PM M341). A server hands that window its sections by
-      DuplicateHandle (PM M343).
+    - **Its DAX window** (`fs/window_whp.rs`, D189). Each range the guest maps is a view of a
+      section its server duplicated into the VM process (PM M343), placed into the window's
+      placeholder for that range (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER), so a mapping of
+      several ranges is a view a range. A range is mapped at stage 2 as it is first placed
+      and left standing, since WHP's stage 2 follows the host's view (PM M341): a replace is
+      a free and a place, 82.1 µs at p50 on windows-2025 against 122.1 remapped. A range
+      never placed is not mapped, so a big window costs its boot no maps. Zeros stand in
+      where a restore's server cannot answer. The section reaches past every range asked of
+      it and is committed before the answer, so there is no file end to follow, and a fault
+      in a mapped range is only a vCPU racing a replace: WHP's memory-access exit asks the
+      window first and runs the access again once. A range mapped to be written is all
+      held (patch 0009). The ask is the Unix one plus the VM's pid (le32) and its stream
+      handle's value (le64), 38 bytes. The server duplicates the section only into a process
+      holding the share's own stream, and answers with its value. The device adopts a value
+      only if NtQueryObject's type is "Section", and leaves any other alone.
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that

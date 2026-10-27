@@ -368,7 +368,7 @@ impl mem::Mapper for crate::hv::Stage2 {
     }
 }
 
-#[cfg(all(hv, unix))]
+#[cfg(hv)]
 impl crate::devices::virtio::fs::window::Stage2 for crate::hv::Stage2 {
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
         // SAFETY: forwarded caller contract.
@@ -616,9 +616,10 @@ fn map_window_heads(vm: &crate::hv::Vm, heads: &head::WindowHeads) -> Result<(),
 
 /// A share's DAX window (D189) at `at`: its host side reserved, and on KVM one memslot over
 /// it, as memory to plug's (`add_hotplug`), which each range its guest maps is placed in;
-/// on other hypervisors each range mapped at stage 2 as it is placed. Its held record is
-/// mapped right after it, writable.
-#[cfg(all(hv, unix))]
+/// on HVF each range mapped at stage 2 as it is placed; on WHP each range mapped at stage 2
+/// as it is first placed and left standing, as stage 2 follows the host's view there (PM
+/// M341). Its held record is mapped right after it, writable.
+#[cfg(hv)]
 fn dax_window(
     vm: Option<&crate::hv::Vm>,
     at: &WindowAt,
@@ -752,18 +753,10 @@ fn virtio_devices(
             .get(i)
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
-        #[cfg(unix)]
         let window = windows
             .get(i)
             .map(|w| dax_window(vm, w).map(|window| (window, w.head, w.held)))
             .transpose()?;
-        // No DAX window is built on Windows yet (D189): a machine that asks a share for one
-        // is refused, where elsewhere it would be given one.
-        #[cfg(not(unix))]
-        let window = match windows.get(i) {
-            Some(_) => return Err("a DAX window is not built on Windows yet (D189)".into()),
-            None => None,
-        };
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
                 .with_limit(hosts.io)
