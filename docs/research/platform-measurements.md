@@ -15191,3 +15191,32 @@ revision before comparing a changed API/implementation.
   directly (LOOP_SET_DIRECT_IO, Linux 4.4): a build's cache layer's, a joiner's root. A
   builder's answer that comes past its pass's patience is heard as it comes, once a
   pressure window, and said at once, its builder then told its room as its pass would have.
+
+### M352. A container's `die` before its relayed output: Compose's attached `up` dropped a line (D170)
+
+- **Question.** `a_compose_service_is_built_and_run_attached` failed once on gpu's x86_64
+  Linux CI (40577156435, 234bd57c): Compose's attached `up` printed `app-1 exited with code
+  0` and not the line the built service wrote, `slurp /tmp/built: yes`, though the run's
+  status was right. Where did the line go?
+- **Method.** compose.rs's whole binary, its three tests side by side, ten times on each of
+  eight ubuntu-24.04 runners (`budget-e2e.yml` on the scratch branch `ci-compose-probe`,
+  not for dev, CI 40587510357), the daemon's Engine API attach, start, relayed output and
+  `die` each logged with microseconds since the epoch; Compose v2.38.2, the runners'. On
+  this M5 Max, the test 40 times, Compose v5.1.0. 2026-10-27.
+- **Found.**
+  - Here, 40 of 40 passed. On CI, 1 of 80 failed (runner d, run 7), as on gpu: app-1's
+    attach waited for its start, its start took it, its `die` was logged at
+    1793137384862654 µs, the VM's EXIT reached the relay at …863170, and the relay read
+    the run's 22 bytes from its pipe and wrote them to Compose's attach at …888219, 25.6 ms
+    after the `die`.
+  - Compose v2.38.2's printer, with `--exit-code-from` (which stops every service at the
+    first exit, cascade stop), sets `aborting` as it hears the first exit and drops every
+    log line it hears after (pkg/compose/printer.go, `Run`: `if !aborting`); v5.1.0's
+    prints each line as it comes, which is why no run here failed.
+  - dockerd stops a container and logs `die` only once `StreamConfig.Wait` has returned,
+    or 2 s have passed (moby v28.5.1 daemon/monitor.go:74-75), and an exec's `exec_die`
+    likewise (:210-211): its attaches have its output first.
+- **Consequence (D170).** A run's end waits for the relays of its output to its Engine
+  API attaches under way, up to 2 s from its end, and an exec's `exec_die` likewise
+  (daemon/engine.rs `Relaying`, `RELAY_WAIT`); `a_runs_end_waits_for_the_relays_of_its_output`
+  holds it, mutation-checked.

@@ -80,6 +80,120 @@ pub(super) struct Engine {
     arrived: Mutex<Vec<(String, UnixStream)>>,
     /// How many connections each microVM's own engine holds open (D181), by its run's ID.
     scoped: Mutex<HashMap<String, usize>>,
+    /// The relays of runs' output to their attaches under way, by the run's container ID,
+    /// and what waits for them ([`Relaying`]).
+    pub(super) relays: Mutex<HashMap<String, Relays>>,
+}
+
+/// How long the end of a run whose output goes to attaches through the daemon waits for
+/// it to reach them, at most, from the run's end on: dockerd's (moby v28.5.1
+/// daemon/monitor.go, handleContainerExit: `StreamConfig.Wait` for 2 s before the container
+/// is stopped and `die` logged). An attach that reads none of it by then has what it has.
+const RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The relays of one run's output to its attaches under way, and its end, where it came
+/// meanwhile.
+#[derive(Default)]
+pub(super) struct Relays {
+    count: usize,
+    pub(super) ended: Option<super::Ended>,
+    /// An exec's end, where the relay is of an exec's output: its container's ID and its
+    /// status, for its `exec_die`.
+    exec_died: Option<(String, u8)>,
+}
+
+/// A relay of run `id`'s output to its Engine API attaches, under way until it drops: the
+/// run's end, if it comes meanwhile, is told once every relay of it has ended
+/// (`end_after_relays`), so that its attaches have what it wrote before anyone hears it
+/// ended, as dockerd has it ([`RELAY_WAIT`]). Compose's `up`, which stops at the first exit
+/// it hears, drops what it reads after it (compose v2.38.2 pkg/compose/printer.go,
+/// `aborting`): a built service's one line, written as its run ended, went so on CI
+/// (40577156435).
+pub(super) struct Relaying<'d, D: Disk> {
+    daemon: &'d Daemon<D>,
+    id: String,
+}
+
+impl<D: Disk> Drop for Relaying<'_, D> {
+    fn drop(&mut self) {
+        let ended = {
+            let mut relays = lock(&self.daemon.engine.relays);
+            let Some(r) = relays.get_mut(&self.id) else {
+                return;
+            };
+            r.count = r.count.saturating_sub(1);
+            if r.count > 0 {
+                return;
+            }
+            relays.remove(&self.id)
+        };
+        let Some(Relays { ended, exec_died, .. }) = ended else {
+            return;
+        };
+        if let Some(ended) = ended {
+            self.daemon.tell_end(&self.id, ended);
+        }
+        if let Some((container, status)) = exec_died {
+            self.daemon.exec_died(&container, &self.id, status);
+        }
+    }
+}
+
+/// Waits until every copy of a relay has ended, each holding a sender of `copies`, or
+/// [`RELAY_WAIT`] has passed: once its run has ended, what the relay waits for before it
+/// drops its [`Relaying`].
+fn copied(copies: &std::sync::mpsc::Receiver<()>) {
+    let _ = copies.recv_timeout(RELAY_WAIT);
+}
+
+impl<D: Disk> Daemon<D> {
+    /// A relay of run `id`'s output to its attaches, under way until the value drops.
+    pub(super) fn relaying(&self, id: &str) -> Relaying<'_, D> {
+        lock(&self.engine.relays).entry(id.to_string()).or_default().count += 1;
+        Relaying {
+            daemon: self,
+            id: id.to_string(),
+        }
+    }
+
+    /// Tells run `id`'s end now, or once the relays of its output under way have ended.
+    pub(in crate::daemon) fn end_after_relays(&self, id: &str, ended: super::Ended) {
+        {
+            let mut relays = lock(&self.engine.relays);
+            if let Some(r) = relays.get_mut(id)
+                && r.count > 0
+            {
+                r.ended = Some(ended);
+                return;
+            }
+        }
+        self.tell_end(id, ended);
+    }
+
+    /// Says exec `exec_id` of container `id` ended with `status` (`exec_die`) now, or once
+    /// the relays of its output under way have ended.
+    pub(in crate::daemon) fn exec_died_after_relays(&self, id: &str, exec_id: &str, status: u8) {
+        {
+            let mut relays = lock(&self.engine.relays);
+            if let Some(r) = relays.get_mut(exec_id)
+                && r.count > 0
+            {
+                r.exec_died = Some((id.to_string(), status));
+                return;
+            }
+        }
+        self.exec_died(id, exec_id, status);
+    }
+
+    /// `exec_die` of exec `exec_id` of container `id`, ended with `status` (moby
+    /// daemon/monitor.go, ProcessEvent's exit of an exec).
+    fn exec_died(&self, id: &str, exec_id: &str, status: u8) {
+        self.container_event(
+            id,
+            "exec_die",
+            &[("execID", exec_id.to_string()), ("exitCode", status.to_string())],
+        );
+    }
 }
 
 impl Engine {

@@ -389,6 +389,10 @@ pub struct Exec {
     /// `-t` from a client that says what its terminal is: its terminal types, as a run's
     /// ([`Run::terms`]).
     pub terms: Vec<String>,
+    /// Its ID, where it has one already: the Engine API's, made with the exec and said in
+    /// its `exec_create`, as dockerd has it (moby daemon/exec.go); empty for `shards
+    /// exec`'s, which the daemon makes as it starts it.
+    pub id: String,
 }
 
 impl Exec {
@@ -413,6 +417,7 @@ impl Exec {
         put_identity(&mut w, &self.daemon);
         w.push(u8::from(self.privileged));
         put_list(&mut w, &self.terms);
+        put_str(&mut w, &self.id);
         w
     }
 
@@ -437,6 +442,7 @@ impl Exec {
             daemon: r.identity()?,
             privileged: r.flag()?,
             terms: r.list()?,
+            id: r.str()?,
         };
         r.0.is_empty().then_some(exec)
     }
@@ -2071,6 +2077,7 @@ mod tests {
             stdin_terminal: true,
             privileged: true,
             terms: vec!["xterm-kitty".into()],
+            id: "1f".repeat(32),
             daemon: Identity {
                 dev: 1,
                 ino: 2,
