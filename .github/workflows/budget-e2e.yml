@@ -1,4 +1,5 @@
 name: budget E2E
+# SCRATCH (ci-compose-probe, not for dev): compose.rs's whole binary ten times on each runner, the daemon's attach, start, output and die stamped (PROBE lines in its log, shown as a test fails).
 
 # An E2E test of crates/shards/tests, by default the FUSE budget E2E (tests/daemon.rs
 # a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one, D188),
@@ -60,15 +61,16 @@ jobs:
       - name: Host
         run: |
           nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          docker compose version || true
           uname -r
       - name: E2E
         env:
           SHARDS_REQUIRE_VMS: "1"
           SHARDS_REQUIRE_USER_MANAGER: "1"
           # A push runs the default, as a dispatch with nothing asked does.
-          TEST: ${{ github.event.inputs.test || 'daemon' }}
-          NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.name || 'a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one' }}
-          TIMES: ${{ github.event.inputs.times || '1' }}
+          TEST: ${{ github.event.inputs.test || 'compose' }}
+          NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.name || 'all' }}
+          TIMES: ${{ github.event.inputs.times || '10' }}
         run: |
           if [ "$NAME" != all ]; then args=("$NAME" -- --exact --nocapture); else args=(-- --nocapture); fi
           # bin:PACKAGE:BINARY, a binary's own tests (the VM process's: bin:shards-vm-process:shards-vm);

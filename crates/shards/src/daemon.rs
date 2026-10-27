@@ -5274,6 +5274,13 @@ impl<D: Disk> Daemon<D> {
             // Logged before anyone waiting hears of the end, as dockerd logs it in the
             // exit's handling (monitor.go), ahead of `stop`'s own event.
             if started {
+                // PROBE (scratch): when its die is said.
+                log(format!(
+                    "PROBE {} die {id} {status}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_micros())
+                ));
                 let seconds = ran.map_or(0, |ns| ns / 1_000_000_000);
                 self.event_for(
                     id,

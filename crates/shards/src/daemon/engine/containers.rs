@@ -39,6 +39,13 @@ pub(in crate::daemon) struct Waiting {
     stdin: Option<mpsc::Sender<PipeWriter>>,
 }
 
+/// PROBE (scratch): microseconds since the epoch, for the probe's lines.
+fn stamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_micros())
+}
+
 /// How long an attach waiting for its container's start waits before it looks whether
 /// the container is still there.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -63,18 +70,29 @@ impl Outputs {
         };
         let mut to = self.to.lock().unwrap_or_else(PoisonError::into_inner);
         to.retain(|(conn, asked)| {
-            !asked.get(usize::from(stream)).copied().unwrap_or(false) || (&mut &*conn).write_all(out).is_ok()
+            let kept = !asked.get(usize::from(stream)).copied().unwrap_or(false) || (&mut &*conn).write_all(out).is_ok();
+            if !kept {
+                log(format!("PROBE {} output: an attach dropped writing {} bytes of stream {stream}", stamp(), out.len()));
+            }
+            kept
         });
     }
 
     /// Copies `from` to each connection as `stream`, until it ends; or, unless `drain`,
     /// until no connection asks for it, which closes it, and its writer stops.
-    pub(super) fn copy(&self, stream: u8, mut from: PipeReader, drain: bool) {
+    pub(super) fn copy(&self, stream: u8, mut from: PipeReader, drain: bool) -> u64 {
         let mut buf = vec![0u8; 32 << 10];
+        let mut copied = 0u64;
         loop {
             match from.read(&mut buf) {
-                Ok(0) | Err(_) => return,
-                Ok(n) => self.write(stream, buf.get(..n).unwrap_or_default()),
+                Ok(0) | Err(_) => return copied,
+                Ok(n) => {
+                    if copied == 0 {
+                        log(format!("PROBE {} output: stream {stream}'s first {n} bytes", stamp()));
+                    }
+                    copied += n as u64;
+                    self.write(stream, buf.get(..n).unwrap_or_default())
+                }
             }
             let asked = |(_, streams): &(UnixStream, [bool; 3])| {
                 streams.get(usize::from(stream)).copied().unwrap_or(false)
@@ -87,7 +105,7 @@ impl Outputs {
                     .iter()
                     .any(asked)
             {
-                return;
+                return copied;
             }
         }
     }
@@ -407,6 +425,7 @@ impl<D: Disk> Daemon<D> {
             return Answer::error(403, "custom checkpointdir is not supported");
         }
         let waiting = lock(&self.engine.waiting).remove(&id).unwrap_or_default();
+        log(format!("PROBE {} start {id}: {} attaches waiting", stamp(), waiting.len()));
         let result = if waiting.is_empty() {
             let mut run = Run {
                 again: Some(id),
@@ -559,19 +578,28 @@ impl<D: Disk> Daemon<D> {
                     let outputs = &outputs;
                     // All its output is read, though every attach goes: its command writes
                     // on, and its log has it.
-                    let _ = std::thread::Builder::new()
+                    let o = std::thread::Builder::new()
                         .name("engine-stdout".into())
                         .spawn_scoped(s, move || outputs.copy(1, out, true));
-                    let _ = std::thread::Builder::new()
+                    let e = std::thread::Builder::new()
                         .name("engine-stderr".into())
                         .spawn_scoped(s, move || outputs.copy(2, err, true));
                     // Its end, which the VM says once the command has ended.
                     while let Ok(Some(m)) = shards_ipc::recv(&conn) {
                         if m.kind == kind::EXIT {
+                            log(format!("PROBE {} output {ended}: EXIT", stamp()));
                             break;
                         }
                     }
+                    let o = o.ok().and_then(|h| h.join().ok());
+                    let e = e.ok().and_then(|h| h.join().ok());
+                    log(format!("PROBE {} output {ended}: copied {o:?} and {e:?} bytes", stamp()));
                 });
+                log(format!(
+                    "PROBE {} output {ended}: ending {} attaches",
+                    stamp(),
+                    outputs.to.lock().unwrap_or_else(PoisonError::into_inner).len()
+                ));
                 outputs.end();
                 lock(&self.engine.terminals).remove(&ended);
                 lock(&self.engine.stdins).remove(&ended);
@@ -782,6 +810,7 @@ impl<D: Disk> Daemon<D> {
         };
         let tty = made.tty.is_some();
         let running_attach = |conn: &UnixStream| {
+            log(format!("PROBE {} attach {id}: running", stamp()));
             if http::hijack(conn, call.head, &call.version, !tty).is_ok() {
                 self.attach_running(threads, conn, &id, streams, &made, &keys);
             }
@@ -816,6 +845,7 @@ impl<D: Disk> Daemon<D> {
                 to,
                 stdin: streams[0].then_some(stdin_to),
             });
+            log(format!("PROBE {} attach {id}: waiting for its start, {streams:?}", stamp()));
         }
         let stdin = loop {
             match stdin_at.recv_timeout(LOOK_AGAIN) {
@@ -831,6 +861,7 @@ impl<D: Disk> Daemon<D> {
                     // Started by a client that takes no attach (shards' CLI): attached as
                     // a running one is, where no start took it meanwhile.
                     if self.running(&id) && self.unwait(&id, number) {
+                        log(format!("PROBE {} attach {id}: started by another, attached running", stamp()));
                         self.attach_running(threads, conn, &id, streams, &made, &keys);
                         return Done::Close;
                     }
