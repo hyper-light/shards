@@ -6202,6 +6202,16 @@ impl<D: Disk> Daemon<D> {
         let image =
             File::open(&prepared.rootfs).map_err(|e| format!("{}: {e}", prepared.rootfs.display()))?;
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a joiner's connection: {e}"))?;
+        // Its other end the provider's VM's once handed: what the daemon sends on it, the
+        // joiner's run among it, takes its handles there, duplicated into the VM's process
+        // as its link's are. A pair's own queue kept them in this one on Windows, and the
+        // VM waited for them past the daemon's patience (TAKE_TIMEOUT).
+        #[cfg(windows)]
+        ours.gives_to(
+            vm.giver()
+                .map_err(|e| format!("a joiner's connection: {e}"))?
+                .into_handle(),
+        );
         // Held until the VM says it has it (`EXEC_TAKEN`), as an exec's client is (M24).
         let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
         let held = theirs

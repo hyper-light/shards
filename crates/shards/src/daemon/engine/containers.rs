@@ -255,7 +255,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         run: &Run,
     ) -> Result<RunAnswer, String> {
-        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        let null = File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let (said, said_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let conn = self.put_run(threads, run, [null.as_fd(), null.as_fd(), said_by.as_fd()])?;
         drop(said_by);
@@ -505,7 +505,7 @@ impl<D: Disk> Daemon<D> {
         let (out, out_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let (err, err_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let (stdin, stdin_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
-        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        let null = File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let mut run = Run {
             again: Some(id.to_string()),
             resume,

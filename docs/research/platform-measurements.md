@@ -15434,3 +15434,32 @@ revision before comparing a changed API/implementation.
   of itself before the daemon kills it, so that what it says of why reaches the daemon's
   log. The tests give a log a file, as the daemon does, and compare a DACL's entry with its
   user by SID (EqualSid), not by its SDDL text.
+
+### M354. CI's Windows runners with the daemon's microVMs running: a joiner's run never taken, a restart's null device, and a tests' step past its limit (D195, D119)
+
+- **Question.** With every VM the daemon starts made ready (M351), what fails on CI's
+  Windows runners, and how long do their tests take?
+- **Method.** CI run 40591646770 (branch `win-daemon-wip`, 8aaa5779), 2026-10-27: the
+  windows-2025 and windows-2022 runners' logs, and GitHub's record of each step's start and
+  end.
+- **Found.**
+  - Both runners' tests' steps ran out of their 41 minutes in `tests/containers.rs`, before
+    `tests/daemon.rs`. Building the tests took 27.3 minutes of windows-2025's (22:10:23 to
+    its first test binary at 22:37:44) and 18.9 of windows-2022's; `containers.rs` began at
+    22:42:02 and 22:31:41. In run 40580565374, where every microVM ended at once (M351),
+    the step had taken 36.3 and 40.5 minutes.
+  - On each runner 13 tests' daemons said `warm VM N may have taken a run: operation would
+    block; ending it`: every one a test whose run joins another's microVM
+    (`--network container:`, `--ipc container:`, D119), its VM silent for the daemon's 10 s
+    (TAKE_TIMEOUT). A joiner's connection is a pair the daemon makes, one end given the
+    provider's VM; on Windows the daemon's end of a pair carried a message's handles in the
+    pair's own queue, in the daemon, so the joiner's run reached the VM without them and
+    the VM waited for them.
+  - A container restarted by its policy was not: `restarting it: /dev/null: The system
+    cannot find the path specified. (os error 3)`, the daemon's own start of it opening
+    `/dev/null` by name (daemon/restart.rs).
+- **Consequence (D195).** The daemon's end of a joiner's connection gives its handles to
+  the provider's VM's process (`Stream::gives_to`), as a VM's link does; a restart opens the
+  host's null device (`os::NULL`), as the Engine API's three openers of one do too. The
+  Windows runners' limits are their own, far out (120 minutes for the tests' step, 150 for
+  the job), until their runs say how long the slowest take, as M245's said the others'.
