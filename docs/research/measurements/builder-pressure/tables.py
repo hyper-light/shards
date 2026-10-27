@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """measure.py's output as the PM entry's tables, each run alone or with --pool every run given
 as one (runs of one host): for each build and arm (free, held), over the rounds after the
-first (round 1's free arm fills the builds' caches): its time, its scope's peak and budget
+first (round 1's free arm fills the builds' caches): its time, its scope's anonymous peak and budget
 (Linux), and its builder's give-backs, each answer's time from its word and what it freed
 of its files and asked to unplug, and each build's sums; each as n, p50, p90, p99 and max.
 Then the rule fixed before any number: a held build is slower than its free arm beyond the
@@ -60,9 +60,9 @@ def report(title, into):
             times[arm] = s
             print(f"-- {name} {arm}: rounds 2+ {len(rounds)}, failed {len(failed)}")
             print(f"   build time        {stats(s, ' s')}")
-            peaks = [int(builds[(name, arm, r)].get("scope_peak", 0)) for r in rounds]
+            peaks = [int(builds[(name, arm, r)].get("scope_anon_peak", 0)) for r in rounds]
             if any(peaks):
-                print(f"   scope peak        {stats(peaks, ' MiB', MIB)}")
+                print(f"   scope anon peak   {stats(peaks, ' MiB', MIB)}")
             budgets = [int(builds[(name, arm, r)].get("budget", 0)) for r in rounds]
             if any(budgets):
                 print(f"   budget            {stats(budgets, ' MiB', MIB)}")

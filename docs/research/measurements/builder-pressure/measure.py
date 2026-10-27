@@ -8,11 +8,14 @@ builder's own samples on its console) and give.patch (each give-back's answer, a
 after its word it came, on the build's stderr).
 
 - Linux: each build in a scope of the user's manager (systemd-run --user --scope) that swaps
-  nothing (MemorySwapMax=0). Held, its MemoryHigh is the free arm's peak in the round
-  before it (the scope's memory.peak) less what that arm's builder held at most that it
-  could give back (its inactive_file and what lay plugged past twice what it used, at once):
-  so the build fits its budget where its builder gives that back, and is held to it,
-  stalling as its host reclaims what it cannot swap (PSI), which the build's watcher hears.
+  nothing (MemorySwapMax=0). Held, its MemoryHigh is the most anonymous memory the free arm's
+  scope held (memory.stat's anon, each second), in the round before it, less what that arm's
+  builder held at most that it could give back (its inactive_file and what lay plugged past
+  twice what it used, at once): so the build fits its budget where its builder gives that
+  back, and is held to it, stalling as its host reclaims what it cannot swap (PSI), which the
+  build's watcher hears. Not the scope's whole peak, memory.peak: that counts the host's page
+  cache of the build's files, which the host drops at no stall, and a budget of it less what
+  the builder could give back asked the builder for nothing (run 40426695726, 0 asks).
   A round's held arm comes after its free arm where the round is odd, before it where even,
   with the round before's peak: round 1's free arm alone fills the builds' caches.
 - macOS, where no unprivileged process may raise the system's pressure: held, the build is
@@ -160,7 +163,8 @@ def scope_of(pid):
 
 def sample_host(build_pid, tag, stop, peak):
     """The builder's VM process's memory each second, and its scope's (Linux), until `stop`;
-    the scope's memory.peak kept in `peak`; the build ended where the room runs short."""
+    the most anonymous memory the scope held kept in `peak`; the build ended where the room
+    runs short."""
     while not stop.wait(1):
         left = room()
         if left < ROOM:
@@ -178,8 +182,10 @@ def sample_host(build_pid, tag, stop, peak):
         if scope:
             try:
                 current = int(open(f"{scope}/memory.current").read())
-                peak[0] = max(peak[0], int(open(f"{scope}/memory.peak").read()))
-                fields.append(f"scope_current={current} scope_peak={peak[0]}")
+                stat = dict(l.split() for l in open(f"{scope}/memory.stat") if len(l.split()) == 2)
+                anon, file = int(stat.get("anon", 0)), int(stat.get("file", 0))
+                peak[0] = max(peak[0], anon)
+                fields.append(f"scope_current={current} scope_anon={anon} scope_file={file}")
             except (OSError, ValueError):
                 pass
         if fields:
@@ -234,8 +240,9 @@ def tail(path, tag, stop, now_step, held_cold):
 
 
 def one(r, name, arm, budget):
-    """A build of `name` in round `r`, `arm` free or held (to `budget` bytes on Linux): its
-    scope's peak and what its builder held at most that it could give back."""
+    """A build of `name` in round `r`, `arm` free or held (to `budget` bytes on Linux): the
+    most anonymous memory its scope held and what its builder held at most that it could give
+    back."""
     tag = f"round={r} build={name} arm={arm}"
     ctx = os.path.join(builds_dir, name)
     console = os.path.join(out, "raw", f"{r}-{name}-{arm}-console.txt")
@@ -290,7 +297,7 @@ def one(r, name, arm, budget):
     for t in threads:
         t.join()
     raw.close()
-    say(f"build {tag} exit={code} s={time.time() - started:.1f} budget={budget} scope_peak={peak[0]} "
+    say(f"build {tag} exit={code} s={time.time() - started:.1f} budget={budget} scope_anon_peak={peak[0]} "
         f"held_cold={held_cold[0]}")
     for args in (["rmi", "-f", f"builder-pressure-{name}"], ["image", "prune", "-f"]):
         subprocess.run([shards, *args], env=env, capture_output=True)
