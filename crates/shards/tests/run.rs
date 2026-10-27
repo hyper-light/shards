@@ -1,10 +1,8 @@
 //! Commands run in images, end to end: `shards run --rootfs IMAGE -- COMMAND` boots a
 //! real VM into an EROFS image, shards-init runs the command as `docker run` would, and
 //! its output and exit status come back through shards. The command is the test guest,
-//! run as a workload (crates/testguest/src/workload.rs). Runs need vsock, which shards has
-//! on Unix hosts.
+//! run as a workload (crates/testguest/src/workload.rs).
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -448,9 +446,17 @@ fn templates_restore_into_runs_of_their_own() {
     assert_eq!(get(&second, "mount /"), "overlay");
 }
 
+/// What a test sends shards: a signal, by its host's number, on Unix; on Windows its
+/// interrupt (common::interrupt), the one event a process can send another's group.
+#[cfg(unix)]
+type Signal = libc::c_int;
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct Signal;
+
 /// Runs `command` in the image, sends `signal` to shards once the command says `ready`,
 /// and returns what shards returns.
-fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
+fn signaled(image: &Path, command: &[&str], signal: Signal) -> Output {
     signaled_ignoring(image, command, &[signal], false)
 }
 
@@ -459,20 +465,25 @@ fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
 /// default actions, whatever this test was started with.
 /// Each of `signals` is sent half a second after the one before, so that each reaches
 /// the command before the next is sent.
-fn signaled_ignoring(image: &Path, command: &[&str], signals: &[libc::c_int], ignoring: bool) -> Output {
+fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignoring: bool) -> Output {
     use std::io::BufRead;
-    use std::os::unix::process::CommandExt;
     let mut run = common::command();
-    let action = if ignoring { libc::SIG_IGN } else { libc::SIG_DFL };
-    // SAFETY: signal(2) only, between fork and exec.
-    unsafe {
-        run.pre_exec(move || {
-            libc::signal(libc::SIGINT, action);
-            libc::signal(libc::SIGQUIT, action);
-            Ok(())
-        });
+    #[cfg(unix)]
+    {
+        let action = if ignoring { libc::SIG_IGN } else { libc::SIG_DFL };
+        // SAFETY: signal(2) only, between fork and exec.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut run, move || {
+                libc::signal(libc::SIGINT, action);
+                libc::signal(libc::SIGQUIT, action);
+                Ok(())
+            });
+        }
     }
-    let mut child = run
+    // A Windows console starts no process with its break ignored.
+    #[cfg(windows)]
+    assert!(!ignoring, "Windows starts no process ignoring its break");
+    let mut child = common::interruptible(&mut run)
         .args(["run", "--kernel"])
         .arg(kernel())
         .args([
@@ -488,13 +499,13 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[libc::c_int], ig
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // A regression fails the test instead of hanging it.
-    let pid = child.id() as libc::pid_t;
+    // A regression fails the test instead of hanging it: its child, only reaped after
+    // `done`, ended outright.
+    let pid = i32::try_from(child.id()).unwrap();
     let (done, watch) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         if watch.recv_timeout(TIMEOUT).is_err() {
-            // SAFETY: kill(2) of our own child, which is only reaped after `done`.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+            common::kill_now(pid);
         }
     });
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
@@ -505,8 +516,16 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[libc::c_int], ig
         if i > 0 {
             std::thread::sleep(Duration::from_millis(500));
         }
+        #[cfg(unix)]
         // SAFETY: kill(2) of our own child.
-        unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, signal);
+        }
+        #[cfg(windows)]
+        {
+            let Signal = signal;
+            common::interrupt(&child);
+        }
     }
     let mut rest = Vec::new();
     out.read_to_end(&mut rest).unwrap();
@@ -528,30 +547,40 @@ fn signals_reach_the_command() {
     }
     let dir = TempDir::new("run-signals");
     let image = workload_image(&dir);
-    // The command sees Linux's numbers, whatever the host's are (SIGUSR1 is 30 on macOS).
-    for (name, host, linux) in [("INT", libc::SIGINT, 2), ("USR1", libc::SIGUSR1, 10)] {
+    // The command sees Linux's numbers, whatever the host's are (SIGUSR1 is 30 on macOS); on
+    // Windows its interrupt, SIGINT.
+    #[cfg(unix)]
+    let cases = [("INT", libc::SIGINT, 2), ("USR1", libc::SIGUSR1, 10)];
+    #[cfg(windows)]
+    let cases = [("INT", Signal, 2)];
+    for (name, host, linux) in cases {
         let out = signaled(&image, &["/bin/testguest", "trap", name], host);
         assert_eq!(out.status, Some(0), "{name}: {out}");
         assert_eq!(out.stdout, format!("got {linux}\n").into_bytes(), "{name}: {out}");
     }
-    // Even one shards was started ignoring, as `docker run`'s signal proxy takes it.
-    let out = signaled_ignoring(&image, &["/bin/testguest", "trap", "INT"], &[libc::SIGINT], true);
-    assert_eq!(
-        (out.status, out.stdout.as_slice()),
-        (Some(0), &b"got 2\n"[..]),
-        "{out}"
-    );
-    // One it does not catch, PID 1 of its namespace, as a container's command, does not
-    // hear (D115), as under `docker run`: the run goes on, and hears the next it catches.
-    let out = signaled_ignoring(
-        &image,
-        &["/bin/testguest", "trap", "INT"],
-        &[libc::SIGTERM, libc::SIGINT],
-        false,
-    );
-    assert_eq!(
-        (out.status, out.stdout.as_slice()),
-        (Some(0), &b"got 2\n"[..]),
-        "{out}"
-    );
+    // The rest are Unix's: a Windows console starts no process with its break ignored, and
+    // a process sends another's group that one event alone.
+    #[cfg(unix)]
+    {
+        // Even one shards was started ignoring, as `docker run`'s signal proxy takes it.
+        let out = signaled_ignoring(&image, &["/bin/testguest", "trap", "INT"], &[libc::SIGINT], true);
+        assert_eq!(
+            (out.status, out.stdout.as_slice()),
+            (Some(0), &b"got 2\n"[..]),
+            "{out}"
+        );
+        // One it does not catch, PID 1 of its namespace, as a container's command, does not
+        // hear (D115), as under `docker run`: the run goes on, and hears the next it catches.
+        let out = signaled_ignoring(
+            &image,
+            &["/bin/testguest", "trap", "INT"],
+            &[libc::SIGTERM, libc::SIGINT],
+            false,
+        );
+        assert_eq!(
+            (out.status, out.stdout.as_slice()),
+            (Some(0), &b"got 2\n"[..]),
+            "{out}"
+        );
+    }
 }

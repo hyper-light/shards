@@ -2,9 +2,10 @@
 //! `wait`, `logs`, `rm`, `stop` and `kill` (crates/shards/src/daemon/commands.rs), as
 //! `docker` has them. Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT, so no snapshots
 //! are needed; the image comes from a loopback registry (tests/common, `served`), and its
-//! entrypoint is the test guest.
+//! entrypoint is the test guest. Tests of what Windows serves with a later step of the
+//! platform parity plan say so (`later_on_windows`), or are Unix's until then where they
+//! reach Unix's own interfaces, each naming its step.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -22,8 +23,10 @@ use std::time::{Duration, Instant};
 
 use common::{
     Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, registry, run_shards_env, served,
-    served_counting, sha256_digest, shards, shards_vm, test_index,
+    served_counting, sha256_digest, test_index,
 };
+#[cfg(unix)]
+use common::{shards, shards_vm};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -85,16 +88,18 @@ fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child 
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let said = home.join(format!("run-{n}.stderr"));
     let stderr = std::fs::File::create(&said).unwrap();
-    let mut child = common::command()
-        .args(run_args(image, options, command))
-        .env("SHARDS_HOME", home)
-        .env("SHARDS_KERNEL", kernel())
-        .env("SHARDS_INIT", guest_init())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()
-        .unwrap();
+    let mut child = common::interruptible(
+        common::command()
+            .args(run_args(image, options, command))
+            .env("SHARDS_HOME", home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", guest_init())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(stderr),
+    )
+    .spawn()
+    .unwrap();
     let mut line = String::new();
     BufReader::new(child.stdout.as_mut().unwrap())
         .read_line(&mut line)
@@ -111,11 +116,16 @@ fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child 
 /// How a run's client that should have gone on ended, and what it said where it said it
 /// into `stderr`: a test's home goes with it, failing or not (common::TempDir).
 fn ended(child: &mut Child, stderr: Option<&Path>) -> String {
-    use std::os::unix::process::ExitStatusExt as _;
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         match child.try_wait() {
-            Ok(Some(s)) => break format!("status {:?}, signal {:?}", s.code(), s.signal()),
+            Ok(Some(s)) => {
+                #[cfg(unix)]
+                let signal = std::os::unix::process::ExitStatusExt::signal(&s);
+                #[cfg(windows)]
+                let signal: Option<i32> = None;
+                break format!("status {:?}, signal {signal:?}", s.code());
+            }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
                 let _ = child.kill();
@@ -162,6 +172,9 @@ fn home(name: &str) -> Option<(TempDir, String)> {
 /// each reaching the guest.
 #[test]
 fn many_published_ports_all_reach_the_guest() {
+    if common::later_on_windows(5, "published ports") {
+        return;
+    }
     use std::io::{Read as _, Write as _};
     let Some((home, image)) = home("containers-publish-many") else {
         return;
@@ -1108,9 +1121,7 @@ fn stats_measures_each_microvm_from_its_guest() {
             .strip_suffix("GiB")
             .and_then(|g| g.parse().ok())
             .unwrap_or(0.0);
-        // SAFETY: sysconf(3) with constant arguments.
-        let host =
-            unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) as f64 * libc::sysconf(libc::_SC_PAGESIZE) as f64 };
+        let host = common::host_memory() as f64;
         assert!(limit * f64::from(1u32 << 30) > host / 2.0, "{line}");
         assert_eq!(fields.last(), Some(&"1"), "{line}");
         (cpu, fields[3].to_string())
@@ -1568,6 +1579,9 @@ fn an_s6_overlay_image_runs_as_pid_1() {
 /// of its own.
 #[test]
 fn a_microvms_io_is_paced_at_its_limits() {
+    if common::later_on_windows(6, "host directories and volumes") {
+        return;
+    }
     let Some((home, image)) = home("containers-io") else {
         return;
     };
@@ -1671,6 +1685,8 @@ fn a_microvms_io_is_paced_at_its_limits() {
 /// its mapping leaves it zeros where the host has no page, never an end to its microVM,
 /// and the file once the host writes there again; whole pages it writes where its host
 /// holds none of them, the host and the guest read (as FUSE_WRITEs, patch 0009).
+// Host directories and their DAX windows on Windows come with the platform parity plan's step 6.
+#[cfg(unix)]
 #[test]
 fn a_volumes_large_files_go_through_its_dax_window() {
     if cannot_run_vms() {
@@ -1971,6 +1987,8 @@ fn a_volumes_large_files_go_through_its_dax_window() {
 /// (D189): a file of that size its guest maps, as statx says, and one a byte short it reads
 /// through FUSE; each it reads whole as the host wrote it, what it writes in place the host
 /// reads, and what the host writes in place it reads.
+// Host directories and their DAX windows on Windows come with the platform parity plan's step 6.
+#[cfg(unix)]
 #[test]
 fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
     if cannot_run_vms() {
@@ -2048,6 +2066,9 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
 /// `SHARDS_SHARE_WINDOW_MIB` is 0; and through one where it gives one, on any host.
 #[test]
 fn a_volumes_large_files_go_through_a_dax_window_by_default() {
+    if common::later_on_windows(6, "volumes' DAX windows") {
+        return;
+    }
     if cannot_run_vms() {
         return;
     }
@@ -2119,6 +2140,9 @@ fn host_is_a_virtual_machine_on_amd() -> bool {
 /// volume has none.
 #[test]
 fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
+    if common::later_on_windows(6, "volumes' DAX windows") {
+        return;
+    }
     if cannot_run_vms() {
         return;
     }
@@ -2175,6 +2199,9 @@ fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
 /// bytes missing.
 #[test]
 fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
+    if common::later_on_windows(6, "volumes' DAX windows") {
+        return;
+    }
     if cannot_run_vms() {
         return;
     }
@@ -2258,6 +2285,8 @@ fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
 /// scope, and a run without one, its template's pool warm, in none of the slice; `inspect`
 /// says it; a joiner names its provider's or none; and the scope goes with the daemon. A
 /// path, which names no slice, is refused; and elsewhere than Linux, any.
+// --cgroup-parent on Windows, a job object, comes with the platform parity plan's step 12.
+#[cfg(unix)]
 #[test]
 fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
     let Some((home, image)) = home("containers-parent") else {
@@ -2477,6 +2506,8 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 /// back and what it asked to unplug, and holds it within the budget's room, in which it
 /// reads a gigabyte, in files of a MiB, to the end. Linux alone: macOS has no group of
 /// processes a budget holds.
+// Budgets and give-backs on Windows come with the platform parity plan's step 7.
+#[cfg(unix)]
 #[test]
 fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if !cfg!(target_os = "linux") {
@@ -2608,6 +2639,8 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
 /// itself a virtual machine on an AMD CPU gives none by default (PM M308), and the read up
 /// to 300 s: such a host reads through one at 7 to 25 MiB/s (PM M308). Linux alone, as the
 /// budget test before it.
+// Budgets on Windows come with the platform parity plan's step 7, DAX windows with its step 6.
+#[cfg(unix)]
 #[test]
 fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end() {
     if !cfg!(target_os = "linux") {
@@ -3264,6 +3297,9 @@ fn a_stopped_microvms_files_are_read_and_written() {
 /// every command reaches it at once after, another start among them (D37).
 #[test]
 fn a_refused_start_leaves_its_container_as_it_was() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-start-refused") else {
         return;
     };
@@ -3422,6 +3458,9 @@ fn an_endpoints_sysctls_are_its_interfaces() {
 /// The option is refused where it names no destination, or where nothing could reach one.
 #[test]
 fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     use std::io::Write as _;
     if cannot_run_vms() {
         return;
@@ -3547,6 +3586,9 @@ fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
 
 #[test]
 fn a_runs_mac_is_its_own() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     use std::io::{Read as _, Write as _};
     let Some((home, image)) = home("containers-mac") else {
         return;
@@ -3753,6 +3795,9 @@ fn a_runs_mac_is_its_own() {
 /// MAC, as on dockerd's bridge.
 #[test]
 fn a_runs_link_local_addresses_are_its_own() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-link-local") else {
         return;
     };
@@ -4275,9 +4320,12 @@ fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
     ] {
         refused(&admin, op, "Permission denied");
     }
-    // Its microVM's own share, whose tag it knows.
-    let with_share: Vec<&str> = admin.iter().copied().chain(["-v", bind.as_str()]).collect();
-    refused(&with_share, "mount:virtiofs:shards0:/mnt", "Permission denied");
+    // Its microVM's own share, whose tag it knows: a host's directory, which Windows shares
+    // with the platform parity plan's step 6.
+    if !cfg!(windows) {
+        let with_share: Vec<&str> = admin.iter().copied().chain(["-v", bind.as_str()]).collect();
+        refused(&with_share, "mount:virtiofs:shards0:/mnt", "Permission denied");
+    }
     // umount is left to it, as docker-default leaves it (D121): a tmpfs of its own.
     let with_tmpfs: Vec<&str> = admin.iter().copied().chain(["--tmpfs", "/t"]).collect();
     let unmounted = fs(&with_tmpfs, "umount:/t");
@@ -4367,24 +4415,28 @@ fn start_attached_passes_signals_on() {
         return;
     };
     let shards = |args: &[&str]| shards_in(&home, args);
+    // SIGTERM on Unix; Windows' interrupt, SIGINT (common::terminate).
+    let (trapped, number) = common::PROXIED;
     for (name, options) in [("plain", &[][..]), ("terminal", &["-t"][..])] {
         let mut args = vec!["create", "--pull", "never", "--name", name];
         args.extend(options);
-        args.extend([image.as_str(), "trap", "TERM"]);
+        args.extend([image.as_str(), "trap", trapped]);
         let made = shards(&args);
         assert_eq!(made.status, Some(0), "{made}");
     }
     let attached = |name: &str| -> Child {
-        let mut child = common::command()
-            .args(["start", "-a", name])
-            .env("SHARDS_HOME", &*home)
-            .env("SHARDS_KERNEL", kernel())
-            .env("SHARDS_INIT", guest_init())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = common::interruptible(
+            common::command()
+                .args(["start", "-a", name])
+                .env("SHARDS_HOME", &*home)
+                .env("SHARDS_KERNEL", kernel())
+                .env("SHARDS_INIT", guest_init())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )
+        .spawn()
+        .unwrap();
         let mut line = String::new();
         BufReader::new(child.stdout.as_mut().unwrap())
             .read_line(&mut line)
@@ -4392,22 +4444,23 @@ fn start_attached_passes_signals_on() {
         assert!(line.starts_with("ready"), "{name}: {line:?}");
         child
     };
-    let term = |child: &Child| {
-        // SAFETY: kill(2) of a child of this test's, not yet waited for.
-        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
-    };
+    let got = format!("got {number}");
     let mut plain = attached("plain");
-    term(&plain);
+    common::terminate(&plain);
     assert_eq!(exit(&mut plain), Some(0));
     let logged = shards(&["logs", "plain"]);
-    assert!(logged.stdout.contains("got 15"), "{logged}");
+    assert!(logged.stdout.contains(&got), "{logged}");
     let mut terminal = attached("terminal");
-    term(&terminal);
-    assert_eq!(exit(&mut terminal), None, "the client ends by the signal");
+    common::terminate(&terminal);
+    assert_eq!(
+        exit(&mut terminal),
+        common::TERMINATED,
+        "the client ends by the signal"
+    );
     let state = shards(&["inspect", "-f", "{{.State.Status}}", "terminal"]);
     assert_eq!(state.stdout, "running\n", "{state}");
     let logged = shards(&["logs", "terminal"]);
-    assert!(!logged.stdout.contains("got 15"), "{logged}");
+    assert!(!logged.stdout.contains(&got), "{logged}");
     assert_eq!(shards(&["rm", "-f", "terminal"]).status, Some(0));
 }
 
@@ -4495,8 +4548,7 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
         .trim()
         .parse()
         .unwrap();
-    // SAFETY: kill(2) of the microVM's process, which this test's run started.
-    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+    common::kill_now(pid);
     let dir = dir_of("killed");
     settled(&dir);
     let file = std::fs::File::open(dir.join("layer.ext4")).unwrap();
@@ -5206,10 +5258,8 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
         &["--sig-proxy=false", "--name", "unproxied"],
         &["sleep"],
     );
-    let pid = libc::pid_t::try_from(kept.id()).unwrap();
-    // SAFETY: kill(2) of the client this test started, not yet waited for.
-    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
-    assert_eq!(exit(&mut kept), None);
+    common::terminate(&kept);
+    assert_eq!(exit(&mut kept), common::TERMINATED);
     let state = shards(&["inspect", "-f", "{{.State.Status}}", "unproxied"]);
     assert_eq!(state.stdout, "running\n", "{state}");
     let removed = shards(&["rm", "-f", "unproxied"]);
@@ -5962,6 +6012,9 @@ fn an_exec_joins_a_workload_that_nests_its_cgroups() {
 /// made again hides the lower's (an opaque directory, by its upper layer's attribute).
 #[test]
 fn an_overlay_on_a_volume_is_written_as_on_a_kernels_own_filesystem() {
+    if common::later_on_windows(6, "host directories and volumes") {
+        return;
+    }
     let Some((home, image)) = home("containers-overlay") else {
         return;
     };
@@ -6239,11 +6292,15 @@ fn usage_mistakes_are_answered_without_a_daemon() {
 /// This build's `shards` in a directory of its own, with a VM process binary
 /// (`SHARDS_VM_BINARY`) that waits for a gate to open before it becomes this build's.
 /// Every VM its daemon starts waits there, so a run stays pending, its container created,
-/// for as long as the test keeps the gate shut (audit A06).
+/// for as long as the test keeps the gate shut (audit A06). Unix's: Windows has no exec,
+/// and a process gives the one it starts only the handles it lists, so a VM process held
+/// there waits for a way of its own (the platform parity plan's step 2).
+#[cfg(unix)]
 struct Gated {
     dir: TempDir,
 }
 
+#[cfg(unix)]
 impl Gated {
     fn new(name: &str) -> Gated {
         let dir = TempDir::new(name);
@@ -6305,12 +6362,14 @@ impl Gated {
 }
 
 /// A command left going, its output collected as it comes.
+#[cfg(unix)]
 struct Going {
     child: Child,
     out: std::thread::JoinHandle<String>,
     err: std::thread::JoinHandle<String>,
 }
 
+#[cfg(unix)]
 impl Going {
     fn finish(mut self) -> Run {
         let start = Instant::now();
@@ -6326,6 +6385,7 @@ impl Going {
 }
 
 /// The ID of the one container in `home`, once it is there: created, its run pending.
+#[cfg(unix)]
 fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
     let id = std::cell::RefCell::new(String::new());
     let last = std::cell::RefCell::new(String::new());
@@ -6384,6 +6444,8 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
 /// client hears that the container is gone, as `docker run` hears it of a container
 /// removed before it was started, and nothing is left (audit A06, whose reproduction
 /// this is: before, the command ran after its container was removed).
+// A run held pending by its VM process's gate is Unix's until Windows has a way of its own ([`Gated`]).
+#[cfg(unix)]
 #[test]
 fn rm_cancels_a_run_whose_vm_is_not_ready() {
     let Some((home, image)) = home("containers-cancel") else {
@@ -6426,6 +6488,8 @@ fn rm_cancels_a_run_whose_vm_is_not_ready() {
 /// whose run did not start, with 255 for the status nobody saw, and `rm` removes it
 /// (audit A15, whose finding this is: before, a container existed only in its daemon's
 /// memory until its run started, and went with the daemon).
+// A run held pending by its VM process's gate is Unix's until Windows has a way of its own ([`Gated`]).
+#[cfg(unix)]
 #[test]
 fn a_container_outlives_a_daemon_that_dies() {
     let Some((home, image)) = home("containers-crash") else {
@@ -6474,6 +6538,8 @@ fn a_container_outlives_a_daemon_that_dies() {
 /// A daemon told to stop starts no run still pending, and waits for no VM to boot for
 /// one (audit A07): the run is refused at once, the daemon ends, and the run's container
 /// stays, created, with the code of a start that failed.
+// A run held pending by its VM process's gate is Unix's until Windows has a way of its own ([`Gated`]).
+#[cfg(unix)]
 #[test]
 fn a_stopping_daemon_starts_no_pending_run() {
     let Some((home, image)) = home("containers-stop-pending") else {
@@ -6976,6 +7042,7 @@ fn a_run_on_network_none_reaches_nothing() {
 
 /// A run serving on the host's network: its client, and the port its server says it is
 /// ready on (`ready PORT`).
+#[cfg(unix)]
 fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
     let options = ["--rm", "-u", "root", "--network", "host"];
     ready_on(home, &run_args(image, &options, command))
@@ -7034,6 +7101,8 @@ fn talk(at: std::net::SocketAddr, sent: &str) -> String {
 /// choosing port 0's; a port the host holds refused as Linux refuses it, and one closed
 /// and bound again at once its own; the host's own services reached at its loopback, by
 /// clients that bind first too; and what dockerd refuses there refused in its words.
+// The host's network on Windows comes with the platform parity plan's step 5.
+#[cfg(unix)]
 #[test]
 fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     let Some((home, image)) = home("containers-host") else {
@@ -7235,6 +7304,9 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
 /// provider's ports free once its end is told, the joiner's once its own is.
 #[test]
 fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
+    if common::later_on_windows(5, "the host's network") {
+        return;
+    }
     let Some((home, image)) = home("containers-host-join") else {
         return;
     };
@@ -7290,6 +7362,9 @@ fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/network-host/release.sh"]
 fn ports_held_past_their_containers_end() {
+    if common::later_on_windows(5, "published ports") {
+        return;
+    }
     let Some((home, image)) = home("containers-m181") else {
         return;
     };
@@ -7340,6 +7415,9 @@ fn ports_held_past_their_containers_end() {
 /// of 10 times, the last one's end not yet taken.
 #[test]
 fn an_asked_address_is_free_once_its_run_has_ended() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-ip-reuse") else {
         return;
     };
@@ -7363,6 +7441,9 @@ fn an_asked_address_is_free_once_its_run_has_ended() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/exit-drain/run.sh"]
 fn datagrams_a_command_sends_as_it_ends() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-m182") else {
         return;
     };
@@ -7448,6 +7529,9 @@ fn datagrams_a_command_sends_as_it_ends() {
 /// the answer was lost as the run's ports went.
 #[test]
 fn a_runs_gateway_is_its_neighbor_from_its_start() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-gateway-mac") else {
         return;
     };
@@ -7519,6 +7603,9 @@ fn a_runs_gateway_is_its_neighbor_from_its_start() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/dns-lookup/run.sh"]
 fn a_names_lookup_round_trip() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-m247") else {
         return;
     };
@@ -7551,6 +7638,9 @@ fn a_names_lookup_round_trip() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/gateway-neighbor/run.sh"]
 fn answers_lost_without_the_gateways_mac() {
+    if common::later_on_windows(5, "the host's network") {
+        return;
+    }
     let Some((home, image)) = home("containers-m180") else {
         return;
     };
@@ -8027,6 +8117,9 @@ fn listeners_of(port: u16) -> String {
 /// as it has ended.
 #[test]
 fn published_ports_reach_the_guest() {
+    if common::later_on_windows(5, "published ports") {
+        return;
+    }
     use std::io::{Read as _, Write as _};
     use std::net::{SocketAddr, TcpStream};
     let Some((home, image)) = home("containers-publish") else {
@@ -8294,6 +8387,9 @@ fn published_ports_reach_the_guest() {
 /// would hold every one it had until that child's exec (PM M134, M158).
 #[test]
 fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
+    if common::later_on_windows(5, "published ports") {
+        return;
+    }
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     /// The other runs stop however this test's own ends, a panic's unwinding included:
@@ -8411,6 +8507,9 @@ fn children_of(parent: u32) -> Vec<(u32, String)> {
 #[test]
 fn published_udp_ports_carry_datagrams_both_ways() {
     use std::net::UdpSocket;
+    if common::later_on_windows(5, "published ports") {
+        return;
+    }
     let Some((home, image)) = home("containers-publish-udp") else {
         return;
     };
@@ -9007,10 +9106,18 @@ fn ustar(bytes: &[u8]) -> Vec<(String, u32, Vec<u8>)> {
 /// the client, which a test run under `cmd &` would otherwise start ignoring SIGINT.
 #[test]
 fn an_interrupted_save_leaves_nothing_behind() {
-    use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
     // Named short: a socket is bound in it by its whole path (sockaddr_un).
     let home = TempDir::new("save-int");
+    // A daemon that never answers: on Unix one of an older build listening at daemon.sock;
+    // on Windows the home's lock held, which the daemon its client starts waits for.
+    #[cfg(unix)]
     let _daemon = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
+    #[cfg(windows)]
+    let lock = {
+        let lock = std::fs::File::create(home.join("daemon.lock")).unwrap();
+        lock.try_lock().unwrap();
+        lock
+    };
     let out = TempDir::new("containers-save-interrupted-out");
     let dest = out.join("image.tar");
     let left = || -> Vec<std::ffi::OsString> {
@@ -9019,7 +9126,12 @@ fn an_interrupted_save_leaves_nothing_behind() {
             .map(|e| e.unwrap().file_name())
             .collect()
     };
-    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+    // Windows sends a console process one event, its interrupt (common::interrupt).
+    #[cfg(unix)]
+    let signals = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+    #[cfg(windows)]
+    let signals = [2];
+    for sig in signals {
         let mut save = common::command();
         save.args(["save", "-o", dest.to_str().unwrap(), "any:1"])
             .env("SHARDS_HOME", &*home)
@@ -9027,21 +9139,50 @@ fn an_interrupted_save_leaves_nothing_behind() {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         // SAFETY: signal(2), async-signal-safe, between fork and exec.
+        #[cfg(unix)]
         unsafe {
-            save.pre_exec(|| {
+            std::os::unix::process::CommandExt::pre_exec(&mut save, || {
                 for s in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
                     libc::signal(s, libc::SIG_DFL);
                 }
                 Ok(())
             });
         }
-        let mut save = save.spawn().unwrap();
+        let mut save = common::interruptible(&mut save).spawn().unwrap();
         eventually("the save's temporary file", || !left().is_empty());
-        // SAFETY: kill(2) of the client this test started.
-        assert_eq!(unsafe { libc::kill(save.id() as libc::pid_t, sig) }, 0);
-        let status = save.wait().unwrap();
-        assert_eq!(status.signal(), Some(sig), "{status}");
+        #[cfg(unix)]
+        {
+            // SAFETY: kill(2) of the client this test started.
+            assert_eq!(unsafe { libc::kill(save.id() as libc::pid_t, sig) }, 0);
+            let status = save.wait().unwrap();
+            assert_eq!(
+                std::os::unix::process::ExitStatusExt::signal(&status),
+                Some(sig),
+                "{status}"
+            );
+        }
+        #[cfg(windows)]
+        {
+            common::interrupt(&save);
+            exit(&mut save);
+        }
         assert_eq!(left(), Vec::<std::ffi::OsString>::new(), "after signal {sig}");
+    }
+    // The daemon its client started, which waits for the lock, ended: named by its log's
+    // lines (`shards daemon PID: ...`).
+    #[cfg(windows)]
+    {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        if let Some(pid) = log.lines().find_map(|l| {
+            l.strip_prefix("shards daemon ")?
+                .split_once(':')?
+                .0
+                .parse::<i32>()
+                .ok()
+        }) {
+            common::kill_now(pid);
+        }
+        drop(lock);
     }
     // A client that can reach no daemon fails, and leaves nothing either: its home is a
     // file, where no daemon can be.
@@ -9064,7 +9205,6 @@ fn an_interrupted_save_leaves_nothing_behind() {
 /// or not at all; an image not found refused before anything is written.
 #[test]
 fn save_writes_images() {
-    use std::os::unix::fs::PermissionsExt as _;
     if cannot_run_vms() {
         return;
     }
@@ -9083,30 +9223,35 @@ fn save_writes_images() {
         (Some(0), "", ""),
         "{saved}"
     );
-    assert_eq!(
-        std::fs::metadata(&tar).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    // 0600 whatever the umask, as atomicwriter's Close chmods it: made under umask 0377,
-    // the file would be 0400.
-    let strict = out.join("strict.tar");
-    let mut save = common::command();
-    save.args(["save", "-o", strict.to_str().unwrap(), &image])
-        .env("SHARDS_HOME", &*home)
-        .stdout(Stdio::null());
-    // SAFETY: umask(2), async-signal-safe, between fork and exec.
-    unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut save, || {
-            libc::umask(0o377);
-            Ok(())
-        });
+    // Its mode, 0600 whatever the umask, as atomicwriter's Close chmods it: made under
+    // umask 0377, the file would be 0400. A Windows file has no mode, nor its process a
+    // umask: its owner's alone there is crate::os's `owner_only`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&tar).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let strict = out.join("strict.tar");
+        let mut save = common::command();
+        save.args(["save", "-o", strict.to_str().unwrap(), &image])
+            .env("SHARDS_HOME", &*home)
+            .stdout(Stdio::null());
+        // SAFETY: umask(2), async-signal-safe, between fork and exec.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut save, || {
+                libc::umask(0o377);
+                Ok(())
+            });
+        }
+        assert!(save.status().unwrap().success());
+        assert_eq!(
+            std::fs::metadata(&strict).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_file(&strict).unwrap();
     }
-    assert!(save.status().unwrap().success());
-    assert_eq!(
-        std::fs::metadata(&strict).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    std::fs::remove_file(&strict).unwrap();
     let records = ustar(&std::fs::read(&tar).unwrap());
     let id = sha256_digest(&index);
     // The index, our manifest, config and layer, and our attestation's three: not the
@@ -9171,10 +9316,30 @@ fn save_writes_images() {
     let layer = home
         .join("images/blobs/sha256")
         .join(sha256_digest(&blobs[1]).trim_start_matches("sha256:"));
-    std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Unreadable: no mode on Unix; on Windows held open by this test, shared with no one.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    #[cfg(windows)]
+    let held = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&layer)
+            .unwrap()
+    };
     let broken = out.join("broken.tar");
     let failed = shards(&["save", "-o", broken.to_str().unwrap(), &image]);
-    std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o444)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o444)).unwrap();
+    }
+    #[cfg(windows)]
+    drop(held);
     assert_eq!(failed.status, Some(1), "{failed}");
     assert!(failed.stderr.starts_with("shards: "), "{failed}");
     assert!(!broken.exists());
@@ -9727,7 +9892,6 @@ fn a_push_ends_with_its_client_and_the_daemon() {
 /// Docker CLI.
 #[test]
 fn a_run_interrupted_as_it_pulls_ends_at_once() {
-    use std::os::unix::process::CommandExt as _;
     use std::sync::atomic::Ordering;
     if cannot_run_vms() {
         return;
@@ -9738,13 +9902,14 @@ fn a_run_interrupted_as_it_pulls_ends_at_once() {
     let home = TempDir::new("containers-run-interrupted");
     let mut client = common::command();
     // SAFETY: signal(2), async-signal-safe, between fork and exec.
+    #[cfg(unix)]
     unsafe {
-        client.pre_exec(|| {
+        std::os::unix::process::CommandExt::pre_exec(&mut client, || {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
             Ok(())
         });
     }
-    let client = client
+    let client = common::interruptible(&mut client)
         .args(["run", &image, "true"])
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_KERNEL", kernel())
@@ -9755,9 +9920,7 @@ fn a_run_interrupted_as_it_pulls_ends_at_once() {
         .spawn()
         .unwrap();
     eventually("the pull's blobs asked for", || begun.load(Ordering::SeqCst) >= 1);
-    let pid = libc::pid_t::try_from(client.id()).unwrap();
-    // SAFETY: kill(2) of the client this test started, not yet waited for.
-    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    common::interrupt(&client);
     let t0 = Instant::now();
     let out = client.wait_with_output().unwrap();
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
@@ -10192,6 +10355,9 @@ fn run_mounts_binds_volumes_and_tmpfs() {
 /// directory takes that directory's owner, as it did.
 #[test]
 fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
+    if common::later_on_windows(6, "host directories and volumes") {
+        return;
+    }
     let Some((home, image)) = home("containers-fresh") else {
         return;
     };
@@ -10233,6 +10399,9 @@ fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
 
 #[test]
 fn volume_commands_keep_volumes() {
+    if common::later_on_windows(6, "host directories and volumes") {
+        return;
+    }
     let Some((home, image)) = home("containers-volume-commands") else {
         return;
     };
@@ -11641,6 +11810,9 @@ fn attach_joins_a_running_microvm() {
 /// dockerd does.
 #[test]
 fn microvms_on_an_ipv6_network_reach_one_another() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-ipv6") else {
         return;
     };
@@ -11746,6 +11918,9 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
 /// network says what it does.
 #[test]
 fn a_networks_options_are_what_its_microvms_do() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-netopts") else {
         return;
     };
@@ -11907,6 +12082,9 @@ fn a_networks_options_are_what_its_microvms_do() {
 /// 29.3.1).
 #[test]
 fn microvms_on_a_network_reach_one_another_by_name() {
+    if common::later_on_windows(5, "networks of a user's own") {
+        return;
+    }
     let Some((home, image)) = home("containers-networks") else {
         return;
     };
@@ -12608,10 +12786,7 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
     match reported(&["--rm"]) {
         None => println!("SKIP: this guest kernel reports none of the memory it may plug (D149)"),
         Some((pluggable, meminfo)) => {
-            // SAFETY: sysconf(3) with constant arguments.
-            let host = unsafe {
-                libc::sysconf(libc::_SC_PHYS_PAGES) as u64 * libc::sysconf(libc::_SC_PAGESIZE) as u64
-            } / 1024;
+            let host = common::host_memory() / 1024;
             // All of it, never more than its host has; what may still be plugged is free
             // and available as well, as plugged it would be.
             let total = kib(&meminfo, "MemTotal:");
@@ -13455,11 +13630,7 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
         assert!(r.stderr.contains(said), "{flags:?}: {r}");
     }
     // Its host's hostname; the microVM's cgroup tree.
-    let mut name = [0u8; 256];
-    // SAFETY: gethostname(2) into our own buffer, of its length.
-    let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
-    assert_eq!(got, 0);
-    let host = String::from_utf8_lossy(name.split(|&b| b == 0).next().unwrap()).to_string();
+    let host = common::host_name();
     let host = host.get(..host.len().min(64)).unwrap().to_string();
     let named = run_in(
         &home,
@@ -13854,6 +14025,7 @@ fn accept_within(listener: &std::net::TcpListener) -> Option<std::net::TcpStream
 
 /// What a syslog server reads on `listener`'s first connection: its lines until `lines`
 /// have come, or all it gets until the connection ends; none where none comes.
+#[cfg(unix)]
 fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::JoinHandle<Vec<String>> {
     std::thread::spawn(move || {
         let Some(conn) = accept_within(&listener) else {
@@ -13875,6 +14047,7 @@ fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::J
 }
 
 /// A port nothing listens on now, which a test may listen on later.
+#[cfg(unix)]
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -13896,6 +14069,8 @@ fn free_port() -> u16 {
 /// whose daemon restarted meanwhile: Docker's would not start without its server, and
 /// would lose what was not yet sent. `logs` reads the local copy, and refuses where
 /// `cache-disabled` keeps it. The refusals are in shards' words.
+// A log sent elsewhere from Windows comes with the platform parity plan's step 8.
+#[cfg(unix)]
 #[test]
 fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     let Some((home, image)) = home("containers-syslog") else {
@@ -14266,6 +14441,9 @@ fn gelf_messages(datagrams: &[Vec<u8>]) -> Vec<serde_json::Value> {
 /// when its output came, to the millisecond.
 #[test]
 fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
+    if common::later_on_windows(8, "a log sent elsewhere") {
+        return;
+    }
     let Some((home, image)) = home("containers-gelf") else {
         return;
     };
@@ -14402,6 +14580,7 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
 /// time, record, options), until `count` have come: each its tag, its time in nanoseconds
 /// (whole seconds, or an EventTime's), its record, and its options. Where the options ask
 /// for an ack, it is sent back, as fluentd does.
+#[cfg(unix)]
 fn fluentd_events(
     conn: &mut (impl std::io::Read + std::io::Write),
     count: usize,
@@ -14488,6 +14667,8 @@ fn fluentd_events(
 /// container's ID and name, the stream, the line, the attributes asked for, and a part's
 /// place in a line longer than 16 KiB), and an ack asked for where told. Over TCP and a
 /// unix socket.
+// A log sent elsewhere from Windows comes with the platform parity plan's step 8.
+#[cfg(unix)]
 #[test]
 fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     let Some((home, image)) = home("containers-fluentd") else {
@@ -14933,6 +15114,9 @@ fn hec_events(body: &[u8]) -> Vec<serde_json::Value> {
 /// shards' words.
 #[test]
 fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
+    if common::later_on_windows(8, "a log sent elsewhere") {
+        return;
+    }
     let Some((home, image)) = home("containers-splunk") else {
         return;
     };
@@ -15199,6 +15383,9 @@ fn cloudwatch(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<Clo
 /// the request the daemon keeps on disk; the refusals in shards' words.
 #[test]
 fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
+    if common::later_on_windows(8, "a log sent elsewhere") {
+        return;
+    }
     let Some((home, image)) = home("containers-awslogs") else {
         return;
     };
@@ -15576,6 +15763,9 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
 /// own log name, or the one the options give; the refusals in shards' words.
 #[test]
 fn a_runs_log_is_sent_to_cloud_logging_as_its_options_say() {
+    if common::later_on_windows(8, "a log sent elsewhere") {
+        return;
+    }
     let Some((home, image)) = home("containers-gcplogs") else {
         return;
     };
