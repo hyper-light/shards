@@ -14874,6 +14874,10 @@ revision before comparing a changed API/implementation.
   4. `cargo bench -p shards --bench restore -- --runs 100`: the `resume` test guest
      snapshotted by `shards run --kernel --snapshot-dir`, then 100 cold restores (a `shards
      restore` each) and 100 warm (`--hold`, then released), 3 of each first unrecorded.
+  5. `whp-run.yml` on GitHub's windows-2022 (Windows Server 2022, build 20348) and
+     windows-2025 (build 26100) runners, runs 40519967461 and 40523208206: 1's and 2's
+     probes, 1's with the APIC page and XSAVE area set back as read after the first run, and
+     the page's first 1 and 2 KiB, each answer recorded; and on jupiter the same.
 - **Found.**
   - **The vCPU's state** (1). Its APIC page, 4,096 bytes, and its XSAVE area, 2,472, set
     into a new partition, read back with no byte apart. 74 architectural registers read,
@@ -15000,12 +15004,28 @@ revision before comparing a changed API/implementation.
     test's own process, and the same rename asked again at once was taken); in 3 of 10 with
     a refused rename linking its target aside and asking once more; and in none of 25 with
     a refusal of another writer's file linked in turn.
+  - **GitHub's runners** (5). Microsoft Defender's real-time protection was off on both
+    (Get-MpComputerStatus), and the rename probe was refused nothing, in any pass, in either
+    place; a directory with a file open in it refused its rename there too.
+    - windows-2025: every question of 1's as on jupiter: the APIC page set back whole and as
+      its first 1 and 2 KiB, the XSAVE area (872 bytes on its CPU) set back, restores going
+      on as saved. A restore, µs, n=200, p50 / p99: to its run 990 / 1,273; its guest's
+      first touch of 512 pages 10,763 / 12,592 and first store into 448 19,684 / 23,102 (21
+      and 44 µs a page, in a runner's nested partition).
+    - windows-2022: WHvSetVirtualProcessorState refused the APIC page set back as read
+      (ERROR_MORE_DATA, 0x800700EA) and its first 1 and 2 KiB (E_INVALIDARG, 0x80070057),
+      and took the XSAVE area; its restores stopped at the page.
+    - jupiter (build 26200): the page set back whole and as its first 1 and 2 KiB.
 - **Consequence (D196).**
   - A WHP partition is saved by its registers, its APIC page and XSAVE area through
     WHvGetVirtualProcessorState, its time suspended and read at one instant, and restored
     into a new partition in a new process, its time held until its first run; its RAM a
     copy-on-write view of its sparse file, which no restore writes.
   - A process holds one partition at a time.
+  - A snapshot restores on builds 26100 and 26200. Windows Server 2022 (build 20348) sets
+    no vCPU's APIC page back through WHvSetVirtualProcessorState, whole or in part, so none
+    restores there, and a restore says so; the function that function supersedes, which
+    Microsoft marks deprecated, is not used.
   - A restore costs its guest's first touches: 70 ms cold and 60 ms warm at p50 on jupiter,
     3.4 ms with its RAM populated at stage 2 ahead, which itself costs 1.1 to 1.2 µs a page.
     A working set (D25) recorded and populated ahead is what takes that off a restore's

@@ -147,6 +147,9 @@ pub(super) const IDENTITY: &[(u32, u32)] = &[
 
 /// Bounds on what a decoder takes: a state is a few pages; a host's register list is
 /// shorter than this.
+/// ERROR_MORE_DATA (234) as an HRESULT (FACILITY_WIN32).
+const ERROR_MORE_DATA_HRESULT: u32 = 0x8007_00EA;
+
 const MAX_BLOB: usize = 64 << 10;
 const MAX_REGISTERS: usize = 256;
 const MAX_LEAVES: usize = 64;
@@ -263,12 +266,22 @@ impl Vcpu {
             &[*base],
             "WHvSetVirtualProcessorRegisters(ApicBase)",
         )?;
-        self.partition.set_state(
-            self.index,
-            WHvVirtualProcessorStateTypeInterruptControllerState2,
-            &st.apic,
-            "WHvSetVirtualProcessorState(InterruptControllerState2)",
-        )?;
+        self.partition
+            .set_state(
+                self.index,
+                WHvVirtualProcessorStateTypeInterruptControllerState2,
+                &st.apic,
+                "WHvSetVirtualProcessorState(InterruptControllerState2)",
+            )
+            .map_err(|e| match e {
+                // What Windows Server 2022 (build 20348) answers a page set back as read, and
+                // E_INVALIDARG to a part of it, where builds 26100 and 26200 take it (PM M345).
+                Error::Call { hr, .. } if hr as u32 == ERROR_MORE_DATA_HRESULT => Error::Guest(format!(
+                    "{e}: this Windows sets no vCPU's APIC page back, so no snapshot restores on it \
+                     (Windows Server 2022, build 20348, refuses it; builds 26100 and 26200 take it)"
+                )),
+                e => e,
+            })?;
         self.partition.set_state(
             self.index,
             WHvVirtualProcessorStateTypeXsaveState,
