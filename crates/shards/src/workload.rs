@@ -1247,6 +1247,23 @@ fn heard(conn: UnixStream, token: &[u8; run::TOKEN]) {
     }
 }
 
+/// The null device, which stands in for the stdio of a client this VM lets go of: held from
+/// its start ([`hold_null`]), /dev/null, or on Windows the NUL its spawner gave it, as its
+/// AppContainer opens no file by name, NUL among them on Windows Server (PM M351).
+static NULL: std::sync::OnceLock<fs::File> = std::sync::OnceLock::new();
+
+/// Holds `null` as this VM's null device ([`null`]), which it keeps once held.
+pub fn hold_null(null: fs::File) {
+    let _ = NULL.set(null);
+}
+
+/// This VM's null device, a copy of its own.
+pub fn null() -> io::Result<fs::File> {
+    NULL.get()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no null device is held"))?
+        .try_clone()
+}
+
 /// A command to run beside the workload (`docker exec`), and its client's: the
 /// connection it is answered on, and its stdio.
 pub struct ExecRequest {
@@ -1388,7 +1405,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                 // Its client's stdio is let go of, as `docker exec -d` holds none of it once
                 // the command has started: what reads the client's output to its end is not
                 // held until the command ends.
-                if let Ok(null) = fs::File::open("/dev/null") {
+                if let Ok(null) = null() {
                     for slot in [&mut req.stdin, &mut req.stdout, &mut req.stderr] {
                         if let Ok(null) = null.try_clone() {
                             *slot = null;

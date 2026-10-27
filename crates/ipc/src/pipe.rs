@@ -1631,17 +1631,23 @@ mod tests {
     }
 
     /// A pipe's DACL grants its user alone ([`attributes`]): one entry, its user's; none for
-    /// Everyone, whom the default DACL gives read, nor any other.
+    /// Everyone, whom the default DACL gives read, nor any other. The entry's SID is compared
+    /// with its user's, not as SDDL, which writes some as aliases: the built-in
+    /// Administrator's, CI's runners' user, as `LA`.
     #[test]
     fn a_pipe_is_its_users_alone() {
         use windows_sys::Win32::Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertStringSidToSidW, GetSecurityInfo,
+            SE_FILE_OBJECT,
         };
-        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+        use windows_sys::Win32::Security::{
+            ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, EqualSid, GetAce, PSECURITY_DESCRIPTOR, PSID,
+        };
         let (server, _client) = pair(BUFFER).unwrap();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        // SAFETY: a handle `server` holds, which may read its DACL, and a pointer for the call
-        // to fill, freed below.
+        // SAFETY: a handle `server` holds, which may read its DACL, and pointers for the call
+        // to fill: the descriptor, freed below, and its DACL, within it.
         let status = unsafe {
             GetSecurityInfo(
                 server.as_raw_handle(),
@@ -1649,7 +1655,7 @@ mod tests {
                 DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
+                &raw mut dacl,
                 std::ptr::null_mut(),
                 &raw mut descriptor,
             )
@@ -1675,15 +1681,36 @@ mod tests {
         assert_ne!(ok, 0, "{}", io::Error::last_os_error());
         // SAFETY: the `len` units the call wrote at `text`.
         let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) });
-        // SAFETY: what the two calls allocated, freed once each.
+        // SAFETY: what the call allocated, freed once.
+        unsafe { LocalFree(text.cast()) };
+        let sddl = sddl.trim_end_matches('\0').to_string();
+        assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
+        let mut ace: *mut std::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: the DACL within `descriptor`, which is still held; its one entry.
+        assert_ne!(unsafe { GetAce(dacl, 0, &raw mut ace) }, 0, "{sddl}");
+        let mut user: PSID = std::ptr::null_mut();
+        let sid = wide(&user_sid().unwrap());
+        // SAFETY: a NUL-terminated SID string, and a pointer for the SID made, freed below.
+        assert_ne!(unsafe { ConvertStringSidToSidW(sid.as_ptr(), &raw mut user) }, 0);
+        // SAFETY: the entry's SID, within the DACL, which allows (the one "(A;" above), and
+        // the user's SID just made.
+        let same = unsafe {
+            EqualSid(
+                (&raw mut (*ace.cast::<ACCESS_ALLOWED_ACE>()).SidStart).cast(),
+                user,
+            )
+        };
+        // SAFETY: what the calls allocated, freed once each, the DACL with its descriptor.
         unsafe {
-            LocalFree(text.cast());
+            LocalFree(user.cast());
             LocalFree(descriptor.cast());
         }
-        let sddl = sddl.trim_end_matches('\0');
-        let sid = user_sid().unwrap();
-        assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
-        assert!(sddl.contains(&format!(";;;{sid})")), "{sddl}");
+        assert_ne!(
+            same,
+            0,
+            "{sddl}: its entry is not its user's, {}",
+            user_sid().unwrap()
+        );
     }
 
     /// One thread's write goes while another's read of the same end waits: each call is

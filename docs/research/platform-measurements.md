@@ -15395,3 +15395,40 @@ revision before comparing a changed API/implementation.
   directly (LOOP_SET_DIRECT_IO, Linux 4.4): a build's cache layer's, a joiner's root. A
   builder's answer that comes past its pass's patience is heard as it comes, once a
   pressure window, and said at once, its builder then told its room as its pass would have.
+
+### M351. NUL opened by a VM process in its AppContainer: refused on Windows Server 2022 and 2025, opened on Windows 11 (D195)
+
+- **Question.** On CI's Windows runners every VM the daemon started ended before it was
+  ready, its process killed by the daemon (137), where jupiter ran the same tests
+  (tests/daemon.rs 37 of 37 on 2026-10-27, D195's "Tested"). What ends them?
+- **Method.** CI run 40580565374 (branch `win-daemon-wip`, d9adf471), 2026-10-27: the
+  daemon said, with a VM not ready, whether its process had ended and with what status. The
+  windows-2022 runner (Windows Server 2022 Datacenter, 10.0.20348) and the windows-2025
+  runner (Windows Server 2025 Datacenter, 10.0.26100), each nested in an Azure VM; the VM
+  processes' stderr, their daemon's `daemon.log`, as the failing tests printed it.
+- **Found.**
+  - VMs of 91 process IDs on windows-2022 and 86 on windows-2025 were not ready, each of
+    whose process still ran as its link to the daemon closed. Where a VM had said why, in
+    the daemon logs the failing tests printed, it said one thing: `shards: NUL: Access is
+    denied. (os error 5)`, the VM's `File::open("NUL")` as it made its link
+    (`warm::Link::new`). Elsewhere its word was cut short (`shards: ` alone) or missing:
+    its link closed as its error returned, before it wrote it, and the daemon killed it
+    then, at times mid-line.
+  - On jupiter (Windows 10.0.26200.9711, Windows 11) the same open, in the same
+    AppContainer, succeeded.
+  - Why Windows Server refuses NUL to an AppContainer that Windows 11 lets open it was not
+    found: NUL's security descriptor was not read on either.
+  - An `exec -d` let go of its client's stdio by opening `/dev/null`, which names no
+    device on Windows: there it kept the client's stdio (from the code, not measured).
+  - Besides, in the same run, on both runners: NUL's metadata was not read
+    (`File::metadata`, ERROR_INVALID_FUNCTION, os error 1), where a test of warm.rs gave a
+    log NUL; and a pipe's DACL read back as SDDL was `D:P(A;;FA;;;LA)`. The runners' user
+    is the built-in Administrator, whose SID SDDL writes as `LA`, so a test that looked for
+    its SID's text failed where the DACL granted that user alone.
+- **Consequence (D195, D141).** A VM process's AppContainer opens no file by name, NUL
+  included: its spawner opens NUL and gives it (`null`) beside its link, as every file it
+  reaches comes (M201), and the VM holds it for every client's stdio it lets go of
+  (`workload::null`), an `exec -d`'s too. A VM that is not ready is given a second to end
+  of itself before the daemon kills it, so that what it says of why reaches the daemon's
+  log. The tests give a log a file, as the daemon does, and compare a DACL's entry with its
+  user by SID (EqualSid), not by its SDDL text.

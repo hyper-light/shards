@@ -298,18 +298,23 @@ fn link_arg(flag: &str, value: String) -> Result<LinkArg, String> {
     }
 }
 
-/// The link to its daemon `arg` names, owned from here on.
+/// The link to its daemon `arg` names, owned from here on, and the null device held for
+/// the clients it lets go of (`workload::null`): /dev/null, or on Windows the NUL its
+/// spawner gave it (`null`), as its AppContainer opens no file by name (PM M351).
 fn daemon_link(flag: &str, arg: LinkArg) -> Result<crate::warm::Link, String> {
     #[cfg(unix)]
     {
         let _ = flag;
+        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        crate::workload::hold_null(null);
         crate::warm::Link::from_fd(arg)
     }
     #[cfg(windows)]
     {
         let handle = take_given(flag, &arg)?;
         let stream = shards_ipc::Stream::given(handle).map_err(|e| format!("{flag} {arg}: {e}"))?;
-        crate::warm::Link::new(stream)
+        crate::workload::hold_null(std::fs::File::from(take_given(flag, "null")?));
+        Ok(crate::warm::Link::new(stream))
     }
 }
 
