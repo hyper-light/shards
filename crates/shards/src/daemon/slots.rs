@@ -358,7 +358,7 @@ impl<D: Disk> Daemon<D> {
         // The rest of its request, whole within the time a socket's client had to send its
         // own, and no longer waited for once the daemon ends its clients.
         let request = |opened: slots::Opened| {
-            opened.request_within(Some(self.request_timeout), Some(self.requests_end.0.as_fd()))
+            opened.request_within(Some(self.request_timeout), Some(&self.requests_end))
         };
         // A daemon that has closed takes no more: its client asks the next.
         let Some(counted) = self.in_hand() else {

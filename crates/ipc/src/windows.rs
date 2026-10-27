@@ -17,8 +17,9 @@
 //!   that one whose maker went without deleting it is deleted by the next ([`sweep`]). It
 //!   holds the capabilities VidExo's DACL grants, read from the device as it is made
 //!   ([`hypervisor_capabilities`]), without which it runs no partition (M200).
-//! - **Messages** ([`send`], [`recv`]) carry no handles: a handle goes in a payload, its
-//!   value in the receiver's process, where its sender put it ([`Child::give`]).
+//! - **Messages** of a VM's grants ([`write_message`], [`read_message`]) carry no handles: a
+//!   handle goes in a payload, its value in the receiver's process, where its sender put it
+//!   ([`Child::give`]). A [`crate::Stream`]'s carry them as Unix's do (pipe.rs, D195).
 //! - **Windows' mitigations**: strict handle checks, no Win32k, no extension points, no
 //!   images from remote devices or of a low label, no child processes, and no FSCTLs where
 //!   the Windows takes it (windows-2022 does not, M201). Not dynamic code: windows-2022's
@@ -34,6 +35,8 @@ use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _,
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use crate::pipe::Message;
 
 use windows_sys::Win32::Foundation::{
     DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, GENERIC_ALL,
@@ -389,16 +392,10 @@ pub fn in_app_container() -> bool {
     ok != 0 && is != 0
 }
 
-/// A message as [`send`] and [`recv`] carry it on Windows.
-#[derive(Debug)]
-pub struct Message {
-    pub kind: u8,
-    pub payload: Vec<u8>,
-}
-
-/// Sends a message as [`recv`] reads it: its kind, its payload's length (a big-endian u32)
-/// and its payload, framed as Unix's messages are.
-pub fn send(mut to: impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
+/// Writes a message as [`read_message`] reads it: its kind, its payload's length (a
+/// big-endian u32) and its payload, framed as Unix's messages are, without handles: what a
+/// VM's grants and a network process's links carry (D141, D142).
+pub fn write_message(mut to: impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     if payload.len() > crate::MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -472,13 +469,18 @@ impl Incoming {
             let [kind, ..] = self.header;
             let payload = self.payload.take().unwrap_or_default();
             self.have = 0;
-            return Ok(Took::Message(Message { kind, payload }));
+            return Ok(Took::Message(Message {
+                kind,
+                payload,
+                fds: Vec::new(),
+            }));
         }
     }
 }
 
-/// The next message, or `None` where the stream ends before one starts.
-pub fn recv(mut from: impl Read) -> io::Result<Option<Message>> {
+/// The next message [`write_message`] wrote, or `None` where the stream ends before one
+/// starts.
+pub fn read_message(mut from: impl Read) -> io::Result<Option<Message>> {
     let mut header = [0u8; 5];
     let mut got = 0;
     while got < header.len() {
@@ -504,7 +506,11 @@ pub fn recv(mut from: impl Read) -> io::Result<Option<Message>> {
     }
     let mut payload = vec![0u8; len];
     from.read_exact(&mut payload)?;
-    Ok(Some(Message { kind, payload }))
+    Ok(Some(Message {
+        kind,
+        payload,
+        fds: Vec::new(),
+    }))
 }
 
 /// A SID the system allocated, freed as it drops.
@@ -1250,17 +1256,17 @@ mod tests {
     #[test]
     fn messages_frame_as_unix_messages_do() {
         let mut wire = Vec::new();
-        send(&mut wire, 7, b"payload").unwrap();
-        send(&mut wire, 8, b"").unwrap();
+        write_message(&mut wire, 7, b"payload").unwrap();
+        write_message(&mut wire, 8, b"").unwrap();
         let mut from = wire.as_slice();
-        let m = recv(&mut from).unwrap().unwrap();
+        let m = read_message(&mut from).unwrap().unwrap();
         assert_eq!((m.kind, m.payload.as_slice()), (7, &b"payload"[..]));
-        let m = recv(&mut from).unwrap().unwrap();
+        let m = read_message(&mut from).unwrap().unwrap();
         assert_eq!((m.kind, m.payload.len()), (8, 0));
-        assert!(recv(&mut from).unwrap().is_none());
-        assert!(recv(&wire[..3]).is_err());
+        assert!(read_message(&mut from).unwrap().is_none());
+        assert!(read_message(&wire[..3]).is_err());
         let too_long = [1u8, 0xff, 0xff, 0xff, 0xff];
-        assert!(recv(&too_long[..]).is_err());
+        assert!(read_message(&too_long[..]).is_err());
     }
 
     /// A message read a byte at a time, as a socket that does not wait gives it, is taken
@@ -1268,8 +1274,8 @@ mod tests {
     #[test]
     fn a_message_comes_whole_from_its_parts() {
         let mut wire = Vec::new();
-        send(&mut wire, 9, b"parts").unwrap();
-        send(&mut wire, 3, b"").unwrap();
+        write_message(&mut wire, 9, b"parts").unwrap();
+        write_message(&mut wire, 3, b"").unwrap();
         struct Trickle<'a>(&'a [u8], usize);
         impl Read for Trickle<'_> {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {

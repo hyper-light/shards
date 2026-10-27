@@ -875,10 +875,10 @@ struct Daemon<D: Disk = Real> {
     /// Told as a client leaves, under its lock: a slot's client past the most in hand waits
     /// on it for its turn.
     room: (Mutex<()>, Condvar),
-    /// Readable once [`end_clients`](Self::end_clients) has ended the clients in hand: a
-    /// slot's client whose request is not whole yet waits on it too (slots.rs), and is told
-    /// to ask the next daemon.
-    requests_end: (io::PipeReader, io::PipeWriter),
+    /// Set once [`end_clients`](Self::end_clients) has ended the clients in hand: a slot's
+    /// client whose request is not whole yet waits on it too (slots.rs), and is told to ask
+    /// the next daemon.
+    requests_end: shards_ipc::Latch,
     /// When it last said its clients in hand reached its most (slots.rs).
     at_most_said: Mutex<Option<Instant>>,
     clients_ended: AtomicBool,
@@ -1639,7 +1639,7 @@ impl<D: Disk> Daemon<D> {
             closed: AtomicBool::new(false),
             slot_events: Mutex::new(None),
             room: (Mutex::new(()), Condvar::new()),
-            requests_end: io::pipe()?,
+            requests_end: shards_ipc::Latch::new()?,
             at_most_said: Mutex::new(None),
             clients_ended: AtomicBool::new(false),
             live: Mutex::default(),
@@ -2081,9 +2081,9 @@ impl<D: Disk> Daemon<D> {
         for cancel in lock(&self.preparing).values() {
             cancel.cancel();
         }
-        // Slots' clients mid-request: a byte never read, which keeps the pipe readable.
+        // Slots' clients mid-request, whose readers wait on it beside their requests.
         if !self.clients_ended.swap(true, Ordering::SeqCst) {
-            let _ = (&self.requests_end.1).write_all(&[0]);
+            self.requests_end.set();
         }
     }
 

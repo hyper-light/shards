@@ -1837,7 +1837,6 @@ pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
 /// share process's connection.
 pub const MAX_FDS: usize = 9;
 
-#[cfg(unix)]
 pub mod slots;
 #[cfg(unix)]
 mod spawner;
@@ -1848,9 +1847,60 @@ pub use spawner::{Group, end_group, group_ended, serve_spawner, spawn_in_group, 
 #[cfg(unix)]
 pub use unix::*;
 #[cfg(windows)]
+mod pipe;
+#[cfg(windows)]
+pub use pipe::{Event, Message, Pipe, Stream, end, recv, recv_by, send};
+#[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+
+/// What one thread sets, once, for others to see, and a wait can wake on: the daemon's end
+/// of its clients, which a slot's reader of a request waits on beside the request (D185).
+/// A pipe written a byte never read, on Unix; an event, on Windows.
+#[derive(Debug)]
+pub struct Latch {
+    #[cfg(unix)]
+    pipe: (std::io::PipeReader, std::io::PipeWriter),
+    #[cfg(windows)]
+    event: Event,
+}
+
+impl Latch {
+    pub fn new() -> std::io::Result<Latch> {
+        Ok(Latch {
+            #[cfg(unix)]
+            pipe: std::io::pipe()?,
+            #[cfg(windows)]
+            event: Event::new()?,
+        })
+    }
+
+    /// Sets it, and it stays set.
+    pub fn set(&self) {
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+            // A full pipe is set already.
+            let _ = (&self.pipe.1).write_all(&[0]);
+        }
+        #[cfg(windows)]
+        self.event.set();
+    }
+
+    /// What a wait wakes on once it is set: readable from then on.
+    #[cfg(unix)]
+    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        self.pipe.0.as_fd()
+    }
+
+    /// What a wait wakes on once it is set.
+    #[cfg(windows)]
+    pub fn event(&self) -> &Event {
+        &self.event
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
