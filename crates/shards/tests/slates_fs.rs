@@ -59,28 +59,23 @@ const HELLO: &[u8] = b"hello from slates over shards virtio-fs\n";
 const FROM_GUEST: &[u8] = b"written by a shards guest through its slates share\n";
 /// The file the guest maps with DAX: 3 MiB, past the 2 MiB slates marks `FUSE_ATTR_DAX` at, byte `i` being `i mod 251`,
 /// as the testguest checks it.
-#[cfg(unix)]
 const BIG_BYTES: usize = 3 << 20;
 /// Where the guest stores through its map, and what, as the testguest stores it.
-#[cfg(unix)]
 const GUEST_AT: usize = 4096;
-#[cfg(unix)]
 const GUEST_STORE: &[u8] = b"stored by a shards guest through its DAX map\n";
 /// Where the host's change through another path lands, and what, as the testguest waits for it.
-#[cfg(unix)]
 const HOST_AT: usize = 1 << 20;
-#[cfg(unix)]
 const HOST_CHANGE: &[u8] = b"written by the host through slates while the guest held its map\n";
+/// Where the host cuts the file once the guest has seen its change, as the testguest expects it: past the change,
+/// inside the first range, at no page's end, so the rest of that page must read zeros in the guest's map.
+const CUT: usize = (3 << 19) + 100;
 /// The DAX window the share gets (D189), in MiB: room for the file's two ranges and to spare.
-#[cfg(unix)]
 const SHARE_WINDOW_MIB: &str = "64";
 
 /// A process the test runs, killed and reaped when dropped, so a failed assertion leaves no VM behind (the DAX guest
 /// waits for the host with no deadline of its own).
-#[cfg(unix)]
 struct Reaped(Child);
 
-#[cfg(unix)]
 impl Drop for Reaped {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -91,7 +86,6 @@ impl Drop for Reaped {
 /// Runs `cmd` (given [`as_tests_run`]'s environment) with its stdout read line by line as it comes: `on_line` sees each
 /// line on this thread, so the test can act on the host while the VM waits for it. Killed, failing the test, after
 /// `timeout`; `asked` names it then. Its exit and everything it printed.
-#[cfg(unix)]
 fn run_watching(
     mut cmd: Command,
     asked: &[String],
@@ -156,7 +150,11 @@ fn run_watching(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+    // A Windows process ends with an exit code, never a signal.
+    #[cfg(windows)]
+    let signal = None;
     common::Run {
         status: status.code(),
         signal,
@@ -316,8 +314,10 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
 /// fsyncs. When it says so, the host reads `big` through slates and rewrites it through another attachment with the
 /// guest's store kept and other bytes changed. Expect slates' first read after the guest's word to hold the store (slates
 /// writes it back before the fsync returns; how long that read took is printed), the guest to see the host's change and
-/// its own store in its same map and print `SHARDS-TEST PASS`, and slates' read afterwards to hold both.
-#[cfg(unix)]
+/// its own store in its same map. When it says so, the host cuts `big` at [`CUT`]; expect the guest to read zeros over
+/// the rest of the page that holds the new end, its store and the change kept, and print `SHARDS-TEST PASS`, and
+/// slates' read afterwards to hold both and end at the cut. On Windows the
+/// stream is handed as a handle and the window is WHP's (slates A-180 answers its descriptor asks with confined sections).
 #[test]
 fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() {
     if cannot_run_vms() {
@@ -333,9 +333,16 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
 
     let k = kernel().to_str().unwrap().to_owned();
     let init = test_guest().to_str().unwrap().to_owned();
+    // The stream's end as the first test hands it: descriptor 3 on Unix, a handle on Windows (slates A-181).
+    #[cfg(unix)]
+    let (hand, flag, end): (&[&str], _, _) = (&["--fd", "3"], "--slates-fs-fd", "3");
+    #[cfg(windows)]
+    let (hand, flag, end): (&[&str], _, _) = (&[], "--slates-fs-handle", "{handle}");
     let mut vm = Command::new(&bin);
     as_tests_run(&mut vm);
-    vm.args(["--instance", &instance, "shards", &id, "--fd", "3", "--"])
+    vm.args(["--instance", &instance, "shards", &id])
+        .args(hand)
+        .arg("--")
         .arg(shards())
         .args([
             "run",
@@ -343,8 +350,8 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
             &k,
             "--init",
             &init,
-            "--slates-fs-fd",
-            "3",
+            flag,
+            end,
             "--share-window",
             SHARE_WINDOW_MIB,
             "--cmdline",
@@ -353,11 +360,17 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
     let asked = vec![
         "slates shards".to_string(),
         id.clone(),
-        "-- shards run --slates-fs-fd 3 --share-window".to_string(),
+        format!("-- shards run {flag} {end} --share-window"),
         SHARE_WINDOW_MIB.to_string(),
     ];
     let mut visible_after = None;
+    let mut changed: Option<Vec<u8>> = None;
     let run = run_watching(vm, &asked, TIMEOUT, |line| {
+        if line.contains("SLATES-DAX SEEN") {
+            let whole = changed.as_ref().expect("the guest saw the change the host made");
+            write(&bin, &instance, &id, "big", &whole[..CUT]);
+            return;
+        }
         if !line.contains("SLATES-DAX STORED") {
             return;
         }
@@ -370,9 +383,10 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
             GUEST_STORE,
             "the guest's store reached the volume by its fsync"
         );
-        let mut changed = read.stdout;
-        changed[HOST_AT..HOST_AT + HOST_CHANGE.len()].copy_from_slice(HOST_CHANGE);
-        write(&bin, &instance, &id, "big", &changed);
+        let mut whole = read.stdout;
+        whole[HOST_AT..HOST_AT + HOST_CHANGE.len()].copy_from_slice(HOST_CHANGE);
+        write(&bin, &instance, &id, "big", &whole);
+        changed = Some(whole);
     });
     assert_eq!(run.status, Some(0), "{run}");
     assert!(
@@ -394,6 +408,7 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
 
     let read = slates(&bin, &instance, &["read", &id, "big"], b"");
     assert!(read.status.success(), "slates read: {read:?}");
+    assert_eq!(read.stdout.len(), CUT, "the file ends at the cut");
     assert_eq!(&read.stdout[GUEST_AT..GUEST_AT + GUEST_STORE.len()], GUEST_STORE);
     assert_eq!(&read.stdout[HOST_AT..HOST_AT + HOST_CHANGE.len()], HOST_CHANGE);
 }

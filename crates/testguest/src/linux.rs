@@ -124,8 +124,12 @@ fn slates_fs() -> Result<(), String> {
 /// (`SLATES-DAX STORED`); the host then reads the volume and rewrites the file through another
 /// path, keeping the store and changing other bytes, and slates writes that change into the map
 /// before the host's write returns. So the guest waits, with no deadline of its own (the host
-/// bounds the test), for both to show in its same map. The bytes and offsets are those of
-/// crates/shards/tests/slates_fs.rs.
+/// bounds the test), for both to show in its same map. It then says so (`SLATES-DAX SEEN`), the
+/// host cuts the file inside this range at a length no page ends at, and the rest of the page that
+/// holds the new end must read zeros through the same map, the store and the change before it kept:
+/// a file's tail past its end, as every host's window shows it (slates zeroes what a cut takes). Pages
+/// wholly past the end are not touched, since the guest's own kernel answers those `SIGBUS` (POSIX's
+/// rule, not the window's). The bytes and offsets are those of crates/shards/tests/slates_fs.rs.
 fn slates_fs_dax() -> Result<(), String> {
     use std::os::fd::AsRawFd;
     const BIG: &str = "/mnt/big";
@@ -135,6 +139,8 @@ fn slates_fs_dax() -> Result<(), String> {
     const GUEST: &[u8] = b"stored by a shards guest through its DAX map\n";
     const HOST_AT: usize = 1 << 20;
     const HOST: &[u8] = b"written by the host through slates while the guest held its map\n";
+    // Where the host cuts the file: past the change, inside the first range, at no page's end.
+    const CUT: usize = (3 << 19) + 100;
     std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
     let (src, target, fs, opts) = (
         cstr("shards0")?,
@@ -207,6 +213,26 @@ fn slates_fs_dax() -> Result<(), String> {
                 "host bytes {:?}, own store {:?}",
                 String::from_utf8_lossy(&host),
                 String::from_utf8_lossy(&own)
+            ))
+        }
+    });
+    let _ = writeln!(io::stdout(), "SLATES-DAX SEEN");
+    // SAFETY: a pure query of the page size.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .map_err(|_| "the page size".to_string())?;
+    let tail_end = CUT.div_ceil(page) * page;
+    waiting("the cut's tail to read zeros", || {
+        let tail = read(CUT, tail_end - CUT);
+        let (host, own) = (read(HOST_AT, HOST.len()), read(GUEST_AT, GUEST.len()));
+        if tail.iter().all(|byte| *byte == 0) && host == HOST && own == GUEST {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} of the tail's {} bytes not zero, host bytes kept {}, own store kept {}",
+                tail.iter().filter(|byte| **byte != 0).count(),
+                tail.len(),
+                host == HOST,
+                own == GUEST
             ))
         }
     });
