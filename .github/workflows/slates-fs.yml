@@ -1,0 +1,84 @@
+name: slates fs
+
+# A WHP microVM on Windows mounts a volume the slates daemon serves, over the virtio-fs device's
+# duplex named pipe (D38, PM M340; slates A-179, A-181): `slates shards ID -- shards run …
+# --slates-fs-handle {handle}`. The guest reads slates' write and writes a file slates then reads
+# (crates/shards/tests/slates_fs.rs). slates is built from the commit SLATES_REV pins, so a slates
+# change reaches this run only by moving the pin. The test runs three times, each a fresh anchor,
+# volume and VM; a SKIP fails the run, since every gate it has is met here.
+# Runs when the test, the device's stream or this file changes, or when asked.
+on:
+  push:
+    paths:
+      - crates/shards/tests/slates_fs.rs
+      - crates/vmm/src/platform/windows.rs
+      - crates/shards/src/vm_run.rs
+      - .github/workflows/slates-fs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: "1.98.1"
+  # slates' main with the Windows `{handle}` hand-off (A-181).
+  SLATES_REV: f71282e1f613e129914150d7e6dc2b02ea4db4fe
+  # slates' own pin, its rust-toolchain.toml's.
+  SLATES_TOOLCHAIN: "1.98.0"
+  # AWS-LC's x64 assembly from source in both trees (vendor/README.md; slates' ci.yml).
+  AWS_LC_SYS_PREBUILT_NASM: "0"
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: hyper-light/slates
+          ref: ${{ env.SLATES_REV }}
+          path: slates-src
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl
+          scripts/retry 5 30 rustup toolchain install "$SLATES_TOOLCHAIN" --profile minimal
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: slates
+        shell: bash
+        working-directory: slates-src
+        run: |
+          git log -1 --format='slates %H %s'
+          cargo "+$SLATES_TOOLCHAIN" build --locked --release -p slates-cli --bin slates
+          echo "SLATES_BIN=$(cygpath -w "$PWD/target/release/slates.exe")" >> "$GITHUB_ENV"
+      - name: Build the test
+        shell: bash
+        run: cargo test --locked -p shards --profile test-release --test slates_fs --no-run
+      - name: A guest mounts, reads and writes a slates volume, three times
+        shell: bash
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+        run: |
+          for run in 1 2 3; do
+            echo "::group::run $run"
+            cargo test --locked -p shards --profile test-release --test slates_fs -- \
+              --exact a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves --nocapture \
+              2>&1 | tee "$RUNNER_TEMP/run-$run.log"
+            status=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then echo "run $run failed: $status"; exit "$status"; fi
+            if grep -q '^SKIP' "$RUNNER_TEMP/run-$run.log"; then echo "run $run skipped"; exit 1; fi
+            grep -q '1 passed' "$RUNNER_TEMP/run-$run.log" || { echo "run $run ran no test"; exit 1; }
+          done
+          echo "3 of 3 runs passed"

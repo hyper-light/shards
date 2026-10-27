@@ -25,11 +25,15 @@
 //! unmounted before slates' anchor stops, whatever the test's outcome, since a daemon that dies under a live macOS NFS
 //! mount leaves the mount hung.
 //!
-//! Unix-only (fd-passing); a Windows microVM would be handed a HANDLE, which slates has no route for yet. It skips loudly
-//! (prints and passes) where the host cannot run VMs or `SLATES_BIN` is unset, as the other VM tests do.
+//! The first test runs on Windows too (WHP, D140): there the stream is a duplex named pipe, and `slates shards ID --
+//! shards run … --slates-fs-handle {handle}` starts the spawner holding the pipe's end as a handle, writing its value
+//! where `{handle}` stands (slates A-179, A-181); the spawner duplicates it into the confined VM process (D141, PM
+//! M203), whose device reads and writes this framing on it with overlapped I/O (PM M340). The DAX and mount tests are
+//! Unix's: Windows has no DAX window for a share another server serves yet, and no `slates mount` a Shards daemon
+//! shares. Each test skips loudly (prints and passes) where the host cannot run VMs or `SLATES_BIN` is unset, as the
+//! other VM tests do.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![cfg(unix)]
 
 mod common;
 
@@ -38,10 +42,9 @@ use std::io::Write;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{
-    TempDir, as_tests_run, cannot_run_vms, guest_init, kernel, run_command, run_shards_env, served, shards,
-    test_guest,
-};
+#[cfg(unix)]
+use common::{TempDir, guest_init, run_shards_env, served};
+use common::{as_tests_run, cannot_run_vms, kernel, run_command, shards, test_guest};
 
 /// The host bounds the run; the guest's own waits are unbounded (it powers off on done).
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -56,20 +59,28 @@ const HELLO: &[u8] = b"hello from slates over shards virtio-fs\n";
 const FROM_GUEST: &[u8] = b"written by a shards guest through its slates share\n";
 /// The file the guest maps with DAX: 3 MiB, past the 2 MiB slates marks `FUSE_ATTR_DAX` at, byte `i` being `i mod 251`,
 /// as the testguest checks it.
+#[cfg(unix)]
 const BIG_BYTES: usize = 3 << 20;
 /// Where the guest stores through its map, and what, as the testguest stores it.
+#[cfg(unix)]
 const GUEST_AT: usize = 4096;
+#[cfg(unix)]
 const GUEST_STORE: &[u8] = b"stored by a shards guest through its DAX map\n";
 /// Where the host's change through another path lands, and what, as the testguest waits for it.
+#[cfg(unix)]
 const HOST_AT: usize = 1 << 20;
+#[cfg(unix)]
 const HOST_CHANGE: &[u8] = b"written by the host through slates while the guest held its map\n";
 /// The DAX window the share gets (D189), in MiB: room for the file's two ranges and to spare.
+#[cfg(unix)]
 const SHARE_WINDOW_MIB: &str = "64";
 
 /// A process the test runs, killed and reaped when dropped, so a failed assertion leaves no VM behind (the DAX guest
 /// waits for the host with no deadline of its own).
+#[cfg(unix)]
 struct Reaped(Child);
 
+#[cfg(unix)]
 impl Drop for Reaped {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -80,6 +91,7 @@ impl Drop for Reaped {
 /// Runs `cmd` (given [`as_tests_run`]'s environment) with its stdout read line by line as it comes: `on_line` sees each
 /// line on this thread, so the test can act on the host while the VM waits for it. Killed, failing the test, after
 /// `timeout`; `asked` names it then. Its exit and everything it printed.
+#[cfg(unix)]
 fn run_watching(
     mut cmd: Command,
     asked: &[String],
@@ -256,9 +268,17 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
 
     let k = kernel().to_str().unwrap().to_owned();
     let init = test_guest().to_str().unwrap().to_owned();
+    // The stream's end reaches the spawner as descriptor 3 on Unix; on Windows as a handle, its value written where
+    // `{handle}` stands, since a handle's value is not the caller's to choose (slates A-181).
+    #[cfg(unix)]
+    let (hand, flag, end): (&[&str], _, _) = (&["--fd", "3"], "--slates-fs-fd", "3");
+    #[cfg(windows)]
+    let (hand, flag, end): (&[&str], _, _) = (&[], "--slates-fs-handle", "{handle}");
     let mut vm = Command::new(&bin);
     as_tests_run(&mut vm);
-    vm.args(["--instance", &instance, "shards", &id, "--fd", "3", "--"])
+    vm.args(["--instance", &instance, "shards", &id])
+        .args(hand)
+        .arg("--")
         .arg(shards())
         .args([
             "run",
@@ -266,15 +286,15 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
             &k,
             "--init",
             &init,
-            "--slates-fs-fd",
-            "3",
+            flag,
+            end,
             "--cmdline",
             "console=ttyS0 quiet panic=-1 shards_test=slates_fs",
         ]);
     let asked = vec![
         "slates shards".to_string(),
         id.clone(),
-        "-- shards run --slates-fs-fd 3".to_string(),
+        format!("-- shards run {flag} {end}"),
     ];
     let run = run_command(vm, &asked, TIMEOUT);
     assert_eq!(run.status, Some(0), "{run}");
@@ -297,6 +317,7 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
 /// guest's store kept and other bytes changed. Expect slates' first read after the guest's word to hold the store (slates
 /// writes it back before the fsync returns; how long that read took is printed), the guest to see the host's change and
 /// its own store in its same map and print `SHARDS-TEST PASS`, and slates' read afterwards to hold both.
+#[cfg(unix)]
 #[test]
 fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() {
     if cannot_run_vms() {
@@ -379,20 +400,25 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
 
 /// The file a guest maps through Shards' own DAX window over a slates mount: 8 MiB, past the 1 MiB from which a volume's
 /// files go through its microVM's window (D189), byte `i` being `i mod 251`.
+#[cfg(unix)]
 const MOUNTED_BYTES: usize = 8 << 20;
 /// Where the host's change through another slates attachment lands in that file: inside its second 2 MiB range.
+#[cfg(unix)]
 const MOUNTED_AT: usize = 3 << 20;
 /// The name of the microVM the mount test runs under its Shards daemon.
+#[cfg(unix)]
 const MOUNTED_VM: &str = "slatesmount";
 
 /// A volume mounted on this host with `slates mount` at a directory, unmounted when dropped (asked until slates answers,
 /// then forced), so that slates' daemon never dies under a live mount: declared after the anchor, it is dropped before.
+#[cfg(unix)]
 struct Mounted<'a> {
     bin: &'a OsStr,
     instance: String,
     point: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl<'a> Mounted<'a> {
     fn new(bin: &'a OsStr, instance: &str, id: &str, point: &std::path::Path) -> Mounted<'a> {
         let at = point.to_str().unwrap();
@@ -405,6 +431,7 @@ impl<'a> Mounted<'a> {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Mounted<'_> {
     fn drop(&mut self) {
         let at = self.point.to_str().unwrap_or_default();
@@ -423,10 +450,12 @@ impl Drop for Mounted<'_> {
 }
 
 /// A microVM under a Shards daemon, removed when dropped: declared after the mount it shares, it is removed first.
+#[cfg(unix)]
 struct Removed<'a> {
     env: &'a [(&'a str, &'a OsStr)],
 }
 
+#[cfg(unix)]
 impl Drop for Removed<'_> {
     fn drop(&mut self) {
         let _ = run_shards_env(&[], &["rm", "-f", MOUNTED_VM], self.env, TIMEOUT);
@@ -440,6 +469,7 @@ impl Drop for Removed<'_> {
 /// Expect: the guest's kernel maps `big` into the window (`dax /v/big yes`) and reads it whole through it; and a fresh
 /// open and read in the guest shows the host's byte within `TIMEOUT`, since each open makes Shards' server open the host
 /// file, which revalidates it on the host side.
+#[cfg(unix)]
 #[test]
 fn a_microvm_maps_a_slates_mount_file_through_its_own_dax_window() {
     if cannot_run_vms() {
