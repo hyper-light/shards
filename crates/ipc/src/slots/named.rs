@@ -924,11 +924,14 @@ mod tests {
             // Each slot's end, as its thread has it: its maker lets go of it then, as a
             // daemon's does (`Event::Ended`).
             let (done, gone) = mpsc::channel::<u64>();
+            // Up to OFFERED waiting, counted once a look: clients that take each instance as
+            // it is made would keep a maker that counted again after each from ever looking at
+            // its clock.
             let offer = |requests: &mut Requests| {
                 while let Ok(n) = gone.try_recv() {
                     requests.remove(n);
                 }
-                while requests.waiting(false).unwrap() < OFFERED {
+                for _ in requests.waiting(false).unwrap()..OFFERED {
                     let slot = requests.make(false).unwrap();
                     stops.hold(&slot);
                     let (n, done) = (slot.number(), done.clone());
