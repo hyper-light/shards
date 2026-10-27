@@ -66,6 +66,11 @@ pub use poll::{ExitWatch, Poller};
 /// 4.1 to 15.1). The pipe takes these as quotas, not allocations (CreateNamedPipeW).
 pub(crate) const BUFFER: u32 = 1 << 20;
 
+/// What each direction of a slot's line holds (D185): a FIFO's capacity on Linux (pipe(7):
+/// 16 pages, 65,536 bytes), so that an answer its client does not take holds its daemon as
+/// it does there (PM M261). M340's 64 KiB moved 3.3 GB/s at least, past any answer's need.
+pub(crate) const LINE_BUFFER: u32 = 64 << 10;
+
 /// `code`, a Win32 error, as an `io::Error`.
 pub(crate) fn error(code: u32) -> io::Error {
     io::Error::from_raw_os_error(i32::try_from(code).unwrap_or(i32::MAX))
@@ -438,8 +443,8 @@ pub(crate) fn wide(name: &str) -> Vec<u16> {
 
 /// A new instance of the pipe `name`, duplex and overlapped, in bytes, refusing remote
 /// clients, of this user's alone ([`attributes`]); its name's first instance where `first`,
-/// its only where `only`.
-pub(crate) fn instance(name: &[u16], first: bool, only: bool) -> io::Result<OwnedHandle> {
+/// its only where `only`; `buffer` bytes each way.
+pub(crate) fn instance(name: &[u16], first: bool, only: bool, buffer: u32) -> io::Result<OwnedHandle> {
     let attributes = attributes()?;
     let first = if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 };
     // SAFETY: a NUL-terminated name, attributes that live through the call.
@@ -453,8 +458,8 @@ pub(crate) fn instance(name: &[u16], first: bool, only: bool) -> io::Result<Owne
             } else {
                 windows_sys::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES
             },
-            BUFFER,
-            BUFFER,
+            buffer,
+            buffer,
             0,
             &raw const attributes,
         )
@@ -492,7 +497,7 @@ pub(crate) fn open(name: &[u16], overlapped: bool) -> io::Result<OwnedHandle> {
 
 /// A connected pair of ends, each overlapped: a fresh name's only instance, and the client
 /// end opened at once, which no other process can then open (M340).
-pub(crate) fn pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
+pub(crate) fn pair(buffer: u32) -> io::Result<(OwnedHandle, OwnedHandle)> {
     static MADE: AtomicU64 = AtomicU64::new(0);
     let name = wide(&format!(
         r"\\.\pipe\shards-{}-{}-{}",
@@ -500,7 +505,7 @@ pub(crate) fn pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
         MADE.fetch_add(1, Ordering::Relaxed),
         random_hex(8)?
     ));
-    let server = instance(&name, true, true)?;
+    let server = instance(&name, true, true, buffer)?;
     let client = open(&name, true)?;
     if !connected(server.as_raw_handle(), &[])? {
         return Err(io::Error::other("a pipe pair did not connect"));
@@ -669,7 +674,7 @@ impl Stream {
 
     /// A connected pair, both ends this process's ([`pair`]).
     pub fn pair() -> io::Result<(Stream, Stream)> {
-        let (server, client) = pair()?;
+        let (server, client) = pair(BUFFER)?;
         let queues = Arc::new(Queues::default());
         Ok((
             Stream::of(
@@ -1519,7 +1524,7 @@ mod tests {
     #[test]
     fn an_instance_peeks_as_listening_until_opened() {
         let name = fresh("peek");
-        let server = instance(&name, true, false).unwrap();
+        let server = instance(&name, true, false, BUFFER).unwrap();
         let e = available(server.as_raw_handle(), None).unwrap_err();
         assert_eq!(code(&e), ERROR_BAD_PIPE);
         let client = open(&name, true).unwrap();
@@ -1538,7 +1543,7 @@ mod tests {
         let waited = |ms| unsafe { WaitNamedPipeW(name.as_ptr(), ms) };
         assert_eq!(waited(1000), 0);
         assert_eq!(code(&io::Error::last_os_error()), ERROR_FILE_NOT_FOUND);
-        let first = instance(&name, true, false).unwrap();
+        let first = instance(&name, true, false, BUFFER).unwrap();
         let _taken = open(&name, true).unwrap();
         let t0 = Instant::now();
         assert_eq!(waited(50), 0);
@@ -1550,7 +1555,7 @@ mod tests {
                 (waited(10_000), t0.elapsed())
             });
             std::thread::sleep(Duration::from_millis(100));
-            let _second = instance(&name, false, false).unwrap();
+            let _second = instance(&name, false, false, BUFFER).unwrap();
             let (got, took) = waiting.join().unwrap();
             assert_ne!(got, 0);
             assert!(
@@ -1566,7 +1571,7 @@ mod tests {
     #[test]
     fn a_wait_ends_as_the_last_instance_closes() {
         let name = fresh("gone");
-        let server = instance(&name, true, false).unwrap();
+        let server = instance(&name, true, false, BUFFER).unwrap();
         let _taken = open(&name, true).unwrap();
         std::thread::scope(|s| {
             let waiting = s.spawn(|| {

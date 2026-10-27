@@ -9148,10 +9148,17 @@ mod tests {
             // A slot's names beside the lists: the maker's first look is done. Served
             // alone, its lists are as they were opened, and that look could find them half
             // removed below and make them again as they go (gate e2, under load).
+            #[cfg(unix)]
             t.until("no slot was offered", |_| {
                 std::fs::read_dir(t.home.join(s::DIR))
                     .unwrap()
                     .any(|e| !matches!(e.unwrap().file_name().to_str(), Some("free" | "free-streams")))
+            });
+            // A slot is an instance of its list's pipe on Windows, named in no file: one a
+            // client takes was offered after the maker's first look.
+            #[cfg(windows)]
+            t.until("no slot was offered", |_| {
+                matches!(s::take(&t.home, 0), Ok(s::Taken::Slot(_)))
             });
             // Its lists' names, as one removes them by hand, and its maker told to look,
             // as the listener tells it once a name of the home comes or goes.

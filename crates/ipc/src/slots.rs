@@ -31,7 +31,7 @@ pub type Line = crate::Pipe;
 
 /// Two lines joined, what is written to the second read from the first, as a session's
 /// `say` and `answer` are joined to its client's ends: a pipe on Unix; on Windows a pair
-/// of shards' own pipes, either way.
+/// of shards' own pipes, either way, each holding what a slot's line holds.
 pub fn joined() -> io::Result<(Line, Line)> {
     #[cfg(unix)]
     {
@@ -43,7 +43,7 @@ pub fn joined() -> io::Result<(Line, Line)> {
     }
     #[cfg(windows)]
     {
-        let (one, other) = crate::pipe::pair()?;
+        let (one, other) = crate::pipe::pair(crate::pipe::LINE_BUFFER)?;
         Ok((crate::Pipe::from_handle(one), crate::Pipe::from_handle(other)))
     }
 }

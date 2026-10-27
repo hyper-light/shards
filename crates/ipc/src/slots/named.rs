@@ -123,7 +123,7 @@ fn lists(dir: &Path) -> io::Result<([String; 2], [Keeper; 2])> {
     let made = [FREE, FREE_STREAMS].map(|file| -> io::Result<(String, Keeper)> {
         let name = format!("{prefix}-{file}");
         let wide = pipe::wide(&name);
-        let server = pipe::instance(&wide, true, false)?;
+        let server = pipe::instance(&wide, true, false, pipe::LINE_BUFFER)?;
         let client = pipe::open(&wide, true)?;
         if !pipe::connected(server.as_raw_handle(), &[])? {
             return Err(io::Error::other("a list's own instance did not connect"));
@@ -224,7 +224,7 @@ impl Requests {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("slot numbers"))?;
         let name = self.names.get(list(streams)).ok_or(io::ErrorKind::InvalidInput)?;
-        let instance = pipe::instance(&pipe::wide(name), false, false)?;
+        let instance = pipe::instance(&pipe::wide(name), false, false, pipe::LINE_BUFFER)?;
         let kept = instance.try_clone()?;
         let streams = if streams {
             Some([
