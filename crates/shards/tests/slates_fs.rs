@@ -15,7 +15,8 @@
 //! object holding that one file's bytes, writes every change made through another path into it before the change
 //! returns, and writes the guest's stores back into the volume at its fsync. The guest stores through its map and syncs;
 //! the host reads the store through slates and rewrites the file through another attachment; the guest waits to see the
-//! host's change in its same map.
+//! host's change in its same map, then the host cuts the file and the guest waits for its tail to read zeros. Its
+//! red-check is a test of its own: the same guest booted with no window finds no DAX and fails its map check.
 //!
 //! The third test takes Shards' own route instead: slates mounts the volume on the host (`slates mount`, NFS over
 //! loopback on macOS), and a microVM under a Shards daemon gets that mount as an ordinary volume (`-v MOUNT:/v`) with
@@ -29,7 +30,8 @@
 //! shards run … --slates-fs-handle {handle}` starts the spawner holding the pipe's end as a handle, writing its value
 //! where `{handle}` stands (slates A-179, A-181); the spawner duplicates it into the confined VM process (D141, PM
 //! M203), whose device reads and writes this framing on it with overlapped I/O (PM M340). The DAX test runs there too,
-//! its stream handed so and its window WHP's (D189; slates A-180 answers its descriptor asks with sections). The mount
+//! its stream handed so and its window WHP's (D189; slates A-180 answers its descriptor asks with sections), and so does
+//! its red-check. The mount
 //! test is Unix's: Windows has no `slates mount` a Shards daemon shares. Each test skips loudly (prints and passes)
 //! where the host cannot run VMs or `SLATES_BIN` is unset, as the other VM tests do.
 
@@ -306,6 +308,65 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
     assert_eq!(
         read.stdout, FROM_GUEST,
         "slates reads what the guest wrote through its share"
+    );
+}
+
+/// Do: boot the DAX test's microVM, its guest and its file alike, with no DAX window (`--share-window` left off). Expect
+/// the guest to find `big` not DAX and say so (`SHARDS-TEST FAIL /mnt/big is not DAX`), and no `SHARDS-TEST PASS`:
+/// without the window its reads go through FUSE, so the DAX test's map is the window's doing and cannot pass vacuously.
+/// This is the DAX test's red-check, kept as a test of its own.
+#[test]
+fn without_a_dax_window_the_guest_finds_no_dax_and_its_map_check_fails() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let Some(bin) = std::env::var_os("SLATES_BIN") else {
+        eprintln!("SKIP: SLATES_BIN is not set (the built `slates` binary)");
+        return;
+    };
+    let big: Vec<u8> = (0..BIG_BYTES).map(|i| (i % 251) as u8).collect();
+    let (_anchor, instance, id) = volume(&bin, "shards-nodax", &[("big", big.as_slice())]);
+
+    let k = kernel().to_str().unwrap().to_owned();
+    let init = test_guest().to_str().unwrap().to_owned();
+    // The stream's end as the other tests hand it: descriptor 3 on Unix, a handle on Windows (slates A-181).
+    #[cfg(unix)]
+    let (hand, flag, end): (&[&str], _, _) = (&["--fd", "3"], "--slates-fs-fd", "3");
+    #[cfg(windows)]
+    let (hand, flag, end): (&[&str], _, _) = (&[], "--slates-fs-handle", "{handle}");
+    let mut vm = Command::new(&bin);
+    as_tests_run(&mut vm);
+    vm.args(["--instance", &instance, "shards", &id])
+        .args(hand)
+        .arg("--")
+        .arg(shards())
+        .args([
+            "run",
+            "--kernel",
+            &k,
+            "--init",
+            &init,
+            flag,
+            end,
+            "--cmdline",
+            "console=ttyS0 quiet panic=-1 shards_test=slates_fs_dax",
+        ]);
+    let asked = vec![
+        "slates shards".to_string(),
+        id.clone(),
+        format!("-- shards run {flag} {end} (no --share-window)"),
+    ];
+    let run = run_command(vm, &asked, TIMEOUT);
+    // The guest gives its verdict on the console and powers off either way, so the VM ends well; the verdict is the line.
+    assert_eq!(run.status, Some(0), "{run}");
+    assert!(
+        run.stdout.contains("SHARDS-TEST FAIL /mnt/big is not DAX"),
+        "a guest with no window must fail its map check, for want of DAX: {run}"
+    );
+    assert!(
+        !run.stdout.contains("SHARDS-TEST PASS"),
+        "a guest with no window must not pass: {run}"
     );
 }
 

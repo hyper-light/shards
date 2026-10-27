@@ -106,3 +106,17 @@ jobs:
             grep -q '1 passed' "$RUNNER_TEMP/dax-$run.log" || { echo "dax run $run ran no test"; exit 1; }
           done
           echo "3 of 3 DAX runs passed"
+      # The DAX test's red-check, once: the same guest with no window finds no DAX and its map check fails.
+      - name: Without a window the guest finds no DAX and its map check fails (the red-check)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+        run: |
+          cargo test --locked -p shards --profile test-release --test slates_fs -- \
+            --exact without_a_dax_window_the_guest_finds_no_dax_and_its_map_check_fails --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/nodax.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then echo "the red-check failed: $status"; exit "$status"; fi
+          if grep -q '^SKIP' "$RUNNER_TEMP/nodax.log"; then echo "the red-check skipped"; exit 1; fi
+          grep -q '1 passed' "$RUNNER_TEMP/nodax.log" || { echo "the red-check ran no test"; exit 1; }
