@@ -1224,14 +1224,21 @@ fn lists_filter_and_info_counts() {
 }
 
 /// A command run in a running container by exec: made, started on the connection taken
-/// over, its streams as frames, its status kept for its client to read; the container
-/// then killed and removed.
+/// over, its streams as frames, its status kept for its client to read, and its events,
+/// `exec_create` as it is made, `exec_start` and `exec_die`, said with the ID its client
+/// has, as dockerd says them (moby daemon/exec.go, daemon/monitor.go); the container then
+/// killed and removed.
 #[test]
 fn a_command_runs_in_a_running_container_by_exec() {
     let Some((home, image)) = home("eng-exec") else {
         return;
     };
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let mut api = Api::new(&home);
+    let mut execs = Vec::new();
     let made = api.call(
         "POST",
         "/containers/create?name=held",
@@ -1264,6 +1271,7 @@ fn a_command_runs_in_a_running_container_by_exec() {
         );
         assert_eq!(exec.status, 201, "{}", exec.text());
         let exec_id = exec.json()["Id"].as_str().unwrap().to_string();
+        execs.push((exec_id.clone(), code));
         let (status, _, streamed) = Api::new(&home).upgraded(
             &format!("/exec/{exec_id}/start"),
             Some(json!({"Detach": false, "Tty": false})),
@@ -1319,6 +1327,38 @@ fn a_command_runs_in_a_running_container_by_exec() {
     assert!(refused.text().contains("/no/such/command"), "{}", refused.text());
     let unknown = api.call("GET", "/exec/nothing/json", None);
     assert_eq!(unknown.status, 404, "{}", unknown.text());
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1;
+    let events = api.call("GET", &format!("/events?since={since}&until={until}"), None);
+    assert_eq!(events.status, 200, "{}", events.text());
+    let said: Vec<Value> = events
+        .text()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    for (exec_id, code) in &execs {
+        let of_it: Vec<String> = said
+            .iter()
+            .filter(|e| e["Actor"]["Attributes"]["execID"] == json!(exec_id))
+            .map(|e| {
+                let action = e["Action"].as_str().unwrap();
+                let action = action.split_once(':').map_or(action, |(a, _)| a);
+                match e["Actor"]["Attributes"]["exitCode"].as_str() {
+                    Some(c) => format!("{action} {c}"),
+                    None => action.to_string(),
+                }
+            })
+            .collect();
+        assert_eq!(
+            of_it,
+            ["exec_create", "exec_start", &format!("exec_die {code}")],
+            "{exec_id} in {}",
+            events.text()
+        );
+    }
     let killed = api.call("POST", "/containers/held/kill", None);
     assert_eq!(killed.status, 204, "{}", killed.text());
     let waited = api.call("POST", "/containers/held/wait", None);

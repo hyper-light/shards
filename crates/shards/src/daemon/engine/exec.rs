@@ -93,7 +93,7 @@ impl<D: Disk> Daemon<D> {
             Ok(keys) => keys,
             Err(e) => return Answer::error(400, e),
         };
-        let request = shards_ipc::Exec {
+        let mut request = shards_ipc::Exec {
             container: id.clone(),
             cmd,
             env: words(&body, "Env"),
@@ -113,6 +113,10 @@ impl<D: Disk> Daemon<D> {
             Ok(exec_id) => exec_id,
             Err(e) => return Answer::error(500, format!("an exec's ID: {e}")),
         };
+        // Said as it is made, with the ID its client has, which its start and end are said
+        // with too (moby daemon/exec.go, ContainerExecCreate).
+        self.exec_event(&id, &request.cmd, "exec_create", &exec_id);
+        request.id = exec_id.clone();
         lock(&self.engine.execs).insert(
             exec_id.clone(),
             Instance {
@@ -185,6 +189,9 @@ impl<D: Disk> Daemon<D> {
             ended(None);
             return Done::Answer(Answer::error(500, "an exec's socket pair"));
         };
+        // Registered before it can end: its `exec_die` waits for its output to reach its
+        // client (engine `Relaying`), which a detached exec has none of.
+        let relaying = (!detach).then(|| self.relaying(exec_id));
         self.take(threads, theirs);
         let reads = request.interactive && !detach;
         let fds = if detach {
@@ -252,14 +259,18 @@ impl<D: Disk> Daemon<D> {
         }
         let code = std::thread::scope(|s| {
             let outputs = &outputs;
-            let copied = [
-                std::thread::Builder::new()
-                    .name("engine-stdout".into())
-                    .spawn_scoped(s, move || outputs.copy(1, out, true)),
-                std::thread::Builder::new()
-                    .name("engine-stderr".into())
-                    .spawn_scoped(s, move || outputs.copy(2, err, true)),
-            ];
+            let (copying, copies) = std::sync::mpsc::channel::<()>();
+            let copied =
+                [(1, out, "engine-stdout"), (2, err, "engine-stderr")].map(|(stream, from, name)| {
+                    let copying = copying.clone();
+                    std::thread::Builder::new()
+                        .name(name.into())
+                        .spawn_scoped(s, move || {
+                            outputs.copy(stream, from, true);
+                            drop(copying);
+                        })
+                });
+            drop(copying);
             if reads {
                 let keys = &keys;
                 let _ = std::thread::Builder::new()
@@ -277,6 +288,9 @@ impl<D: Disk> Daemon<D> {
                     break;
                 }
             }
+            // Its `exec_die` told once its client has what it wrote (`Relaying`).
+            super::copied(&copies);
+            drop(relaying);
             // All its output, then its end kept, before its client hears the stream end.
             for copy in copied.into_iter().flatten() {
                 let _ = copy.join();

@@ -15145,7 +15145,9 @@ revision before comparing a changed API/implementation.
 - **Result.** With those fixes, one test at a time and unclamped, the whole suite passed in 479 s: snapshot.rs 10 of
   10 (78 s), warm.rs 6 of 6, saved.rs 13 of 13 (160 s), daemon.rs 43 of 43 (192 s), and the snapshot tests of
   run.rs, vsock.rs, pmem.rs and boot.rs, 6 of 6; the guest's memory steady between binaries, 23.8 to 24.3 GB free.
-  Rebased onto gpu 522a95fc, it passed again, 78 of 78 in 738 s, saved.rs taking 429 s of them.
+  Rebased onto gpu 522a95fc, it passed again, 78 of 78 in 738 s, saved.rs taking 429 s of them. restore.rs, which
+  came with WHP's snapshots (D196) and the suite takes since, passed 2 of 2 there at 234bd57c (`SHARDS_L1_TESTS=restore`,
+  unclamped through launchd-run.sh, 101.9 s with the guest's boot), 2026-10-27.
 - **Hypervisor.framework ended the guest once.** In one of the 27 boots of the nested guest that day (the rebased
   tree's workspace gate, 48.8 s in), its VM process took SIGTRAP inside Hypervisor.framework: its vGIC emulation of
   an EOI (`HvCore::Hypervisor::EmulatedVgic::write_end_of_interrupt_register`, from `Arm::Emulator::write_icc_eoir1_el1`
@@ -15432,3 +15434,35 @@ revision before comparing a changed API/implementation.
   of itself before the daemon kills it, so that what it says of why reaches the daemon's
   log. The tests give a log a file, as the daemon does, and compare a DACL's entry with its
   user by SID (EqualSid), not by its SDDL text.
+
+### M352. A container's `die` before its relayed output: Compose's attached `up` dropped a line (D170)
+
+- **Question.** `a_compose_service_is_built_and_run_attached` failed once on gpu's x86_64
+  Linux CI (40577156435, 234bd57c): Compose's attached `up` printed `app-1 exited with code
+  0` and not the line the built service wrote, `slurp /tmp/built: yes`, though the run's
+  status was right. Where did the line go?
+- **Method.** compose.rs's whole binary, its three tests side by side, ten times on each of
+  eight ubuntu-24.04 runners (`budget-e2e.yml` on the scratch branch `ci-compose-probe`,
+  not for dev, CI 40587510357), the daemon's Engine API attach, start, relayed output and
+  `die` each logged with microseconds since the epoch; Compose v2.38.2, the runners'. On
+  this M5 Max, the test 40 times, Compose v5.1.0. 2026-10-27.
+- **Found.**
+  - Here, 40 of 40 passed. On CI, 1 of 80 failed (runner d, run 7), as on gpu: app-1's
+    attach waited for its start, its start took it, its `die` was logged at
+    1793137384862654 µs, the VM's EXIT reached the relay at …863170, and the relay read
+    the run's 22 bytes from its pipe and wrote them to Compose's attach at …888219, 25.6 ms
+    after the `die`.
+  - Compose v2.38.2's printer, with `--exit-code-from` (which stops every service at the
+    first exit, cascade stop), sets `aborting` as it hears the first exit and drops every
+    log line it hears after (pkg/compose/printer.go, `Run`: `if !aborting`); v5.1.0's
+    prints each line as it comes, which is why no run here failed.
+  - dockerd stops a container and logs `die` only once `StreamConfig.Wait` has returned,
+    or 2 s have passed (moby v28.5.1 daemon/monitor.go:74-75), and an exec's `exec_die`
+    likewise (:210-211): its attaches have its output first.
+  - With its end waiting for the relay (gpu 9a4482dd), compose.rs's whole binary twenty
+    times on each of the eight runners (`ci-compose-probe-2`, CI 40592927773): 0 of 160
+    failed.
+- **Consequence (D170).** A run's end waits for the relays of its output to its Engine
+  API attaches under way, up to 2 s from its end, and an exec's `exec_die` likewise
+  (daemon/engine.rs `Relaying`, `RELAY_WAIT`); `a_runs_end_waits_for_the_relays_of_its_output`
+  holds it, mutation-checked.

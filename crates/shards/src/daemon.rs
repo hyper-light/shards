@@ -766,6 +766,19 @@ struct Tracked {
 /// alone, by the followers' loop as messages come (`follow`), and by every container
 /// command before it answers (`settle`). A run tells the daemon of its start and end
 /// before its client learns of them, so a command sees what any client has seen.
+/// A run's end, as [`Daemon::tell_end`] tells it: its VM's process, whether its command
+/// started, its status and what kept it from starting, the snapshot its save stopped it as
+/// (D176), and a detached run's client, and whether `start` asked for it.
+struct Ended {
+    pid: u32,
+    started: bool,
+    status: u8,
+    said: Option<String>,
+    saved: Option<String>,
+    detached: Option<UnixStream>,
+    named: bool,
+}
+
 struct Inbox {
     socket: Arc<RunSocket>,
     /// The warm VM's process ID, for the log.
@@ -5143,12 +5156,9 @@ impl<D: Disk> Daemon<D> {
                             .position(|(e, _)| *e == u64::from_be_bytes(*n))
                     {
                         let (_, exec_id) = inbox.exec_ids.swap_remove(at);
-                        // moby daemon/monitor.go, ProcessEvent's exit of an exec.
-                        self.container_event(
-                            id,
-                            "exec_die",
-                            &[("execID", exec_id), ("exitCode", status.to_string())],
-                        );
+                        // Said once its output has reached its Engine API client, where the
+                        // daemon relays it to one (engine `Relaying`).
+                        self.exec_died_after_relays(id, &exec_id, status);
                     }
                 }
                 _ => {}
@@ -5528,6 +5538,32 @@ impl<D: Disk> Daemon<D> {
                 (code, Some(said))
             }
         };
+        let ended = Ended {
+            pid,
+            started,
+            status,
+            said,
+            saved,
+            detached: inbox.detached.take(),
+            named: inbox.named.is_some(),
+        };
+        // Told once what its command wrote has reached its Engine API attaches, where the
+        // daemon relays it to any (engine `Relaying`).
+        self.end_after_relays(id, ended);
+    }
+
+    /// Tells run `id`'s end: its container stopped, its waiters, `die`, and its restart or
+    /// removal, as its policy has it.
+    pub(super) fn tell_end(&self, id: &str, ended: Ended) {
+        let Ended {
+            pid,
+            started,
+            status,
+            said,
+            saved,
+            mut detached,
+            named,
+        } = ended;
         // A run may end before its container's record is written: its end waits in its
         // reservation, for the record (`end_container`).
         // What `die` says of it (moby daemon/monitor.go): its status, and how long it ran
@@ -5601,9 +5637,9 @@ impl<D: Disk> Daemon<D> {
         }
         // A detached command that never started: why, as `docker run -d` says it, or as
         // `docker start` does, without run's help (container/start.go).
-        if let Some(client) = inbox.detached.take() {
+        if let Some(client) = detached.take() {
             let said = said.as_deref().unwrap_or_default();
-            let (text, exits) = if inbox.named.is_some() {
+            let (text, exits) = if named {
                 (format!("shards: {said}"), 1)
             } else {
                 crate::spec::not_run(said)
@@ -11088,6 +11124,50 @@ mod tests {
             t.until("the VM was not reaped", |_| reaped(vm.id()));
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(reaped(net_pid));
+        });
+    }
+
+    /// A run's end waits for the relays of its output to its Engine API attaches under way
+    /// (engine `Relaying`): its container runs on, its waiters unanswered and its `die`
+    /// unsaid, until the last has ended, as dockerd stops a container and logs `die` once
+    /// its streams are copied (moby daemon/monitor.go, handleContainerExit); a run with
+    /// none ends at once.
+    #[test]
+    fn a_runs_end_waits_for_the_relays_of_its_output() {
+        let t = Test::new("relayed-end");
+        t.run(|t| {
+            for relays in [2, 0] {
+                let id = t.create(&format!("relayed-{relays}"));
+                let starting = t.start(&id);
+                let (ready, vm) = t.warm_vm(None);
+                starting.warm.send(ready).unwrap();
+                assert_eq!(heard(&vm).0, kind::RUN);
+                say(&vm, kind::TAKEN, &[]);
+                say(&vm, kind::STARTED, &[]);
+                let mut held: Vec<_> = (0..relays).map(|_| t.daemon.relaying(&id)).collect();
+                say(&vm, kind::DONE, &[3]);
+                if relays > 0 {
+                    t.until("its DONE was not taken", |d| {
+                        lock(&d.engine.relays).get(&id).is_some_and(|r| r.ended.is_some())
+                    });
+                    while let Some(relay) = held.pop() {
+                        assert_eq!(t.record(&id).map(|c| c.state), Some(Life::Running));
+                        assert!(
+                            t.daemon.running(&id),
+                            "ended with {} relays under way",
+                            held.len() + 1
+                        );
+                        assert!(!starting.run.is_finished(), "its waiter heard its end");
+                        drop(relay);
+                    }
+                }
+                joined(starting.run).unwrap();
+                assert_eq!(
+                    t.record(&id).map(|c| (c.state, c.exit_code)),
+                    Some((Life::Exited, Some(3)))
+                );
+                assert!(lock(&t.daemon.engine.relays).get(&id).is_none());
+            }
         });
     }
 
