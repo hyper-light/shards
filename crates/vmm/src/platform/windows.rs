@@ -520,17 +520,19 @@ pub unsafe fn unmap_file_shared(ptr: NonNull<u8>, _len: usize) {
     }
 }
 
-/// Maps `len` bytes of `file` from `offset` copy-on-write at `at`, the whole of a region
-/// [`reserve_ram`] made: its memory freed back to its placeholder (VirtualFree,
+/// Maps `len` bytes of `file` from `offset` copy-on-write at `at`, where that is the whole
+/// of a region [`reserve_ram`] made: its memory freed back to its placeholder (VirtualFree,
 /// MEM_PRESERVE_PLACEHOLDER) and a copy-on-write view of the file placed there
 /// (MapViewOfFile3, PAGE_WRITECOPY, MEM_REPLACE_PLACEHOLDER), whose pages every restore of
 /// the file shares in the cache until one writes a page, its own copy; the file is never
 /// written (PM M345). Unsupported where `offset` is not on the allocation granularity, at
-/// which every view starts: the caller then reads the file in.
+/// which every view starts, and where the range is no such region, a part of one or of a
+/// [`reserve`]'s, which Windows frees back to no placeholder (ERROR_INVALID_ADDRESS): the
+/// caller then reads the file in, the range untouched.
 ///
 /// # Safety
-/// `at..at + len` must be a whole region of `reserve_ram`'s, which no hypervisor maps and
-/// nothing references.
+/// `at..at + len` must be within a reservation of [`reserve`]'s or [`reserve_ram`]'s, which
+/// no hypervisor maps and nothing references.
 pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull<u8>) -> io::Result<()> {
     let mut info = SYSTEM_INFO::default();
     // SAFETY: GetSystemInfo fills the provided struct.
@@ -556,10 +558,11 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
             )
         };
     };
-    // SAFETY: forwarded caller contract: the whole of an allocation that replaced a
-    // placeholder, freed back to that placeholder.
+    // SAFETY: forwarded caller contract: memory of this process's reservations, freed back
+    // to its placeholder only where it is the whole of an allocation that replaced one; else
+    // the call frees nothing.
     if unsafe { VirtualFree(at.as_ptr().cast(), len, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) } == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(io::ErrorKind::Unsupported.into());
     }
     // SAFETY: a copy-on-write section of the whole file, closed once its view holds it.
     let section = unsafe {
