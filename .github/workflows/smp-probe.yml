@@ -1,0 +1,61 @@
+# Scratch (not for dev): why multi-vCPU guests stall at "smpboot: x86: Booting SMP
+# configuration:" in a confined VM process on Windows Server 2022 (build 20348), where the
+# unconfined control (boot.rs two_vcpus_boot_to_their_end_in_this_process) brings both up,
+# and why every daemon-started VM there ends 137 before READY. Each job builds the same
+# tree, the second with its VM process never forbidding itself dynamic code (D141's ACG):
+# whatever differs between them is ACG's.
+name: smp probe
+on:
+  push:
+    branches: [ci-smp-probe]
+env:
+  CARGO_TERM_COLOR: never
+  TOOLCHAIN: 1.98.1
+jobs:
+  probe:
+    name: windows-2022 ${{ matrix.acg }}
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        acg: [acg, no-acg]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Host
+        shell: bash
+        run: powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).Name; [Environment]::OSVersion.Version; (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors"
+      - name: The VM process allowed dynamic code (no-acg)
+        if: matrix.acg == 'no-acg'
+        shell: bash
+        run: |
+          sed -i 's/        shards_vmm::hv::forbid_dynamic_code_once_set_up();/        \/\/ probe: dynamic code left allowed/' crates/shards/src/vm_run.rs
+          grep -n "probe: dynamic code left allowed" crates/shards/src/vm_run.rs
+      - name: Build
+        shell: bash
+        run: cargo test --locked -p shards --profile test-release --test boot --test daemon --no-run
+      - name: Boots of more than one vCPU
+        shell: bash
+        run: |
+          export SHARDS_REQUIRE_VMS=1
+          cargo test --locked -p shards --profile test-release --test boot -- --exact brings_up_every_vcpu boots_the_hosts_maximum_vcpu_count two_vcpus_boot_to_their_end_in_this_process 2>&1 | grep -a -E "^test |test result|Brought up|Booting SMP|panicked|vCPUs:" | cut -c1-300 || true
+      - name: Daemon runs
+        shell: bash
+        run: |
+          export SHARDS_REQUIRE_VMS=1
+          cargo test --locked -p shards --profile test-release --test daemon -- --exact errors_reach_the_client idle_daemons_exit 2>&1 | grep -a -E "^test |test result|panicked|left:|right:|137|status" | cut -c1-400 | head -40 || true
