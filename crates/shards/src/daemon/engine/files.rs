@@ -54,7 +54,10 @@ impl<D: Disk> Daemon<D> {
             return Done::Close;
         }
         // Its archive: once the head is out, nothing more can be said but the archive.
-        let _ = self.ask_command_with(threads, &[COPY_STEP, "archive", given, path], &[conn.as_fd()]);
+        let Ok(out) = shards_ipc::handed(conn) else {
+            return Done::Close;
+        };
+        let _ = self.ask_command_with(threads, &[COPY_STEP, "archive", given, path], &[out.as_fd()]);
         shards_ipc::end(conn);
         Done::Close
     }
@@ -143,7 +146,10 @@ impl<D: Disk> Daemon<D> {
         if http::head_to_close(conn, 200, TAR, &[]).is_err() {
             return Done::Close;
         }
-        let _ = self.ask_command_with(threads, &["export", &id], &[conn.as_fd()]);
+        let Ok(out) = shards_ipc::handed(conn) else {
+            return Done::Close;
+        };
+        let _ = self.ask_command_with(threads, &["export", &id], &[out.as_fd()]);
         shards_ipc::end(conn);
         Done::Close
     }

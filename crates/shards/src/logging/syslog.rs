@@ -375,6 +375,27 @@ impl Local {
         })
     }
 
+    /// `at`, nanoseconds since the epoch, in this host's time zone on Windows: its offset
+    /// that instant's, as Go's `time.Local` has it there (cli/listing.rs `local`), and its
+    /// fields by the proleptic Gregorian calendar, as localtime(3) breaks a time into them.
+    #[cfg(windows)]
+    pub fn of(at: u64) -> Option<Local> {
+        let t = i64::try_from(at / 1_000_000_000).ok()?;
+        let offset = crate::cli::listing::local(t).offset;
+        let local = i128::from(t).checked_add(i128::from(offset))?;
+        let (year, month, mday) = shards_cmdline::format::civil(local.div_euclid(86_400));
+        let secs = local.rem_euclid(86_400);
+        Some(Local {
+            year: i64::try_from(year).ok()?,
+            mon: usize::try_from(month.checked_sub(1)?).ok()?,
+            mday: i64::try_from(mday).ok()?,
+            hour: i64::try_from(secs / 3600).ok()?,
+            min: i64::try_from(secs / 60 % 60).ok()?,
+            sec: i64::try_from(secs % 60).ok()?,
+            offset,
+        })
+    }
+
     /// Go's `time.Stamp`: `Jan _2 15:04:05`.
     fn stamp(&self) -> String {
         format!(
@@ -418,6 +439,29 @@ impl Local {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A moment broken into this host's local fields is that moment: its fields, read back
+    /// by the proleptic Gregorian calendar, less its zone's offset, are its seconds since the
+    /// epoch; localtime(3)'s on Unix, the zone's offset and the calendar's on Windows.
+    #[test]
+    fn a_local_time_is_its_moment() {
+        // Howard Hinnant's days_from_civil.
+        let days = |y: i64, m: i64, d: i64| {
+            let y = if m <= 2 { y - 1 } else { y };
+            let era = y.div_euclid(400);
+            let yoe = y - era * 400;
+            let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+            let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+            era * 146_097 + doe - 719_468
+        };
+        for t in [0u64, 951_782_400, 1_709_164_800, 1_761_566_400, 4_102_444_799] {
+            let l = Local::of(t * 1_000_000_000).unwrap();
+            let mon = i64::try_from(l.mon).unwrap() + 1;
+            let read = days(l.year, mon, l.mday) * 86_400 + l.hour * 3_600 + l.min * 60 + l.sec;
+            assert_eq!(read - l.offset, i64::try_from(t).unwrap(), "{t}: {l:?}");
+            assert!((0..12).contains(&l.mon) && (1..=31).contains(&l.mday), "{l:?}");
+        }
+    }
 
     /// What Docker 29's syslog driver sent, and which of its options Docker took
     /// (scripts/logdrivers/generate).

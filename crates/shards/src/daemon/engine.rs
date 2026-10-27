@@ -446,10 +446,7 @@ impl<D: Disk> Daemon<D> {
         conn: &UnixStream,
         scope: Option<&Scope>,
     ) {
-        let Ok(reading) = conn.try_clone() else {
-            return;
-        };
-        let mut reader = BufReader::new(shards_ipc::Polled(reading));
+        let mut reader = BufReader::new(shards_ipc::Polled(conn));
         let mut after_post = false;
         loop {
             let head = match head::read(&mut reader, true, after_post) {
@@ -477,7 +474,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         conn: &UnixStream,
         head: &Head,
-        reader: &mut BufReader<shards_ipc::Polled<UnixStream>>,
+        reader: &mut BufReader<shards_ipc::Polled<&UnixStream>>,
         scope: Option<&Scope>,
     ) -> bool {
         let (target, query) = head.target.split_once('?').unwrap_or((&head.target, ""));
@@ -494,7 +491,7 @@ impl<D: Disk> Daemon<D> {
         };
         // A call refused before its body is read: answered first, then the rest of its
         // body read and dropped ([`answered_first`]).
-        let refuse = |reader: &mut BufReader<shards_ipc::Polled<UnixStream>>, answer: Answer| {
+        let refuse = |reader: &mut BufReader<shards_ipc::Polled<&UnixStream>>, answer: Answer| {
             answered_first(conn, head, answer, &mut Body::new(reader, framing))
         };
         let Some(decoded) = unescape(&path, false) else {

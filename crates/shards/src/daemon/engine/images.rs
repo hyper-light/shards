@@ -509,7 +509,10 @@ impl<D: Disk> Daemon<D> {
         if http::head_to_close(conn, 200, "application/x-tar", &[]).is_err() {
             return Done::Close;
         }
-        let _ = self.ask_command_with(threads, &argv, &[conn.as_fd()]);
+        let Ok(out) = shards_ipc::handed(conn) else {
+            return Done::Close;
+        };
+        let _ = self.ask_command_with(threads, &argv, &[out.as_fd()]);
         shards_ipc::end(conn);
         Done::Close
     }
