@@ -26,7 +26,10 @@ pub struct Terminal {
     /// reader, and its close on its output's end.
     shown: std::sync::mpsc::Receiver<Vec<u8>>,
     shell: Child,
+    /// What it has shown since the last wait, its escape sequences taken out ([`text_of`]).
     seen: String,
+    /// The start of an escape sequence its last write left unfinished.
+    pending: String,
     dir: super::TempDir,
 }
 
@@ -204,14 +207,55 @@ impl Terminal {
             shown,
             shell: Child { process },
             seen: String::new(),
+            pending: String::new(),
             dir,
         }
     }
 }
 
+/// What a terminal shows of `raw`, written to it: its text, its escape sequences taken out
+/// (CSI's to their final byte, OSC's to BEL or ST, and the two-character rest), which a pseudo
+/// console writes of its own as it repaints its screen (an erase before each line's end, its
+/// cursor's moves, a resize's report); and the start of one `raw` leaves unfinished.
+fn text_of(raw: &str) -> (String, &str) {
+    let mut text = String::new();
+    let mut chars = raw.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if c != '\u{1b}' {
+            text.push(c);
+            continue;
+        }
+        match chars.next() {
+            None => return (text, raw.get(at..).unwrap_or_default()),
+            Some((_, '[')) => loop {
+                match chars.next() {
+                    None => return (text, raw.get(at..).unwrap_or_default()),
+                    Some((_, '\u{40}'..='\u{7e}')) => break,
+                    Some(_) => {}
+                }
+            },
+            Some((_, ']')) => loop {
+                match chars.next() {
+                    None => return (text, raw.get(at..).unwrap_or_default()),
+                    Some((_, '\u{7}')) => break,
+                    Some((_, '\u{1b}')) => {
+                        if chars.next().is_none() {
+                            return (text, raw.get(at..).unwrap_or_default());
+                        }
+                        break;
+                    }
+                    Some(_) => {}
+                }
+            },
+            Some(_) => {}
+        }
+    }
+    (text, "")
+}
+
 impl Terminal {
     /// Reads what the terminal shows until `text` has appeared since the last wait, and
-    /// returns everything read since then.
+    /// returns everything read since then, its escape sequences taken out ([`text_of`]).
     pub fn wait_for(&mut self, text: &str) -> String {
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -221,7 +265,12 @@ impl Terminal {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             match self.shown.recv_timeout(left.min(Duration::from_millis(100))) {
-                Ok(bytes) => self.seen.push_str(&String::from_utf8_lossy(&bytes)),
+                Ok(bytes) => {
+                    let raw = std::mem::take(&mut self.pending) + &String::from_utf8_lossy(&bytes);
+                    let (text, rest) = text_of(&raw);
+                    self.seen.push_str(&text);
+                    self.pending = rest.to_string();
+                }
                 Err(_) => assert!(
                     Instant::now() < deadline,
                     "{text:?} did not come; the terminal showed {:?}",

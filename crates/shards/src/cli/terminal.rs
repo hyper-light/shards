@@ -271,11 +271,11 @@ fn raw_mode(was: u32) -> u32 {
 /// Puts stdin's console in raw mode ([`raw_mode`]), its keys the escape sequences a
 /// terminal sends where the console gives them (ENABLE_VIRTUAL_TERMINAL_INPUT, as moby/term
 /// asks for it where it is taken), and has stdout take escape sequences, which a terminal's
-/// command writes.
+/// command writes, and its line feeds as a terminal takes them.
 #[cfg(windows)]
 pub fn make_raw() -> io::Result<()> {
     use windows_sys::Win32::System::Console::{
-        ENABLE_VIRTUAL_TERMINAL_INPUT, GetConsoleMode, SetConsoleMode,
+        DISABLE_NEWLINE_AUTO_RETURN, ENABLE_VIRTUAL_TERMINAL_INPUT, GetConsoleMode, SetConsoleMode,
     };
     let input = console_in().ok_or_else(|| io::Error::other("stdin is not a console"))?;
     let mut was = 0;
@@ -297,6 +297,18 @@ pub fn make_raw() -> io::Result<()> {
         (unsafe { GetConsoleMode(h, &mut mode) } != 0).then_some(mode)
     });
     let _ = styles(1);
+    // A line feed alone moves down, as a terminal's does, with no carriage return of the
+    // console's: moby/term's raw output (SetRawTerminalOutput, DISABLE_NEWLINE_AUTO_RETURN),
+    // which a console without it refuses, passed over as moby/term passes it over.
+    if let Some(h) = console(1) {
+        let mut mode = 0;
+        // SAFETY: the console's own handle, its mode read into a local and set.
+        unsafe {
+            if GetConsoleMode(h, &mut mode) != 0 {
+                SetConsoleMode(h, mode | DISABLE_NEWLINE_AUTO_RETURN);
+            }
+        }
+    }
     *SAVED.lock().unwrap_or_else(PoisonError::into_inner) = Some((was, out));
     Ok(())
 }
