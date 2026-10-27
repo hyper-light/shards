@@ -138,6 +138,9 @@ pub mod pinned;
 
 #[cfg(unix)]
 pub mod terminal;
+#[cfg(windows)]
+#[path = "terminal_windows.rs"]
+pub mod terminal;
 
 /// The file `name` of the snapshot generation `dir` points at (vmm snapshot/mod.rs).
 pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
