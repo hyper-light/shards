@@ -1559,32 +1559,90 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     }
 }
 
-/// An idle daemon wakes for nothing: within a while of its start, a few seconds in which
-/// none of its threads is switched to, by its own wake or the kernel's (Linux: each
-/// thread's context switches, /proc/PID/task/TID/status). Its slots' maker woke once a
-/// second to look at its lists (PM M259); it sleeps until it is told something now. No VM
-/// needed.
+/// Each thread of process `pid`, by its ID: its name, and the times it was switched to
+/// (/proc/PID/task/TID/status).
 #[cfg(target_os = "linux")]
+fn threads_run(pid: i32) -> std::collections::BTreeMap<String, (String, u64)> {
+    let mut each = std::collections::BTreeMap::new();
+    for task in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+        let task = task.unwrap().path();
+        let tid = task.file_name().unwrap().to_string_lossy().into_owned();
+        let comm = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
+        let status = std::fs::read_to_string(task.join("status")).unwrap_or_default();
+        let n: u64 = status
+            .lines()
+            .filter(|l| l.contains("ctxt_switches:"))
+            .filter_map(|l| l.split_whitespace().last()?.parse::<u64>().ok())
+            .sum();
+        each.insert(tid, (comm.trim().to_string(), n));
+    }
+    each
+}
+
+/// Each thread of process `pid`, by its ID: its name (GetThreadDescription), and the
+/// cycles it has run (QueryThreadCycleTime), which a thread switched to adds to: Windows
+/// counts a thread's switches in no documented place.
+#[cfg(windows)]
+fn threads_run(pid: i32) -> std::collections::BTreeMap<String, (String, u64)> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetThreadDescription, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime;
+    let pid = u32::try_from(pid).unwrap();
+    let mut each = std::collections::BTreeMap::new();
+    // SAFETY: a snapshot of the system's threads, read and closed here; each of `pid`'s
+    // threads opened, read and closed in turn, its description freed as documented.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        assert_ne!(
+            snapshot,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = u32::try_from(size_of::<THREADENTRY32>()).unwrap();
+        let mut more = Thread32First(snapshot, &mut entry) != 0;
+        while more {
+            let thread = if entry.th32OwnerProcessID == pid {
+                OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, entry.th32ThreadID)
+            } else {
+                std::ptr::null_mut()
+            };
+            if !thread.is_null() {
+                let mut cycles = 0u64;
+                QueryThreadCycleTime(thread, &mut cycles);
+                let mut described: *mut u16 = std::ptr::null_mut();
+                let mut name = String::new();
+                if GetThreadDescription(thread, &mut described) >= 0 && !described.is_null() {
+                    let len = (0..).take_while(|&i| *described.add(i) != 0).count();
+                    name = String::from_utf16_lossy(std::slice::from_raw_parts(described, len));
+                    LocalFree(described.cast());
+                }
+                each.insert(entry.th32ThreadID.to_string(), (name, cycles));
+                CloseHandle(thread);
+            }
+            more = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    each
+}
+
+/// An idle daemon wakes for nothing: within a while of its start, a few seconds in which
+/// none of its threads is switched to, by its own wake or the kernel's ([`threads_run`]).
+/// Its slots' maker woke once a second to look at its lists (PM M259); it sleeps until it
+/// is told something now. No VM needed.
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn an_idle_daemon_wakes_for_nothing() {
     let home = TempDir::new("daemon-idle");
     let daemon = start_daemon(&home, None);
-    let switches = || -> std::collections::BTreeMap<String, (String, u64)> {
-        let mut each = std::collections::BTreeMap::new();
-        for task in std::fs::read_dir(format!("/proc/{daemon}/task")).unwrap() {
-            let task = task.unwrap().path();
-            let tid = task.file_name().unwrap().to_string_lossy().into_owned();
-            let comm = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
-            let status = std::fs::read_to_string(task.join("status")).unwrap_or_default();
-            let n: u64 = status
-                .lines()
-                .filter(|l| l.contains("ctxt_switches:"))
-                .filter_map(|l| l.split_whitespace().last()?.parse::<u64>().ok())
-                .sum();
-            each.insert(tid, (comm.trim().to_string(), n));
-        }
-        each
-    };
+    let switches = || threads_run(daemon);
     // What it does as it starts may take a while on a busy host: the first quiet window
     // within 30 s is what is asked for.
     let deadline = Instant::now() + Duration::from_secs(30);
