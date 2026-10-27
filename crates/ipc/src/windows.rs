@@ -903,6 +903,27 @@ pub fn spawn_confined(s: &Spawn<'_>) -> io::Result<Child> {
     spawn_suspended(s)?.resume()
 }
 
+/// Whether process `pid` lives: one that opens and has not ended, or another user's, which
+/// does not open (ERROR_ACCESS_DENIED). An ended process opens while a handle to it is
+/// held, and has ended.
+pub(crate) fn alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError};
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: a process handle of waiting access alone, owned below.
+    let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if raw.is_null() {
+        // SAFETY: no arguments.
+        return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+    }
+    // SAFETY: the handle just opened, which nothing else owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    // SAFETY: a process handle this function holds, not waited on.
+    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_TIMEOUT }
+}
+
 /// The variable a child of [`spawn`]'s finds its grants pipe by: the handles it was given
 /// past its standard ones ([`given_fd`]).
 const GIVEN: &str = "SHARDS_GIVEN";

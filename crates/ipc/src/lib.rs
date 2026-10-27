@@ -6,7 +6,7 @@
 //! The `shards` command links this crate and the standard library alone, so that it
 //! starts fast (docs/research/platform-measurements.md M23).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// shards' home: `SHARDS_HOME`, or `shards` in this user's data directory:
 /// `~/Library/Application Support` on macOS (Apple's File System Programming Guide),
@@ -42,6 +42,32 @@ pub fn home() -> Result<PathBuf, String> {
 
 /// The variable that names shards' home.
 pub const HOME: &str = "SHARDS_HOME";
+
+/// What a daemon that no longer serves keeps in its home while it ends its runs: its
+/// process ID. A daemon or client that finds none serving waits for that one while it
+/// lives, as long as its runs' stop timeouts make it, and then takes its place.
+pub const STOPPING: &str = "daemon.stopping";
+
+/// Whether the daemon that `STOPPING` in `home` names still lives, ending its runs.
+pub fn exiting(home: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(home.join(STOPPING)) else {
+        return false;
+    };
+    #[cfg(unix)]
+    let alive = unix::alive;
+    #[cfg(windows)]
+    let alive = windows::alive;
+    text.trim().parse::<u32>().is_ok_and(alive)
+}
+
+/// Where a daemon the client starts writes its messages.
+pub fn log(home: &Path) -> PathBuf {
+    home.join("daemon.log")
+}
+
+/// The first word of `shards cp`'s steps, which no command line has: what its client asks
+/// the daemon one at a time (cli/cp.rs, daemon/commands.rs).
+pub const COPY_STEP: &str = "\u{0}cp";
 
 /// Message kinds between the daemon, warm VMs and clients.
 pub mod kind {

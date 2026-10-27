@@ -3408,8 +3408,7 @@ impl DiffPage {
     }
 }
 
-/// The first word of `shards cp`'s steps, which no command line has.
-pub(crate) const COPY_STEP: &str = "\u{0}cp";
+pub(crate) use shards_ipc::COPY_STEP;
 
 /// The most of a microVM's process dump `top` takes: some 2 KiB a process.
 const TOP_LIMIT: usize = 16 << 20;

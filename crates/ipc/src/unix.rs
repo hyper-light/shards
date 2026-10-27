@@ -20,7 +20,7 @@ use std::net::Shutdown;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -1025,28 +1025,16 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
 /// the home's path (PM M26).
 pub const SOCKET: &str = "daemon.sock";
 
-/// What a daemon that no longer serves keeps in its home while it ends its runs: its
-/// process ID. A daemon or client that finds none serving waits for that one while it
-/// lives, as long as its runs' stop timeouts make it, and then takes its place.
-pub const STOPPING: &str = "daemon.stopping";
-
-/// Whether the daemon that `STOPPING` in `home` names still lives, ending its runs.
-pub fn exiting(home: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(home.join(STOPPING)) else {
-        return false;
-    };
+/// Whether process `pid` lives: kill(2) with signal 0 asks, one of another user's among
+/// those that do (EPERM).
+pub(crate) fn alive(pid: u32) -> bool {
     // Zero or less would name a process group, or every process.
-    let Some(pid) = text.trim().parse::<libc::pid_t>().ok().filter(|&pid| pid > 0) else {
+    let Some(pid) = libc::pid_t::try_from(pid).ok().filter(|&pid| pid > 0) else {
         return false;
     };
     // SAFETY: kill(2) with signal 0 only asks whether the process exists.
     let alive = unsafe { libc::kill(pid, 0) } == 0;
     alive || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-/// Where a daemon the client starts writes its messages.
-pub fn log(home: &Path) -> PathBuf {
-    home.join("daemon.log")
 }
 
 /// This process's peak resident set so far, in KiB; 0 where unknown. On Linux it is the
