@@ -9,11 +9,13 @@ after its word it came, on the build's stderr).
 
 - Linux: each build in a scope of the user's manager (systemd-run --user --scope) that swaps
   nothing (MemorySwapMax=0). Held, its MemoryHigh is the most anonymous memory the free arm's
-  scope held (memory.stat's anon, each second), in the round before it, less what that arm's
-  builder held at most that it could give back (its inactive_file and what lay plugged past
-  twice what it used, at once): so the build fits its budget where its builder gives that
-  back, and is held to it, stalling as its host reclaims what it cannot swap (PSI), which the
-  build's watcher hears. Not the scope's whole peak, memory.peak: that counts the host's page
+  scope held (memory.stat's anon, each second), in the round before it, less the most its
+  builder held cold of its files (inactive_file), which is guest RAM the host holds: so the
+  build fits its budget where its builder gives that back, and is held to it, stalling as its
+  host reclaims what it cannot swap (PSI), which the build's watcher hears. Not less what lay
+  plugged past twice what it used: the guest reports what it frees at once (D151), so its
+  host holds little of that, and a budget less it was none (npm's on Fedora, 512 MiB plugged
+  past its use of 505 MiB held). Not the scope's whole peak, memory.peak: that counts the host's page
   cache of the build's files, which the host drops at no stall, and a budget of it less what
   the builder could give back asked the builder for nothing (run 40426695726, 0 asks).
   A round's held arm comes after its free arm where the round is odd, before it where even,
@@ -210,8 +212,8 @@ STEP = re.compile(r"^#(\d+) \[")
 
 def tail(path, tag, stop, now_step, held_cold):
     """The builder's console as it is written, each whole line stamped as it is read, until
-    `stop` and the file's end; the most it held at once that it could give back kept in
-    `held_cold` (its inactive_file and what lay plugged past twice what it used)."""
+    `stop` and the file's end; the most it held cold of its files (inactive_file) kept in
+    `held_cold`."""
     part = ""
     with open(path, errors="replace") as f:
         while True:
@@ -231,8 +233,7 @@ def tail(path, tag, stop, now_step, held_cold):
                 end = words[-1] == "step_end"
                 pairs = dict(zip((words[:-1] if end else words)[::2], (words[:-1] if end else words)[1::2]))
                 try:
-                    cold = int(pairs.get("inactive_file", 0)) + int(pairs.get("past_twice_used", 0))
-                    held_cold[0] = max(held_cold[0], cold)
+                    held_cold[0] = max(held_cold[0], int(pairs.get("inactive_file", 0)))
                 except ValueError:
                     pass
                 fields = " ".join(f"{k}={v}" for k, v in pairs.items())
@@ -241,8 +242,7 @@ def tail(path, tag, stop, now_step, held_cold):
 
 def one(r, name, arm, budget):
     """A build of `name` in round `r`, `arm` free or held (to `budget` bytes on Linux): the
-    most anonymous memory its scope held and what its builder held at most that it could give
-    back."""
+    most anonymous memory its scope held and the most its builder held cold of its files."""
     tag = f"round={r} build={name} arm={arm}"
     ctx = os.path.join(builds_dir, name)
     console = os.path.join(out, "raw", f"{r}-{name}-{arm}-console.txt")
