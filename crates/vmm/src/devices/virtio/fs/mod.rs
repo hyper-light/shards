@@ -1994,7 +1994,8 @@ mod descriptor_on_windows {
     #[test]
     fn the_ask_names_this_process_and_its_end_and_a_section_is_adopted() {
         let value = section_value();
-        let (got, ask, stream) = asked(move |s| shards_ipc::write_message(s, 0, &value.to_le_bytes()).unwrap());
+        let (got, ask, stream) =
+            asked(move |s| shards_ipc::write_message(s, 0, &value.to_le_bytes()).unwrap());
         let mut want = vec![DESCRIPTOR];
         want.extend_from_slice(&7u64.to_le_bytes());
         want.push(1);
