@@ -21,6 +21,22 @@ pub use unix::*;
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+#[cfg(windows)]
+mod windows_files;
+#[cfg(windows)]
+mod windows_process;
+#[cfg(windows)]
+mod windows_watch;
+#[cfg(windows)]
+pub use windows_files::{
+    names_in, open_beneath, open_dir_beneath, open_in, punch_hole, sync_entries, write_in,
+};
+#[cfg(windows)]
+pub use windows_process::{
+    Usage, descriptor_limit, launched, mapped_pages, process_usage, raise_descriptor_limit, thread_limit,
+};
+#[cfg(windows)]
+pub use windows_watch::FileWatch;
 
 /// AF_UNIX stream sockets, std's on Unix and shards' own on Windows (PM M199).
 #[cfg(windows)]
@@ -80,10 +96,9 @@ mod pressure;
 pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
 
 mod granted;
-#[cfg(unix)]
-pub use granted::open_beneath_input;
 pub use granted::{
-    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_input, set_dialer,
+    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_beneath_input,
+    open_input, set_dialer,
 };
 
 #[cfg(target_os = "linux")]
