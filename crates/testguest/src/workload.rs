@@ -3274,6 +3274,47 @@ fn checksum(path: &str) -> io::Result<(u64, u64)> {
         for &b in buf.get(..n).unwrap_or_default() {
             sum = (sum ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
         }
+        // Scratch (the ROOM probe): what the guest holds as it reads, every 32 MiB.
+        if (total >> 25) != ((total + n as u64) >> 25) {
+            let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+            let kib = |key: &str| {
+                meminfo
+                    .lines()
+                    .find_map(|l| l.strip_prefix(key))
+                    .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<u64>().ok())
+                    .unwrap_or(0)
+                    >> 10
+            };
+            let cg = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+            let cg = cg
+                .lines()
+                .find_map(|l| l.strip_prefix("0::"))
+                .unwrap_or("?")
+                .to_string();
+            let read = |f: &str| {
+                std::fs::read_to_string(f)
+                    .unwrap_or_else(|e| format!("({e})"))
+                    .trim()
+                    .replace('\n', ",")
+            };
+            let _ = writeln!(
+                io::stdout(),
+                "GUEST at {}M: total={}M free={}M cached={}M active_file={}M inactive_file={}M anon={}M cg={cg} cg.current={} cg.high={} build.current={} build.high={} build.events={} steps.current={}",
+                (total + n as u64) >> 20,
+                kib("MemTotal:"),
+                kib("MemFree:"),
+                kib("Cached:"),
+                kib("Active(file):"),
+                kib("Inactive(file):"),
+                kib("AnonPages:"),
+                read(&format!("/sys/fs/cgroup{cg}/memory.current")),
+                read(&format!("/sys/fs/cgroup{cg}/memory.high")),
+                read("/sys/fs/cgroup/build/memory.current"),
+                read("/sys/fs/cgroup/build/memory.high"),
+                read("/sys/fs/cgroup/build/memory.events"),
+                read("/sys/fs/cgroup/build/steps/memory.current"),
+            );
+        }
         total += n as u64;
     }
 }
