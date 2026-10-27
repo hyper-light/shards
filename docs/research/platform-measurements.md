@@ -15466,3 +15466,36 @@ revision before comparing a changed API/implementation.
   API attaches under way, up to 2 s from its end, and an exec's `exec_die` likewise
   (daemon/engine.rs `Relaying`, `RELAY_WAIT`); `a_runs_end_waits_for_the_relays_of_its_output`
   holds it, mutation-checked.
+
+### M353. A guest's CPUs brought up in parallel or one at a time, on Windows Server 2022's WHP (D140)
+
+- **Question.** On CI's windows-2022 runners `boots_the_hosts_maximum_vcpu_count` never
+  brought up its second CPU in 60 s, the console at `smpboot: x86: Booting SMP
+  configuration:`, and every microVM booted beside it stalled too, while windows-2025's
+  brought the same 240 up. Not the VM process's confinement: alone, 2, 7 and 16 vCPUs came
+  up (CI 40582881884, 40586854103). What holds a bring-up?
+- **Method.** `probe_smp_sweep` (boot.rs, on the scratch branch `ci-smp-probe`, not for
+  dev): for each count of vCPUs, a VM alone, the time from `Booting SMP configuration` to
+  `smp: Brought up` as the console says them, or the 60 s it is given, and the VM process's
+  CPU time over it (GetProcessTimes); Windows Server 2022 10.0.20348, 4 logical CPUs; the
+  pinned kernel, Linux 6.18.48, `CONFIG_HOTPLUG_PARALLEL=y`. Then each count again with
+  `cpuhp.parallel=0` (kernel/cpu.c), which brings its APs up one at a time. CI 40593423045,
+  40596480573, 2026-10-27.
+- **Found.**
+
+  | vCPUs | parallel | host CPUs used | one at a time | host CPUs used |
+  |---|---|---|---|---|
+  | 4 | 13 ms | 2.1 | 12 ms | 0.0 |
+  | 8 | 1.43 s | 4.0 | 23 ms | 1.9 |
+  | 16 | 7.04 s | 4.0 | 45 ms | 1.3 |
+  | 32 | 39.1 s | 4.0 | 96 ms | 1.3 |
+  | 64 | none in 61 s | 4.0 | 219 ms | 1.5 |
+  | 240 (64 up) | none in 61 s | 4.0 | 219 ms | 1.3 |
+
+  Brought up in parallel, past the host's CPUs each AP started spins in its turn while
+  the next waits for a host CPU, which this WHP gives no other vCPU (the VM process used all
+  4 throughout), and its time grows past linearly with its vCPUs; one at a time, each
+  started AP is idle as the next comes up.
+- **Consequence (D140).** On WHP a guest's kernel brings its APs up one at a time
+  (vm/x86_64.rs, `cpuhp.parallel=0` beside `reboot=k`): never slower here, at 4 vCPUs as at
+  240. Unmeasured on KVM and HVF, which keep parallel.
