@@ -58,7 +58,62 @@ pub(crate) fn local(secs: i64) -> Zone {
             };
         }
     }
+    #[cfg(windows)]
+    if let Some(zone) = windows_local(secs) {
+        return zone;
+    }
     format::utc(secs)
+}
+
+/// The system's zone at `secs` seconds since the epoch, as Go's `time.Local` has it on
+/// Windows (src/time/zoneinfo_windows.go): the dynamic zone's rules
+/// (GetDynamicTimeZoneInformation), its offset that instant's, standard or daylight
+/// (SystemTimeToTzSpecificLocalTimeEx). Its name is Go's fallback for a zone its table does
+/// not know: the capitals of the zone's own standard or daylight name (`extractCAPS`).
+#[cfg(windows)]
+fn windows_local(secs: i64) -> Option<Zone> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{
+        DYNAMIC_TIME_ZONE_INFORMATION, FileTimeToSystemTime, GetDynamicTimeZoneInformation,
+        SystemTimeToFileTime, SystemTimeToTzSpecificLocalTimeEx, TIME_ZONE_ID_INVALID,
+    };
+    /// Seconds from 1601-01-01, FILETIME's epoch, to 1970-01-01.
+    const FROM_1601: i64 = 11_644_473_600;
+    let mut tz = DYNAMIC_TIME_ZONE_INFORMATION::default();
+    // SAFETY: a structure for the call to fill.
+    if unsafe { GetDynamicTimeZoneInformation(&mut tz) } == TIME_ZONE_ID_INVALID {
+        return None;
+    }
+    let ticks = u64::try_from(secs.checked_add(FROM_1601)?.checked_mul(10_000_000)?).ok()?;
+    let at = FILETIME {
+        dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let (mut utc, mut local, mut back) = (SYSTEMTIME::default(), SYSTEMTIME::default(), FILETIME::default());
+    // SAFETY: each call reads one structure and fills another, all on this stack.
+    let converted = unsafe {
+        FileTimeToSystemTime(&at, &mut utc) != 0
+            && SystemTimeToTzSpecificLocalTimeEx(&tz, &utc, &mut local) != 0
+            && SystemTimeToFileTime(&local, &mut back) != 0
+    };
+    if !converted {
+        return None;
+    }
+    let local_ticks = (u64::from(back.dwHighDateTime) << 32) | u64::from(back.dwLowDateTime);
+    let offset = (i128::from(local_ticks) - i128::from(ticks)) / 10_000_000;
+    let offset = i64::try_from(offset).ok()?;
+    let daylight = tz.DaylightBias != 0 && offset == -i64::from(tz.Bias + tz.DaylightBias) * 60;
+    let name = if daylight {
+        &tz.DaylightName
+    } else {
+        &tz.StandardName
+    };
+    let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    let caps: String = String::from_utf16_lossy(name.get(..len).unwrap_or_default())
+        .chars()
+        .filter(char::is_ascii_uppercase)
+        .collect();
+    Some(Zone { offset, name: caps })
 }
 
 /// Now, in nanoseconds since the epoch.

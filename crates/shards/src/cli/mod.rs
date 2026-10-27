@@ -12,21 +12,17 @@ use std::process::ExitCode;
 
 use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 
-#[cfg(unix)]
 mod client;
+pub(crate) use client::Stream;
+// The daemon's, Unix's alone as yet (D195).
 #[cfg(unix)]
-pub(crate) use client::{Stream, ask_here};
-#[cfg(unix)]
+pub(crate) use client::ask_here;
 pub(crate) mod cp;
-#[cfg(unix)]
 pub(crate) mod listing;
-#[cfg(unix)]
 pub(crate) mod look;
 pub(crate) mod request;
 pub(crate) mod save;
-#[cfg(unix)]
 mod screens;
-#[cfg(unix)]
 mod show;
 pub(crate) mod terminal;
 pub(crate) mod terms;
@@ -113,7 +109,6 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
     }
     // An action Docker has too, alone, on a colour terminal: its page, where Docker's
     // answer is that it lacks an argument; elsewhere, Docker's answer.
-    #[cfg(unix)]
     if let [action] = text.as_slice()
         && shards_cmdline::grammar::is_action(action)
         && !shards_cmdline::commands::find(&[action.as_str()]).is_some_and(|(c, _, _)| {
@@ -134,7 +129,6 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
     {
         // The page is named as it was asked for: `list vms`, not `ps`; and is that form's,
         // in shards' words, where help is asked.
-        #[cfg(unix)]
         look::name_as(&text.iter().take(2).cloned().collect::<Vec<_>>().join(" "));
         if let Some(form) = shards_cmdline::grammar::form(&text) {
             let _ = FORM.set(form);
@@ -208,7 +202,6 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         ["container", "exec", ..] => {
             request::exec("shards container exec", args.get(2..).unwrap_or_default())
         }
-        #[cfg(unix)]
         ["daemon", "stop"] if args.len() == 2 => match shards_ipc::home() {
             Ok(home) => client::stop(&home),
             Err(e) => failed(&e),
@@ -294,7 +287,6 @@ fn container(
     };
     // A listing's `--format` is the client's to apply, and to check first, as the CLI
     // checks it before it asks (container/list.go, buildContainerListOptions).
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::PS) {
         let format = parsed.string("format").to_string();
         if !format.is_empty() {
@@ -315,7 +307,6 @@ fn container(
             ..listing::Asked::default()
         });
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_LS) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -324,7 +315,6 @@ fn container(
             ..listing::Asked::default()
         });
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::IMAGES) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -337,7 +327,6 @@ fn container(
             filtered: false,
         });
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_LS) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -388,7 +377,6 @@ fn container(
         );
         return ExitCode::FAILURE;
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::SYSTEM_DF) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -408,17 +396,13 @@ fn container(
                 return ExitCode::FAILURE;
             }
         };
-        #[cfg(unix)]
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
             verbose: parsed.bool("verbose"),
             filtered,
             ..listing::Asked::default()
         });
-        #[cfg(not(unix))]
-        let _ = filtered;
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::HISTORY) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -434,7 +418,6 @@ fn container(
     // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in
     // shards' look, elsewhere in the CLI's words.
     if let Some(warning) = prune_warning(command, &parsed) {
-        #[cfg(unix)]
         let asked = match look::styled() {
             Some(p) => {
                 let items = prune_items(command, &parsed);
@@ -443,13 +426,10 @@ fn container(
             }
             None => confirmed(&warning),
         };
-        #[cfg(not(unix))]
-        let asked = confirmed(&warning);
         if !asked {
             return ExitCode::SUCCESS;
         }
     }
-    #[cfg(unix)]
     {
         // `save` and `export` write where the client says, opened here, before the
         // client moves to the daemon's home.
@@ -514,7 +494,7 @@ fn container(
         });
         match resolved {
             Ok((daemon, identity, home)) => {
-                use std::os::fd::AsFd as _;
+                use shards_ipc::fd::AsFd as _;
                 // What the daemon writes, the command's output; what it reads, its input.
                 let mut fds: Vec<client::Stream<'_>> =
                     output.iter().map(|o| client::Stream::To(o.fd())).collect();
@@ -531,8 +511,7 @@ fn container(
                     }),
                     now: now_ns(),
                     utc_offset: utc_offset(),
-                    // SAFETY: isatty(3) on this process's stdout.
-                    terminal: unsafe { libc::isatty(1) } == 1,
+                    terminal: std::io::IsTerminal::is_terminal(&std::io::stdout()),
                     width: terminal::size(1).1,
                     // docker/cli's tui.NewOutput: any NO_COLOR but an empty one; and a
                     // terminal that says it is dumb.
@@ -562,35 +541,6 @@ fn container(
             }
             Err(e) => failed(&e),
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = words;
-        // No daemon here yet: a pull runs in this process, said as `docker pull` says it.
-        if std::ptr::eq(command, &shards_cmdline::commands::PULL) {
-            let home = match shards_ipc::home() {
-                Ok(home) => home,
-                Err(e) => return failed(&e),
-            };
-            let out = crate::pull::Out {
-                out: &|line| {
-                    let _ = writeln!(std::io::stdout(), "{line}");
-                },
-                err: &|line| {
-                    let _ = writeln!(std::io::stderr(), "{line}");
-                },
-                progress: None,
-            };
-            let env = |k: &str| std::env::var(k).ok();
-            let status = crate::pull::command(&parsed, &home, &env, &out, None);
-            if let Some(agentfile) = agentfile {
-                return pulled_agentfile(agentfile, status, &home, &parsed);
-            }
-            return ExitCode::from(status);
-        }
-        failed(
-            "container commands need the daemon, which needs Unix sockets, which shards does not support on this platform yet",
-        )
     }
 }
 
@@ -648,7 +598,6 @@ fn action_help(action: &str) -> ExitCode {
         .filter(|(_, a, _, _)| *a == action)
         .map(|(_, _, takes, about)| (*takes, *about))
         .collect();
-    #[cfg(unix)]
     if let Some(p) = look::styled() {
         look::action(&p, action, &rows, &mut std::io::stdout().lock());
         return ExitCode::SUCCESS;
@@ -663,7 +612,6 @@ fn action_help(action: &str) -> ExitCode {
 
 /// `shards --help`: shards' grammar, its own page on a colour terminal, plain elsewhere.
 fn top_help() -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = look::styled() {
         look::top(&p, &mut std::io::stdout().lock());
         return ExitCode::SUCCESS;
@@ -675,7 +623,6 @@ fn top_help() -> ExitCode {
 
 /// A management command's help, as [`top_help`] says the root's.
 fn management_help(name: &str) -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = look::styled()
         && look::management(&p, name, &mut std::io::stdout().lock())
     {
@@ -693,7 +640,6 @@ fn management_help(name: &str) -> ExitCode {
 /// A command shards does not have, refused as docker/cli refuses one (status 1); in a
 /// panel on a colour terminal.
 fn unknown(text: &str) -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = look::styled_err() {
         let first = text.lines().next().unwrap_or(text);
         let first = first.strip_prefix("shards: ").unwrap_or(first);
@@ -780,7 +726,6 @@ fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
 }
 
 /// A page's name for the command `path` names: `prune image` for `shards image prune`.
-#[cfg(unix)]
 fn look_name(path: &str) -> String {
     let words: Vec<&str> = path.split(' ').skip(1).collect();
     match words.as_slice() {
@@ -791,7 +736,6 @@ fn look_name(path: &str) -> String {
 }
 
 /// What a prune removes, in shards' words, for its page.
-#[cfg(unix)]
 fn prune_items(command: &'static Command, parsed: &Parsed) -> Vec<String> {
     use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE, VOLUME_PRUNE};
     if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_PRUNE) {
@@ -868,7 +812,8 @@ fn confirmed(question: &str) -> bool {
 
 /// Draws a page that changes as it is watched over the last one drawn into `live`: a
 /// search's (D172), its results filled in as their lookups answer.
-#[cfg(unix)]
+// The daemon's, Unix's alone as yet (D195).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn show_live(sheet: &shards_ipc::Sheet, live: &mut shards_tui::frame::Frame) {
     screens::show(sheet, live);
 }
@@ -897,7 +842,6 @@ pub(crate) fn read(
         Outcome::Help { notices } => {
             let _ = std::io::stdout().write_all(notices.as_bytes());
             let form = FORM.get();
-            #[cfg(unix)]
             if let Some(p) = look::styled() {
                 match form {
                     Some(form) => look::form(&p, command, form, &mut std::io::stdout().lock()),
@@ -918,7 +862,6 @@ pub(crate) fn read(
             status,
         } => {
             let _ = std::io::stdout().write_all(notices.as_bytes());
-            #[cfg(unix)]
             if let Some(p) = look::styled_err() {
                 let first = text.lines().next().unwrap_or(&text);
                 let name = path.strip_prefix("shards ").unwrap_or(path);
@@ -950,13 +893,24 @@ fn columns() -> u16 {
 }
 
 /// This clock, in nanoseconds since the epoch.
-#[cfg(unix)]
 fn now_ns() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|d| i64::try_from(d.as_nanos()).ok())
         .unwrap_or(0)
+}
+
+/// This process's time zone's offset east of UTC now, in seconds, as Go's `time.Now()`
+/// has it in its `Local` zone: the system's zone at this instant ([`listing::local`]).
+#[cfg(windows)]
+pub(crate) fn utc_offset() -> i32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+    i32::try_from(listing::local(now).offset).unwrap_or(0)
 }
 
 /// This process's time zone's offset east of UTC now, in seconds, as Go's `time.Now()`

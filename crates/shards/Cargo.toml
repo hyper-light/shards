@@ -76,7 +76,7 @@ shards-apple = { path = "../apple" }
 shards-bus = { path = "../bus" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
+windows-sys = { workspace = true, features = ["Win32_System_Pipes", "Win32_System_Time"] }
 
 [build-dependencies]
 # The helpers' digests (build.rs).
