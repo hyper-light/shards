@@ -658,6 +658,29 @@ mod tests {
         text
     }
 
+    /// What renaming a directory takes while a file in it is open, as std opens one (every
+    /// sharing): the plain rename (MoveFileEx's) refused, and a POSIX one through the
+    /// directory's handle, which this records.
+    #[test]
+    fn a_directory_holding_an_open_file_is_renamed_as_it_can_be() {
+        let base = shards_testdir::TempDir::new("dir-rename").unwrap();
+        let dir = base.join("c");
+        std::fs::create_dir(&dir).unwrap();
+        let held = std::fs::File::create(dir.join("log")).unwrap();
+        let plain = std::fs::rename(&dir, base.join("c.plain"));
+        let parent = super::super::open_dir(&base).unwrap();
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(DELETE | SYNCHRONIZE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&dir)
+            .unwrap();
+        let posix = rename_into(&handle, &parent, "c.posix");
+        eprintln!("plain: {plain:?}; posix: {posix:?}");
+        drop((handle, held));
+        assert!(plain.is_err() || posix.is_ok());
+    }
+
     /// Names Windows reads as something else are refused: a stream, a separator, a device
     /// with or without an extension, a trailing dot or space; plain ones pass.
     #[test]
