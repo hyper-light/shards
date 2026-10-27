@@ -1522,6 +1522,14 @@ mod tests {
                 .iter()
                 .map(|a| a.as_str().unwrap().to_owned())
                 .collect();
+            // A case that binds the host's own directories runs where they are, Unix's /tmp
+            // as its golden says: Windows binds none yet (the plan's step 6).
+            #[cfg(windows)]
+            if args.windows(2).any(|w| {
+                (w[0] == "-v" && w[1].starts_with('/')) || (w[0] == "--mount" && w[1].contains("type=bind"))
+            }) {
+                continue;
+            }
             // As the CLI asks for them: `create`'s detached and a create (cli/request.rs
             // `create`), each `run` case `-d`.
             let mut run = crate::cli::request::for_test(&args).unwrap();

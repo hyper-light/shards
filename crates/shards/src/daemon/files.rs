@@ -6,7 +6,6 @@
 //! took: a segment 10.9 ms at a loaded host's p90 (PM M98).
 
 use std::collections::VecDeque;
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -164,7 +163,7 @@ impl<D: Disk> Daemon<D> {
                 pack,
                 socket,
             } => {
-                let made = File::open(&dir)
+                let made = shards_vmm::platform::open_dir(&dir)
                     .and_then(|d| crate::segments::new_segment(&d, seq, files))
                     .map_err(|e| log(format!("container {id}: log segment {seq}: {e}")))
                     .ok();

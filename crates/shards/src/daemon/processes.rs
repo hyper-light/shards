@@ -227,7 +227,7 @@ impl<D: Disk> Daemon<D> {
         // coming, by the run's end, or by the client's hanging up, as `logs -f` is; where
         // no watch can be had, it reads again every RETRY, as `logs -f` does.
         let followed = (|| -> io::Result<()> {
-            let mut watch = shards_vmm::platform::FileWatch::new(&std::fs::File::open(&dir)?).ok();
+            let mut watch = shards_vmm::platform::FileWatch::new(&shards_vmm::platform::open_dir(&dir)?).ok();
             // The segment watched, by its number.
             let mut watched: Option<u64> = None;
             let Some((number, end)) = self.wake_at_end(&id)? else {

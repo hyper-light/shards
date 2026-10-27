@@ -1957,7 +1957,7 @@ impl<D: Disk> Daemon<D> {
         // The home, whose removal the listener must see, and its images,
         // where a pull leaves a collection due (pull.rs, `collect_due`). Where a watch
         // cannot be made, the listener looks again every RETRY.
-        let watch = |dir: &Path| match File::open(dir).and_then(|d| FileWatch::new(&d)) {
+        let watch = |dir: &Path| match shards_vmm::platform::open_dir(dir).and_then(|d| FileWatch::new(&d)) {
             Ok(w) => Some(w),
             Err(e) => {
                 log(format!("watching {}: {e}", dir.display()));
@@ -7833,23 +7833,27 @@ mod tests {
     }
 
     /// Whether process `pid` is gone, reaped: one that has ended unreaped still answers a
-    /// signal of 0 on Unix; on Windows its process stays while a handle holds it.
+    /// signal of 0 on Unix. Windows reaps nothing: a process's ID names no other while a
+    /// handle holds it, the test's own `Child` among them, and its end is as far as it goes.
     fn reaped(pid: u32) -> bool {
         #[cfg(unix)]
         // SAFETY: kill(2) with signal 0 only asks whether the process exists.
         return unsafe { libc::kill(pid as libc::pid_t, 0) != 0 };
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+            use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+            };
             // SAFETY: an open of the process for no more than waiting, closed at once.
             unsafe {
                 let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
                 if process.is_null() {
                     return true;
                 }
+                let ended = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
                 CloseHandle(process);
-                false
+                ended
             }
         }
     }
@@ -8539,6 +8543,9 @@ mod tests {
         for (what, payload) in messages {
             bytes.push(*what);
             bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+            // A stream's message on Windows says how many handles come with it: none.
+            #[cfg(windows)]
+            bytes.push(0);
             bytes.extend_from_slice(payload);
         }
         (&mut &*vm).write_all(&bytes).unwrap();
@@ -10881,6 +10888,9 @@ mod tests {
             t.until("the VM's end was not handled", |d| {
                 !lock(&d.followers.deadlines).is_empty()
             });
+            // Its ID kept: Unix's to check, as Windows reuses no ID while a handle holds its
+            // process (the follower's, and this test's).
+            #[cfg(unix)]
             assert!(!reaped(vm.id()), "reaped while its ports were held");
             assert_eq!(lock(&t.daemon.ports_held).len(), 1);
             kill_pid(net_pid);
