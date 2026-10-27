@@ -14766,6 +14766,293 @@ revision before comparing a changed API/implementation.
     asking process holds the attachment's stream (M340: every handle to an end names its pipe), keeping the process
     handle so that the pid cannot be reused under it.
 
+### M344. What a Windows directory watch hears of a file's writes, beside a read oplock; a directory's handle opened again; a rename over a file held open (D27)
+
+- **Questions.** `logs -f`, `top -f` and a log driver's shipping follow a log segment as its
+  run's VM appends to it, woken by a watch on its directory (D27: kqueue on macOS, inotify on
+  Linux). On Windows, what tells the follower of an append?
+  - ReadDirectoryChangesW reports a size or last-write change "only when the file is written
+    to the disk" (its documentation). Does it report an append by a writer that holds the file
+    open, as a run's VM holds its log?
+  - Does a read oplock (OPLOCK_LEVEL_CACHE_READ) on a handle of the follower's own hear each
+    such append?
+  - How is a directory's handle opened again, for a listing or a watch of its own, as unix.rs
+    opens `.` relative to it?
+  - Does a rename replace a file another handle holds open, as write_in's rename(2) does on
+    Unix?
+- **Method.** `docs/research/measurements/windows-watch`, `cargo run --release`. Host: jupiter,
+  AMD Family 26 Model 112, 32 logical CPUs, Windows 10.0.26200, 2026-10-27.
+  1. ReadDirectoryChangesW on the directory, overlapped, for size and last-write changes: 20
+     appends of 10 bytes by a writer holding the file open, each waited for 5 s.
+  2. The same for names: 1,000 files made, each timed from before its create to the wait's
+     return.
+  3. A read oplock asked on a handle of FILE_READ_ATTRIBUTES, overlapped, beside a writer
+     holding the file open: 1,000 asks, each followed by an append of 10 bytes, timed from
+     before the write to the ask's completion.
+  4. The oplock asked before a writer opens: whether the open breaks it, then the append.
+  5. ReOpenFile of a directory's handle, five ways asked; then NtCreateFile of no name
+     relative to the handle.
+  6. A rename by NtSetInformationFile (FileRenameInformationEx, relative to the directory's
+     handle) over a file another handle holds open: the holder sharing delete or not, with and
+     without FILE_RENAME_POSIX_SEMANTICS.
+- **Found.**
+  - 1: none of the 20 appends was reported within its 5 s.
+  - 2: a name made was reported, µs: n=1000 p50=240.3 p90=336.2 p99=495.4 max=679.4.
+  - 3: the oplock was granted 1,000 times of 1,000. Each append broke it, µs: n=1000 p50=8.7
+    p90=10.2 p99=21.8 max=270.7. Each break went to level 0, no acknowledgement asked.
+  - 4: granted; the writer's open broke nothing, and its append broke the oplock 54.4 µs on.
+  - 5: ReOpenFile refused every way asked, "Access is denied." (5). NtCreateFile of no name
+    relative to the handle opened the directory (status 0).
+  - 6: with the holder sharing delete, the POSIX rename went (status 0): the holder read the
+    old bytes and the name the new. Without POSIX semantics it was refused
+    (STATUS_ACCESS_DENIED, 0xC0000022). With the holder sharing no delete it was refused both
+    ways (STATUS_SHARING_VIOLATION, 0xC0000043, with POSIX semantics; STATUS_ACCESS_DENIED
+    without).
+- **Consequence (D27).**
+  - On Windows a FileWatch hears names through ReadDirectoryChangesW. It hears its file's
+    writes through a read oplock on a handle of its own, asked for again after each break,
+    since ReadDirectoryChangesW says nothing of a held-open writer's appends.
+  - One completion port and one thread serve every watch of a process, setting each watch's
+    own event. In its unit test, five appends by a writer holding the file open woke the
+    watch 12.2 to 169.4 µs on.
+  - A directory's own handle is opened again by NtCreateFile of no name relative to it.
+  - write_in renames with POSIX semantics.
+
+### M345. A WHP partition saved and restored: its vCPU's state, its time held and set, its RAM a copy-on-write view of a sparse file; what a restore costs; and the renames a snapshot's commit makes, which Windows may refuse (D196)
+
+- **Questions.** Before shards' WHP backend saves and restores a partition (D196):
+  - What does WHvGetVirtualProcessorState give of a vCPU's local APIC
+    (InterruptControllerState2) and XSAVE area, the functions Microsoft marks deprecated
+    aside, and does each, set into a new partition, read back the same? Which registers
+    does the host read beyond the architectural ones a snapshot keeps anyway?
+  - Partition time: does a new partition's TSC and reference time run before its vCPU
+    first does? Does WHvSuspendPartitionTime hold them, may they be set while held, and
+    does a run resume them?
+  - A guest saved from one partition and restored into another, its RAM a copy-on-write
+    view (PAGE_WRITECOPY) of a sparse file of its saved RAM, placed into a placeholder and
+    mapped at stage 2: does it read its RAM, zeros where the file has holes, do its stores
+    land in the view and never in the file, and do its TSC and its reference TSC page's
+    time go on from the save?
+  - May one process map memory into a second partition while another lives?
+  - What does each step of a restore cost, a restored guest's first touch and first store
+    of each page, and `shards restore` end to end, cold and warm?
+  - The snapshot store replaces its pointer, and a generation's working set, by a file
+    renamed over the last (`write_in`: a POSIX rename, M344), and commits a generation by
+    renaming its directory into place. Under a full test run, eight writers' renames over
+    one working set were refused (STATUS_ACCESS_DENIED). Is such a rename refused alone,
+    for how long, by whom, and what does Windows still allow of the file it refuses?
+- **Method.** jupiter: AMD Family 26 Model 112, 32 logical CPUs, Windows 10.0.26200,
+  Microsoft Defender's real-time protection on (Get-MpComputerStatus), 2026-10-27.
+  1. `docs/research/measurements/whp-run/src/bin/m345.rs`, `cargo run --release --bin m345
+     -- DIR`: a partition of one vCPU in long mode, 2 MiB of RAM, its guest an interpreter
+     (M341's: at each port exit the host names a load, a store, a TSC read, a touch or a
+     store into each page of a range, and the next exit carries the result). Its clocks
+     read over 50 ms never run, run, suspended, set while suspended, resumed, and run while
+     suspended; its registers read one by one; its state saved (registers, APIC page, XSAVE
+     area, reference time, TSC), its RAM written to a sparse file, page by page where not
+     zero; then 201 restores, each into a new partition, the first checking what its guest
+     finds and the 200 after timed step by step.
+  2. `src/bin/m345_rename.rs`, `cargo run --release --bin m345_rename -- DIR`, in DIR (under
+     the user's profile) and in `%TEMP%`, where shards' tests write: a rename over a file
+     held four ways (a handle sharing all, a section, a mapped view, a view alone); then
+     writers as `write_in`'s (8 KiB of their own bytes written to a name of their own,
+     flushed, renamed over `target`, flushed, closed, the next at once): one writer 2,000
+     times; eight side by side, 250 each; eight beside eight threads writing and removing
+     256 KiB files of their own. A refused rename is retried every 100 µs for 60 s, and
+     then, never taken, its file is renamed to a name of its own, a new file is renamed
+     over the target, the target is linked under a second name (CreateHardLinkW), and the
+     new file renamed over it again; in other passes a refusal asks Restart Manager who
+     holds the target, moves the target away and renames its file in, or links the target
+     aside and renames its file over it at once. Last, a directory renamed with a file in it
+     open, then closed; and 500 generations as the store commits them (a directory of a
+     1 MiB memory and a 4 KiB state file, written, flushed and closed, then renamed into
+     place), alone and beside the churn.
+  3. The vmm unit test `working_sets_saved_at_once_each_land_whole`, eight threads writing
+     20 working sets each into one generation by `write_in`, run within its 35 tests
+     (`cargo test -p shards-vmm --lib -- whp ioapic snapshot::`) again and again, before
+     and after `write_in`'s fallback.
+  4. `cargo bench -p shards --bench restore -- --runs 100`: the `resume` test guest
+     snapshotted by `shards run --kernel --snapshot-dir`, then 100 cold restores (a `shards
+     restore` each) and 100 warm (`--hold`, then released), 3 of each first unrecorded.
+  5. `whp-run.yml` on GitHub's windows-2022 (Windows Server 2022, build 20348) and
+     windows-2025 (build 26100) runners, runs 40519967461 and 40523208206: 1's and 2's
+     probes, 1's with the APIC page and XSAVE area set back as read after the first run, and
+     the page's first 1 and 2 KiB, each answer recorded; and on jupiter the same.
+  6. `docs/research/measurements/write-in-versions/run.sh` (the vmm test
+     `write_in_as_the_rename_probes_writers`, release profile), on jupiter at 76d80231, five
+     passes: platform `write_in` as each write now lands, as its name's next version (D196),
+     written as 2.'s writers write (8 KiB of their own bytes; one writer 2,000 times, eight
+     side by side 250 each, eight beside eight threads writing and removing files of their
+     own); each write timed, every error said. Another session's work ran beside them (12
+     of 32 CPUs idle as the first pass began, the CPUs 47% busy as the last ended).
+- **Found.**
+  - **The vCPU's state** (1). Its APIC page, 4,096 bytes, and its XSAVE area, 2,472, set
+    into a new partition, read back with no byte apart. 74 architectural registers read,
+    none refused. Of the optional ones, this host reads MtrrCap (0x508: 8 variable MTRRs;
+    the first and eighth pairs read, the sixteenth refused), XSS, the CET registers and the
+    pending debug exception, and refuses SPEC_CTRL, PRED_CMD, TSX_CTRL, the TSC deadline,
+    TSC_ADJUST, UMWAIT_CONTROL, XFD, XFD_ERR, MISC_ENABLE, FEATURE_CONTROL and BNDCFGS
+    (STATUS_HV_INVALID_PARAMETER, 0xC0350005), and the APIC's current count
+    (STATUS_HV_ACCESS_DENIED, 0xC0350006). A save: 85 registers 15.3 µs, the APIC page 11.3,
+    the XSAVE area 14.6, the reference time 3.1, the suspend 10.7.
+  - **Time** (1). A new partition whose vCPU never ran: its TSC and reference time moved 0
+    over 50 ms; after a run, 151,425,000 TSC ticks and 50.58 ms of reference time. Suspended
+    (WHvSuspendPartitionTime), both moved 0 over 50 ms; the reference time set 10 s on and
+    the TSC 1,000,000 on, each was read back as asked and left the other where it was.
+    Resumed (WHvResumePartitionTime), both ran again; a run made while suspended answered
+    in 32.4 µs, and time ran on after it, as WHvSuspendPartitionTime's reference says a
+    run resumes it. The guest's reference TSC page read 5.5 µs behind the partition's
+    reference time.
+  - **A restore** (1). A restore's partition, never run nor suspended, kept its TSC and a
+    reference time of 0 over 50 ms. Restored and suspended: its TSC and reference time
+    read the saved ones, and still did 50 ms on. Its guest's first load read what it had
+    stored before the save; its TSC was then 5,582,310 ticks past the saved one and its
+    reference TSC page 1.88 ms past the saved reference time, the time from its first run.
+    A page the file holds as a hole read 0. Its stores read back from the view, and the
+    file kept 0 at both: copy-on-write, a restore's RAM never its file. The RAM file:
+    4 pages of 512 written, 196,608 bytes on disk of 2 MiB (NTFS's 64 KiB clusters of
+    sparse allocation), unchanged after 201 restores.
+  - **Views at stage 2** (1). WHvMapGpaRange took every view asked, read-write-execute,
+    read-execute and read: copy-on-write views of a read-only and of a read-write file,
+    in a placeholder and anywhere, read-only views, a pagefile section's and private
+    memory; and maps made with the partition's time suspended, and half before the suspend
+    and half after.
+  - **One partition a process** (1). With a partition alive whose RAM is mapped, a second
+    partition's map was refused at GPA 0 and at 1 GiB alike
+    (STATUS_VID_PARTITION_ALREADY_EXISTS, 0xC0370008), and taken once the first was
+    deleted.
+  - **A restore's steps** (1), µs, n=200 each, p50 / p90 / p99 / max:
+
+    | step | p50 | p90 | p99 | max |
+    |---|---|---|---|---|
+    | partition made and set up | 577.8 | 693.4 | 2,501.6 | 4,095.9 |
+    | time suspended | 0.9 | 1.6 | 1.9 | 2.5 |
+    | RAM reserved and committed | 6.7 | 7.4 | 9.4 | 88.8 |
+    | RAM freed back to its placeholder | 15.6 | 16.7 | 25.1 | 76.5 |
+    | copy-on-write view placed | 143.4 | 189.2 | 250.6 | 327.2 |
+    | view mapped at stage 2 | 37.7 | 58.2 | 71.9 | 79.7 |
+    | vCPU made | 92.0 | 130.5 | 187.5 | 209.7 |
+    | APIC base set | 10.3 | 24.3 | 29.7 | 32.6 |
+    | APIC page set | 14.2 | 23.1 | 28.8 | 41.2 |
+    | XSAVE area set | 7.1 | 11.6 | 12.8 | 30.0 |
+    | registers set | 15.2 | 24.1 | 31.4 | 89.9 |
+    | reference time set | 3.2 | 5.0 | 7.0 | 23.8 |
+    | the whole restore, to its run | 954.8 | 1,147.9 | 2,827.1 | 4,455.9 |
+    | first answer (a run, time resumed) | 562.5 | 679.5 | 817.9 | 948.6 |
+    | first touch of 512 pages | 3,264.4 | 3,678.0 | 3,995.6 | 4,092.9 |
+    | next touch | 6.6 | 7.7 | 11.0 | 17.3 |
+    | first store into 448 pages | 3,722.8 | 3,909.7 | 4,085.7 | 5,240.7 |
+    | next store into them | 7.0 | 8.7 | 16.6 | 21.7 |
+
+    A restored guest's first touch of a page costs 6.4 µs at p50, its first store 8.3: a
+    stage-2 fault each that the hypervisor resolves through the host's view.
+  - **`shards restore`** (4). Host "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S", OS "Microsoft
+    Windows [Version 10.0.26200.9711]", kernel vmlinux-6.18.48-x86_64-hyperv, 1 vCPU,
+    revision 56fa5e5b-dirty (this entry's commit's code before rustfmt and a comment), µs:
+
+    | | n | p50 | p90 | p99 | max |
+    |---|---|---|---|---|---|
+    | cold_restore, 256 MiB | 100 | 69,811 | 74,022 | 84,818 | 114,840 |
+    | cold_spawn_exit, 256 MiB | 100 | 171,269 | 177,875 | 189,587 | 190,552 |
+    | warm_request, 256 MiB | 100 | 59,576 | 67,499 | 71,615 | 71,631 |
+    | cold_restore, 1 GiB | 30 | 72,758 | 80,650 | 87,285 | 87,285 |
+    | cold_spawn_exit, 1 GiB | 30 | 177,683 | 183,975 | 192,290 | 192,290 |
+    | warm_request, 1 GiB | 30 | 59,437 | 63,424 | 67,583 | 67,583 |
+
+    A warm VM's peak working set: 10.1 MiB at every percentile, at both sizes.
+  - **Where a restore's time goes** (4, single runs with `SHARDS_TIMING=1`). A cold restore
+    is ready to run 9.0 and 10.4 ms after its process starts, and its vCPU enters the guest
+    6 to 8 µs after; a held one enters 21 to 34 µs after its release. From that entry to
+    RESUMED, the guest's next store after the one that asked for the snapshot, took 79.3
+    and 79.4 ms cold and 84.3, 88.2 and 95.1 ms held. With the whole of RAM populated at
+    stage 2, read, before the run (WHvAdviseGpaRange, `whp-run/m345-populate.patch` on the
+    same tree, a test-release build), the populate took 74.2 to 79.0 ms for 256 MiB (1.1
+    to 1.2 µs a page) and the same entry-to-RESUMED took 3.35 and 3.36 ms cold and 3.4,
+    3.4 and 10.9 ms held. The restore's cost is its guest's first touches: each page the
+    resumed kernel reads faults at stage 2, through the copy-on-write view, as M345's
+    probe's guest did, and no working set maps them ahead on WHP. It is the same at 1 GiB
+    as at 256 MiB: what the guest touches, not what it has.
+  - **Renames over a file** (2, two runs; the first before the generations' pass was added).
+    A rename over a file held by another handle sharing all, by a section of it, by a mapped
+    view, or by a view alone, was taken, and the name read the new bytes. Taken renames, µs,
+    the second run: one writer 245 / 358 / 534 / 1,659 (p50 / p90 / p99 / max) in the named
+    directory and 447 / 554 / 735 / 53,703 in `%TEMP%`; eight writers 1,413 / 1,736 / 2,782 /
+    6,801 and 1,352 / 1,716 / 2,146 / 3,485; beside churn 2,292 / 2,812 / 4,057 / 18,049 and
+    1,943 / 2,521 / 5,077 / 33,198, n = 1,990 to 2,000 each.
+  - **Refusals** (2). Every first refusal was STATUS_ACCESS_DENIED (0xC0000022), a retry's
+    now and then STATUS_SHARING_VIOLATION (0xC0000043), and Restart Manager named no process
+    holding the target but, for a sharing violation, the probe itself (a writer's file). A
+    single writer was refused once in 8,000 renames over the two runs (once in the first's
+    2,000 named, never in its 2,000 in `%TEMP%` nor the second's 4,000). Eight writers at
+    once were refused in episodes, every writer of the pass at once, then for 60 s and more:
+    in 4 of the second run's 12 passes of eight, their refusals taken after 59.9 to 60.0 s
+    of retrying or never within it, and in 1 of the first's 12; a sharing violation's taken
+    after 5.8 to 172 ms. Through a hold, the writer's own file could still be renamed to a
+    name of its own, every time, and a new file renamed over the target was refused as the
+    first was.
+  - **What a hold allows** (2). In the first run, the target of a refused rename, linked
+    under a second name (CreateHardLinkW), had the same rename over it taken, 9 times of 9:
+    8 at once, 2.1 to 9.1 ms after the refusal (p50 4.0), and one after a hold of 60 s: a
+    rename that deletes no file. In the second run's holds of a minute, a target still
+    refusing renames refused the link too (ERROR_ACCESS_DENIED), 6 times of 6, the rename
+    asked right after taken each time, the hold just ended; a new file just renamed over the
+    target refused its link 6 times of 8. Its pass that moved a refusing target away was
+    refused the move, 3 times of 3; in a run before these two, the same pass's moves were
+    taken, 5 times of 5, and only another writer's rename into the freed name
+    (STATUS_OBJECT_NAME_COLLISION, 0xC0000035) kept its own out.
+  - **A snapshot's commit** (2). A directory renamed while a file in it was open was refused
+    (ERROR_ACCESS_DENIED, 5), in both places; with the file closed, taken. 2,000 generations
+    committed as the store commits them (files written, flushed, closed, then their directory
+    renamed into place), alone and beside churn, in both places: none refused; taken, µs, 832
+    / 951 / 1,216 / 21,234 named and 1,471 / 1,797 / 2,217 / 10,288 in `%TEMP%`, alone.
+  - **The vmm test** (3). Eight writers saving working sets into one generation failed in 3
+    runs of 10 of its 35 tests with `write_in` as it was, every writer's rename refused (in
+    a build that asked Restart Manager on each refusal, it named System, pid 4, and the
+    test's own process, and the same rename asked again at once was taken); in 3 of 10 with
+    a refused rename linking its target aside and asking once more; and in none of 25 with
+    a refusal of another writer's file linked in turn.
+  - **Versions** (6). No write was refused or failed: 30,000 in five passes. Each pass left
+    its newest version alone, 6,000 landed (the fifth's newest `~5999`: a writer whose
+    listing came before another's version went landed under that version's number once it
+    had gone). A write, µs, n=2,000 a pass, the five passes' p50 / p90 / p99 / max: one
+    writer 1,201–1,340 / 1,428–1,685 / 1,875–2,360 / 11,081–24,309; eight side by side
+    3,460–3,659 / 19,468–23,400 / 60,882–70,447 / 102,743–176,153; eight beside churn
+    9,280–12,794 / 30,514–32,445 / 56,817–62,848 / 112,718–138,891.
+  - **GitHub's runners** (5). Microsoft Defender's real-time protection was off on both
+    (Get-MpComputerStatus), and the rename probe was refused nothing, in any pass, in either
+    place; a directory with a file open in it refused its rename there too.
+    - windows-2025: every question of 1's as on jupiter: the APIC page set back whole and as
+      its first 1 and 2 KiB, the XSAVE area (872 bytes on its CPU) set back, restores going
+      on as saved. A restore, µs, n=200, p50 / p99: to its run 990 / 1,273; its guest's
+      first touch of 512 pages 10,763 / 12,592 and first store into 448 19,684 / 23,102 (21
+      and 44 µs a page, in a runner's nested partition).
+    - windows-2022: WHvSetVirtualProcessorState refused the APIC page set back as read
+      (ERROR_MORE_DATA, 0x800700EA) and its first 1 and 2 KiB (E_INVALIDARG, 0x80070057),
+      and took the XSAVE area; its restores stopped at the page.
+    - jupiter (build 26200): the page set back whole and as its first 1 and 2 KiB.
+- **Consequence (D196).**
+  - A WHP partition is saved by its registers, its APIC page and XSAVE area through
+    WHvGetVirtualProcessorState, its time suspended and read at one instant, and restored
+    into a new partition in a new process, its time held until its first run; its RAM a
+    copy-on-write view of its sparse file, which no restore writes.
+  - A process holds one partition at a time.
+  - A snapshot restores on builds 26100 and 26200. Windows Server 2022 (build 20348) sets
+    no vCPU's APIC page back through WHvSetVirtualProcessorState, whole or in part, so none
+    restores there, and a restore says so; the function that function supersedes, which
+    Microsoft marks deprecated, is not used.
+  - A restore costs its guest's first touches: 70 ms cold and 60 ms warm at p50 on jupiter,
+    3.4 ms with its RAM populated at stage 2 ahead, which itself costs 1.1 to 1.2 µs a page.
+    A working set (D25) recorded and populated ahead is what takes that off a restore's
+    path, with templates on Windows (the parity plan's step 4); its recording is WHP's to
+    find, which reads back no access bit at stage 2.
+  - A commit closes its files before its directory's rename (NTFS refuses one with a file
+    open in it). On Windows `write_in` replaces no file: each write lands as its name's next
+    version, by a rename to a name no file has, which no hold refused (2.'s writers renamed
+    their own files to new names every time, and 30,000 writes landed so, 6); then the
+    versions before it go where Windows lets them. Readers take the newest, a confined VM
+    through its spawner; the store's tidy and the daemon's sweep of templates remove what
+    Windows kept. The link-aside fallback went with the replace it rescued.
+
 ### M346. arm64 Linux's KVM restores, in a guest with EL2 on an M5 Max: what a restore's setup costs there, and what made the snapshot tests fail before they passed (D154)
 
 - **Questions.** No arm64 Linux host of ours has KVM: CI's arm64 runners have no /dev/kvm. Do shards' snapshot

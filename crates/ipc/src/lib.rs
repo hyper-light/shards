@@ -337,6 +337,15 @@ pub mod kind {
     /// payload as it came: the client ends as that signal ends the Docker CLI before its
     /// container is made (D26).
     pub const INTERRUPTED: u8 = 71;
+    /// VM → its spawner, on its grants link, where it writes in no directory of its own
+    /// (Windows' AppContainer, D141): stage a snapshot generation in the directory it was
+    /// granted to write in, named as `GRANT` names a path. Answered with a `GRANTED`
+    /// carrying the generation's memory file's and state file's handles in the VM, each a
+    /// little-endian u64, then the generation's name; or an `ERR` (D196).
+    pub const STAGE: u8 = 72;
+    /// VM → its spawner: the generation the payload names, staged and filled, is to be made
+    /// durable and the one in use. Answered with an empty `GRANTED`, or an `ERR` (D196).
+    pub const COMMIT: u8 = 73;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

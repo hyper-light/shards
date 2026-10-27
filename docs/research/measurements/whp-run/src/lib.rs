@@ -169,6 +169,17 @@ pub fn bind() -> Result<Api, String> {
     }
 }
 
+/// Function `name` of WinHvPlatform.dll, as `T`, its signature, for a probe that needs one
+/// `Api` does not bind; `None` where the host has no such function.
+///
+/// # Safety
+/// `T` must be the function's own signature, a function pointer.
+pub unsafe fn platform_function<T: Copy>(name: &str) -> Result<Option<T>, String> {
+    let lib = library("WinHvPlatform.dll")?;
+    // SAFETY: forwarded caller contract.
+    Ok(unsafe { sym(lib, name) }.ok())
+}
+
 pub fn check(what: &str, hr: HRESULT) -> Result<(), String> {
     if hr < 0 {
         return Err(format!("{what}: HRESULT {:#010x}", hr as u32));

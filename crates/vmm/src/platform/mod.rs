@@ -21,6 +21,23 @@ pub use unix::*;
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+#[cfg(windows)]
+mod windows_files;
+#[cfg(windows)]
+mod windows_process;
+#[cfg(windows)]
+mod windows_watch;
+#[cfg(windows)]
+pub use windows_files::{
+    names_in, newest_in, open_beneath, open_dir_beneath, open_in, open_newest_beneath, open_newest_in,
+    punch_hole, remove_in, sync_entries, version_of, write_in,
+};
+#[cfg(windows)]
+pub use windows_process::{
+    Usage, descriptor_limit, launched, mapped_pages, process_usage, raise_descriptor_limit, thread_limit,
+};
+#[cfg(windows)]
+pub use windows_watch::FileWatch;
 
 /// AF_UNIX stream sockets, std's on Unix and shards' own on Windows (PM M199).
 #[cfg(windows)]
@@ -80,10 +97,11 @@ mod pressure;
 pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
 
 mod granted;
-#[cfg(unix)]
-pub use granted::open_beneath_input;
+#[cfg(windows)]
+pub use granted::input_file_id;
 pub use granted::{
-    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_input, set_dialer,
+    Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix,
+    open_beneath_input, open_input, open_newest_beneath_input, set_dialer, set_stager, stager,
 };
 
 #[cfg(target_os = "linux")]
@@ -144,6 +162,11 @@ pub fn read_in(dir: &File, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> 
 /// is read.
 pub fn read_beneath(root: &std::path::Path, rel: &[&str], max: u64) -> io::Result<Option<Vec<u8>>> {
     read_bounded(open_beneath_input(root, rel), &rel.join("/"), max)
+}
+
+/// [`read_beneath`] of the file's newest version ([`open_newest_beneath_input`]).
+pub fn read_newest_beneath(root: &std::path::Path, rel: &[&str], max: u64) -> io::Result<Option<Vec<u8>>> {
+    read_bounded(open_newest_beneath_input(root, rel), &rel.join("/"), max)
 }
 
 /// [`read_in`] for a VM's input at `path` ([`open_input`]).

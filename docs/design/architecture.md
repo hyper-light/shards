@@ -207,7 +207,7 @@ the guest arch is always the host arch.
 | Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; snapshots with cold and warm restore (D154) |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
-| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
+| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; snapshots with cold and warm restore (D196) |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
@@ -1485,7 +1485,12 @@ removes it; `--rm` removes it once it ends.
       instance's, which one thread reads, each watch woken through an eventfd of its
       own: a user may have 128 instances, and a KDE Plasma desktop with a few apps
       open held 101 of them (PM M257); with an instance each, the followers past the
-      rest failed. Where no watch can be made, a follower reads again every 250 ms.
+      rest failed. On Windows a watch hears names through ReadDirectoryChangesW, and its
+      log's appends through a read oplock held on a handle of its own, which each append
+      through the VM's handle breaks. ReadDirectoryChangesW said none of 20 appends by a
+      writer holding its file open within 5 s each; each such append broke the oplock 8.7 µs
+      on at p50, 21.8 at p99 (PM M344). One completion port and one thread serve every watch
+      of a process. Where no watch can be made, a follower reads again every 250 ms.
     - **A log keeps only its newest output**: at most its user's history (`shards
       configure disk --log-history`, 1 GiB by default, D186), in equal segments of at
       most 20 MiB, two at least, the oldest removed as the next begins; the daemon's
@@ -6376,6 +6381,138 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
+
+**Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
+row 2a): a microVM on Windows took no snapshot (D140), so `run --kernel --snapshot-dir`, `shards
+restore` and everything built on them, templates (D25) and warm pools (D26), were Unix's alone.
+What WHP keeps of a partition, and what a restore may set back, measured first (PM M345, a
+probe on jupiter: a guest saved from one partition, restored into another, its memory a view of
+its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over WHP (virt_whp's
+`vp_state.rs`, `apic.rs` and `lib.rs`, at 429b72a9).
+
+- **Each vCPU's state** (`hv::whp::state`): its registers as WHP names them, 69 every host reads
+  (what it runs from, the MSRs a Linux guest writes, its APIC base, the VP assist page its
+  Hyper-V setup gives it, its pending interruption, interrupt state, pending event and activity:
+  an AP still held for its SIPI among it) and the optional ones its host reads (the variable
+  MTRRs MtrrCap counts, XSS, the CET registers, SPEC_CTRL, TSX_CTRL, TSC_ADJUST, UMWAIT_CONTROL,
+  XFD and XFD_ERR, the pending debug exception), asked once a process, each alone; its local
+  APIC's page and its XSAVE area by WHvGetVirtualProcessorState (InterruptControllerState2,
+  XsaveState), not the two functions it supersedes, which Microsoft's reference marks deprecated
+  ("WHvGetVirtualProcessorXsaveState", "WHvGetVirtualProcessorInterruptControllerState2"). A
+  restore sets the APIC base first, which the APIC page's mode follows, then the page, then the
+  XSAVE area, then every register (XCR0 after the area, OpenVMM's order); a state naming a
+  register no snapshot keeps is refused as it is read, as is one taken on another CPU (the
+  leaves of its vendor, family, features, XSAVE components and address sizes, as WHP gives a
+  guest: not its caches, which a hybrid host's cores describe apart, M258).
+- **The partition's time, held.** A partition's TSCs and reference time stand still while it is
+  suspended (WHvSuspendPartitionTime), and a partition never run keeps them where it was made
+  (M345). A save holds them once every vCPU is parked, reads each vCPU's TSC there, at one
+  instant, with the reference time and the Hyper-V MSRs the guest writes once for all its vCPUs
+  (its OS ID before its hypercall page, then its reference TSC page), and resumes them: no
+  vCPU's TSC comes back apart from another's by however far apart their captures were, and the
+  guest's clocks run through the save as a KVM guest's do. A restore holds them before it sets
+  them, and they stay held until a vCPU first runs (WHvSuspendPartitionTime's reference): the
+  guest's clocks go on from the snapshot whenever its vCPUs are released, a held restore's wait
+  (`--hold`) unseen, as KVM's restart their TSCs at the release. Its reference TSC page then
+  reads the saved reference time, run on (M345).
+- **The IOAPIC is the VMM's** (D140) and is saved with the partition: its registers and each
+  pin's line; a level-triggered entry keeps its remote IRR, which the restored local APIC's
+  EOI clears.
+- **Memory.** A snapshot's memory file is sparse (FSCTL_SET_SPARSE): NTFS keeps no hole it is
+  not told to, and writes the zeros of every page up to the last written (M345: a 2 MiB guest's
+  four pages took 192 KiB, NTFS allocating sparse files 64 KiB at a time). A restore's RAM is the
+  file mapped copy-on-write (PAGE_WRITECOPY), placed at the address its RAM was reserved at:
+  guest RAM is reserved as a placeholder that committed memory replaces at once
+  (`platform::reserve_ram`), which the restore frees back to its placeholder and replaces with
+  the view, leaving no moment in which another thread could take the range. WHP maps any view
+  at stage 2 (copy-on-write, read-only, shared or of the pagefile, M345); the guest's stores
+  land in the view and never in the file, and every restore shares the file's pages in the
+  cache until it writes one. The file is made sparse as it is made, by whoever makes it: for a
+  confined VM its spawner, since the VM process may make no FSCTL (D141).
+- **One partition a process.** WHP maps no memory into a second partition of a process while
+  another lives (STATUS_VID_PARTITION_ALREADY_EXISTS, until the first is deleted, M345). A VM
+  process holds one; the partition that reads the host's vCPU limit is deleted before it.
+- **Windows Server 2022 restores none.** Its WHP (build 20348) sets no vCPU's APIC page back
+  through WHvSetVirtualProcessorState: the page as read is refused (ERROR_MORE_DATA), and its
+  first 1 or 2 KiB too (E_INVALIDARG), where builds 26100 (windows-2025) and 26200 (jupiter)
+  take it whole and in part (M345). The function it supersedes stays unused, deprecated as
+  Microsoft marks it, so a snapshot taken there restores nowhere there, and a restore says
+  why rather than an HRESULT alone; builds between 20348 and 26100 are unmeasured.
+- **A confined VM writes its snapshot through its spawner.** An AppContainer writes in no
+  directory of its user's (D141), and a directory handle would give it every name in it: the
+  spawner makes the snapshot's directory the VM asks to write in, stages each generation there
+  on the VM's word (`kind::STAGE`), hands the VM the generation's memory and state files to
+  fill, and makes it durable and the one in use on its next (`kind::COMMIT`), as the daemon
+  stages a run's save (D176), every file of the generation closed first: NTFS renames no
+  directory a file in which is open (ERROR_ACCESS_DENIED, M345), so the VM's handed files go
+  with its save, and a commit's own close before the rename that puts the generation in
+  place, on every host. Once a generation is committed the spawner gives the directory
+  up, as a Unix VM seals its own (vm_run.rs `seal`): a guest that took the VM's process over
+  later cannot have every later restore of the template restore what it wrote. One staged and
+  never committed goes with the VM.
+- **A restore reads its template through its grants**, as on macOS: the pointer, then the files
+  of the generation it names (`granted_template`). A backing file's identity is its volume's
+  serial number and its file index, as a Unix file's device and inode are: a file of the same
+  bytes and times renamed over a disk is another (audit A18). An AppContainer may not even ask
+  a file's metadata by its path (M201), so on Windows a restore first reads which backing files
+  the snapshot's state names (`snapshot::backing_named`), has them granted, then reads the
+  generation, and refuses one whose backing files changed between, a snapshot saved again as
+  it was read.
+- **A rename over a file Windows will not yet let go of.** The store replaced its pointer and a
+  generation's working set by renaming a new file over the old (`write_in`, a POSIX rename,
+  M344). On jupiter Windows refused such renames (STATUS_ACCESS_DENIED): a single writer's once
+  in 8,000, and eight writers' at once in episodes of a minute and more, Restart Manager naming
+  no process holding the file (M345; Microsoft Defender's real-time protection was on, and
+  logged nothing); in those holds it refused too the link and the move that might have
+  stepped around one, while a rename of a file to a name no file had was never refused. So on
+  Windows no write replaces a file: `write_in` lands each as its name's next version
+  (`name.~N`, one past the highest listed, by a rename that replaces nothing; a writer that
+  finds its version's name taken lists again), flushes the directory, then removes the
+  versions before it, and a file at the name itself, where Windows lets them go. Versions
+  count from those listed, never from a clock, which may step back. Readers take the newest
+  (`platform::newest_in`): the store's pointer and working set, a template's record, and a
+  confined VM's, through its spawner, which opens the newest for the path it asks
+  (`grant::Access::ReadNewestIfThere`). The store's tidy removes the pointers a newer one
+  superseded, and with no pointer to read keeps every generation; the daemon's sweep of
+  templates takes every version of a record. Elsewhere `write_in` renames over the file, as
+  rename(2) does. In five passes of the probe's writers on jupiter, 30,000 writes, none was
+  refused (M345, 6). `point` writes the pointer by `write_in` on every host. A commit's rename
+  of its generation's directory was never refused (M345: 2,000 commits, alone and beside
+  churn).
+- **What a restore costs** (M345, `benches/restore.rs`, jupiter, 256 MiB, n=100): a cold
+  restore runs its guest again 69.8 ms after its process starts at p50, 84.8 at p99, a
+  `shards restore` start to exit 171 ms; a warm one 59.6 ms after its release at p50, 71.6 at
+  p99, its peak working set 10.1 MiB. Nearly all of it is the guest's first touches: a restore
+  is ready to run 9 to 10 ms after its process starts, its vCPU entering the guest within 34
+  µs of that, and from there to the guest's next store after its snapshot point took 79 to 95
+  ms, and 3.4 ms with the whole of RAM populated at stage 2 beforehand (a populate that itself
+  took 74 to 79 ms). The same at 1 GiB: what a guest touches, not what it has.
+- **Not yet on WHP**: working sets (`vm::WORKING_SETS`), so a restore takes each page into
+  stage 2 as its guest first touches it (M345: 6.4 µs a page read and 8.3 µs a page written
+  at p50 on jupiter, where a populate maps a 2 MiB range at 0.4 to 0.7 µs a page, M341):
+  what a working set recorded and populated ahead takes off a restore's path, with the
+  daemon's templates and warm pools (D25, D26), which wait for the daemon on Windows (D195,
+  the parity plan's step 4). Its recording is WHP's to find: no access bit is read back at
+  stage 2, and a confined VM process may not ask its memory file's allocated ranges (an
+  FSCTL, D141).
+
+**Tested.** Unit: the states' round trips and damage, and a state naming any other register
+refused (`hv::whp::state`); a restored IOAPIC going on as the saved one; a generation staged by
+its spawner reading back once committed, and the store's every on-disk test, which run on
+Windows now (`snapshot`), among them eight writers saving working sets into one generation at
+once, which on jupiter failed in 3 runs of 10 with no fallback, in 3 of 10 with one retry
+after a link, and in none of 25 with each refusal of another writer's file linked in turn; a
+write landing as a version beside one held open that shares no delete, eight writers' at once
+each landing whole, and a version one past the highest listed (`windows_files`); a spawner
+granting a pointer written twice as its newest version (`grant_answer`); on Windows, a spawner
+staging and committing a VM's snapshots over real pipes, refusing a stage elsewhere and a
+commit of what is not staged, giving the directory up, and removing what is never committed
+(`grant_answer`). On real WHP guests (jupiter and CI's windows-2025):
+tests/snapshot.rs, every test, the storms of busy machines among them, which run on Windows
+now, and the unwritable directory by an access list there; tests/restore.rs, cold restores of
+one snapshot side by side and a held (warm) restore whose guest runs nothing until released.
+
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
 **Found.** A registry off loopback that speaks plain HTTP, a `registry:2` on another
@@ -6857,8 +6994,9 @@ the guest keeps their metadata alone.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
-- Hosts whose microVMs take no snapshots yet (Windows: D140) boot every run, so
-  each run pays the head's probe and the layer's first mount: not measured there yet.
+- Hosts whose runs restore no template yet (Windows, whose daemon is yet to come: D195,
+  D196) boot every run, so each run pays the head's probe and the layer's first mount: not
+  measured there yet.
 - APFS fills a hole shorter than 16 MiB between written blocks of a sparse file (PM
   M277): a layer's file, as a swap file and a template's memory, takes more of a Mac's disk
   than it was written.
@@ -7184,7 +7322,7 @@ container's processes one by one and refuses what it cannot: a `docker run -t` t
 device files, files sent over Unix sockets, locks held unless told to, processes joined
 to anything outside the set it dumps (criu.org, "What cannot be checkpointed"). A
 microVM's state is its memory and its devices', which shards' VMM already saves and
-restores for templates (D25): HVF and KVM, on x86_64 and arm64 (D154), WHP not yet (D140). What
+restores for templates (D25): HVF and KVM, on x86_64 and arm64 (D154), and WHP (D196). What
 lies outside the microVM goes as with CRIU by default, and is said: connections to the
 world beyond it, exec sessions and attached clients.
 
@@ -9964,7 +10102,8 @@ network process (D142) and its builder (D143) follow.
   event, not a socket pair.
 - **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
   every other host.
-- **Not yet on WHP**: snapshots, and so templates and warm pools (`vm::SNAPSHOTS`).
+- **Snapshots** came after (D196); templates and warm pools wait for the daemon on Windows
+  (D195).
 - **Recorded differences** from a KVM guest's machine: its clock is Hyper-V's reference TSC
   page where KVM's is kvm-clock; its APICs are xAPIC alone, offering neither x2APIC nor
   TSC-deadline (M198).

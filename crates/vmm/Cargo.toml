@@ -31,10 +31,15 @@ shards-syscall-filter = { path = "../syscall-filter" }
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
 windows-sys = { workspace = true, features = [
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
+  "Win32_Globalization",
   "Win32_Security",
   "Win32_System_Hypervisor",
+  "Win32_System_Ioctl",
   "Win32_System_LibraryLoader",
   "Win32_System_Pipes",
+  "Win32_System_ProcessStatus",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
   # A DAX window's answer must name a section (NtQueryObject's type record).

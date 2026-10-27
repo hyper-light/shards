@@ -1046,9 +1046,20 @@ impl Origin {
         Some((parent, format!("{name}.origin")))
     }
 
-    /// The template `dir`'s record, to remove with it.
+    /// The template `dir`'s record, as a test writes one by hand.
+    #[cfg(test)]
     pub fn path(dir: &Path) -> Option<PathBuf> {
         Self::place(dir).map(|(parent, name)| parent.join(name))
+    }
+
+    /// Removes the template `dir`'s record with it: each version of it (platform `write_in`)
+    /// that its host lets go of.
+    pub fn remove(dir: &Path) {
+        if let Some((parent, name)) = Self::place(dir)
+            && let Ok(templates) = shards_vmm::platform::open_dir(parent)
+        {
+            let _ = shards_vmm::platform::remove_in(&templates, &name);
+        }
     }
 
     pub fn of(guest: &Guest, rootfs: &Path, server: bool, gpu: bool, emulator: Option<&Path>) -> Origin {
@@ -1088,10 +1099,10 @@ impl Origin {
     }
 
     /// What is recorded for the template `dir`, if it is recorded whole: a regular file
-    /// beside it, never followed if it is a link.
+    /// beside it, its newest version (platform `write_in`), never followed if it is a link.
     pub fn read(dir: &Path) -> Option<Origin> {
         let (parent, name) = Self::place(dir)?;
-        let bytes = shards_vmm::platform::read_beneath(parent, &[&name], Self::MOST).ok()??;
+        let bytes = shards_vmm::platform::read_newest_beneath(parent, &[&name], Self::MOST).ok()??;
         serde_json::from_slice(&bytes).ok()
     }
 

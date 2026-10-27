@@ -91,7 +91,6 @@ pub fn open_input(path: &Path, write: bool) -> io::Result<File> {
 /// The regular file `rel` names beneath `root`, for reading, as a snapshot's files are
 /// read (PM M165): the descriptor granted for its path, its spawner having opened it so
 /// (shards `grant_answer`), or else [`super::open_beneath`]'s.
-#[cfg(unix)]
 pub fn open_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
     let path = rel.iter().fold(root.to_path_buf(), |p, name| p.join(name));
     match given(&path, false)? {
@@ -105,11 +104,38 @@ pub fn open_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
     }
 }
 
+/// The regular file `rel` names beneath `root`, its newest version, for reading, as a
+/// snapshot's pointer and working set are read (platform `write_in`): the descriptor granted
+/// for its path, its spawner having opened the newest so (shards `grant_answer`), or else
+/// [`super::open_newest_beneath`]'s.
+pub fn open_newest_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
+    let path = rel.iter().fold(root.to_path_buf(), |p, name| p.join(name));
+    match given(&path, false)? {
+        Some(file) => {
+            if !file.metadata()?.file_type().is_file() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "not a regular file"));
+            }
+            Ok(file)
+        }
+        None => super::open_newest_beneath(root, rel),
+    }
+}
+
 /// `path`'s metadata: the granted descriptor's, or the file's at `path`.
 pub fn input_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
     match given(path, false)? {
         Some(file) => file.metadata(),
         None => std::fs::metadata(path),
+    }
+}
+
+/// Which file `path` is (windows.rs `file_id`): the granted handle's, or the file's at
+/// `path` opened for no access, as [`input_metadata`] asks of one not granted.
+#[cfg(windows)]
+pub fn input_file_id(path: &Path) -> io::Result<(u64, u64)> {
+    match given(path, false)? {
+        Some(file) => super::file_id(&file),
+        None => super::file_id(&super::open_for_metadata(path)?),
     }
 }
 
@@ -229,6 +255,32 @@ pub fn set_dialer(dialer: Dialer) -> Result<(), String> {
 /// A connection to the socket at `path` through the dialer set, if one is.
 pub fn dial_unix(path: &Path) -> Option<io::Result<super::UnixStream>> {
     DIALER.get().map(|dial| dial(path))
+}
+
+/// What stages this process's snapshots where it writes in no directory of its own, an
+/// AppContainer's on Windows (D141): its spawner, which makes each generation in the
+/// directory it granted, hands this process the generation's memory and state files to
+/// fill, and makes it durable and the one in use on this process's word (D196).
+pub trait Stager: Send + Sync + std::fmt::Debug {
+    /// A new generation in `dir`: its name, then its memory file and its state file, empty
+    /// and open for writing.
+    fn stage(&self, dir: &Path) -> io::Result<(String, File, File)>;
+    /// Makes generation `name` of `dir`, filled, durable and the one in use.
+    fn commit(&self, dir: &Path, name: &str) -> io::Result<()>;
+}
+
+static STAGER: std::sync::OnceLock<Box<dyn Stager>> = std::sync::OnceLock::new();
+
+/// Has `stager` stage every snapshot this process writes from here on. Once.
+pub fn set_stager(stager: Box<dyn Stager>) -> Result<(), String> {
+    STAGER
+        .set(stager)
+        .map_err(|_| "a stager was set already".to_string())
+}
+
+/// The stager set ([`set_stager`]), if one is.
+pub fn stager() -> Option<&'static dyn Stager> {
+    STAGER.get().map(|s| &**s)
 }
 
 #[cfg(test)]
