@@ -795,24 +795,25 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
     let shown = lines.join("\n");
     assert!(set, "its step never read the file:\n{shown}");
     assert!(status.success(), "{shown}");
-    let gave = shown
+    let gave: Vec<&str> = shown
         .lines()
-        .find_map(|l| {
+        .filter_map(|l| {
             l.split_once("the build's builders gave back ")
-                .map(|(_, rest)| rest.to_string())
+                .map(|(_, rest)| rest)
         })
-        .unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
-    eprintln!("held short of memory, the build's builders gave back {gave}");
+        .collect();
+    assert!(!gave.is_empty(), "nothing given back said:\n{shown}");
+    eprintln!("held short of memory, the build's builders gave back {gave:#?}");
     let mib: u64 = gave
-        .split_whitespace()
-        .next()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0);
-    assert!(mib > 0, "{gave}");
-    assert!(gave.contains("asked to unplug "), "{gave}");
+        .iter()
+        .filter_map(|g| g.split_whitespace().next()?.parse::<u64>().ok())
+        .sum();
+    assert!(mib > 0, "{gave:#?}");
+    assert!(gave.iter().all(|g| g.contains("asked to unplug ")), "{gave:#?}");
     assert!(
-        gave.contains("past what they use, by their budget's room"),
-        "its guest held the build within no room: {gave}"
+        gave.iter()
+            .any(|g| g.contains("past what they use, by their budget's room")),
+        "its guest held the build within no room: {gave:#?}"
     );
     eprintln!("REPRO {:?} held build done", t0.elapsed());
     let free_out = TempDir::new("build-psi-free");

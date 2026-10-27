@@ -160,6 +160,11 @@ impl Giver {
         }
     }
 
+    /// Whether an ask of its is out, its answer not yet come.
+    pub fn awaiting(&self) -> bool {
+        self.out.is_some()
+    }
+
     /// Asks the builder to give back what it holds cold of its files and what it holds
     /// plugged past what it keeps, unless an ask is out: then it is asked nothing until that
     /// answer has come ([`answer`](Self::answer)). Whether this ask went.
