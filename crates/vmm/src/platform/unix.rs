@@ -317,6 +317,19 @@ pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Reserves `len` bytes of guest RAM of which the host gives nothing yet: [`reserve_ram`]'s,
+/// [`withhold`]n at once, each part [`grant`]ed as it is given out (memory to plug, D133).
+pub fn reserve_withheld(len: usize) -> io::Result<NonNull<u8>> {
+    let p = reserve_ram(len)?;
+    // SAFETY: the mapping just made, which nothing else references.
+    if let Err(e) = unsafe { withhold(p, len) } {
+        // SAFETY: as above, released as it goes unused.
+        unsafe { release(p, len) };
+        return Err(e);
+    }
+    Ok(p)
+}
+
 /// # Safety
 /// `ptr..ptr+len` must be a mapping returned by `reserve` or `reserve_ram` and not used
 /// afterwards.

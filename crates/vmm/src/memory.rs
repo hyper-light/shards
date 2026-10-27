@@ -409,7 +409,7 @@ impl GuestMemory {
         if self.regions.iter().any(|r| gpa < r.end() && r.gpa < end) {
             return Err(invalid("memory to plug overlaps guest RAM".into()));
         }
-        let host = platform::reserve_ram(len)?;
+        let host = platform::reserve_withheld(len)?;
         let words = (len as u64 / block).div_ceil(64);
         // Ownership moves into `self`, whose Drop releases it.
         self.hotplug = Some(Hotplug {
@@ -421,8 +421,6 @@ impl GuestMemory {
             ever: (0..words).map(|_| AtomicU64::new(0)).collect(),
             said_kept: AtomicBool::new(false),
         });
-        // SAFETY: the reservation just made, which nothing else references.
-        unsafe { platform::withhold(host, len) }?;
         Ok(self)
     }
 

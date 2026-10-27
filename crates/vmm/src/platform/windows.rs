@@ -111,6 +111,17 @@ pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Reserves `len` bytes of guest RAM of which the host gives nothing yet, each part
+/// [`grant`]ed as it is given out (memory to plug, D133): reserved alone (MEM_RESERVE), as
+/// [`withhold`] leaves a region. Reserved and committed first, as [`reserve`] does, it took
+/// its whole length's commit charge, which a host short of it refused ("The paging file is
+/// too small", ERROR_COMMITMENT_LIMIT, on jupiter under load).
+pub fn reserve_withheld(len: usize) -> io::Result<NonNull<u8>> {
+    // SAFETY: a fresh reservation owned by the caller until `release`.
+    let p = unsafe { VirtualAlloc(std::ptr::null(), len, MEM_RESERVE, PAGE_NOACCESS) };
+    NonNull::new(p.cast()).ok_or_else(io::Error::last_os_error)
+}
+
 /// Commits `ptr..ptr+len`, which [`withhold`] decommitted, again: read/write, zero-filled.
 ///
 /// # Safety
