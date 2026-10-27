@@ -6391,6 +6391,10 @@ forked.
   lists again under another name. A slot no client opened is stopped by an event of its
   own. Where the file names no pipe, or the pipe has no instance, the client starts the
   daemon. One daemon a home: it takes `daemon.lock` by LockFileEx (std's `try_lock`).
+  A slot's `say` and `answer` being one instance, which its client hears end only once
+  every handle of the daemon's has closed, the daemon reads what the client says only
+  until its side has said all it will: a run whose microVM was killed left its client
+  waiting for ever before (M348).
 - **Waits.** A read of no bytes on an overlapped pipe waits for what comes without taking
   it (M348): the daemon's followers wait on its runs' streams, and on processes' ends and
   events, through `pipe::Poller` (an I/O completion port, and a thread-pool wait on each
@@ -6445,7 +6449,7 @@ pass (`slots.rs`), beside each host's own (`fifo.rs`, `named.rs`, `pipe.rs`, `po
 stream's pipe made without FILE_FLAG_FIRST_PIPE_INSTANCE, which another process could then
 take first, and the tests caught every one: the last a client that read its list's name
 just before its daemon made its lists anew (`take_listed`). On jupiter, 2026-10-27, the
-daemon's and the containers' unit tests pass, 223 of 223, and tests/daemon.rs with real
+daemon's and the containers' unit tests pass, 225 of 225, and tests/daemon.rs with real
 microVMs, 37 of 37, `an_idle_daemon_wakes_for_nothing` among them, each thread's cycles
 read there (QueryThreadCycleTime) where Linux reads its switches. Its eleven pool and
 template tests, which the parity plan's step 4 takes up, skip there as on arm64 Linux, for

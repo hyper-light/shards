@@ -14957,6 +14957,16 @@ revision before comparing a changed API/implementation.
   - Windows removes no directory a process stands in (ERROR_SHARING_VIOLATION, g121-bc's
     probe), and the daemon stands in its home: one removing what is left of its home,
     removed as it served, has to leave it first.
+  - A run's microVM killed (`taskkill /F` of its process) as its command ran: the daemon
+    saw it end and kept its container as Exited (255), but the attached client did not
+    end, until a timeout killed it 90 s on; on macOS, killed so (`kill -9`), the client
+    ended at once, "the command's microVM stopped before the command ended". A slot's
+    `say` and `answer` are one instance on Windows, two handles of the daemon's, and the
+    daemon's reader of `say` held it open, waiting for a client that said nothing more:
+    the instance never closed. Reading `say` no longer once the daemon's side has said all
+    it will, the client ended 0 s after the kill, as on macOS
+    (`a_client_hears_its_session_end_though_it_says_nothing`, which fails on jupiter with
+    that read kept).
 - **Consequence (D195).**
   - The daemon waits on its slots, and its clients on its answers, by reads of no bytes
     (`pipe::Poller`, `await_any`); it sees a client's open by PeekNamedPipe; a client waits
@@ -14969,6 +14979,9 @@ revision before comparing a changed API/implementation.
     FIFOs took 116 and 291 µs (M255): two are kept offered of each kind, as on Unix.
   - A daemon with no console starts its confined VM processes detached; guest RAM to plug
     is reserved alone; the daemon leaves its home before removing it.
+  - A slot's session reads what its client says only until the daemon's side has said all
+    it will (`slots::read_frame_until`), so that the client hears its end as a FIFO's
+    reader hears its writer go.
 
 ### M349. What a file sized past what is written takes of an NTFS disk, sparse and not (D195, D190)
 
@@ -14997,5 +15010,7 @@ revision before comparing a changed API/implementation.
 - **Consequence (D195).** On Windows a run's layer, its swap and a build's cache part are
   made sparse before they are sized (`platform::make_sparse`, the image store's
   `make_sparse`), as a Unix file is: a run takes of its disk what its guest writes. Why a
-  run whose disk filled did not end, where its client should have heard why, is not found
-  yet.
+  run whose disk filled did not end, where its client should have heard why, was not
+  found from these runs, whose homes went with their tests; a run whose microVM ended
+  without a word left its client waiting for ever on Windows then (M348), fixed since, and
+  a full disk was not made again to see whether that was all.
