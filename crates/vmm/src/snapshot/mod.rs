@@ -604,11 +604,11 @@ fn is_generation(name: &str) -> bool {
             .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
-/// The generation `dir`'s pointer names. A pointer is a name and a newline; no more of
-/// one is read.
+/// The generation `dir`'s pointer names, its newest version's (platform `write_in`). A
+/// pointer is a name and a newline; no more of one is read.
 fn current(dir: &Path) -> io::Result<String> {
     let mut bytes = Vec::new();
-    platform::open_beneath_input(dir, &[CURRENT])?
+    platform::open_newest_beneath_input(dir, &[CURRENT])?
         .take(MAX_NAME as u64 + 2)
         .read_to_end(&mut bytes)?;
     let name = std::str::from_utf8(&bytes)
@@ -631,10 +631,11 @@ fn create_unsynced(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> i
     Ok(file)
 }
 
-/// Points `dir` at the generation `name`: a new pointer, synced, renamed over the old one,
-/// and the directory synced ([`platform::write_in`], whose leftovers, `.current.…`, [`tidy`]
-/// removes: on Windows, a pointer Windows would not yet let go of is linked aside so that
-/// the rename over it is taken, PM M345).
+/// Points `dir` at the generation `name`: a new pointer, synced, renamed into place, and the
+/// directory synced ([`platform::write_in`]: over the old one, or on Windows, which in holds
+/// of a minute and more refused renames over a file it had lately been given, as its next
+/// version, PM M345). Its leftovers, `.current.…` and the versions Windows would not yet let
+/// go of, [`tidy`] removes.
 fn point(dir: &Path, name: &str) -> io::Result<()> {
     platform::write_in(&platform::open_dir(dir)?, CURRENT, format!("{name}\n").as_bytes())
 }
@@ -1028,16 +1029,24 @@ impl Drop for Staged {
 }
 
 /// Removes everything but what `current` names, which is whole: superseded generations,
-/// and what failed or dead writers left.
+/// pointers a newer one superseded (platform `write_in`'s versions), and what failed or
+/// dead writers left. With no pointer to read it removes no generation: the one a pointer
+/// lost to a crash or a fault named would go with the rest.
 fn tidy(dir: &Path) {
     let keep = current(dir).ok();
+    let pointer = platform::open_dir(dir)
+        .and_then(|d| platform::newest_in(&d, CURRENT))
+        .ok();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let entry_name = entry.file_name();
             let entry_name = entry_name.to_string_lossy();
-            let generation = is_generation(&entry_name) && keep.as_deref() != Some(&*entry_name);
+            let generation =
+                is_generation(&entry_name) && keep.as_deref().is_some_and(|keep| keep != entry_name);
             let leftover = entry_name.starts_with(".g-") || entry_name.starts_with(&format!(".{CURRENT}."));
-            if generation || leftover {
+            let superseded = platform::version_of(&entry_name) == CURRENT
+                && pointer.as_deref().is_some_and(|newest| newest != entry_name);
+            if generation || leftover || superseded {
                 let _ = fs::remove_dir_all(entry.path()).or_else(|_| fs::remove_file(entry.path()));
             }
         }
@@ -1276,7 +1285,7 @@ pub fn accept_working_set(
 /// Whether the generation the snapshot in `dir` is at has a working set saved: one a
 /// restore of it maps ahead, and records none of.
 pub fn has_working_set(dir: &Path) -> bool {
-    generation(dir).is_ok_and(|g| g.join(WORKING_SET).is_file())
+    current(dir).is_ok_and(|name| platform::open_newest_beneath_input(dir, &[&name, WORKING_SET]).is_ok())
 }
 
 /// A working set as a restore hands it to its spawner (`--working-set FD`): the name of the
@@ -1311,7 +1320,8 @@ pub fn read_working_set(generation: &Path, page: u64, max_pages: u64) -> Result<
             generation.display()
         )));
     };
-    let Some(bytes) = platform::read_beneath(dir, &[name, WORKING_SET], max_bytes).map_err(|e| at(&e))?
+    let Some(bytes) =
+        platform::read_newest_beneath(dir, &[name, WORKING_SET], max_bytes).map_err(|e| at(&e))?
     else {
         return Ok(None);
     };
@@ -1779,10 +1789,14 @@ mod tests {
             let mut buf = [0u8; 5];
             restored.access().unwrap().read(0x8000_0010, &mut buf).unwrap();
             assert_eq!(&buf, b"guest");
-            // One generation, and the pointer to it.
+            // One generation, and the pointer to it (a version of it on Windows, platform
+            // `write_in`).
             let names = generations(&dir);
             assert_eq!(names.len(), 2, "{names:?}");
-            assert!(names.contains(&CURRENT.to_string()), "{names:?}");
+            assert!(
+                names.iter().any(|n| platform::version_of(n) == CURRENT),
+                "{names:?}"
+            );
             assert!(!exists(&s.0.join("elsewhere")));
             assert!(
                 read(&s.0.join("elsewhere"))
@@ -1857,7 +1871,7 @@ mod tests {
                 "../snap\n".into(),
                 String::new(),
             ] {
-                fs::write(dir.join(CURRENT), &bad).unwrap();
+                platform::write_in(&platform::open_dir(&dir).unwrap(), CURRENT, bad.as_bytes()).unwrap();
                 assert!(!exists(&dir), "{bad:?}");
                 assert!(
                     read(&dir).unwrap_err().contains("a pointer to no generation"),
@@ -2043,7 +2057,8 @@ mod tests {
             assert_eq!(accept_working_set(&dir, &name, &fewer, page, |_| max), Ok(0));
             assert_eq!(stored(), Some(set.clone()));
             // One a restore cannot read is replaced.
-            fs::write(read(&dir).unwrap().path.join(WORKING_SET), b"damaged").unwrap();
+            let generation = platform::open_dir(&read(&dir).unwrap().path).unwrap();
+            platform::write_in(&generation, WORKING_SET, b"damaged").unwrap();
             assert!(read_working_set(&read(&dir).unwrap().path, page, max).is_err());
             assert_eq!(accept_working_set(&dir, &name, &fewer, page, |_| max), Ok(1));
             assert_eq!(stored(), Some(touches(&[0x8000_4000])));
@@ -2138,10 +2153,13 @@ mod tests {
             });
             let saved = read_working_set(&p.path, 16384, 1 << 20).unwrap().unwrap();
             assert!(sets.contains(&saved), "{} pages", saved.len());
-            let mut names = generations(&dir.join(current(&dir).unwrap()));
-            // But what a Windows rename linked aside, a set Windows would not yet let go of
-            // (platform `write_in`, PM M345), which goes with its generation.
-            names.retain(|n| !(n.starts_with(&format!(".{WORKING_SET}.")) && n.ends_with(".old")));
+            // Each name once, a set's versions Windows would not yet let go of among them
+            // (platform `write_in`, PM M345), which go with their generation.
+            let mut names: Vec<String> = generations(&dir.join(current(&dir).unwrap()))
+                .iter()
+                .map(|n| platform::version_of(n).to_string())
+                .collect();
+            names.dedup();
             assert_eq!(names, [MEMORY, STATE, WORKING_SET], "no temporary files are left");
         }
     }

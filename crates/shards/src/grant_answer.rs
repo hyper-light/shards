@@ -37,11 +37,31 @@ pub fn decode(mut bytes: &[u8]) -> Option<Vec<Wanted>> {
     bytes.is_empty().then_some(out)
 }
 
+/// The newest version of the file at `path` (platform `write_in`), opened for reading, or
+/// `None` where it has none.
+#[cfg(any(target_os = "macos", windows))]
+fn newest(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "no file named",
+        ));
+    };
+    let opened = shards_vmm::platform::open_dir(parent)
+        .and_then(|dir| shards_vmm::platform::open_newest_in(&dir, name));
+    match opened {
+        Ok(file) => Ok(Some(file)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// The access `code` names, if any.
 fn access(code: u8) -> Option<Access> {
     match code {
         0 => Some(Access::Read),
         1 => Some(Access::ReadIfThere),
+        5 => Some(Access::ReadNewestIfThere),
         2 => Some(Access::Write),
         3 => Some(Access::MakeDir),
         4 => Some(Access::Listen),
@@ -116,6 +136,11 @@ fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
                 Err(e) => Err(at(e)),
             },
+            Access::ReadNewestIfThere => match shards_vmm::platform::open_newest_beneath(template, &rel) {
+                Ok(file) => Ok(Answer::File(file)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
+                Err(e) => Err(at(e)),
+            },
             _ => Err(format!(
                 "{}: a restore writes nothing of its template",
                 path.display()
@@ -135,6 +160,11 @@ fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer
         Access::ReadIfThere => match std::fs::File::open(path) {
             Ok(file) => Ok(Answer::File(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
+            Err(e) => Err(at(e)),
+        },
+        Access::ReadNewestIfThere => match newest(path) {
+            Ok(Some(file)) => Ok(Answer::File(file)),
+            Ok(None) => Ok(Answer::Absent),
             Err(e) => Err(at(e)),
         },
         Access::MakeDir => {
@@ -403,6 +433,11 @@ fn handed(access: Access, path: &Path) -> Result<Handed, String> {
         Access::ReadIfThere => match std::fs::File::open(path) {
             Ok(file) => Ok(Handed::File(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Handed::Absent),
+            Err(e) => Err(at(e)),
+        },
+        Access::ReadNewestIfThere => match newest(path) {
+            Ok(Some(file)) => Ok(Handed::File(file)),
+            Ok(None) => Ok(Handed::Absent),
             Err(e) => Err(at(e)),
         },
         Access::MakeDir => {
@@ -714,7 +749,8 @@ mod windows_tests {
 
     /// A VM's request is answered as asked: a file it reads, read-only; one it writes,
     /// read-write; one to read if it is there and is not, not found, though a file appears
-    /// there since; each also at the path its spawner found it at.
+    /// there since; a pointer written twice, its newest version, and one never written, not
+    /// found; each also at the path its spawner found it at.
     #[test]
     fn a_spawner_grants_what_a_vm_asks_for() {
         use shards_vmm::platform::{input_path, open_input};
@@ -722,6 +758,10 @@ mod windows_tests {
         let (kernel, disk, absent) = (dir.join("kernel"), dir.join("disk"), dir.join("absent"));
         std::fs::write(&kernel, b"k").unwrap();
         std::fs::write(&disk, b"d").unwrap();
+        let (pointer, unpointed) = (dir.join("current"), dir.join("never"));
+        let at = shards_vmm::platform::open_dir(&dir).unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-1\n").unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-2\n").unwrap();
         let (spawner, vm) = link();
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, &Here));
@@ -731,6 +771,8 @@ mod windows_tests {
                     (Access::Read, kernel.clone()),
                     (Access::Write, disk.clone()),
                     (Access::ReadIfThere, absent.clone()),
+                    (Access::ReadNewestIfThere, pointer.clone()),
+                    (Access::ReadNewestIfThere, unpointed.clone()),
                 ],
             )
             .unwrap();
@@ -753,6 +795,16 @@ mod windows_tests {
             std::fs::write(&absent, b"later").unwrap();
             assert_eq!(
                 open_input(&absent, false).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            let mut newest = String::new();
+            open_input(&pointer, false)
+                .unwrap()
+                .read_to_string(&mut newest)
+                .unwrap();
+            assert_eq!(newest, "g-2\n", "the pointer's newest version");
+            assert_eq!(
+                open_input(&unpointed, false).unwrap_err().kind(),
                 std::io::ErrorKind::NotFound
             );
             drop(vm);
@@ -786,12 +838,11 @@ mod windows_tests {
             (&memory).write_all(b"memory").unwrap();
             (&state).write_all(b"state").unwrap();
             drop((memory, state));
-            assert!(!snapshot.join("current").exists(), "none in use until its commit");
+            // The pointer as its readers take it, its newest version (platform `write_in`).
+            let pointer = || shards_vmm::platform::read_newest_beneath(&snapshot, &["current"], 64).unwrap();
+            assert_eq!(pointer(), None, "none in use until its commit");
             commit(&vm, &name).unwrap();
-            assert_eq!(
-                std::fs::read_to_string(snapshot.join("current")).unwrap(),
-                format!("{name}\n")
-            );
+            assert_eq!(pointer(), Some(format!("{name}\n").into_bytes()));
             assert_eq!(
                 std::fs::read(snapshot.join(&name).join("memory")).unwrap(),
                 b"memory"
@@ -943,7 +994,8 @@ mod tests {
 
     /// A VM's request is answered as asked: a file it reads, read-only (it reads, and
     /// cannot write); one it writes, read-write; one to read if it is there and is not,
-    /// not found, though a file appears there since; a directory to write in, made. A path
+    /// not found, though a file appears there since; a pointer written twice, its newest
+    /// version, and one never written, not found; a directory to write in, made. A path
     /// that cannot be granted ends the answers with why.
     #[test]
     fn a_spawner_grants_what_a_vm_asks_for() {
@@ -958,6 +1010,10 @@ mod tests {
         );
         std::fs::write(&kernel, b"k").unwrap();
         std::fs::write(&disk, b"d").unwrap();
+        let (pointer, unpointed) = (dir.join("current"), dir.join("never"));
+        let at = shards_vmm::platform::open_dir(&dir).unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-1\n").unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-2\n").unwrap();
         let (vm, spawner) = std::os::unix::net::UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, None));
@@ -967,6 +1023,8 @@ mod tests {
                     (Access::Read, kernel.clone()),
                     (Access::Write, disk.clone()),
                     (Access::ReadIfThere, absent.clone()),
+                    (Access::ReadNewestIfThere, pointer.clone()),
+                    (Access::ReadNewestIfThere, unpointed.clone()),
                     (Access::MakeDir, made.clone()),
                 ],
             )
@@ -987,6 +1045,16 @@ mod tests {
             std::fs::write(&absent, b"later").unwrap();
             assert_eq!(
                 open_input(&absent, false).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            let mut newest = String::new();
+            open_input(&pointer, false)
+                .unwrap()
+                .read_to_string(&mut newest)
+                .unwrap();
+            assert_eq!(newest, "g-2\n", "the pointer's newest version");
+            assert_eq!(
+                open_input(&unpointed, false).unwrap_err().kind(),
                 std::io::ErrorKind::NotFound
             );
             assert!(made.is_dir(), "the directory to write in was made");

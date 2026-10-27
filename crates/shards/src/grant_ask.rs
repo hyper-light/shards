@@ -195,10 +195,16 @@ pub fn obtain(link: &std::os::unix::net::UnixStream, wanted: &[Wanted]) -> Resul
             .ok_or_else(|| format!("the spawner went before granting {}", path.display()))?;
         match answer.kind {
             kind::GRANTED => match (*access, answer.fds.into_iter().next(), answer.payload.is_empty()) {
-                (Access::Read | Access::ReadIfThere | Access::Write, Some(fd), true) => {
+                (
+                    Access::Read | Access::ReadIfThere | Access::ReadNewestIfThere | Access::Write,
+                    Some(fd),
+                    true,
+                ) => {
                     shards_vmm::platform::grant_input(path.clone(), Some(fd));
                 }
-                (Access::ReadIfThere, None, true) => shards_vmm::platform::grant_input(path.clone(), None),
+                (Access::ReadIfThere | Access::ReadNewestIfThere, None, true) => {
+                    shards_vmm::platform::grant_input(path.clone(), None);
+                }
                 (Access::Listen, Some(fd), true) => shards_vmm::platform::grant_listener(path.clone(), fd),
                 (Access::MakeDir, None, false) => {
                     let resolved =
@@ -271,13 +277,14 @@ pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String
             .ok_or_else(|| format!("the spawner went before granting {}", path.display()))?;
         let at = |e: String| format!("{}: {e}", path.display());
         match (answer.kind, *access) {
-            (kind::GRANTED, Access::Read | Access::ReadIfThere | Access::Write)
-                if !answer.payload.is_empty() =>
-            {
+            (
+                kind::GRANTED,
+                Access::Read | Access::ReadIfThere | Access::ReadNewestIfThere | Access::Write,
+            ) if !answer.payload.is_empty() => {
                 let handed = handed_file(&answer.payload).map_err(at)?;
                 shards_vmm::platform::grant_input(path.clone(), Some(handed), *access == Access::Write);
             }
-            (kind::GRANTED, Access::ReadIfThere) => {
+            (kind::GRANTED, Access::ReadIfThere | Access::ReadNewestIfThere) => {
                 shards_vmm::platform::grant_input(path.clone(), None, false)
             }
             (kind::GRANTED, Access::Listen) => {
@@ -421,6 +428,7 @@ fn code(access: Access) -> u8 {
     match access {
         Access::Read => 0,
         Access::ReadIfThere => 1,
+        Access::ReadNewestIfThere => 5,
         Access::Write => 2,
         Access::MakeDir => 3,
         Access::Listen => 4,

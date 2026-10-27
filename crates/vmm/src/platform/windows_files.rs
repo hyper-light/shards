@@ -28,22 +28,22 @@ use std::path::{Path, PathBuf};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-    FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileLinkInformation, FileRenameInformation, FileRenameInformationEx,
-    NtCreateFile, NtSetInformationFile,
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+    FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile,
+    NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_NO_MORE_FILES, NTSTATUS, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_ACCESS_DENIED,
-    STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
+    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, NTSTATUS, OBJ_CASE_INSENSITIVE,
+    RtlNtStatusToDosError, STATUS_OBJECT_NAME_COLLISION, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FileAttributeTagInfo,
-    FileDispositionInfo, FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE,
-    SetFileInformationByHandle,
+    FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
+    FileDispositionInfo, FileDispositionInfoEx, FileFullDirectoryInfo, FlushFileBuffers,
+    GetFileInformationByHandleEx, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{
@@ -263,17 +263,24 @@ pub fn open_in(dir: &File, name: &str) -> io::Result<File> {
     open_relative(dir, name, FILE_GENERIC_READ, FILE_OPEN, FILE_NON_DIRECTORY_FILE)
 }
 
-/// Creates `name` in the directory `dir` holds open, durably: written to a temporary
-/// sibling of its own, flushed, renamed over `name` by the directory's handle, and the
-/// directory flushed (unix.rs `write_in`). It lands there even if the directory was renamed
-/// since it was opened, and of writers racing to the same name, one replaces the file
-/// whole: a POSIX rename (FILE_RENAME_POSIX_SEMANTICS) replaces a file another holds
-/// open, as rename(2) does, where without it NTFS refuses (STATUS_ACCESS_DENIED, PM M344).
-/// A holder that shares no delete keeps the file from being replaced either way
-/// (STATUS_SHARING_VIOLATION): Windows' own limit, which std's opens, and so shards' own
-/// readers, never set. A file at `name` that Windows will not yet delete is linked aside
-/// first, as `.{name}.….old` ([`rename_into`]): removed once the rename is taken if Windows
-/// lets the file go by then, else left for the directory's owner to tidy.
+/// What sets a version's number off from the name it is a version of ([`write_in`]):
+/// `name.~N`.
+const VERSION: &str = ".~";
+
+/// Creates `name` in the directory `dir` holds open, durably, as a version of its own:
+/// written to a temporary sibling, flushed, renamed by the directory's handle to `name.~N`,
+/// N one past the highest version listed there, by a rename that replaces nothing, and the
+/// directory flushed; then the versions before it, and a file at `name` itself, are removed
+/// where Windows lets them go. Windows refused renames over a file it had lately been given
+/// (STATUS_ACCESS_DENIED) for a minute and more at a time, Restart Manager naming no holder,
+/// and in those holds refused the links and moves that might have stepped around one, while
+/// a rename to a name no file had was never refused (PM M345): so no write here replaces a
+/// file, and readers take the newest version ([`newest_in`]). Of writers racing to the same
+/// name each lands a version whole, the highest the newest; one that finds its version's
+/// name taken lists again (STATUS_OBJECT_NAME_COLLISION). Versions count up from those
+/// listed, never from a clock, which may step back. A version Windows will not yet let go of
+/// stays for the next write, or the directory's owner ([`remove_in`]), to remove. It lands
+/// even if the directory was renamed since it was opened.
 pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -282,12 +289,11 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let stem = format!(
-        ".{name}.{nanos:x}-{:x}-{:x}",
+    let tmp = format!(
+        ".{name}.{nanos:x}-{:x}-{:x}.tmp",
         std::process::id(),
         COUNT.fetch_add(1, Ordering::Relaxed)
     );
-    let tmp = format!("{stem}.tmp");
     let mut file = open_relative(
         dir,
         &tmp,
@@ -295,22 +301,209 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
         FILE_CREATE,
         FILE_NON_DIRECTORY_FILE,
     )?;
-    let written = file
+    let landed = file
         .write_all(bytes)
         .and_then(|()| super::sync_durable(&file))
-        .and_then(|()| rename_into(&file, dir, name, &stem))
+        .and_then(|()| land(&file, dir, name))
         // The rename is the file's own metadata: flushed with it.
-        .and_then(|()| super::sync_durable(&file));
-    if let Err(e) = written {
-        // Ours alone, under its own name, unless the rename went: then the file at `name`
-        // is whole, and stays.
-        if attributes(&file).is_ok() && file_name_is(&file, &tmp) {
-            delete_on_close(&file);
+        .and_then(|version| super::sync_durable(&file).map(|()| version));
+    let version = match landed {
+        Ok(version) => version,
+        Err(e) => {
+            // Ours alone, under its own name, unless the rename went: then the version is
+            // whole, and stays.
+            if attributes(&file).is_ok() && file_name_is(&file, &tmp) {
+                delete_on_close(&file);
+            }
+            return Err(e);
         }
+    };
+    drop(file);
+    sync_entries(dir)?;
+    // What it supersedes, where Windows lets it go: what it keeps, a later write removes.
+    if let Ok(names) = names_in(dir) {
+        let before = versions(&names, name)
+            .filter(|(n, _)| *n < version)
+            .map(|(_, entry)| entry);
+        for entry in before.chain(names.iter().filter(|entry| entry.as_os_str() == OsStr::new(name))) {
+            if let Some(entry) = entry.to_str() {
+                let _ = unlink_in(dir, entry);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Renames `file` to `name`'s next version in the directory `dir` holds open, `name.~N`, N
+/// one past the highest listed there, by a rename that replaces nothing; listed again where
+/// another writer landed that version first. The version it landed.
+fn land(file: &File, dir: &File, name: &str) -> io::Result<u64> {
+    loop {
+        let next = versions(&names_in(dir)?, name)
+            .map(|(n, _)| n)
+            .max()
+            .map_or(Some(1), |n| n.checked_add(1))
+            .ok_or_else(|| io::Error::other(format!("{name}: no version past the last")))?;
+        let status = rename_to(file, dir, &format!("{name}{VERSION}{next}"))?;
+        if status >= 0 {
+            return Ok(next);
+        }
+        if status != STATUS_OBJECT_NAME_COLLISION {
+            return Err(nt_error(status));
+        }
+    }
+}
+
+/// The versions of `name` among `names`, a directory's listing ([`write_in`]): each
+/// `name.~N`'s N, with its entry.
+fn versions<'a>(names: &'a [OsString], name: &'a str) -> impl Iterator<Item = (u64, &'a OsString)> + 'a {
+    names.iter().filter_map(move |entry| {
+        let n = entry.to_str()?.strip_prefix(name)?.strip_prefix(VERSION)?;
+        version_number(n).map(|n| (n, entry))
+    })
+}
+
+/// `digits` as a version's number: digits alone, none a leading zero, so that each version
+/// has one name.
+fn version_number(digits: &str) -> Option<u64> {
+    let canonical = !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && !(digits.len() > 1 && digits.starts_with('0'));
+    canonical.then(|| digits.parse().ok()).flatten()
+}
+
+/// What `entry`, a name a directory lists, is a version of ([`write_in`]): `name` for
+/// `name.~N`, else `entry` itself.
+pub fn version_of(entry: &str) -> &str {
+    match entry.rsplit_once(VERSION) {
+        Some((name, n)) if !name.is_empty() && version_number(n).is_some() => name,
+        _ => entry,
+    }
+}
+
+/// The name `name`'s newest version goes by in the directory `dir` holds open
+/// ([`write_in`]): the highest `name.~N` listed there, else `name` itself.
+pub fn newest_in(dir: &File, name: &str) -> io::Result<String> {
+    plain_name(name)?;
+    let names = names_in(dir)?;
+    Ok(versions(&names, name)
+        .max_by_key(|(n, _)| *n)
+        .and_then(|(_, entry)| entry.to_str())
+        .map_or_else(|| name.to_string(), str::to_string))
+}
+
+/// Opens `name`'s newest version for reading in the directory `dir` holds open
+/// ([`newest_in`]).
+pub fn open_newest_in(dir: &File, name: &str) -> io::Result<File> {
+    newest_opened(dir, name, |entry| open_in(dir, entry))
+}
+
+/// The regular file `rel` names beneath the directory at `root`, its newest version
+/// ([`newest_in`]), opened for reading as [`open_beneath`] opens one: no component below
+/// `root` a reparse point, nor the version, which its handle says.
+pub fn open_newest_beneath(root: &Path, rel: &[&str]) -> io::Result<File> {
+    let (name, dirs) = rel
+        .split_last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file named"))?;
+    let dir = open_dir_beneath(root, dirs)?;
+    newest_opened(&dir, name, |entry| {
+        let file = open_relative(
+            &dir,
+            entry,
+            FILE_GENERIC_READ,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        )?;
+        regular(attributes(&file)?)?;
+        Ok(file)
+    })
+}
+
+/// `name`'s newest version in `dir`, as `open` opens an entry: listed again where it went
+/// between its listing and its open, which a writer does only once it has landed a newer.
+fn newest_opened(dir: &File, name: &str, open: impl Fn(&str) -> io::Result<File>) -> io::Result<File> {
+    loop {
+        let entry = newest_in(dir, name)?;
+        match open(&entry) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound && entry != name => {}
+            opened => return opened,
+        }
+    }
+}
+
+/// Removes `name` from the directory `dir` holds open, every version of it and a file at
+/// `name` itself ([`write_in`]), each where Windows lets it go: the first it refused, once
+/// it has asked for them all.
+pub fn remove_in(dir: &File, name: &str) -> io::Result<()> {
+    plain_name(name)?;
+    let names = names_in(dir)?;
+    let mut refused = None;
+    let all = versions(&names, name)
+        .map(|(_, entry)| entry)
+        .chain(names.iter().filter(|entry| entry.as_os_str() == OsStr::new(name)));
+    for entry in all {
+        let Some(entry) = entry.to_str() else { continue };
+        match unlink_in(dir, entry) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                refused.get_or_insert(e);
+            }
+            _ => {}
+        }
+    }
+    refused.map_or(Ok(()), Err)
+}
+
+/// Removes `name` from the directory `dir` holds open (unix.rs `unlink_in`): its name at
+/// once, whoever holds it open, as unlink(2) removes it (FileDispositionInfoEx, POSIX
+/// semantics); on a file system without them (FAT), as its last handle closes. A link
+/// itself is removed, not what it names.
+pub fn unlink_in(dir: &File, name: &str) -> io::Result<()> {
+    let file = open_relative(
+        dir,
+        name,
+        DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+    )?;
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    };
+    let size = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).map_err(io::Error::other)?;
+    // SAFETY: a handle `file` holds open with DELETE, and a FILE_DISPOSITION_INFO_EX of
+    // `size` bytes.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            size,
+        )
+    } != 0
+    {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if !matches!(
+        e.raw_os_error().and_then(|c| u32::try_from(c).ok()),
+        Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED)
+    ) {
         return Err(e);
     }
-    drop(file);
-    sync_entries(dir)
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let size = u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).map_err(io::Error::other)?;
+    // SAFETY: as above, with a FILE_DISPOSITION_INFO of `size` bytes.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            (&raw const info).cast(),
+            size,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Whether `file`'s own name, as its handle says it, ends with `name`.
@@ -333,103 +526,10 @@ fn delete_on_close(file: &File) {
     };
 }
 
-/// Renames `file` to `name` in the directory `dir` holds open, replacing what is there,
-/// whoever holds it open (NtSetInformationFile, FileRenameInformationEx, POSIX semantics);
-/// on a file system without POSIX renames (FAT), by the plain rename, which replaces a file
-/// no one holds open.
-///
-/// Windows may refuse a rename over a file it has lately been given, STATUS_ACCESS_DENIED,
-/// while Restart Manager names no process holding it (PM M345). In a refusal it ended within
-/// milliseconds, it still let the file be linked: linked under a second name, the rename
-/// over it, which then deletes no file, was taken at once, 9 times of 9. In one it held a
-/// minute or more, it refused the link too. So a refused rename links the file at `name` as
-/// `{stem}-N.old` and is asked again, and again while each refusal is of another writer's
-/// file, which took the name in between; it stops refused where the file it linked is still
-/// there, or the link is refused and one more ask is too. Its links are removed once it
-/// ends, those Windows lets go by then; the rest are left for the directory's owner to tidy.
-fn rename_into(file: &File, dir: &File, name: &str, stem: &str) -> io::Result<()> {
-    let mut status = set_name(file, dir, name, FileRenameInformationEx, REPLACE)?;
-    let mut asides = Vec::new();
-    while status == STATUS_ACCESS_DENIED {
-        let aside = format!("{stem}-{}.old", asides.len());
-        let Ok(linked) = link_aside(dir, name, &aside) else {
-            // Gone, or not to be linked: asked once more as it is.
-            status = set_name(file, dir, name, FileRenameInformationEx, REPLACE)?;
-            break;
-        };
-        asides.push(aside);
-        status = set_name(file, dir, name, FileRenameInformationEx, REPLACE)?;
-        let there = open_relative(
-            dir,
-            name,
-            FILE_READ_ATTRIBUTES,
-            FILE_OPEN,
-            FILE_NON_DIRECTORY_FILE,
-        )
-        .and_then(|f| super::file_id(&f));
-        // Asked again only where another writer's file has taken the name since: the file it
-        // linked still there, or none it can read, ends it.
-        if status == STATUS_ACCESS_DENIED && !there.is_ok_and(|id| id != linked) {
-            break;
-        }
-    }
-    for aside in &asides {
-        if let Ok(link) = open_relative(dir, aside, DELETE, FILE_OPEN, FILE_NON_DIRECTORY_FILE) {
-            delete_on_close(&link);
-        }
-    }
-    if status >= 0 {
-        return Ok(());
-    }
-    if ![
-        STATUS_INVALID_PARAMETER,
-        STATUS_INVALID_INFO_CLASS,
-        STATUS_NOT_SUPPORTED,
-    ]
-    .contains(&status)
-    {
-        return Err(nt_error(status));
-    }
-    // FileRenameInformation's ReplaceIfExists is the first byte of the same word.
-    let status = set_name(file, dir, name, FileRenameInformation, 1)?;
-    if status < 0 {
-        return Err(nt_error(status));
-    }
-    Ok(())
-}
-
-/// A rename's flags: over what is there, whoever holds it open.
-const REPLACE: u32 = FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
-
-/// Links the file at `name` in the directory `dir` holds open as `aside` there too
-/// (FileLinkInformation, replacing nothing), by a handle of its own that may only read and
-/// write its attributes, which a link's count is; which file it linked ([`super::file_id`]).
-fn link_aside(dir: &File, name: &str, aside: &str) -> io::Result<(u64, u64)> {
-    plain_name(aside)?;
-    let target = open_relative(
-        dir,
-        name,
-        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
-        FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE,
-    )?;
-    let status = set_name(&target, dir, aside, FileLinkInformation, 0)?;
-    if status < 0 {
-        return Err(nt_error(status));
-    }
-    super::file_id(&target)
-}
-
-/// Gives the file `file` holds the name `name` in the directory `dir` holds open, as
-/// `class` does (a rename, or a link: FILE_LINK_INFORMATION's layout is
-/// FILE_RENAME_INFORMATION's) with `flags`; the call's status.
-fn set_name(
-    file: &File,
-    dir: &File,
-    name: &str,
-    class: FILE_INFORMATION_CLASS,
-    flags: u32,
-) -> io::Result<NTSTATUS> {
+/// Renames `file` to `name` in the directory `dir` holds open, replacing nothing
+/// (NtSetInformationFile, FileRenameInformation, ReplaceIfExists false, which every file
+/// system takes): the call's status, STATUS_OBJECT_NAME_COLLISION where `name` is taken.
+fn rename_to(file: &File, dir: &File, name: &str) -> io::Result<NTSTATUS> {
     let wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
     let name_bytes = wide
         .len()
@@ -451,9 +551,9 @@ fn set_name(
     let mut status_block = IO_STATUS_BLOCK::default();
     // SAFETY: `buf` holds `size` bytes, aligned for FILE_RENAME_INFORMATION: its head, and
     // the name's `wide.len()` units at its FileName, which `size` makes room for; then a
-    // handle `file` holds open, and the structure of `size32` bytes `buf` holds.
+    // handle `file` holds open with DELETE, and the structure of `size32` bytes `buf` holds.
+    // Its first word zero: ReplaceIfExists false.
     Ok(unsafe {
-        (*info).Anonymous.Flags = flags;
         (*info).RootDirectory = dir.as_raw_handle();
         (*info).FileNameLength = name_length;
         std::ptr::copy_nonoverlapping(
@@ -466,7 +566,7 @@ fn set_name(
             &mut status_block,
             info.cast(),
             size32,
-            class,
+            FileRenameInformation,
         )
     })
 }
@@ -725,75 +825,219 @@ mod tests {
         assert!(open_in(&dir, "..").is_err());
     }
 
-    /// A write replaces a file whole, lands in its directory wherever it moved, leaves no
-    /// temporary file, and replaces one another reader holds open; the listing shows each
-    /// name but `.` and `..`, and the directory's entries flush.
+    /// A write lands whole as its name's next version, in its directory wherever that moved,
+    /// leaving no temporary file and no version before it; a reader keeps what it opened; the
+    /// listing shows each name but `.` and `..`, and the directory's entries flush.
     #[test]
     fn written_whole_in_an_open_directory_and_listed() {
         let base = shards_testdir::TempDir::new("write-in").unwrap();
         std::fs::create_dir(base.join("d")).unwrap();
         let dir = super::super::open_dir(&base.join("d")).unwrap();
         write_in(&dir, "state", b"one").unwrap();
-        let held = File::open(base.join("d").join("state")).unwrap();
+        let held = open_newest_in(&dir, "state").unwrap();
         write_in(&dir, "state", b"two").unwrap();
         assert_eq!(read(held), "one", "the reader keeps what it opened");
         std::fs::rename(base.join("d"), base.join("moved")).unwrap();
         write_in(&dir, "other", b"three").unwrap();
         std::fs::create_dir(base.join("moved").join("sub")).unwrap();
-        assert_eq!(std::fs::read(base.join("moved").join("state")).unwrap(), b"two");
-        assert_eq!(std::fs::read(base.join("moved").join("other")).unwrap(), b"three");
+        assert_eq!(read(open_newest_in(&dir, "state").unwrap()), "two");
+        assert_eq!(read(open_newest_in(&dir, "other").unwrap()), "three");
         let mut names = names_in(&dir).unwrap();
         names.sort();
-        assert_eq!(names, ["other", "state", "sub"]);
+        assert_eq!(names, ["other.~1", "state.~2", "sub"]);
         sync_entries(&dir).unwrap();
         assert!(write_in(&dir, "a:b", b"x").is_err(), "a stream's name");
     }
 
-    /// What a refused rename falls back on: the file at the name, linked aside, is replaced
-    /// by a rename over it, its bytes kept under the aside name until that goes; a link
-    /// asked over a name already there is refused, as is an aside name that is no plain name.
+    /// A version another holds open sharing no delete, which no rename could replace (PM
+    /// M344), as Windows' own holds kept files it refused to replace (PM M345), keeps no write
+    /// from landing: the next version is the newest, and the one held goes with a later write
+    /// once it is let go.
     #[test]
-    fn a_file_linked_aside_is_renamed_over() {
-        use std::io::Write as _;
-        let base = shards_testdir::TempDir::new("aside").unwrap();
+    fn a_held_version_keeps_no_write_from_landing() {
+        let base = shards_testdir::TempDir::new("held").unwrap();
+        let d = base.join("d");
+        std::fs::create_dir(&d).unwrap();
+        let dir = super::super::open_dir(&d).unwrap();
+        write_in(&dir, "current", b"one").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(d.join("current.~1"))
+            .unwrap();
+        write_in(&dir, "current", b"two").unwrap();
+        assert_eq!(read(open_newest_in(&dir, "current").unwrap()), "two");
+        assert!(d.join("current.~1").exists(), "a version held was let go of");
+        drop(held);
+        write_in(&dir, "current", b"three").unwrap();
+        assert_eq!(names_in(&dir).unwrap(), ["current.~3"]);
+        assert_eq!(
+            read(open_newest_beneath(&base, &["d", "current"]).unwrap()),
+            "three"
+        );
+    }
+
+    /// Writers racing to one name each land a version of their own, whole, none replacing
+    /// another's: what is left is versions alone, the newest one of theirs.
+    #[test]
+    fn writers_racing_to_one_name_each_land_whole() {
+        let base = shards_testdir::TempDir::new("race").unwrap();
         std::fs::create_dir(base.join("d")).unwrap();
         let dir = super::super::open_dir(&base.join("d")).unwrap();
-        write_in(&dir, "current", b"old").unwrap();
-        link_aside(&dir, "current", ".current.1.old").unwrap();
-        let new = open_relative(
-            &dir,
-            "new.tmp",
-            FILE_GENERIC_WRITE | DELETE,
-            FILE_CREATE,
-            FILE_NON_DIRECTORY_FILE,
-        )
-        .unwrap();
-        (&new).write_all(b"new").unwrap();
-        rename_into(&new, &dir, "current", ".current.2").unwrap();
-        drop(new);
-        let d = base.join("d");
-        assert_eq!(std::fs::read(d.join("current")).unwrap(), b"new");
-        assert_eq!(std::fs::read(d.join(".current.1.old")).unwrap(), b"old");
-        assert!(
-            !d.join(".current.2-0.old").exists(),
-            "taken at once: nothing set aside"
-        );
-        assert_eq!(link_aside(&dir, "current", ".current.3.old").unwrap(), {
-            let f = open_relative(
-                &dir,
-                "current",
-                FILE_READ_ATTRIBUTES,
-                FILE_OPEN,
-                FILE_NON_DIRECTORY_FILE,
-            )
-            .unwrap();
-            super::super::file_id(&f).unwrap()
+        let sets: Vec<String> = (1..=8).map(|w| format!("writer {w} ").repeat(64 * w)).collect();
+        std::thread::scope(|scope| {
+            for set in &sets {
+                let dir = &dir;
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        write_in(dir, "set", set.as_bytes()).unwrap();
+                    }
+                });
+            }
         });
-        assert!(
-            link_aside(&dir, "current", ".current.1.old").is_err(),
-            "a name already there"
+        let newest = read(open_newest_in(&dir, "set").unwrap());
+        assert!(sets.contains(&newest), "{} bytes", newest.len());
+        for name in names_in(&dir).unwrap() {
+            let name = name.to_str().unwrap();
+            assert_eq!(version_of(name), "set", "{name} left");
+        }
+    }
+
+    /// A write's version is one past the highest listed, whatever wrote it, and the versions
+    /// before it go, with a file at the name itself; a name with no version's digits is no
+    /// version, and stays; a removal takes every version.
+    #[test]
+    fn a_version_is_one_past_the_highest_listed() {
+        let base = shards_testdir::TempDir::new("versions").unwrap();
+        let d = base.join("d");
+        std::fs::create_dir(&d).unwrap();
+        let dir = super::super::open_dir(&d).unwrap();
+        for (name, bytes) in [
+            ("set", "plain"),
+            ("set.~41", "old"),
+            ("set.~041", "a leading zero"),
+            ("set.~x", "no digits"),
+        ] {
+            std::fs::write(d.join(name), bytes).unwrap();
+        }
+        assert_eq!(newest_in(&dir, "set").unwrap(), "set.~41");
+        write_in(&dir, "set", b"new").unwrap();
+        let mut names = names_in(&dir).unwrap();
+        names.sort();
+        assert_eq!(names, ["set.~041", "set.~42", "set.~x"]);
+        for (entry, of) in [
+            ("set.~42", "set"),
+            ("set.~041", "set.~041"),
+            ("set.~x", "set.~x"),
+            (".~1", ".~1"),
+            ("set", "set"),
+        ] {
+            assert_eq!(version_of(entry), of, "{entry}");
+        }
+        remove_in(&dir, "set").unwrap();
+        let mut names = names_in(&dir).unwrap();
+        names.sort();
+        assert_eq!(names, ["set.~041", "set.~x"]);
+        assert_eq!(
+            open_newest_in(&dir, "set").unwrap_err().kind(),
+            io::ErrorKind::NotFound
         );
-        assert!(link_aside(&dir, "current", "a:b").is_err(), "a stream's name");
+    }
+
+    /// A measurement (PM M345): [`write_in`] as the rename probe's writers write
+    /// (docs/research/measurements/whp-run/src/bin/m345_rename.rs, its second part), 8 KiB of
+    /// their own bytes a write: one writer 2,000 times, eight side by side 250 times each, then
+    /// eight beside eight threads writing and removing files of their own; each pass's writes
+    /// timed, and every error said.
+    #[test]
+    #[ignore = "a measurement: docs/research/measurements/write-in-versions/run.sh"]
+    fn write_in_as_the_rename_probes_writers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = shards_testdir::TempDir::new("write-in-m345").unwrap();
+        std::fs::create_dir(base.join("d")).unwrap();
+        let dir = super::super::open_dir(&base.join("d")).unwrap();
+        let bytes =
+            |w: usize, n: usize| -> Vec<u8> { (0..8 << 10).map(|i| (i * 31 + w * 7 + n) as u8).collect() };
+        let writes = |w: usize, rounds: usize| -> (Vec<u128>, Vec<String>) {
+            let (mut took, mut errors) = (Vec::new(), Vec::new());
+            for n in 0..rounds {
+                let content = bytes(w, n);
+                let t0 = std::time::Instant::now();
+                match write_in(&dir, "target", &content) {
+                    Ok(()) => took.push(t0.elapsed().as_micros()),
+                    Err(e) => errors.push(format!("writer {w} write {n}: {e}")),
+                }
+            }
+            (took, errors)
+        };
+        let report = |pass: &str, mut took: Vec<u128>, errors: Vec<String>| {
+            took.sort_unstable();
+            let at = |q: usize| {
+                took.get((took.len() * q / 100).min(took.len().saturating_sub(1)))
+                    .copied()
+            };
+            println!(
+                "{pass}: n={} errors={} p50={:?} p90={:?} p99={:?} max={:?} (us)",
+                took.len() + errors.len(),
+                errors.len(),
+                at(50),
+                at(90),
+                at(99),
+                took.last()
+            );
+            for e in errors.iter().take(10) {
+                println!("  {e}");
+            }
+        };
+        let (took, errors) = writes(0, 2000);
+        report("one writer", took, errors);
+        for churn in [false, true] {
+            let stop = AtomicBool::new(false);
+            let (took, errors) = std::thread::scope(|scope| {
+                let churners: Vec<_> = (0..if churn { 8 } else { 0 })
+                    .map(|c| {
+                        let (stop, base) = (&stop, &base);
+                        scope.spawn(move || {
+                            let mine = base.join(format!("churn-{c}"));
+                            while !stop.load(Ordering::Relaxed) {
+                                std::fs::write(&mine, bytes(c, 0)).unwrap();
+                                std::fs::remove_file(&mine).unwrap();
+                            }
+                        })
+                    })
+                    .collect();
+                let each: Vec<_> = (1..=8).map(|w| scope.spawn(move || writes(w, 250))).collect();
+                let all = each.into_iter().map(|h| h.join().unwrap()).fold(
+                    (Vec::new(), Vec::new()),
+                    |(mut t, mut e), (took, errors)| {
+                        t.extend(took);
+                        e.extend(errors);
+                        (t, e)
+                    },
+                );
+                stop.store(true, Ordering::Relaxed);
+                for c in churners {
+                    c.join().unwrap();
+                }
+                all
+            });
+            report(
+                if churn {
+                    "eight writers beside churn"
+                } else {
+                    "eight writers"
+                },
+                took,
+                errors,
+            );
+        }
+        let newest = newest_in(&dir, "target").unwrap();
+        let left: Vec<_> = names_in(&dir)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n != newest.as_str())
+            .collect();
+        println!("newest {newest}; left beside it: {left:?}");
     }
 
     /// A listing longer than one read's buffer is whole.

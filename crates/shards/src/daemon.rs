@@ -6407,8 +6407,9 @@ impl<D: Disk> Daemon<D> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            // A template's record is beside it (run::Origin), and goes once it has gone.
-            if let Some(of) = name.strip_suffix(".origin") {
+            // A template's record is beside it (run::Origin), each version of it, and goes once
+            // it has gone.
+            if let Some(of) = shards_vmm::platform::version_of(&name).strip_suffix(".origin") {
                 if !templates.join(of).exists() {
                     let _ = std::fs::remove_file(&dir);
                 }
@@ -6437,9 +6438,7 @@ impl<D: Disk> Daemon<D> {
             self.let_go_template(&dir);
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {
-                    if let Some(origin) = crate::run::Origin::path(&dir) {
-                        let _ = std::fs::remove_file(origin);
-                    }
+                    crate::run::Origin::remove(&dir);
                     log(format!("collected template {}", dir.display()));
                 }
                 Err(e) => log(format!("collecting {}: {e}", dir.display())),

@@ -104,6 +104,23 @@ pub fn open_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
     }
 }
 
+/// The regular file `rel` names beneath `root`, its newest version, for reading, as a
+/// snapshot's pointer and working set are read (platform `write_in`): the descriptor granted
+/// for its path, its spawner having opened the newest so (shards `grant_answer`), or else
+/// [`super::open_newest_beneath`]'s.
+pub fn open_newest_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
+    let path = rel.iter().fold(root.to_path_buf(), |p, name| p.join(name));
+    match given(&path, false)? {
+        Some(file) => {
+            if !file.metadata()?.file_type().is_file() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "not a regular file"));
+            }
+            Ok(file)
+        }
+        None => super::open_newest_beneath(root, rel),
+    }
+}
+
 /// `path`'s metadata: the granted descriptor's, or the file's at `path`.
 pub fn input_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
     match given(path, false)? {

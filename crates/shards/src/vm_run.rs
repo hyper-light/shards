@@ -2428,17 +2428,18 @@ impl shards_vmm::platform::Stager for SpawnerStages {
 }
 
 /// A restore's template, as a VM in App Sandbox or an AppContainer is granted it: its
-/// pointer, then the files of the generation it names, never its directory.
+/// pointer, then the files of the generation it names, never its directory; the pointer's
+/// and the working set's newest versions (platform `write_in`).
 #[cfg(any(target_os = "macos", windows))]
 fn granted_template(dir: &Path) -> Result<(), String> {
     use crate::grant::Access;
-    ask(&[(Access::ReadIfThere, shards_vmm::snapshot::pointer(dir))])?;
+    ask(&[(Access::ReadNewestIfThere, shards_vmm::snapshot::pointer(dir))])?;
     let ([state, memory], [working_set, layer_head, layer, window_heads]) =
         shards_vmm::snapshot::generation_files(dir)?;
     ask(&[
         (Access::Read, state),
         (Access::Read, memory),
-        (Access::ReadIfThere, working_set),
+        (Access::ReadNewestIfThere, working_set),
         (Access::ReadIfThere, layer_head),
         (Access::ReadIfThere, layer),
         (Access::ReadIfThere, window_heads),

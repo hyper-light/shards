@@ -93,6 +93,10 @@ pub enum Access {
     Read,
     /// A file it reads if it is there: a descriptor, or word that it is not.
     ReadIfThere,
+    /// A file it reads if it is there, its newest version (platform `write_in`): a snapshot's
+    /// pointer and working set, which a write on Windows lands under a name of their own
+    /// beside the one asked for. A descriptor, or word that there is none.
+    ReadNewestIfThere,
     /// A file it reads and writes: a descriptor opened read-write.
     Write,
     /// A directory it writes in, its own: made first if it is not there, then a read-write
