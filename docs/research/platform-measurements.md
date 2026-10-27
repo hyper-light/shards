@@ -14765,3 +14765,55 @@ revision before comparing a changed API/implementation.
   - slates' daemon answers a DAX mapping with the section's value in the VM process. Before that it checks that the
     asking process holds the attachment's stream (M340: every handle to an end names its pipe), keeping the process
     handle so that the pid cannot be reused under it.
+
+### M344. What a Windows directory watch hears of a file's writes, beside a read oplock; a directory's handle opened again; a rename over a file held open (D27)
+
+- **Questions.** `logs -f`, `top -f` and a log driver's shipping follow a log segment as its
+  run's VM appends to it, woken by a watch on its directory (D27: kqueue on macOS, inotify on
+  Linux). On Windows, what tells the follower of an append?
+  - ReadDirectoryChangesW reports a size or last-write change "only when the file is written
+    to the disk" (its documentation). Does it report an append by a writer that holds the file
+    open, as a run's VM holds its log?
+  - Does a read oplock (OPLOCK_LEVEL_CACHE_READ) on a handle of the follower's own hear each
+    such append?
+  - How is a directory's handle opened again, for a listing or a watch of its own, as unix.rs
+    opens `.` relative to it?
+  - Does a rename replace a file another handle holds open, as write_in's rename(2) does on
+    Unix?
+- **Method.** `docs/research/measurements/windows-watch`, `cargo run --release`. Host: jupiter,
+  AMD Family 26 Model 112, 32 logical CPUs, Windows 10.0.26200, 2026-10-27.
+  1. ReadDirectoryChangesW on the directory, overlapped, for size and last-write changes: 20
+     appends of 10 bytes by a writer holding the file open, each waited for 5 s.
+  2. The same for names: 1,000 files made, each timed from before its create to the wait's
+     return.
+  3. A read oplock asked on a handle of FILE_READ_ATTRIBUTES, overlapped, beside a writer
+     holding the file open: 1,000 asks, each followed by an append of 10 bytes, timed from
+     before the write to the ask's completion.
+  4. The oplock asked before a writer opens: whether the open breaks it, then the append.
+  5. ReOpenFile of a directory's handle, five ways asked; then NtCreateFile of no name
+     relative to the handle.
+  6. A rename by NtSetInformationFile (FileRenameInformationEx, relative to the directory's
+     handle) over a file another handle holds open: the holder sharing delete or not, with and
+     without FILE_RENAME_POSIX_SEMANTICS.
+- **Found.**
+  - 1: none of the 20 appends was reported within its 5 s.
+  - 2: a name made was reported, µs: n=1000 p50=240.3 p90=336.2 p99=495.4 max=679.4.
+  - 3: the oplock was granted 1,000 times of 1,000. Each append broke it, µs: n=1000 p50=8.7
+    p90=10.2 p99=21.8 max=270.7. Each break went to level 0, no acknowledgement asked.
+  - 4: granted; the writer's open broke nothing, and its append broke the oplock 54.4 µs on.
+  - 5: ReOpenFile refused every way asked, "Access is denied." (5). NtCreateFile of no name
+    relative to the handle opened the directory (status 0).
+  - 6: with the holder sharing delete, the POSIX rename went (status 0): the holder read the
+    old bytes and the name the new. Without POSIX semantics it was refused
+    (STATUS_ACCESS_DENIED, 0xC0000022). With the holder sharing no delete it was refused both
+    ways (STATUS_SHARING_VIOLATION, 0xC0000043, with POSIX semantics; STATUS_ACCESS_DENIED
+    without).
+- **Consequence (D27).**
+  - On Windows a FileWatch hears names through ReadDirectoryChangesW. It hears its file's
+    writes through a read oplock on a handle of its own, asked for again after each break,
+    since ReadDirectoryChangesW says nothing of a held-open writer's appends.
+  - One completion port and one thread serve every watch of a process, setting each watch's
+    own event. In its unit test, five appends by a writer holding the file open woke the
+    watch 12.2 to 169.4 µs on.
+  - A directory's own handle is opened again by NtCreateFile of no name relative to it.
+  - write_in renames with POSIX semantics.

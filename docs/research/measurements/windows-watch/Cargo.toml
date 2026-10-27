@@ -1,0 +1,25 @@
+# What a Windows directory watch hears of a file's writes, beside what a read oplock hears
+# (PM M344), for FileWatch on Windows: whether ReadDirectoryChangesW says an append by a
+# writer that holds its file open, whether a read oplock is granted beside that writer, how
+# soon each append breaks it, and how a directory's handle is opened again (ReOpenFile against
+# NtCreateFile of no name relative to it).
+[package]
+name = "windows-watch"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  "Win32_System_Kernel",
+  "Win32_System_Threading",
+] }

@@ -2,8 +2,10 @@
 """measure.py's output as the PM entry's tables, each run alone or with --pool every run given
 as one (runs of one host): for each build and arm (free, held), over the rounds after the
 first (round 1's free arm fills the builds' caches): its time, its scope's anonymous peak and budget
-(Linux), and its builder's give-backs, each answer's time from its word and what it freed
-of its files and asked to unplug, and each build's sums; each as n, p50, p90, p99 and max.
+(Linux), and its builder's give-backs, each answer's time from its word, what it freed of
+its files, what it asked to unplug and what its guest then held plugged less (its own samples,
+a second on), and each build's sums; the rooms its budget left told it and what its guest
+held the build within, and what it refused; each as n, p50, p90, p99 and max.
 Then the rule fixed before any number: a held build is slower than its free arm beyond the
 rounds' spread where its fastest round is slower than the free arm's slowest.
 
@@ -33,7 +35,8 @@ def stats(values, unit="", scale=1):
 
 
 def read(path, run, into):
-    builds, gives, head = into
+    builds, gives, head = into[:3]
+    plugged = into[3]
     for line in open(path, errors="replace"):
         if line.startswith(("host ", "builds ")) and "=" not in line.split()[1]:
             head.append(line.rstrip())
@@ -43,10 +46,24 @@ def read(path, run, into):
         elif line.startswith("give "):
             f = fields(line)
             gives[(f["build"], f["arm"], (run, int(f["round"])))].append(f)
+        elif line.startswith("guest "):
+            f = fields(line)
+            if "plugged" in f:
+                plugged[(f["build"], f["arm"], (run, int(f["round"])))].append((float(f["t"]), int(f["plugged"])))
+
+
+def unplugged(samples, t):
+    """What the guest held plugged less, from its last sample before `t` (an answer's) to its
+    first a second or more after: what an ask to unplug did."""
+    before = [p for at, p in samples if at <= t]
+    after = [p for at, p in samples if at >= t + 1]
+    if not before or not after:
+        return None
+    return max(before[-1] - after[0], 0)
 
 
 def report(title, into):
-    builds, gives, head = into
+    builds, gives, head, plugged = into
     print(f"== {title}")
     for h in head:
         print(h)
@@ -72,9 +89,19 @@ def report(title, into):
                 print(f"   answers           {len(answers)}, unanswered {len(unanswered)}")
                 print(f"   answered in       {stats([int(g['answered_ms']) for g in answers], ' ms')}")
                 print(f"   freed an answer   {stats([int(g['freed']) for g in answers], ' MiB', MIB)}")
-                print(f"   unplugging        {stats([int(g['unplugging']) for g in answers], ' MiB', MIB)}")
+                print(f"   unplug asked      {stats([int(g['unplugging']) for g in answers], ' MiB', MIB)}")
+                done = [d for r in rounds for g in gives.get((name, arm, r), []) if "answered_ms" in g
+                        for d in [unplugged(plugged.get((name, arm, r), []), float(g["t"]))] if d is not None]
+                print(f"   unplug done       {stats(done, ' MiB', MIB)}")
                 sums = [sum(int(g["freed"]) for g in gives.get((name, arm, r), []) if "answered_ms" in g) for r in rounds]
                 print(f"   freed a build     {stats(sums, ' MiB', MIB)}")
+            helds = [g for r in rounds for g in gives.get((name, arm, r), []) if "held_ms" in g]
+            if helds:
+                within = [int(g["within"]) for g in helds if g["within"] != "none"]
+                print(f"   rooms told        {len(helds)}, held within {stats(within, ' MiB', MIB)}")
+            refusals = [g for r in rounds for g in gives.get((name, arm, r), []) if "refused_ms" in g]
+            if refusals:
+                print(f"   refusals          {len(refusals)}, the last: {refusals[-1]['why'].replace('_', ' ')}")
         free, held = times.get("free", []), times.get("held", [])
         if free and held:
             worse = min(held) > max(free)
@@ -86,13 +113,13 @@ def main(args):
     pool = "--pool" in args
     paths = [a for a in args if a != "--pool"]
     if pool:
-        into = ({}, defaultdict(list), [])
+        into = ({}, defaultdict(list), [], defaultdict(list))
         for run, path in enumerate(paths):
             read(path, run, into)
         report(" + ".join(paths), into)
         return
     for path in paths:
-        into = ({}, defaultdict(list), [])
+        into = ({}, defaultdict(list), [], defaultdict(list))
         read(path, 0, into)
         report(path, into)
 

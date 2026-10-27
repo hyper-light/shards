@@ -1475,7 +1475,12 @@ removes it; `--rm` removes it once it ends.
       instance's, which one thread reads, each watch woken through an eventfd of its
       own: a user may have 128 instances, and a KDE Plasma desktop with a few apps
       open held 101 of them (PM M257); with an instance each, the followers past the
-      rest failed. Where no watch can be made, a follower reads again every 250 ms.
+      rest failed. On Windows a watch hears names through ReadDirectoryChangesW, and its
+      log's appends through a read oplock held on a handle of its own, which each append
+      through the VM's handle breaks. ReadDirectoryChangesW said none of 20 appends by a
+      writer holding its file open within 5 s each; each such append broke the oplock 8.7 µs
+      on at p50, 21.8 at p99 (PM M344). One completion port and one thread serve every watch
+      of a process. Where no watch can be made, a follower reads again every 250 ms.
     - **A log keeps only its newest output**: at most its user's history (`shards
       configure disk --log-history`, 1 GiB by default, D186), in equal segments of at
       most 20 MiB, two at least, the oldest removed as the next begins; the daemon's

@@ -25,6 +25,7 @@ on:
       - "!.github/workflows/budget-e2e.yml"
       - "!.github/workflows/restore-faults.yml"
       - "!.github/workflows/windows-pipe.yml"
+      - "!.github/workflows/windows-watch.yml"
   pull_request:
 
 permissions:

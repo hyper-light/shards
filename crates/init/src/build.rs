@@ -211,6 +211,11 @@ fn serve() -> io::Result<()> {
     std::env::set_current_dir("/")?;
     let notes = match plug {
         Some(plug) => {
+            // What its host's budget leaves the build (D188), shared by the grower and the
+            // give-back's answerer this process forks, as a run's init shares it.
+            if let Err(e) = crate::plug::make_cap() {
+                let _ = writeln!(io::stderr(), "shards-init: {e}; its build is held to no budget");
+            }
             plug.raise_limits()?;
             // What it may still plug, reported where its kernel reports it (D149), as a
             // build on a host sees the host's memory: before its grower, which reads it.

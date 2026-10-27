@@ -551,32 +551,6 @@ pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
         .open(path)
 }
 
-/// A snapshot's file beneath `root` (unix.rs `open_beneath`). No snapshots are read on
-/// Windows.
-pub fn open_beneath_input(_root: &std::path::Path, _rel: &[&str]) -> io::Result<File> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "a snapshot's files are not read on Windows",
-    ))
-}
-
-/// A snapshot's directories beneath `root` (unix.rs `open_dir_beneath`). No snapshots are
-/// written on Windows.
-pub fn open_dir_beneath(_root: &std::path::Path, _rel: &[&str]) -> io::Result<File> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "a snapshot's directories are not opened on Windows",
-    ))
-}
-
-/// Opens `name` in the directory `dir` holds open. No snapshots are read on Windows.
-pub fn open_in(_dir: &File, _name: &str) -> io::Result<File> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "opening a file in an open directory is not supported on Windows",
-    ))
-}
-
 /// Which pages of anonymous memory were never touched: Windows is not asked yet, so none
 /// are skipped (unix.rs `untouched`).
 ///
@@ -606,43 +580,12 @@ impl FaultAroundOff {
     }
 }
 
-/// The pages mapped of a range, for a restore's working set (unix.rs `mapped_pages`): no
-/// snapshot is restored on Windows yet (vm::SNAPSHOTS).
-pub fn mapped_pages(_ptr: *const u8, _len: usize) -> io::Result<Vec<(usize, bool)>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "working sets are not recorded on Windows: it restores no snapshot yet",
-    ))
-}
-
-/// The names in the directory `dir` holds open. No container logs are kept on Windows.
-pub fn names_in(_dir: &File) -> io::Result<Vec<std::ffi::OsString>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "listing an open directory is not supported on Windows",
-    ))
-}
-
-/// Creates `name` in the directory `dir` holds open. No snapshots are written on Windows.
-pub fn write_in(_dir: &File, _name: &str, _bytes: &[u8]) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "writing into an open directory is not supported on Windows",
-    ))
-}
-
 /// Flushes file data and metadata to stable storage.
 pub fn sync_durable(file: &File) -> io::Result<()> {
     // SAFETY: flushing an owned, open handle.
     if unsafe { FlushFileBuffers(file.as_raw_handle()) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
-}
-
-/// Gives back blocks of `file` that hold zeros, where a file system fills its holes
-/// (unix.rs): no snapshot is written on Windows.
-pub fn punch_hole(_file: &File, _offset: u64, _len: u64) -> io::Result<()> {
     Ok(())
 }
 

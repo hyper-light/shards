@@ -45,7 +45,7 @@ pub(crate) const ENGINE_SOCKET: &str = engine::SOCKET;
 mod events;
 mod files;
 use crate::filters;
-mod budget;
+pub(crate) mod budget;
 mod follow;
 mod health;
 mod hostnet;

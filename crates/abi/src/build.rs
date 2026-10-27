@@ -23,11 +23,12 @@ pub const PORT: u32 = 1026;
 pub const SSH_PORT: u32 = 1028;
 
 /// The host port the guest dials before [`PORT`], over which its host asks it to give back
-/// what it holds cold (D188 for builders): [`kind::GIVE_BACK`] asks and [`kind::GAVE`]
-/// answers, one at a time, on a connection of their own, so that an ask is answered while
-/// a step runs. Dialed before [`PORT`], it waits for the host as the build's connection is
-/// taken, which no step precedes: the host takes it then or never, its first connection
-/// alone, so that no process of a step's reaches it.
+/// what it holds cold and tells it its budget's room (D188 for builders): [`kind::GIVE_BACK`]
+/// and [`kind::ROOM`] ask, [`kind::GAVE`] and [`kind::HELD`] answer, one at a time, on a
+/// connection of their own, so that an ask is answered while a step runs. Dialed before
+/// [`PORT`], it waits for the host as the build's connection is taken, which no step
+/// precedes: the host takes it then or never, its first connection alone, so that no
+/// process of a step's reaches it.
 pub const GIVE_PORT: u32 = 1030;
 
 /// Frame kinds, beside the run protocol's `STDOUT`, `STDERR`, `SYSTEM_ERR` and `EXIT`.
@@ -63,6 +64,15 @@ pub mod kind {
     /// the build's cgroup holds less of its files, and the bytes it asked to be unplugged,
     /// in decimal, a space between, as `RECLAIM` answers; else why it gave nothing back.
     pub const GAVE: u8 = 41;
+    /// Host to guest, on [`GIVE_PORT`](super::GIVE_PORT): the room the build's budget leaves
+    /// its builder, the bytes past what it uses in signed decimal, or nothing where it has no
+    /// budget; the builder holds its build within it, as a run's init holds its run at `ROOM`
+    /// (D188).
+    pub const ROOM: u8 = 42;
+    /// Guest to host, on [`GIVE_PORT`](super::GIVE_PORT), a `ROOM`'s answer: the bytes the
+    /// build is held within past what it uses, in decimal, or nothing with no budget; else
+    /// why it is not held.
+    pub const HELD: u8 = 43;
 }
 
 /// A cache's root directory: what overlayfs shows of the directory its upper layer is,

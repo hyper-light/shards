@@ -756,24 +756,32 @@ pub fn answer_give_backs(conn: std::fs::File) -> io::Result<()> {
     if pid == 0 {
         // Out of the build's cgroup, where PID 1 is: the root's ("0", the writer itself).
         let _ = std::fs::write("/sys/fs/cgroup/cgroup.procs", "0");
-        answer(&conn, || {
-            crate::run::reclaim_cold(BUILD).and_then(|freed| Ok((freed, shrink_run(BUILD)?)))
-        });
+        answer(
+            &conn,
+            || crate::run::reclaim_cold(BUILD).and_then(|freed| Ok((freed, shrink_run(BUILD)?))),
+            |room| hold_within(BUILD, room),
+        );
         // SAFETY: _exit(2) ends this process alone.
         unsafe { libc::_exit(0) };
     }
     Ok(())
 }
 
-/// The most a frame on the give-back connection holds: a `GIVE_BACK` holds nothing, and a
-/// frame past this ends the connection rather than have its answerer hold it.
+/// The most a frame on the give-back connection holds: a `GIVE_BACK` holds nothing and a
+/// `ROOM` a number, and a frame past this ends the connection rather than have its answerer
+/// hold it.
 const GIVE_FRAME: usize = 4096;
 
 /// What [`answer_give_backs`]'s process does until its connection ends: each frame read
-/// whole, each `GIVE_BACK` answered with a `GAVE` of what `give` gave back (the bytes its
-/// files freed and those it asked to unplug), or of why nothing, any other frame passed
-/// over.
-fn answer(conn: &std::fs::File, mut give: impl FnMut() -> io::Result<(u64, u64)>) {
+/// whole; each `GIVE_BACK` answered with a `GAVE` of what `give` gave back (the bytes its
+/// files freed and those it asked to unplug), or of why nothing; each `ROOM` with a `HELD`
+/// of what `hold` held the build within past what it uses (nothing with no budget, its
+/// room's payload empty), or of why not; any other frame passed over.
+fn answer(
+    conn: &std::fs::File,
+    mut give: impl FnMut() -> io::Result<(u64, u64)>,
+    mut hold: impl FnMut(Option<i64>) -> io::Result<Option<u64>>,
+) {
     use shards_abi::{build::kind, run};
     let mut h = [0u8; run::HEADER];
     let mut payload = Vec::new();
@@ -792,14 +800,35 @@ fn answer(conn: &std::fs::File, mut give: impl FnMut() -> io::Result<(u64, u64)>
         if r.read_exact(&mut payload).is_err() {
             return;
         }
-        if which != kind::GIVE_BACK {
-            continue;
-        }
-        let said = match give() {
-            Ok((freed, unplugging)) => format!("{freed} {unplugging}"),
-            Err(e) => format!("nothing given back: {e}"),
+        let (answers, said) = match which {
+            kind::GIVE_BACK => (
+                kind::GAVE,
+                match give() {
+                    Ok((freed, unplugging)) => format!("{freed} {unplugging}"),
+                    Err(e) => format!("nothing given back: {e}"),
+                },
+            ),
+            kind::ROOM => {
+                let room = match std::str::from_utf8(&payload).map(str::trim) {
+                    Ok("") => Ok(None),
+                    Ok(text) => text
+                        .parse::<i64>()
+                        .map(Some)
+                        .map_err(|_| err(format!("a room that is no number of bytes: {text:?}"))),
+                    Err(_) => Err(err("a room that is no text")),
+                };
+                (
+                    kind::HELD,
+                    match room.and_then(&mut hold) {
+                        Ok(Some(held)) => held.to_string(),
+                        Ok(None) => String::new(),
+                        Err(e) => format!("not held: {e}"),
+                    },
+                )
+            }
+            _ => continue,
         };
-        if crate::run::send(conn, kind::GAVE, said.as_bytes()).is_err() {
+        if crate::run::send(conn, answers, said.as_bytes()).is_err() {
             return;
         }
     }
@@ -1742,7 +1771,7 @@ mod tests {
         let (host, guest) = give_pair();
         let gave = std::sync::Mutex::new(vec![Err(io::Error::other("no cgroup")), Ok((5 * MIB, 128 * MIB))]);
         std::thread::scope(|s| {
-            let answerer = s.spawn(|| answer(&guest, || gave.lock().unwrap().pop().unwrap()));
+            let answerer = s.spawn(|| answer(&guest, || gave.lock().unwrap().pop().unwrap(), |_| Ok(None)));
             let _shut = Shut(&host);
             let mut w = &host;
             w.write_all(&run::header(kind::EMULATE, 3)).unwrap();
@@ -1757,6 +1786,54 @@ mod tests {
         assert!(gave.lock().unwrap().is_empty());
     }
 
+    /// Each `ROOM` is answered with a `HELD` of what the build was held within past what it
+    /// uses: the room parsed as signed decimal bytes, none where its payload is empty; a room
+    /// that is no number refused unheld, and a hold that failed said, each answered all the
+    /// same.
+    #[test]
+    fn a_room_is_answered_with_what_the_build_is_held_within() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let rooms = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|s| {
+            let answerer = s.spawn(|| {
+                answer(
+                    &guest,
+                    || Ok((0, 0)),
+                    |room| {
+                        rooms.lock().unwrap().push(room);
+                        match room {
+                            Some(r) if r < 0 => Err(io::Error::other("no memory.high")),
+                            Some(_) => Ok(Some(64 * MIB)),
+                            None => Ok(None),
+                        }
+                    },
+                )
+            });
+            let _shut = Shut(&host);
+            let mut w = &host;
+            let mut room = |payload: &[u8]| {
+                w.write_all(&run::header(kind::ROOM, u32::try_from(payload.len()).unwrap()))
+                    .unwrap();
+                w.write_all(payload).unwrap();
+                heard(&host)
+            };
+            assert_eq!(room(b"134217728"), (kind::HELD, "67108864".into()));
+            assert_eq!(room(b""), (kind::HELD, String::new()));
+            assert_eq!(
+                room(b"x"),
+                (
+                    kind::HELD,
+                    "not held: a room that is no number of bytes: \"x\"".into()
+                )
+            );
+            assert_eq!(room(b"-5"), (kind::HELD, "not held: no memory.high".into()));
+            host.shutdown(std::net::Shutdown::Write).unwrap();
+            answerer.join().unwrap();
+        });
+        assert_eq!(*rooms.lock().unwrap(), [Some(128 * MIB as i64), None, Some(-5)]);
+    }
+
     /// A frame longer than any its host sends ends the connection, unread and unanswered,
     /// rather than have its answerer hold it.
     #[test]
@@ -1767,10 +1844,14 @@ mod tests {
         let (ended, end) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
             s.spawn(|| {
-                answer(&guest, || {
-                    asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok((0, 0))
-                });
+                answer(
+                    &guest,
+                    || {
+                        asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Ok((0, 0))
+                    },
+                    |_| Ok(None),
+                );
                 ended.send(()).unwrap();
             });
             let len = u32::try_from(GIVE_FRAME + 1).unwrap();

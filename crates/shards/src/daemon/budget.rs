@@ -17,7 +17,7 @@ use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
 use crate::containers::Disk;
 
 /// The cgroup v2 hierarchy's root, which holds nothing to a budget (cgroup-v2.rst).
-pub(super) const ROOT: &str = "/sys/fs/cgroup";
+pub(crate) const ROOT: &str = "/sys/fs/cgroup";
 
 /// What the budget over the cgroup `dir` leaves the microVMs made in it: of `dir` and each
 /// cgroup above it below `root` held to a budget (`memory.high` or `memory.max` short of
@@ -26,7 +26,7 @@ pub(super) const ROOT: &str = "/sys/fs/cgroup";
 /// counted in wherever they are charged, and those of them their host took back under it
 /// that `evicted` says of what they map now, by process ([`Budgets::evicted`]); and which
 /// cgroup that is. None where no cgroup it is in has a budget.
-pub(super) fn room(
+pub(crate) fn room(
     dir: &Path,
     root: &Path,
     evicted: &mut dyn FnMut(&Mapped) -> u64,
@@ -167,7 +167,7 @@ pub(super) fn held_at(dir: &Path) -> Option<Holding> {
 }
 
 /// What each process maps of files, by process ID ([`mapped_under`]).
-pub(super) type Mapped = [(u32, u64)];
+pub(crate) type Mapped = [(u32, u64)];
 
 /// The processes of cgroup `dir` and those below it, each with the bytes of files it maps,
 /// each page once among them (/proc/PID/smaps_rollup's `Pss_File`, which shares a page's
