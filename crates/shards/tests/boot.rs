@@ -1286,12 +1286,15 @@ fn probe_smp_sweep() {
     use std::process::Stdio;
     use std::time::Instant;
     let k = kernel();
-    for n in [4u32, 8, 16, 32, 48, 64, 128, 240] {
+    for (n, cmdline) in [4u32, 8, 16, 32, 64, 240]
+        .into_iter()
+        .flat_map(|n| [(n, "console=ttyS0 panic=-1"), (n, "console=ttyS0 panic=-1 cpuhp.parallel=0")])
+    {
         let cpus = n.to_string();
         let mut child = common::command()
             .args(["run", "--kernel"])
             .arg(k)
-            .args(["--cpus", &cpus, "--memory", "1024", "--cmdline", "console=ttyS0 panic=-1"])
+            .args(["--cpus", &cpus, "--memory", "1024", "--cmdline", cmdline])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1330,7 +1333,7 @@ fn probe_smp_sweep() {
             _ => None,
         };
         eprintln!(
-            "PROBE n={n} booting_smp={booting:?} brought_up={up:?} wall={wall:?} cpu_at_booting={cpu_at_booting:?} cpu_end={cpu_end:?} host_cpus_used_after_booting={rate:?} last={last}"
+            "PROBE n={n} cmdline={cmdline:?} booting_smp={booting:?} brought_up={up:?} wall={wall:?} cpu_at_booting={cpu_at_booting:?} cpu_end={cpu_end:?} host_cpus_used_after_booting={rate:?} last={last}"
         );
     }
 }
