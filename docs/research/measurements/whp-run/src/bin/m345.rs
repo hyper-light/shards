@@ -701,10 +701,38 @@ fn clocks(vm: &Vm<'_>, label: &str) {
     );
 }
 
+/// What WHvSetVirtualProcessorState takes back of what WHvGetVirtualProcessorState gave: the
+/// APIC page and the XSAVE area set back as read, and the APIC page's first 1 and 2 KiB, its
+/// xAPIC registers' (windows-2022 refused the page whole, ERROR_MORE_DATA, run 40519967461).
+fn set_back(vm: &Vm<'_>) {
+    for (what, kind) in [
+        ("APIC page", WHvVirtualProcessorStateTypeInterruptControllerState2),
+        ("XSAVE area", WHvVirtualProcessorStateTypeXsaveState),
+    ] {
+        match vm.get_state(kind) {
+            Ok(bytes) => {
+                let mut said = format!("{what} of {} bytes set back: {:?}", bytes.len(), vm.set_state(kind, &bytes));
+                if kind == WHvVirtualProcessorStateTypeInterruptControllerState2 {
+                    for len in [1024usize, 2048] {
+                        if let Some(part) = bytes.get(..len) {
+                            said += &format!("; its first {len} bytes: {:?}", vm.set_state(kind, part));
+                        }
+                    }
+                    // The page whole again, where a part was taken, for the questions after.
+                    let _ = vm.set_state(kind, &bytes);
+                }
+                println!("{said}");
+            }
+            Err(e) => println!("{what}: unread: {e}"),
+        }
+    }
+}
+
 /// The first partition's questions on time; leaves its time running.
 fn time_questions(vm: &mut Vm<'_>) -> Result<(), String> {
     clocks(vm, "a new partition, its vCPU never run");
     vm.start()?;
+    set_back(vm);
     let timer = apic_timer(vm);
     println!("APIC timer set counting through the APIC state page: {timer:?}");
     clocks(vm, "after a run, the vCPU out of it");
