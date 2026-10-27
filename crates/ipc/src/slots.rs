@@ -20,7 +20,9 @@ pub use fifo::{Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper,
 #[cfg(windows)]
 mod named;
 #[cfg(windows)]
-pub use named::{Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer};
+pub use named::{
+    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served, take, unoffer,
+};
 
 /// What carries a slot's messages, each way: a FIFO on Unix (`say`'s, `answer`'s); on
 /// Windows the slot's instance of its list's pipe, which carries both.

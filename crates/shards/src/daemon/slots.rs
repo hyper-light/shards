@@ -462,8 +462,16 @@ impl<D: Disk> Daemon<D> {
         if sent.is_ok() {
             living.passed();
         }
+        // On Windows `say` and `answer` are one pipe instance, whose client hears its end
+        // only once each handle of it here has closed: what the client says stops being
+        // read once all the daemon will say has been passed on, so that `say` closes with
+        // `answer`. A run whose VM was killed left its client waiting for ever before.
+        #[cfg(windows)]
+        let said_all = shards_ipc::Event::new()?;
         std::thread::scope(|inner| {
             let say = &say;
+            #[cfg(windows)]
+            let said_all = &said_all;
             // The client's messages, on to the daemon; its end, the connection's. None
             // where the request never went: the connection has ended there, and ended here
             // too before its last messages are read, XNU would drop them (soshutdown's
@@ -473,7 +481,14 @@ impl<D: Disk> Daemon<D> {
                     std::thread::Builder::new()
                         .name("slot-say".into())
                         .spawn_scoped(inner, move || {
-                            while let Ok(Some(f)) = slots::read_frame(say) {
+                            loop {
+                                #[cfg(unix)]
+                                let said = slots::read_frame(say);
+                                #[cfg(windows)]
+                                let said = slots::read_frame_until(say, said_all);
+                                let Ok(Some(f)) = said else {
+                                    break;
+                                };
                                 if shards_ipc::send(ours, f.kind, &f.payload, &[]).is_err() {
                                     break;
                                 }
@@ -507,6 +522,8 @@ impl<D: Disk> Daemon<D> {
             drop(streams.take());
             // The client's end of the session: its reads end.
             drop(answer);
+            #[cfg(windows)]
+            said_all.set();
             // All the daemon will say is the client's to read, there whether or not the
             // daemon is (a FIFO keeps what was written as its writer goes, pipe(7)): the
             // slot holds the daemon no longer, though the client's messages may still come

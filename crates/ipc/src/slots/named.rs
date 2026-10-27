@@ -425,6 +425,23 @@ impl Read for Within<'_> {
     }
 }
 
+/// The client's next message on `say`, its slot's line, as [`read_frame`](super::read_frame)
+/// reads it, or `None` once `said_all` is set: a slot's `say` and `answer` are one instance,
+/// whose client hears its end only once every handle the daemon has of it has closed, so
+/// what the client says stops being read once the daemon has said all it will, and `say`
+/// closes with `answer`, as a FIFO's reader hears its writer go.
+pub fn read_frame_until(say: &Pipe, said_all: &Event) -> io::Result<Option<Frame>> {
+    let mut from = Within {
+        line: say,
+        ended: Some(said_all),
+        deadline: None,
+    };
+    match frame_from(&mut from) {
+        Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => Ok(None),
+        read => read,
+    }
+}
+
 impl Opened {
     /// The rest of the client's request: `None` where the client ended before it was
     /// whole.

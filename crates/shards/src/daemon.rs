@@ -9414,6 +9414,78 @@ mod tests {
         });
     }
 
+    /// A slot's client hears its session end once the daemon's side has, though it says
+    /// nothing more itself: a run whose microVM was killed, which said no EXIT. On Windows
+    /// the slot's `say` and `answer` are one pipe instance, the daemon's two handles of it
+    /// (named.rs), which its client hears end only once both have closed; the client of a
+    /// killed VM's run waited there for ever (PM M348).
+    #[test]
+    fn a_client_hears_its_session_end_though_it_says_nothing() {
+        use shards_ipc::slots::{Session, joined, read_frame, write_frame};
+        let t = Test::new("said-all");
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            // The client's line and the daemon's: one instance both ways on Windows, as a
+            // slot's is; a FIFO each way on Unix.
+            #[cfg(windows)]
+            let (says, hears, session) = {
+                let (client, line) = joined().unwrap();
+                let (say, answer) = (line.try_clone().unwrap(), line);
+                let session = Session {
+                    n: 0,
+                    say,
+                    answer,
+                    input: None,
+                    output: None,
+                    errors: None,
+                };
+                (client.try_clone().unwrap(), client, session)
+            };
+            #[cfg(unix)]
+            let (says, hears, session) = {
+                let (say, says) = joined().unwrap();
+                let (hears, answer) = joined().unwrap();
+                let session = Session {
+                    n: 0,
+                    say,
+                    answer,
+                    input: None,
+                    output: None,
+                    errors: None,
+                };
+                (says, hears, session)
+            };
+            std::thread::scope(|s| {
+                let passing = s.spawn(|| t.daemon.pass_on(Ok(()), &ours, session, &living));
+                // Its VM says something, then is gone without a word.
+                shards_ipc::send(&theirs, kind::OUT, b"out", &[]).unwrap();
+                drop(theirs);
+                let (heard, hearing) = mpsc::channel();
+                let hears = &hears;
+                s.spawn(move || {
+                    let first = read_frame(hears).unwrap().map(|f| f.kind);
+                    let _ = heard.send((first, read_frame(hears).ok().flatten().map(|f| f.kind)));
+                });
+                let ends = hearing.recv_timeout(PATIENCE);
+                if ends.is_err() {
+                    // Held open: a word from the client lets the slot's reader go, and this
+                    // fails rather than hangs.
+                    let _ = write_frame(&says, kind::SIGNAL, &[2]);
+                }
+                // The client ends as it hears its session's end.
+                drop(says);
+                assert_eq!(
+                    ends.ok(),
+                    Some((Some(kind::OUT), None)),
+                    "the session never ended for its client"
+                );
+                passing.join().unwrap().unwrap();
+            });
+            drop(living);
+        });
+    }
+
     /// A daemon that has closed starts no warm VM: a waiting one that ends as it exits is
     /// replaced by none, which would only end with it as the next daemon starts.
     #[test]

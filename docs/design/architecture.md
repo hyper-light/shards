@@ -6440,19 +6440,20 @@ kind, as on Unix. A removal costs 0.9 to 1.4 ms at p50 with its two syncs, again
 
 **Tested.** The slots' cases are one set that Unix's FIFOs and Windows' named pipes both
 pass (`slots.rs`), beside each host's own (`fifo.rs`, `named.rs`, `pipe.rs`, `poll.rs`):
-`shards_ipc`'s tests pass on jupiter, 57 of 57. A mutation run changed one line at each of
+`shards_ipc`'s tests pass on jupiter, 58 of 58. A mutation run changed one line at each of
 23 places of Windows' slots and pipes, among them a pipe's DACL granting Everyone and a
 stream's pipe made without FILE_FLAG_FIRST_PIPE_INSTANCE, which another process could then
-take first, and the tests caught 22. On jupiter, 2026-10-27, the daemon's and the
-containers' unit tests pass, 223 of 223, and tests/daemon.rs with real microVMs, 37 of 37,
-`an_idle_daemon_wakes_for_nothing` among them, each thread's cycles read there
-(QueryThreadCycleTime) where Linux reads its switches. Its eleven pool and template tests,
-which the parity plan's step 4 takes up, skip there as on arm64 Linux, for want of
-snapshots (`vm::SNAPSHOTS`) to restore warm VMs from (D196, step 3). Those it leaves out on
-Windows are Unix's by nature (a terminal's job control, descriptor limits, systemd's
-slices) or a later step's (the Engine API's stream, step 8; FUSE under a budget, steps 6
-and 7). Every command of the catalog was asked of a daemon there once and answered;
-`pause` says a microVM is not paused on Windows yet (step 2).
+take first, and the tests caught every one: the last a client that read its list's name
+just before its daemon made its lists anew (`take_listed`). On jupiter, 2026-10-27, the
+daemon's and the containers' unit tests pass, 223 of 223, and tests/daemon.rs with real
+microVMs, 37 of 37, `an_idle_daemon_wakes_for_nothing` among them, each thread's cycles
+read there (QueryThreadCycleTime) where Linux reads its switches. Its eleven pool and
+template tests, which the parity plan's step 4 takes up, skip there as on arm64 Linux, for
+want of snapshots (`vm::SNAPSHOTS`) to restore warm VMs from (D196, step 3). Those it
+leaves out on Windows are Unix's by nature (a terminal's job control, descriptor limits,
+systemd's slices) or a later step's (the Engine API's stream, step 8; FUSE under a budget,
+steps 6 and 7). Every command of the catalog was asked of a daemon there once and
+answered; `pause` says a microVM is not paused on Windows yet (step 2).
 
 **Not on Windows yet**, each refused with a message that says so, each a later step of the
 parity plan: templates and warm pools (steps 3 and 4, on WHP's snapshots, D196); published
