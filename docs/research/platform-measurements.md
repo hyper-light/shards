@@ -14833,3 +14833,169 @@ revision before comparing a changed API/implementation.
     watch 12.2 to 169.4 µs on.
   - A directory's own handle is opened again by NtCreateFile of no name relative to it.
   - write_in renames with POSIX semantics.
+
+### M347. A container's directory on Windows: no rename sets it aside while a file in it is open; what making a directory's entries durable costs (D195, D27)
+
+- **Questions.** A container's removal sets its directory aside by renaming it, then syncs
+  the containers' directory, so that no crash brings the container back (D27, M46). Its
+  run's VM, or a reader of its log, may hold a file in it open.
+  - Does NTFS rename a directory while a file in it is open, by MoveFileEx or by a POSIX
+    rename through the directory's handle?
+  - What does making a directory's entries durable cost on Windows, by FlushFileBuffers of
+    a handle to it that may write (shards' `platform::sync_dir`), beside M46's levels? And
+    what does Windows' removal cost, which marks the directory instead of renaming it,
+    with its second sync and without?
+- **Method.**
+  - `a_directory_holding_an_open_file_is_renamed_by_no_rename` (vmm
+    `platform/windows_files.rs`): a file made in a directory by std (every sharing
+    allowed) and held open; the directory renamed by `std::fs::rename` (MoveFileExW), and
+    by a POSIX rename (NtSetInformationFile) through a handle of the directory's (DELETE,
+    every sharing); then renamed again once the file has closed. jupiter, 2026-10-27.
+  - `docs/research/measurements/record-sync` (bc242d10), `run.sh DIR 1000`, whose syncs on
+    Windows are FlushFileBuffers, a directory's through a handle opened with GENERIC_WRITE
+    and backup semantics. Its `remove` there is Windows' removal (containers.rs `Removal`):
+    a mark `.cN.removing` written beside the directory, the parent synced, the directory
+    removed where it is, the parent synced, the mark removed; `remove, one sync` leaves the
+    second sync out. n = 1,000 each level, alone, in blocks of 500, two rounds of opposite
+    order. Host: jupiter, an AMD Ryzen AI Max+ 395 (16 cores, 32 threads), Windows
+    10.0.26200.9711, NTFS on a WD PC SN5000S NVMe SSD, 2026-10-27, 30 or 31 of its 32 CPUs
+    idle as each run began; run 1 in the user's profile, run 2 in `%LOCALAPPDATA%`, where
+    shards' home is.
+- **Found.**
+  - Both renames were refused while the file was open, "Access is denied." (5), and the
+    plain one went once it had closed.
+  - Results (µs; the two runs):
+
+| Level | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| write, rename | 278–289 | 416–573 | 705–793 | 95 734–367 616 |
+| FlushFileBuffers, rename | 790–835 | 1 112–27 644 | 20 736–129 907 | 68 017–283 072 |
+| FlushFileBuffers, rename, directory synced | 986–1 436 | 1 257–7 804 | 15 050–19 410 | 17 963–69 034 |
+| a new directory and record, all synced | 1 670–1 948 | 2 199–2 774 | 18 329–19 035 | 48 262–211 030 |
+| marked, synced, removed, synced, unmarked | 915–1 421 | 1 297–2 115 | 14 287–22 664 | 27 565–88 632 |
+| the same, its second sync left out | 686–1 179 | 949–3 036 | 3 352–6 912 | 12 572–14 522 |
+
+  - Its second sync cost the removal 229 and 242 µs at p50, and 10.9 and 15.8 ms at p99.
+- **Consequence (D195, D27).**
+  - On Windows a removed container's directory is not renamed aside: its VM or a reader of
+    its log may hold a file in it. A mark `.ID.removing`, an empty file, is written beside
+    it instead, made durable by the containers' directory's sync as Unix's rename is; the
+    next start deletes a marked directory, then its mark.
+  - The mark goes only once the directory's deletion is durable: a power loss that kept
+    the mark's deletion but not the directory's would bring the container back
+    (containers.rs's power-loss model, which keeps any unsynced operation or none). That
+    sync is the 0.2 ms at p50 and the 11 to 16 ms at p99 above, so removals completed
+    together share one (`Removal::delete_all`).
+  - Windows' whole removal costs 0.9 to 1.4 ms at p50, where macOS's rename, F_FULLFSYNC and
+    removal cost 4.3 (M46), and 14 to 23 ms at p99, against macOS's 9 to 15.
+  - `platform::sync_dir`, and the image store's `sync_dir`, made nothing durable on Windows
+    before: each now flushes as above.
+
+### M348. Windows named pipes as a daemon's request slots, what a request costs through one, and what a daemon with no console starts (D195)
+
+- **Questions.** D185's slots are FIFOs in the home, which Windows has none of: on Windows a
+  slot is an instance of a named pipe (D195), and the daemon and its clients rely on what
+  follows. Does each hold?
+  - A read of no bytes waits for what comes, without taking it: a readiness wait, where
+    Unix has poll(2) and select(2).
+  - The daemon sees whether a client has opened an instance it offered (PeekNamedPipe).
+  - A client waits for a free instance while every one is taken (WaitNamedPipe), and hears
+    at once that its daemon has gone.
+  - And what does a request cost through a slot, as its client sees it, and a slot its
+    daemon, against M254's and M255's FIFOs?
+- **Method.**
+  - Unit tests of `crates/ipc/src/pipe.rs`, `cargo test -p shards-ipc`, on jupiter (Windows
+    10.0.26200.9711), 2026-10-27, at 2adce835 (the IPC crate unchanged since):
+    `a_stream_waits_to_be_readable` (an overlapped ReadFile of no bytes on one end of a
+    pair, waited 50 ms with nothing written, then after a byte, after it is read, and after
+    the peer closes; and ended by an event of the caller's);
+    `an_instance_peeks_as_listening_until_opened` (PeekNamedPipe on a server instance no
+    client has opened, then opened, then closed by its client);
+    `a_client_waits_for_a_free_instance` (WaitNamedPipeW on a name with no instance; with
+    its one instance taken, for 50 ms; then for 10 s, as another thread makes a second
+    instance 100 ms in); `a_wait_ends_as_the_last_instance_closes` (a WaitNamedPipeW of
+    3 s under way, the name's last instance closed 100 ms in).
+  - `docs/research/measurements/request-slots` (fb49ee02), `run.sh DIR 2000`, through
+    `shards_ipc::slots` itself. `slot`: a client takes a slot, asks a request of 64 bytes
+    and reads its answer of a byte, timed from the take to the answer; the daemon keeps two
+    slots offered, a thread waiting on each, and offers another as each is taken, as it
+    does, and the client asks every 2 ms, so that no ask waits for a slot to be made.
+    `pair`: the same request and answer over two lines held open, as a slot's are once
+    taken. `make`: a slot made and removed, offered nowhere, without streams and with them.
+    n = 2,000 each, alone, in blocks of 1,000, two rounds of opposite order, after 100 of
+    each not counted. jupiter, `%LOCALAPPDATA%`, 2026-10-27, its 32 CPUs idle as each run
+    began; two runs.
+  - The daemon run on jupiter as D195 was built, 2026-10-27.
+- **Found.**
+  - A read of no bytes stayed pending with nothing written, and completed once a byte was
+    there, which was still there to read; pending again once it was read; completed as the
+    peer closed; and ended by the caller's event.
+  - PeekNamedPipe on an instance no client had opened failed ERROR_BAD_PIPE (230), not
+    ERROR_PIPE_LISTENING (536); opened, it said 0 bytes to read; its client gone,
+    ERROR_BROKEN_PIPE (109).
+  - WaitNamedPipeW on a name with no instance failed at once, ERROR_FILE_NOT_FOUND (2).
+    With the one instance taken, it waited out its 50 ms, ERROR_SEM_TIMEOUT (121). Waiting
+    10 s, it returned once the second instance was made, within the test's bound of 5 s.
+  - A wait under way ended as the name's last instance closed, ERROR_FILE_NOT_FOUND, within
+    the test's bound of 1 s.
+  - Requests and slots (µs; the two runs):
+
+| way | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| slot | 143.1–148.7 | 210.6–211.9 | 237.8–253.1 | 454.1–469.3 |
+| pair | 27.5–28.7 | 49.8–50.1 | 67.1–67.9 | 311.6–381.2 |
+| make | 7.1 | 8.9–9.4 | 12.4–13.5 | 62.1–319.4 |
+| make, streams | 28.2–28.6 | 37.0–38.2 | 46.9–47.4 | 86.3–106.8 |
+
+  - The confined VM process (D141), started by a daemon with no console, failed as it
+    started, STATUS_DLL_INIT_FAILED (0xC0000142), though started with CREATE_NO_WINDOW;
+    started DETACHED_PROCESS, it ran. One the CLI starts from its console is unaffected.
+  - Guest RAM to plug (D133), reserved and committed as a guest's RAM is, took its whole
+    length's commit charge, which jupiter under load refused (ERROR_COMMITMENT_LIMIT, 1455,
+    "The paging file is too small"); reserved alone (MEM_RESERVE), each part committed as it
+    is granted, it was not.
+  - Windows removes no directory a process stands in (ERROR_SHARING_VIOLATION, g121-bc's
+    probe), and the daemon stands in its home: one removing what is left of its home,
+    removed as it served, has to leave it first.
+- **Consequence (D195).**
+  - The daemon waits on its slots, and its clients on its answers, by reads of no bytes
+    (`pipe::Poller`, `await_any`); it sees a client's open by PeekNamedPipe; a client waits
+    for a free slot in WaitNamedPipe, a quarter of a second at a time (`LOOK_AGAIN`), since
+    a daemon that made its lists again offers on another name, and hears its daemon's end
+    at once.
+  - A request through a slot costs 143 to 149 µs at p50 on jupiter, five times the floor of
+    its two lines (28 µs), against 83 to 112 µs on macOS and 34 µs on Linux (M254). A slot
+    takes its daemon 7 µs to make and remove at p50, 28 µs with its streams, where macOS's
+    FIFOs took 116 and 291 µs (M255): two are kept offered of each kind, as on Unix.
+  - A daemon with no console starts its confined VM processes detached; guest RAM to plug
+    is reserved alone; the daemon leaves its home before removing it.
+
+### M349. What a file sized past what is written takes of an NTFS disk, sparse and not (D195, D190)
+
+- **Question.** A run's writable layer (D190) is a file of 10 GiB unless the run asks for
+  another size, sized at once, of which its guest writes what it writes; a run's swap
+  (D159) and a build's cache part (D134), sized to what the store has room for, likewise.
+  A Unix file system gives such a file no blocks for what is not written. Does NTFS?
+- **Method.** jupiter (Windows 10.0.26200.9711, NTFS on an NVMe SSD), 2026-10-27.
+  - PowerShell: a new file set to 10 GiB (`FileStream.SetLength`), the volume's free space
+    (`Get-PSDrive`) read before and after; then a new file made sparse first (`fsutil
+    sparse setflag`, FSCTL_SET_SPARSE) and set to 10 GiB the same way.
+  - tests/daemon.rs, eight at a time (`--test-threads 8`), at fb49ee02 and again at
+    9b9a747e, whose layers are sparse; jupiter otherwise idle, 92 GB free as each began.
+  - A run's layer as its microVM holds it, sparse: `shards run -d alpine sleep 120`, its
+    file's allocated ranges summed 5 s on (`fsutil file queryallocranges`); and as made,
+    on macOS's APFS, `a_layer_takes_of_its_disk_what_is_written`'s first run.
+- **Found.**
+  - Set to 10 GiB, the plain file took 10,737,418,240 bytes of free space at once, all of
+    it; the sparse one took none.
+  - tests/daemon.rs, its layers not sparse: 23 passed and 13 failed, in 538.7 s. One failed
+    with ERROR_DISK_FULL (112) as a run's layer was made, and twelve with a run that had not
+    ended 60 s after its image was pulled, the disk filling. Its layers sparse: 36 passed,
+    none failed, in 46.5 s.
+  - A running microVM's layer took 1,572,864 bytes of its 10,995,367,936 on NTFS; one as
+    made took 425,984 bytes on APFS.
+- **Consequence (D195).** On Windows a run's layer, its swap and a build's cache part are
+  made sparse before they are sized (`platform::make_sparse`, the image store's
+  `make_sparse`), as a Unix file is: a run takes of its disk what its guest writes. Why a
+  run whose disk filled did not end, where its client should have heard why, is not found
+  yet.

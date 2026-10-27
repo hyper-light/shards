@@ -202,7 +202,7 @@ the guest arch is always the host arch.
 | Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; no snapshots yet (D154) |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
-| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
+| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; the daemon and its client (D195); no snapshots yet (D140) |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
@@ -4284,9 +4284,9 @@ the command given no terminal of its own, the terminal not taken as its controll
 the client not raw, signals steering nothing, SIGWINCH sent as a signal with no resize, and
 a signal's Linux number taken for the daemon's system's.
 
-**Part 2b, built: a Windows client's console.** No daemon of shards' runs on Windows yet, so
-a context is how a Windows machine runs microVMs at all, and its console is its terminal as
-a Unix client's is:
+**Part 2b, built: a Windows client's console.** Until D195 brought shards' daemon to
+Windows, a context was how a Windows machine ran microVMs at all; its console is its
+terminal as a Unix client's is:
 - **Raw, so that keys reach the command there as a terminal's**: no echo, line editing or
   processed input, so ^C is a key the command's terminal there makes SIGINT of; no mouse
   events; insert and quick-edit mode, and keys as the escape sequences a terminal sends
@@ -4808,7 +4808,8 @@ Where Docker's `ssh://` context starts `docker system dial-stdio` through a shel
 for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
 each relayed connection opens a QUIC connection of its own, a handshake each, where one
 connection kept for the context, a stream each, would not (part 5 measures both); a Windows
-client, with no daemon of shards' to relay, has no engine socket (Docker's `npipe://`).
+client, whose daemon serves no Engine API yet (D195; the parity plan's step 8), has no
+engine socket (Docker's `npipe://`).
 Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` through the
 socket; a microVM made through the context, listed there and not by the client's own engine;
 Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
@@ -6359,6 +6360,105 @@ template pays it once; what its restores pay is to be measured with mappings.
   scheduler put a run on (M302). A window takes none of its guest's memory on either
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
+
+### D195. The daemon and its client on Windows: request slots of named pipes (built)
+
+**Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
+row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
+containers, images, volumes and networks. D185's slots are FIFOs in the home, their
+streams handed by `SCM_RIGHTS`, its spawner a forked process: Windows has no FIFO in a
+filesystem and passes no descriptor over a socket, and a process there is made, not
+forked.
+
+**Decided and built.**
+- **Slots, named by files in the home** (`slots/named.rs`). Each list, without streams and
+  with, is a named pipe whose name the file `requests/free` or `requests/free-streams`
+  gives: a fresh random name each time the daemon makes its lists, the file written whole
+  before it is renamed into place, so that a client reads a whole name or none. Its DACL
+  grants the daemon's user alone, not an AppContainer of that user's (a VM process's) nor
+  another user, and it refuses remote clients. A slot is an instance of its list's pipe: a
+  client takes one by opening the name, which gives it an instance no client has opened,
+  and no other client can then open that one (PM M340). The daemon's first word on it is
+  its number; a slot with streams has three pipes more, `<list>-<N>.in`, `.out` and `.err`,
+  each its name's first and only instance, so that no other process holds one first. Then,
+  as on Unix, the client writes which streams it opened, what each descriptor its request
+  stands for is, and its request. No socket of shards' own is made.
+- **Liveness, each way**, as D185's: each side's end ends the other's reads after all it
+  wrote (M340). A list's name lives while the daemon holds an instance of its own, as a
+  Unix list has its daemon's reader. A client waits for a free slot in WaitNamedPipe, and
+  hears of its daemon's end at once, its wait ending as the last instance closes (M348);
+  it looks at the list's file again every quarter of a second, for a daemon that made its
+  lists again under another name. A slot no client opened is stopped by an event of its
+  own. Where the file names no pipe, or the pipe has no instance, the client starts the
+  daemon. One daemon a home: it takes `daemon.lock` by LockFileEx (std's `try_lock`).
+- **Waits.** A read of no bytes on an overlapped pipe waits for what comes without taking
+  it (M348): the daemon's followers wait on its runs' streams, and on processes' ends and
+  events, through `pipe::Poller` (an I/O completion port, and a thread-pool wait on each
+  process and event), and clients through `await_any`, where Unix has poll(2) and kqueue(2).
+- **Handles where Unix passes descriptors.** A stream of `shards_ipc`'s carries handles:
+  the sender duplicates each into its receiver's process (DuplicateHandle), and their
+  values follow the message. A child's end takes them only from its spawner, its spawner
+  none from it. So the daemon hands a run's VM the client's connection and the slot's
+  streams as it does on Unix.
+- **Lines and streams.** A slot's line holds 64 KiB, what a Linux FIFO holds (pipe(7)), so
+  that what a client leaves untaken is what it leaves on Linux (D185, "What it said last");
+  a stream's pipe holds 1 MiB, which moved more than 64 KiB in M340.
+- **No spawner process** (D158). A Unix child is forked holding every descriptor its parent
+  holds, so the daemon's children come from a process made before it held any. A Windows
+  child is made by CreateProcess with the handles named for it alone
+  (PROC_THREAD_ATTRIBUTE_HANDLE_LIST) and inherits nothing else, so the daemon makes its
+  children itself. Having no console, it starts its confined VM processes detached: one
+  started with CREATE_NO_WINDOW alone failed as it started (STATUS_DLL_INIT_FAILED, M348).
+- **Another build's daemon steps aside**, `shards run daemon` serves and `shards stop daemon`
+  ends it, as on Unix (D185).
+- **Containers' directories** (M347). NTFS renames no directory while a file in it is open,
+  and a run's VM or a reader of its log may hold one, so a removal marks its container's
+  directory instead of renaming it: an empty file `.ID.removing` beside it, made durable by
+  the containers' directory's sync as the rename is; the next start deletes a marked
+  directory, then its mark. The directory is deleted where it is once no record of its
+  container is being written (a write under way lands in it, which Windows leaves in
+  place), and its mark only once that deletion is durable: removals completed together
+  share that sync. A directory's entries are made durable by FlushFileBuffers of a handle
+  to it that may write, in the VMM's platform and the image store, where Windows synced
+  nothing before.
+- **Files sized ahead are sparse** (M349). NTFS took every cluster of a file as it was
+  sized, so each run's 10 GiB writable layer (D190) took 10 GiB of its disk at once, and
+  eight runs filled jupiter's. A run's layer, its swap (D159) and a build's cache part
+  (D134) are made sparse before they are sized, as a Unix file is: a running microVM's
+  layer took 1.5 MiB.
+- **Smaller things a daemon on Windows needed** (M348): guest RAM to plug (D133) reserved
+  alone, its commit charge taken as each part is granted, since a host short of commit
+  refused it whole; the daemon leaves its home before removing what is left of it, since
+  Windows removes no directory a process stands in.
+
+**Measured** (M347, M348, jupiter). A request through a slot costs 143 to 149 µs at p50 and
+238 to 253 µs at p99, five times its two lines held open (28 µs), against 83 to 112 µs on
+macOS and 34 µs on Linux (M254). A slot takes its daemon 7 µs to make and remove, 28 µs
+with its streams, where macOS's FIFOs took 116 and 291 (M255): two are kept offered of each
+kind, as on Unix. A removal costs 0.9 to 1.4 ms at p50 with its two syncs, against macOS's
+4.3 (M46).
+
+**Tested.** The slots' cases are one set that Unix's FIFOs and Windows' named pipes both
+pass (`slots.rs`), beside each host's own (`fifo.rs`, `named.rs`, `pipe.rs`, `poll.rs`):
+`shards_ipc`'s tests pass on jupiter, 57 of 57. A mutation run changed one line at each of
+23 places of Windows' slots and pipes, among them a pipe's DACL granting Everyone and a
+stream's pipe made without FILE_FLAG_FIRST_PIPE_INSTANCE, which another process could then
+take first, and the tests caught 22. On jupiter, 2026-10-27, the daemon's and the
+containers' unit tests pass, 223 of 223, and tests/daemon.rs with real microVMs, 37 of 37,
+`an_idle_daemon_wakes_for_nothing` among them, each thread's cycles read there
+(QueryThreadCycleTime) where Linux reads its switches. Its eleven pool and template tests,
+which the parity plan's step 4 takes up, skip there as on arm64 Linux, for want of
+snapshots (`vm::SNAPSHOTS`) to restore warm VMs from (D196, step 3). Those it leaves out on
+Windows are Unix's by nature (a terminal's job control, descriptor limits, systemd's
+slices) or a later step's (the Engine API's stream, step 8; FUSE under a budget, steps 6
+and 7). Every command of the catalog was asked of a daemon there once and answered;
+`pause` says a microVM is not paused on Windows yet (step 2).
+
+**Not on Windows yet**, each refused with a message that says so, each a later step of the
+parity plan: templates and warm pools (steps 3 and 4, on WHP's snapshots, D196); published
+ports and a host's network (step 5); a host's directories as volumes and binds (step 6);
+memory given back (step 7); the Engine API, another machine's clients, `--use-api-socket`
+and what log drivers wait on a TCP connection for (step 8).
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
