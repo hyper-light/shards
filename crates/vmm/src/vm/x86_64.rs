@@ -31,6 +31,12 @@ const MIN_MEMORY_MIB: u64 = 128;
 const MACHINE_CMDLINE: &str = "reboot=k";
 /// Where the machine has no PCI bus, its kernel looks for none (D153).
 const NO_PCI_CMDLINE: &str = "pci=off";
+/// On WHP its kernel brings its APs up one at a time (kernel/cpu.c, `cpuhp.parallel`): in
+/// parallel, each AP started spins in its turn while those to come wait for a host CPU,
+/// which WHP on Windows Server 2022 gave no other vCPU, its 4 CPUs all busy, and bringing up
+/// 8 vCPUs took 1.4 s, 32 took 39 s, and 64 none in 60 s; one at a time 23, 96 and 219 ms,
+/// and 12 ms to parallel's 13 for 4 (PM M353).
+const ONE_AT_A_TIME_CMDLINE: &str = "cpuhp.parallel=0";
 
 /// How the vCPUs start.
 #[derive(Debug)]
@@ -672,10 +678,13 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     debug!("kernel and initrd copied");
     // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
     config.share_window_mib = a.share_window_mib;
-    let cmdline = match &a.pci {
+    let mut cmdline = match &a.pci {
         Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
         None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),
     };
+    if cfg!(hv = "whp") {
+        cmdline = format!("{cmdline} {ONE_AT_A_TIME_CMDLINE}");
+    }
     let boot_state = boot::write_boot_state(
         &memory,
         kernel.entry,

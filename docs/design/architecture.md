@@ -10094,6 +10094,10 @@ network process (D142) and its builder (D143) follow.
 - **No doorbells.** A notification port's round trip was no shorter than an MMIO exit's
   (M198): virtio's notifications are exits.
 - **A kick is a cancel**, which a run about to start takes too (M198).
+- **Its CPUs brought up one at a time.** Its kernel is told `cpuhp.parallel=0`: brought up
+  in parallel past the host's CPUs, each AP started spins in its turn while the next waits
+  for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s
+  where one at a time took 96 ms, never slower, at 4 vCPUs as at 240 (M353).
 - **The guest kernel's `hyperv` variant** (resources/kernel/hyperv.config): Linux 6.18
   marks the TSC unstable on a Hyper-V that does not offer TSC invariance, as no runner did,
   and keeps time by Hyper-V's reference TSC page only with CONFIG_HYPERV (M197). No VMBus,
