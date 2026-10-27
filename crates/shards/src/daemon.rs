@@ -7397,7 +7397,7 @@ impl<D: Disk> Daemon<D> {
                         self.rebalance(threads, &state, key);
                     }
                     Err(e) => {
-                        log(&e);
+                        log(with_its_process(&child, e));
                         if !unstarted {
                             pool.failures += 1;
                         }
@@ -7426,6 +7426,7 @@ impl<D: Disk> Daemon<D> {
                     }));
                 }
                 Err(e) => {
+                    let e = with_its_process(&child, e);
                     let _ = child.kill(shards_ipc::signal::SIGKILL);
                     let _ = tx.send(Err(e));
                 }
@@ -7436,6 +7437,15 @@ impl<D: Disk> Daemon<D> {
             For::Run(_) => None,
         };
         self.follow_vm(threads, child, pool, net_process);
+    }
+}
+
+/// `why` a VM was not ready, said with what its process says as it is ended: the status it
+/// ended with, or that it ran still, its link to the daemon gone.
+fn with_its_process(child: &shards_ipc::Child, why: String) -> String {
+    match child.try_wait() {
+        Some(status) => format!("{why}; its process ended with status {status} ({status:#x})"),
+        None => format!("{why}; its process ran still, its link to the daemon gone"),
     }
 }
 
