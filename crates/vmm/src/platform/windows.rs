@@ -755,6 +755,14 @@ impl PipeStream {
     }
 }
 
+/// Its handle's value in this process: what a DAX window's ask names as the share's end of
+/// the stream, for its server to check before it duplicates a section here (D189, PM M343).
+impl std::os::windows::io::AsRawHandle for PipeStream {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        self.pipe.as_raw_handle()
+    }
+}
+
 impl io::Read for PipeStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED};
@@ -808,8 +816,9 @@ impl io::Write for PipeStream {
 }
 
 #[cfg(test)]
-mod pipe_stream {
-    //! A share's stream over a real pipe pair, made as a server makes one for a VM (PM M340).
+pub mod pipe_stream {
+    //! A share's stream over a real pipe pair, made as a server makes one for a VM (PM M340);
+    //! [`pair`] for the device's tests too.
     use std::io::{Read as _, Write as _};
     use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
 
@@ -826,7 +835,7 @@ mod pipe_stream {
 
     /// A connected byte-mode pair: the server's end and the VM's, each overlapped
     /// (`overlapped`) or not.
-    fn pair(overlapped: bool) -> (PipeStream, PipeStream) {
+    pub fn pair(overlapped: bool) -> (PipeStream, PipeStream) {
         pair_in(overlapped, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE)
     }
 

@@ -5,13 +5,19 @@ name: slates fs
 # --slates-fs-handle {handle}`. The guest reads slates' write and writes a file slates then reads
 # (crates/shards/tests/slates_fs.rs). slates is built from the commit SLATES_REV pins, so a slates
 # change reaches this run only by moving the pin. The test runs three times, each a fresh anchor,
-# volume and VM; a SKIP fails the run, since every gate it has is met here.
-# Runs when the test, the device's stream or this file changes, or when asked.
+# volume and VM; a SKIP fails the run, since every gate it has is met here. Then the DAX test does,
+# three times too: the guest maps a slates file through its WHP DAX window (slates A-180 answers its
+# descriptor asks with confined sections), stores and fsyncs, sees the host's change, and reads zeros
+# past the end of a cut, in its same map.
+# Runs when the test, the guest, the device's stream or window, or this file changes, or when asked.
 on:
   push:
     paths:
       - crates/shards/tests/slates_fs.rs
+      - crates/testguest/**
       - crates/vmm/src/platform/windows.rs
+      - crates/vmm/src/devices/virtio/fs/**
+      - crates/vmm/src/hv/whp/**
       - crates/shards/src/vm_run.rs
       - .github/workflows/slates-fs.yml
   workflow_dispatch:
@@ -82,3 +88,35 @@ jobs:
             grep -q '1 passed' "$RUNNER_TEMP/run-$run.log" || { echo "run $run ran no test"; exit 1; }
           done
           echo "3 of 3 runs passed"
+      - name: A guest maps a slates file through its DAX window, three times
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+        run: |
+          for run in 1 2 3; do
+            echo "::group::dax run $run"
+            cargo test --locked -p shards --profile test-release --test slates_fs -- \
+              --exact a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes --nocapture \
+              2>&1 | tee "$RUNNER_TEMP/dax-$run.log"
+            status=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then echo "dax run $run failed: $status"; exit "$status"; fi
+            if grep -q '^SKIP' "$RUNNER_TEMP/dax-$run.log"; then echo "dax run $run skipped"; exit 1; fi
+            grep -q '1 passed' "$RUNNER_TEMP/dax-$run.log" || { echo "dax run $run ran no test"; exit 1; }
+          done
+          echo "3 of 3 DAX runs passed"
+      # The DAX test's red-check, once: the same guest with no window finds no DAX and its map check fails.
+      - name: Without a window the guest finds no DAX and its map check fails (the red-check)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+        run: |
+          cargo test --locked -p shards --profile test-release --test slates_fs -- \
+            --exact without_a_dax_window_the_guest_finds_no_dax_and_its_map_check_fails --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/nodax.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then echo "the red-check failed: $status"; exit "$status"; fi
+          if grep -q '^SKIP' "$RUNNER_TEMP/nodax.log"; then echo "the red-check skipped"; exit 1; fi
+          grep -q '1 passed' "$RUNNER_TEMP/nodax.log" || { echo "the red-check ran no test"; exit 1; }

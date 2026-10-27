@@ -25,12 +25,16 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Whether this build's VMs can be snapshotted and restored: HVF's and x86_64 KVM's can,
-/// arm64 KVM's and WHP's not yet (D140).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", all(hv = "kvm", target_arch = "x86_64")));
+/// Working sets from the pages a restored machine's host maps: KVM's, and the x86_64
+/// machine's on any backend.
+#[cfg(any(hv = "kvm", all(hv, target_arch = "x86_64")))]
+mod mapped;
+/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's can, on
+/// x86_64 and arm64 (D154), WHP's not yet (D140).
+pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
-/// (vm::x86_64::recorder).
+/// (vm::mapped).
 pub const WORKING_SETS: bool = SNAPSHOTS;
 /// Which run records it. HVF's: the one that saves the template, whose command recording
 /// slows sixfold (PM M30), on a run that boots anyway. KVM's: the first warm restore
@@ -368,7 +372,7 @@ impl mem::Mapper for crate::hv::Stage2 {
     }
 }
 
-#[cfg(all(hv, unix))]
+#[cfg(hv)]
 impl crate::devices::virtio::fs::window::Stage2 for crate::hv::Stage2 {
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
         // SAFETY: forwarded caller contract.
@@ -616,9 +620,10 @@ fn map_window_heads(vm: &crate::hv::Vm, heads: &head::WindowHeads) -> Result<(),
 
 /// A share's DAX window (D189) at `at`: its host side reserved, and on KVM one memslot over
 /// it, as memory to plug's (`add_hotplug`), which each range its guest maps is placed in;
-/// on other hypervisors each range mapped at stage 2 as it is placed. Its held record is
-/// mapped right after it, writable.
-#[cfg(all(hv, unix))]
+/// on HVF each range mapped at stage 2 as it is placed; on WHP each range mapped at stage 2
+/// as it is first placed and left standing, as stage 2 follows the host's view there (PM
+/// M341). Its held record is mapped right after it, writable.
+#[cfg(hv)]
 fn dax_window(
     vm: Option<&crate::hv::Vm>,
     at: &WindowAt,
@@ -752,18 +757,10 @@ fn virtio_devices(
             .get(i)
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
-        #[cfg(unix)]
         let window = windows
             .get(i)
             .map(|w| dax_window(vm, w).map(|window| (window, w.head, w.held)))
             .transpose()?;
-        // No DAX window is built on Windows yet (D189): a machine that asks a share for one
-        // is refused, where elsewhere it would be given one.
-        #[cfg(not(unix))]
-        let window = match windows.get(i) {
-            Some(_) => return Err("a DAX window is not built on Windows yet (D189)".into()),
-            None => None,
-        };
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
                 .with_limit(hosts.io)

@@ -109,7 +109,7 @@ fn evidence(home: &Path, name: &str) -> String {
     let lines: Vec<&str> = log.lines().collect();
     let tail = lines.get(lines.len().saturating_sub(60)..).unwrap_or_default();
     // What its guest does: its processes, their states and where they wait; and whether it
-    // uses any CPU, sampled twice a second apart.
+    // uses any CPU, sampled twice, a second and more apart.
     let top = shards_in(home, &["top", name, "-o", "pid,stat,wchan:32,time,args"]);
     let stats = || {
         let s = shards_in(
@@ -124,7 +124,7 @@ fn evidence(home: &Path, name: &str) -> String {
         );
         format!("{}{}", s.stdout.trim(), s.stderr.trim())
     };
-    // What its kernel does with memory, a second apart: swapping, reclaiming or stalled
+    // What its kernel does with memory, twice: swapping, reclaiming or stalled
     // (vmstat's pswpin, pswpout and pgscan, the pressure it is under, its cgroup's events),
     // and the host's, whose faults a guest's swap and restored memory take.
     let memory = || {
@@ -149,11 +149,49 @@ fn evidence(home: &Path, name: &str) -> String {
             .collect();
         format!("{}{}{host}", guest.stdout, guest.stderr)
     };
+    // What its vCPUs do, as KVM counts it where this host lets the tests read it: its exits
+    // by kind, its faults and its halts.
+    let pid = vm_pid(&state.stdout);
+    let kvm = || {
+        pid.and_then(common::kvm_counters)
+            .map(|c| format!("{c:?}"))
+            .unwrap_or_default()
+    };
+    let faults = || match pid.and_then(host_faults) {
+        Some((minor, major)) => format!("minflt {minor} majflt {major}"),
+        None => "(not said on this host)".into(),
+    };
+    // The host's own counters that moved: its faults, reclaim and page cache.
+    let host_vmstat = || {
+        let all = std::fs::read_to_string("/proc/vmstat").unwrap_or_default();
+        all.lines()
+            .filter_map(|l| l.split_once(' '))
+            .filter_map(|(k, v)| Some((k.to_string(), v.parse::<i64>().ok()?)))
+            .collect::<std::collections::BTreeMap<String, i64>>()
+    };
+    // The host's counters bracket the second alone, the guest's around them: a slow
+    // guest's exec takes seconds. Each pair's span is said with it.
     let first = stats();
+    let guest_from = Instant::now();
     let first_memory = memory();
+    let host_from = Instant::now();
+    let first_kvm = kvm();
+    let first_faults = faults();
+    let first_host = host_vmstat();
     std::thread::sleep(Duration::from_secs(1));
-    let second = stats();
+    let second_kvm = kvm();
+    let second_faults = faults();
+    let moved: Vec<String> = host_vmstat()
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let was = first_host.get(&k).copied().unwrap_or(0);
+            (v != was).then(|| format!("{k} {:+}", v - was))
+        })
+        .collect();
+    let host_span = host_from.elapsed();
     let second_memory = memory();
+    let guest_span = guest_from.elapsed();
+    let second = stats();
     // Where each of its processes waits, in its kernel (proc(5)'s stack: privileged).
     let stacks = shards_in(
         home,
@@ -168,11 +206,12 @@ fn evidence(home: &Path, name: &str) -> String {
         ],
     );
     format!(
-        "its state: {}{}\nits processes:\n{}{}\nits use, a second apart: {first} | {second}\nits VM process's threads:\n{}\nits processes' stacks:\n{}{}\nits memory:\n{first_memory}\na second later:\n{second_memory}\nthe daemon's log's end:\n{}",
+        "its state: {}{}\nits processes:\n{}{}\nits use, apart: {first} | {second}\nits VM's KVM counters, {host_span:?} apart:\n{first_kvm}\n{second_kvm}\nits VM process's host faults, as far apart: {first_faults} | {second_faults}\nthe host's vmstat counters that moved meanwhile: {}\nits VM process's threads:\n{}\nits processes' stacks:\n{}{}\nits memory:\n{first_memory}\n{guest_span:?} later:\n{second_memory}\nthe daemon's log's end:\n{}",
         state.stdout,
         state.stderr,
         top.stdout,
         top.stderr,
+        moved.join(", "),
         vm_threads(&state.stdout),
         stacks.stdout,
         stacks.stderr,
@@ -180,14 +219,31 @@ fn evidence(home: &Path, name: &str) -> String {
     )
 }
 
+/// The VM process of a run whose `inspect` State is `state`, where it runs.
+fn vm_pid(state: &str) -> Option<u32> {
+    serde_json::from_str::<serde_json::Value>(state)
+        .ok()
+        .and_then(|s| s["Pid"].as_u64())
+        .and_then(|p| u32::try_from(p).ok())
+        .filter(|&p| p > 0)
+}
+
+/// The host's faults in process `pid`, minor and major, on Linux: proc(5)'s minflt and
+/// majflt, which count KVM's for its stage 2 to the vCPU that takes them (mm/memory.c,
+/// `mm_account_fault`).
+fn host_faults(pid: u32) -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The fields after the name, which is in parentheses: minflt is the 10th, majflt
+    // the 12th.
+    let (_, rest) = stat.rsplit_once(") ")?;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    Some((fields.get(7)?.parse().ok()?, fields.get(9)?.parse().ok()?))
+}
+
 /// The VM process's threads as the host has them, on Linux: each one's name, state and the
 /// kernel function it waits in (proc(5)), which say whether its vCPUs run or wait.
 fn vm_threads(state: &str) -> String {
-    let pid = serde_json::from_str::<serde_json::Value>(state)
-        .ok()
-        .and_then(|s| s["Pid"].as_u64())
-        .filter(|&p| p > 0);
-    let Some(pid) = pid else {
+    let Some(pid) = vm_pid(state) else {
         return "(none running)".into();
     };
     let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
@@ -968,13 +1024,42 @@ fn a_saved_microvm_keeps_what_it_swapped() {
         evidence(&home, "swapped")
     );
     // The round the save cut short ends from what was restored, and the next reads all of
-    // it back so.
-    until_in(
-        "its pattern kept after the restore",
-        TIMEOUT + 2 * round,
-        &mut || log().matches("kept ").count() >= rounds + 2,
-        &said,
-    );
+    // it back so. Those rounds fault back in what its guest holds, as a restored guest's
+    // memory and swap are mapped a page at a time as it touches them, which a host whose
+    // faults cost much takes long for: a nested guest's first two rounds after the restore
+    // took 15.8 and 16.9 s, its VM process faulting 36,900 pages, 0.9 ms each, and the
+    // next ones 0.9 s, as before the save (PM M346). So each round or host fault moves the
+    // wait's end on, the faults as many as twice the pages its memory and swap hold (each
+    // read, then written), and it fails after as long without either.
+    let memory = std::fs::metadata(common::snapshot_file(&snapshot, "memory")).unwrap();
+    let most = 2 * (memory.len() + kept.len()) / 4096;
+    let pid = vm_pid(&shards(&["inspect", "-f", "{{json .State}}", "swapped"]).stdout);
+    let faulted = || pid.and_then(host_faults).map(|(minor, major)| minor + major);
+    let from = faulted();
+    let within = TIMEOUT + 2 * round;
+    let mut last = (rounds, from);
+    let mut deadline = Instant::now() + within;
+    loop {
+        let now = (
+            log().matches("kept ").count(),
+            faulted().filter(|&f| f.saturating_sub(from.unwrap_or(f)) <= most),
+        );
+        if now.0 >= rounds + 2 {
+            break;
+        }
+        if now != last {
+            last = now;
+            deadline = Instant::now() + within;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "its pattern kept after the restore, {} rounds and {:?} host faults on: {}",
+            now.0 - rounds,
+            now.1.zip(from).map(|(f, from)| f.saturating_sub(from)),
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(!log().contains("lost"), "{}", log());
     assert_eq!(shards(&["kill", "swapped"]).status, Some(0));
 }

@@ -388,6 +388,27 @@ impl Partition {
         Ok(())
     }
 
+    /// Maps `len` bytes at `host` at `gpa`, as `flags` say, without recording them as guest
+    /// RAM for Windows' emulator ([`Partition::host`]): a DAX window's range, which may be a
+    /// bare placeholder or a view the guest may not write, and which this process must never
+    /// touch for the guest. An access the emulator meets there goes to the VMM's devices, as
+    /// an access to no memory does.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay reserved until unmapped or the partition is deleted.
+    unsafe fn map_unrecorded(
+        &self,
+        host: *mut u8,
+        gpa: u64,
+        len: usize,
+        flags: WHV_MAP_GPA_RANGE_FLAGS,
+    ) -> Result<()> {
+        // SAFETY: forwarded caller contract.
+        check("WHvMapGpaRange", unsafe {
+            WHvMapGpaRange(self.0, host.cast_const().cast::<c_void>(), gpa, len as u64, flags)
+        })
+    }
+
     fn unmap(&self, gpa: u64, len: u64) -> Result<()> {
         // SAFETY: the partition's own mapping, which nothing else uses.
         check("WHvUnmapGpaRange", unsafe { WHvUnmapGpaRange(self.0, gpa, len) })?;
@@ -460,6 +481,24 @@ impl Stage2 {
     pub unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
         // SAFETY: forwarded caller contract.
         unsafe { self.0.map(host, gpa, len, RWX) }
+    }
+
+    /// Maps `len` bytes at `host` at `gpa` for a share's DAX window (D189): readable and
+    /// executable, as a guest runs programs from its volumes, and writable only if
+    /// `writable`. A view placed there later is the guest's with no further call, as stage 2
+    /// follows the host's view (PM M341). Not guest RAM to Windows' emulator: the range may
+    /// be a bare placeholder ([`Partition::map_unrecorded`]).
+    ///
+    /// # Safety
+    /// As [`Stage2::map`]'s.
+    pub unsafe fn map_file(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let flags = if writable {
+            RWX
+        } else {
+            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.0.map_unrecorded(host, gpa, len, flags) }
     }
 
     pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
@@ -1157,6 +1196,13 @@ impl Vcpu {
         // SAFETY: the union member a memory exit fills.
         let m = unsafe { e.Anonymous.MemoryAccess };
         let gpa = m.Gpa;
+        // Memory a device gives the guest that the host had none at as it was accessed: a
+        // share's DAX window's range while another thread replaced it, as stage 2 follows the
+        // host's view (D189, PM M341). Given now, the access runs again, its instruction not
+        // stepped over.
+        if io.memory_fault(Some(gpa)) {
+            return Ok(());
+        }
         // SAFETY: the access's bits: AccessType (1:0), 0 read, 1 write, 2 execute.
         let kind = unsafe { m.AccessInfo.AsUINT32 } & 3;
         if kind == 2 {

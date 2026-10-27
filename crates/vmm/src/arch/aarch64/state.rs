@@ -1,10 +1,18 @@
-//! arm64 machine state for snapshots. System registers are keyed by their
-//! op0:op1:CRn:CRm:op2 encoding, which HVF's `hv_sys_reg_t` and `hv_gic_icc_reg_t` and
-//! KVM's `ARM64_SYS_REG` share (ground-truth doc §5 row 16). The GIC device is the
-//! backend's own serialization: a snapshot restores only on the backend that took it.
+//! arm64 machine state for snapshots. Each vCPU's is its backend's own: Hypervisor.framework's
+//! registers ([`VcpuState`]), system registers keyed by their op0:op1:CRn:CRm:op2 encoding,
+//! which HVF's `hv_sys_reg_t` and `hv_gic_icc_reg_t` and KVM's `ARM64_SYS_REG` share
+//! (ground-truth doc §5 row 16), or every register KVM lists, by its ID (hv::kvm, D154). The
+//! GIC device is the backend's own serialization too: a snapshot restores only on the
+//! backend that took it.
 
 use super::Entry;
 use crate::snapshot::codec::{DecodeError, Reader, Result, Writer};
+
+/// A vCPU's state as a snapshot keeps it, in its backend's terms.
+pub trait VcpuCodec: Sized {
+    fn encode(&self, w: &mut Writer);
+    fn decode(r: &mut Reader<'_>) -> Result<Self>;
+}
 
 /// A vCPU's PSCI power state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +39,7 @@ pub struct VcpuState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineState {
+pub struct MachineState<V> {
     /// The guest's virtual counter (CNTVCT_EL0) when the VM paused. Restore keeps it
     /// continuous: every vCPU gets one counter offset.
     pub counter: u64,
@@ -39,9 +47,9 @@ pub struct MachineState {
     /// reports anything different (ground-truth doc §5 row 21).
     pub cpu_id: Vec<(u16, u64)>,
     /// The GIC device: distributor, redistributors and what the backend holds besides,
-    /// in the backend's own serialization (HVF: hv_gic_state).
+    /// in the backend's own serialization (HVF: hv_gic_state; KVM: its registers).
     pub gic: Vec<u8>,
-    pub vcpus: Vec<VcpuState>,
+    pub vcpus: Vec<V>,
 }
 
 // Decoding limits, well above what any backend produces (HVF: ≤ 64 vCPUs, ~1500
@@ -64,7 +72,7 @@ fn get_pairs16(r: &mut Reader<'_>, max: usize) -> Result<Vec<(u16, u64)>> {
     r.seq(max, 10, |r| Ok((r.u16()?, r.u64()?)))
 }
 
-impl VcpuState {
+impl VcpuCodec for VcpuState {
     fn encode(&self, w: &mut Writer) {
         self.x.iter().for_each(|&v| w.u64(v));
         w.u64(self.pc);
@@ -121,7 +129,7 @@ impl VcpuState {
     }
 }
 
-impl MachineState {
+impl<V: VcpuCodec> MachineState<V> {
     pub fn encode(&self, w: &mut Writer) {
         w.u64(self.counter);
         put_pairs16(w, &self.cpu_id);
@@ -129,12 +137,12 @@ impl MachineState {
         w.seq(&self.vcpus, |w, v| v.encode(w));
     }
 
-    pub fn decode(r: &mut Reader<'_>) -> Result<MachineState> {
+    pub fn decode(r: &mut Reader<'_>) -> Result<MachineState<V>> {
         Ok(MachineState {
             counter: r.u64()?,
             cpu_id: get_pairs16(r, MAX_ID)?,
             gic: r.bytes(MAX_GIC)?.to_vec(),
-            vcpus: r.seq(MAX_VCPUS, 1, VcpuState::decode)?,
+            vcpus: r.seq(MAX_VCPUS, 1, V::decode)?,
         })
     }
 }
@@ -144,7 +152,7 @@ impl MachineState {
 mod tests {
     use super::*;
 
-    fn sample() -> MachineState {
+    fn sample() -> MachineState<VcpuState> {
         let vcpu = |i: u64, power| VcpuState {
             x: std::array::from_fn(|n| i * 100 + n as u64),
             pc: 0x8000_1000 + i,
@@ -191,12 +199,12 @@ mod tests {
         sample().encode(&mut w);
         let bytes = w.into_bytes();
         for cut in 0..bytes.len() {
-            assert!(MachineState::decode(&mut Reader::new(&bytes[..cut])).is_err());
+            assert!(MachineState::<VcpuState>::decode(&mut Reader::new(&bytes[..cut])).is_err());
         }
         for i in 0..bytes.len() {
             let mut b = bytes.clone();
             b[i] ^= 0xff;
-            let _ = MachineState::decode(&mut Reader::new(&b));
+            let _ = MachineState::<VcpuState>::decode(&mut Reader::new(&b));
         }
     }
 }

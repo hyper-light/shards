@@ -7,8 +7,9 @@
 //!
 //! A share another server serves is reached over that server's stream ([`Stream`]): a
 //! Unix socket on Unix, a duplex named pipe on Windows (PM M340). On Windows the device
-//! answers no share of its own: the share process, its server and budgets, and the DAX
-//! window are Unix's alone for now, and the FUSE wire the device needs is `proto`'s.
+//! answers no share of its own: the share process, its server and budgets are Unix's alone
+//! for now, and the FUSE wire the device needs is `proto`'s. Its DAX window there maps the
+//! sections its server duplicates into this process (`window_whp.rs`, PM M341, M343).
 
 #[cfg(unix)]
 pub mod headroom;
@@ -19,9 +20,8 @@ pub mod proto;
 pub mod server;
 #[cfg(unix)]
 pub mod window;
-/// No DAX window is built on Windows yet (D189): its API, around a window none can make.
 #[cfg(windows)]
-#[path = "window_none.rs"]
+#[path = "window_whp.rs"]
 pub mod window;
 
 use std::io::{self, Read as _, Write as _};
@@ -97,10 +97,10 @@ pub const MAX_FRAME: usize = proto::MAX_WRITE as usize + 4096;
 const CONTROL: u32 = 1 << 31;
 /// A control frame's ask: the server's tables, or that it take them; or the descriptor of a
 /// file it holds open, for a DAX window's mapping of it (D189), which comes back as a
-/// shards_ipc message, the descriptor with it.
+/// shards_ipc message, the descriptor with it (on Windows a section's handle, which the
+/// server duplicated into this process, its value in the message).
 const SAVE: u8 = 1;
 const RESTORE: u8 = 2;
-#[cfg(unix)]
 const DESCRIPTOR: u8 = 3;
 /// The requests a device with a DAX window answers itself (include/uapi/linux/fuse.h), and
 /// a mapping's flag that it may be written.
@@ -243,24 +243,113 @@ fn descriptor_on(
     }
 }
 
-/// No file's object reaches a Windows device yet: none has a DAX window to map it into
-/// (D189), so none asks.
+/// The section of node `node`'s file that the server at the other end of `conn` duplicated
+/// into this process, for a DAX window's mapping of `len` bytes of it from `foffset` (D189,
+/// PM M343), writable only if `writable`: an errno where the server refuses it. A stream
+/// carries no handle on Windows (M340), so the ask names this process and its end of the
+/// stream, which the server checks is the share's own before it duplicates anything here,
+/// and the answer gives the section's value in this process. A value that names no section
+/// is refused and left alone: it is no handle the server gave this process for the mapping.
 #[cfg(windows)]
 fn descriptor_on(
-    _conn: &mut Stream,
-    _node: u64,
-    _writable: bool,
-    _foffset: u64,
-    _len: u64,
+    conn: &mut Stream,
+    node: u64,
+    writable: bool,
+    foffset: u64,
+    len: u64,
 ) -> Result<MapObject, i32> {
-    Err(proto::EIO)
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+    let stream = conn.as_raw_handle() as usize as u64;
+    let ask = descriptor_ask_from(node, writable, foffset, len, std::process::id(), stream);
+    write_control(conn, &ask).map_err(|_| proto::EIO)?;
+    match shards_ipc::read_message(&mut *conn) {
+        Ok(Some(m)) if m.kind == 0 => {
+            let value = <[u8; 8]>::try_from(m.payload.as_slice())
+                .map(u64::from_le_bytes)
+                .map_err(|_| proto::EIO)?;
+            let raw = usize::try_from(value)
+                .ok()
+                .filter(|&v| v != 0)
+                .ok_or(proto::EIO)? as std::os::windows::io::RawHandle;
+            if !names_a_section(raw) {
+                return Err(proto::EIO);
+            }
+            // SAFETY: a section the server duplicated into this process for this mapping
+            // alone, its value told in the answer and checked to name a section: this is
+            // its one owner.
+            Ok(unsafe { MapObject::from_raw_handle(raw) })
+        }
+        Ok(Some(m)) => Err(m
+            .payload
+            .get(..4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map_or(proto::EIO, i32::from_le_bytes)),
+        _ => Err(proto::EIO),
+    }
+}
+
+/// Room for a handle's type record as ntdll writes it and its name after it, in words, so
+/// that the record's pointer to its name is aligned: 1 KiB, where the record is 104 bytes
+/// in winternl.h's public form and the longest name an object's type has is under 64.
+#[cfg(windows)]
+const TYPE_RECORD_WORDS: usize = 128;
+
+/// Whether `handle` names a section in this process: its object's type
+/// (NtQueryObject, ObjectTypeInformation), which waits on nothing the object does, where a
+/// query of a name or a mode waits behind a read pending on a synchronous pipe (slates'
+/// measurement, 2026-10-26).
+#[cfg(windows)]
+fn names_a_section(handle: std::os::windows::io::RawHandle) -> bool {
+    use windows_sys::Wdk::Foundation::{NtQueryObject, ObjectTypeInformation};
+    use windows_sys::Win32::System::WindowsProgramming::PUBLIC_OBJECT_TYPE_INFORMATION;
+    let mut record = [0u64; TYPE_RECORD_WORDS];
+    let room = u32::try_from(std::mem::size_of_val(&record)).unwrap_or(u32::MAX);
+    let mut wrote = 0u32;
+    // SAFETY: a buffer of `room` bytes, which the call fills with the handle's type record
+    // and its name, and the length it wrote into a local.
+    let status = unsafe {
+        NtQueryObject(
+            handle,
+            ObjectTypeInformation,
+            record.as_mut_ptr().cast(),
+            room,
+            &mut wrote,
+        )
+    };
+    if status != 0 {
+        return false;
+    }
+    // SAFETY: the record the call wrote at the buffer's start, aligned as its words are.
+    let name = unsafe { (*record.as_ptr().cast::<PUBLIC_OBJECT_TYPE_INFORMATION>()).TypeName };
+    let (start, end) = (
+        record.as_ptr() as usize,
+        (record.as_ptr() as usize).saturating_add(std::mem::size_of_val(&record)),
+    );
+    let at = name.Buffer as usize;
+    let bytes = usize::from(name.Length);
+    if name.Buffer.is_null() || at < start || at.checked_add(bytes).is_none_or(|stop| stop > end) {
+        return false;
+    }
+    // SAFETY: the name's UTF-16 units, which the call wrote within the buffer (checked).
+    let name = unsafe { std::slice::from_raw_parts(name.Buffer.cast_const(), bytes / 2) };
+    name.iter().copied().eq("Section".encode_utf16())
+}
+
+/// The ask on Windows: [`descriptor_ask`]'s, then the asking process's id (le32) and its end
+/// of the stream's handle value there (le64), 38 bytes, which slates' daemon reads whole
+/// (agreed with slates, 2026-10-26).
+#[cfg(windows)]
+fn descriptor_ask_from(node: u64, writable: bool, foffset: u64, len: u64, pid: u32, stream: u64) -> Vec<u8> {
+    let mut ask = descriptor_ask(node, writable, foffset, len);
+    ask.extend_from_slice(&pid.to_le_bytes());
+    ask.extend_from_slice(&stream.to_le_bytes());
+    ask
 }
 
 /// A `DESCRIPTOR` ask: the node (le64), whether the mapping is writable (one byte), then
 /// the range of the file it maps, its offset and length (le64 each). A server that keeps
 /// a file's bytes in an object of its own for each mapping (slates' shares) answers for
 /// that range; shards' own reads the node and the flag alone.
-#[cfg(unix)]
 fn descriptor_ask(node: u64, writable: bool, foffset: u64, len: u64) -> Vec<u8> {
     let mut ask = Vec::with_capacity(26);
     ask.push(DESCRIPTOR);
@@ -1848,5 +1937,97 @@ mod tests {
         server.join().unwrap();
         // SAFETY: the mapping made above.
         unsafe { libc::munmap(host, 2 * p) };
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used)]
+mod descriptor_on_windows {
+    //! The DAX window's ask on Windows (D189, PM M343) over a real pipe pair, its server played
+    //! here: the 38 bytes it sends, and what it makes of each answer.
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::{GetHandleInformation, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READWRITE};
+    use windows_sys::Win32::System::Threading::CreateEventW;
+
+    use super::*;
+
+    /// What the server read of the ask, and what it answers: a message of `kind`, `payload`.
+    fn asked(answer: impl FnOnce(&mut Stream) + Send + 'static) -> (Result<MapObject, i32>, Vec<u8>, u64) {
+        let (mut server, mut device) = crate::platform::pipe_stream::pair(true);
+        let stream = device.as_raw_handle() as usize as u64;
+        let serving = std::thread::spawn(move || {
+            let mut word = [0u8; 4];
+            server.read_exact(&mut word).unwrap();
+            let len = u32::from_le_bytes(word);
+            assert_ne!(len & CONTROL, 0, "a control frame");
+            let mut ask = vec![0u8; (len & !CONTROL) as usize];
+            server.read_exact(&mut ask).unwrap();
+            answer(&mut server);
+            ask
+        });
+        let got = descriptor_on(&mut device, 7, true, 2 << 20, 4 << 20);
+        (got, serving.join().unwrap(), stream)
+    }
+
+    /// A section of 2 MiB, its handle's value given up to whoever adopts it.
+    fn section_value() -> u64 {
+        // SAFETY: a fresh pagefile-backed section, checked below.
+        let handle = unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                std::ptr::null(),
+                PAGE_READWRITE,
+                0,
+                2 << 20,
+                std::ptr::null(),
+            )
+        };
+        assert!(!handle.is_null());
+        handle as usize as u64
+    }
+
+    /// Do: ask for node 7's 4 MiB from 2 MiB, writable, and answer with a section's value.
+    /// Expect the ask's 38 bytes (DESCRIPTOR, the node, the flag, the range, this process's
+    /// id, and the device's end of the stream), and the section adopted.
+    #[test]
+    fn the_ask_names_this_process_and_its_end_and_a_section_is_adopted() {
+        let value = section_value();
+        let (got, ask, stream) = asked(move |s| shards_ipc::write_message(s, 0, &value.to_le_bytes()).unwrap());
+        let mut want = vec![DESCRIPTOR];
+        want.extend_from_slice(&7u64.to_le_bytes());
+        want.push(1);
+        want.extend_from_slice(&(2u64 << 20).to_le_bytes());
+        want.extend_from_slice(&(4u64 << 20).to_le_bytes());
+        want.extend_from_slice(&std::process::id().to_le_bytes());
+        want.extend_from_slice(&stream.to_le_bytes());
+        assert_eq!(ask, want);
+        let section = got.unwrap();
+        assert_eq!(section.as_raw_handle() as usize as u64, value);
+        assert!(names_a_section(section.as_raw_handle()));
+    }
+
+    /// Do: answer with an errno; with a value naming an event, which is no section; with a
+    /// payload of four bytes; and not at all. Expect the errno, EIO with the event's handle
+    /// left open, EIO, and EIO.
+    #[test]
+    fn every_other_answer_is_refused() {
+        let (got, _, _) = asked(|s| shards_ipc::write_message(s, 1, &13i32.to_le_bytes()).unwrap());
+        assert_eq!(got.err(), Some(13));
+        // SAFETY: an unnamed event, which is no section, its value given to the device.
+        let event =
+            unsafe { OwnedHandle::from_raw_handle(CreateEventW(std::ptr::null(), 1, 0, std::ptr::null())) };
+        let value = event.as_raw_handle() as usize as u64;
+        let (got, _, _) = asked(move |s| shards_ipc::write_message(s, 0, &value.to_le_bytes()).unwrap());
+        assert_eq!(got.err(), Some(proto::EIO));
+        let mut flags = 0;
+        // SAFETY: reads the flags of a handle this test holds.
+        let read = unsafe { GetHandleInformation(event.as_raw_handle(), &mut flags) };
+        assert_ne!(read, 0, "left open");
+        let (got, _, _) = asked(|s| shards_ipc::write_message(s, 0, &[0u8; 4]).unwrap());
+        assert_eq!(got.err(), Some(proto::EIO));
+        let (got, _, _) = asked(|s| s.flush().unwrap());
+        assert_eq!(got.err(), Some(proto::EIO));
     }
 }

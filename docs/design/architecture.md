@@ -56,7 +56,7 @@ performance and resource usage.
 | D9 | Implement **both** virtio-mmio and virtio-pci (modern, per-queue MSI-X). Choose the default transport by measuring the restore path and runtime. | MMIO costs 2 exits per interrupt; PCI is needed for VFIO [VIO §2.4, R3]; GPU-free default VMs must stay pin-free [GPU R1] |
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
-| D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
+| D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). The guest's dials of the host wait for its answer however long it takes: Linux gives a connection 2 s and then resets it, though its host may have taken it already, and a loaded host's VM process had told its daemon its VM was ready on such a connection, whose run then found it gone as init powered off (2 runs of 13 rounds, PM M346). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`); dials: net/vmw_vsock/af_vsock.c `vsock_connect` (VSOCK_DEFAULT_CONNECT_TIMEOUT, 2·HZ; "VIRTIO_VSOCK_OP_RST will follow") and SO_VM_SOCKETS_CONNECT_TIMEOUT [PM M346] |
 | D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
 | D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
 | D115 | A run of an Agentfile's image gives its own command no reach into the image's agents and harnesses, whatever the CLI asks. The command is PID 1 of a PID namespace of its own, as a container's command is (under `--init` a reaper is, in docker-init's place), so it sees none of their processes; and the daemon, its init, and the build refuse — in Docker's words where Docker defines the flag, shards' otherwise — `--privileged`, the capabilities that would cross into a domain, `systempaths=unconfined`, a `net.*` sysctl where the domains' flows cross the command's network namespace, a uid or gid of the domains' or their servers', `--pid host`, `--network none` where the Agentfile grants egress, and `--volumes-from` or a named-volume mount that would take a scoped volume; Docker's default `CAP_NET_RAW`, withheld there, is said to be. | Docker's default capabilities include CAP_KILL [moby oci/caps/defaults.go]; a shared PID namespace lets the workload signal, `/proc/<pid>/root`- and ptrace-reach the domains [Linux 6.18 kernel/signal.c check_kill_permission, fs/proc, kernel/ptrace.c ptrace_may_access]; the kernel ends a PID namespace's processes with its init, which hears only the signals it handles [pid_namespaces(7)]; Docker 29.3.1's own answers [PM M145]; every check twice (D109): [[feedback-runtime-and-buildtime-checks]] |
@@ -188,7 +188,12 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     interrupt a Generic Event Device (`ACPI0013`) on GSI 23 whose `_EVT` notifies it, as
     Firecracker declares them; the 16 bytes are the first of the firmware area.
   - The E2E snapshot, template, pooled-run, vsock and pmem tests run on CI's x86_64
-    runners (KVM) as on the Mac.
+    runners (KVM) as on the Mac, and on arm64 Linux's KVM in a guest with EL2 on an M3 or
+    later Mac (D154).
+- **arm64 on KVM** (D154): every register KVM lists for each vCPU, its power state and a
+  pending SError; the GIC through its registers, as the writes that remake it; the counter
+  set once for the VM at the release; working sets recorded as on x86_64, and mapped ahead
+  by the prefetch program on vCPU 0.
 
 ### Platforms (D13)
 
@@ -199,7 +204,7 @@ the guest arch is always the host arch.
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
 | Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; snapshots with cold and warm restore; CI on both libcs |
-| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; no snapshots yet (D154) |
+| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; snapshots with cold and warm restore (D154) |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; the daemon and its client (D195); no snapshots yet (D140) |
@@ -1080,13 +1085,18 @@ for the exit status.
         as TCP estimates a round trip's, and its window that estimate's retransmission
         timeout, SRTT + 4·RTTVAR (RFC 6298 §2; its 1 s initial RTO until the first
         refill is timed): runs closer together than that may wait for a refill.
-      - A pool unclaimed for SHARDS_POOL_KEEP seconds (600) ends its ready VMs and keeps
-        none until its next run, which is served all the same: a fixed keep-alive, as
-        AWS keeps an idle function 10 minutes and Azure 20 (Shahrad et al., "Serverless
-        in the Wild", USENIX ATC 2020, §1). Their hybrid histogram policy, which sets
-        each application's keep-alive and pre-warming from its inter-arrival times, is
-        not taken: the thresholds that say when its histogram is representative are not
-        published, and no traces of agents' runs exist here to set them.
+      - A pool idle for SHARDS_POOL_KEEP seconds (600), none of its runs going and none
+        claimed or ended within them, ends its ready VMs and keeps none until its next
+        run, which is served all the same: a fixed keep-alive, as AWS and Azure keep a
+        function's resources 10 and 20 minutes "after a function execution" (Shahrad et
+        al., "Serverless in the Wild", USENIX ATC 2020, §1, §2), a keep-alive that "only
+        starts at the end of function executions" (§4). Counted from its claims alone, a
+        pool whose runs outlasted it kept nothing for the next: a loaded host's runs took
+        28 to 31 s, past a test's keep-alive of 15 s (PM M346). Their hybrid histogram
+        policy, which sets each application's keep-alive and pre-warming from its
+        inter-arrival times, is not taken: the thresholds that say when its histogram is
+        representative are not published, and no traces of agents' runs exist here to set
+        them.
     - **What nothing needs is collected** (`Store::collect`, daemon.rs
       `collect_garbage`), at the daemon's start and once a pull, by a run or by `shards
       pull`, has moved a reference (it leaves `images/collect-due`, whose coming the
@@ -2779,10 +2789,21 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       the bytes that fitted. A read past the server's going is the end, as the socket's is.
     - **What the device builds on.** The FUSE wire it needs is `fs/proto.rs`, which every
       host builds. `server.rs`, the share process and its budgets stay Unix's.
-    - **No DAX window yet.** A machine that asks a share for one is refused. `window_none.rs`
-      keeps the window's API around a type none can make, until the window is built on
-      WHP's placeholders (PM M341). A server hands that window its sections by
-      DuplicateHandle (PM M343).
+    - **Its DAX window** (`fs/window_whp.rs`, D189). Each range the guest maps is a view of a
+      section its server duplicated into the VM process (PM M343), placed into the window's
+      placeholder for that range (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER), so a mapping of
+      several ranges is a view a range. A range is mapped at stage 2 as it is first placed
+      and left standing, since WHP's stage 2 follows the host's view (PM M341): a replace is
+      a free and a place, 82.1 µs at p50 on windows-2025 against 122.1 remapped. A range
+      never placed is not mapped, so a big window costs its boot no maps. Zeros stand in
+      where a restore's server cannot answer. The section reaches past every range asked of
+      it and is committed before the answer, so there is no file end to follow, and a fault
+      in a mapped range is only a vCPU racing a replace: WHP's memory-access exit asks the
+      window first and runs the access again once. A range mapped to be written is all
+      held (patch 0009). The ask is the Unix one plus the VM's pid (le32) and its stream
+      handle's value (le64), 38 bytes. The server duplicates the section only into a process
+      holding the share's own stream, and answers with its value. The device adopts a value
+      only if NtQueryObject's type is "Section", and leaves any other alone.
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
@@ -6725,8 +6746,15 @@ the guest keeps their metadata alone.
   (mm/sparse-vmemmap.c), so the head
   is two blocks more than a block a section, and the device starts at a section
   (`layer_head`). Init finds it by the address the control page gives (`control::LAYER`)
-  and mounts its ext4 `dax=always,noinit_itable` where it mounted the tmpfs. A machine
-  without one, a joiner's root among them (D119), keeps its tmpfs.
+  and mounts its ext4 `dax=always,noinit_itable,no_prefetch_block_bitmaps` where it
+  mounted the tmpfs. A machine without one, a joiner's root among them (D119), keeps its
+  tmpfs. `no_prefetch_block_bitmaps`: ext4lazyinit reads every group's block bitmap and
+  builds its buddy cache in the background after a mount (fs/ext4/super.c,
+  `ext4_run_li_request`), so that a first allocation does not wait on a disk, where a DAX
+  device's bitmap is memory; and as a template mounts its layer before its snapshot,
+  every restored guest did that work again, which in a nested arm64 guest under load
+  held a CPU 22 to 27 s (soft lockups in the logs of each of 5 failing rounds before, of
+  none of 6 after; PM M346). What it saves a warm VM's memory is unmeasured.
 - **Mounted in the template.** A mount took 0.4 to 0.65 ms at p50 and an overlay over it
   0.2 to 0.32 ms more on a guest that had mounted it before, 1 to 80 ms the first time (PM
   M277), where a run's whole start is 0.73 ms at p50 (M230): so the template mounts it
@@ -6939,7 +6967,7 @@ the guest keeps their metadata alone.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
-- Hosts whose microVMs take no snapshots yet (arm64 KVM, Windows: D140) boot every run, so
+- Hosts whose microVMs take no snapshots yet (Windows: D140) boot every run, so
   each run pays the head's probe and the layer's first mount: not measured there yet.
 - APFS fills a hole shorter than 16 MiB between written blocks of a sparse file (PM
   M277): a layer's file, as a swap file and a template's memory, takes more of a Mac's disk
@@ -7266,7 +7294,7 @@ container's processes one by one and refuses what it cannot: a `docker run -t` t
 device files, files sent over Unix sockets, locks held unless told to, processes joined
 to anything outside the set it dumps (criu.org, "What cannot be checkpointed"). A
 microVM's state is its memory and its devices', which shards' VMM already saves and
-restores for templates (D25): HVF and x86_64 KVM, arm64 KVM and WHP not yet (D140). What
+restores for templates (D25): HVF and KVM, on x86_64 and arm64 (D154), WHP not yet (D140). What
 lies outside the microVM goes as with CRIU by default, and is said: connections to the
 world beyond it, exec sessions and attached clients.
 
@@ -9308,8 +9336,87 @@ one. So both, in that order.
   of the test image skipped 2,048 to 4,095, all at one PC, 64 to a page, about 40 µs
   each nested (shards' debug log). Not yet measured: what the skips cost on a bare-metal
   host whose CPU has neither; CI's arm64 Linux runners' runs never met one, and pass.
-- **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
-  through KVM's registers); more vCPUs than one redistributor region holds (123). For
+- **Snapshots on arm64 KVM** (the parity plan's step 9, 2026-10-26): a microVM on an arm64
+  Linux host is saved and restored, cold and from warm pools, and templates, their working
+  sets and pools serve its runs, as on x86_64's KVM and Hypervisor.framework.
+  - **A vCPU's state is every register KVM lists** (KVM_GET_REG_LIST, api.rst 4.84; each
+    by KVM_GET_ONE_REG, 4.68): the core registers, KVM's firmware pseudo-registers (PSCI's
+    version, the SMCCC workarounds, the hypercall bitmaps), the system registers, the
+    timers' among them, and the caches' geometry; with its power state (KVM_GET_MP_STATE,
+    PSCI's, which KVM's own PSCI keeps) and a virtual SError pending in it, which no
+    register shows (KVM_GET_VCPU_EVENTS). As Firecracker and QEMU keep one
+    (vmm/src/arch/aarch64/vcpu.rs, save_state; target/arm/kvm.c): what KVM lists is what
+    a user may read and write back (its get-reg-list self-test), and a register a later
+    KVM adds is in it unasked. A PSCI CPU_ON owed to a vCPU not yet run is finished before
+    any of its registers is read (arm.c, KVM_GET_ONE_REG: "We could owe a reset due to
+    PSCI"). Restored into a vCPU initialized with the same features, in KVM's order; a
+    register this KVM has not, or a value it refuses, fails the restore, as a snapshot of
+    another CPU or KVM should. HVF's state keeps its own encoding byte for byte
+    (`arch::aarch64::state::VcpuCodec`).
+  - **The counter, once, for the VM.** KVM keeps one offset of the guest's virtual counter
+    for a VM, which a write of KVM_REG_ARM_TIMER_CNT through any vCPU sets as of the write
+    (sys_regs.c, arch_timer_set_user; Linux 5.x set it on every vCPU at once,
+    update_vtimer_cntvoff): so the restore writes it once, through vCPU 0, as the vCPUs
+    are released (`hv::Counter`), where each vCPU writing its own, as under HVF, would
+    step a running vCPU's counter back by the next write's lag. The counter goes on from
+    the snapshot's; the physical counter stays the host's, as under HVF, and neither
+    counter is written with the rest of the registers.
+  - **The GIC through its registers** (KVM_DEV_ARM_VGIC_GRP_*, arm-vgic-v3.rst), kept as
+    the writes that make a new VM's GIC, initialized and with every vCPU, the one saved,
+    in QEMU's order (hw/intc/arm_gicv3_kvm.c, kvm_arm_gicv3_put): the distributor's
+    implementation revision first, as the document asks, and its control; each
+    redistributor's private interrupts; the SPIs', each interrupt's configuration before
+    its line's level and its routing and enable before its pending state; then each CPU
+    interface's, its active priority registers as many as its priority bits make. A
+    set-enable and a set-active register follow all-ones written to their clear twins, as
+    a new GIC's SGIs are enabled; the pending registers set the latched state themselves,
+    and the line levels (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO) the rest of a level interrupt's.
+    KVM takes every vCPU for each access, and fails one while any vCPU is in a call of its
+    own (EBUSY): the GIC is read once every vCPU has parked and written as the machine
+    finishes, its vCPUs' threads waiting. A machine with an ITS (a PCI bus) saves none.
+  - **Working sets as on x86_64's KVM** (`vm::mapped`): recorded from the pages the host
+    maps of the first warm restore, its fault-around held off; the pages it wrote copied
+    ahead at a restore. **Mapped ahead by a program on vCPU 0**: arm64's KVM has no
+    KVM_PRE_FAULT_MEMORY (x86's and s390's alone, virt/kvm/Kconfig, to Linux 7.2), so
+    vCPU 0 runs the prefetch program Hypervisor.framework's does
+    (`arch::aarch64::prefetch`). KVM runs no vCPU before the GIC is initialized
+    (vgic_v3_map_resources: EBUSY) nor makes one after (kvm_arch_vcpu_precreate), so it
+    runs as the machine finishes, from that thread, its own waiting; then vCPU 0's state
+    is restored again. KVM takes a guest's HVC for itself (SMCCC), so the program ends
+    with a write KVM returns as MMIO, which a run with `immediate_exit` then retires, as
+    KVM_RUN completes the last exit's access first (mmio.c, kvm_handle_mmio_return), lest
+    it advance the restored PC; its exception vectors end it the same way. Its memory slot
+    is read-only and deleted after, which unmaps it at stage 2 and flushes the VM's stage
+    1 translations with it.
+  - **A guest with virtualization of its own is shown the host's widest addresses**
+    (`--nested`, D132): Hypervisor.framework's guest is shown the PARange its memory map
+    needs (D10), and arm64's KVM sizes the VMs it runs by its CPU's PARange (kvm_ipa_limit),
+    so a nested guest's own microVMs had no room past their memory for a share's DAX
+    window or a run's swap window ("the guest's addresses leave none a 2 MiB range").
+  - **Tested on arm64 Linux by the snapshot tests themselves**, where no arm64 Linux host
+    of ours has KVM (CI's arm64 runners have no /dev/kvm): boot.rs's
+    `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` builds tests/snapshot.rs,
+    warm.rs, saved.rs and daemon.rs whole, and the snapshot tests of run.rs, vsock.rs,
+    pmem.rs and boot.rs, for arm64 Linux (static musl, `common::linux_tests`), and runs
+    them in a guest with EL2 on an M3 or later Mac, the `kvm` kernel's, as such a host runs
+    them, every VM test required (SHARDS_REQUIRE_VMS), one at a time: two of the daemon's
+    tests together, some 20 VMs of eight vCPUs on the guest's eight, its KVM nVHE, stalled
+    restored guests 20 to 31 s in 11 of 24 rounds (PM M346). The guest is a host as Linux
+    has one: the test guest's `e2e` mode, PID 1, mounts its pseudo-terminals, cgroups and
+    debugfs, brings its loopback up, holds the host's CA certificates, reaps every process
+    orphaned to it as an init does (a daemon that detached and ended was a zombie its test
+    took for alive), and ends what each binary left running before the next.
+    Found and fixed on the way: a Linux host without /dev/fd (made by an init or udev) had
+    no share start (`platform::open_descriptors` reads /proc/self/fd); the nested width
+    above; two daemon tests that needed a shell for `ulimit` and one `cp` now need neither;
+    a host with no CA certificates reached no registry over plain HTTP (registry `tls.rs`);
+    and, as loaded restored guests showed them, a guest's dial of its host that gave up
+    after Linux's 2 s though its host had answered (D12), a pool's keep-alive counted from
+    its claims, past which its runs went on (D26), and ext4's bitmap prefetch in every
+    restored guest (D190). A restored guest faults back in what it holds there at 0.9 ms a
+    fault: the swap test now waits for its rounds as long as its guest makes them or its VM
+    process faults pages in.
+- **Not yet:** more vCPUs than one redistributor region holds (123). For
   VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs on x86_64
   and the host's addresses (above); a VF whose PF is bound to vfio-pci, which VFIO gives
   only with the PF's VF token (vfio_pci_core_match_token_uuid); then `--gpus` on Linux.

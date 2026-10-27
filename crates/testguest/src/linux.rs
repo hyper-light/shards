@@ -41,6 +41,7 @@ pub fn main() {
             "pci-dma" => pci_dma(),
             "host" => host(),
             "daemon" => daemon(),
+            "e2e" => e2e(),
             "slates_fs" => slates_fs(),
             "slates_fs_dax" => slates_fs_dax(),
             other => Err(format!("unknown test {other:?}")),
@@ -124,8 +125,12 @@ fn slates_fs() -> Result<(), String> {
 /// (`SLATES-DAX STORED`); the host then reads the volume and rewrites the file through another
 /// path, keeping the store and changing other bytes, and slates writes that change into the map
 /// before the host's write returns. So the guest waits, with no deadline of its own (the host
-/// bounds the test), for both to show in its same map. The bytes and offsets are those of
-/// crates/shards/tests/slates_fs.rs.
+/// bounds the test), for both to show in its same map. It then says so (`SLATES-DAX SEEN`), the
+/// host cuts the file inside this range at a length no page ends at, and the rest of the page that
+/// holds the new end must read zeros through the same map, the store and the change before it kept:
+/// a file's tail past its end, as every host's window shows it (slates zeroes what a cut takes). Pages
+/// wholly past the end are not touched, since the guest's own kernel answers those `SIGBUS` (POSIX's
+/// rule, not the window's). The bytes and offsets are those of crates/shards/tests/slates_fs.rs.
 fn slates_fs_dax() -> Result<(), String> {
     use std::os::fd::AsRawFd;
     const BIG: &str = "/mnt/big";
@@ -135,6 +140,8 @@ fn slates_fs_dax() -> Result<(), String> {
     const GUEST: &[u8] = b"stored by a shards guest through its DAX map\n";
     const HOST_AT: usize = 1 << 20;
     const HOST: &[u8] = b"written by the host through slates while the guest held its map\n";
+    // Where the host cuts the file: past the change, inside the first range, at no page's end.
+    const CUT: usize = (3 << 19) + 100;
     std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
     let (src, target, fs, opts) = (
         cstr("shards0")?,
@@ -207,6 +214,26 @@ fn slates_fs_dax() -> Result<(), String> {
                 "host bytes {:?}, own store {:?}",
                 String::from_utf8_lossy(&host),
                 String::from_utf8_lossy(&own)
+            ))
+        }
+    });
+    let _ = writeln!(io::stdout(), "SLATES-DAX SEEN");
+    // SAFETY: a pure query of the page size.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .map_err(|_| "the page size".to_string())?;
+    let tail_end = CUT.div_ceil(page) * page;
+    waiting("the cut's tail to read zeros", || {
+        let tail = read(CUT, tail_end - CUT);
+        let (host, own) = (read(HOST_AT, HOST.len()), read(GUEST_AT, GUEST.len()));
+        if tail.iter().all(|byte| *byte == 0) && host == HOST && own == GUEST {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} of the tail's {} bytes not zero, host bytes kept {}, own store kept {}",
+                tail.iter().filter(|byte| **byte != 0).count(),
+                tail.len(),
+                host == HOST,
+                own == GUEST
             ))
         }
     });
@@ -2159,6 +2186,212 @@ fn daemon() -> Result<(), String> {
             }
         }
         return Err(format!("the run given {device} ended with {}", ran.status));
+    }
+    Ok(())
+}
+
+/// A guest that is a KVM host of its architecture's Linux running shards' own E2E test
+/// binaries (D154's test path, boot.rs `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`):
+/// a host as Linux has one, its pseudo-terminals, cgroups and loopback up, where each line
+/// of /e2e/run names a binary and its arguments, run in turn with /e2e/env's variables
+/// (`KEY=VALUE` lines) and no others. Each line a binary writes is printed as it comes,
+/// after `E2E: ` (its stderr's after `E2E stderr: `), then its status, `E2E STATUS
+/// <binary> <status>`; the test passes where every binary ended well.
+fn e2e() -> Result<(), String> {
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    // KVM's counters of each VM, which tests read for evidence (`common::kvm_counters`),
+    // where the kernel has debugfs: no test needs them to pass.
+    for (src, target, fs, data, needed) in [
+        ("devpts", "/dev/pts", "devpts", "ptmxmode=0666", true),
+        ("cgroup2", "/sys/fs/cgroup", "cgroup2", "", true),
+        ("debugfs", "/sys/kernel/debug", "debugfs", "", false),
+    ] {
+        let mounted = std::fs::create_dir_all(target)
+            .map_err(|e| format!("{target}: {e}"))
+            .and_then(|()| {
+                let c = |s: &str| CString::new(s).map_err(|e| e.to_string());
+                let (src, at, fs, data) = (c(src)?, c(target)?, c(fs)?, c(data)?);
+                // SAFETY: NUL-terminated strings, a data string of the file system's options.
+                match unsafe { libc::mount(src.as_ptr(), at.as_ptr(), fs.as_ptr(), 0, data.as_ptr().cast()) }
+                {
+                    0 => Ok(()),
+                    _ => Err(format!("mount {target}: {}", io::Error::last_os_error())),
+                }
+            });
+        if let Err(e) = mounted
+            && needed
+        {
+            return Err(e);
+        }
+    }
+    loopback_up()?;
+    // As a host's init, PID 1 reaps every process orphaned to it: a daemon that detached and
+    // has ended is then gone, not a zombie its test takes for alive, as kill(2) finds one.
+    // The reaper takes the test binaries' statuses too, and hands them on.
+    let (reaped, statuses) = std::sync::mpsc::channel::<(libc::pid_t, libc::c_int)>();
+    thread::Builder::new()
+        .name("reaper".into())
+        .spawn(move || {
+            loop {
+                let mut status = 0;
+                // SAFETY: waitpid(2) into a local.
+                let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
+                if pid > 0 {
+                    if reaped.send((pid, status)).is_err() {
+                        return;
+                    }
+                } else if io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+                    // No child yet, or none between binaries.
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        })
+        .map_err(|e| format!("the reaper: {e}"))?;
+    let read = |path: &str| std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"));
+    let env: Vec<(String, String)> = read("/e2e/env")?
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let mut failed = Vec::new();
+    for line in read("/e2e/run")?.lines() {
+        let mut words = line.split_whitespace();
+        let Some(binary) = words.next() else {
+            continue;
+        };
+        let spawned = std::process::Command::new(binary)
+            .args(words)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(e) => {
+                let _ = writeln!(io::stdout(), "E2E STATUS {binary} not started: {e}");
+                failed.push(binary.to_string());
+                continue;
+            }
+        };
+        let relay = |from: Option<Box<dyn io::Read + Send>>, prefix: &'static str| {
+            move || {
+                let Some(from) = from else {
+                    return;
+                };
+                for line in io::BufRead::lines(io::BufReader::new(from)).map_while(Result::ok) {
+                    let _ = writeln!(io::stdout().lock(), "{prefix}{line}");
+                }
+            }
+        };
+        let out = child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn io::Read + Send>);
+        let err = child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn io::Read + Send>);
+        let pid = libc::pid_t::try_from(child.id()).map_err(|e| format!("{binary}: {e}"))?;
+        let status = thread::scope(|s| {
+            s.spawn(relay(out, "E2E: "));
+            s.spawn(relay(err, "E2E stderr: "));
+            statuses
+                .iter()
+                .find(|&(reaped, _)| reaped == pid)
+                .map(|(_, status)| status)
+        })
+        .ok_or_else(|| format!("{binary}: the reaper ended"))?;
+        let said = if libc::WIFEXITED(status) {
+            format!("exit status: {}", libc::WEXITSTATUS(status))
+        } else if libc::WIFSIGNALED(status) {
+            format!("signal: {}", libc::WTERMSIG(status))
+        } else {
+            format!("status {status:#x}")
+        };
+        let _ = writeln!(io::stdout(), "E2E STATUS {binary} {said}");
+        if !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0) {
+            failed.push(binary.to_string());
+        }
+        // What it left running ends before the next starts, as its runner's would with
+        // it: a daemon idling, a microVM it left going, which would take the next binary's
+        // CPUs, and the guest's power-off with KVM's vCPUs in it.
+        end_the_rest();
+        // What the binaries before left of this host's memory, its tmpfs's among it: what
+        // the next one runs with.
+        let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let fields: Vec<&str> = meminfo
+            .lines()
+            .filter(|l| {
+                ["MemFree:", "MemAvailable:", "Shmem:", "AnonPages:"]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
+            .collect();
+        let _ = writeln!(io::stdout(), "E2E MEMORY after {binary}: {}", fields.join(", "));
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("these failed: {}", failed.join(" ")))
+    }
+}
+
+/// Ends every process but PID 1 (kill(2) of -1) and waits, ten seconds at most, until none
+/// is left running: a process's /proc entry with a command line, which a kernel thread's
+/// and a zombie's lack.
+fn end_the_rest() {
+    // SAFETY: kill(2) of every process PID 1 may signal, which is all but itself.
+    unsafe { libc::kill(-1, libc::SIGKILL) };
+    let running = || {
+        std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n != "1" && n.parse::<u32>().is_ok())
+            })
+            .any(|e| std::fs::read(e.path().join("cmdline")).is_ok_and(|c| !c.is_empty()))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Brings the loopback interface up, as a host has it, with 127.0.0.1/8 and ::1
+/// (netdevice(7), SIOCSIFFLAGS).
+fn loopback_up() -> Result<(), String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let failed = |what: &str| format!("bringing up lo: {what}: {}", io::Error::last_os_error());
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(failed("socket"));
+    }
+    // SAFETY: a descriptor just opened, owned from here on.
+    let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    // SAFETY: ifreq is plain data, for which all zeroes is valid.
+    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (dst, src) in req.ifr_name.iter_mut().zip(b"lo") {
+        *dst = *src as libc::c_char;
+    }
+    // SAFETY: an ifreq naming an interface, which the kernel fills in.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFFLAGS as libc::Ioctl, &mut req) } != 0 {
+        return Err(failed("SIOCGIFFLAGS"));
+    }
+    // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
+    unsafe {
+        req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+    }
+    // SAFETY: the ifreq as read, with IFF_UP added.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &req) } != 0 {
+        return Err(failed("SIOCSIFFLAGS"));
     }
     Ok(())
 }

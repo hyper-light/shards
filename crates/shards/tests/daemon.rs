@@ -619,26 +619,20 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let before = daemon_pid(&home).expect("a daemon pid");
     let bin = TempDir::new("daemon-rebuilt-bin");
     let other = bin.join(format!("shards{}", std::env::consts::EXE_SUFFIX));
-    // Copied by a process of its own: a copy this process wrote would be open for writing
-    // in each child another test's thread forks meanwhile, until that child execs, and
-    // running it then fails with ETXTBSY (x86_64 CI, 2026-10-11).
-    #[cfg(unix)]
-    {
-        let copied = Command::new("cp").arg(shards()).arg(&other).status().unwrap();
-        assert!(copied.success(), "{copied}");
-    }
-    // A Windows child has no handle it is not given, std's being uninheritable: copied here.
-    #[cfg(windows)]
+    // A copy this process wrote is open for writing in each child another test's thread
+    // forks meanwhile, until that child execs, and running it fails with ETXTBSY until then
+    // (x86_64 CI, 2026-10-11): `common::spawn` waits that out.
     std::fs::copy(shards(), &other).unwrap();
-    let mut run = Command::new(&other)
-        .args(["run", "-i", "--pull", "never", &image, "cat"])
-        .env("SHARDS_HOME", &*home)
-        .env("SHARDS_LOCAL_STORE", "none")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut run = common::spawn(
+        Command::new(&other)
+            .args(["run", "-i", "--pull", "never", &image, "cat"])
+            .env("SHARDS_HOME", &*home)
+            .env("SHARDS_LOCAL_STORE", "none")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .unwrap();
     let said = "given before the old daemon stepped aside\n";
     run.stdin.take().unwrap().write_all(said.as_bytes()).unwrap();
     // Its output read as it comes, and the client ended past the deadline: a stdin lost
@@ -958,20 +952,15 @@ fn shell(args: &OsStr) {
 /// Starts `home`'s daemon with `shards ps`, which needs no VM, under a limit of `limit`
 /// open descriptors if one is given, which the daemon inherits; its pid.
 fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
-    let mut cmd = match limit {
-        Some(n) => {
-            let mut sh = Command::new("/bin/sh");
-            sh.arg("-c")
-                .arg(format!("ulimit -n {n} && exec \"$0\" ps"))
-                .arg(shards());
-            sh
-        }
-        None => {
-            let mut plain = common::command();
-            plain.arg("ps");
-            plain
-        }
-    };
+    let mut cmd = common::command();
+    cmd.arg("ps");
+    #[cfg(unix)]
+    if let Some(n) = limit {
+        descriptor_limit(&mut cmd, u64::from(n), true);
+    }
+    // Windows gives a process no limit of open handles to lower.
+    #[cfg(windows)]
+    assert!(limit.is_none(), "no limit of open handles to set on Windows");
     let out = cmd
         .env("SHARDS_HOME", home)
         .env("SHARDS_LOCAL_STORE", "none")
@@ -980,6 +969,34 @@ fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     daemon_pid(home).expect("a daemon pid")
+}
+
+/// Has `cmd` start its program under a limit of `limit` open descriptors, the soft limit and,
+/// where `hard`, the hard one too, as a shell's `ulimit -n` sets both and `ulimit -S -n` the
+/// soft alone: with no shell, which a host need not have.
+#[cfg(unix)]
+fn descriptor_limit(cmd: &mut Command, limit: u64, hard: bool) {
+    // SAFETY: getrlimit(2) and setrlimit(2) are async-signal-safe, and the closure touches
+    // nothing but its own copies of the limit.
+    unsafe {
+        cmd.pre_exec(move || {
+            let mut lim = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            lim.rlim_cur = limit as libc::rlim_t;
+            if hard {
+                lim.rlim_max = limit as libc::rlim_t;
+            }
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Raises this process's soft limit on open descriptors as far as it goes, up to macOS's
@@ -1204,12 +1221,11 @@ fn a_daemon_raises_its_descriptor_limit() {
         return;
     }
     let home = TempDir::new("daemon-limit");
-    let out = Command::new("/bin/sh")
-        .arg("-c")
-        .arg("ulimit -S -n 256 && exec \"$0\" ps")
-        .arg(shards())
+    let mut cmd = common::command();
+    descriptor_limit(&mut cmd, 256, false);
+    let out = cmd
+        .arg("ps")
         .env("SHARDS_HOME", &*home)
-        .env("SHARDS_LOCAL_STORE", "none")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -2711,8 +2727,8 @@ fn warm_vms_are_bounded_across_templates() {
 
 /// A pool keeps what its runs need while they come (audit A13): runs well apart keep one
 /// warm VM, not the most a pool may keep; runs at once keep more, up to that most; and a
-/// pool unclaimed past `SHARDS_POOL_KEEP` keeps none. The next run is served all the
-/// same, and its pool keeps VMs again.
+/// pool idle past `SHARDS_POOL_KEEP`, none of its runs going, keeps none. The next run is
+/// served all the same, and its pool keeps VMs again.
 /// Each warm VM of a pool is given its template's root filesystem (`--backing`), the
 /// one file a restore of it may name, so that what the VM saving the template wrote does
 /// not choose what the next is given.
@@ -2819,14 +2835,23 @@ fn pools_keep_what_their_runs_need_while_they_come() {
             let image = image.clone();
             std::thread::spawn(move || {
                 let env: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-                run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT).status
+                let began = Instant::now();
+                let status = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT).status;
+                (status, began.elapsed())
             })
         })
         .collect();
+    // How long each run took, said where the pool keeps too few after them: a loaded
+    // host's took 28 to 31 s (PM M346).
+    let mut took = Vec::new();
     for b in burst {
-        assert_eq!(b.join().unwrap(), Some(0));
+        let (status, run_took) = b.join().unwrap();
+        assert_eq!(status, Some(0));
+        took.push(run_took);
     }
-    settled("a burst of three", &|n| n >= 2);
+    settled(&format!("a burst of three, its runs taking {took:?}"), &|n| {
+        n >= 2
+    });
     // Never past its most, once the burst's own VMs have gone, each of which tells its run's
     // end before it goes, a loaded runner's past 500 ms: what the pool keeps it keeps until
     // its keep-alive, so a pool past its most stays so.

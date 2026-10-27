@@ -777,6 +777,9 @@ struct Inbox {
     /// The template its working set goes with, and the parts of it that have come.
     records: Option<Records>,
     working_set: WorkingSet,
+    /// The pool its warm VM came from, which counts it among its runs going until it ends
+    /// (demand.rs).
+    pool: Option<PoolKey>,
     /// The run's container's directory, and the log segment the VM writes there, which
     /// the daemon made.
     container: PathBuf,
@@ -2117,7 +2120,9 @@ impl<D: Disk> Daemon<D> {
         let aging = lock(&self.state)
             .pools
             .values()
-            .filter(|p| p.waiting == 0 && !p.ready.is_empty())
+            // One with runs going expires no sooner than the last ends, which wakes the
+            // listener (`run_ended`).
+            .filter(|p| p.waiting == 0 && !p.ready.is_empty() && !p.demand.going())
             // Never claimed from, it has expired already (`Demand::expired`).
             .filter_map(|p| {
                 p.demand
@@ -4835,6 +4840,12 @@ impl<D: Disk> Daemon<D> {
             link_local: _,
             engine,
         } = keep;
+        // A pool's run keeps its pool in use until it ends (demand.rs).
+        if let Some(key) = &ready.pool
+            && let Some(pool) = lock(&self.state).pools.get_mut(key)
+        {
+            pool.demand.started();
+        }
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
         }
@@ -4883,6 +4894,7 @@ impl<D: Disk> Daemon<D> {
             ended: false,
             records: ready.records,
             working_set: WorkingSet::default(),
+            pool: ready.pool,
             container: lock(&self.containers).dir(id),
             segment: 0,
             log_files,
@@ -5453,6 +5465,12 @@ impl<D: Disk> Daemon<D> {
 
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
+        // Its pool has one run fewer going, and is idle from the last to end (demand.rs).
+        if let Some(key) = inbox.pool.take()
+            && let Some(pool) = lock(&self.state).pools.get_mut(&key)
+        {
+            pool.demand.ended(Instant::now());
+        }
         self.leave_network(id);
         // A joiner's volumes go from its microVM's join share as its link closes; and a
         // microVM's join share ends with its VM, the daemon's connection to it let go (D119).
@@ -6784,7 +6802,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Ends the ready VMs of pools unclaimed past their keep-alive, and forgets the pools
+    /// Ends the ready VMs of pools idle past their keep-alive, and forgets the pools
     /// that hold nothing (audit A13).
     fn age_pools(&self) {
         let now = Instant::now();
@@ -6795,7 +6813,7 @@ impl<D: Disk> Daemon<D> {
             }
             for aged in pool.ready.drain(..) {
                 log(format!(
-                    "ending warm VM {} of {}: unclaimed for {:?} (SHARDS_POOL_KEEP)",
+                    "ending warm VM {} of {}: idle for {:?} (SHARDS_POOL_KEEP)",
                     aged.vm.id(),
                     key.dir.display(),
                     self.keep
@@ -9574,7 +9592,8 @@ mod tests {
 
     /// The listener's duty for a pool is when `age_pools` first finds it expired: its
     /// keep-alive after its last claim, or at once if it was never claimed from; none for
-    /// a pool with no VM ready, or one a run waits on.
+    /// a pool with no VM ready, one a run waits on, or one whose runs go on, whose last
+    /// end wakes the listener.
     #[test]
     fn a_pool_is_the_listeners_duty_once_it_would_expire() {
         let mut t = Test::new("duty");
@@ -9607,6 +9626,13 @@ mod tests {
                 .unwrap()
                 .waiting = 1;
             assert_eq!(t.daemon.next_duty(false), None, "a run waits");
+            {
+                let mut state = lock(&t.daemon.state);
+                let pool = state.pools.get_mut(&own(&claimed)).unwrap();
+                pool.waiting = 0;
+                pool.demand.started();
+            }
+            assert_eq!(t.daemon.next_duty(false), None, "a run goes on");
             let (ready, _never_vm) = t.warm_vm(Some("never"));
             lock(&t.daemon.state)
                 .pools
@@ -9663,8 +9689,8 @@ mod tests {
         });
     }
 
-    /// A pool unclaimed past its keep-alive ends its ready VMs and is forgotten; one
-    /// claimed within it, or with a run waiting, keeps them (audit A13).
+    /// A pool idle past its keep-alive, unclaimed, ends its ready VMs and is forgotten;
+    /// one claimed within it, or with a run waiting, keeps them (audit A13).
     #[test]
     fn pools_unclaimed_past_their_keep_alive_end_their_vms() {
         let mut t = Test::new("aging");

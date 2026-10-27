@@ -340,7 +340,11 @@ fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &s
     guest_binary_with(package, name, target_dir, "guest", env)
 }
 
-/// [`guest_binary_in`], of cargo's profile `profile`.
+/// [`guest_binary_in`], of cargo's profile `profile`. Where `SHARDS_TEST_GUESTS` names a
+/// directory, the binary built beforehand into it, as `target_dir`'s last part and `name`
+/// (`guest/shards-testguest`): for test binaries run where no cargo builds them, a guest
+/// of the host's that is itself a KVM host (boot.rs,
+/// `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`).
 fn guest_binary_with(
     package: &str,
     name: &str,
@@ -348,52 +352,20 @@ fn guest_binary_with(
     profile: &str,
     env: &[(&str, &str)],
 ) -> PathBuf {
+    if let Some(built) = std::env::var_os("SHARDS_TEST_GUESTS") {
+        let variant = Path::new(target_dir).file_name().unwrap_or_default();
+        return Path::new(&built).join(variant).join(name);
+    }
     let target_dir = workspace().join(target_dir);
     let guest_target = format!("{ARCH}-unknown-linux-musl");
-    // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
-    // the dyld paths cargo injects into test processes: the proxy's environment is
-    // what lets rust-lld find the toolchain's libLLVM.
-    // Linked as build.rs links the init shardsd carries, whatever linker the environment
-    // names for the host's own musl builds.
-    let linker = format!(
-        "CARGO_TARGET_{}_LINKER",
-        guest_target.to_ascii_uppercase().replace('-', "_")
-    );
     // One build at a time, and this process's own copy of what it made: cargo puts its
     // output in place again on every build, up to date or not, and another test process
     // reading it meanwhile finds it missing.
     std::fs::create_dir_all(&target_dir).unwrap();
     let lock = std::fs::File::create(target_dir.join(".tests.lock")).unwrap();
     lock.lock().unwrap();
-    // Its C (AWS-LC) by zig, as build.rs compiles init's (scripts/zig-cc).
-    let var = guest_target.replace('-', "_");
-    let mut cc: Vec<(String, String)> = Vec::new();
-    if std::env::var_os(format!("CC_{var}")).is_none() {
-        let tool = |name: &str| {
-            let script = workspace().join("scripts").join(name);
-            if cfg!(windows) {
-                // As a POSIX shell on Windows (Git's, MSYS) takes a path: forward slashes,
-                // and no verbatim prefix (`\\?\`), whose backslashes it reads as escapes.
-                let text = script.display().to_string();
-                format!(
-                    "sh {}",
-                    text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
-                )
-            } else {
-                script.display().to_string()
-            }
-        };
-        cc.push((format!("CC_{var}"), tool("zig-cc")));
-        cc.push((format!("AR_{var}"), tool("zig-ar")));
-        cc.push(("ZIG_TARGET".to_string(), format!("{ARCH}-linux-musl")));
-    }
-    let st = Command::new("cargo")
-        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
-        .env_remove("DYLD_LIBRARY_PATH")
-        .env(linker, "rust-lld")
-        .envs(cc)
+    let st = guest_cargo(&guest_target)
         .envs(env.iter().copied())
-        .current_dir(workspace())
         .args([
             "build",
             "-p",
@@ -432,6 +404,141 @@ fn guest_binary_with(
     std::fs::copy(&built, &copy).unwrap();
     drop(lock);
     copy
+}
+
+/// cargo for this architecture's Linux (static musl), `guest_target`, from the workspace:
+/// through the rustup proxy on PATH (not $CARGO, the bare cargo binary), without the dyld
+/// paths cargo injects into test processes, as the proxy's environment is what lets
+/// rust-lld find the toolchain's libLLVM; linked as build.rs links the init shardsd
+/// carries, whatever linker the environment names for the host's own musl builds; its C
+/// (AWS-LC) by zig, as build.rs compiles init's (scripts/zig-cc).
+fn guest_cargo(guest_target: &str) -> Command {
+    let linker = format!(
+        "CARGO_TARGET_{}_LINKER",
+        guest_target.to_ascii_uppercase().replace('-', "_")
+    );
+    let var = guest_target.replace('-', "_");
+    let mut cc: Vec<(String, String)> = Vec::new();
+    if std::env::var_os(format!("CC_{var}")).is_none() {
+        let tool = |name: &str| {
+            let script = workspace().join("scripts").join(name);
+            if cfg!(windows) {
+                // As a POSIX shell on Windows (Git's, MSYS) takes a path: forward slashes,
+                // and no verbatim prefix (`\\?\`), whose backslashes it reads as escapes.
+                let text = script.display().to_string();
+                format!(
+                    "sh {}",
+                    text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
+                )
+            } else {
+                script.display().to_string()
+            }
+        };
+        cc.push((format!("CC_{var}"), tool("zig-cc")));
+        cc.push((format!("AR_{var}"), tool("zig-ar")));
+        cc.push(("ZIG_TARGET".to_string(), format!("{ARCH}-linux-musl")));
+    }
+    let mut cargo = Command::new("cargo");
+    cargo
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .env(linker, "rust-lld")
+        .envs(cc)
+        .current_dir(workspace());
+    cargo
+}
+
+/// shards' E2E test binaries of `tests` (their targets' names), built for this
+/// architecture's Linux (static musl) with the tests' profile, without debug information,
+/// for a guest that is itself a KVM host to run as such a host runs them (boot.rs,
+/// `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`).
+pub struct LinuxTests {
+    /// Each test's binary, by its target's name.
+    pub binaries: Vec<(String, PathBuf)>,
+    /// What the binaries reach by the paths their build gave them: `shards`
+    /// (CARGO_BIN_EXE_shards), the init build.rs made (OUT_DIR) and the helpers it carries
+    /// (SHARDS_HELPERS_CARRIED).
+    pub files: Vec<PathBuf>,
+}
+
+pub fn linux_tests(tests: &[&str]) -> LinuxTests {
+    let target_dir = workspace().join("target/l1");
+    let guest_target = format!("{ARCH}-unknown-linux-musl");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    let lock = std::fs::File::create(target_dir.join(".tests.lock")).unwrap();
+    lock.lock().unwrap();
+    let mut cargo = guest_cargo(&guest_target);
+    cargo
+        .env("CARGO_PROFILE_TEST_RELEASE_DEBUG", "false")
+        .args(["test", "-p", "shards", "--profile", "test-release", "--no-run"])
+        .args([
+            "--message-format=json-render-diagnostics",
+            "--target",
+            &guest_target,
+        ])
+        .arg("--target-dir")
+        .arg(&target_dir);
+    for test in tests {
+        cargo.args(["--test", test]);
+    }
+    let out = cargo.stdin(Stdio::null()).output().unwrap();
+    assert!(
+        out.status.success(),
+        "building the tests for Linux: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    drop(lock);
+    let (mut binaries, mut shards) = (Vec::new(), None);
+    // Each package's build script's output directory, and the helpers it carries, if any.
+    let mut scripts: Vec<(String, PathBuf, Option<PathBuf>)> = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Ok(m) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        let package = text(&m["package_id"]);
+        match m["reason"].as_str() {
+            Some("compiler-artifact") => {
+                let (Some(kinds), Some(executable)) =
+                    (m["target"]["kind"].as_array(), m["executable"].as_str())
+                else {
+                    continue;
+                };
+                let name = text(&m["target"]["name"]);
+                if kinds.iter().any(|k| k == "test") {
+                    binaries.push((name, PathBuf::from(executable)));
+                } else if kinds.iter().any(|k| k == "bin") && name == "shards" {
+                    shards = Some((package, PathBuf::from(executable)));
+                }
+            }
+            Some("build-script-executed") => {
+                let carried = m["env"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|kv| kv[0] == "SHARDS_HELPERS_CARRIED")
+                    .and_then(|kv| kv[1].as_str())
+                    .map(PathBuf::from);
+                scripts.push((package, PathBuf::from(text(&m["out_dir"])), carried));
+            }
+            _ => {}
+        }
+    }
+    let (package, shards) = shards.expect("cargo built no shards for Linux");
+    let (_, out_dir, carried) = scripts
+        .into_iter()
+        .find(|(p, ..)| *p == package)
+        .expect("no build script ran for shards");
+    let carried = carried.expect("shards' build carries no helpers");
+    LinuxTests {
+        binaries,
+        files: vec![
+            shards,
+            out_dir.join("shards-init"),
+            carried.join("shards-vm"),
+            carried.join("shards-net"),
+        ],
+    }
 }
 
 /// The production guest init (PID 1): the one `shardsd` carries, as build.rs made it.
@@ -514,8 +621,30 @@ pub fn kvm_counters_in(text: &str) -> std::collections::BTreeMap<String, u64> {
 }
 
 /// KVM's counters of VM process `pid` ([`kvm_counters_in`]), from debugfs, which only root
-/// reads: through `sudo -n`, as CI's runners allow; none where they cannot be read.
+/// reads: directly where this process may, as root on a guest that is a KVM host of its own
+/// (boot.rs, `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`), else through
+/// `sudo -n`, as CI's runners allow; none where they cannot be read.
 pub fn kvm_counters(pid: u32) -> Option<std::collections::BTreeMap<String, u64>> {
+    let mine = format!("{pid}-");
+    let direct: String = std::fs::read_dir("/sys/kernel/debug/kvm")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|vm| vm.file_name().to_string_lossy().starts_with(&mine))
+        .flat_map(|vm| std::fs::read_dir(vm.path()).into_iter().flatten().flatten())
+        .filter_map(|f| {
+            let value = std::fs::read_to_string(f.path()).ok()?;
+            Some(format!(
+                "{} {}\n",
+                f.file_name().to_string_lossy(),
+                value.replace('\n', " ")
+            ))
+        })
+        .collect();
+    let counters = kvm_counters_in(&direct);
+    if !counters.is_empty() {
+        return Some(counters);
+    }
     let script = format!(
         "for f in /sys/kernel/debug/kvm/{pid}-*/*; do [ -f \"$f\" ] && printf '%s %s\\n' \"${{f##*/}}\" \"$(tr '\\n' ' ' < \"$f\")\"; done; true"
     );

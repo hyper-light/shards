@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub use sys::{Gic, GicLayout, GicParams, MsiFrame};
 
 use super::{Exit, Io, Touch};
-use crate::arch::aarch64::{self, Entry, esr, layout, psci, sysreg};
+use crate::arch::aarch64::{self, Entry, esr, layout, prefetch, psci, sysreg};
 use crate::debug;
 use crate::devices::get_le;
 use crate::sync::lock;
@@ -757,7 +757,8 @@ impl Kicker {
 
 // ---- snapshots ---------------------------------------------------------------------
 
-use crate::arch::aarch64::state::{Power, VcpuState};
+use crate::arch::aarch64::state::Power;
+pub use crate::arch::aarch64::state::VcpuState;
 
 /// EL1/EL0 system registers a snapshot carries: all the guest-changeable state HVF
 /// exposes (hv_vcpu_types.h:257-420). SP_EL0/SP_EL1/ELR_EL1/SPSR_EL1 are system
@@ -918,52 +919,31 @@ impl Vcpu {
     /// writes to read-only memory and pages listed twice, so a damaged list costs no more
     /// than touching guest memory once. Returns how many pages it touched.
     ///
-    /// For a fresh vCPU, before its state is restored: it runs `PREFETCH_CODE` at EL1
-    /// with its own MMU state, all of which the restore sets again.
+    /// For a fresh vCPU, before its state is restored: it runs the prefetch program
+    /// ([`prefetch`](crate::arch::aarch64::prefetch)) at EL1 with its own MMU state, all of
+    /// which the restore sets again; HVF returns its `hvc #0` as the loop's end.
     pub fn prefetch(&mut self, vm: &Vm, pages: &[Touch]) -> Result<usize> {
-        const TABLE: usize = 4 << 10;
-        // Atomic instructions (FEAT_LSE): ID_AA64ISAR0_EL1.Atomic is 2 or more.
-        let lse = (self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)? >> 20) & 0xf >= 2;
-        let mut listed = std::collections::HashSet::new();
-        let list: Vec<u64> = pages
-            .iter()
-            .filter_map(|t| {
-                let page = t.gpa & !(PAGE - 1);
-                let r = self.memory.iter().find(|r| r.holds(page))?;
-                let write = t.written && lse && r.perms == sys::Perms::RWX;
-                (page < PREFETCH_REACH && listed.insert(page)).then_some(page | u64::from(write))
-            })
-            .collect();
+        let lse = prefetch::lse(self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)?);
+        let list = prefetch::entries(pages, PAGE, lse, |page| {
+            let r = self.memory.iter().find(|r| r.holds(page))?;
+            Some(r.perms == sys::Perms::RWX)
+        });
         if list.is_empty() {
             return Ok(0);
         }
         let size = (PAGE as usize).saturating_add((list.len() * 8).next_multiple_of(PAGE as usize));
-        let mut table = [0u64; 512];
-        let gib = |gpa: u64| (gpa >> 30) as usize;
-        let block = |gpa: u64, code: bool| {
-            // Normal memory (MAIR attribute 0), inner shareable, accessed, EL1 read-write;
-            // never executable at EL0, nor at EL1 unless it holds the code.
-            let never = if code { 1 << 54 } else { 3 << 53 };
-            (gpa & !((1 << 30) - 1)) | never | (1 << 10) | (3 << 8) | 0b01
-        };
-        for &entry in &list {
-            if let Some(slot) = table.get_mut(gib(entry)) {
-                *slot = block(entry, false);
-            }
-        }
-        if let Some(slot) = table.get_mut(gib(layout::PREFETCH)) {
-            *slot = block(layout::PREFETCH, true);
-        }
+        let table = prefetch::table(&list);
         let scratch = Scratch::new(size)?;
         scratch.put(
             0,
-            &PREFETCH_CODE
+            &prefetch::LOOP
                 .iter()
+                .chain([&HVC])
                 .flat_map(|w| w.to_le_bytes())
                 .collect::<Vec<u8>>(),
         );
         scratch.put(
-            TABLE,
+            prefetch::TABLE as usize,
             &table.iter().flat_map(|e| e.to_le_bytes()).collect::<Vec<u8>>(),
         );
         scratch.put(
@@ -979,7 +959,7 @@ impl Vcpu {
         let clock = crate::platform::ThreadClock::current().ok();
         let (cpu, events) = (clock.and_then(|c| c.read().ok()), crate::platform::task_events());
         let ran = self.run_prefetch(
-            layout::PREFETCH + TABLE as u64,
+            layout::PREFETCH + prefetch::TABLE,
             layout::PREFETCH + PAGE,
             list.len(),
         );
@@ -1013,17 +993,10 @@ impl Vcpu {
 
     fn run_prefetch(&mut self, table: u64, list: u64, n: usize) -> Result<()> {
         let s = &mut self.sys;
-        let parange = s.sys_reg(sysreg::ID_AA64MMFR0_EL1)? & 0xf;
-        // A 39-bit space from TTBR0 at 4 KiB granules, whose first level maps 1 GiB blocks;
-        // walks write-back cacheable and inner shareable; no TTBR1 walks; IPS = PARange.
-        let tcr = 25 | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 23) | (parange << 32);
-        s.set_sys_reg(sysreg::MAIR_EL1, 0xff)?;
-        s.set_sys_reg(sysreg::TCR_EL1, tcr)?;
-        s.set_sys_reg(sysreg::TTBR0_EL1, table)?;
-        s.set_sys_reg(
-            sysreg::SCTLR_EL1,
-            sysreg::SCTLR_EL1_RESET | sysreg::SCTLR_EL1_MMU_CACHES,
-        )?;
+        let parange = s.sys_reg(sysreg::ID_AA64MMFR0_EL1)?;
+        for (r, value) in prefetch::registers(parange, table) {
+            s.set_sys_reg(r, value)?;
+        }
         s.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
         s.set_x(0, list)?;
         s.set_x(1, n as u64)?;
@@ -1039,43 +1012,8 @@ impl Vcpu {
     }
 }
 
-/// The first 512 GiB of guest memory, which [`PREFETCH_CODE`]'s one level of 1 GiB blocks
-/// can map.
-const PREFETCH_REACH: u64 = 512 << 30;
-
-/// Touches the list at X0, X1 entries long, then `hvc #0`. The MMU is on, over an identity
-/// map of 1 GiB Normal write-back blocks, so the writes are coherent with the host's view
-/// of the memory. An entry is a page's address, with bit 0 set for a write: an atomic add
-/// of zero, a write for permission purposes that cannot change the data (Arm ARM, LDADD).
-/// `tlbi vmalle1is` last, so that no translation of the map outlives it on any core.
-///
-/// ```text
-///     cbz  x1, 3f            2:  and  x2, x2, #~1
-/// 1:  ldr  x2, [x0], #8          staddb wzr, [x2]
-///     tbnz x2, #0, 2f            subs x1, x1, #1
-///     ldrb w3, [x2]              b.ne 1b
-///     subs x1, x1, #1        3:  tlbi vmalle1is
-///     b.ne 1b                    dsb  ish
-///     b    3f                    isb
-///                                hvc  #0
-/// ```
-const PREFETCH_CODE: [u32; 15] = [
-    0xb400_0161,
-    0xf840_8402,
-    0x3700_00a2,
-    0x3940_0043,
-    0xf100_0421,
-    0x54ff_ff81,
-    0x1400_0005,
-    0x927f_f842,
-    0x383f_005f,
-    0xf100_0421,
-    0x54ff_fee1,
-    0xd508_831f,
-    0xd503_3b9f,
-    0xd503_3fdf,
-    0xd400_0002,
-];
+/// The prefetch loop's end here: `hvc #0`, which HVF returns as an exception.
+const HVC: u32 = 0xd400_0002;
 
 /// Anonymous host memory for the prefetch loop, unmapped on drop.
 struct Scratch {
