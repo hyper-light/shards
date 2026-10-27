@@ -11406,7 +11406,11 @@ mod tests {
         }
         fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
             // Windows' set-aside is its mark's write (`Removal::set_aside`).
-            if cfg!(windows) && path.file_name().is_some_and(|n| n == ".removing") {
+            if cfg!(windows)
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with(".removing"))
+            {
                 if self.failing.load(Ordering::SeqCst) {
                     return Err(io::Error::other("a failing disk"));
                 }

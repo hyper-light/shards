@@ -1332,8 +1332,12 @@ mod tests {
         drop(r);
         let root = home.join("containers");
         std::fs::write(root.join("aa/config.json.new"), b"{\"id\":").unwrap();
-        std::fs::create_dir_all(root.join(".bb.removing")).unwrap();
-        std::fs::write(root.join(".bb.removing/log"), b"x").unwrap();
+        // A removal a crash cut short: its directory set aside, as each host sets one aside.
+        std::fs::create_dir_all(aside_dir(&home, "bb")).unwrap();
+        std::fs::write(aside_dir(&home, "bb").join("log"), b"x").unwrap();
+        if cfg!(windows) {
+            std::fs::write(root.join(".bb.removing"), b"").unwrap();
+        }
         std::fs::create_dir_all(root.join("spare")).unwrap();
         std::fs::write(root.join("spare/log"), b"").unwrap();
         for (dir, record) in [
@@ -1375,6 +1379,7 @@ mod tests {
         notes.retain(|n| !n.ends_with("its next version is taken"));
         assert!(!root.join("aa/config.json.new").exists());
         assert!(!root.join(".bb.removing").exists());
+        assert!(!aside_dir(&home, "bb").exists());
         assert!(!root.join("spare").exists());
         assert_eq!(notes.len(), 3, "{notes:?}");
         for dir in ["empty", "torn", "moved"] {
@@ -1769,6 +1774,7 @@ mod tests {
                         .and_then(|b| serde_json::from_slice::<Container>(b).ok())
                         .is_some_and(|c| c.id == id)
                 };
+                // One set aside, its directory renamed (Unix) or marked (Windows), is gone.
                 let recovered: Vec<String> = ["one", "two"]
                     .into_iter()
                     .filter(|id| {
@@ -1776,6 +1782,7 @@ mod tests {
                         matches!(tree.get(&dir.join(RECORD)), Some(Some(_)))
                             && !whole(dir.join(RECORD), id)
                             && whole(dir.join(NEW_RECORD), id)
+                            && tree.get(&root.join(format!(".{id}.removing"))).is_none()
                     })
                     .map(str::to_string)
                     .collect();
