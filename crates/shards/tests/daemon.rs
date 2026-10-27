@@ -1615,7 +1615,13 @@ fn threads_run(pid: i32) -> std::collections::BTreeMap<String, (String, u64)> {
             };
             if !thread.is_null() {
                 let mut cycles = 0u64;
-                QueryThreadCycleTime(thread, &mut cycles);
+                assert_ne!(
+                    QueryThreadCycleTime(thread, &mut cycles),
+                    0,
+                    "thread {}'s cycles: {}",
+                    entry.th32ThreadID,
+                    std::io::Error::last_os_error()
+                );
                 let mut described: *mut u16 = std::ptr::null_mut();
                 let mut name = String::new();
                 if GetThreadDescription(thread, &mut described) >= 0 && !described.is_null() {
@@ -1630,6 +1636,7 @@ fn threads_run(pid: i32) -> std::collections::BTreeMap<String, (String, u64)> {
         }
         CloseHandle(snapshot);
     }
+    assert!(!each.is_empty(), "no thread of process {pid} could be read");
     each
 }
 
