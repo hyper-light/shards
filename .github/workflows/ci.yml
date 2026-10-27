@@ -15,6 +15,7 @@ on:
       - "!docs/research/measurements/**/*.json"
       - "!docs/research/measurements/**/*.c"
       - "!docs/research/measurements/**/Dockerfile"
+      - "!docs/research/measurements/**/*.txt"
       - "!.github/workflows/builder-cold.yml"
       - "!.github/workflows/builder-pressure.yml"
       - "!.github/workflows/dax-budget.yml"
