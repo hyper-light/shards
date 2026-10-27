@@ -1,6 +1,6 @@
 //! How many warm VMs a template's pool keeps ready: as many as the largest burst of runs
 //! it has seen arrive within one refill, while it is in use, and none once it has gone
-//! unclaimed for its keep-alive (audit A13).
+//! idle for its keep-alive (audit A13).
 //!
 //! - A refill takes as long as a warm VM takes to restore and say it is ready. Its time is
 //!   estimated as TCP estimates a round trip's, and its window is that estimate's
@@ -8,9 +8,11 @@
 //!   than that cannot all be served by VMs refilled for one another.
 //! - A burst is the runs claimed within one refill window of each other. The pool keeps
 //!   the largest seen within the keep-alive, at least one, and at most its most.
-//! - The keep-alive is a fixed time since the pool's last claim, as providers keep an
-//!   idle function (AWS 10 minutes, Azure 20: Shahrad et al., "Serverless in the Wild",
-//!   USENIX ATC 2020, §1). Past it the pool keeps nothing until its next claim.
+//! - The keep-alive is a fixed time the pool is idle, none of its runs going, from its
+//!   last run's end or claim, as providers keep a function's resources a fixed time "after
+//!   a function execution" (AWS 10 minutes, Azure 20: Shahrad et al., "Serverless in the
+//!   Wild", USENIX ATC 2020, §1, §2), their keep-alive one that "only starts at the end of
+//!   function executions" (§4). Past it the pool keeps nothing until its next claim.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -18,8 +20,12 @@ use std::time::{Duration, Instant};
 /// A template's demand, as its pool has seen it.
 #[derive(Debug, Default)]
 pub struct Demand {
-    /// When a run last took one of its VMs, or the pool began; `None` before either.
+    /// When a run last took one of its VMs or ended, or the pool began; `None` before
+    /// any.
     last: Option<Instant>,
+    /// Its runs going: those that took one of its VMs and have not ended. The pool is
+    /// idle only once none is.
+    going: usize,
     /// Recent claims, within one refill window of the last, at most the pool's most.
     recent: VecDeque<Instant>,
     /// The largest burst within the keep-alive, and when it was seen.
@@ -80,6 +86,24 @@ impl Demand {
         }
     }
 
+    /// A run that took one of its VMs goes on: until it [`ended`](Self::ended), the pool
+    /// is not idle.
+    pub fn started(&mut self) {
+        self.going += 1;
+    }
+
+    /// Whether a run that took one of its VMs goes on, so that the pool is not idle.
+    pub fn going(&self) -> bool {
+        self.going > 0
+    }
+
+    /// A run that took one of its VMs ended, at `now`, from which the pool's idle time
+    /// counts once none goes on.
+    pub fn ended(&mut self, now: Instant) {
+        self.going = self.going.saturating_sub(1);
+        self.last = Some(self.last.map_or(now, |last| last.max(now)));
+    }
+
     /// Runs this close together are one burst: a refill's retransmission timeout.
     fn window(&self) -> Duration {
         self.srtt.map_or(FIRST_WINDOW, |srtt| {
@@ -87,15 +111,18 @@ impl Demand {
         })
     }
 
-    /// When a run last took one of its VMs, or the pool began.
+    /// When a run last took one of its VMs or ended, or the pool began.
     pub fn last(&self) -> Option<Instant> {
         self.last
     }
 
-    /// Whether the pool has gone unclaimed past `keep` at `now`.
+    /// Whether the pool has been idle past `keep` at `now`: none of its runs going, and
+    /// none taken or ended within it.
     pub fn expired(&self, now: Instant, keep: Duration) -> bool {
-        self.last
-            .is_none_or(|last| now.saturating_duration_since(last) > keep)
+        self.going == 0
+            && self
+                .last
+                .is_none_or(|last| now.saturating_duration_since(last) > keep)
     }
 
     /// How many VMs the pool keeps ready at `now`: none past its keep-alive `keep`, and
@@ -126,7 +153,7 @@ mod tests {
     }
 
     /// A pool keeps one VM while runs come one at a time, as many as came at once, at most
-    /// its most, and none once unclaimed past its keep-alive, until the next claim.
+    /// its most, and none once idle past its keep-alive, until the next claim.
     #[test]
     fn a_pool_keeps_what_its_bursts_need_while_it_is_used() {
         let t0 = Instant::now();
@@ -160,6 +187,39 @@ mod tests {
         assert_eq!(d.target(later, 4, KEEP), 0);
         d.claimed(later, 4);
         assert_eq!(d.target(later, 4, KEEP), 1);
+    }
+
+    /// A pool whose runs go on past its keep-alive keeps its VMs for the next run, and
+    /// its keep-alive counts from the last of them to end: a function's resources are kept
+    /// a fixed time after its execution (Shahrad et al., §1, §4). Its runs on a loaded
+    /// host took 28 to 31 s, past a test's keep-alive of 15 s counted from their claims,
+    /// and the pool kept nothing for its next burst (PM M346).
+    #[test]
+    fn a_pools_keep_alive_counts_from_its_last_runs_end() {
+        let t0 = Instant::now();
+        let mut d = Demand::default();
+        d.begin(t0);
+        for i in 0..3 {
+            d.claimed(t0 + ms(i), 4);
+            d.started();
+        }
+        let long = t0 + KEEP + ms(30_000);
+        assert!(!d.expired(long, KEEP), "runs going");
+        assert_eq!(d.target(long, 4, KEEP), 3);
+        d.ended(long);
+        d.ended(long + ms(10));
+        assert!(!d.expired(long + KEEP, KEEP), "one run still going");
+        let last = long + KEEP + ms(1000);
+        d.ended(last);
+        assert!(
+            !d.expired(last + KEEP, KEEP),
+            "within the keep-alive of the last end"
+        );
+        assert!(d.expired(last + KEEP + ms(1), KEEP));
+        assert_eq!(d.target(last + KEEP + ms(1), 4, KEEP), 0);
+        // An end with none going, as of a run counted before its pool was made again.
+        d.ended(last + KEEP + ms(2));
+        assert_eq!(d.going, 0);
     }
 
     /// A burst is measured by the refill's window: claims further apart than a refill

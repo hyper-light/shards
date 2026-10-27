@@ -1080,13 +1080,18 @@ for the exit status.
         as TCP estimates a round trip's, and its window that estimate's retransmission
         timeout, SRTT + 4·RTTVAR (RFC 6298 §2; its 1 s initial RTO until the first
         refill is timed): runs closer together than that may wait for a refill.
-      - A pool unclaimed for SHARDS_POOL_KEEP seconds (600) ends its ready VMs and keeps
-        none until its next run, which is served all the same: a fixed keep-alive, as
-        AWS keeps an idle function 10 minutes and Azure 20 (Shahrad et al., "Serverless
-        in the Wild", USENIX ATC 2020, §1). Their hybrid histogram policy, which sets
-        each application's keep-alive and pre-warming from its inter-arrival times, is
-        not taken: the thresholds that say when its histogram is representative are not
-        published, and no traces of agents' runs exist here to set them.
+      - A pool idle for SHARDS_POOL_KEEP seconds (600), none of its runs going and none
+        claimed or ended within them, ends its ready VMs and keeps none until its next
+        run, which is served all the same: a fixed keep-alive, as AWS and Azure keep a
+        function's resources 10 and 20 minutes "after a function execution" (Shahrad et
+        al., "Serverless in the Wild", USENIX ATC 2020, §1, §2), a keep-alive that "only
+        starts at the end of function executions" (§4). Counted from its claims alone, a
+        pool whose runs outlasted it kept nothing for the next: a loaded host's runs took
+        28 to 31 s, past a test's keep-alive of 15 s (PM M346). Their hybrid histogram
+        policy, which sets each application's keep-alive and pre-warming from its
+        inter-arrival times, is not taken: the thresholds that say when its histogram is
+        representative are not published, and no traces of agents' runs exist here to set
+        them.
     - **What nothing needs is collected** (`Store::collect`, daemon.rs
       `collect_garbage`), at the daemon's start and once a pull, by a run or by `shards
       pull`, has moved a reference (it leaves `images/collect-due`, whose coming the

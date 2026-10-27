@@ -2406,8 +2406,8 @@ fn warm_vms_are_bounded_across_templates() {
 
 /// A pool keeps what its runs need while they come (audit A13): runs well apart keep one
 /// warm VM, not the most a pool may keep; runs at once keep more, up to that most; and a
-/// pool unclaimed past `SHARDS_POOL_KEEP` keeps none. The next run is served all the
-/// same, and its pool keeps VMs again.
+/// pool idle past `SHARDS_POOL_KEEP`, none of its runs going, keeps none. The next run is
+/// served all the same, and its pool keeps VMs again.
 /// Each warm VM of a pool is given its template's root filesystem (`--backing`), the
 /// one file a restore of it may name, so that what the VM saving the template wrote does
 /// not choose what the next is given.
@@ -2514,14 +2514,23 @@ fn pools_keep_what_their_runs_need_while_they_come() {
             let image = image.clone();
             std::thread::spawn(move || {
                 let env: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-                run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT).status
+                let began = Instant::now();
+                let status = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT).status;
+                (status, began.elapsed())
             })
         })
         .collect();
+    // How long each run took, said where the pool keeps too few after them: a loaded
+    // host's took 28 to 31 s (PM M346).
+    let mut took = Vec::new();
     for b in burst {
-        assert_eq!(b.join().unwrap(), Some(0));
+        let (status, run_took) = b.join().unwrap();
+        assert_eq!(status, Some(0));
+        took.push(run_took);
     }
-    settled("a burst of three", &|n| n >= 2);
+    settled(&format!("a burst of three, its runs taking {took:?}"), &|n| {
+        n >= 2
+    });
     // Never past its most, once the burst's own VMs have gone, each of which tells its run's
     // end before it goes, a loaded runner's past 500 ms: what the pool keeps it keeps until
     // its keep-alive, so a pool past its most stays so.
