@@ -148,7 +148,7 @@ pub(super) const IDENTITY: &[(u32, u32)] = &[
 /// Bounds on what a decoder takes: a state is a few pages; a host's register list is
 /// shorter than this.
 /// ERROR_MORE_DATA (234) as an HRESULT (FACILITY_WIN32).
-const ERROR_MORE_DATA_HRESULT: u32 = 0x8007_00EA;
+pub(super) const ERROR_MORE_DATA_HRESULT: u32 = 0x8007_00EA;
 
 const MAX_BLOB: usize = 64 << 10;
 const MAX_REGISTERS: usize = 256;

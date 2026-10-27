@@ -184,12 +184,14 @@ pub fn check_host() -> std::result::Result<(), String> {
 /// `restore_state`): vCPU 0's local APIC page, of a partition of one set up as every VM's
 /// is, read and set back, once a process and only when asked, so that no VM's start pays
 /// for it. Windows Server 2022 (build 20348) refuses a page set back as read
-/// (ERROR_MORE_DATA), where builds 26100 and 26200 take it (PM M345).
+/// (ERROR_MORE_DATA), where builds 26100 and 26200 take it (PM M345). Only that refusal
+/// says no: a probe that cannot run, as where the process holds a partition already (one a
+/// process, D196), leaves a restore to say why it fails, as it does.
 pub fn restores() -> bool {
     static RESTORES: OnceLock<bool> = OnceLock::new();
     *RESTORES.get_or_init(|| {
         let Ok(partition) = partition(1) else {
-            return false;
+            return true;
         };
         // SAFETY: the partition just set up.
         if check("WHvCreateVirtualProcessor", unsafe {
@@ -197,7 +199,7 @@ pub fn restores() -> bool {
         })
         .is_err()
         {
-            return false;
+            return true;
         }
         let kind = WHvVirtualProcessorStateTypeInterruptControllerState2;
         let set_back = partition.state(0, kind).and_then(|page| {
@@ -210,7 +212,7 @@ pub fn restores() -> bool {
         });
         // SAFETY: the vCPU made above, which never ran.
         unsafe { WHvDeleteVirtualProcessor(partition.0, 0) };
-        set_back.is_ok()
+        !matches!(set_back, Err(Error::Call { hr, .. }) if hr as u32 == state::ERROR_MORE_DATA_HRESULT)
     })
 }
 
