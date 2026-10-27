@@ -50,7 +50,9 @@ enum Process {
         ended_vm: Option<Arc<shards_ipc::Child>>,
         watch: Option<ExitWatch>,
     },
-    /// A run's share process (D38), which ends as its VM's connections close.
+    /// A run's share process (D38), which ends as its VM's connections close: Unix's
+    /// alone as yet.
+    #[cfg_attr(windows, allow(dead_code))]
     Share {
         child: Arc<shards_ipc::Child>,
         watch: Option<ExitWatch>,
@@ -421,6 +423,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Follows share process `child` to its end on the followers' loop, which reaps it.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(super) fn follow_share<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, child: shards_ipc::Child) {
         let f = &self.followers;
         let token = f.next.fetch_add(1, Ordering::Relaxed);

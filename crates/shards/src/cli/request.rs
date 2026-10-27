@@ -904,7 +904,7 @@ pub(crate) fn run_status(error: &str) -> u8 {
 
 /// The request `args` (`run`'s words) make, as `run` makes it: for tests that hold what a
 /// request becomes to what Docker makes of the same words.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn for_test(args: &[String]) -> Result<Run, String> {
     match shards_cmdline::flags::parse(&RUN, "shards run", args, &validate) {
         shards_cmdline::flags::Outcome::Run(parsed) => request(&parsed),

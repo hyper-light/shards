@@ -195,7 +195,6 @@ pub fn command(
                 }
                 Err(e) => return refuse(&format!("shards: {e}")),
             };
-            #[cfg(unix)]
             if let Some(disk) = &pulled.rootfs {
                 publish(home, reference, &pulled.id, &pulled.config, disk, env);
             }
@@ -229,7 +228,6 @@ pub fn command(
 /// daemon's publisher, so that the pull does not wait: unless `SHARDS_LOCAL_STORE` is
 /// `none`, or no store is found (local_store.rs). The client's `env` names the store,
 /// else the daemon's own.
-#[cfg(unix)]
 pub(crate) fn publish(
     home: &Path,
     reference: &Reference,

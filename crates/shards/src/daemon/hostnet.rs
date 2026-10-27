@@ -26,6 +26,7 @@ use shards_vmm::devices::virtio::fs::host::linux_errno;
 
 /// IP protocol numbers (IANA).
 const TCP: u8 = 6;
+#[cfg(unix)]
 const UDP: u8 = 17;
 /// Linux's errnos for what is the daemon's to say: a socket it does not have, and a
 /// network process that is gone.

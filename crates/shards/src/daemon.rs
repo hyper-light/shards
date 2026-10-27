@@ -46,6 +46,8 @@ mod cuts;
 mod demand;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach.
+/// Unix's: Windows' named pipe comes with the plan's step 8.
+#[cfg(unix)]
 pub(crate) const ENGINE_SOCKET: &str = engine::SOCKET;
 mod events;
 mod files;
@@ -190,7 +192,8 @@ fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The home's empty directory, every join share's root (D119): its server makes nothing in
-/// it, and shows nothing of it.
+/// it, and shows nothing of it. Unix's, as share processes are as yet (D38).
+#[cfg(unix)]
 const JOIN_ROOT: &str = "join-root";
 /// The home's private directory, 0700: a build's ID file, and what a share process keeps of
 /// a restored guest's files that no path reaches (D176).
@@ -631,10 +634,23 @@ enum RunState {
     /// Being handed to a warm VM: it starts or fails, and commands wait to see which.
     /// `socket` is the VM's, which the handoff holds open until the run leaves this state
     /// (`start_run`): a VM says TAKEN on it before it starts anything.
-    Handing { socket: RawFd },
+    Handing { socket: Named },
     /// Handed over, and followed until it ends.
     Tracked(Tracked),
 }
+
+/// A descriptor named by its value, which its holder keeps open while it is named
+/// (`RunState::Handing`'s socket): never owned, closed or read through, only looked at.
+#[derive(Debug, Clone, Copy)]
+struct Named(RawFd);
+
+// SAFETY: a value, looked at by whichever thread holds the runs' lock; a Windows handle's
+// value is a pointer, which Rust would not send.
+#[cfg(windows)]
+unsafe impl Send for Named {}
+// SAFETY: as above.
+#[cfg(windows)]
+unsafe impl Sync for Named {}
 
 /// What a run was composed of, which each `exec` in its container starts from, and its
 /// health check with the shell a `CMD-SHELL` one runs in.
@@ -3457,12 +3473,28 @@ impl<D: Disk> Daemon<D> {
         if !published.is_empty() {
             flags |= shards_ipc::RUN_PUBLISHED;
         }
+        // The client's connection and the shares' link as a message hands them on: a stream
+        // lends no handle on Windows (`shards_ipc::handed`).
+        let handed = shards_ipc::handed(conn)
+            .and_then(|c| Ok((c, shares.as_ref().map(shards_ipc::handed).transpose()?)));
+        let (conn_fd, link_fd) = match &handed {
+            Ok((c, l)) => (Some(c.as_fd()), l.as_ref().map(|l| l.as_fd())),
+            Err(e) => {
+                if !matches!(start, network::Start::Fails(_)) {
+                    start = network::Start::Fails(format!("handing on its connections: {e}"));
+                }
+                (None, None)
+            }
+        };
         // A detached run's output goes only to its log; it reads nothing.
         let mut fds = if run.detach {
             flags |= shards_ipc::RUN_DETACHED;
             vec![stdin.as_fd()]
         } else {
-            vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
+            conn_fd
+                .into_iter()
+                .chain([stdin.as_fd(), stdout.as_fd(), stderr.as_fd()])
+                .collect()
         };
         if kept.is_some() {
             fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
@@ -3544,8 +3576,8 @@ impl<D: Disk> Daemon<D> {
             flags |= shards_ipc::RUN_SWAP;
             fds.push(file.as_fd());
         }
-        if let Some(link) = &shares {
-            fds.push(link.as_fd());
+        if let Some(link) = link_fd {
+            fds.push(link);
         }
         // An image whose Agentfile grants its agents anything past the microVM: init keeps
         // the run's own processes from those grants (eth0's own subnet alone, of both
@@ -4033,7 +4065,9 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// The home's private directory (`tmp`, 0700), made if it is not there: where a share
-    /// process keeps the files a restored guest holds that no path reaches (D176).
+    /// process keeps the files a restored guest holds that no path reaches (D176). Unix's,
+    /// as share processes are as yet (D38).
+    #[cfg(unix)]
     fn private_dir(&self) -> Result<File, String> {
         let at = self.home.join(PRIVATE);
         match crate::os::owner_only_dir(&mut std::fs::DirBuilder::new()).create(&at) {
@@ -4656,7 +4690,9 @@ impl<D: Disk> Daemon<D> {
             match runs.get_mut(id) {
                 Some(state) if matches!(state, RunState::Pending { cancelled: false }) => {
                     if !self.ending.load(Ordering::SeqCst) {
-                        *state = RunState::Handing { socket };
+                        *state = RunState::Handing {
+                            socket: Named(socket),
+                        };
                         return Ok(());
                     }
                 }
@@ -5025,6 +5061,9 @@ impl<D: Disk> Daemon<D> {
                         log(format!("container {id}: answering its engine connection: {e}"));
                     }
                     match (inbox.engine.is_some(), m.fds.into_iter().next()) {
+                        // A VM gives its daemon no handle on Windows (`shards_ipc::Stream`):
+                        // a run there has no engine of its own (network.rs `check`).
+                        #[cfg(unix)]
                         (true, Some(fd)) => {
                             self.engine.arrive(id, UnixStream::from(fd));
                             self.wake_listener();
@@ -5242,7 +5281,7 @@ impl<D: Disk> Daemon<D> {
         let mut states = lock(&self.runs);
         while states
             .values()
-            .any(|r| matches!(r, RunState::Handing { socket } if readable_fd(*socket)))
+            .any(|r| matches!(r, RunState::Handing { socket } if readable_fd(socket.0)))
         {
             states = self.resolved.wait(states).unwrap_or_else(PoisonError::into_inner);
         }
@@ -6117,6 +6156,8 @@ impl<D: Disk> Daemon<D> {
             #[cfg(windows)]
             return Err(NO_SHARES.into());
         }
+        #[cfg(windows)]
+        let _ = threads;
         let image =
             File::open(&prepared.rootfs).map_err(|e| format!("{}: {e}", prepared.rootfs.display()))?;
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a joiner's connection: {e}"))?;
@@ -6125,11 +6166,12 @@ impl<D: Disk> Daemon<D> {
         let held = theirs
             .try_clone()
             .map_err(|e| format!("a joiner's connection: {e}"))?;
+        let handed = shards_ipc::handed(&theirs).map_err(|e| format!("a joiner's connection: {e}"))?;
         lock(&inbox).execs_in_flight.push((number, held));
         if let Err(e) = socket.send(
             kind::JOIN,
             &number.to_be_bytes(),
-            &[theirs.as_fd(), image.as_fd()],
+            &[handed.as_fd(), image.as_fd()],
         ) {
             lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
             return Err(format!("the microVM of container {shown}: {e}"));
@@ -7750,6 +7792,90 @@ mod tests {
         PoolKey::new(dir.as_ref(), "")
     }
 
+    /// A process that does nothing for `secs` seconds and ends, standing in for a VM or a
+    /// network process: `sleep` on Unix; on Windows cmd's pings of the loopback, a second
+    /// apart (`ping -n`'s first answers at once).
+    fn sleeper(secs: u64) -> shards_ipc::Child {
+        #[cfg(unix)]
+        let (program, args) = (PathBuf::from("/bin/sleep"), vec![secs.to_string()]);
+        #[cfg(windows)]
+        let (program, args) = (
+            Path::new(&std::env::var_os("SystemRoot").unwrap()).join(r"System32\cmd.exe"),
+            vec!["/c".to_string(), format!("ping -n {} 127.0.0.1 >nul", secs + 1)],
+        );
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        shards_ipc::spawn(&program, &args, &[], false).unwrap()
+    }
+
+    /// Ends process `pid`, a child of the test's, as SIGKILL does.
+    fn kill_pid(pid: u32) {
+        #[cfg(unix)]
+        // SAFETY: kill(2) of the test's own child.
+        unsafe {
+            libc::kill(pid as libc::pid_t, shards_ipc::signal::SIGKILL)
+        };
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+            // SAFETY: a process the test started, opened to end it, and the handle closed.
+            unsafe {
+                let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                assert!(!process.is_null(), "{}", io::Error::last_os_error());
+                TerminateProcess(process, 128 + 9);
+                CloseHandle(process);
+            }
+        }
+    }
+
+    /// Whether process `pid` is gone, reaped: one that has ended unreaped still answers a
+    /// signal of 0 on Unix; on Windows its process stays while a handle holds it.
+    fn reaped(pid: u32) -> bool {
+        #[cfg(unix)]
+        // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+        return unsafe { libc::kill(pid as libc::pid_t, 0) != 0 };
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+            // SAFETY: an open of the process for no more than waiting, closed at once.
+            unsafe {
+                let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+                if process.is_null() {
+                    return true;
+                }
+                CloseHandle(process);
+                false
+            }
+        }
+    }
+
+    /// Whether `vm` has ended, without reaping it.
+    fn ended_unreaped(vm: &shards_ipc::Child) -> bool {
+        #[cfg(unix)]
+        {
+            // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+            // SAFETY: as above, for a child of this process.
+            assert_eq!(unsafe { libc::waitid(libc::P_PID, vm.id(), &mut info, flags) }, 0);
+            // SAFETY: waitid filled `info`, whose pid is 0 while the child runs.
+            let pid = unsafe { info.si_pid() };
+            pid != 0
+        }
+        // Windows reaps nothing: a process's end is its handle's signal.
+        #[cfg(windows)]
+        vm.has_ended()
+    }
+
+    /// The stream a message's descriptor `fd` is an end of.
+    fn stream_of(fd: &OwnedFd) -> UnixStream {
+        #[cfg(unix)]
+        return UnixStream::from(fd.try_clone().unwrap());
+        #[cfg(windows)]
+        return shards_ipc::Stream::given(fd.try_clone().unwrap()).unwrap();
+    }
+
     /// A client's end is seen; a message not the watch's is not taken, and ends the watch,
     /// the client there; its signals and terminal sizes go with the watch, which goes on;
     /// its INTERRUPT is answered, as it came, and ends the watch, what follows kept; and the
@@ -7826,10 +7952,10 @@ mod tests {
                     shards_ipc::send(&vm, kind::TAKEN, &[], &[]).unwrap();
                     run.fds
                 });
-                hand_over(&daemon, b"run", &[conn.as_fd()]).unwrap();
+                hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap();
                 drop(conn);
                 let mut fds = warm.join().unwrap();
-                let mut taken = UnixStream::from(fds.pop().unwrap());
+                let mut taken = stream_of(&fds.pop().unwrap());
                 client.write_all(b"x").unwrap();
                 let mut got = [0u8; 1];
                 taken.read_exact(&mut got).unwrap();
@@ -7843,7 +7969,7 @@ mod tests {
         let (daemon, vm) = UnixStream::pair().unwrap();
         let (_client, conn) = UnixStream::pair().unwrap();
         let warm = std::thread::spawn(move || drop(shards_ipc::recv(&vm)));
-        let e = hand_over(&daemon, b"run", &[conn.as_fd()]).unwrap_err();
+        let e = hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap_err();
         assert_eq!(e, Untaken::Surely("it ended first".into()));
         warm.join().unwrap();
     }
@@ -7859,13 +7985,13 @@ mod tests {
             shards_ipc::send(&vm, kind::STARTED, &[], &[]).unwrap();
             vm
         });
-        let e = hand_over(&daemon, b"run", &[conn.as_fd()]).unwrap_err();
+        let e = hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap_err();
         assert!(matches!(e, Untaken::Unknown(_)), "{e:?}");
         drop(warm.join().unwrap());
         // So does a VM whose socket is gone before the request is whole.
         let (daemon, vm) = UnixStream::pair().unwrap();
         drop(vm);
-        let e = hand_over(&daemon, b"run", &[conn.as_fd()]).unwrap_err();
+        let e = hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap_err();
         assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
@@ -8039,7 +8165,7 @@ mod tests {
         fn warm_vm(&self, pool: Option<&str>) -> (Ready, UnixStream) {
             let (ours, theirs) = UnixStream::pair().unwrap();
             theirs.set_read_timeout(Some(PATIENCE)).unwrap();
-            let sleep = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let sleep = sleeper(600);
             let vm = Arc::new(sleep);
             lock(&self.vms).push(vm.clone());
             let ready = Ready {
@@ -8996,13 +9122,14 @@ mod tests {
     /// the C library calls it; a path before it changes nothing, and other errors are not.
     #[test]
     fn errors_short_of_descriptors_are_known_by_their_code() {
-        for code in [libc::EMFILE, libc::ENFILE] {
+        for code in crate::os::OUT_OF_DESCRIPTORS {
             let e = io::Error::from_raw_os_error(code);
             assert!(short_of_descriptors(&e.to_string()), "{e}");
             assert!(short_of_descriptors(&format!("/home/images: {e}")), "{e}");
         }
+        // ENOENT, and ERROR_FILE_NOT_FOUND: 2 on both.
         assert!(!short_of_descriptors(
-            &io::Error::from_raw_os_error(libc::ENOENT).to_string()
+            &io::Error::from_raw_os_error(2).to_string()
         ));
         assert!(!short_of_descriptors("a store record that names no blob"));
     }
@@ -9153,8 +9280,7 @@ mod tests {
                 "a slot whose request went on let go of with its answer still to come"
             );
             // An answer its client leaves untaken lets go of it a request's time in.
-            let (client, ours) = std::io::pipe().unwrap();
-            let ours = File::from(std::os::fd::OwnedFd::from(ours));
+            let (client, ours) = shards_ipc::slots::joined().unwrap();
             let answer = vec![b'x'; 1 << 20];
             std::thread::scope(|s| {
                 let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
@@ -9182,8 +9308,7 @@ mod tests {
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             t.daemon.close();
-            let (mut client, ours) = std::io::pipe().unwrap();
-            let ours = File::from(std::os::fd::OwnedFd::from(ours));
+            let (mut client, ours) = shards_ipc::slots::joined().unwrap();
             let answer = vec![b'x'; 1 << 20];
             std::thread::scope(|s| {
                 let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
@@ -9231,19 +9356,18 @@ mod tests {
             let (ours, theirs) = UnixStream::pair().unwrap();
             shards_ipc::send(&theirs, kind::RESTART, &[], &[]).unwrap();
             shards_ipc::end(&theirs);
-            let (say, _says) = std::io::pipe().unwrap();
-            let (heard, answer) = std::io::pipe().unwrap();
+            let (say, _says) = shards_ipc::slots::joined().unwrap();
+            let (heard, answer) = shards_ipc::slots::joined().unwrap();
             let session = shards_ipc::slots::Session {
                 n: 0,
-                say: File::from(std::os::fd::OwnedFd::from(say)),
-                answer: File::from(std::os::fd::OwnedFd::from(answer)),
+                say,
+                answer,
                 input: None,
                 output: None,
                 errors: None,
             };
             let unsent = Err(io::Error::from(io::ErrorKind::BrokenPipe));
             t.daemon.pass_on(unsent, &ours, session, &living).unwrap();
-            let heard = File::from(std::os::fd::OwnedFd::from(heard));
             let told = shards_ipc::slots::read_frame(&heard).unwrap().map(|f| f.kind);
             assert_eq!(told, Some(kind::RESTART));
             assert!(shards_ipc::slots::read_frame(&heard).unwrap().is_none());
@@ -9464,23 +9588,15 @@ mod tests {
             assert_eq!(state.pools[&own("warm")].ready.len(), 1);
             assert_eq!(state.pools[&own("waited")].ready.len(), 1);
             drop(state);
-            // Whether a VM has ended, without reaping it.
-            let ended = |vm: &shards_ipc::Child| {
-                // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
-                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-                let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
-                // SAFETY: as above, for a child of this process.
-                assert_eq!(unsafe { libc::waitid(libc::P_PID, vm.id(), &mut info, flags) }, 0);
-                // SAFETY: waitid filled `info`, whose pid is 0 while the child runs.
-                let pid = unsafe { info.si_pid() };
-                pid != 0
-            };
             let deadline = Instant::now() + PATIENCE;
-            while !ended(&vms[0].1) {
+            while !ended_unreaped(&vms[0].1) {
                 assert!(Instant::now() < deadline, "the aged VM goes on");
                 std::thread::sleep(Duration::from_millis(5));
             }
-            assert!(!ended(&vms[1].1) && !ended(&vms[2].1), "a kept VM ended");
+            assert!(
+                !ended_unreaped(&vms[1].1) && !ended_unreaped(&vms[2].1),
+                "a kept VM ended"
+            );
         });
     }
 
@@ -9830,7 +9946,7 @@ mod tests {
             panic!("an exec with {} descriptors", m.fds.len())
         };
         File::from(stdout.try_clone().unwrap()).write_all(output).unwrap();
-        let conn = UnixStream::from(conn.try_clone().unwrap());
+        let conn = stream_of(conn);
         shards_ipc::send(&conn, kind::EXIT, &[code], &[]).unwrap();
     }
 
@@ -9870,7 +9986,7 @@ mod tests {
             }
             // Its time up, its give-back is ended on its exec's connection, as its VM says
             // once it has ended it; then it may be asked again.
-            let conn = UnixStream::from(held.fds[0].try_clone().unwrap());
+            let conn = stream_of(&held.fds[0]);
             conn.set_read_timeout(Some(PATIENCE)).unwrap();
             let ended = shards_ipc::recv(&conn).unwrap().unwrap();
             assert_eq!((ended.kind, ended.payload), signal(9));
@@ -9939,7 +10055,7 @@ mod tests {
         let t = Test::new("settle-handing");
         t.run(|t| {
             let handing = |socket: &UnixStream| RunState::Handing {
-                socket: socket.as_raw_fd(),
+                socket: Named(socket.as_raw_fd()),
             };
             let (quiet, _unanswered) = UnixStream::pair().unwrap();
             lock(&t.daemon.runs).insert("quiet".into(), handing(&quiet));
@@ -10475,13 +10591,6 @@ mod tests {
         });
     }
 
-    /// Whether process `pid` is gone, reaped: one that has ended unreaped still answers a
-    /// signal of 0.
-    fn reaped(pid: u32) -> bool {
-        // SAFETY: kill(2) with signal 0 only asks whether the process exists.
-        unsafe { libc::kill(pid as libc::pid_t, 0) != 0 }
-    }
-
     /// A warm VM that ends while it waits is reaped, and taken out of its pool, by the
     /// followers' loop: no thread waits out its life (PM M90).
     #[test]
@@ -10613,7 +10722,9 @@ mod tests {
     }
 
     /// A run that publishes nothing, as one on `--network none` never does, holds nothing:
-    /// a record of no addresses, one a run, would only grow (review 2.11, 2.18).
+    /// a record of no addresses, one a run, would only grow (review 2.11, 2.18). Unix's
+    /// until the plan's step 5 publishes ports on Windows.
+    #[cfg(unix)]
     #[test]
     fn a_run_that_publishes_nothing_holds_nothing() {
         let t = Test::new("hold-nothing");
@@ -10688,7 +10799,7 @@ mod tests {
         t.run(|t| {
             let (ready, _theirs) = t.warm_vm(None);
             let vm = ready.vm.clone();
-            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net = sleeper(600);
             let net_pid = net.id();
             lock(&t.daemon.ports_held).push(publish::Held {
                 container: "c".into(),
@@ -10716,7 +10827,7 @@ mod tests {
         t.run(|t| {
             let (ready, _theirs) = t.warm_vm(None);
             let vm = ready.vm.clone();
-            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net = sleeper(600);
             let net_pid = net.id();
             lock(&t.daemon.ports_held).push(publish::Held {
                 container: "c".into(),
@@ -10725,8 +10836,7 @@ mod tests {
                 listeners: Vec::new(),
             });
             t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
-            // SAFETY: kill(2) of the test's own child.
-            unsafe { libc::kill(net_pid as libc::pid_t, shards_ipc::signal::SIGKILL) };
+            kill_pid(net_pid);
             t.until("the network process was not reaped", |_| reaped(net_pid));
             assert_eq!(lock(&t.daemon.ports_held).len(), 1, "freed with the VM running");
             let ended = Instant::now();
@@ -10745,7 +10855,7 @@ mod tests {
         t.run(|t| {
             let (ready, _theirs) = t.warm_vm(None);
             let vm = ready.vm.clone();
-            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net = sleeper(600);
             let net_pid = net.id();
             lock(&t.daemon.ports_held).push(publish::Held {
                 container: "c".into(),
@@ -10762,8 +10872,7 @@ mod tests {
             });
             assert!(!reaped(vm.id()), "reaped while its ports were held");
             assert_eq!(lock(&t.daemon.ports_held).len(), 1);
-            // SAFETY: kill(2) of the test's own child.
-            unsafe { libc::kill(net_pid as libc::pid_t, shards_ipc::signal::SIGKILL) };
+            kill_pid(net_pid);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             t.until("the VM was not reaped", |_| reaped(vm.id()));
         });
@@ -10780,10 +10889,9 @@ mod tests {
             let (ready, _theirs) = t.warm_vm(None);
             t.t.daemon.follow_vm(t.threads, ready.vm.clone(), None, None);
             std::thread::sleep(Duration::from_millis(100));
-            let vm =
-                Arc::new(shards_ipc::spawn(Path::new("/bin/sleep"), &["0".as_ref()], &[], false).unwrap());
+            let vm = Arc::new(sleeper(0));
             vm.ended().unwrap();
-            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net = sleeper(600);
             let net_pid = net.id();
             lock(&t.daemon.ports_held).push(publish::Held {
                 container: "c".into(),
@@ -11026,7 +11134,9 @@ mod tests {
 
     /// A connection a run's command made to its own microVM's engine (D181), which its VM
     /// hands over, is answered as taken (M24), and served scoped to that microVM; one from
-    /// a run with no engine of its own is answered too, and closed unserved.
+    /// a run with no engine of its own is answered too, and closed unserved. Unix's until
+    /// the plan's step 8 serves the Engine API on Windows.
+    #[cfg(unix)]
     #[test]
     fn an_engine_connection_is_served_for_a_run_with_its_own_engine_alone() {
         use std::io::{Read as _, Write as _};

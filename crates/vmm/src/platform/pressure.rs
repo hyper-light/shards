@@ -392,29 +392,27 @@ impl MemoryPressure {
         use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0};
         use windows_sys::Win32::System::Memory::QueryMemoryResourceNotification;
         use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
-        loop {
-            if self.raised {
-                std::thread::sleep(REPEAT);
-                let mut low = 0;
-                // SAFETY: the notification this holds, and a BOOL to write.
-                if unsafe { QueryMemoryResourceNotification(self.low.as_raw_handle(), &raw mut low) } == 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if low != 0 {
-                    // Still low, as it was REPEAT ago.
-                    return Ok(());
-                }
-                self.raised = false;
+        if self.raised {
+            std::thread::sleep(REPEAT);
+            let mut low = 0;
+            // SAFETY: the notification this holds, and a BOOL to write.
+            if unsafe { QueryMemoryResourceNotification(self.low.as_raw_handle(), &raw mut low) } == 0 {
+                return Err(io::Error::last_os_error());
             }
-            // SAFETY: a wait on the notification this holds.
-            match unsafe { WaitForSingleObject(self.low.as_raw_handle(), INFINITE) } {
-                WAIT_OBJECT_0 => {
-                    self.raised = true;
-                    return Ok(());
-                }
-                WAIT_FAILED => return Err(io::Error::last_os_error()),
-                other => return Err(io::Error::other(format!("a wait answered {other}"))),
+            if low != 0 {
+                // Still low, as it was REPEAT ago.
+                return Ok(());
             }
+            self.raised = false;
+        }
+        // SAFETY: a wait on the notification this holds.
+        match unsafe { WaitForSingleObject(self.low.as_raw_handle(), INFINITE) } {
+            WAIT_OBJECT_0 => {
+                self.raised = true;
+                Ok(())
+            }
+            WAIT_FAILED => Err(io::Error::last_os_error()),
+            other => Err(io::Error::other(format!("a wait answered {other}"))),
         }
     }
 }

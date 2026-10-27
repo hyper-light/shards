@@ -93,7 +93,9 @@ impl Engine {
     }
 
     /// Keeps `conn`, a connection run `provider`'s command made to its own microVM's engine
-    /// (D181), for the listener to take ([`Engine::take_arrived`]).
+    /// (D181), for the listener to take ([`Engine::take_arrived`]). Unix's: a VM gives its
+    /// daemon no handle on Windows.
+    #[cfg(unix)]
     pub(super) fn arrive(&self, provider: &str, conn: UnixStream) {
         lock(&self.arrived).push((provider.to_string(), conn));
     }
@@ -363,7 +365,7 @@ impl<D: Disk> Daemon<D> {
         // `check`).
         #[cfg(windows)]
         if scope.is_none() {
-            log("refused an API client: the Engine API is not served on Windows yet".into());
+            log("refused an API client: the Engine API is not served on Windows yet");
             return;
         }
         // SAFETY: geteuid(2) cannot fail.

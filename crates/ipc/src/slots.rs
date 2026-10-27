@@ -29,6 +29,25 @@ pub type Line = std::fs::File;
 #[cfg(windows)]
 pub type Line = crate::Pipe;
 
+/// Two lines joined, what is written to the second read from the first, as a session's
+/// `say` and `answer` are joined to its client's ends: a pipe on Unix; on Windows a pair
+/// of shards' own pipes, either way.
+pub fn joined() -> io::Result<(Line, Line)> {
+    #[cfg(unix)]
+    {
+        let (reader, writer) = std::io::pipe()?;
+        Ok((
+            std::fs::File::from(std::os::fd::OwnedFd::from(reader)),
+            std::fs::File::from(std::os::fd::OwnedFd::from(writer)),
+        ))
+    }
+    #[cfg(windows)]
+    {
+        let (one, other) = crate::pipe::pair()?;
+        Ok((crate::Pipe::from_handle(one), crate::Pipe::from_handle(other)))
+    }
+}
+
 /// The home's directory of slots.
 pub const DIR: &str = "requests";
 

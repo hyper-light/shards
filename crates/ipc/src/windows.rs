@@ -985,7 +985,7 @@ impl crate::Identity {
 /// A child's resource group (D183's `--cgroup-parent`): none on Windows yet, where a run
 /// that names one is refused before anything starts. It has no value, so that what takes
 /// one is written once.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {}
 
 impl Group {
