@@ -1782,7 +1782,7 @@ mod tests {
                         matches!(tree.get(&dir.join(RECORD)), Some(Some(_)))
                             && !whole(dir.join(RECORD), id)
                             && whole(dir.join(NEW_RECORD), id)
-                            && tree.get(&root.join(format!(".{id}.removing"))).is_none()
+                            && !tree.contains_key(&root.join(format!(".{id}.removing")))
                     })
                     .map(str::to_string)
                     .collect();
