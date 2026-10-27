@@ -788,24 +788,47 @@ impl Removal {
         disk.sync_dir(&self.root)
     }
 
-    /// Deletes what was set aside: on Windows the directory where it is, its files deleted
-    /// as POSIX deletes them where they are open (std's `remove_dir_all`), then, once that
-    /// is durable, its mark: a power loss that kept the mark's deletion but not the
-    /// directory's would bring the container back. What a failure leaves, the next start
-    /// deletes.
+    /// [`delete_all`](Self::delete_all) of this one alone.
+    #[cfg(test)]
     pub fn delete(&self, disk: &dyn Disk) -> io::Result<()> {
-        #[cfg(windows)]
-        match disk.remove_dir_all(&self.root.join(&self.container.id)) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => disk.sync_dir(&self.root)?,
-        }
-        #[cfg(unix)]
-        let deleted = disk.remove_dir_all(&self.aside);
-        #[cfg(windows)]
-        let deleted = disk.remove_file(&self.aside);
-        match deleted {
+        Self::delete_all(&[self], disk).pop().unwrap_or(Ok(()))
+    }
+
+    /// Deletes what `removals`, of one registry, set aside, each one's failure in its
+    /// place: on Windows each directory where it is, its files deleted as POSIX deletes
+    /// them where they are open (std's `remove_dir_all`), then, once that is durable, its
+    /// mark: a power loss that kept the mark's deletion but not the directory's would bring
+    /// the container back. One sync makes all their deletions durable, a sync's tail being
+    /// milliseconds (PM M348). What a failure leaves, the next start deletes.
+    pub fn delete_all(removals: &[&Removal], disk: &dyn Disk) -> Vec<io::Result<()>> {
+        let gone = |done: io::Result<()>| match done {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
+        };
+        #[cfg(unix)]
+        return removals
+            .iter()
+            .map(|r| gone(disk.remove_dir_all(&r.aside)))
+            .collect();
+        #[cfg(windows)]
+        {
+            let mut deleted: Vec<io::Result<()>> = removals
+                .iter()
+                .map(|r| gone(disk.remove_dir_all(&r.root.join(&r.container.id))))
+                .collect();
+            let synced = match removals.first() {
+                Some(r) if deleted.iter().any(Result::is_ok) => disk.sync_dir(&r.root),
+                _ => Ok(()),
+            };
+            for (r, d) in removals.iter().zip(&mut deleted) {
+                if d.is_ok() {
+                    *d = match &synced {
+                        Ok(()) => gone(disk.remove_file(&r.aside)),
+                        Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
+                    };
+                }
+            }
+            deleted
         }
     }
 }

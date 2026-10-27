@@ -4532,7 +4532,7 @@ impl<D: Disk> Daemon<D> {
                 "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
             )),
         }
-        self.delete_aside(removal);
+        self.delete_aside(&[removal]);
         if removal.container.auto_remove {
             self.drop_anonymous(&removal.container);
         }
@@ -4621,7 +4621,7 @@ impl<D: Disk> Daemon<D> {
             return;
         };
         let synced = first.sync(&self.disk);
-        for removal in aside {
+        for removal in &aside {
             let id = &removal.container.id;
             match &synced {
                 Ok(()) => lock(&self.containers).release(id),
@@ -4629,24 +4629,28 @@ impl<D: Disk> Daemon<D> {
                     "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
                 )),
             }
-            self.delete_aside(removal);
-            if removal.container.auto_remove {
-                self.drop_anonymous(&removal.container);
-            }
+        }
+        self.delete_aside(&aside);
+        for removal in aside.iter().filter(|r| r.container.auto_remove) {
+            self.drop_anonymous(&removal.container);
         }
     }
 
-    /// Deletes what `removal` set aside, on Windows once no record of it is being written
-    /// (`await_unwritten`). A failure goes to the log: the next start deletes what it
-    /// leaves.
-    fn delete_aside(&self, removal: &Removal) {
-        let id = &removal.container.id;
+    /// Deletes what `removals` set aside, on Windows once no record of them is being
+    /// written (`await_unwritten`). Each failure goes to the log: the next start deletes
+    /// what it leaves.
+    fn delete_aside(&self, removals: &[&Removal]) {
         #[cfg(windows)]
-        self.await_unwritten(id);
-        if let Err(e) = removal.delete(&self.disk) {
-            log(format!(
-                "container {id}: deleting its files: {e}; the next start deletes them"
-            ));
+        for removal in removals {
+            self.await_unwritten(&removal.container.id);
+        }
+        for (removal, deleted) in removals.iter().zip(Removal::delete_all(removals, &self.disk)) {
+            if let Err(e) = deleted {
+                log(format!(
+                    "container {}: deleting its files: {e}; the next start deletes them",
+                    removal.container.id
+                ));
+            }
         }
     }
 
@@ -11549,9 +11553,9 @@ mod tests {
                 let registry = lock(&d.containers);
                 (0..3).all(|i| registry.name_taken(&format!("batch{i}")).is_none())
             });
-            // On Windows each deletion takes one more, after its name is let go, before
-            // its mark goes (`Removal::delete`).
-            let syncs = if cfg!(windows) { 2 + 3 } else { 2 };
+            // On Windows each batch's deletions take one more, after their names are let
+            // go, before their marks go (`Removal::delete_all`).
+            let syncs = if cfg!(windows) { 2 + 2 } else { 2 };
             t.until("each deletion synced", |d| {
                 d.disk.syncs.load(Ordering::SeqCst) >= syncs
             });
