@@ -15435,6 +15435,71 @@ revision before comparing a changed API/implementation.
   log. The tests give a log a file, as the daemon does, and compare a DACL's entry with its
   user by SID (EqualSid), not by its SDDL text.
 
+### M352. A container's `die` before its relayed output: Compose's attached `up` dropped a line (D170)
+
+- **Question.** `a_compose_service_is_built_and_run_attached` failed once on gpu's x86_64
+  Linux CI (40577156435, 234bd57c): Compose's attached `up` printed `app-1 exited with code
+  0` and not the line the built service wrote, `slurp /tmp/built: yes`, though the run's
+  status was right. Where did the line go?
+- **Method.** compose.rs's whole binary, its three tests side by side, ten times on each of
+  eight ubuntu-24.04 runners (`budget-e2e.yml` on the scratch branch `ci-compose-probe`,
+  not for dev, CI 40587510357), the daemon's Engine API attach, start, relayed output and
+  `die` each logged with microseconds since the epoch; Compose v2.38.2, the runners'. On
+  this M5 Max, the test 40 times, Compose v5.1.0. 2026-10-27.
+- **Found.**
+  - Here, 40 of 40 passed. On CI, 1 of 80 failed (runner d, run 7), as on gpu: app-1's
+    attach waited for its start, its start took it, its `die` was logged at
+    1793137384862654 µs, the VM's EXIT reached the relay at …863170, and the relay read
+    the run's 22 bytes from its pipe and wrote them to Compose's attach at …888219, 25.6 ms
+    after the `die`.
+  - Compose v2.38.2's printer, with `--exit-code-from` (which stops every service at the
+    first exit, cascade stop), sets `aborting` as it hears the first exit and drops every
+    log line it hears after (pkg/compose/printer.go, `Run`: `if !aborting`); v5.1.0's
+    prints each line as it comes, which is why no run here failed.
+  - dockerd stops a container and logs `die` only once `StreamConfig.Wait` has returned,
+    or 2 s have passed (moby v28.5.1 daemon/monitor.go:74-75), and an exec's `exec_die`
+    likewise (:210-211): its attaches have its output first.
+  - With its end waiting for the relay (gpu 9a4482dd), compose.rs's whole binary twenty
+    times on each of the eight runners (`ci-compose-probe-2`, CI 40592927773): 0 of 160
+    failed.
+- **Consequence (D170).** A run's end waits for the relays of its output to its Engine
+  API attaches under way, up to 2 s from its end, and an exec's `exec_die` likewise
+  (daemon/engine.rs `Relaying`, `RELAY_WAIT`); `a_runs_end_waits_for_the_relays_of_its_output`
+  holds it, mutation-checked.
+
+### M353. A guest's CPUs brought up in parallel or one at a time, on Windows Server 2022's WHP (D140)
+
+- **Question.** On CI's windows-2022 runners `boots_the_hosts_maximum_vcpu_count` never
+  brought up its second CPU in 60 s, the console at `smpboot: x86: Booting SMP
+  configuration:`, and every microVM booted beside it stalled too, while windows-2025's
+  brought the same 240 up. Not the VM process's confinement: alone, 2, 7 and 16 vCPUs came
+  up (CI 40582881884, 40586854103). What holds a bring-up?
+- **Method.** `probe_smp_sweep` (boot.rs, on the scratch branch `ci-smp-probe`, not for
+  dev): for each count of vCPUs, a VM alone, the time from `Booting SMP configuration` to
+  `smp: Brought up` as the console says them, or the 60 s it is given, and the VM process's
+  CPU time over it (GetProcessTimes); Windows Server 2022 10.0.20348, 4 logical CPUs; the
+  pinned kernel, Linux 6.18.48, `CONFIG_HOTPLUG_PARALLEL=y`. Then each count again with
+  `cpuhp.parallel=0` (kernel/cpu.c), which brings its APs up one at a time. CI 40593423045,
+  40596480573, 2026-10-27.
+- **Found.**
+
+  | vCPUs | parallel | host CPUs used | one at a time | host CPUs used |
+  |---|---|---|---|---|
+  | 4 | 13 ms | 2.1 | 12 ms | 0.0 |
+  | 8 | 1.43 s | 4.0 | 23 ms | 1.9 |
+  | 16 | 7.04 s | 4.0 | 45 ms | 1.3 |
+  | 32 | 39.1 s | 4.0 | 96 ms | 1.3 |
+  | 64 | none in 61 s | 4.0 | 219 ms | 1.5 |
+  | 240 (64 up) | none in 61 s | 4.0 | 219 ms | 1.3 |
+
+  Brought up in parallel, past the host's CPUs each AP started spins in its turn while
+  the next waits for a host CPU, which this WHP gives no other vCPU (the VM process used all
+  4 throughout), and its time grows past linearly with its vCPUs; one at a time, each
+  started AP is idle as the next comes up.
+- **Consequence (D140).** On WHP a guest's kernel brings its APs up one at a time
+  (vm/x86_64.rs, `cpuhp.parallel=0` beside `reboot=k`): never slower here, at 4 vCPUs as at
+  240. Unmeasured on KVM and HVF, which keep parallel.
+
 ### M354. CI's Windows runners with the daemon's microVMs running: a joiner's run never taken, a restart's null device, and a tests' step past its limit (D195, D119)
 
 - **Question.** With every VM the daemon starts made ready (M351), what fails on CI's

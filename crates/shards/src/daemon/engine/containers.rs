@@ -514,6 +514,8 @@ impl<D: Disk> Daemon<D> {
             ..Run::default()
         };
         self.as_client(&mut run)?;
+        // Registered before its run can end: its end waits for its output to reach them.
+        let relaying = self.relaying(id);
         let stdin_fd = if reads { stdin.as_fd() } else { null.as_fd() };
         let conn = self.put_run(threads, &run, [stdin_fd, out_by.as_fd(), err_by.as_fd()])?;
         drop((out_by, err_by, stdin));
@@ -567,20 +569,28 @@ impl<D: Disk> Daemon<D> {
             .spawn_scoped(threads, move || {
                 std::thread::scope(|s| {
                     let outputs = &outputs;
+                    let (copying, copies) = mpsc::channel::<()>();
                     // All its output is read, though every attach goes: its command writes
                     // on, and its log has it.
-                    let _ = std::thread::Builder::new()
-                        .name("engine-stdout".into())
-                        .spawn_scoped(s, move || outputs.copy(1, out, true));
-                    let _ = std::thread::Builder::new()
-                        .name("engine-stderr".into())
-                        .spawn_scoped(s, move || outputs.copy(2, err, true));
+                    for (stream, from, name) in [(1, out, "engine-stdout"), (2, err, "engine-stderr")] {
+                        let copying = copying.clone();
+                        let _ = std::thread::Builder::new()
+                            .name(name.into())
+                            .spawn_scoped(s, move || {
+                                outputs.copy(stream, from, true);
+                                drop(copying);
+                            });
+                    }
+                    drop(copying);
                     // Its end, which the VM says once the command has ended.
                     while let Ok(Some(m)) = shards_ipc::recv(&conn) {
                         if m.kind == kind::EXIT {
                             break;
                         }
                     }
+                    // Told once its attaches have what it wrote (`Relaying`).
+                    super::copied(&copies);
+                    drop(relaying);
                 });
                 outputs.end();
                 lock(&self.engine.terminals).remove(&ended);
@@ -913,6 +923,8 @@ impl<D: Disk> Daemon<D> {
             stdin: streams[0] && reads,
             daemon: self.identity,
         };
+        // Registered before it attaches: the run's end waits for its output to reach it.
+        let relaying = self.relaying(id);
         let Ok((ours, theirs)) = UnixStream::pair() else {
             return;
         };
@@ -940,13 +952,18 @@ impl<D: Disk> Daemon<D> {
         }
         std::thread::scope(|s| {
             let outputs = &outputs;
+            let (copying, copies) = mpsc::channel::<()>();
             // Its streams until it goes: then the VM's attach ends as their pipes close.
-            let _ = std::thread::Builder::new()
-                .name("engine-stdout".into())
-                .spawn_scoped(s, move || outputs.copy(1, out, false));
-            let _ = std::thread::Builder::new()
-                .name("engine-stderr".into())
-                .spawn_scoped(s, move || outputs.copy(2, err, false));
+            for (stream, from, name) in [(1, out, "engine-stdout"), (2, err, "engine-stderr")] {
+                let copying = copying.clone();
+                let _ = std::thread::Builder::new()
+                    .name(name.into())
+                    .spawn_scoped(s, move || {
+                        outputs.copy(stream, from, false);
+                        drop(copying);
+                    });
+            }
+            drop(copying);
             if request.stdin {
                 let _ = std::thread::Builder::new()
                     .name("engine-stdin".into())
@@ -961,6 +978,9 @@ impl<D: Disk> Daemon<D> {
                     break;
                 }
             }
+            // Its run's end told once it has what the run wrote (`Relaying`).
+            super::copied(&copies);
+            drop(relaying);
             outputs.end();
         });
         lock(&self.engine.terminals).remove(id);

@@ -351,7 +351,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Ok(handed) => handed,
             Err(e) => return refuse(&format!("shards: handing on the connection: {e}")),
         };
-        let exec_id = self.exec_events(&id, &options.argv);
+        // An Engine API exec said its `exec_create` as it was made, with the ID its client
+        // has; `shards exec` makes and starts one at once.
+        let exec_id = if exec.id.is_empty() {
+            self.exec_events(&id, &options.argv)
+        } else {
+            self.exec_event(&id, &options.argv, "exec_start", &exec.id);
+            Some(exec.id)
+        };
         {
             let mut inbox = lock(&inbox);
             inbox.execs_in_flight.push((number, held));
@@ -436,15 +443,26 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// Logs exec `argv`'s creation and start in container `id` as dockerd does (moby
-    /// daemon/exec.go: `exec_create: ENTRYPOINT ARGS`, then `exec_start`, each with its
-    /// ID), and returns the ID, for its `exec_die`; none if no ID could be made.
-    pub(super) fn exec_events(&self, id: &str, argv: &[String]) -> Option<String> {
-        let exec_id = crate::containers::new_id().ok()?;
+    /// Logs exec `exec_id`'s `action` of `argv` in container `id` as dockerd does (moby
+    /// daemon/exec.go: `exec_create: ENTRYPOINT ARGS`, then `exec_start: …`, each with its
+    /// ID).
+    pub(super) fn exec_event(&self, id: &str, argv: &[String], action: &str, exec_id: &str) {
         let (entry, args) = argv.split_first().map_or(("", &[][..]), |(e, a)| (e.as_str(), a));
         let line = format!("{entry} {}", args.join(" "));
+        self.container_event(
+            id,
+            format!("{action}: {line}"),
+            &[("execID", exec_id.to_string())],
+        );
+    }
+
+    /// Logs exec `argv`'s creation and start in container `id`, as `shards exec` makes and
+    /// starts one at once ([`exec_event`](Self::exec_event)), and returns its ID, for its
+    /// `exec_die`; none if no ID could be made.
+    pub(super) fn exec_events(&self, id: &str, argv: &[String]) -> Option<String> {
+        let exec_id = crate::containers::new_id().ok()?;
         for action in ["exec_create", "exec_start"] {
-            self.container_event(id, format!("{action}: {line}"), &[("execID", exec_id.clone())]);
+            self.exec_event(id, argv, action, &exec_id);
         }
         Some(exec_id)
     }

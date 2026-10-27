@@ -7961,6 +7961,17 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   registered before their heads are written, as clients start once they have them, so
   no first byte and no end goes unseen. A wait is for a microVM not running, its next
   end though it has yet to start, or its removal.
+- **Its output before its end.** A run's end (its container stopped, its waiters
+  answered, `die` logged) and an exec's `exec_die` wait for what the daemon relays of
+  their output to their attaches, up to 2 s from the end, as dockerd waits for its streams
+  before it stops a container or an exec (moby v28.5.1 daemon/monitor.go, `StreamConfig.Wait`
+  at lines 74 and 210; daemon/engine.rs `Relaying`). Without it a built service's one line
+  reached Compose's attach 25.6 ms after its `die`, and Compose v2.38.2, which stops
+  printing at the first exit it hears when it stops on one, dropped it (1 of 80 runs on
+  CI, PM M352). Tested by `a_runs_end_waits_for_the_relays_of_its_output`,
+  mutation-checked. An Engine API exec's events carry the ID its client was given:
+  `exec_create` as it is made, then `exec_start` and `exec_die` (moby daemon/exec.go),
+  where each had another, the daemon's own, before.
 - **An answer given before the body is read, never lost.** A call answered before its
   body is read whole (an upload its handler refuses, a build's context sent through a
   session; a call refused before it is routed, an API version not served; a body past
@@ -10200,6 +10211,10 @@ network process (D142) and its builder (D143) follow.
 - **No doorbells.** A notification port's round trip was no shorter than an MMIO exit's
   (M198): virtio's notifications are exits.
 - **A kick is a cancel**, which a run about to start takes too (M198).
+- **Its CPUs brought up one at a time.** Its kernel is told `cpuhp.parallel=0`: brought up
+  in parallel past the host's CPUs, each AP started spins in its turn while the next waits
+  for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s
+  where one at a time took 96 ms, never slower, at 4 vCPUs as at 240 (M353).
 - **The guest kernel's `hyperv` variant** (resources/kernel/hyperv.config): Linux 6.18
   marks the TSC unstable on a Hyper-V that does not offer TSC invariance, as no runner did,
   and keeps time by Hyper-V's reference TSC page only with CONFIG_HYPERV (M197). No VMBus,
