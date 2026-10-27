@@ -1123,6 +1123,7 @@ pub fn joined(setup: &mut [Vec<u8>], names: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::agentfile::AgentVolume;
 
     /// A joiner's shared directories are its microVM's join share's volumes, by the names
@@ -1152,6 +1153,9 @@ mod tests {
     /// own mounts; a run's own `-v` standing in, given as the Agentfile gives the volume;
     /// `--volumes-from` keeping no other image's grant; a tmpfs or a file refused where
     /// it would stand in, as neither is given across domains.
+    // Host directories on Windows, a drive's path in `-v` among them, come with the
+    // platform parity plan's step 6.
+    #[cfg(unix)]
     #[test]
     fn an_agentfiles_volumes_are_registered_as_it_and_the_run_say() {
         let home_dir = shards_testdir::TempDir::new("agent-volumes").unwrap();
