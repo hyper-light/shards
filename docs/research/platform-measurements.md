@@ -14808,6 +14808,22 @@ revision before comparing a changed API/implementation.
     (STATUS_ACCESS_DENIED, 0xC0000022). With the holder sharing no delete it was refused both
     ways (STATUS_SHARING_VIOLATION, 0xC0000043, with POSIX semantics; STATUS_ACCESS_DENIED
     without).
+- **Again on GitHub's runners** (`.github/workflows/windows-watch.yml`, run 40480876955 of
+  899e2369, 2026-10-27): windows-2022 (Windows Server 2022, 10.0.20348, AMD EPYC 7763, 4
+  logical CPUs) and windows-2025 (Windows Server 2025, 10.0.26100, GenuineIntel Family 6
+  Model 207, 4 logical CPUs). Each found what jupiter found:
+  - 1: none of the 20 appends reported, on either.
+  - 2: a name made reported, µs: windows-2022 n=1000 p50=207.3 p90=573.0 p99=4231.9
+    max=5891.5; windows-2025 n=1000 p50=123.7 p90=373.7 p99=3734.9 max=13111.5.
+  - 3: the oplock granted 1,000 times of 1,000 on each. Each append broke it, µs:
+    windows-2022 n=1000 p50=4.5 p90=5.6 p99=8.5 max=2585.3; windows-2025 n=1000 p50=3.7
+    p90=4.0 p99=17.3 max=1238.8; each break to level 0, no acknowledgement asked.
+  - 4: granted; the open broke nothing, and the append broke the oplock 45.3 µs on
+    (windows-2022) and 53.1 µs on (windows-2025).
+  - 5: ReOpenFile refused every way asked, "Access is denied." (5), on both.
+  - 6: the same statuses as jupiter's on both: 0 with POSIX semantics and delete shared,
+    0xC0000022 without POSIX semantics, 0xC0000043 with POSIX semantics and no delete
+    shared.
 - **Consequence (D27).**
   - On Windows a FileWatch hears names through ReadDirectoryChangesW. It hears its file's
     writes through a read oplock on a handle of its own, asked for again after each break,
