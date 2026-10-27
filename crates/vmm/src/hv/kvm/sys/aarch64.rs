@@ -34,11 +34,17 @@ pub const IOCTLS: &[u64] = &[
     KVM_IRQFD,
     KVM_ENABLE_CAP,
     KVM_SET_VCPU_EVENTS,
+    KVM_GET_VCPU_EVENTS,
+    KVM_GET_REG_LIST,
     KVM_SIGNAL_MSI,
     KVM_SET_GSI_ROUTING,
 ];
 
 pub const KVM_GET_ONE_REG: u64 = 0x4010_AEAB;
+/// _IOWR(KVMIO, 0xb0, struct kvm_reg_list): its count, then that many IDs.
+pub const KVM_GET_REG_LIST: u64 = 0xC008_AEB0;
+/// _IOR(KVMIO, 0x9f, struct kvm_vcpu_events), arm64's.
+pub const KVM_GET_VCPU_EVENTS: u64 = 0x8040_AE9F;
 /// _IOW(KVMIO, 0xa3, struct kvm_enable_cap).
 pub const KVM_ENABLE_CAP: u64 = 0x4068_AEA3;
 /// _IOW(KVMIO, 0xa0, struct kvm_vcpu_events), arm64's.
@@ -69,6 +75,14 @@ struct kvm_vcpu_events {
     reserved: [u32; 12],
 }
 
+/// A virtual SError pending in a vCPU, which KVM_GET_VCPU_EVENTS shows (api.rst 4.31): its
+/// syndrome, where it has one. KVM injects one for the host's RAS errors, and none is
+/// otherwise in any register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SError {
+    pub esr: Option<u64>,
+}
+
 impl VmFd {
     /// Enables the VM's capability `cap`, without arguments (KVM_ENABLE_CAP, api.rst 4.37).
     pub fn enable_cap(&self, cap: u32) -> io::Result<()> {
@@ -91,6 +105,9 @@ const _: () = {
     assert!(size(KVM_GET_ONE_REG) == size_of::<kvm_one_reg>());
     assert!(size(KVM_ENABLE_CAP) == size_of::<kvm_enable_cap>());
     assert!(size(KVM_SET_VCPU_EVENTS) == size_of::<kvm_vcpu_events>());
+    assert!(size(KVM_GET_VCPU_EVENTS) == size_of::<kvm_vcpu_events>());
+    // struct kvm_reg_list's own size: its count, the IDs following it.
+    assert!(size(KVM_GET_REG_LIST) == size_of::<u64>());
     assert!(size(KVM_SET_ONE_REG) == size_of::<kvm_one_reg>());
     assert!(size(KVM_ARM_VCPU_INIT) == size_of::<kvm_vcpu_init>());
     assert!(size(KVM_ARM_PREFERRED_TARGET) == size_of::<kvm_vcpu_init>());
@@ -122,6 +139,15 @@ pub const VGIC_GRP_ADDR: u32 = 0;
 pub const VGIC_GRP_NR_IRQS: u32 = 3;
 pub const VGIC_GRP_CTRL: u32 = 4;
 pub const VGIC_GRP_MAINT_IRQ: u32 = 9;
+/// Its registers (arm-vgic-v3.rst): the distributor's and each redistributor's by offset,
+/// 32 bits each; each CPU interface's by encoding, 64 bits; and the input level of 32
+/// interrupts' lines.
+pub const VGIC_GRP_DIST_REGS: u32 = 1;
+pub const VGIC_GRP_REDIST_REGS: u32 = 5;
+pub const VGIC_GRP_CPU_SYSREGS: u32 = 6;
+pub const VGIC_GRP_LEVEL_INFO: u32 = 7;
+/// KVM_GET_MP_STATE's power state of a vCPU PSCI has on (api.rst 4.38).
+pub const MP_STATE_RUNNABLE: u32 = 0;
 pub const VGIC_V3_ADDR_TYPE_DIST: u64 = 2;
 pub const VGIC_V3_ADDR_TYPE_REDIST: u64 = 3;
 /// The ITS's register frame, 128 KiB on a 64 KiB boundary (KVM_VGIC_ITS_ADDR_TYPE).
@@ -162,6 +188,17 @@ pub const fn sysreg(enc: u16) -> u64 {
     REG_ARM64 | REG_SIZE_U64 | REG_ARM64_SYSREG | enc as u64
 }
 
+/// The guest's virtual and physical counters (KVM_REG_ARM_TIMER_CNT, whose encoding is
+/// CNTV_CVAL_EL0's, the uapi's swap; KVM_REG_ARM_PTIMER_CNT, CNTPCT_EL0's): a write sets
+/// the VM's one offset of that counter from the host's (sys_regs.c, arch_timer_set_user).
+pub const REG_TIMER_CNT: u64 = sysreg(0xdf1a);
+pub const REG_PTIMER_CNT: u64 = sysreg(0xdf01);
+
+/// A register's size in bytes, which its ID holds as a power of two (KVM_REG_SIZE).
+pub const fn reg_size(id: u64) -> usize {
+    1 << ((id >> 52) & 0xf)
+}
+
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct kvm_vcpu_init {
@@ -198,6 +235,11 @@ impl VmFd {
 }
 
 impl DeviceFd {
+    /// Reads attribute `attr` of `group`, of the attribute's own type: a GICv3 register.
+    pub fn get_attr<T: Default>(&self, group: u32, attr: u64) -> io::Result<T> {
+        super::get_attr(self.0.as_raw_fd(), group, attr)
+    }
+
     /// Sets an attribute that takes no value: a control (the GICv3's initialization).
     pub fn control(&self, group: u32, attr: u64) -> io::Result<()> {
         let a = super::kvm_device_attr {
@@ -263,6 +305,140 @@ impl VcpuFd {
         };
         // SAFETY: a kvm_one_reg whose `addr` is a live u64, the register's size.
         unsafe { ioctl(self.fd(), KVM_SET_ONE_REG, (&raw const reg) as libc::c_ulong) }.map(drop)
+    }
+
+    /// Every register of this vCPU KVM gives a user, by ID (KVM_GET_REG_LIST, api.rst
+    /// 4.84): asked first for none, which KVM answers with E2BIG and the count.
+    pub fn reg_list(&self) -> io::Result<Vec<u64>> {
+        let mut list = vec![0u64];
+        loop {
+            // SAFETY: a kvm_reg_list of `list[0]` IDs after its count, which KVM fills
+            // up to that count.
+            match unsafe { ioctl(self.fd(), KVM_GET_REG_LIST, list.as_mut_ptr() as libc::c_ulong) } {
+                Ok(_) => {
+                    let n = usize::try_from(list.first().copied().unwrap_or(0)).map_err(io::Error::other)?;
+                    return Ok(list.get(1..=n).map(<[u64]>::to_vec).unwrap_or_default());
+                }
+                Err(e) if e.raw_os_error() == Some(libc::E2BIG) => {
+                    let n = usize::try_from(list.first().copied().unwrap_or(0)).map_err(io::Error::other)?;
+                    // Registers come and go only as the vCPU is initialized; a count that
+                    // grows past any arm64 vCPU's is not one.
+                    if n == 0 || n > MAX_REGS {
+                        return Err(io::Error::other(format!("KVM_GET_REG_LIST counts {n} registers")));
+                    }
+                    list = vec![0u64; n + 1];
+                    if let Some(count) = list.first_mut() {
+                        *count = n as u64;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Reads register `id`, of 16 bytes at most (a V register's), as a little-endian value.
+    pub fn get_reg_value(&self, id: u64) -> io::Result<u128> {
+        let size = reg_size(id);
+        if size > 16 {
+            return Err(io::Error::other(format!("register {id:#x}: {size} bytes")));
+        }
+        let mut value = 0u128;
+        let reg = kvm_one_reg {
+            id,
+            addr: (&raw mut value) as u64,
+        };
+        // SAFETY: a kvm_one_reg whose `addr` is a live u128, at least the register's size,
+        // of which KVM writes the register's bytes.
+        unsafe { ioctl(self.fd(), KVM_GET_ONE_REG, (&raw const reg) as libc::c_ulong) }?;
+        Ok(value)
+    }
+
+    /// Writes register `id` from a little-endian value of its size ([`get_reg_value`]).
+    ///
+    /// [`get_reg_value`]: Self::get_reg_value
+    pub fn set_reg_value(&self, id: u64, value: u128) -> io::Result<()> {
+        let size = reg_size(id);
+        if size > 16 {
+            return Err(io::Error::other(format!("register {id:#x}: {size} bytes")));
+        }
+        let reg = kvm_one_reg {
+            id,
+            addr: (&raw const value) as u64,
+        };
+        // SAFETY: a kvm_one_reg whose `addr` is a live u128, at least the register's size,
+        // of which KVM reads the register's bytes.
+        unsafe { ioctl(self.fd(), KVM_SET_ONE_REG, (&raw const reg) as libc::c_ulong) }.map(drop)
+    }
+
+    /// Its power state: [`MP_STATE_RUNNABLE`], or KVM_MP_STATE_STOPPED, off (api.rst 4.38).
+    pub fn get_mp_state(&self) -> io::Result<u32> {
+        let mut state = 0u32;
+        // SAFETY: KVM writes one u32.
+        unsafe { ioctl(self.fd(), KVM_GET_MP_STATE, (&raw mut state) as libc::c_ulong) }?;
+        Ok(state)
+    }
+
+    pub fn set_mp_state(&self, state: u32) -> io::Result<()> {
+        // SAFETY: KVM reads one u32.
+        unsafe { ioctl(self.fd(), KVM_SET_MP_STATE, (&raw const state) as libc::c_ulong) }.map(drop)
+    }
+
+    /// The virtual SError pending in the vCPU, if one is (api.rst 4.31).
+    pub fn serror(&self) -> io::Result<Option<SError>> {
+        let mut events = kvm_vcpu_events::default();
+        // SAFETY: KVM_GET_VCPU_EVENTS fills the kvm_vcpu_events it is given.
+        unsafe { ioctl(self.fd(), KVM_GET_VCPU_EVENTS, (&raw mut events) as libc::c_ulong) }?;
+        Ok((events.serror_pending != 0).then_some(SError {
+            esr: (events.serror_has_esr != 0).then_some(events.serror_esr),
+        }))
+    }
+
+    /// Makes `serror` pending in the vCPU (api.rst 4.32).
+    pub fn set_serror(&self, serror: SError) -> io::Result<()> {
+        let events = kvm_vcpu_events {
+            serror_pending: 1,
+            serror_has_esr: u8::from(serror.esr.is_some()),
+            serror_esr: serror.esr.unwrap_or(0),
+            ..Default::default()
+        };
+        // SAFETY: KVM_SET_VCPU_EVENTS reads the kvm_vcpu_events it is given.
+        unsafe {
+            ioctl(
+                self.fd(),
+                KVM_SET_VCPU_EVENTS,
+                (&raw const events) as libc::c_ulong,
+            )
+        }
+        .map(drop)
+    }
+
+    /// A handle that does not keep the vCPU: for a thread that reaches it while its own
+    /// thread waits (the machine's release, its prefetch).
+    pub fn weak(&self) -> WeakVcpu {
+        WeakVcpu {
+            fd: std::sync::Arc::downgrade(&self.fd),
+            run: std::sync::Arc::downgrade(&self.run),
+        }
+    }
+}
+
+/// More registers than any arm64 vCPU has: a reg list's count past it is no vCPU's.
+const MAX_REGS: usize = 4096;
+
+/// A vCPU's descriptor and its `kvm_run`, not kept alive by this handle ([`VcpuFd::weak`]).
+#[derive(Debug, Clone)]
+pub struct WeakVcpu {
+    fd: std::sync::Weak<std::os::fd::OwnedFd>,
+    run: std::sync::Weak<super::RunMap>,
+}
+
+impl WeakVcpu {
+    /// The vCPU, while it lives: its ioctls, KVM_RUN among them, from this thread.
+    pub fn upgrade(&self) -> Option<VcpuFd> {
+        Some(VcpuFd {
+            fd: self.fd.upgrade()?,
+            run: self.run.upgrade()?,
+        })
     }
 }
 

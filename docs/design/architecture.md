@@ -188,7 +188,12 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     interrupt a Generic Event Device (`ACPI0013`) on GSI 23 whose `_EVT` notifies it, as
     Firecracker declares them; the 16 bytes are the first of the firmware area.
   - The E2E snapshot, template, pooled-run, vsock and pmem tests run on CI's x86_64
-    runners (KVM) as on the Mac.
+    runners (KVM) as on the Mac, and on arm64 Linux's KVM in a guest with EL2 on an M3 or
+    later Mac (D154).
+- **arm64 on KVM** (D154): every register KVM lists for each vCPU, its power state and a
+  pending SError; the GIC through its registers, as the writes that remake it; the counter
+  set once for the VM at the release; working sets recorded as on x86_64, and mapped ahead
+  by the prefetch program on vCPU 0.
 
 ### Platforms (D13)
 
@@ -199,7 +204,7 @@ the guest arch is always the host arch.
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
 | Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; snapshots with cold and warm restore; CI on both libcs |
-| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; no snapshots yet (D154) |
+| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; snapshots with cold and warm restore (D154) |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
@@ -6852,7 +6857,7 @@ the guest keeps their metadata alone.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
-- Hosts whose microVMs take no snapshots yet (arm64 KVM, Windows: D140) boot every run, so
+- Hosts whose microVMs take no snapshots yet (Windows: D140) boot every run, so
   each run pays the head's probe and the layer's first mount: not measured there yet.
 - APFS fills a hole shorter than 16 MiB between written blocks of a sparse file (PM
   M277): a layer's file, as a swap file and a template's memory, takes more of a Mac's disk
@@ -7179,7 +7184,7 @@ container's processes one by one and refuses what it cannot: a `docker run -t` t
 device files, files sent over Unix sockets, locks held unless told to, processes joined
 to anything outside the set it dumps (criu.org, "What cannot be checkpointed"). A
 microVM's state is its memory and its devices', which shards' VMM already saves and
-restores for templates (D25): HVF and x86_64 KVM, arm64 KVM and WHP not yet (D140). What
+restores for templates (D25): HVF and KVM, on x86_64 and arm64 (D154), WHP not yet (D140). What
 lies outside the microVM goes as with CRIU by default, and is said: connections to the
 world beyond it, exec sessions and attached clients.
 
@@ -9221,8 +9226,87 @@ one. So both, in that order.
   of the test image skipped 2,048 to 4,095, all at one PC, 64 to a page, about 40 µs
   each nested (shards' debug log). Not yet measured: what the skips cost on a bare-metal
   host whose CPU has neither; CI's arm64 Linux runners' runs never met one, and pass.
-- **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
-  through KVM's registers); more vCPUs than one redistributor region holds (123). For
+- **Snapshots on arm64 KVM** (the parity plan's step 9, 2026-10-26): a microVM on an arm64
+  Linux host is saved and restored, cold and from warm pools, and templates, their working
+  sets and pools serve its runs, as on x86_64's KVM and Hypervisor.framework.
+  - **A vCPU's state is every register KVM lists** (KVM_GET_REG_LIST, api.rst 4.84; each
+    by KVM_GET_ONE_REG, 4.68): the core registers, KVM's firmware pseudo-registers (PSCI's
+    version, the SMCCC workarounds, the hypercall bitmaps), the system registers, the
+    timers' among them, and the caches' geometry; with its power state (KVM_GET_MP_STATE,
+    PSCI's, which KVM's own PSCI keeps) and a virtual SError pending in it, which no
+    register shows (KVM_GET_VCPU_EVENTS). As Firecracker and QEMU keep one
+    (vmm/src/arch/aarch64/vcpu.rs, save_state; target/arm/kvm.c): what KVM lists is what
+    a user may read and write back (its get-reg-list self-test), and a register a later
+    KVM adds is in it unasked. A PSCI CPU_ON owed to a vCPU not yet run is finished before
+    any of its registers is read (arm.c, KVM_GET_ONE_REG: "We could owe a reset due to
+    PSCI"). Restored into a vCPU initialized with the same features, in KVM's order; a
+    register this KVM has not, or a value it refuses, fails the restore, as a snapshot of
+    another CPU or KVM should. HVF's state keeps its own encoding byte for byte
+    (`arch::aarch64::state::VcpuCodec`).
+  - **The counter, once, for the VM.** KVM keeps one offset of the guest's virtual counter
+    for a VM, which a write of KVM_REG_ARM_TIMER_CNT through any vCPU sets as of the write
+    (sys_regs.c, arch_timer_set_user; Linux 5.x set it on every vCPU at once,
+    update_vtimer_cntvoff): so the restore writes it once, through vCPU 0, as the vCPUs
+    are released (`hv::Counter`), where each vCPU writing its own, as under HVF, would
+    step a running vCPU's counter back by the next write's lag. The counter goes on from
+    the snapshot's; the physical counter stays the host's, as under HVF, and neither
+    counter is written with the rest of the registers.
+  - **The GIC through its registers** (KVM_DEV_ARM_VGIC_GRP_*, arm-vgic-v3.rst), kept as
+    the writes that make a new VM's GIC, initialized and with every vCPU, the one saved,
+    in QEMU's order (hw/intc/arm_gicv3_kvm.c, kvm_arm_gicv3_put): the distributor's
+    implementation revision first, as the document asks, and its control; each
+    redistributor's private interrupts; the SPIs', each interrupt's configuration before
+    its line's level and its routing and enable before its pending state; then each CPU
+    interface's, its active priority registers as many as its priority bits make. A
+    set-enable and a set-active register follow all-ones written to their clear twins, as
+    a new GIC's SGIs are enabled; the pending registers set the latched state themselves,
+    and the line levels (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO) the rest of a level interrupt's.
+    KVM takes every vCPU for each access, and fails one while any vCPU is in a call of its
+    own (EBUSY): the GIC is read once every vCPU has parked and written as the machine
+    finishes, its vCPUs' threads waiting. A machine with an ITS (a PCI bus) saves none.
+  - **Working sets as on x86_64's KVM** (`vm::mapped`): recorded from the pages the host
+    maps of the first warm restore, its fault-around held off; the pages it wrote copied
+    ahead at a restore. **Mapped ahead by a program on vCPU 0**: arm64's KVM has no
+    KVM_PRE_FAULT_MEMORY (x86's and s390's alone, virt/kvm/Kconfig, to Linux 7.2), so
+    vCPU 0 runs the prefetch program Hypervisor.framework's does
+    (`arch::aarch64::prefetch`). KVM runs no vCPU before the GIC is initialized
+    (vgic_v3_map_resources: EBUSY) nor makes one after (kvm_arch_vcpu_precreate), so it
+    runs as the machine finishes, from that thread, its own waiting; then vCPU 0's state
+    is restored again. KVM takes a guest's HVC for itself (SMCCC), so the program ends
+    with a write KVM returns as MMIO, which a run with `immediate_exit` then retires, as
+    KVM_RUN completes the last exit's access first (mmio.c, kvm_handle_mmio_return), lest
+    it advance the restored PC; its exception vectors end it the same way. Its memory slot
+    is read-only and deleted after, which unmaps it at stage 2 and flushes the VM's stage
+    1 translations with it.
+  - **A guest with virtualization of its own is shown the host's widest addresses**
+    (`--nested`, D132): Hypervisor.framework's guest is shown the PARange its memory map
+    needs (D10), and arm64's KVM sizes the VMs it runs by its CPU's PARange (kvm_ipa_limit),
+    so a nested guest's own microVMs had no room past their memory for a share's DAX
+    window or a run's swap window ("the guest's addresses leave none a 2 MiB range").
+  - **Tested on arm64 Linux by the snapshot tests themselves**, where no arm64 Linux host
+    of ours has KVM (CI's arm64 runners have no /dev/kvm): boot.rs's
+    `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` builds tests/snapshot.rs,
+    warm.rs, saved.rs and daemon.rs whole, and the snapshot tests of run.rs, vsock.rs,
+    pmem.rs and boot.rs, for arm64 Linux (static musl, `common::linux_tests`), and runs
+    them in a guest with EL2 on an M3 or later Mac, the `kvm` kernel's, as such a host runs
+    them, every VM test required (SHARDS_REQUIRE_VMS), one at a time: two of the daemon's
+    tests together, some 20 VMs of eight vCPUs on the guest's eight, its KVM nVHE, stalled
+    restored guests 20 to 31 s in 11 of 24 rounds (PM M346). The guest is a host as Linux
+    has one: the test guest's `e2e` mode, PID 1, mounts its pseudo-terminals, cgroups and
+    debugfs, brings its loopback up, holds the host's CA certificates, reaps every process
+    orphaned to it as an init does (a daemon that detached and ended was a zombie its test
+    took for alive), and ends what each binary left running before the next.
+    Found and fixed on the way: a Linux host without /dev/fd (made by an init or udev) had
+    no share start (`platform::open_descriptors` reads /proc/self/fd); the nested width
+    above; two daemon tests that needed a shell for `ulimit` and one `cp` now need neither;
+    a host with no CA certificates reached no registry over plain HTTP (registry `tls.rs`);
+    and, as loaded restored guests showed them, a guest's dial of its host that gave up
+    after Linux's 2 s though its host had answered (D12), a pool's keep-alive counted from
+    its claims, past which its runs went on (D26), and ext4's bitmap prefetch in every
+    restored guest (D190). A restored guest faults back in what it holds there at 0.9 ms a
+    fault: the swap test now waits for its rounds as long as its guest makes them or its VM
+    process faults pages in.
+- **Not yet:** more vCPUs than one redistributor region holds (123). For
   VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs on x86_64
   and the host's addresses (above); a VF whose PF is bound to vfio-pci, which VFIO gives
   only with the PF's VF token (vfio_pci_core_match_token_uuid); then `--gpus` on Linux.

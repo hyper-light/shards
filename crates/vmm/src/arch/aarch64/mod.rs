@@ -2,6 +2,7 @@
 
 pub mod boot;
 pub mod esr;
+pub mod prefetch;
 pub mod psci;
 pub mod state;
 

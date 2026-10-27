@@ -4,8 +4,10 @@
 use std::fs::File;
 use std::sync::Arc;
 
+#[cfg(hv = "kvm")]
+use super::mapped;
 use super::{Config, Console};
-use crate::arch::aarch64::state::{MachineState, VcpuState};
+use crate::arch::aarch64::state::MachineState;
 use crate::arch::aarch64::{self, Entry, boot, layout};
 use crate::devices::control::Control;
 use crate::devices::power::Power;
@@ -36,7 +38,7 @@ pub enum Start {
 
 #[derive(Debug)]
 pub struct Restored {
-    pub vcpus: Vec<VcpuState>,
+    pub vcpus: Vec<hv::VcpuState>,
     /// The guest counter when the snapshot was taken. At release every vCPU gets one
     /// offset, so the counter continues from here and agrees across CPUs.
     pub counter: u64,
@@ -48,26 +50,39 @@ pub struct Restored {
     pub devices: Vec<u8>,
     /// The snapshot's working set, to prefetch before the guest runs; empty for none.
     pub working_set: Vec<hv::Touch>,
+    /// KVM's: the guest's memory a working set may name, each range's address, length and
+    /// whether the guest may write it there (its RAM): what the prefetch program touches.
+    #[cfg(hv = "kvm")]
+    pub memory: Vec<(u64, u64, bool)>,
+    /// KVM's: the host's fault-around held off over the guest's RAM and pmem for the
+    /// machine's life ([`Kept`]), as on x86_64: what the host maps of them is then what the
+    /// guest touches, and a working set recorded or mapped ahead holds those pages alone
+    /// (`platform::FaultAroundOff`, PM M312).
+    #[cfg(hv = "kvm")]
+    pub around: Option<platform::FaultAroundOff>,
 }
 
 /// What vCPU `index` sets itself up from ([`split`]): moved to its thread, its own alone.
 #[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "moved once to each vCPU's thread at its setup: boxing the state would add an allocation per vCPU to every restore"
+#[cfg_attr(
+    hv = "hvf",
+    expect(
+        clippy::large_enum_variant,
+        reason = "moved once to each vCPU's thread at its setup: boxing the state would add an allocation per vCPU to every restore"
+    )
 )]
 pub enum VcpuStart {
     /// The boot vCPU's entry; `None` for the others, which wait for PSCI CPU_ON.
     Boot(Option<Entry>),
     Restore {
-        state: VcpuState,
+        state: hv::VcpuState,
         /// vCPU 0's part.
         first: Option<First>,
     },
 }
 
 /// vCPU 0's part of a restore: the CPU the snapshot was taken on, and the working set it
-/// prefetches.
+/// prefetches as it sets up (HVF's: KVM's prefetches as the machine finishes, [`finish`]).
 #[derive(Debug)]
 pub struct First {
     cpu_id: Vec<(u16, u64)>,
@@ -81,13 +96,35 @@ pub struct Remainder {
     counter: u64,
     gic: Vec<u8>,
     devices: Vec<u8>,
+    /// KVM's: what [`finish`] prefetches, and then how many pages it did.
+    #[cfg(hv = "kvm")]
+    prefetch: Option<Prefetch>,
+    #[cfg(hv = "kvm")]
+    prefetched: usize,
+    /// KVM's: [`Restored::around`], which the machine keeps ([`keep`]).
+    #[cfg(hv = "kvm")]
+    around: Option<platform::FaultAroundOff>,
+}
+
+/// A working set KVM's vCPU 0 prefetches once every vCPU exists (hv::kvm, `Vm::prefetch`):
+/// its pages, vCPU 0's state, which the program runs over and which is restored again
+/// after it, and the guest's memory ([`Restored::memory`]).
+#[cfg(hv = "kvm")]
+#[derive(Debug)]
+struct Prefetch {
+    working_set: Vec<hv::Touch>,
+    first: hv::VcpuState,
+    memory: Vec<(u64, u64, bool)>,
 }
 
 /// What vCPU 0 found as it set up, for the machine to keep.
 #[derive(Debug, Default)]
 pub struct SetUp {
-    /// Pages of the working set it prefetched.
+    /// Pages of the working set it prefetched (HVF's).
     prefetched: usize,
+    /// KVM's: what sets the guest's counter as the vCPUs are released ([`release_offset`]).
+    #[cfg(hv = "kvm")]
+    counter: Option<hv::Counter>,
 }
 
 /// Divides `start` among `vcpus` vCPUs and the machine: each vCPU takes only its own
@@ -104,9 +141,25 @@ pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remai
             if r.vcpus.len() < vcpus {
                 return Err(format!("the snapshot has {} vCPUs, not {vcpus}", r.vcpus.len()));
             }
+            // KVM runs no vCPU before every vCPU exists, so its prefetch waits for the
+            // machine's finish, with a copy of vCPU 0's state to restore after it.
+            #[cfg(hv = "kvm")]
+            let (working_set, prefetch) = match r.vcpus.first() {
+                Some(first) if !r.working_set.is_empty() => (
+                    Vec::new(),
+                    Some(Prefetch {
+                        working_set: r.working_set,
+                        first: first.clone(),
+                        memory: r.memory,
+                    }),
+                ),
+                _ => (Vec::new(), None),
+            };
+            #[cfg(not(hv = "kvm"))]
+            let working_set = r.working_set;
             let mut first = Some(First {
                 cpu_id: r.cpu_id,
-                working_set: r.working_set,
+                working_set,
             });
             let starts = r
                 .vcpus
@@ -123,6 +176,12 @@ pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remai
                     counter: r.counter,
                     gic: r.gic,
                     devices: r.devices,
+                    #[cfg(hv = "kvm")]
+                    prefetch,
+                    #[cfg(hv = "kvm")]
+                    prefetched: 0,
+                    #[cfg(hv = "kvm")]
+                    around: r.around,
                 }),
             ))
         }
@@ -149,6 +208,9 @@ pub struct Machine {
     pub finish: Finish,
     pub start: Start,
     pub config: MachineConfig,
+    /// KVM's: each pmem region at its guest address, which working sets record.
+    #[cfg(hv = "kvm")]
+    pub pmem: Vec<(u64, Arc<pmem::Region>)>,
 }
 
 #[derive(Debug)]
@@ -389,6 +451,9 @@ struct Assembled {
     share_window_mib: u64,
     /// Its PCI host bridge, where it has a PCI bus (D153).
     pci: Option<boot::PciBridge>,
+    /// KVM's: each pmem region at its guest address, which working sets record.
+    #[cfg(hv = "kvm")]
+    pmem_regions: Vec<(u64, Arc<pmem::Region>)>,
 }
 
 /// `vsock` is the host side of the vsock device `config` asks for; `gpu`, whether it has a
@@ -489,7 +554,12 @@ fn assemble(
         .chain(layer.iter().map(|(layer, gpa)| (*gpa, layer.len())))
         .chain(windows.iter().flat_map(|w| [w.head, w.held]))
         .collect();
-    let ipa_bits = ipa_bits(top)?;
+    // A guest with virtualization of its own (D132) is shown the widest addresses the host
+    // gives, its PARange, rather than its own memory's: its own guests' addresses can be no
+    // wider (arm64 KVM sizes its VMs by it, kvm_ipa_limit), and theirs need room past their
+    // memory for their DAX and swap windows (D189, D159), which a guest shown its memory's
+    // width alone had none of (D154's test path).
+    let ipa_bits = ipa_bits(if config.nested { top.max(ipa_reach()?) } else { top })?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
     if config.nested && !hv::el2_supported() {
         return Err(hv::NO_EL2.into());
@@ -727,6 +797,11 @@ fn assemble(
         gpu_window,
         share_window_mib,
         pci,
+        #[cfg(hv = "kvm")]
+        pmem_regions: regions
+            .iter()
+            .map(|(region, gpa)| (*gpa, region.clone()))
+            .collect(),
     })
 }
 
@@ -835,6 +910,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             x0: fdt_addr,
         }),
         config,
+        #[cfg(hv = "kvm")]
+        pmem: a.pmem_regions,
     })
 }
 
@@ -845,10 +922,9 @@ pub const PAGE: u64 = hv::PAGE;
 #[cfg(hv = "hvf")]
 pub type Recorder = Arc<hv::Watch>;
 
-/// Nothing records one: a VM on arm64 KVM is not snapshotted yet (vm::SNAPSHOTS).
+/// What records a working set on KVM: the pages the host maps (`mapped`), as on x86_64.
 #[cfg(hv = "kvm")]
-#[derive(Debug)]
-pub enum Recorder {}
+pub type Recorder = mapped::Recorder;
 
 /// Starts recording `vm`'s working set: its stage 2 watches RAM and pmem alike. Every
 /// vCPU must be out of the guest.
@@ -859,6 +935,8 @@ pub fn record(vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     Ok(Some(watch))
 }
 
+/// None: on KVM, the run that saves a template records nothing; its first warm restore
+/// does ([`recorder`], `vm::RESTORES_RECORD`).
 #[cfg(hv = "kvm")]
 pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     Ok(None)
@@ -870,14 +948,23 @@ pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
     Ok(recorder.stop())
 }
 
+/// The pages touched since the restore ([`mapped::recorded`]).
 #[cfg(hv = "kvm")]
 pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
-    match *recorder {}
+    mapped::recorded(recorder)
 }
 
 /// None: on HVF, the run that saves a template records its working set ([`record`]).
+#[cfg(hv = "hvf")]
 pub fn recorder(_m: &Machine) -> Option<Recorder> {
     None
+}
+
+/// Records what restored machine `m` touches, from what its host maps of its RAM and pmem
+/// ([`mapped::recorder`]).
+#[cfg(hv = "kvm")]
+pub fn recorder(m: &Machine) -> Option<Recorder> {
+    mapped::recorder(&m.memory, &m.pmem)
 }
 
 /// What a machine keeps of its [`Start`] once its vCPUs are set up, for its release and
@@ -888,13 +975,35 @@ pub struct Kept {
     counter: Option<u64>,
     /// How many pages of its working set a restored machine prefetched.
     prefetched: usize,
+    /// KVM's: what sets the guest's counter at the release, vCPU 0's.
+    #[cfg(hv = "kvm")]
+    setter: Option<hv::Counter>,
+    /// KVM's: [`Restored::around`], held for the machine's life.
+    #[cfg(hv = "kvm")]
+    _around: Option<platform::FaultAroundOff>,
 }
 
 /// What the start leaves the running machine, once every vCPU is set up.
+#[cfg(hv = "hvf")]
 pub fn keep(rest: Option<&mut Remainder>, first: &SetUp) -> Kept {
     Kept {
         counter: rest.map(|r| r.counter),
         prefetched: first.prefetched,
+    }
+}
+
+/// What the start leaves the running machine, once every vCPU is set up.
+#[cfg(hv = "kvm")]
+pub fn keep(rest: Option<&mut Remainder>, first: &SetUp) -> Kept {
+    let (counter, prefetched, around) = match rest {
+        Some(r) => (Some(r.counter), r.prefetched, r.around.take()),
+        None => (None, 0, None),
+    };
+    Kept {
+        counter,
+        prefetched,
+        setter: first.counter.clone(),
+        _around: around,
     }
 }
 
@@ -905,7 +1014,7 @@ pub fn start_bytes(start: &Start) -> Option<[usize; 3]> {
         return None;
     };
     Some([
-        r.vcpus.capacity() * std::mem::size_of::<VcpuState>(),
+        r.vcpus.capacity() * std::mem::size_of::<hv::VcpuState>(),
         r.gic.capacity() + r.devices.capacity(),
         r.working_set.capacity() * std::mem::size_of::<hv::Touch>(),
     ])
@@ -956,6 +1065,22 @@ pub fn restore(
         .chain(a.pmem.iter().copied())
         .collect();
     let working_set = super::usable_working_set(working_set, PAGE, &guest);
+    // KVM's, as on x86_64: the host's fault-around held off before the guest touches any of
+    // its memory, and for the machine's life, so that a working set recorded or mapped ahead
+    // holds the pages the guest touched alone (PM M312); and the pages the working set says
+    // the guest wrote copied ahead, which KVM then maps writable as they are touched.
+    #[cfg(hv = "kvm")]
+    let around = platform::FaultAroundOff::over(&mapped::host_ranges(&memory, &a.pmem_regions));
+    #[cfg(hv = "kvm")]
+    if let Err(e) = mapped::copy_written(&memory, &working_set) {
+        warn!("{e}; the guest copies the pages it writes as it writes them");
+    }
+    #[cfg(hv = "kvm")]
+    let ranges: Vec<(u64, u64, bool)> = memory
+        .regions()
+        .map(|(gpa, _, len)| (gpa, len as u64, true))
+        .chain(a.pmem.iter().map(|&(gpa, len)| (gpa, len, false)))
+        .collect();
     Ok(Machine {
         vm: a.vm,
         memory,
@@ -971,8 +1096,14 @@ pub fn restore(
             gic: state.gic,
             devices: snap.devices.clone(),
             working_set,
+            #[cfg(hv = "kvm")]
+            memory: ranges,
+            #[cfg(hv = "kvm")]
+            around,
         }),
         config: snap.config.clone(),
+        #[cfg(hv = "kvm")]
+        pmem: a.pmem_regions,
     })
 }
 
@@ -986,11 +1117,38 @@ pub fn restore(
 /// request completed, the guest never told). Devices go after the GIC, because they
 /// re-raise their interrupt lines as they restore. Last, the restored guest gets a new
 /// generation ID, so it reseeds its RNG before it runs anything that uses it.
-pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, rest: Option<&Remainder>) -> Result<(), String> {
+///
+/// KVM's vCPU 0 prefetches the working set here, first, the GIC initialized and before its
+/// state is restored, as KVM runs no vCPU sooner (hv::kvm, `Vm::prefetch`).
+pub fn finish(
+    vm: &hv::Vm,
+    bus: &MmioBus,
+    vmgenid: &VmGenId,
+    rest: Option<&mut Remainder>,
+) -> Result<(), String> {
     vm.vcpus_created().map_err(|e| e.to_string())?;
     let Some(r) = rest else {
         return Ok(());
     };
+    #[cfg(hv = "kvm")]
+    if let Some(p) = r.prefetch.take() {
+        let began = crate::log::uptime_us();
+        let memory = |page: u64| {
+            p.memory
+                .iter()
+                .find(|&&(gpa, len, _)| page.checked_sub(gpa).is_some_and(|off| off < len))
+                .map(|&(_, _, writable)| writable)
+        };
+        r.prefetched = vm
+            .prefetch(&p.working_set, &p.first, memory)
+            .map_err(|e| format!("prefetching the working set: {e}"))?;
+        crate::info!(
+            "mapped {} of {} working-set pages ahead in {} us",
+            r.prefetched,
+            p.working_set.len(),
+            crate::log::uptime_us().saturating_sub(began)
+        );
+    }
     vm.restore_gic(&r.gic).map_err(|e| e.to_string())?;
     let mut devices = Reader::new(&r.devices);
     bus.restore(&mut devices)
@@ -1024,11 +1182,18 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                     ));
                 }
                 // Before the state: the prefetch runs on this vCPU. A failure is the VM's,
-                // since its translations may outlive a loop that stopped short.
+                // since its translations may outlive a loop that stopped short. KVM's
+                // waits for the machine's finish ([`split`]).
+                #[cfg(hv = "hvf")]
                 if !working_set.is_empty() {
                     set_up.prefetched = vcpu
                         .prefetch(vm, &working_set)
                         .map_err(|e| format!("prefetching the working set: {e}"))?;
+                }
+                #[cfg(hv = "kvm")]
+                {
+                    drop(working_set);
+                    set_up.counter = Some(vcpu.counter());
                 }
                 prefetched = crate::log::uptime_us();
             }
@@ -1049,20 +1214,44 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
 
 /// For a restore, the counter offset every vCPU applies at release, taken now so the
 /// guest counter continues from the snapshot.
+#[cfg(hv = "hvf")]
 pub fn release_offset(kept: &Kept) -> Result<Option<u64>, String> {
     Ok(kept
         .counter
         .map(|counter| hv::host_counter().wrapping_sub(counter)))
 }
 
+/// For a restore, the guest's counter set now to where the snapshot left it, for every
+/// vCPU at once: KVM keeps one offset for the VM, which a write through any vCPU sets as of
+/// that write (sys_regs.c, arch_timer_set_user), so a vCPU released before another's write
+/// would see its counter step back. No vCPU has an offset of its own to apply.
+#[cfg(hv = "kvm")]
+pub fn release_offset(kept: &Kept) -> Result<Option<u64>, String> {
+    match (kept.counter, &kept.setter) {
+        (Some(counter), Some(setter)) => setter
+            .set(counter)
+            .map_err(|e| format!("the guest's counter: {e}"))?,
+        (Some(_), None) => return Err("the guest's counter: vCPU 0 gave nothing to set it by".into()),
+        (None, _) => {}
+    }
+    Ok(None)
+}
+
+#[cfg(hv = "hvf")]
 pub fn set_counter_offset(vcpu: &mut hv::Vcpu, offset: u64) -> Result<(), String> {
     vcpu.set_counter_offset(offset).map_err(|e| e.to_string())
+}
+
+/// None on KVM: the counter is the VM's, set once at the release ([`release_offset`]).
+#[cfg(hv = "kvm")]
+pub fn set_counter_offset(_vcpu: &mut hv::Vcpu, _offset: u64) -> Result<(), String> {
+    Err("KVM's guest counter is the VM's, set once as its vCPUs are released".into())
 }
 
 /// One vCPU's contribution to a snapshot, captured on its own thread.
 #[derive(Debug)]
 pub struct Captured {
-    state: VcpuState,
+    state: hv::VcpuState,
     /// Its guest counter when it stopped.
     counter: u64,
     /// The CPU identity, from vCPU 0.
@@ -1101,7 +1290,7 @@ pub fn encode_state(vm: &hv::Vm, captured: Vec<Captured>) -> Result<Vec<u8>, Str
     Ok(w.into_bytes())
 }
 
-fn decode_state(bytes: &[u8]) -> Result<MachineState, String> {
+fn decode_state(bytes: &[u8]) -> Result<MachineState<hv::VcpuState>, String> {
     let mut r = Reader::new(bytes);
     let state = MachineState::decode(&mut r).map_err(|e| e.to_string())?;
     r.finish().map_err(|e| e.to_string())?;

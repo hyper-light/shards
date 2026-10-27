@@ -60,3 +60,10 @@ Each lone item is confirmed or closed as its row is worked.
    itself, held to their budgets by D188's give-backs.
 9. Row 8, `etwlogs` on Windows, and journald's counterparts on macOS and Windows.
 10. Row 9, a function passed through where a host allows one.
+
+## Closed
+
+- Row 2b, arm64 Linux: snapshots and restores, cold and warm, templates and warm pools on
+  KVM (D154), tested by the snapshot tests themselves on arm64 Linux in a guest with EL2
+  on an M3 or later Mac (boot.rs, `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`),
+  where all 78 passed (PM M346).

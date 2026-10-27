@@ -14765,3 +14765,87 @@ revision before comparing a changed API/implementation.
   - slates' daemon answers a DAX mapping with the section's value in the VM process. Before that it checks that the
     asking process holds the attachment's stream (M340: every handle to an end names its pipe), keeping the process
     handle so that the pid cannot be reused under it.
+
+### M346. arm64 Linux's KVM restores, in a guest with EL2 on an M5 Max: what a restore's setup costs there, and what made the snapshot tests fail before they passed (D154)
+
+- **Questions.** No arm64 Linux host of ours has KVM: CI's arm64 runners have no /dev/kvm. Do shards' snapshot
+  tests pass on arm64 Linux's KVM, run as such a host runs them? What does a restore's setup cost there? What, of
+  what fails, is the environment's, and what shards'?
+- **Method.** boot.rs's `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` (D154): the test binaries built for
+  aarch64-unknown-linux-musl (`common::linux_tests`), run by the test guest's `e2e` mode as PID 1 of a guest booted
+  with `--nested`, its kernel the pinned `kvm` variant (6.18.48), 8 vCPUs and 24 GiB. `SHARDS_L1_TESTS` picks
+  binaries and filters, `SHARDS_L1_LOG` their log level, and `SHARDS_TEST_LOG_SHOWN` how much of a failing test's
+  logs they print. `SHARDS_L1_CONSOLE` keeps its console, passing or not, and the e2e mode prints the guest's memory
+  after each binary. Host: M5 Max, macOS 26.4.1 (25E253), other agents' builds holding its load average at 12 to 18.
+  Runs up to the swap test's were started from an agent's session, held at utility QoS (every thread at priority 20
+  or below); from the pool's on, as a user's program runs, through macos-sched/launchd-run.sh. Revision: branch
+  a64snap on gpu 0554d060.
+- **A restore's setup there** (one run of daemon.rs's `parallel_runs_keep_their_own_stdio` at `debug`, ten warm VMs
+  of 8 vCPUs; every number nested, each of the guest's exits going through Hypervisor.framework):
+  - a vCPU made (KVM_CREATE_VCPU, KVM_ARM_VCPU_INIT, its MPIDR checked): n=80 p50=17 p90=31 p99=46 max=50 µs;
+  - its state restored, every register KVM lists and its power state: n=80 p50=53 p90=60 p99=82 max=498 µs;
+  - the machine finished (the GIC initialized and its state written, the devices restored, a new generation ID):
+    n=11 p50=745 p90=1,480 p99=6,099 max=6,099 µs.
+- **What failed, and why.**
+  - Of the guest's making, fixed in the test guest: its PID 1 reaped nothing, so a daemon that detached and ended
+    stayed a zombie, which kill(2) finds, and daemon.rs's tests of daemons ending failed (ten of them); and the
+    tests' VMs outlived their binary into the next one's.
+  - Of shards', fixed: a host with no /dev/fd (a link an init or udev makes) had no share start
+    (`platform::open_descriptors`), so every run with a volume ended before its command; a nested guest was shown
+    its own memory's PARange, so its microVMs had no room for DAX or swap windows. And a host with no CA
+    certificates could not pull from a registry over plain HTTP (registry `tls.rs`); the guest is given the host's.
+  - Of shards', fixed: a guest's dial of its host gave up after 2 s. daemon.rs's
+    `parallel_runs_keep_their_own_stdio` (eight runs at once, from a pool of ten VMs of eight vCPUs) failed "the
+    guest stopped before the command ended: failed to fill whole buffer" in 2 of 13 rounds beside the pool test (1
+    of 2 and 1 of 4 at `info`, none of 3 at `debug`, none of 4 with the warm VMs' consoles kept). Its restored
+    guests' dials ended 3.8 to 10.3 s into their VM processes (marker CONNECTED). init dialed with
+    Linux's connect timeout, 2 s (VSOCK_DEFAULT_CONNECT_TIMEOUT), past which Linux resets a connection its host may
+    have answered already ("VIRTIO_VSOCK_OP_RST will follow", net/vmw_vsock/af_vsock.c `vsock_connect`) and init
+    powers off, where the VM process takes a guest's connection as its muxer answers it and tells the daemon its VM
+    is ready on it. init now waits for its host's answer (D12): the test passed 24 of 24 rounds beside the pool test
+    after, its dials ending as late as 39.7 s after their restore.
+  - Of shards', fixed: a pool's keep-alive counted from its last claim. Beside `parallel_runs_keep_their_own_stdio`,
+    daemon.rs's `pools_keep_what_their_runs_need_while_they_come` saw its burst of three take 28.4, 30.8 and 28.2 s,
+    past its keep-alive of 15 s, and its pool keep nothing for the next. A pool's keep-alive now counts from its last
+    run's end, none going, as the providers' keep-alive Shahrad et al. describe does (D26).
+  - Of shards', fixed: every restored guest ran ext4lazyinit's block bitmap prefetch, its template having mounted
+    its writable layer before its snapshot, and the logs of each of 5 failing rounds held soft lockups of it
+    ("watchdog: BUG: soft lockup - CPU#3 stuck for 22s! [ext4lazyinit:144]", 22 to 27 s). The layer is mounted
+    `no_prefetch_block_bitmaps` now, its bitmaps DAX memory (D190); the logs of none of 6 failing rounds after held
+    one.
+  - Of nesting, held to one test at a time: two of the daemon's tests together, those two, some 20 VMs of eight
+    vCPUs on the guest's eight, its KVM in nVHE mode ("Hyp nVHE mode initialized"), had restored guests stall 20 to
+    31 s between resuming and their dial's end (markers RESUMED and CONNECTED), and runs past 60 s, in 11 of 24 rounds
+    after the first two fixes (3, 2, 3 and 3 of four boots' six, each in rounds 4 to 6; one boot's guest memory steady
+    through them, 24 GB free and 120 to 180 MB of tmpfs), where the pool test alone passed 9 of 9 rounds, 33 to 38.5 s
+    each. Why rounds 4 to 6 alone is unmeasured. Four tests at a time, `parallel_runs_keep_their_own_stdio` had found none of its warm VMs ready in
+    60 s. The guest's CPU, Apple's, has neither CTR_EL0.IDC nor DIC, so each restored guest's cache maintenance of
+    pages of its DAX root comes to the VMM (KVM_EXIT_ARM_NISV, D154), 4,096 and more of them a VM in that run.
+- **A restored guest faults back in what it holds, nested at 0.9 ms a fault.** saved.rs's
+  `a_saved_microvm_keeps_what_it_swapped` (a container of 64 MiB swapping 96 MiB of a pattern of its own, each round
+  reading all of it back, in a microVM of 239 MiB) finished no round in the 62 s after its restore with another test
+  beside it, and passed alone. Alone, from the agent's session (Method), its rounds timed from its log and its VM
+  process's host faults from proc(5)'s minflt, which count KVM's for its stage 2:
+  - cold: its pattern written 0.71 s after it started, then rounds of 0.82 s; its VM process had faulted 9,778
+    pages in all by then. KVM counted 27,100 exits a second (debugfs, 1.008 s apart).
+  - restored: its first two rounds took 15.8 and 16.9 s, its VM process faulting 20,639 and 16,226 pages, then rounds
+    of 1.7, 2.4, 0.88 and 0.85 s with 81, 18, 0 and 0 faults: 36,865 faults in 32.7 s, 0.89 ms each, and none
+    lasting. In another run's first rounds after the restore KVM counted 3,900 and 4,300 exits a second, and the
+    host 1,220 faults (its /proc/vmstat a second apart: 324 anonymous pages made, RAM written and so copied; 697
+    pages mapped; 360 of shmem made, its swap's copy written where it held none).
+  - So a restored guest's memory and swap, mapped as it touches them, cost its first rounds there, and the rounds
+    after cost what they did before. Why a fault there costs 0.9 ms is unmeasured: Hypervisor.framework runs the
+    nested guest, and its costs are not ours to read.
+  - The test waited for those rounds as long as a round before the save took, twice, and a minute; it now waits as
+    long as the guest makes rounds or its VM process faults, at most twice the pages its memory and swap hold
+    (each read, then written), and fails after that long without either.
+- **Result.** With those fixes, one test at a time and unclamped, the whole suite passed in 479 s: snapshot.rs 10 of
+  10 (78 s), warm.rs 6 of 6, saved.rs 13 of 13 (160 s), daemon.rs 43 of 43 (192 s), and the snapshot tests of
+  run.rs, vsock.rs, pmem.rs and boot.rs, 6 of 6; the guest's memory steady between binaries, 23.8 to 24.3 GB free.
+  Rebased onto gpu 522a95fc, it passed again, 78 of 78 in 738 s, saved.rs taking 429 s of them.
+- **Hypervisor.framework ended the guest once.** In one of the 27 boots of the nested guest that day (the rebased
+  tree's workspace gate, 48.8 s in), its VM process took SIGTRAP inside Hypervisor.framework: its vGIC emulation of
+  an EOI (`HvCore::Hypervisor::EmulatedVgic::write_end_of_interrupt_register`, from `Arm::Emulator::write_icc_eoir1_el1`
+  on a trapped system register write) called `Base::report_fixme_and_trap`, as the guest's KVM host wrote
+  ICC_EOIR1_EL1 (EXC_BREAKPOINT; crash report, macOS 26.4.1, Mac17,6). The framework's own unfinished case: nothing
+  of shards' runs in that thread but `hv_vcpu_run`.

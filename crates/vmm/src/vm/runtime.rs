@@ -827,6 +827,9 @@ fn launch(
         finish,
         start,
         config,
+        // What a restore's recorder read, which it took before the launch.
+        #[cfg(all(hv = "kvm", target_arch = "aarch64"))]
+            pmem: _,
     } = m;
     let vcpus = config.vcpus;
     // Each vCPU is moved its own part of the start, and the machine keeps the rest: none
@@ -931,7 +934,7 @@ fn launch(
             slowest.0,
             slowest.1
         );
-        let finished = machine::finish(&vm, &bus, &finish, rest.as_ref());
+        let finished = machine::finish(&vm, &bus, &finish, rest.as_mut());
         debug!(
             "the machine's start finished in {} us",
             crate::log::uptime_us().saturating_sub(finishing)

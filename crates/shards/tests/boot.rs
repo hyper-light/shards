@@ -899,6 +899,196 @@ fn a_run_is_given_a_hosts_vfio_group() {
     assert_eq!(ran.status, Some(0), "{ran}");
 }
 
+/// shards' snapshot tests pass on a KVM host of this architecture's Linux (D154): a guest
+/// given virtualization of its own (`--nested`, D132), its kernel the pinned `kvm`
+/// variant's, runs them as such a host runs them, built for it (`common::linux_tests`),
+/// with real VMs of its own, KVM's: snapshots taken and restored, cold and from warm
+/// pools, templates and their working sets, microVMs saved and restored. Every VM test
+/// must run there (SHARDS_REQUIRE_VMS). A host that gives a guest no EL2 (a Mac before
+/// the M3; x86_64, not yet) skips, before building anything.
+#[test]
+fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(nested) = common::nested_kernel() else {
+        eprintln!("SKIP: no nested guest kernel for {}", common::ARCH);
+        return;
+    };
+    let dir = common::TempDir::new("l1-e2e");
+    let read = |p: &std::path::Path| std::fs::read(p).unwrap();
+    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
+        vm_run(
+            &[
+                "--kernel",
+                nested.to_str().unwrap(),
+                "--initrd",
+                initrd.to_str().unwrap(),
+                "--nested",
+                "--cpus",
+                cpus,
+                "--memory",
+                memory,
+                "--cmdline",
+                &format!("console=ttyS0 panic=-1 {cmdline}"),
+            ],
+            timeout,
+        )
+    };
+    // Whether this host gives a guest EL2, before the tests are built for one.
+    let probe = dir.join("probe.cpio");
+    std::fs::write(&probe, shards_vmm::initramfs::with_init(&read(test_guest()))).unwrap();
+    let probed = outer(&probe, "1", "256", "shards_test=kmsg", TIMEOUT);
+    if probed.stderr.contains("gives a guest no EL2") {
+        eprintln!("SKIP: this host gives a guest no EL2");
+        return;
+    }
+    assert_eq!(probed.status, Some(0), "{probed}");
+    // Each test binary, and what it is given: whole files, and of the rest the tests of
+    // snapshots alone (`cannot_snapshot`), one at a time: a nested guest's exits each go
+    // through this host's hypervisor, its KVM's nVHE world switches among them, and two of
+    // the daemon's tests together, some 20 VMs of eight vCPUs on its eight, had restored
+    // guests stall 30 s between resuming and dialing their host, their runs past 60 s, in
+    // 11 of 24 rounds, where the one that failed passed 9 of 9 alone (PM M346).
+    // SHARDS_L1_TESTS names others instead (`binary` or `binary:filter`, comma-separated),
+    // SHARDS_L1_LOG their SHARDS_LOG, and SHARDS_TEST_LOG_SHOWN how much of a failing
+    // test's logs they show.
+    let runs: Vec<(String, String)> = match std::env::var("SHARDS_L1_TESTS") {
+        Ok(chosen) => chosen
+            .split(',')
+            .map(|run| match run.split_once(':') {
+                Some((test, filter)) => (test.to_string(), filter.to_string()),
+                None => (run.to_string(), String::new()),
+            })
+            .collect(),
+        Err(_) => [
+            ("snapshot", ""),
+            ("warm", ""),
+            ("saved", ""),
+            ("daemon", ""),
+            ("run", "templates_restore_into_runs_of_their_own"),
+            ("vsock", "restored_copies"),
+            ("pmem", "restored_copies"),
+            ("boot", "a_snapshot_keeps"),
+        ]
+        .map(|(test, filter)| (test.to_string(), filter.to_string()))
+        .to_vec(),
+    };
+    let tests: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    let built = common::linux_tests(&tests);
+    // The host's CA certificates, as every Linux host has a bundle of them, where Linux's
+    // TLS libraries look (rustls-native-certs, openssl-probe): the registry client trusts
+    // the system's roots, and on Linux builds no verifier without them (registry tls.rs).
+    let roots = [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ]
+    .iter()
+    .find_map(|path| std::fs::read(path).ok())
+    .expect("no CA bundle on this host");
+    let mut cpio = shards_vmm::initramfs::Cpio::new();
+    cpio.dir("dev", 0o755)
+        .char_dev("dev/console", 0o600, 5, 1)
+        .dir("proc", 0o555)
+        .dir("sys", 0o555)
+        .dir("tmp", 0o1777)
+        .dir("etc", 0o755)
+        .dir("etc/ssl", 0o755)
+        .dir("etc/ssl/certs", 0o755)
+        .file("etc/ssl/certs/ca-certificates.crt", 0o644, &roots)
+        .file("init", 0o755, &read(test_guest()))
+        .dir("e2e", 0o755)
+        .dir("e2e/bin", 0o755)
+        .dir("e2e/tests", 0o755)
+        .dir("e2e/guests", 0o755)
+        .dir("e2e/guests/guest", 0o755)
+        .file("e2e/guests/guest/shards-testguest", 0o755, &read(test_guest()));
+    // The files the binaries name by their build's paths, the kernel their VMs boot among
+    // them, each under the directories that hold it; and the checkout's, which they
+    // name as their workspace.
+    let mut dirs = std::collections::BTreeSet::new();
+    let mut place = |cpio: &mut shards_vmm::initramfs::Cpio, path: &std::path::Path, data: Option<&[u8]>| {
+        let relative = path.strip_prefix("/").unwrap();
+        for ancestor in relative.ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
+            let name = ancestor.to_str().unwrap();
+            if !name.is_empty() && dirs.insert(name.to_string()) {
+                cpio.dir(name, 0o755);
+            }
+        }
+        match data {
+            Some(bytes) => {
+                cpio.file(relative.to_str().unwrap(), 0o755, bytes);
+            }
+            None => {
+                if dirs.insert(relative.to_str().unwrap().to_string()) {
+                    cpio.dir(relative.to_str().unwrap(), 0o755);
+                }
+            }
+        }
+    };
+    for file in built
+        .files
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .chain([kernel()])
+    {
+        place(&mut cpio, file, Some(&read(file)));
+    }
+    place(&mut cpio, &common::workspace().join("crates/shards"), None);
+    let (mut run, mut names) = (String::new(), Vec::new());
+    for (test, args) in &runs {
+        let (_, binary) = built
+            .binaries
+            .iter()
+            .find(|(name, _)| name == test)
+            .unwrap_or_else(|| panic!("no test binary {test} built"));
+        let name = format!("e2e/tests/{test}");
+        cpio.file(&name, 0o755, &read(binary));
+        run.push_str(&format!("/{name} --test-threads=1 {args}\n"));
+        names.push(name);
+    }
+    let mut env = String::from(
+        "HOME=/tmp\nPATH=/e2e/bin\nTMPDIR=/tmp\nXDG_CACHE_HOME=/tmp/cache\nRUST_BACKTRACE=1\nSHARDS_REQUIRE_VMS=1\nSHARDS_TEST_GUESTS=/e2e/guests\n",
+    );
+    if let Ok(level) = std::env::var("SHARDS_L1_LOG") {
+        env.push_str(&format!("SHARDS_LOG={level}\n"));
+    }
+    if let Ok(bytes) = std::env::var("SHARDS_TEST_LOG_SHOWN") {
+        env.push_str(&format!("SHARDS_TEST_LOG_SHOWN={bytes}\n"));
+    }
+    cpio.file("e2e/run", 0o644, run.as_bytes())
+        .file("e2e/env", 0o644, env.as_bytes());
+    let initrd = dir.join("l1.cpio");
+    std::fs::write(&initrd, cpio.finish()).unwrap();
+    let ran = outer(
+        &initrd,
+        "8",
+        "24576",
+        "shards_test=e2e",
+        Duration::from_secs(45 * 60),
+    );
+    // SHARDS_L1_CONSOLE names a file its console is written to, passing or failing, for
+    // what the tests in it say of themselves.
+    if let Some(console) = std::env::var_os("SHARDS_L1_CONSOLE") {
+        std::fs::write(console, ran.to_string()).unwrap();
+    }
+    for name in &names {
+        assert!(
+            ran.stdout
+                .lines()
+                .any(|l| l.trim_end() == format!("E2E STATUS /{name} exit status: 0")),
+            "/{name} failed on Linux: {ran}"
+        );
+    }
+    assert!(!ran.stdout.contains("SKIP: snapshots are not supported"), "{ran}");
+    assert!(
+        ran.stdout.lines().any(|l| l.trim_end() == "SHARDS-TEST PASS"),
+        "{ran}"
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+}
+
 /// A snapshot of a guest with memory to plug, none of it plugged (D148): the VM that
 /// booted and each VM restored from it plug memory as their guest asks, and write it.
 #[test]

@@ -25,12 +25,16 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Whether this build's VMs can be snapshotted and restored: HVF's and x86_64 KVM's can,
-/// arm64 KVM's and WHP's not yet (D140).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", all(hv = "kvm", target_arch = "x86_64")));
+/// Working sets from the pages a restored machine's host maps: KVM's, and the x86_64
+/// machine's on any backend.
+#[cfg(any(hv = "kvm", all(hv, target_arch = "x86_64")))]
+mod mapped;
+/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's can, on
+/// x86_64 and arm64 (D154), WHP's not yet (D140).
+pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
-/// (vm::x86_64::recorder).
+/// (vm::mapped).
 pub const WORKING_SETS: bool = SNAPSHOTS;
 /// Which run records it. HVF's: the one that saves the template, whose command recording
 /// slows sixfold (PM M30), on a run that boots anyway. KVM's: the first warm restore

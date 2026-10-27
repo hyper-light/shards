@@ -553,20 +553,20 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let before = daemon_pid(&home).expect("a daemon pid");
     let bin = TempDir::new("daemon-rebuilt-bin");
     let other = bin.join("shards");
-    // Copied by a process of its own: a copy this process wrote would be open for writing
-    // in each child another test's thread forks meanwhile, until that child execs, and
-    // running it then fails with ETXTBSY (x86_64 CI, 2026-10-11).
-    let copied = Command::new("cp").arg(shards()).arg(&other).status().unwrap();
-    assert!(copied.success(), "{copied}");
-    let mut run = Command::new(&other)
-        .args(["run", "-i", "--pull", "never", &image, "cat"])
-        .env("SHARDS_HOME", &*home)
-        .env("SHARDS_LOCAL_STORE", "none")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    // A copy this process wrote is open for writing in each child another test's thread
+    // forks meanwhile, until that child execs, and running it fails with ETXTBSY until then
+    // (x86_64 CI, 2026-10-11): `common::spawn` waits that out.
+    std::fs::copy(shards(), &other).unwrap();
+    let mut run = common::spawn(
+        Command::new(&other)
+            .args(["run", "-i", "--pull", "never", &image, "cat"])
+            .env("SHARDS_HOME", &*home)
+            .env("SHARDS_LOCAL_STORE", "none")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .unwrap();
     let said = "given before the old daemon stepped aside\n";
     run.stdin.take().unwrap().write_all(said.as_bytes()).unwrap();
     // Its output read as it comes, and the client ended past the deadline: a stdin lost
@@ -881,20 +881,11 @@ fn shell(args: &OsStr) {
 /// Starts `home`'s daemon with `shards ps`, which needs no VM, under a limit of `limit`
 /// open descriptors if one is given, which the daemon inherits; its pid.
 fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
-    let mut cmd = match limit {
-        Some(n) => {
-            let mut sh = Command::new("/bin/sh");
-            sh.arg("-c")
-                .arg(format!("ulimit -n {n} && exec \"$0\" ps"))
-                .arg(shards());
-            sh
-        }
-        None => {
-            let mut plain = common::command();
-            plain.arg("ps");
-            plain
-        }
-    };
+    let mut cmd = common::command();
+    cmd.arg("ps");
+    if let Some(n) = limit {
+        descriptor_limit(&mut cmd, u64::from(n), true);
+    }
     let out = cmd
         .env("SHARDS_HOME", home)
         .env("SHARDS_LOCAL_STORE", "none")
@@ -903,6 +894,33 @@ fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     daemon_pid(home).expect("a daemon pid")
+}
+
+/// Has `cmd` start its program under a limit of `limit` open descriptors, the soft limit and,
+/// where `hard`, the hard one too, as a shell's `ulimit -n` sets both and `ulimit -S -n` the
+/// soft alone: with no shell, which a host need not have.
+fn descriptor_limit(cmd: &mut Command, limit: u64, hard: bool) {
+    // SAFETY: getrlimit(2) and setrlimit(2) are async-signal-safe, and the closure touches
+    // nothing but its own copies of the limit.
+    unsafe {
+        cmd.pre_exec(move || {
+            let mut lim = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            lim.rlim_cur = limit as libc::rlim_t;
+            if hard {
+                lim.rlim_max = limit as libc::rlim_t;
+            }
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Raises this process's soft limit on open descriptors as far as it goes, up to macOS's
@@ -1016,12 +1034,11 @@ fn a_daemon_raises_its_descriptor_limit() {
         return;
     }
     let home = TempDir::new("daemon-limit");
-    let out = Command::new("/bin/sh")
-        .arg("-c")
-        .arg("ulimit -S -n 256 && exec \"$0\" ps")
-        .arg(shards())
+    let mut cmd = common::command();
+    descriptor_limit(&mut cmd, 256, false);
+    let out = cmd
+        .arg("ps")
         .env("SHARDS_HOME", &*home)
-        .env("SHARDS_LOCAL_STORE", "none")
         .stdin(Stdio::null())
         .output()
         .unwrap();

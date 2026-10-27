@@ -1445,10 +1445,17 @@ pub fn descriptor_limit() -> Option<u64> {
     Some(lim.rlim_cur)
 }
 
-/// How many descriptors this process has open: the entries of /dev/fd (fdescfs on macOS,
-/// /proc/self/fd on Linux), less the one that lists them.
+/// How many descriptors this process has open: the entries of /dev/fd on macOS (fdescfs)
+/// and of /proc/self/fd on Linux, less the one that lists them. Linux's /dev/fd is a link
+/// a host's init or udev makes, which a host without them has not (a guest whose PID 1 is
+/// its own, D154's test path): a share then failed to start.
 pub fn open_descriptors() -> Option<u64> {
-    let count = std::fs::read_dir("/dev/fd").ok()?.count();
+    let dir = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    let count = std::fs::read_dir(dir).ok()?.count();
     u64::try_from(count.checked_sub(1)?).ok()
 }
 

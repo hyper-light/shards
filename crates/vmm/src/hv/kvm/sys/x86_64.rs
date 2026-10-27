@@ -8,7 +8,7 @@ use super::{
     KVM_CHECK_EXTENSION, KVM_CREATE_DEVICE, KVM_CREATE_VCPU, KVM_CREATE_VM, KVM_GET_API_VERSION,
     KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RUN,
     KVM_SET_DEVICE_ATTR, KVM_SET_GSI_ROUTING, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, KVM_SIGNAL_MSI,
-    Kvm, VcpuFd, VmFd, ioctl, kvm_device_attr, set_attr,
+    Kvm, VcpuFd, VmFd, get_attr, ioctl, set_attr,
 };
 
 /// Every ioctl request shards makes of KVM: what its seccomp filter allows
@@ -261,20 +261,6 @@ struct Cpuid2 {
     nent: u32,
     padding: u32,
     entries: [kvm_cpuid_entry2; MAX_CPUID_ENTRIES],
-}
-
-/// Reads attribute `attr` of `group` of the vCPU `fd`, of type `T`.
-fn get_attr<T: Default>(fd: RawFd, group: u32, attr: u64) -> io::Result<T> {
-    let mut value = T::default();
-    let a = kvm_device_attr {
-        group,
-        attr,
-        addr: (&raw mut value) as u64,
-        ..Default::default()
-    };
-    // SAFETY: a kvm_device_attr whose `addr` is a live `T`, which KVM writes.
-    unsafe { ioctl(fd, KVM_GET_DEVICE_ATTR, (&raw const a) as libc::c_ulong) }?;
-    Ok(value)
 }
 
 /// Calls `request`, which fills a structure of `len` bytes, and returns the bytes: state a
