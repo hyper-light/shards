@@ -15256,3 +15256,33 @@ revision before comparing a changed API/implementation.
 - **Consequence (D140).** On WHP a guest's kernel brings its APs up one at a time
   (vm/x86_64.rs, `cpuhp.parallel=0` beside `reboot=k`): never slower here, at 4 vCPUs as at
   240. Unmeasured on KVM and HVF, which keep parallel.
+
+### M356. Whether macOS and Windows pass a host's PCI function through to a VM (D154)
+
+- **Question.** VFIO is how Linux gives a process, a VMM, a host's PCI function (D154).
+  What does each other host offer, for the parity plan's step 13?
+- **Method.** Apple's and Microsoft's own documentation and answers, read 2026-10-27; no
+  device was dismounted from a host here.
+- **Found.**
+  - macOS: Hypervisor.framework's API maps a process's memory into a VM and runs its vCPUs,
+    and assigns no device. Virtualization's passthrough is USB's, through
+    `VZUSBPassthroughDeviceConfiguration` (WWDC26, "Expand the capabilities of your
+    Virtualization app"), and Apple answers that it has "no general mechanism" past it
+    (Developer Forums thread 741785). A PCI function reaches a process only through a
+    DriverKit driver (PCIDriverKit) whose entitlement,
+    `com.apple.developer.driverkit.transport.pci`, lists the devices Apple grants it for
+    (developer.apple.com/documentation/bundleresources/entitlements/
+    com.apple.developer.driverkit.transport.pci; Forums thread 747029: a VM app's request
+    for one, its check failing in the kernel).
+  - Windows: WHP gives a partition a virtual PCI device of a host's function
+    (`WHvAllocateVpciResource`, then `WHvCreateVpciDevice`: Windows 10 20H2 on x64, Windows
+    11 24H2 26100.3915 on arm64, learn.microsoft.com/virtualization/api/hypervisor-platform/
+    funcs/whvcreatevpcidevice), once its administrator has dismounted the function from the
+    host (Discrete Device Assignment); and Microsoft's own guidance says device assignment
+    is not supported "on desktop-class hardware or client operating systems such as Windows
+    10 or 11 Pro" (learn.microsoft.com/troubleshoot/windows-server/virtualization/
+    troubleshoot-hyper-v-gpu-assignment-partitioning-passthrough-issues).
+- **Consequence (D154).** macOS refuses a function, naming that limit; Windows does too,
+  naming Windows Server's as the one that allows it, which is not built: it waits for a
+  Windows Server host with a function to give, which neither CI's runners, nested, nor
+  jupiter, Windows 11, is.

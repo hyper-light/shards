@@ -9036,6 +9036,15 @@ one. So both, in that order.
   it lives: KVM forgets its groups as its descriptor closes (kvm_vfio_release). A machine
   given a function has no memory to plug, no balloon (its DMA mappings pinned; QEMU's
   `ram_block_discard_disable`) and no snapshot.
+- **Where no OS passes one through, refused with its OS's own limit** (the parity plan's
+  step 13, M356). macOS: Hypervisor.framework assigns no device to a VM, Virtualization's
+  passthrough is USB's alone, and a PCI function reaches a process only through a
+  DriverKit driver Apple entitles to it (`com.apple.developer.driverkit.transport.pci`).
+  Windows: a partition is given one only once its administrator dismounts it from the
+  host (Discrete Device Assignment; WHP's `WHvCreateVpciDevice`), which Microsoft supports
+  on Windows Server alone, not on Windows 10 or 11; Windows Server's, on a host with a
+  function to give, is not built. Each refusal says so (`vm::NO_PASSTHROUGH`), held by
+  `a_hosts_pci_function_is_refused_with_its_oss_own_limit`.
 - **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
   (VFIO_REGION_INFO_FLAG_MMAP: a memory BAR of a page or more, vfio_pci_probe_mmaps) is
   mapped into the VM process, and its pages, but for those of the MSI-X table and pending
