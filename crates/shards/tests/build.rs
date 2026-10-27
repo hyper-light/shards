@@ -615,6 +615,7 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
         return;
     }
     let (image, _) = served();
+    let t0 = std::time::Instant::now();
     let home = TempDir::new("build-psi-home");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -635,6 +636,7 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
         TIMEOUT,
     );
     assert_eq!(filled.status, Some(0), "{filled}");
+    eprintln!("REPRO {:?} filled", t0.elapsed());
     let ctx = context(
         "build-psi-ctx",
         &format!(
@@ -713,7 +715,9 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
                 String::from_utf8_lossy(&budget.stderr)
             );
             set = true;
+            eprintln!("REPRO {:?} budget set: MemoryHigh={high} of current {current}", t0.elapsed());
         }
+        eprintln!("REPRO {:?} | {line}", t0.elapsed());
         lines.push(line);
     }
     let status = held.wait().unwrap();
@@ -739,8 +743,10 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
         gave.contains("past what they use, by their budget's room"),
         "its guest held the build within no room: {gave}"
     );
+    eprintln!("REPRO {:?} held build done", t0.elapsed());
     let free_out = TempDir::new("build-psi-free");
     let free = build(false, &free_out).wait_with_output().unwrap();
+    eprintln!("REPRO {:?} free build done", t0.elapsed());
     assert!(free.status.success(), "{}", String::from_utf8_lossy(&free.stderr));
     assert_eq!(layers(&held_out), layers(&free_out), "{shown}");
 }

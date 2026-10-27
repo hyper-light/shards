@@ -1,0 +1,44 @@
+# Scratch: how long the ROOM test's phases take on GitHub's ubuntu-24.04, alone and among
+# its binary's other tests, as CI's x86_64 Linux tests step runs them (its 41 minutes
+# passed since 0554d060). Not for dev.
+name: room probe
+on:
+  push:
+    branches: [ci-room-probe]
+env:
+  CARGO_TERM_COLOR: never
+  TOOLCHAIN: 1.98.1
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-gnu --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - run: scripts/install-zig
+      - run: if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+      - name: User manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
+          ls -l "$bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      - name: Build the test binary
+        run: cargo test --locked -p shards --profile test-release --target x86_64-unknown-linux-gnu --test build --no-run
+      - name: Host
+        run: nproc; free -m; cat /proc/pressure/memory; uname -r
+      - name: Alone
+        timeout-minutes: 40
+        run: |
+          export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1
+          date -u +%T
+          cargo test --locked -p shards --profile test-release --target x86_64-unknown-linux-gnu --test build -- --exact a_build_held_short_of_memory_has_its_builder_give_back --nocapture 2>&1 | grep -a -E 'REPRO|test result|panicked|SKIP' | cut -c1-300
+          date -u +%T
+      - name: Among its binary's tests
+        timeout-minutes: 45
+        run: |
+          export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1
+          date -u +%T
+          cargo test --locked -p shards --profile test-release --target x86_64-unknown-linux-gnu --test build -- --nocapture 2>&1 | grep -a -E 'REPRO|test result|panicked|has been running' | cut -c1-300
+          date -u +%T
