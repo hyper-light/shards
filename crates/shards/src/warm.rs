@@ -1575,7 +1575,10 @@ fn let_go(null: &File) {
 
 /// Makes `stdio` this process's standard input, output and error, each its own from here
 /// on: dup2(2) onto 0, 1 and 2 on Unix, which closes what they were; on Windows its
-/// standard handles (SetStdHandle), those they were closed after, each once.
+/// standard handles (SetStdHandle), those they were closed after, each once. A thread may
+/// be reading the standard input it was, a client's that says nothing: on Windows that
+/// read is cancelled (CancelIoEx) and the handle closed on a thread of its own, since a
+/// close of a handle a synchronous read waits on waits for that read, as dup2 never does.
 fn set_stdio(stdio: [OwnedFd; 3]) -> io::Result<()> {
     #[cfg(unix)]
     for (fd, target) in stdio.iter().zip([0, 1, 2]) {
@@ -1608,16 +1611,41 @@ fn set_stdio(stdio: [OwnedFd; 3]) -> io::Result<()> {
             now.push(raw);
         }
         let mut closed = Vec::with_capacity(3);
-        for old in before {
+        // Its output and error first, which its client waits to see end; its input last.
+        for (i, old) in before.into_iter().enumerate().rev() {
             if old.is_null() || old == INVALID_HANDLE_VALUE || now.contains(&old) || closed.contains(&old) {
                 continue;
             }
             closed.push(old);
+            if i == 0 {
+                close_input(old);
+                continue;
+            }
             // SAFETY: a standard handle this process had, none of its own from here on.
             unsafe { CloseHandle(old) };
         }
     }
     Ok(())
+}
+
+/// Closes `old`, the standard input this process had, waiting for no read of it: one under
+/// way is cancelled, and the handle closed on a thread of its own, which a read cancel does
+/// not end waits for.
+#[cfg(windows)]
+fn close_input(old: windows_sys::Win32::Foundation::HANDLE) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::IO::CancelIoEx;
+    // SAFETY: a handle this process holds; no OVERLAPPED: every request on it.
+    unsafe { CancelIoEx(old, std::ptr::null()) };
+    let raw = old as usize;
+    let closing = std::thread::Builder::new()
+        .name("stdin-close".into())
+        .spawn(move || {
+            // SAFETY: the standard handle let go of above, closed here alone.
+            unsafe { CloseHandle(raw as windows_sys::Win32::Foundation::HANDLE) };
+        });
+    // Where no thread starts, it stays open until this process exits.
+    drop(closing);
 }
 
 #[cfg(test)]
