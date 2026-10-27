@@ -963,6 +963,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
             .collect(),
         Err(_) => [
             ("snapshot", ""),
+            ("restore", ""),
             ("warm", ""),
             ("saved", ""),
             ("daemon", ""),

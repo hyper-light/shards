@@ -15145,7 +15145,9 @@ revision before comparing a changed API/implementation.
 - **Result.** With those fixes, one test at a time and unclamped, the whole suite passed in 479 s: snapshot.rs 10 of
   10 (78 s), warm.rs 6 of 6, saved.rs 13 of 13 (160 s), daemon.rs 43 of 43 (192 s), and the snapshot tests of
   run.rs, vsock.rs, pmem.rs and boot.rs, 6 of 6; the guest's memory steady between binaries, 23.8 to 24.3 GB free.
-  Rebased onto gpu 522a95fc, it passed again, 78 of 78 in 738 s, saved.rs taking 429 s of them.
+  Rebased onto gpu 522a95fc, it passed again, 78 of 78 in 738 s, saved.rs taking 429 s of them. restore.rs, which
+  came with WHP's snapshots (D196) and the suite takes since, passed 2 of 2 there at 234bd57c (`SHARDS_L1_TESTS=restore`,
+  unclamped through launchd-run.sh, 101.9 s with the guest's boot), 2026-10-27.
 - **Hypervisor.framework ended the guest once.** In one of the 27 boots of the nested guest that day (the rebased
   tree's workspace gate, 48.8 s in), its VM process took SIGTRAP inside Hypervisor.framework: its vGIC emulation of
   an EOI (`HvCore::Hypervisor::EmulatedVgic::write_end_of_interrupt_register`, from `Arm::Emulator::write_icc_eoir1_el1`
