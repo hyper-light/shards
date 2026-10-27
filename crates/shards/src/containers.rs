@@ -208,6 +208,10 @@ pub fn valid_name(name: &str) -> bool {
 /// A container's record, in its directory, and the name it is written under first.
 const RECORD: &str = "config.json";
 const NEW_RECORD: &str = "config.json.new";
+/// What marks a container's directory removed on Windows ([`Removal::set_aside`]): the next
+/// start deletes a directory that holds it, as it deletes one set aside on Unix.
+#[cfg(windows)]
+const REMOVING: &str = ".removing";
 /// The largest record read. A run's command arrives in one message
 /// (`shards_ipc::MAX_PAYLOAD`), and JSON writes a byte as at most 6.
 const MAX_RECORD: u64 = 8 << 20;
@@ -361,6 +365,13 @@ impl Registry {
                 if name.ends_with(".removing") {
                     removed |= Registry::gone(disk, &dir, note);
                 }
+                continue;
+            }
+            // Marked removed, Windows' set-aside (`Removal::set_aside`): deleted, whatever
+            // record a write made meanwhile.
+            #[cfg(windows)]
+            if disk.read(&dir.join(REMOVING), 0).is_ok() {
+                removed |= Registry::gone(disk, &dir, note);
                 continue;
             }
             let c = match load(disk, &dir, &name, RECORD) {
@@ -720,6 +731,8 @@ fn write(disk: &dyn Disk, root: &Path, c: &Container) -> io::Result<()> {
 pub struct Removal {
     pub container: Container,
     root: PathBuf,
+    /// Where its directory goes, `.ID.removing`: on Unix, as Windows marks it where it is.
+    #[cfg_attr(windows, allow(dead_code))]
     aside: PathBuf,
 }
 
@@ -728,22 +741,44 @@ impl Removal {
     /// (`.ID.removing`): no crash of the daemon brings it back. One gone already has
     /// nothing to set aside. A write of its record meanwhile lands in what is set aside, or
     /// fails: none makes the directory again.
+    ///
+    /// On Windows its directory is marked instead ([`REMOVING`]): NTFS renames no directory
+    /// while a file in it is open, by any rename (vmm windows_files.rs,
+    /// `a_directory_holding_an_open_file_is_renamed_by_no_rename`), and its VM, or a reader
+    /// of its log, may hold one. A record written meanwhile is passed by as the mark is
+    /// found.
     pub fn set_aside(&self, disk: &dyn Disk) -> io::Result<()> {
-        match disk.rename(&self.root.join(&self.container.id), &self.aside) {
+        #[cfg(unix)]
+        let set = disk.rename(&self.root.join(&self.container.id), &self.aside);
+        #[cfg(windows)]
+        let set = disk.write(&self.root.join(&self.container.id).join(REMOVING), b"");
+        match set {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }
     }
 
     /// Makes the removal durable: the containers' directory is synced, so that no crash
-    /// brings the container back. Slow (PM M46), so done outside the registry's lock.
+    /// brings the container back; on Windows the container's own, which holds its mark.
+    /// Slow (PM M46), so done outside the registry's lock.
     pub fn sync(&self, disk: &dyn Disk) -> io::Result<()> {
+        #[cfg(windows)]
+        match disk.sync_dir(&self.root.join(&self.container.id)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         disk.sync_dir(&self.root)
     }
 
-    /// Deletes what was set aside. What a failure leaves, the next start deletes.
+    /// Deletes what was set aside: on Windows the directory where it is, its files deleted
+    /// as POSIX deletes them where they are open (std's `remove_dir_all`). What a failure
+    /// leaves, the next start deletes.
     pub fn delete(&self, disk: &dyn Disk) -> io::Result<()> {
-        match disk.remove_dir_all(&self.aside) {
+        #[cfg(unix)]
+        let at = self.aside.clone();
+        #[cfg(windows)]
+        let at = self.root.join(&self.container.id);
+        match disk.remove_dir_all(&at) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }
@@ -760,6 +795,23 @@ mod tests {
     /// A home of its own, removed when dropped, whether its test passes or panics.
     fn temp_home(tag: &str) -> shards_testdir::TempDir {
         shards_testdir::TempDir::new(&format!("containers-{tag}")).unwrap()
+    }
+
+    /// Where container `id`'s directory is once set aside: `.ID.removing` on Unix; on
+    /// Windows where it was, marked ([`REMOVING`]).
+    fn aside_dir(home: &Path, id: &str) -> PathBuf {
+        #[cfg(unix)]
+        return home.join("containers").join(format!(".{id}.removing"));
+        #[cfg(windows)]
+        return home.join("containers").join(id);
+    }
+
+    /// Whether container `id`'s directory is set aside.
+    fn is_aside(home: &Path, id: &str) -> bool {
+        #[cfg(unix)]
+        return aside_dir(home, id).is_dir();
+        #[cfg(windows)]
+        return aside_dir(home, id).join(REMOVING).is_file();
     }
 
     fn container(id: &str, name: &str, state: State) -> Container {
@@ -1190,7 +1242,7 @@ mod tests {
         removal.set_aside(&Real).unwrap();
         r.aside("aa");
         assert!(!r.any_setting_aside());
-        assert!(home.join("containers/.aa.removing").is_dir());
+        assert!(is_aside(&home, "aa"));
         removal.set_aside(&Real).unwrap();
 
         made(
@@ -1214,7 +1266,7 @@ mod tests {
         assert!(r.get("cc").is_none(), "seen, though taken out");
         taken.set_aside(&Real).unwrap();
         r.aside("cc");
-        assert!(home.join("containers/.cc.removing").join(RECORD).is_file());
+        assert!(aside_dir(&home, "cc").join(RECORD).is_file());
 
         made(&mut r, container("dd", "four", State::Exited));
         let _removal = r.take_out("dd").unwrap();
@@ -1239,9 +1291,9 @@ mod tests {
         r.release("aa");
         assert!(r.name_taken("one").is_none());
         // Its files, left by a delete that failed, go at the next start.
-        assert!(home.join("containers/.aa.removing").is_dir());
+        assert!(is_aside(&home, "aa"));
         assert!(open(&home).get("aa").is_none());
-        assert!(!home.join("containers/.aa.removing").exists());
+        assert!(!aside_dir(&home, "aa").exists());
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1368,7 +1420,14 @@ mod tests {
             let created = at("rename config.json", 0);
             let running = at("rename config.json", 1);
             let exited = at("rename config.json", if auto_remove { 1 } else { 2 });
-            let set_aside = at("rename .life.removing", 0);
+            let set_aside = at(
+                if cfg!(windows) {
+                    "write .removing"
+                } else {
+                    "rename .life.removing"
+                },
+                0,
+            );
             let _ = std::fs::remove_dir_all(home.join("containers"));
             for crash in 0..=steps.len() {
                 let _ = std::fs::remove_dir_all(home.join("containers"));

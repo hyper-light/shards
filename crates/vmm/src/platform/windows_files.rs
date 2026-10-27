@@ -658,11 +658,12 @@ mod tests {
         text
     }
 
-    /// What renaming a directory takes while a file in it is open, as std opens one (every
-    /// sharing): the plain rename (MoveFileEx's) refused, and a POSIX one through the
-    /// directory's handle, which this records.
+    /// What shards' containers' removal relies on (D195): NTFS renames no directory while a
+    /// file in it is open, even one std opened (every sharing allowed), by MoveFileEx's
+    /// rename or a POSIX one through the directory's handle; once nothing in it is open, it
+    /// does. Both refusals were "Access is denied" on jupiter.
     #[test]
-    fn a_directory_holding_an_open_file_is_renamed_as_it_can_be() {
+    fn a_directory_holding_an_open_file_is_renamed_by_no_rename() {
         let base = shards_testdir::TempDir::new("dir-rename").unwrap();
         let dir = base.join("c");
         std::fs::create_dir(&dir).unwrap();
@@ -676,9 +677,10 @@ mod tests {
             .open(&dir)
             .unwrap();
         let posix = rename_into(&handle, &parent, "c.posix");
-        eprintln!("plain: {plain:?}; posix: {posix:?}");
+        assert_eq!(plain.map_err(|e| e.kind()), Err(io::ErrorKind::PermissionDenied));
+        assert_eq!(posix.map_err(|e| e.kind()), Err(io::ErrorKind::PermissionDenied));
         drop((handle, held));
-        assert!(plain.is_err() || posix.is_ok());
+        std::fs::rename(&dir, base.join("c.plain")).unwrap();
     }
 
     /// Names Windows reads as something else are refused: a stream, a separator, a device

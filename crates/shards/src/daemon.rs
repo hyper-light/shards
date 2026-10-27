@@ -11362,6 +11362,21 @@ mod tests {
         }
     }
 
+    impl Held {
+        /// A set-aside's turn: refused where they fail, and held where they wait.
+        fn set_aside_turn(&self) -> io::Result<()> {
+            if self.failing_set_asides.load(Ordering::SeqCst) {
+                return Err(io::Error::other("a failing set-aside"));
+            }
+            if self.holding_set_asides.load(Ordering::SeqCst) {
+                self.setting_aside.store(true, Ordering::SeqCst);
+                let through = lock(&self.set_asides_through);
+                drop(self.set_asides_turn.wait_while(through, |t| !*t).unwrap());
+            }
+            Ok(())
+        }
+    }
+
     impl Disk for Held {
         fn create_dir(&self, dir: &Path) -> io::Result<()> {
             Real.create_dir(dir)
@@ -11373,6 +11388,14 @@ mod tests {
             Real.read(path, max)
         }
         fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+            // Windows' set-aside is its mark's write (`Removal::set_aside`).
+            if cfg!(windows) && path.file_name().is_some_and(|n| n == ".removing") {
+                if self.failing.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("a failing disk"));
+                }
+                self.set_aside_turn()?;
+                return Real.write(path, bytes);
+            }
             if self.holding_writes.load(Ordering::SeqCst) {
                 self.writing.store(true, Ordering::SeqCst);
                 let through = lock(&self.through);
@@ -11387,13 +11410,8 @@ mod tests {
             let aside = to
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().ends_with(".removing"));
-            if aside && self.failing_set_asides.load(Ordering::SeqCst) {
-                return Err(io::Error::other("a failing set-aside"));
-            }
-            if aside && self.holding_set_asides.load(Ordering::SeqCst) {
-                self.setting_aside.store(true, Ordering::SeqCst);
-                let through = lock(&self.set_asides_through);
-                drop(self.set_asides_turn.wait_while(through, |t| !*t).unwrap());
+            if aside {
+                self.set_aside_turn()?;
             }
             Real.rename(from, to)
         }
