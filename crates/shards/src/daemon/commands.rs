@@ -1562,7 +1562,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// A paused container is let go on once sent SIGKILL or its own stop signal, as
     /// dockerd resumes one (moby daemon/kill.go, killWithSignal): the signal waits in its
     /// socket and is read as it runs again. Other signals wait for `unpause`.
-    fn signal(&self, id: &str, linux: u32) -> bool {
+    pub(super) fn signal(&self, id: &str, linux: u32) -> bool {
         // Sent once the runs' lock is let go of: no send waits under it.
         let socket = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) => t.socket.clone(),

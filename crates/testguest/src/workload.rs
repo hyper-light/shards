@@ -215,6 +215,18 @@ pub fn main() -> ! {
         // whose translation every step misses, as a host's address space shapes it (D159,
         // PM M230).
         "walk" => walk(arg(1).parse().unwrap_or(0), arg(2).parse().unwrap_or(0)),
+        // Touches N MiB as `alloc` does, says so, and holds it for SECONDS: memory its
+        // microVM holds and has nothing of to give back (D183's groups).
+        "alloc-hold" => {
+            let mib: usize = arg(1).parse().unwrap_or(0);
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..mib {
+                held.push(vec![1u8; 1 << 20]);
+            }
+            let _ = writeln!(io::stdout(), "allocated {}", held.len());
+            std::thread::sleep(std::time::Duration::from_secs(arg(2).parse().unwrap_or(0)));
+            i32::from(held.is_empty() && mib > 0)
+        }
         // Touches N MiB as `alloc` does, frees it, says so, and idles for SECONDS: memory
         // its microVM may give back (D151).
         "alloc-free" => {

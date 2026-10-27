@@ -20,34 +20,48 @@ pub(super) fn check(run: &Run) -> Result<(), String> {
     if given.is_empty() {
         return Ok(());
     }
-    if !cfg!(target_os = "linux") {
-        return Err(format!(
-            "--cgroup-parent {given}: this host has no group of processes a microVM's can be made in and held to; its microVM's own limits are its --memory and --cpus"
-        ));
-    }
-    if !is_slice_name(given) {
-        return Err(format!(
-            "--cgroup-parent {given}: your user's cgroups are its systemd manager's, which makes them for its slices: name the slice its microVM's processes go under, as NAME.slice (a '-' nests one within another: a-b.slice is within a.slice)"
-        ));
-    }
-    #[cfg(target_os = "linux")]
+    // Where the host has no group a user's tools cap, one shards keeps (D183, slice 3).
+    #[cfg(target_os = "macos")]
     {
-        // SAFETY: getuid(2) takes nothing and cannot fail.
-        let bus = shards_bus::user_bus_path(unsafe { libc::getuid() });
-        if !bus.exists() {
+        if !super::groups::is_group_name(given) {
             return Err(format!(
-                "--cgroup-parent {given}: no systemd manager of your user's runs here to place its microVM under a slice of: its bus, {}, is not there",
-                bus.display()
+                "--cgroup-parent {given}: on this host a group shards keeps, groups/{given} of its home, is named by letters, digits, '.', '-' and '_' alone"
             ));
         }
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !cfg!(target_os = "linux") {
+            return Err(format!(
+                "--cgroup-parent {given}: this host has no group of processes a microVM's can be made in and held to; its microVM's own limits are its --memory and --cpus"
+            ));
+        }
+        if !is_slice_name(given) {
+            return Err(format!(
+                "--cgroup-parent {given}: your user's cgroups are its systemd manager's, which makes them for its slices: name the slice its microVM's processes go under, as NAME.slice (a '-' nests one within another: a-b.slice is within a.slice)"
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: getuid(2) takes nothing and cannot fail.
+            let bus = shards_bus::user_bus_path(unsafe { libc::getuid() });
+            if !bus.exists() {
+                return Err(format!(
+                    "--cgroup-parent {given}: no systemd manager of your user's runs here to place its microVM under a slice of: its bus, {}, is not there",
+                    bus.display()
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Whether `name` names a slice as systemd's own check has it (src/basic/unit-name.c,
 /// `slice_name_is_valid`, `unit_name_is_valid`): `-.slice`, the root slice; or a name
 /// shorter than 256 bytes ending `.slice`, before it letters, digits and `:-_.\` alone,
 /// no `-` first or last, and none beside another.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(super) fn is_slice_name(name: &str) -> bool {
     if name == "-.slice" {
         return true;
@@ -65,8 +79,10 @@ pub(super) fn is_slice_name(name: &str) -> bool {
         && !prefix.contains("--")
 }
 
-/// A parent's spawner: being placed by the run that first asked for it, or placed.
+/// A parent's spawner: being placed by the run that first asked for it, or placed. None on
+/// macOS, whose parents are groups shards keeps (groups.rs).
 #[derive(Debug)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 enum Entry {
     Placing,
     Placed(Group),
@@ -77,8 +93,10 @@ enum Entry {
 #[derive(Debug, Default)]
 pub(super) struct Parents {
     by_slice: Mutex<HashMap<String, Entry>>,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     placed: Condvar,
     /// Spawners placed so far, which name their scopes apart.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     made: AtomicU64,
 }
 
@@ -86,6 +104,7 @@ impl Parents {
     /// `slice`'s spawner: placed already, or made and placed now, as the one process of a
     /// scope of its own in `slice`. One whose placement the user's manager refuses is
     /// ended, and what the manager said is said.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(super) fn group(&self, slice: &str, home: &Path) -> Result<Group, String> {
         let mut held = lock(&self.by_slice);
         loop {
@@ -125,6 +144,7 @@ impl Parents {
 
     /// Forgets `slice`'s spawner `group`, which has gone (its slice stopped, say), and
     /// ends it: the next run under `slice` places another.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(super) fn forget(&self, slice: &str, group: Group) {
         let mut held = lock(&self.by_slice);
         if matches!(held.get(slice), Some(Entry::Placed(g)) if *g == group) {
@@ -158,6 +178,7 @@ impl Parents {
 
     /// Where no user's manager places a process: refused by [`check`] before any run asks.
     #[cfg(not(target_os = "linux"))]
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn place(&self, slice: &str, _home: &Path) -> Result<Group, String> {
         let _ = self.made.load(Ordering::Relaxed);
         Err(format!(
@@ -215,6 +236,12 @@ mod tests {
                 Ok(()) => {}
                 Err(why) => assert!(why.contains("no systemd manager of your user's"), "{why}"),
             }
+        } else if cfg!(target_os = "macos") {
+            // A group shards keeps, named as a file of the home is (D183, slice 3).
+            assert!(refused.contains("groups/"), "{refused}");
+            assert_eq!(check(&run("agents.slice")), Ok(()));
+            assert_eq!(check(&run("agents")), Ok(()));
+            assert!(check(&run("..")).is_err());
         } else {
             assert!(refused.contains("--memory"), "{refused}");
             assert!(check(&run("agents.slice")).is_err());
