@@ -1190,6 +1190,39 @@ pub fn append_new_in(dir: &File, name: &str) -> io::Result<File> {
     )
 }
 
+/// What `entry`, a name a directory lists, is a version of: itself, as a write here replaces
+/// the file at its name (windows_files.rs `version_of`, whose writes replace none).
+pub fn version_of(entry: &str) -> &str {
+    entry
+}
+
+/// The name `name`'s newest version goes by in the directory `dir` holds open: `name`, as a
+/// write here replaces the file there (windows_files.rs `newest_in`).
+pub fn newest_in(_dir: &File, name: &str) -> io::Result<String> {
+    Ok(name.to_string())
+}
+
+/// Opens `name`'s newest version for reading in the directory `dir` holds open: the file at
+/// `name` ([`open_in`]; windows_files.rs `open_newest_in`).
+pub fn open_newest_in(dir: &File, name: &str) -> io::Result<File> {
+    open_in(dir, name)
+}
+
+/// The regular file `rel` names beneath `root`, its newest version, opened for reading: the
+/// file itself ([`open_beneath`]; windows_files.rs `open_newest_beneath`).
+pub fn open_newest_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    open_beneath(root, rel)
+}
+
+/// Removes `name` from the directory `dir` holds open, where it is there (windows_files.rs
+/// `remove_in`, which removes its every version).
+pub fn remove_in(dir: &File, name: &str) -> io::Result<()> {
+    match unlink_in(dir, name) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    }
+}
+
 /// Removes `name` from the directory `dir` holds open.
 pub fn unlink_in(dir: &File, name: &str) -> io::Result<()> {
     let name = std::ffi::CString::new(name)
@@ -1261,6 +1294,12 @@ pub fn sync_entries(dir: &File) -> io::Result<()> {
     return sync_durable(dir);
     #[cfg(not(target_os = "macos"))]
     return dir.sync_all();
+}
+
+/// Makes `file` keep what is never written to it as holes: nothing to do, as ext4, btrfs,
+/// XFS and APFS leave a file's unwritten ranges holes by themselves (windows.rs must ask).
+pub fn sparse(_file: &File) -> io::Result<()> {
+    Ok(())
 }
 
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the

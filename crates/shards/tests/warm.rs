@@ -24,7 +24,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards_vm, workload_image};
+use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, shards_vm, workload_image};
 use shards_abi::run::Spec;
 use shards_ipc::kind;
 
@@ -447,7 +447,7 @@ fn ends(stdout: &mut BufReader<File>) -> bool {
 
 #[test]
 fn warm_vms_serve_one_request_on_the_clients_stdio() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("warm");
@@ -504,7 +504,7 @@ fn warm_vms_serve_one_request_on_the_clients_stdio() {
 /// 8.10).
 #[test]
 fn a_warm_vms_log_stays_out_of_its_clients_stderr() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("warm-log");
@@ -536,7 +536,7 @@ fn a_warm_vms_log_stays_out_of_its_clients_stderr() {
 /// VM, and says why.
 #[test]
 fn a_template_saver_takes_a_run_only_out_of_the_templates_reach() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("warm-saver");
@@ -568,7 +568,7 @@ fn a_template_saver_takes_a_run_only_out_of_the_templates_reach() {
 
 #[test]
 fn a_warm_vms_client_signals_its_command() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("warm-signals");
@@ -597,7 +597,7 @@ fn a_warm_vms_client_signals_its_command() {
 
 #[test]
 fn warm_needs_a_socket_of_its_own() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("warm-bad");
@@ -624,7 +624,7 @@ fn warm_needs_a_socket_of_its_own() {
 /// command that outlives it writes nowhere.
 #[test]
 fn a_warm_vm_lets_go_of_its_clients_stdio() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("warm-letgo");

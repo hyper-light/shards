@@ -592,8 +592,9 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
 /// its memory stalls (PSI) as its host reclaims what it cannot swap, and the build's watcher,
 /// which watches its own cgroup's pressure, asks its builder to give back and tells it the
 /// room the budget leaves (`ROOM`). Its log says what it gave back and asked to unplug, and
-/// what its guest held the build within, and it succeeds, its layers those of the same
-/// build held to nothing. Linux alone, with a user's manager, as the budget test of runs.
+/// what its guest held the build within, as the answers came, and it succeeds, its layers
+/// those of the same build held to nothing. Linux alone, with a user's manager, as the
+/// budget test of runs.
 #[test]
 fn a_build_held_short_of_memory_has_its_builder_give_back() {
     use std::io::BufRead as _;
@@ -720,24 +721,27 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
     let shown = lines.join("\n");
     assert!(set, "its step never read the file:\n{shown}");
     assert!(status.success(), "{shown}");
-    let gave = shown
+    // What each line said they gave back: a pass's, and what came past its patience, said as
+    // it came (a guest its host throttles answers late, PM M350).
+    let gave: Vec<&str> = shown
         .lines()
-        .find_map(|l| {
+        .filter_map(|l| {
             l.split_once("the build's builders gave back ")
-                .map(|(_, rest)| rest.to_string())
+                .map(|(_, rest)| rest)
         })
-        .unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
-    eprintln!("held short of memory, the build's builders gave back {gave}");
+        .collect();
+    assert!(!gave.is_empty(), "nothing given back said:\n{shown}");
+    eprintln!("held short of memory, the build's builders gave back {gave:#?}");
     let mib: u64 = gave
-        .split_whitespace()
-        .next()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0);
-    assert!(mib > 0, "{gave}");
-    assert!(gave.contains("asked to unplug "), "{gave}");
+        .iter()
+        .filter_map(|g| g.split_whitespace().next()?.parse::<u64>().ok())
+        .sum();
+    assert!(mib > 0, "{gave:#?}");
+    assert!(gave.iter().all(|g| g.contains("asked to unplug ")), "{gave:#?}");
     assert!(
-        gave.contains("past what they use, by their budget's room"),
-        "its guest held the build within no room: {gave}"
+        gave.iter()
+            .any(|g| g.contains("past what they use, by their budget's room")),
+        "its guest held the build within no room: {gave:#?}"
     );
     let free_out = TempDir::new("build-psi-free");
     let free = build(false, &free_out).wait_with_output().unwrap();

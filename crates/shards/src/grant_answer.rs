@@ -37,11 +37,31 @@ pub fn decode(mut bytes: &[u8]) -> Option<Vec<Wanted>> {
     bytes.is_empty().then_some(out)
 }
 
+/// The newest version of the file at `path` (platform `write_in`), opened for reading, or
+/// `None` where it has none.
+#[cfg(any(target_os = "macos", windows))]
+fn newest(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "no file named",
+        ));
+    };
+    let opened = shards_vmm::platform::open_dir(parent)
+        .and_then(|dir| shards_vmm::platform::open_newest_in(&dir, name));
+    match opened {
+        Ok(file) => Ok(Some(file)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// The access `code` names, if any.
 fn access(code: u8) -> Option<Access> {
     match code {
         0 => Some(Access::Read),
         1 => Some(Access::ReadIfThere),
+        5 => Some(Access::ReadNewestIfThere),
         2 => Some(Access::Write),
         3 => Some(Access::MakeDir),
         4 => Some(Access::Listen),
@@ -116,6 +136,11 @@ fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
                 Err(e) => Err(at(e)),
             },
+            Access::ReadNewestIfThere => match shards_vmm::platform::open_newest_beneath(template, &rel) {
+                Ok(file) => Ok(Answer::File(file)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
+                Err(e) => Err(at(e)),
+            },
             _ => Err(format!(
                 "{}: a restore writes nothing of its template",
                 path.display()
@@ -135,6 +160,11 @@ fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer
         Access::ReadIfThere => match std::fs::File::open(path) {
             Ok(file) => Ok(Answer::File(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
+            Err(e) => Err(at(e)),
+        },
+        Access::ReadNewestIfThere => match newest(path) {
+            Ok(Some(file)) => Ok(Answer::File(file)),
+            Ok(None) => Ok(Answer::Absent),
             Err(e) => Err(at(e)),
         },
         Access::MakeDir => {
@@ -374,16 +404,19 @@ impl Recipient for shards_ipc::Process {
 }
 
 /// What is granted for a path on Windows: a file opened for it, nothing where a file to
-/// read if it is there is not, or a socket bound there.
+/// read if it is there is not, a directory its snapshots are staged in, or a socket bound
+/// there.
 #[cfg(windows)]
 enum Handed {
     File(std::fs::File),
     Absent,
+    Dir,
     Bound(shards_vmm::platform::UnixListener),
 }
 
-/// What `access` to `path` is granted on Windows. A directory to write in is not: WHP's
-/// microVMs take no snapshots yet (D140), and a snapshot's is the only one a VM writes in.
+/// What `access` to `path` is granted on Windows. A directory to write in is made, and its
+/// snapshots are staged by this process ([`serve`]'s `STAGE`): an AppContainer writes in no
+/// directory of its user's (D141, D196).
 #[cfg(windows)]
 fn handed(access: Access, path: &Path) -> Result<Handed, String> {
     let at = |e: std::io::Error| format!("{}: {e}", path.display());
@@ -402,10 +435,18 @@ fn handed(access: Access, path: &Path) -> Result<Handed, String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Handed::Absent),
             Err(e) => Err(at(e)),
         },
-        Access::MakeDir => Err(format!(
-            "{}: a microVM on Windows takes no snapshot yet",
-            path.display()
-        )),
+        Access::ReadNewestIfThere => match newest(path) {
+            Ok(Some(file)) => Ok(Handed::File(file)),
+            Ok(None) => Ok(Handed::Absent),
+            Err(e) => Err(at(e)),
+        },
+        Access::MakeDir => {
+            std::fs::create_dir_all(path).map_err(at)?;
+            if !std::fs::metadata(path).map_err(at)?.is_dir() {
+                return Err(format!("{}: not a directory", path.display()));
+            }
+            Ok(Handed::Dir)
+        }
         Access::Listen => bound(path).map(Handed::Bound).map_err(at),
     }
 }
@@ -448,9 +489,12 @@ fn dial_for(listening: Option<&Path>, port: u32) -> Result<shards_vmm::platform:
 
 /// Answers the VM on `link` as it asks, until it closes it, putting what it grants in
 /// `to`, the VM's process: a file's handle and the path it was found at (the VM may not ask,
-/// PM M203); a socket shared with it (WSADuplicateSocketW, PM M203). A path that cannot be
-/// granted ends the answers with why. As on macOS, a VM that has its vsock path, the last
-/// it asks for, has started, and asks for nothing more.
+/// PM M203); a socket shared with it (WSADuplicateSocketW, PM M203); a directory to write in
+/// made, in which this process stages each snapshot generation the VM asks for, hands it the
+/// generation's memory and state files, and commits the generation on its word (`STAGE`,
+/// `COMMIT`, D196). A path that cannot be granted ends the answers with why. As on macOS, a
+/// VM that has its vsock path, the last it asks for, has started, and asks for nothing more
+/// but its dials and its snapshots.
 #[cfg(windows)]
 pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String> {
     use shards_ipc::kind;
@@ -461,6 +505,10 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
     // bound socket is held as well.
     let mut held: Vec<shards_vmm::platform::UnixStream> = Vec::new();
     let mut held_bound: Vec<shards_vmm::platform::UnixListener> = Vec::new();
+    // The directories the VM may stage snapshots in, and what is staged there uncommitted,
+    // each removed if the VM ends before it commits it.
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut staged: Vec<shards_vmm::snapshot::Staged> = Vec::new();
     let mut started = false;
     let refuse = |e: String| {
         let _ = shards_ipc::write_message(&link.to, kind::ERR, e.as_bytes());
@@ -494,6 +542,40 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
             sent.map_err(|e| format!("answering a VM's dial: {e}"))?;
             continue;
         }
+        if asked.kind == kind::STAGE {
+            let answer = stage(&asked.payload, &dirs, to).map(|(generation, payload)| {
+                // One generation at a time a directory: one staged and never committed goes.
+                staged.retain(|s| s.dir() != generation.dir());
+                staged.push(generation);
+                payload
+            });
+            reply(link, answer, "a VM's stage")?;
+            continue;
+        }
+        if asked.kind == kind::COMMIT {
+            let answer = match staged
+                .iter()
+                .position(|s| s.name().as_bytes() == asked.payload.as_slice())
+            {
+                // Its directory given up once its snapshot is in place, as a Unix VM's is
+                // (vm_run.rs `seal`): a guest that took the VM's process over later could
+                // otherwise have every later restore of it restore what it wrote.
+                Some(at) => {
+                    let generation = staged.swap_remove(at);
+                    let dir = generation.dir().to_path_buf();
+                    generation.commit().map(|()| {
+                        dirs.retain(|d| *d != dir);
+                        Vec::new()
+                    })
+                }
+                None => Err(format!(
+                    "{}: no generation of that name is staged",
+                    String::from_utf8_lossy(&asked.payload)
+                )),
+            };
+            reply(link, answer, "a VM's commit")?;
+            continue;
+        }
         let wanted = match (asked.kind, decode(&asked.payload)) {
             (kind::GRANT, Some(wanted)) => wanted,
             _ => return Err("a VM sent a malformed request for access".into()),
@@ -520,6 +602,10 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
                     }
                 }
                 Ok(Handed::Absent) => Vec::new(),
+                Ok(Handed::Dir) => {
+                    dirs.push(path.clone());
+                    Vec::new()
+                }
                 Ok(Handed::Bound(socket)) => {
                     if listening.is_some() {
                         return refuse("a VM asked for a second vsock path".into());
@@ -539,6 +625,54 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
                 .map_err(|e| format!("granting a VM {}: {e}", path.display()))?;
         }
     }
+}
+
+/// A generation staged for the VM in the directory a `STAGE`'s payload names, which must be
+/// one granted it, and the answer that hands it the generation's memory and state files,
+/// put in `to`: their handles there, little-endian u64s, then the generation's name.
+#[cfg(windows)]
+fn stage(
+    asked: &[u8],
+    dirs: &[PathBuf],
+    to: &dyn Recipient,
+) -> Result<(shards_vmm::snapshot::Staged, Vec<u8>), String> {
+    use std::os::windows::io::AsHandle as _;
+    let dir = crate::grant::path_from(asked).ok_or("a VM asked to stage at no path")?;
+    if !dirs.contains(&dir) {
+        return Err(format!(
+            "{}: not a directory the VM was granted to write in",
+            dir.display()
+        ));
+    }
+    let generation = shards_vmm::snapshot::prepare(&dir, false)?;
+    let files = generation.handed()?;
+    let [memory, state] = files.as_slice() else {
+        return Err(format!(
+            "{}: a generation of {} files",
+            dir.display(),
+            files.len()
+        ));
+    };
+    let mut payload = Vec::with_capacity(16 + generation.name().len());
+    for file in [memory, state] {
+        let value = to
+            .give(file.as_handle())
+            .map_err(|e| format!("giving a VM its snapshot's files: {e}"))?;
+        payload.extend((value as u64).to_le_bytes());
+    }
+    payload.extend(generation.name().as_bytes());
+    Ok((generation, payload))
+}
+
+/// Answers the VM with `GRANTED` and `answer`'s payload, or `ERR` and why not.
+#[cfg(windows)]
+fn reply(link: &crate::grant::Link, answer: Result<Vec<u8>, String>, what: &str) -> Result<(), String> {
+    use shards_ipc::kind;
+    match answer {
+        Ok(payload) => shards_ipc::write_message(&link.to, kind::GRANTED, &payload),
+        Err(e) => shards_ipc::write_message(&link.to, kind::ERR, e.as_bytes()),
+    }
+    .map_err(|e| format!("answering {what}: {e}"))
 }
 
 #[cfg(all(test, windows))]
@@ -616,8 +750,8 @@ mod windows_tests {
 
     /// A VM's request is answered as asked: a file it reads, read-only; one it writes,
     /// read-write; one to read if it is there and is not, not found, though a file appears
-    /// there since; each also at the path its spawner found it at. A directory to write in
-    /// is refused, with why, and the refusal ends the answers.
+    /// there since; a pointer written twice, its newest version, and one never written, not
+    /// found; each also at the path its spawner found it at.
     #[test]
     fn a_spawner_grants_what_a_vm_asks_for() {
         use shards_vmm::platform::{input_path, open_input};
@@ -625,6 +759,10 @@ mod windows_tests {
         let (kernel, disk, absent) = (dir.join("kernel"), dir.join("disk"), dir.join("absent"));
         std::fs::write(&kernel, b"k").unwrap();
         std::fs::write(&disk, b"d").unwrap();
+        let (pointer, unpointed) = (dir.join("current"), dir.join("never"));
+        let at = shards_vmm::platform::open_dir(&dir).unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-1\n").unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-2\n").unwrap();
         let (spawner, vm) = link();
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, &Here));
@@ -634,6 +772,8 @@ mod windows_tests {
                     (Access::Read, kernel.clone()),
                     (Access::Write, disk.clone()),
                     (Access::ReadIfThere, absent.clone()),
+                    (Access::ReadNewestIfThere, pointer.clone()),
+                    (Access::ReadNewestIfThere, unpointed.clone()),
                 ],
             )
             .unwrap();
@@ -658,11 +798,80 @@ mod windows_tests {
                 open_input(&absent, false).unwrap_err().kind(),
                 std::io::ErrorKind::NotFound
             );
-            let e = obtain(&vm, &[(Access::MakeDir, dir.join("snapshot"))]).unwrap_err();
-            assert!(e.contains("no snapshot"), "{e}");
+            let mut newest = String::new();
+            open_input(&pointer, false)
+                .unwrap()
+                .read_to_string(&mut newest)
+                .unwrap();
+            assert_eq!(newest, "g-2\n", "the pointer's newest version");
+            assert_eq!(
+                open_input(&unpointed, false).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
             drop(vm);
-            assert!(serving.join().unwrap().is_err(), "the refusal ended its answers");
+            assert!(serving.join().unwrap().is_ok(), "the VM's close ends its answers");
         });
+    }
+
+    /// A directory to write in is made, and the VM's snapshots are staged there for it
+    /// (D196): a generation handed over as its memory and state files, which the VM fills,
+    /// then committed on its word, after which the directory is given up (vm_run.rs `seal`).
+    /// A stage elsewhere, and a commit of a generation not staged, are refused; one staged
+    /// and never committed goes with the VM.
+    #[test]
+    fn a_spawner_stages_and_commits_a_vms_snapshots() {
+        use crate::grant_ask::{commit, stage};
+        let dir = shards_testdir::TempDir::new("stage").unwrap();
+        let snapshot = dir.join("snapshot");
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            obtain(&vm, &[(Access::MakeDir, snapshot.clone())]).unwrap();
+            assert!(snapshot.is_dir());
+            let elsewhere = stage(&vm, &dir.join("other")).unwrap_err().to_string();
+            assert!(
+                elsewhere.contains("not a directory the VM was granted"),
+                "{elsewhere}"
+            );
+            let unstaged = commit(&vm, "g-1").unwrap_err().to_string();
+            assert!(unstaged.contains("no generation of that name"), "{unstaged}");
+            let (name, memory, state) = stage(&vm, &snapshot).unwrap();
+            (&memory).write_all(b"memory").unwrap();
+            (&state).write_all(b"state").unwrap();
+            drop((memory, state));
+            // The pointer as its readers take it, its newest version (platform `write_in`).
+            let pointer = || shards_vmm::platform::read_newest_beneath(&snapshot, &["current"], 64).unwrap();
+            assert_eq!(pointer(), None, "none in use until its commit");
+            commit(&vm, &name).unwrap();
+            assert_eq!(pointer(), Some(format!("{name}\n").into_bytes()));
+            assert_eq!(
+                std::fs::read(snapshot.join(&name).join("memory")).unwrap(),
+                b"memory"
+            );
+            assert_eq!(
+                std::fs::read(snapshot.join(&name).join("state")).unwrap(),
+                b"state"
+            );
+            let again = stage(&vm, &snapshot).unwrap_err().to_string();
+            assert!(again.contains("not a directory the VM was granted"), "{again}");
+            drop(vm);
+            assert!(serving.join().unwrap().is_ok());
+        });
+        let abandoned = dir.join("abandoned");
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            obtain(&vm, &[(Access::MakeDir, abandoned.clone())]).unwrap();
+            let (_, memory, state) = stage(&vm, &abandoned).unwrap();
+            drop((memory, state, vm));
+            assert!(serving.join().unwrap().is_ok());
+        });
+        let left: Vec<_> = std::fs::read_dir(&abandoned)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != ".lock")
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     /// A VM's vsock path is bound for it, replacing a socket an earlier VM left there that
@@ -786,7 +995,8 @@ mod tests {
 
     /// A VM's request is answered as asked: a file it reads, read-only (it reads, and
     /// cannot write); one it writes, read-write; one to read if it is there and is not,
-    /// not found, though a file appears there since; a directory to write in, made. A path
+    /// not found, though a file appears there since; a pointer written twice, its newest
+    /// version, and one never written, not found; a directory to write in, made. A path
     /// that cannot be granted ends the answers with why.
     #[test]
     fn a_spawner_grants_what_a_vm_asks_for() {
@@ -801,6 +1011,10 @@ mod tests {
         );
         std::fs::write(&kernel, b"k").unwrap();
         std::fs::write(&disk, b"d").unwrap();
+        let (pointer, unpointed) = (dir.join("current"), dir.join("never"));
+        let at = shards_vmm::platform::open_dir(&dir).unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-1\n").unwrap();
+        shards_vmm::platform::write_in(&at, "current", b"g-2\n").unwrap();
         let (vm, spawner) = std::os::unix::net::UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, None));
@@ -810,6 +1024,8 @@ mod tests {
                     (Access::Read, kernel.clone()),
                     (Access::Write, disk.clone()),
                     (Access::ReadIfThere, absent.clone()),
+                    (Access::ReadNewestIfThere, pointer.clone()),
+                    (Access::ReadNewestIfThere, unpointed.clone()),
                     (Access::MakeDir, made.clone()),
                 ],
             )
@@ -830,6 +1046,16 @@ mod tests {
             std::fs::write(&absent, b"later").unwrap();
             assert_eq!(
                 open_input(&absent, false).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            let mut newest = String::new();
+            open_input(&pointer, false)
+                .unwrap()
+                .read_to_string(&mut newest)
+                .unwrap();
+            assert_eq!(newest, "g-2\n", "the pointer's newest version");
+            assert_eq!(
+                open_input(&unpointed, false).unwrap_err().kind(),
                 std::io::ErrorKind::NotFound
             );
             assert!(made.is_dir(), "the directory to write in was made");

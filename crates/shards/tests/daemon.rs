@@ -2,8 +2,8 @@
 //! its first run starts, served from pools of warm VMs of the image's template. Real VMs;
 //! the image comes from a loopback registry (tests/common, `served`), and its entrypoint
 //! is the test guest, so a command is one of its modes. Needs vsock; its template and pool
-//! tests need snapshots too, and print SKIP where a host takes none (`cannot_snapshot`):
-//! on Windows until the parity plan's steps 3 and 4. The rest run there as on Unix, a
+//! tests need snapshots too, and print SKIP where the daemon keeps none (`cannot_pool`):
+//! on Windows until the parity plan's step 4. The rest run there as on Unix, a
 //! recorded guest booted cold. Tests of what Windows serves with a later step are Unix's
 //! until then, each naming it; tests of a Unix mechanism Windows has no counterpart of say
 //! so.
@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, alive, cannot_run_vms, cannot_snapshot, guest_init, interrupt, interruptible, kernel, kill_now,
+    TempDir, alive, cannot_pool, cannot_run_vms, guest_init, interrupt, interruptible, kernel, kill_now,
     registry_of, rootfs_dir, run_shards_env, run_shards_env_in, served, served_variant, shards, test_image,
     test_image_with,
 };
@@ -72,7 +72,7 @@ fn recorded(name: &str) -> TempDir {
 /// restored from the template do too. Before, the VM ended.
 #[test]
 fn runs_may_clean_the_cache_over_their_image() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -371,7 +371,7 @@ fn parallel_runs_keep_their_own_stdio() {
 /// script's `shards run ... &` is: `docker run`'s signal proxy takes them all the same.
 #[test]
 fn signals_reach_a_warm_run() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -592,7 +592,7 @@ fn a_daemon_ending_its_runs_is_waited_for() {
 /// A daemon that dies leaves no VM waiting for a run it will never send.
 #[test]
 fn a_dead_daemons_waiting_vms_end() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -768,7 +768,7 @@ fn a_daemon_idles_from_its_last_runs_end() {
 /// goes, as `docker run -i`'s does (StdinOnce): `cat` then ends, and its VM with it.
 #[test]
 fn interactive_stdin_ends_with_its_client() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -833,7 +833,7 @@ fn interactive_stdin_ends_with_its_client() {
 /// `SHARDS_TIMING` reaches a warm run's client, which prints the line the VM measured.
 #[test]
 fn timing_reaches_the_client() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -861,7 +861,7 @@ fn a_background_run_stops_to_read_its_terminal() {
     if let Some(args) = std::env::var_os("SHARDS_TEST_SHELL") {
         return shell(&args);
     }
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -1932,7 +1932,7 @@ fn home_with(name: &str) -> TempDir {
 #[cfg(unix)]
 #[test]
 fn runs_under_a_slice_start_after_it_was_stopped() {
-    if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_snapshot() {
+    if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_pool() {
         return;
     }
     let bus = std::env::var_os("XDG_RUNTIME_DIR")
@@ -2034,7 +2034,7 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
 #[cfg(unix)]
 #[test]
 fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one() {
-    if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_snapshot() {
+    if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_pool() {
         return;
     }
     let bus = std::env::var_os("XDG_RUNTIME_DIR")
@@ -2523,7 +2523,7 @@ fn slice_state(cgroup: &Path) -> String {
 /// fills would take (audit A14, whose reproduction this is).
 #[test]
 fn a_pool_of_none_serves_every_run() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -2658,7 +2658,7 @@ fn a_daemon_that_cannot_serve_is_said_at_once() {
 /// the first is still served, on demand.
 #[test]
 fn warm_vms_are_bounded_across_templates() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (first, _) = served();
@@ -2734,7 +2734,7 @@ fn warm_vms_are_bounded_across_templates() {
 /// not choose what the next is given.
 #[test]
 fn warm_vms_are_given_their_templates_root_filesystem() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -2758,7 +2758,7 @@ fn warm_vms_are_given_their_templates_root_filesystem() {
 
 #[test]
 fn pools_keep_what_their_runs_need_while_they_come() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -2925,7 +2925,7 @@ fn a_collection_waits_for_the_stores_lease() {
 /// the new one's, which runs from a template of its own.
 #[test]
 fn what_a_moved_tag_named_is_collected() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (port, _, serving) = registry_of(std::sync::Arc::new(std::sync::Mutex::new(test_image())));
@@ -3052,7 +3052,7 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
 /// ran on, its home gone.
 #[test]
 fn a_restored_microvm_ends_with_its_home() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -3116,7 +3116,7 @@ fn a_killed_daemons_runs_end_with_it() {
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     // The restored run where this host takes snapshots: on Windows with the parity plan's
     // step 3.
-    let snapshots = shards_vmm::vm::SNAPSHOTS;
+    let snapshots = common::POOLS;
     let names: &[&str] = if snapshots { &["plain", "back"] } else { &["plain"] };
     for name in names {
         let up = shards(&[

@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, workload_image};
+use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -367,7 +367,7 @@ fn a_run_has_its_hostname_hosts_and_mtab_and_loopback() {
 
 #[test]
 fn templates_restore_into_runs_of_their_own() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("run-template");

@@ -88,6 +88,9 @@ winhv! {
     fn WHvSetupPartition(partition: WHV_PARTITION_HANDLE);
     fn WHvDeletePartition(partition: WHV_PARTITION_HANDLE);
     fn WHvSetPartitionProperty(partition: WHV_PARTITION_HANDLE, code: WHV_PARTITION_PROPERTY_CODE, value: *const c_void, size: u32);
+    fn WHvGetPartitionProperty(partition: WHV_PARTITION_HANDLE, code: WHV_PARTITION_PROPERTY_CODE, value: *mut c_void, size: u32, written: *mut u32);
+    fn WHvSuspendPartitionTime(partition: WHV_PARTITION_HANDLE);
+    fn WHvResumePartitionTime(partition: WHV_PARTITION_HANDLE);
     fn WHvMapGpaRange(partition: WHV_PARTITION_HANDLE, source: *const c_void, gpa: u64, size: u64, flags: WHV_MAP_GPA_RANGE_FLAGS);
     fn WHvUnmapGpaRange(partition: WHV_PARTITION_HANDLE, gpa: u64, size: u64);
     fn WHvCreateVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32, flags: u32);
@@ -96,6 +99,8 @@ winhv! {
     fn WHvCancelRunVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32, flags: u32);
     fn WHvGetVirtualProcessorRegisters(partition: WHV_PARTITION_HANDLE, index: u32, names: *const WHV_REGISTER_NAME, count: u32, values: *mut WHV_REGISTER_VALUE);
     fn WHvSetVirtualProcessorRegisters(partition: WHV_PARTITION_HANDLE, index: u32, names: *const WHV_REGISTER_NAME, count: u32, values: *const WHV_REGISTER_VALUE);
+    fn WHvGetVirtualProcessorState(partition: WHV_PARTITION_HANDLE, index: u32, kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE, buffer: *mut c_void, size: u32, written: *mut u32);
+    fn WHvSetVirtualProcessorState(partition: WHV_PARTITION_HANDLE, index: u32, kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE, buffer: *const c_void, size: u32);
     fn WHvRequestInterrupt(partition: WHV_PARTITION_HANDLE, control: *const WHV_INTERRUPT_CONTROL, size: u32);
     fn WHvGetVirtualProcessorCpuidOutput(partition: WHV_PARTITION_HANDLE, index: u32, eax: u32, ecx: u32, output: *mut WHV_CPUID_OUTPUT);
     fn WHvTranslateGva(partition: WHV_PARTITION_HANDLE, index: u32, gva: u64, flags: WHV_TRANSLATE_GVA_FLAGS, result: *mut WHV_TRANSLATE_GVA_RESULT, gpa: *mut u64);

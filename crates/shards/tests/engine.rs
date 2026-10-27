@@ -1528,7 +1528,7 @@ fn images_are_tagged_traced_removed_and_pruned() {
     assert_eq!(df["Containers"][0]["Names"], json!(["/user"]), "{df}");
     assert!(df["LayersSize"].as_i64().unwrap() > 0, "{df}");
     // Where this build has snapshots, the run saved its image's template.
-    assert_eq!(saved > 0, shards_vmm::vm::SNAPSHOTS, "{saved} templates");
+    assert_eq!(saved > 0, common::POOLS, "{saved} templates");
     match saved {
         0 => assert_eq!(df["TemplateUsage"], json!({}), "{df}"),
         n => assert_eq!(df["TemplateUsage"]["TotalCount"], json!(n), "{df}"),
@@ -2031,7 +2031,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
     let Some((home, image)) = home("eng-cp") else {
         return;
     };
-    if !shards_vmm::vm::SNAPSHOTS {
+    if !common::POOLS {
         return;
     }
     let config = home.join("docker-config");

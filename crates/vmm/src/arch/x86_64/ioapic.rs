@@ -113,6 +113,17 @@ pub struct Ioapic {
     state: Mutex<State>,
 }
 
+/// What a snapshot keeps of the IOAPIC (D196): every register a guest reads or writes, and
+/// each pin's line as its device drove it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Saved {
+    pub select: u32,
+    pub id: u32,
+    pub entries: [u64; PINS],
+    /// Each pin's line, pin `n` at bit `n`.
+    pub lines: u32,
+}
+
 impl Default for Ioapic {
     /// As after reset: every entry masked.
     fn default() -> Ioapic {
@@ -295,6 +306,34 @@ impl Ioapic {
         lock(&self.state).eoi(vector, &mut sent);
         sent
     }
+
+    pub fn save(&self) -> Saved {
+        let st = lock(&self.state);
+        Saved {
+            select: st.select,
+            id: st.id,
+            entries: st.entries,
+            lines: st
+                .lines
+                .iter()
+                .enumerate()
+                .fold(0, |bits, (pin, &up)| bits | u32::from(up) << pin),
+        }
+    }
+
+    /// Takes `saved`'s registers and lines, before the machine's devices restore and drive
+    /// their lines again: a level-triggered entry keeps its remote IRR, which the restored
+    /// local APIC's EOI of its vector clears, as the guest's handler had yet to; and sends
+    /// nothing, as what was pending is in the local APICs' saved state.
+    pub fn restore(&self, saved: &Saved) {
+        let mut st = lock(&self.state);
+        st.select = saved.select & 0xFF;
+        st.id = saved.id & 0x0F00_0000;
+        st.entries = saved.entries;
+        for (pin, line) in st.lines.iter_mut().enumerate() {
+            *line = saved.lines & (1 << pin) != 0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +483,47 @@ mod tests {
         // Past the last pin, nothing.
         assert!(io.set(24, true).iter().next().is_none());
         assert_eq!(read_register(&io, 0x40), 0);
+    }
+
+    /// A restored IOAPIC is the saved one: its registers read alike, a level-triggered pin
+    /// sent before the save is acknowledged by its EOI after it, and sent again while its
+    /// line is still asserted; an edge pin's line is where its device left it; restoring
+    /// sends nothing of its own.
+    #[test]
+    fn a_restored_ioapic_goes_on_as_the_saved_one() {
+        let io = Ioapic::default();
+        io.write(IOREGSEL, &0u32.to_le_bytes());
+        io.write(IOWIN, &0x0200_0000u32.to_le_bytes());
+        write_entry(&io, 3, 0x0100_0000_0000_0033);
+        write_entry(&io, 4, LEVEL | 0x44);
+        assert_eq!(io.set(4, true).iter().count(), 1, "sent, its remote IRR set");
+        io.write(IOREGSEL, &0x17u32.to_le_bytes());
+        let saved = io.save();
+        assert_eq!(saved.lines, 1 << 4);
+
+        let restored = Ioapic::default();
+        restored.restore(&saved);
+        assert_eq!(restored.save(), saved);
+        let mut sel = [0u8; 4];
+        restored.read(IOREGSEL, &mut sel);
+        assert_eq!(
+            u32::from_le_bytes(sel),
+            0x17,
+            "the register the guest had selected"
+        );
+        assert_eq!(read_register(&restored, 0), 0x0200_0000);
+        for register in 0x10..0x40 {
+            assert_eq!(
+                read_register(&restored, register),
+                read_register(&io, register),
+                "register {register:#x}"
+            );
+        }
+        assert_ne!(read_register(&restored, 0x18) & REMOTE_IRR as u32, 0);
+        // Its device asserts it again as it restores: nothing until the guest's EOI.
+        assert!(restored.set(4, true).iter().next().is_none());
+        assert_eq!(restored.eoi(0x44).iter().count(), 1, "still asserted: again");
+        assert_eq!(restored.set(3, true).iter().count(), 1, "the edge pin rises");
     }
 
     /// A byte read of a register's upper bytes, as no guest of ours makes but any may.

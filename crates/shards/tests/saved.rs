@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{Run, TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, served};
+use common::{Run, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -288,7 +288,7 @@ fn a_running_microvm_is_saved_whole_left_running_or_stopped() {
     let shards = |args: &[&str]| shards_in(&home, args);
     let (mut client, mut counts, said) =
         start(&home, &image, &["--name", "counter", "--rm"], &["counter", "20"]);
-    if cannot_snapshot() {
+    if cannot_pool() {
         let refused = shards(&["save", "vm", "counter", "first"]);
         assert_eq!(refused.status, Some(1), "{refused}");
         assert!(refused.stderr.contains("take no snapshots yet"), "{refused}");
@@ -381,7 +381,7 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     let Some((home, image)) = home("saved-refused") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -497,7 +497,7 @@ fn a_saved_microvm_writes_on_through_its_volume() {
     let Some((home, image)) = home("saved-volume") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -581,7 +581,7 @@ fn a_saved_microvm_writes_on_through_its_volume() {
 /// host wrote while it was saved among it.
 #[test]
 fn a_saved_microvm_reads_on_through_its_dax_window() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -675,7 +675,7 @@ fn a_saved_microvm_resumes_where_it_was_saved() {
     let Some((home, image)) = home("resumed") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -745,7 +745,7 @@ fn a_microvm_saved_and_left_running_is_restored_from_its_save() {
     let Some((home, image)) = home("resumed-left") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -797,7 +797,7 @@ fn a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored() {
     let Some((home, image)) = home("resumed-writer") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -841,7 +841,7 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
     let Some((home, image)) = home("resumed-stdin") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -917,7 +917,7 @@ fn an_exec_reading_its_stdin_through_a_save_ends_once_restored() {
     let Some((home, image)) = home("resumed-cat") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -971,7 +971,7 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     let Some((home, image)) = home("resumed-swap") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -1072,7 +1072,7 @@ fn a_microvm_saved_as_it_writes_loses_none_of_its_output() {
     let Some((home, image)) = home("resumed-firehose") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -1117,7 +1117,7 @@ fn a_saved_microvm_on_a_network_is_restored_at_its_address() {
     let Some((home, image)) = home("resumed-net") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -1217,7 +1217,7 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
     let Some((home, image)) = home("checkpoints") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);

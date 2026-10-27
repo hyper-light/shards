@@ -120,7 +120,7 @@ pub fn cannot_run_vms() -> bool {
 
 /// Snapshots exist where this build has a backend (vm::SNAPSHOTS); tests of them skip
 /// elsewhere with a SKIP line, even where `SHARDS_REQUIRE_VMS=1` says VMs must run: a
-/// backend without snapshots (WHP's, so far) runs VMs all the same.
+/// backend without snapshots runs VMs all the same.
 pub fn cannot_snapshot() -> bool {
     if shards_vmm::vm::SNAPSHOTS {
         return false;
@@ -130,6 +130,26 @@ pub fn cannot_snapshot() -> bool {
         "SKIP: snapshots are not supported on {ARCH} yet"
     );
     true
+}
+
+/// Whether the daemon here keeps the snapshots it keeps, its templates, warm pools and saves
+/// (D25, D26, D176): where there are snapshots, but not on Windows yet, whose daemon boots
+/// every run cold until the platform parity plan's step 4 brings them there.
+pub const POOLS: bool = shards_vmm::vm::SNAPSHOTS && !cfg!(windows);
+
+/// Whether tests of the snapshots a daemon keeps skip here ([`POOLS`]), saying why.
+pub fn cannot_pool() -> bool {
+    if cannot_snapshot() {
+        return true;
+    }
+    if !POOLS {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: templates and warm pools on Windows come with the platform parity plan's step 4"
+        );
+        return true;
+    }
+    false
 }
 
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
@@ -142,10 +162,10 @@ pub mod terminal;
 #[path = "terminal_windows.rs"]
 pub mod terminal;
 
-/// The file `name` of the snapshot generation `dir` points at (vmm snapshot/mod.rs).
+/// The file `name` of the snapshot generation `dir` points at, as the store reads its
+/// pointer (vmm snapshot/mod.rs: its newest version on Windows, platform `write_in`).
 pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
-    let current = std::fs::read_to_string(dir.join("current")).unwrap();
-    dir.join(current.trim_end()).join(name)
+    shards_vmm::snapshot::generation(dir).unwrap().join(name)
 }
 
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's

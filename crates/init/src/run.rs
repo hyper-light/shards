@@ -83,25 +83,36 @@ pub(crate) fn open_flush() {
 }
 
 /// Reclaims what `cgroup` holds cold of its files, at its host's memory pressure (D188):
-/// as much as its memory.stat counts inactive (`inactive_file`), of its file pages alone
-/// (`swappiness=0`, Linux 6.11; a kernel without the key takes the amount alone), its
-/// anonymous memory and tmpfs left to the host, which reclaims those as well as the guest
-/// would, where a clean file page the guest drops is one the host could only have swapped.
-/// Then what that freed is reported at once (D151), so that the host has it back before
-/// this answers. The bytes the cgroup holds less after.
+/// as much as its memory.stat counts inactive (`inactive_file`), as [`reclaim_files`]
+/// reclaims it. The bytes the cgroup holds less after.
 pub(crate) fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
-    let read = |file: &str| std::fs::read_to_string(format!("{cgroup}/{file}"));
-    let cold = read("memory.stat")?
+    let cold = std::fs::read_to_string(format!("{cgroup}/memory.stat"))?
         .lines()
         .find_map(|l| l.strip_prefix("inactive_file "))
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    let current = || -> io::Result<u64> { read("memory.current")?.trim().parse().map_err(io::Error::other) };
+    reclaim_files(cgroup, cold)
+}
+
+/// Reclaims `bytes` of what `cgroup` holds of its files, oldest first as its kernel ages
+/// them (`memory.reclaim`), of its file pages alone (`swappiness=0`, Linux 6.11; a kernel
+/// without the key takes the amount alone), its anonymous memory and tmpfs left to the host,
+/// which reclaims those as well as the guest would, where a clean file page the guest drops
+/// is one the host could only have swapped. Then what that freed is reported at once
+/// (D151), so that the host has it back before this answers. The bytes the cgroup holds
+/// less after.
+pub(crate) fn reclaim_files(cgroup: &str, bytes: u64) -> io::Result<u64> {
+    let current = || -> io::Result<u64> {
+        std::fs::read_to_string(format!("{cgroup}/memory.current"))?
+            .trim()
+            .parse()
+            .map_err(io::Error::other)
+    };
     let before = current()?;
-    if cold > 0 {
+    if bytes > 0 {
         let reclaim = format!("{cgroup}/memory.reclaim");
-        let asked = match std::fs::write(&reclaim, format!("{cold} swappiness=0")) {
-            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => std::fs::write(&reclaim, cold.to_string()),
+        let asked = match std::fs::write(&reclaim, format!("{bytes} swappiness=0")) {
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => std::fs::write(&reclaim, bytes.to_string()),
             asked => asked,
         };
         // Less than asked for is what there was to reclaim.

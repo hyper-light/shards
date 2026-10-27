@@ -29,13 +29,13 @@ use x86_64 as machine;
 /// machine's on any backend.
 #[cfg(any(hv = "kvm", all(hv, target_arch = "x86_64")))]
 mod mapped;
-/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's can, on
-/// x86_64 and arm64 (D154), WHP's not yet (D140).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
+/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's, on x86_64 and
+/// arm64 (D154), and WHP's (D196).
+pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm", hv = "whp"));
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
-/// (vm::mapped).
-pub const WORKING_SETS: bool = SNAPSHOTS;
+/// (vm::mapped). Not WHP's yet (D196).
+pub const WORKING_SETS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
 /// Which run records it. HVF's: the one that saves the template, whose command recording
 /// slows sixfold (PM M30), on a run that boots anyway. KVM's: the first warm restore
 /// without one, for which recording costs nothing, and whose pages later restores touch,
