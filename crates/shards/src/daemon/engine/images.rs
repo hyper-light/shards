@@ -1,11 +1,11 @@
 //! Images' calls (D170): pulled, inspected and listed as shards' CLI asks for each.
 
 use std::io::BufRead;
-use std::os::fd::AsFd as _;
-use std::os::unix::net::UnixStream;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 use shards_ipc::kind;
 
 use super::http::{self, Answer, Stream};

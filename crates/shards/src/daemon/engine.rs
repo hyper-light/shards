@@ -25,13 +25,13 @@ mod watch;
 
 use std::collections::HashMap;
 use std::io::{self, BufReader, PipeReader, Read as _, Write as _};
-use std::os::fd::{AsFd as _, BorrowedFd};
-use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use serde_json::json;
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd as _, BorrowedFd};
 use shards_ipc::{Run, kind};
 
 use super::{Daemon, Threads, lock, log};
@@ -357,8 +357,19 @@ impl<D: Disk> Daemon<D> {
         conn: UnixStream,
         scope: Option<Scope>,
     ) {
+        // On Windows the Engine API takes no host client yet: its named pipe, whose DACL
+        // admits this user's processes alone, comes with the plan's step 8. Nor does a
+        // microVM's own engine come, whose run is refused as it is made (network.rs
+        // `check`).
+        #[cfg(windows)]
+        if scope.is_none() {
+            log("refused an API client: the Engine API is not served on Windows yet".into());
+            return;
+        }
         // SAFETY: geteuid(2) cannot fail.
+        #[cfg(unix)]
         let ours = unsafe { libc::geteuid() };
+        #[cfg(unix)]
         match shards_ipc::peer_uid(&conn) {
             _ if scope.is_some() => {}
             Ok(uid) if uid == ours => {}
@@ -830,6 +841,12 @@ impl<D: Disk> Daemon<D> {
 /// a request's context as its connection's read ends, server.go `backgroundRead`), and not
 /// at its next message, which a quiet microVM's log, or a host where nothing happens, may
 /// never send.
+#[cfg(windows)]
+fn gone_first(ipc: &UnixStream, client: &UnixStream) -> bool {
+    shards_ipc::await_streams(&[ipc, client], None).is_ok_and(|ready| ready.get(1).copied().unwrap_or(false))
+}
+
+#[cfg(unix)]
 fn gone_first(ipc: &UnixStream, client: &UnixStream) -> bool {
     use std::os::fd::AsRawFd as _;
     let pollfd = |fd: &UnixStream| libc::pollfd {

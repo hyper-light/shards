@@ -2708,6 +2708,7 @@ impl<D: Disk> Daemon<D> {
         let kept = match self
             .log_retention()
             .and_then(|bound| crate::logging::kept(&run, bound))
+            .and_then(|kept| crate::logging::sent_here(&run).map(|()| kept))
         {
             Ok(kept) => kept,
             Err(e) => {

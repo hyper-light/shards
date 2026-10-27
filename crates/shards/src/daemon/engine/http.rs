@@ -3,9 +3,9 @@
 //! own (`101 UPGRADED`), and the frames of Docker's multiplexed stream.
 
 use std::io::{self, Write as _};
-use std::os::unix::net::UnixStream;
 
 use serde_json::{Value, json};
+use shards_ipc::Stream as UnixStream;
 
 use crate::build::proxy::head::{self, Head};
 

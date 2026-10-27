@@ -8,19 +8,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd as _, RawFd};
-use std::os::unix::fs::MetadataExt as _;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Instant;
 
-use super::{Daemon, Disk, Threads, lock, log};
+use shards_ipc::Stream as UnixStream;
 
-/// A context's engine socket, as it is served.
+use super::{ApiListener, Daemon, Disk, Threads, lock, log};
+
+/// A context's engine socket, as it is served: a listener as the Engine API's is, which
+/// Windows has none of yet (`ApiListener`).
 struct Relay {
-    listener: UnixListener,
+    listener: ApiListener,
     context: crate::context::Context,
     path: PathBuf,
     /// The socket file bound, by device and inode: one removed, or another put at its
@@ -36,18 +38,19 @@ impl Relay {
         }
         // In place of one a daemon before this one left, which no process serves.
         let listener = super::listening_at(&path)?;
-        let bound = std::fs::symlink_metadata(&path)?;
+        let file = crate::os::path_id(&path)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "its socket, bound, is gone"))?;
         Ok(Relay {
             listener,
             context,
             path,
-            file: (bound.dev(), bound.ino()),
+            file,
         })
     }
 
     /// Whether the socket file at its path is still the one it bound.
     fn bound(&self) -> bool {
-        std::fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.file)
+        crate::os::path_id(&self.path) == Some(self.file)
     }
 
     /// Removes its socket file, where it is still its own.
@@ -72,6 +75,7 @@ impl Relays {
     }
 
     /// The listeners' descriptors, for poll(2).
+    #[cfg(unix)]
     pub(super) fn fds(&self) -> impl Iterator<Item = RawFd> + '_ {
         self.served.values().map(|r| r.listener.as_raw_fd())
     }
@@ -230,8 +234,13 @@ impl<D: Disk> Daemon<D> {
         context: crate::context::Context,
     ) {
         let name = context.name.clone();
+        // On Windows a relay's listener is the Engine API's, which has none yet: its named
+        // pipe, whose DACL admits this user's processes alone (ipc pipe.rs `attributes`),
+        // comes with the plan's step 8.
         // SAFETY: geteuid(2) cannot fail.
+        #[cfg(unix)]
         let ours = unsafe { libc::geteuid() };
+        #[cfg(unix)]
         match shards_ipc::peer_uid(&conn) {
             Ok(uid) if uid == ours => {}
             Ok(uid) => {

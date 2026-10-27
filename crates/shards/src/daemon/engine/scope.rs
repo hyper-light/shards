@@ -440,7 +440,7 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn route_scoped<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
-        conn: &std::os::unix::net::UnixStream,
+        conn: &shards_ipc::Stream,
         call: &Call<'_>,
         scope: &Scope,
     ) -> Done {
@@ -640,7 +640,7 @@ impl<D: Disk> Daemon<D> {
     fn scoped_pull<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
-        conn: &std::os::unix::net::UnixStream,
+        conn: &shards_ipc::Stream,
         call: &Call<'_>,
         scope: &Scope,
     ) -> Done {

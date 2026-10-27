@@ -7,11 +7,11 @@
 //! through the daemon; what a client uploads is taken as it comes, never staged.
 
 use std::io::{self, BufRead, Read as _};
-use std::os::fd::AsFd as _;
-use std::os::unix::net::UnixStream;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 
 use super::http::{self, Answer};
 use super::{Call, Done, refused};

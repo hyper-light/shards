@@ -9,10 +9,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use shards_ipc::Stream as UnixStream;
+use shards_vmm::platform::FileWatch;
 
 use super::logs::{LogFile, Piece, Pos, Reader};
 use super::{Daemon, Threads, lock, log};
@@ -87,17 +90,42 @@ pub(super) struct Wait<'a>(&'a UnixStream);
 impl Wait<'_> {
     /// Waits `d`: whether the daemon stops meanwhile.
     pub(super) fn pause(&self, d: Duration) -> bool {
-        stopped_within(self.0, None, d)
+        #[cfg(unix)]
+        {
+            stopped_within(self.0, None, d)
+        }
+        // A wait that cannot be made is taken for a stop, as on Unix.
+        #[cfg(windows)]
+        {
+            let deadline = std::time::Instant::now().checked_add(d);
+            self.0.wait_readable(None, deadline).unwrap_or(true)
+        }
     }
 
     /// Waits until `fd` is readable, or `d` has passed; an error where the daemon stops
     /// first.
+    #[cfg(unix)]
     pub(super) fn readable(&self, fd: BorrowedFd<'_>, d: Duration) -> io::Result<()> {
         if stopped_within(self.0, Some(fd), d) {
             Err(stops())
         } else {
             Ok(())
         }
+    }
+
+    /// Waits until `socket` is readable, or `d` has passed. On Windows a TCP connection is
+    /// waited on only as its acknowledgements are read (sockets.rs `unacknowledged`), which
+    /// the plan's step 8 brings there.
+    #[cfg(windows)]
+    pub(super) fn readable(
+        &self,
+        _: std::os::windows::io::BorrowedSocket<'_>,
+        _: Duration,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a log's TCP connection is not waited on on Windows yet",
+        ))
     }
 }
 
@@ -457,20 +485,73 @@ fn first(at: [Pos; 2]) -> u64 {
     at[0].seq().min(at[1].seq())
 }
 
-/// Whether any of `fds` is readable now.
-fn ready_now(fds: &[Option<std::os::fd::BorrowedFd<'_>>; 3]) -> bool {
-    let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
-        events: libc::POLLIN,
-        revents: 0,
-    });
-    // SAFETY: poll(2), not waiting, on three pollfds of descriptors the caller holds.
-    let ready = unsafe { libc::poll(polled.as_mut_ptr(), 3, 0) };
-    ready > 0
+/// What a shipper following a run waits on: its log's watch, where it has one, its run's
+/// end, and the daemon's stop.
+struct Waits<'a> {
+    watch: Option<&'a FileWatch>,
+    end: &'a UnixStream,
+    stopped: &'a UnixStream,
+}
+
+#[cfg(windows)]
+impl Waits<'_> {
+    /// Whether any has something now: its watch's event set, or a stream readable.
+    fn ready_now(&self) -> bool {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        self.end.readable()
+            || self.stopped.readable()
+            || self.watch.is_some_and(|w| {
+                // SAFETY: the watch's event, which it holds, looked at without waiting.
+                unsafe { WaitForSingleObject(w.fd().as_raw_handle(), 0) == WAIT_OBJECT_0 }
+            })
+    }
+
+    /// Waits until one has something, or `within` has passed, where it is given: which do,
+    /// as [`Waits::wait`] on Unix answers. The watch's event is a manual-reset one, which a
+    /// wait leaves set (windows_watch.rs).
+    fn wait(&self, within: Option<Duration>) -> io::Result<[bool; 3]> {
+        let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
+        let watch: Vec<_> = self.watch.map(FileWatch::fd).into_iter().collect();
+        let (streams, set) = shards_ipc::await_any(&[self.end, self.stopped], &watch, deadline)?;
+        let at = |v: &[bool], i: usize| v.get(i).copied().unwrap_or(false);
+        Ok([at(&set, 0), at(&streams, 0), at(&streams, 1)])
+    }
+}
+
+#[cfg(unix)]
+impl Waits<'_> {
+    /// Each as poll(2) takes it: one not given is no descriptor, which it passes over.
+    fn fds(&self) -> [Option<BorrowedFd<'_>>; 3] {
+        [
+            self.watch.map(FileWatch::fd),
+            Some(self.end.as_fd()),
+            Some(self.stopped.as_fd()),
+        ]
+    }
+
+    /// Whether any is readable now.
+    fn ready_now(&self) -> bool {
+        let mut polled = self.fds().map(|fd| libc::pollfd {
+            fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        // SAFETY: poll(2), not waiting, on three pollfds of descriptors the caller holds.
+        let ready = unsafe { libc::poll(polled.as_mut_ptr(), 3, 0) };
+        ready > 0
+    }
+
+    /// Waits until one is readable, or `within` has passed, where it is given: which are.
+    fn wait(&self, within: Option<Duration>) -> io::Result<[bool; 3]> {
+        wait_ready(&self.fds(), within)
+    }
 }
 
 /// Waits until one of `fds` is readable, or `within` has passed, where it is given:
 /// which are. One not given is no descriptor, which poll(2) passes over.
+#[cfg(unix)]
 fn wait_ready(fds: &[Option<BorrowedFd<'_>>; 3], within: Option<Duration>) -> io::Result<[bool; 3]> {
     let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
     let mut polled = fds.map(|fd| libc::pollfd {
@@ -512,6 +593,7 @@ enum Shipped {
 
 /// Waits until `stop` is told, or `also` is readable, or `wait` has passed: whether `stop`
 /// was told. A wait poll(2) cannot make is taken for a stop: none is left to wait with.
+#[cfg(unix)]
 fn stopped_within(stop: &UnixStream, also: Option<BorrowedFd<'_>>, wait: Duration) -> bool {
     let deadline = std::time::Instant::now() + wait;
     loop {
@@ -626,7 +708,7 @@ impl<D: Disk> Daemon<D> {
                 let followed = (|| -> io::Result<Shipped> {
                     // Where no watch can be had (on Linux, its user's inotify instances
                     // spent: PM M257), it reads again every RETRY, as `logs -f` does.
-                    let mut watch = shards_vmm::platform::FileWatch::new(file.dir()).ok();
+                    let mut watch = FileWatch::new(file.dir()).ok();
                     let mut watched = None;
                     loop {
                         let mut each = |p: Piece<'_>| lines.take(&p, &mut |m| sender.send(m)).map(|()| true);
@@ -644,12 +726,12 @@ impl<D: Disk> Daemon<D> {
                             watched = Some(segment.seq());
                             continue;
                         }
-                        let fds = [
-                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
-                            Some(end.as_fd()),
-                            Some(stopped.as_fd()),
-                        ];
-                        if !ready_now(&fds) {
+                        let waits = Waits {
+                            watch: watch.as_ref(),
+                            end: &end,
+                            stopped,
+                        };
+                        if !waits.ready_now() {
                             sender.flush()?;
                             place.keep(id, dir, sender.delivered(), false, cached);
                         }
@@ -660,7 +742,7 @@ impl<D: Disk> Daemon<D> {
                             (Some(due), None) => Some(due.min(super::RETRY)),
                             (None, None) => Some(super::RETRY),
                         };
-                        let ready = wait_ready(&fds, within)?;
+                        let ready = waits.wait(within)?;
                         if ready[1] {
                             return Ok(Shipped::Ended);
                         }

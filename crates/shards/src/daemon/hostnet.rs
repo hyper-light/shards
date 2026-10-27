@@ -12,12 +12,16 @@
 //! ports go as it ends while the rest stay.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::net::SocketAddr;
-use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::time::{Duration, Instant};
 
 use shards_abi::run::{HostBind, HostBound, HostListen, kind};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd as _, OwnedFd};
+#[cfg(unix)]
 use shards_vmm::devices::virtio::fs::host::linux_errno;
 
 /// IP protocol numbers (IANA).
@@ -28,6 +32,12 @@ const UDP: u8 = 17;
 const EBADF: i32 = 9;
 const ENETDOWN: i32 = 100;
 const EADDRINUSE: i32 = 98;
+/// Linux's errno for an operation a socket does not support: a bind on the host's network
+/// on Windows, whose network process takes a host's sockets as WSADuplicateSocket gives
+/// them there, which the plan's step 5 brings; a run asking for that network is refused
+/// before its container is made (network.rs `check`).
+#[cfg(windows)]
+const EOPNOTSUPP: i32 = 95;
 
 /// A run's sockets on the host's network: its VM's network process, what has come of its
 /// answers, and how many of them are owed; each socket by its number.
@@ -158,12 +168,18 @@ impl HostNet {
         let Some(h) = self.sockets.get_mut(&l.number) else {
             return answer(EBADF);
         };
+        #[cfg(unix)]
         if h.proto == TCP {
             let backlog = libc::c_int::try_from(l.backlog).unwrap_or(libc::c_int::MAX);
             // SAFETY: listen(2) of a socket of ours.
             if unsafe { libc::listen(h.fd.as_raw_fd(), backlog) } != 0 {
                 return answer(linux_errno(errno()));
             }
+        }
+        // No socket of the host's is made for a guest on Windows yet (`socket`).
+        #[cfg(windows)]
+        if h.proto == TCP {
+            return answer(EOPNOTSUPP);
         }
         if h.published {
             return answer(0);
@@ -221,6 +237,14 @@ impl HostNet {
 }
 
 /// Whether `sock` has something to read within `wait`.
+#[cfg(windows)]
+fn readable(sock: &UnixStream, wait: Duration) -> bool {
+    sock.wait_readable(None, Instant::now().checked_add(wait))
+        .unwrap_or(false)
+}
+
+/// Whether `sock` has something to read within `wait`.
+#[cfg(unix)]
 fn readable(sock: &UnixStream, wait: Duration) -> bool {
     let mut p = libc::pollfd {
         fd: sock.as_raw_fd(),
@@ -232,16 +256,25 @@ fn readable(sock: &UnixStream, wait: Duration) -> bool {
     unsafe { libc::poll(&raw mut p, 1, ms) > 0 }
 }
 
+#[cfg(unix)]
 fn errno() -> i32 {
     std::io::Error::last_os_error()
         .raw_os_error()
         .unwrap_or(libc::EIO)
 }
 
+/// A socket of the host's for a guest's bind, on Windows, which makes none yet
+/// ([`EOPNOTSUPP`]).
+#[cfg(windows)]
+fn socket(_b: &HostBind) -> Result<(OwnedFd, u16), i32> {
+    Err(EOPNOTSUPP)
+}
+
 /// A socket of the host's for `b`, bound, and its port: of its protocol, at its address,
 /// with the guest's socket's options (IPv6 alone or not set either way, as each host's
 /// default differs), close-on-exec, and a UDP socket's datagrams' destinations said
 /// (`IP_PKTINFO`), as the network process reads them; Linux's errno where it cannot be.
+#[cfg(unix)]
 fn socket(b: &HostBind) -> Result<(OwnedFd, u16), i32> {
     let failed = |e: std::io::Error| linux_errno(e.raw_os_error().unwrap_or(libc::EIO));
     let (family, kind) = (
@@ -306,6 +339,7 @@ fn socket(b: &HostBind) -> Result<(OwnedFd, u16), i32> {
 }
 
 /// The port a socket is bound to: the host's choice, for port 0.
+#[cfg(unix)]
 fn bound_port(fd: &OwnedFd) -> Result<u16, i32> {
     // SAFETY: zeroed is a valid sockaddr_storage.
     let mut ss: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
@@ -329,7 +363,8 @@ fn bound_port(fd: &OwnedFd) -> Result<u16, i32> {
     }
 }
 
-#[cfg(test)]
+// Each binds the host's sockets for a guest, which Windows makes with the plan's step 5.
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

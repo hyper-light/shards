@@ -23,7 +23,6 @@ const NOT_RUN: u8 = 125;
 
 /// What names a connection to the machine's Engine API (D180 part 4) to its daemon: no
 /// command line's word, as no command line can hold NUL.
-#[cfg(unix)]
 pub(crate) const ENGINE_STEP: &str = "\u{0}engine";
 
 /// Where this home's daemon serves context `name`'s engine, relative to the home: in `e`, by

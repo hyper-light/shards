@@ -8,11 +8,13 @@
 
 use std::ffi::OsStr;
 use std::io::{BufRead, Read as _};
-use std::os::fd::{AsFd as _, AsRawFd as _};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::AsRawFd as _;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 
 use super::http::{Answer, Stream};
 use super::{Call, Done, at_least, plain, refused};
@@ -190,7 +192,15 @@ fn auth_configs(header: Option<&str>) -> Option<String> {
 }
 
 /// Whether the peer of `conn`, which has something to read, has gone: what it has is its
+/// end, which a pipe's stream says as readable with nothing to peek.
+#[cfg(windows)]
+fn peer_gone(conn: &UnixStream) -> bool {
+    conn.readable() && matches!(conn.peek(), Ok(None))
+}
+
+/// Whether the peer of `conn`, which has something to read, has gone: what it has is its
 /// end.
+#[cfg(unix)]
 fn peer_gone(conn: &UnixStream) -> bool {
     let mut byte = [0u8; 1];
     // SAFETY: recv(2) of at most one byte into a buffer of one, peeked, without blocking.
@@ -203,6 +213,19 @@ fn peer_gone(conn: &UnixStream) -> bool {
         )
     };
     n == 0
+}
+
+/// Whether a read of `said` would not wait: Unix's reads of it do not (O_NONBLOCK), and
+/// on Windows, whose anonymous pipes have no such mode but a LAN Manager one Microsoft
+/// says not to use (SetNamedPipeHandleState), whether it has bytes or has ended.
+#[cfg(unix)]
+fn reads_now(_: &std::io::PipeReader) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn reads_now(said: &std::io::PipeReader) -> bool {
+    shards_ipc::readable_raw(std::os::windows::io::AsRawHandle::as_raw_handle(said))
 }
 
 /// What a failed build said last: its `ERROR:` lines, else its last line.
@@ -323,6 +346,7 @@ impl<D: Disk> Daemon<D> {
         // that a process of its own still holding its output (a builder's VM) holds up
         // nothing once the build has ended.
         // SAFETY: fcntl(2) of a descriptor this process holds.
+        #[cfg(unix)]
         unsafe {
             let flags = libc::fcntl(said_r.as_raw_fd(), libc::F_GETFL);
             libc::fcntl(said_r.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
@@ -358,7 +382,22 @@ impl<D: Disk> Daemon<D> {
                 break gone;
             }
             // What it says, and its client, which says nothing more until its answer but by
-            // going.
+            // going. On Windows each is looked at, and 100 ms slept where neither has anything:
+            // a line comes up to 100 ms after it is said, where poll(2) wakes as it comes. The
+            // plan's step 8, which serves the Engine API there, waits on the pipe itself.
+            #[cfg(windows)]
+            {
+                let said_ready = reads_now(&said_r);
+                if watched && conn.readable() {
+                    if peer_gone(conn) {
+                        break true;
+                    }
+                    watched = false;
+                } else if !said_ready {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            #[cfg(unix)]
             let mut polled = [
                 libc::pollfd {
                     fd: said_r.as_raw_fd(),
@@ -373,19 +412,28 @@ impl<D: Disk> Daemon<D> {
             ];
             // SAFETY: poll(2) on two pollfds of descriptors this process holds (one -1, which
             // poll skips).
-            unsafe { libc::poll(polled.as_mut_ptr(), 2, 100) };
-            let [_, client] = polled;
-            if client.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
-                break true;
-            }
-            if client.revents & libc::POLLIN != 0 {
-                if peer_gone(conn) {
+            #[cfg(unix)]
+            unsafe {
+                libc::poll(polled.as_mut_ptr(), 2, 100)
+            };
+            #[cfg(unix)]
+            {
+                let [_, client] = polled;
+                if client.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
                     break true;
                 }
-                watched = false;
+                if client.revents & libc::POLLIN != 0 {
+                    if peer_gone(conn) {
+                        break true;
+                    }
+                    watched = false;
+                }
             }
             let mut closed = false;
             loop {
+                if !reads_now(&said_r) {
+                    break;
+                }
                 match (&said_r).read(&mut buf) {
                     Ok(0) => {
                         closed = true;
@@ -404,7 +452,9 @@ impl<D: Disk> Daemon<D> {
                 status = Some(child.wait().unwrap_or(-1));
             } else if let Some(ended) = child.try_wait() {
                 // Ended: what it said before, read to its end, and nothing after.
-                while let Ok(n) = (&said_r).read(&mut buf) {
+                while reads_now(&said_r)
+                    && let Ok(n) = (&said_r).read(&mut buf)
+                {
                     if n == 0 {
                         break;
                     }
@@ -418,7 +468,7 @@ impl<D: Disk> Daemon<D> {
         };
         if gone {
             // Its client has gone: the build ends, as dockerd's ends with its request.
-            let _ = child.kill(libc::SIGTERM);
+            let _ = child.kill(shards_ipc::signal::SIGTERM);
             if let Err(e) = child.wait() {
                 log(format!("a build whose client went: {e}"));
             }
