@@ -695,21 +695,47 @@ impl Store {
 }
 
 fn dir_size(dir: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> std::io::Result<u64> {
-    use std::os::unix::fs::MetadataExt as _;
     let mut total = 0u64;
     for e in std::fs::read_dir(dir)? {
         let e = e?;
         let meta = std::fs::symlink_metadata(e.path())?;
         if meta.is_dir() {
             total = total.saturating_add(dir_size(&e.path(), seen)?);
-        } else if meta.nlink() < 2 || seen.insert((meta.dev(), meta.ino())) {
-            total = total.saturating_add(meta.size());
+        } else if linked(&meta, &e.path()).is_none_or(|id| seen.insert(id)) {
+            total = total.saturating_add(meta.len());
         }
     }
     Ok(total)
 }
 
+/// The file at `path` by its device and inode, where other names may be its too, so that
+/// it counts once: one of fewer than two links is none. Windows' link counts are std's
+/// unstable `windows_by_handle`, so each file is known by its identity there.
+#[cfg(unix)]
+fn linked(meta: &std::fs::Metadata, _path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    (meta.nlink() >= 2).then(|| (meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn linked(_meta: &std::fs::Metadata, path: &Path) -> Option<(u64, u64)> {
+    crate::os::path_id(path)
+}
+
+/// Deletes `path` and all under it: std's on Windows, which removes a link, not what it
+/// leads to (`remove_dir_all`), and where a directory's attributes keep no one from
+/// emptying it, as Unix's modes do.
+#[cfg(windows)]
+fn remove_tree(path: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
 /// Deletes `path` and all under it, its directories first made this user's to empty.
+#[cfg(unix)]
 fn remove_tree(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let meta = std::fs::symlink_metadata(path)?;
@@ -736,10 +762,7 @@ fn durably(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn getrandom(buf: &mut [u8]) -> Result<(), String> {
-    use std::io::Read as _;
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(buf))
-        .map_err(|e| format!("a volume's name: {e}"))
+    shards_vmm::platform::fill_random(buf).map_err(|e| format!("a volume's name: {e}"))
 }
 
 /// What a container mounts: registerMountPoints' order, `--volumes-from`'s first, then
@@ -955,7 +978,7 @@ fn register_into(
 /// point, by its destination.
 #[derive(Debug, Default)]
 pub struct Opened {
-    pub dirs: Vec<(std::os::fd::OwnedFd, bool, std::ffi::OsString)>,
+    pub dirs: Vec<(shards_ipc::fd::OwnedFd, bool, std::ffi::OsString)>,
     pub mounts: Vec<(String, Vec<u8>)>,
 }
 
@@ -965,8 +988,7 @@ pub struct Opened {
 /// container is first started, where dockerd copies them as it is made (populateVolumes).
 /// Each in the guest at `shards{i}`, `i` its place in `dirs`.
 pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened, String> {
-    use std::os::fd::OwnedFd;
-    use std::os::unix::ffi::OsStrExt as _;
+    use shards_ipc::fd::OwnedFd;
     let mut opened = Opened::default();
     for p in points {
         let dest = &p.destination;
@@ -1065,7 +1087,8 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
         let kind = if p.domains_only { "domain-volume" } else { "volume" };
         let i = opened.dirs.len();
         let mut entry = format!("{kind}=shards{i}\0{dest}\0{}\0", flags.join(",")).into_bytes();
-        entry.extend_from_slice(only.as_bytes());
+        // Its bytes as Unix has them; on Windows WTF-8's, a name's UTF-8.
+        entry.extend_from_slice(only.as_encoded_bytes());
         opened.mounts.push((dest.clone(), entry));
         opened.dirs.push((fd, !p.rw, only));
     }

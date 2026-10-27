@@ -68,8 +68,10 @@ pub(crate) fn local(secs: i64) -> Zone {
 /// The system's zone at `secs` seconds since the epoch, as Go's `time.Local` has it on
 /// Windows (src/time/zoneinfo_windows.go): the dynamic zone's rules
 /// (GetDynamicTimeZoneInformation), its offset that instant's, standard or daylight
-/// (SystemTimeToTzSpecificLocalTimeEx). Its name is Go's fallback for a zone its table does
-/// not know: the capitals of the zone's own standard or daylight name (`extractCAPS`).
+/// (SystemTimeToTzSpecificLocalTimeEx); its name the abbreviation Go gives it (`abbrev`): from
+/// Go's table ([`super::zones`]) by the zone's standard name, else by its English name, which
+/// Go finds in the registry by the zone's names and Windows gives as its key's
+/// (TimeZoneKeyName); else the capitals of its own name (`extractCAPS`).
 #[cfg(windows)]
 fn windows_local(secs: i64) -> Option<Zone> {
     use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
@@ -103,17 +105,29 @@ fn windows_local(secs: i64) -> Option<Zone> {
     let offset = (i128::from(local_ticks) - i128::from(ticks)) / 10_000_000;
     let offset = i64::try_from(offset).ok()?;
     let daylight = tz.DaylightBias != 0 && offset == -i64::from(tz.Bias + tz.DaylightBias) * 60;
-    let name = if daylight {
-        &tz.DaylightName
-    } else {
-        &tz.StandardName
+    let text = |units: &[u16]| {
+        let len = units.iter().position(|&c| c == 0).unwrap_or(units.len());
+        String::from_utf16_lossy(units.get(..len).unwrap_or_default())
     };
-    let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
-    let caps: String = String::from_utf16_lossy(name.get(..len).unwrap_or_default())
-        .chars()
-        .filter(char::is_ascii_uppercase)
-        .collect();
-    Some(Zone { offset, name: caps })
+    let (standard, summer, key) = (
+        text(&tz.StandardName),
+        text(&tz.DaylightName),
+        text(&tz.TimeZoneKeyName),
+    );
+    let known = |name: &str| {
+        super::zones::ABBRS
+            .iter()
+            .find(|(n, ..)| *n == name)
+            .map(|&(_, std, dst)| (std.to_string(), dst.to_string()))
+    };
+    let caps = |name: &str| name.chars().filter(char::is_ascii_uppercase).collect::<String>();
+    let (std, dst) = known(&standard)
+        .or_else(|| known(&key))
+        .unwrap_or_else(|| (caps(&standard), caps(&summer)));
+    Some(Zone {
+        offset,
+        name: if daylight { dst } else { std },
+    })
 }
 
 /// Now, in nanoseconds since the epoch.

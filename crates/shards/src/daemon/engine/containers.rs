@@ -3,8 +3,8 @@
 
 use std::fs::File;
 use std::io::{self, PipeReader, PipeWriter, Read as _, Write as _};
-use std::os::fd::{AsFd as _, AsRawFd as _};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::AsRawFd as _;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -12,6 +12,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use shards_cmdline::flags::{self, Outcome};
 use shards_cmdline::term::{self, EscapeProxy};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 use shards_ipc::{Run, kind};
 
 use super::http::{self, Answer, MULTIPLEXED, RAW, Stream, frame};
@@ -136,6 +138,14 @@ pub(super) fn detach_keys(given: Option<&str>) -> Result<Vec<u8>, String> {
 
 /// Whether `client` has gone, or sent something more, which a client that waits sends
 /// none of: it is readable.
+#[cfg(windows)]
+fn hung_up(client: &UnixStream) -> bool {
+    client.readable()
+}
+
+/// Whether `client` has gone, or sent something more, which a client that waits sends
+/// none of: it is readable.
+#[cfg(unix)]
 fn hung_up(client: &UnixStream) -> bool {
     let mut polled = libc::pollfd {
         fd: client.as_raw_fd(),

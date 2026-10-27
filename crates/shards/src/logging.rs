@@ -258,6 +258,19 @@ pub enum Remote {
     Gcplogs(gcplogs::Config),
 }
 
+/// Whether this host's daemon sends `run`'s log where its driver says: on Windows not yet,
+/// where a run that asks it to is refused rather than have its log wait in the store
+/// unsent. The plan's step 8 brings each driver there, each tested on Windows.
+pub fn sent_here(run: &Run) -> Result<(), String> {
+    let name = driver(run);
+    if cfg!(windows) && SENDS.contains(&name) {
+        return Err(format!(
+            "--log-driver {name}: shards on Windows sends no log elsewhere yet; it keeps a run's log itself (shards, json-file or local), or keeps none (none)"
+        ));
+    }
+    Ok(())
+}
+
 /// The driver `run` sends its log elsewhere with, if one does.
 pub fn remote(run: &Run) -> Result<Option<Remote>, String> {
     remote_config(driver(run), &options(run))
@@ -772,6 +785,19 @@ mod tests {
                     .is_err_and(|e| e.starts_with("--log-driver journald: the journal is systemd's")),
                 "{journald:?}"
             );
+        }
+    }
+
+    /// A run whose log goes elsewhere is refused on Windows, where its daemon sends none yet,
+    /// and only there; one whose log shards keeps, or none, is taken on every host.
+    #[test]
+    fn windows_sends_no_log_elsewhere_yet() {
+        for driver in SENDS {
+            let sent = sent_here(&run(driver, &[]));
+            assert_eq!(sent.is_err(), cfg!(windows), "{driver}: {sent:?}");
+        }
+        for driver in ["", "shards", "json-file", "local", "none"] {
+            assert_eq!(sent_here(&run(driver, &[])), Ok(()), "{driver}");
         }
     }
 }

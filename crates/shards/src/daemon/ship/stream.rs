@@ -14,7 +14,9 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
+#[cfg(unix)]
 use std::os::fd::AsFd as _;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,6 +57,7 @@ impl Stream {
     }
 
     /// A stream to the unix socket at `path`, on `socket`, connected to it already.
+    #[cfg(unix)]
     pub(super) fn unix(path: PathBuf, socket: UnixStream) -> Stream {
         Stream {
             to: To::Unix(path),
@@ -160,6 +163,7 @@ impl Read for Stream {
 enum Conn {
     Tcp(Counted),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, Counted>>),
+    #[cfg(unix)]
     Unix(UnixStream),
 }
 
@@ -192,6 +196,7 @@ impl Read for Conn {
         match self {
             Conn::Tcp(c) => c.read(buf),
             Conn::Tls(s) => s.read(buf),
+            #[cfg(unix)]
             Conn::Unix(s) => shards_ipc::read(&*s, buf),
         }
     }
@@ -202,6 +207,7 @@ impl Write for Conn {
         match self {
             Conn::Tcp(c) => c.write(buf),
             Conn::Tls(s) => s.write(buf),
+            #[cfg(unix)]
             Conn::Unix(s) => s.write(buf),
         }
     }
@@ -210,6 +216,7 @@ impl Write for Conn {
         match self {
             Conn::Tcp(c) => c.flush(),
             Conn::Tls(s) => s.flush(),
+            #[cfg(unix)]
             Conn::Unix(s) => s.flush(),
         }
     }
@@ -236,11 +243,24 @@ impl Conn {
                 let conn = rustls::ClientConnection::new(config.clone(), name).map_err(io::Error::other)?;
                 Conn::Tls(Box::new(rustls::StreamOwned::new(conn, tcp(address)?)))
             }
+            #[cfg(unix)]
             To::Unix(path) => {
                 let socket = UnixStream::connect(path)?;
                 socket.set_write_timeout(write)?;
                 socket.set_read_timeout(read)?;
                 Conn::Unix(socket)
+            }
+            // AF_UNIX's streams on Windows, which std does not open, come with the plan's
+            // step 8.
+            #[cfg(windows)]
+            To::Unix(path) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "{}: a unix socket's log is not sent from Windows yet",
+                        path.display()
+                    ),
+                ));
             }
         })
     }
@@ -250,6 +270,7 @@ impl Conn {
         match self {
             Conn::Tcp(c) => Some(c),
             Conn::Tls(s) => Some(&s.sock),
+            #[cfg(unix)]
             Conn::Unix(_) => None,
         }
     }
@@ -257,6 +278,7 @@ impl Conn {
     /// Ends the connection once its receiver has all written on it.
     fn finish(self, wait: &Wait<'_>) -> io::Result<()> {
         let mut socket = match self {
+            #[cfg(unix)]
             Conn::Unix(_) => return Ok(()),
             Conn::Tcp(c) => c.socket,
             Conn::Tls(mut s) => {
@@ -291,13 +313,18 @@ impl Conn {
                     return Err(super::stops());
                 }
             } else {
+                #[cfg(unix)]
                 wait.readable(socket.as_fd(), rto)?;
+                #[cfg(windows)]
+                wait.readable(std::os::windows::io::AsSocket::as_socket(&socket), rto)?;
             }
         }
     }
 }
 
-#[cfg(test)]
+// Each closes a TCP connection once its receiver has all written on it, which Windows reads
+// with the plan's step 8 (sockets.rs `unacknowledged`).
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;

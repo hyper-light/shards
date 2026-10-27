@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use shards_template::{Kind, Struct, Value};
 
 use super::commands::{Asker, Reply};
@@ -41,10 +43,10 @@ pub(super) struct Member {
 /// Sends a network process `which` and waits for it to say it took it, as published
 /// ports are given (`give_ports`).
 pub(super) fn ask_net(
-    net: &std::os::unix::net::UnixStream,
+    net: &UnixStream,
     which: u8,
     payload: &[u8],
-    fds: &[std::os::fd::BorrowedFd<'_>],
+    fds: &[BorrowedFd<'_>],
 ) -> Result<(), String> {
     net.set_read_timeout(Some(super::PUBLISH_PATIENCE))
         .map_err(|e| e.to_string())?;
@@ -56,20 +58,34 @@ pub(super) fn ask_net(
     }
 }
 
+/// A stream's end as a handle of its own, to hand over and hold until its receiver says it
+/// has it: the socket itself on Unix; on Windows another handle to its pipe's end
+/// ([`shards_ipc::Stream::share`]), as a stream lends none ([`shards_ipc::handed`]).
+fn owned(end: UnixStream) -> Result<OwnedFd, String> {
+    #[cfg(unix)]
+    {
+        Ok(end.into())
+    }
+    #[cfg(windows)]
+    {
+        end.share().map_err(|e| format!("a peer's link: {e}"))
+    }
+}
+
 /// What a warm VM's network process is told before the VM has its run (D31, E1): each
 /// ask sent as it comes, and their answers read after the last, so that all of them cost
 /// one round trip, not one each. Each answer says which ask it is by its kind, and comes
 /// in the order asked. The descriptors an ask hands over are kept until its answer has
 /// come: XNU drops a socket in flight that no process holds (M24).
 pub(super) struct Asks<'n> {
-    net: &'n std::os::unix::net::UnixStream,
+    net: &'n UnixStream,
     /// Each ask's kind, and what it is, to say where it is not taken.
     asked: Vec<(u8, &'static str)>,
-    held: Vec<std::os::fd::OwnedFd>,
+    held: Vec<OwnedFd>,
 }
 
 impl<'n> Asks<'n> {
-    pub(super) fn new(net: &'n std::os::unix::net::UnixStream) -> Result<Asks<'n>, String> {
+    pub(super) fn new(net: &'n UnixStream) -> Result<Asks<'n>, String> {
         net.set_read_timeout(Some(super::PUBLISH_PATIENCE))
             .map_err(|e| format!("network process: {e}"))?;
         Ok(Asks {
@@ -86,7 +102,7 @@ impl<'n> Asks<'n> {
         what: &'static str,
         which: u8,
         payload: &[u8],
-        fds: &[std::os::fd::BorrowedFd<'_>],
+        fds: &[BorrowedFd<'_>],
     ) -> Result<(), String> {
         shards_ipc::send(self.net, which, payload, fds)
             .map_err(|e| format!("{what}: the network process: {e}"))?;
@@ -100,10 +116,9 @@ impl<'n> Asks<'n> {
         what: &'static str,
         which: u8,
         payload: &[u8],
-        fds: Vec<std::os::fd::OwnedFd>,
+        fds: Vec<OwnedFd>,
     ) -> Result<(), String> {
-        use std::os::fd::AsFd as _;
-        let borrowed: Vec<std::os::fd::BorrowedFd<'_>> = fds.iter().map(|f| f.as_fd()).collect();
+        let borrowed: Vec<BorrowedFd<'_>> = fds.iter().map(|f| f.as_fd()).collect();
         self.ask(what, which, payload, &borrowed)?;
         self.held.extend(fds);
         Ok(())
@@ -956,9 +971,9 @@ impl<D: Disk> Daemon<D> {
             let Some(theirs) = self.net_control(&peer.container) else {
                 continue;
             };
-            let (ours_end, their_end) =
-                std::os::unix::net::UnixStream::pair().map_err(|e| format!("a peer's link: {e}"))?;
-            use std::os::fd::AsFd as _;
+            let (ours_end, their_end) = UnixStream::pair().map_err(|e| format!("a peer's link: {e}"))?;
+            let ours_end = owned(ours_end)?;
+            let their_end = shards_ipc::handed(&their_end).map_err(|e| format!("a peer's link: {e}"))?;
             // Each peer's address, its IPv6 one's length (0 or 16) and that address, then
             // its link-local addresses.
             let addresses = |m: &Member| -> Vec<u8> {
@@ -977,7 +992,7 @@ impl<D: Disk> Daemon<D> {
                 "network",
                 shards_ipc::kind::NET_PEER,
                 &addresses(&peer),
-                vec![ours_end.into()],
+                vec![ours_end],
             )?;
             // A peer that cannot take it has gone; its own end comes soon.
             let _ = ask_net(
@@ -999,7 +1014,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A copy of microVM `id`'s network process's control socket, while it runs.
-    fn net_control(&self, id: &str) -> Option<std::os::unix::net::UnixStream> {
+    fn net_control(&self, id: &str) -> Option<UnixStream> {
         match lock(&self.runs).get(id) {
             Some(super::RunState::Tracked(t)) => t.net.as_ref()?.try_clone().ok(),
             _ => None,

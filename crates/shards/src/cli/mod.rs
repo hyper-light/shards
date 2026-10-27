@@ -27,6 +27,8 @@ mod show;
 pub(crate) mod terminal;
 pub(crate) mod terms;
 pub(crate) mod version;
+#[cfg(windows)]
+mod zones;
 
 /// `docker run`'s status when it could not run the command at all.
 const NOT_RUN: u8 = 125;

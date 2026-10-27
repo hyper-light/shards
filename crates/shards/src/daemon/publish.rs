@@ -11,8 +11,10 @@
 //! Docker Desktop's bound IPv4 alone.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::{AsFd as _, FromRawFd as _};
 
+use shards_ipc::fd::OwnedFd;
 use shards_ipc::{Publish, Run};
 
 use crate::containers::PortRecord;
@@ -160,7 +162,21 @@ pub(super) fn engine_ports(
     Ok(ports)
 }
 
+/// What shards cannot publish yet, refused before a container is made for it: on Windows,
+/// any port, as its network process takes a host's sockets as WSADuplicateSocket gives
+/// them there, where Unix's pass descriptors, which the plan's step 5 brings.
+#[cfg(windows)]
+pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
+    bindings.first().map(|b| {
+        format!(
+            "\"-p {}/{}\": a microVM's ports are not published on Windows yet",
+            b.port, b.proto
+        )
+    })
+}
+
 /// What shards cannot publish yet, refused before a container is made for it.
+#[cfg(unix)]
 pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
     bindings
         .iter()
@@ -379,10 +395,20 @@ pub(super) fn v6_listenable() -> bool {
     *LISTENABLE.get_or_init(|| std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok())
 }
 
+/// A socket of `proto` at `at`, on Windows, which publishes none yet ([`unsupported`]).
+#[cfg(windows)]
+fn listen(_at: SocketAddr, _proto: u8) -> std::io::Result<(OwnedFd, u16)> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "a microVM's ports are not published on Windows yet",
+    ))
+}
+
 /// A socket of `proto` at `at`, and the port it has, as bindTCPOrUDP makes one:
 /// close-on-exec, nonblocking for the network process, IPv6 alone on an IPv6 address, so
 /// that IPv4's own socket at the same port is not refused; for TCP, address reuse and
 /// listening; for UDP, each datagram's destination said (`IP_PKTINFO`).
+#[cfg(unix)]
 fn listen(at: SocketAddr, proto: u8) -> std::io::Result<(OwnedFd, u16)> {
     let family = if at.is_ipv6() {
         libc::AF_INET6
@@ -501,6 +527,7 @@ mod tests {
     /// one the kernel picks is the same at IPv4 and IPv6; a range takes its first free
     /// port.
     #[test]
+    #[cfg(unix)]
     fn ports_bind_on_the_host() {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = taken.local_addr().unwrap().port();
@@ -601,6 +628,7 @@ mod tests {
     /// A port the kernel picks at IPv4 that IPv6 has taken is picked afresh, up to
     /// dockerd's 10 tries; a port asked for is not.
     #[test]
+    #[cfg(unix)]
     fn a_picked_port_taken_at_ipv6_is_picked_again() {
         let both = [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)];
         let refusals = &std::cell::Cell::new(0);
@@ -626,6 +654,7 @@ mod tests {
 
     /// An IPv6 listener takes IPv6 alone: IPv4's connections are not its.
     #[test]
+    #[cfg(unix)]
     fn ipv6_listeners_take_no_ipv4() {
         // A port below every ephemeral range, nothing of IPv4's on it as it is taken: an
         // ephemeral one was another listener's on IPv4 meanwhile, or the connection's own
@@ -646,6 +675,7 @@ mod tests {
     /// An IPv4 address mapped into IPv6's binds and is recorded as IPv4's, as dockerd
     /// binds and records it.
     #[test]
+    #[cfg(unix)]
     fn a_mapped_address_is_ipv4s() {
         let bound = bind(
             &[Publish {
@@ -673,6 +703,7 @@ mod tests {
     /// listen (a kernel booted with ipv6.disable=1), as dockerd binds it, and IPv6's too
     /// where it can (review 2.18).
     #[test]
+    #[cfg(unix)]
     fn a_host_without_ipv6_publishes_at_ipv4_alone() {
         let any = Publish {
             port: 7000,
@@ -701,6 +732,7 @@ mod tests {
     /// A listener is close-on-exec and nonblocking from its making: no VM spawned on
     /// another thread meanwhile has it.
     #[test]
+    #[cfg(unix)]
     fn listeners_are_close_on_exec_and_nonblocking() {
         for proto in [TCP, UDP] {
             let (fd, _) = listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), proto).unwrap();
@@ -713,7 +745,25 @@ mod tests {
         }
     }
 
+    /// On Windows every port is refused before its container is made, none published there
+    /// yet, in the order asked.
     #[test]
+    #[cfg(windows)]
+    fn windows_publishes_no_port_yet() {
+        let port = |proto: &str| Publish {
+            port: 53,
+            proto: proto.into(),
+            ..Publish::default()
+        };
+        assert_eq!(unsupported(&[]), None);
+        assert_eq!(
+            unsupported(&[port("udp"), port("tcp")]).unwrap(),
+            "\"-p 53/udp\": a microVM's ports are not published on Windows yet"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn sctp_ports_are_refused_until_shards_carries_them() {
         let port = |proto: &str| Publish {
             port: 53,
@@ -734,6 +784,7 @@ mod tests {
     /// no connection made meanwhile is given as its own: an ephemeral one was, once,
     /// between the close and the bind (two of this binary at once, 2026-10-19).
     #[test]
+    #[cfg(unix)]
     fn tcp_ports_bind_again_after_their_connections_close() {
         use std::io::Read as _;
         let at = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
@@ -758,6 +809,7 @@ mod tests {
     /// A UDP port is bound as dockerd binds one: a datagram socket, in use at the same
     /// port refused in bindTCPOrUDP's words, and apart from TCP's at that port.
     #[test]
+    #[cfg(unix)]
     fn udp_ports_bind_apart_from_tcp() {
         let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
         let (fds, port) = bind_one(&loopback, "", UDP, &|_| InUse::Host).unwrap();
@@ -784,6 +836,7 @@ mod tests {
     /// (`host_binding_ipv4`) is bound there alone, IPv4's or IPv6's, as dockerd binds it;
     /// one given an address keeps its own.
     #[test]
+    #[cfg(unix)]
     fn a_port_at_no_address_takes_its_networks() {
         let at = |host_ip: &str, default: Option<IpAddr>| -> Vec<IpAddr> {
             let b = Publish {

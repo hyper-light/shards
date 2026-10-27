@@ -3,11 +3,11 @@
 
 use std::fs::File;
 use std::io::{self, Read as _};
-use std::os::fd::AsFd as _;
-use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 use shards_ipc::kind;
 
 use super::containers::{Outputs, detach_keys, input};
