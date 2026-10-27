@@ -118,25 +118,35 @@ pub fn cannot_run_vms() -> bool {
     }
 }
 
-/// Snapshots exist where this build has a backend (vm::SNAPSHOTS); tests of them skip
-/// elsewhere with a SKIP line, even where `SHARDS_REQUIRE_VMS=1` says VMs must run: a
-/// backend without snapshots runs VMs all the same.
+/// Snapshots restore where this build has a backend that takes them (vm::SNAPSHOTS) and
+/// the host's hypervisor sets a vCPU's state back (vm::restores_here: not Windows Server
+/// 2022's, PM M345); tests of them skip elsewhere with a SKIP line, even where
+/// `SHARDS_REQUIRE_VMS=1` says VMs must run: such a host runs VMs all the same.
 pub fn cannot_snapshot() -> bool {
-    if shards_vmm::vm::SNAPSHOTS {
-        return false;
+    if !shards_vmm::vm::SNAPSHOTS {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: snapshots are not supported on {ARCH} yet"
+        );
+        return true;
     }
-    let _ = writeln!(
-        std::io::stderr(),
-        "SKIP: snapshots are not supported on {ARCH} yet"
-    );
-    true
+    if !shards_vmm::vm::restores_here() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: this host's hypervisor sets no vCPU's state back, so no snapshot restores here (Windows Server 2022's WHP sets no APIC page back, PM M345)"
+        );
+        return true;
+    }
+    false
 }
 
 /// Whether the daemon here keeps the snapshots it keeps, its templates, warm pools and saves
-/// (D25, D26, D176): wherever there are snapshots.
-pub const POOLS: bool = shards_vmm::vm::SNAPSHOTS;
+/// (D25, D26, D176): wherever snapshots restore ([`cannot_snapshot`]).
+pub fn pools() -> bool {
+    shards_vmm::vm::restores_here()
+}
 
-/// Whether tests of the snapshots a daemon keeps skip here ([`POOLS`]), saying why.
+/// Whether tests of the snapshots a daemon keeps skip here ([`pools`]), saying why.
 pub fn cannot_pool() -> bool {
     cannot_snapshot()
 }

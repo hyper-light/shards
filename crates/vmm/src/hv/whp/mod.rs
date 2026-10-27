@@ -180,6 +180,40 @@ pub fn check_host() -> std::result::Result<(), String> {
     features().map(drop)
 }
 
+/// Whether this Windows sets a vCPU's state back as a restore does (state.rs
+/// `restore_state`): vCPU 0's local APIC page, of a partition of one set up as every VM's
+/// is, read and set back, once a process and only when asked, so that no VM's start pays
+/// for it. Windows Server 2022 (build 20348) refuses a page set back as read
+/// (ERROR_MORE_DATA), where builds 26100 and 26200 take it (PM M345).
+pub fn restores() -> bool {
+    static RESTORES: OnceLock<bool> = OnceLock::new();
+    *RESTORES.get_or_init(|| {
+        let Ok(partition) = partition(1) else {
+            return false;
+        };
+        // SAFETY: the partition just set up.
+        if check("WHvCreateVirtualProcessor", unsafe {
+            WHvCreateVirtualProcessor(partition.0, 0, 0)
+        })
+        .is_err()
+        {
+            return false;
+        }
+        let kind = WHvVirtualProcessorStateTypeInterruptControllerState2;
+        let set_back = partition.state(0, kind).and_then(|page| {
+            partition.set_state(
+                0,
+                kind,
+                &page,
+                "WHvSetVirtualProcessorState(InterruptControllerState2)",
+            )
+        });
+        // SAFETY: the vCPU made above, which never ran.
+        unsafe { WHvDeleteVirtualProcessor(partition.0, 0) };
+        set_back.is_ok()
+    })
+}
+
 /// The most vCPUs one VM can have: as many as the hypervisor tells a partition's guest it
 /// supports (its leaf 0x40000005, Hyper-V TLFS "Implementation Limits"), read for vCPU 0
 /// of a partition of one, once a process ([`host`]); and at most 254, since the MADT

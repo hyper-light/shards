@@ -26,6 +26,14 @@ pub fn check_host() -> Result<(), String> {
     hv::check_host()
 }
 
+/// Whether a snapshot restores on this host: where this build's VMs take snapshots
+/// ([`SNAPSHOTS`](super::SNAPSHOTS)) and its hypervisor sets a vCPU's state back as a
+/// restore does, which a Windows may not (WHP's local APIC page on Windows Server 2022, PM
+/// M345), asked of it once a process.
+pub fn restores_here() -> bool {
+    super::SNAPSHOTS && hv::restores()
+}
+
 /// The most vCPUs one VM can have on this host.
 pub fn max_vcpus() -> Result<u32, String> {
     hv::max_vcpus().map_err(|e| e.to_string())

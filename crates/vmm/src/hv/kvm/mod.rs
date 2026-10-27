@@ -119,6 +119,11 @@ pub fn check_host() -> std::result::Result<(), String> {
     kvm().map(drop)
 }
 
+/// Whether this host sets a vCPU's state back as a restore does: KVM sets every vCPU's.
+pub fn restores() -> bool {
+    true
+}
+
 /// The most vCPUs one VM can have: KVM's limit, and the architecture's machine's
 /// ([`VCPU_LIMIT`]).
 pub fn max_vcpus() -> Result<u32> {

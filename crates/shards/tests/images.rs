@@ -510,7 +510,7 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
                 .contains(&format!("Status: Image is up to date for {INDEX}")),
         "another platform of an image here: {shown_first}"
     );
-    if common::POOLS {
+    if common::pools() {
         let second = run(&[
             "--rm",
             "--pull",
@@ -753,7 +753,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
     let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
     assert_eq!(first.status, Some(0), "{}", first.stderr);
     assert!(booted(&first), "{}", first.stderr);
-    if !common::POOLS {
+    if !common::pools() {
         assert!(templates().is_empty(), "no snapshots here: {:?}", templates());
         return;
     }
@@ -889,7 +889,7 @@ fn an_agentfiles_image_restores_its_template_too() {
     let first = run_shards_env(&["run"], &["agents:1"], &env, TIMEOUT);
     assert_eq!(first.status, Some(0), "{}", first.stderr);
     assert!(booted(&first), "{}", first.stderr);
-    if !common::POOLS {
+    if !common::pools() {
         return;
     }
     for _ in 0..2 {
@@ -948,7 +948,7 @@ fn the_template(home: &std::path::Path) -> std::path::PathBuf {
 #[cfg(unix)]
 #[test]
 fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
-    if cannot_run_vms() || !common::POOLS {
+    if cannot_run_vms() || !common::pools() {
         eprintln!("SKIP: this host saves no templates");
         return;
     }
@@ -1004,7 +1004,7 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
 #[test]
 fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
     use std::os::unix::fs::OpenOptionsExt as _;
-    if cannot_run_vms() || !common::POOLS {
+    if cannot_run_vms() || !common::pools() {
         eprintln!("SKIP: this host saves no templates");
         return;
     }

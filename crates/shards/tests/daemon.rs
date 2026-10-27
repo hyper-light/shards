@@ -238,17 +238,34 @@ fn users(file: &Path) -> Vec<u32> {
     let mut session = 0u32;
     let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
     // SAFETY: a session's handle and key, into locals of their size.
-    assert_eq!(unsafe { RmStartSession(&mut session, 0, key.as_mut_ptr()) }, ERROR_SUCCESS);
+    let started = unsafe { RmStartSession(&mut session, 0, key.as_mut_ptr()) };
+    assert_eq!(started, ERROR_SUCCESS);
     let wide: Vec<u16> = file.as_os_str().encode_wide().chain([0]).collect();
     let names = [wide.as_ptr()];
     // SAFETY: one file's NUL-terminated name, for the session just started.
     let registered = unsafe {
-        RmRegisterResources(session, 1, names.as_ptr(), 0, std::ptr::null(), 0, std::ptr::null())
+        RmRegisterResources(
+            session,
+            1,
+            names.as_ptr(),
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+        )
     };
     let mut found = vec![RM_PROCESS_INFO::default(); 64];
     let (mut needed, mut listed, mut reasons) = (0u32, found.len() as u32, 0u32);
     // SAFETY: room for `listed` entries, which it says how many it filled.
-    let got = unsafe { RmGetList(session, &mut needed, &mut listed, found.as_mut_ptr(), &mut reasons) };
+    let got = unsafe {
+        RmGetList(
+            session,
+            &mut needed,
+            &mut listed,
+            found.as_mut_ptr(),
+            &mut reasons,
+        )
+    };
     // SAFETY: the session started above, ended once.
     unsafe { RmEndSession(session) };
     assert_eq!(registered, ERROR_SUCCESS, "{}", file.display());
@@ -3177,7 +3194,7 @@ fn a_killed_daemons_runs_end_with_it() {
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     // The restored run where this host takes snapshots: on Windows with the parity plan's
     // step 3.
-    let snapshots = common::POOLS;
+    let snapshots = common::pools();
     let names: &[&str] = if snapshots { &["plain", "back"] } else { &["plain"] };
     for name in names {
         let up = shards(&[

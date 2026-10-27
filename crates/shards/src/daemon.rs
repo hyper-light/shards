@@ -6491,7 +6491,9 @@ impl<D: Disk> Daemon<D> {
         let mut cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
         on_network(&mut cfg);
         cfg.gpu = prepared.gpu.is_some();
-        if !shards_vmm::vm::SNAPSHOTS {
+        // A host whose hypervisor restores no snapshot boots every run cold: Windows Server
+        // 2022's sets no vCPU's APIC page back (PM M345).
+        if !shards_vmm::vm::restores_here() {
             return self.cold(
                 threads,
                 &cfg,
@@ -11284,8 +11286,10 @@ mod tests {
     }
 
     /// Refills are the refiller's, which starts what a pool keeps ahead of its runs, no
-    /// more however often it is asked, and makes the spare container. Unix's until the
-    /// plan's step 4 serves pools on Windows.
+    /// more however often it is asked, and makes the spare container. Unix's: its stand-in
+    /// VM is a script that sleeps whatever it is given, and Windows starts no program that
+    /// waits however it is started in a VM's AppContainer; the refiller is the same code
+    /// there, and its VMs' start Windows' own, which the pool tests of tests/daemon.rs run.
     #[cfg(unix)]
     #[test]
     fn the_refiller_starts_what_a_pool_keeps_and_the_spare() {

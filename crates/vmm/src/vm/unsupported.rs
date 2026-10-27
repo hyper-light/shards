@@ -30,6 +30,10 @@ pub fn check_host() -> Result<(), String> {
     Err(no_backend())
 }
 
+pub fn restores_here() -> bool {
+    false
+}
+
 pub fn accept_working_set(_dir: &std::path::Path, _name: &str, _bytes: &[u8]) -> Result<usize, String> {
     Err(no_backend())
 }

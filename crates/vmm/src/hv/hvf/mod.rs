@@ -70,6 +70,12 @@ pub fn check_host() -> std::result::Result<(), String> {
     }
 }
 
+/// Whether this host sets a vCPU's state back as a restore does: Hypervisor.framework
+/// sets every vCPU's.
+pub fn restores() -> bool {
+    true
+}
+
 pub fn max_vcpus() -> Result<u32> {
     Ok(sys::max_vcpus()?)
 }

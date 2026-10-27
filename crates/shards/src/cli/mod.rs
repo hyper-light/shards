@@ -1200,6 +1200,17 @@ fn vm(args: &[OsString]) -> ExitCode {
         name,
         handle: *handle,
     }));
+    // A warm VM holds its spawner's NUL for the clients it lets go of, as the daemon's
+    // do: its AppContainer opens no file by name (PM M351).
+    let warm = served.iter().any(|(name, _)| name == WARM);
+    let null = match warm.then(|| std::fs::File::open(crate::os::NULL)).transpose() {
+        Ok(null) => null,
+        Err(e) => return failed(&format!("{}: {e}", crate::os::NULL)),
+    };
+    given.extend(null.as_ref().map(|null| shards_ipc::Given {
+        name: "null",
+        handle: null.as_handle(),
+    }));
     let spawned = shards_ipc::spawn_confined(&shards_ipc::Spawn {
         program: &bin,
         args: &with,
@@ -1472,9 +1483,17 @@ mod served_pipes_tests {
         let (read, _write) = std::io::pipe().unwrap();
         let value = (read.as_raw_handle() as usize).to_string();
         for command in ["restore", "run"] {
-            let (kept, pipes) =
-                served_pipes(&args(&[command, "/t", "--warm", value.as_str(), "--", "/bin/x", "--warm", "5"]))
-                    .unwrap();
+            let (kept, pipes) = served_pipes(&args(&[
+                command,
+                "/t",
+                "--warm",
+                value.as_str(),
+                "--",
+                "/bin/x",
+                "--warm",
+                "5",
+            ]))
+            .unwrap();
             assert_eq!(
                 kept,
                 args(&[command, "/t", "--warm", "warm", "--", "/bin/x", "--warm", "5"])
@@ -1486,10 +1505,20 @@ mod served_pipes_tests {
         let other = (second.as_raw_handle() as usize).to_string();
         for (given, why) in [
             (
-                vec!["restore", "/t", "--warm", value.as_str(), "--warm", other.as_str()],
+                vec![
+                    "restore",
+                    "/t",
+                    "--warm",
+                    value.as_str(),
+                    "--warm",
+                    other.as_str(),
+                ],
                 "given twice",
             ),
-            (vec!["restore", "/t", "--warm", "0"], "not a pipe this process holds"),
+            (
+                vec!["restore", "/t", "--warm", "0"],
+                "not a pipe this process holds",
+            ),
             (vec!["restore", "/t", "--warm", "x"], "not a handle"),
             (vec!["restore", "/t", "--warm"], "no handle given"),
         ] {
