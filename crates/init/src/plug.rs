@@ -544,9 +544,17 @@ fn grown_hold(cgroup: &str) -> io::Result<u64> {
 /// needs to go on ([`working_room`]), which a room short of it raises no hold past (what
 /// it holds past the room is given back by the host's passes, `RECLAIM`, whose pages the
 /// kernel reports free together); or with no budget (`None`), as its memory alone holds
-/// it. What the hold leaves above it the kernel reclaims at once, which is then reported
-/// free (D151). The bytes it is held within past what it uses; `None` with no budget.
+/// it. A room short of nothing, its budget already past, first has as much of the run's
+/// file pages reclaimed as it is short ([`crate::run::reclaim_files`]): its host takes that
+/// back one way or another, and with no swap only by throttling it, where what the guest's
+/// own passes counted cold (`inactive_file`) left a held build's host 38 MiB past its
+/// budget, its reread throttled for 15 minutes (CI's ubuntu-24.04, 2026-10-27). What the
+/// hold leaves above it the kernel reclaims at once, which is then reported free (D151).
+/// The bytes it is held within past what it uses; `None` with no budget.
 pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
+    if let Some(short) = room.filter(|r| *r < 0) {
+        crate::run::reclaim_files(cgroup, short.unsigned_abs())?;
+    }
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
     set_cap(room.map_or(u64::MAX, |r| within(used, r, working_room(), cap())));
