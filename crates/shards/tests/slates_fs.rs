@@ -28,10 +28,10 @@
 //! The first test runs on Windows too (WHP, D140): there the stream is a duplex named pipe, and `slates shards ID --
 //! shards run … --slates-fs-handle {handle}` starts the spawner holding the pipe's end as a handle, writing its value
 //! where `{handle}` stands (slates A-179, A-181); the spawner duplicates it into the confined VM process (D141, PM
-//! M203), whose device reads and writes this framing on it with overlapped I/O (PM M340). The DAX and mount tests are
-//! Unix's: Windows has no DAX window for a share another server serves yet, and no `slates mount` a Shards daemon
-//! shares. Each test skips loudly (prints and passes) where the host cannot run VMs or `SLATES_BIN` is unset, as the
-//! other VM tests do.
+//! M203), whose device reads and writes this framing on it with overlapped I/O (PM M340). The DAX test runs there too,
+//! its stream handed so and its window WHP's (D189; slates A-180 answers its descriptor asks with sections). The mount
+//! test is Unix's: Windows has no `slates mount` a Shards daemon shares. Each test skips loudly (prints and passes)
+//! where the host cannot run VMs or `SLATES_BIN` is unset, as the other VM tests do.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
