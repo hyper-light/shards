@@ -2209,16 +2209,17 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Clears each of `watches` that `ready` says saw a change, by its place among them:
-    /// whether the home's (the first) did, and the contexts' (the third).
+    /// whether the home's (the first) did, and the contexts' (the third). Each is asked
+    /// once, before any is cleared: on Windows `ready` reads a watch's event, which its
+    /// clearing resets.
     fn clear_watches(&self, watches: &[Option<FileWatch>; 3], ready: impl Fn(usize) -> bool) -> (bool, bool) {
-        for (i, watch) in watches.iter().enumerate() {
-            if ready(i)
-                && let Some(watch) = watch
-            {
+        let fired = [ready(0), ready(1), ready(2)];
+        for (watch, fired) in watches.iter().zip(fired) {
+            if fired && let Some(watch) = watch {
                 watch.clear();
             }
         }
-        (ready(0), ready(2))
+        (fired[0], fired[2])
     }
 
     pub(super) fn take<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {

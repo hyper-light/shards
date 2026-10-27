@@ -1691,10 +1691,17 @@ fn create(
         si.lpAttributeList = attrs;
         let mut pi = PROCESS_INFORMATION::default();
         let env = environment(s.env);
+        // A spawner with no console (the daemon) makes its child none at all
+        // (DETACHED_PROCESS): one made for a confined child, hidden or not, failed it as
+        // it started (STATUS_DLL_INIT_FAILED, on jupiter).
+        // SAFETY: no arguments.
+        let console = if unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null() {
+            windows_sys::Win32::System::Threading::DETACHED_PROCESS
+        } else {
+            0
+        };
         // SAFETY: a command line we own and may be written; startup info and its
-        // attributes, and the environment block, alive through the call. A spawner with
-        // no console (the daemon) makes its child none either: one made for a confined
-        // child failed it as it started (STATUS_DLL_INIT_FAILED, on jupiter).
+        // attributes, and the environment block, alive through the call.
         if unsafe {
             CreateProcessW(
                 std::ptr::null(),
@@ -1702,7 +1709,7 @@ fn create(
                 std::ptr::null(),
                 std::ptr::null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | no_window(),
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | console,
                 env.as_ptr().cast(),
                 std::ptr::null(),
                 (&raw const si).cast(),
