@@ -8304,7 +8304,7 @@ mod tests {
             let (ask, asks) = mpsc::channel::<()>();
             let (daemon, threads, id) = (&self.t.daemon, self.threads, id.to_string());
             let run = threads.spawn(move || {
-                let null = File::open("/dev/null").unwrap();
+                let null = File::open(crate::os::NULL).unwrap();
                 let acquire = || {
                     let _ = ask.send(());
                     offered
@@ -8618,7 +8618,7 @@ mod tests {
             // Its run started, and not followed: nothing takes what its VM sends but the
             // command that asks.
             let running = threads.spawn(move || {
-                let null = File::open("/dev/null").unwrap();
+                let null = File::open(crate::os::NULL).unwrap();
                 daemon
                     .start_run(
                         threads,
@@ -11101,7 +11101,9 @@ mod tests {
     }
 
     /// Refills are the refiller's, which starts what a pool keeps ahead of its runs, no
-    /// more however often it is asked, and makes the spare container.
+    /// more however often it is asked, and makes the spare container. Unix's until the
+    /// plan's step 4 serves pools on Windows.
+    #[cfg(unix)]
     #[test]
     fn the_refiller_starts_what_a_pool_keeps_and_the_spare() {
         let mut t = Test::new("refiller");

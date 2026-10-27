@@ -420,7 +420,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
     ) -> std::io::Result<Ended> {
         let (mut out, into) = std::io::pipe()?;
-        let null = std::fs::File::open("/dev/null")?;
+        let null = std::fs::File::open(crate::os::NULL)?;
         let ours = self.send_exec(id, spec, argv, false, [null.as_fd(), into.as_fd(), into.as_fd()])?;
         // The VM holds the rest: its end sees the output end.
         drop((into, null));

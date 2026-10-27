@@ -644,7 +644,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::EXPORT,
             ..Default::default()
         };
-        let pieces = std::fs::File::open("/dev/null").and_then(|null| Ok((null, std::io::pipe()?)));
+        let pieces = std::fs::File::open(crate::os::NULL).and_then(|null| Ok((null, std::io::pipe()?)));
         let (null, (mut said, into)) = match pieces {
             Ok(p) => p,
             Err(e) => return refuse(format!("Error exporting container {given}: {e}")),
@@ -728,7 +728,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let Some(file) = asker.files.first() else {
                 return refuse("shards: cp: the client sent no file".into());
             };
-            let pieces = std::fs::File::open("/dev/null").and_then(|null| Ok((null, std::io::pipe()?)));
+            let pieces = std::fs::File::open(crate::os::NULL).and_then(|null| Ok((null, std::io::pipe()?)));
             let (null, (mut errs, into)) = match pieces {
                 Ok(p) => p,
                 Err(e) => return refuse(e.to_string()),
