@@ -1855,6 +1855,24 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+/// The signals shards names a process's end by: this host's own on Unix; on Windows, which
+/// sends a process none but its end, Linux's numbers, which a child it ends takes 128 and
+/// one of as its status (`Child::kill`), as a Unix child a signal ended does.
+pub mod signal {
+    #[cfg(unix)]
+    pub use libc::{SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGTERM};
+    #[cfg(windows)]
+    pub const SIGHUP: i32 = 1;
+    #[cfg(windows)]
+    pub const SIGINT: i32 = 2;
+    #[cfg(windows)]
+    pub const SIGQUIT: i32 = 3;
+    #[cfg(windows)]
+    pub const SIGKILL: i32 = 9;
+    #[cfg(windows)]
+    pub const SIGTERM: i32 = 15;
+}
+
 /// What one thread sets, once, for others to see, and a wait can wake on: the daemon's end
 /// of its clients, which a slot's reader of a request waits on beside the request (D185).
 /// A pipe written a byte never read, on Unix; an event, on Windows.

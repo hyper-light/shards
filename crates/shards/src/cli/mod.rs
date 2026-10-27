@@ -1244,7 +1244,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         name,
         handle: *handle,
     }));
-    let spawned = shards_ipc::spawn(&shards_ipc::Spawn {
+    let spawned = shards_ipc::spawn_confined(&shards_ipc::Spawn {
         program: &bin,
         args: &with,
         grants_at: 1,

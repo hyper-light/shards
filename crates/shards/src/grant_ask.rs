@@ -263,10 +263,10 @@ pub fn dial(
 #[cfg(windows)]
 pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String> {
     use shards_ipc::kind;
-    shards_ipc::send(&link.to, kind::GRANT, &encode(wanted)?)
+    shards_ipc::write_message(&link.to, kind::GRANT, &encode(wanted)?)
         .map_err(|e| format!("asking for access: {e}"))?;
     for (access, path) in wanted {
-        let answer = shards_ipc::recv(&link.from)
+        let answer = shards_ipc::read_message(&link.from)
             .map_err(|e| format!("the grant for {}: {e}", path.display()))?
             .ok_or_else(|| format!("the spawner went before granting {}", path.display()))?;
         let at = |e: String| format!("{}: {e}", path.display());
@@ -325,14 +325,14 @@ fn handed_file(payload: &[u8]) -> Result<(std::fs::File, PathBuf), String> {
 #[cfg(windows)]
 pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm::platform::UnixStream> {
     use shards_ipc::kind;
-    shards_ipc::send(&link.to, kind::DIAL, &port.to_be_bytes())?;
-    let answer = shards_ipc::recv(&link.from)?
+    shards_ipc::write_message(&link.to, kind::DIAL, &port.to_be_bytes())?;
+    let answer = shards_ipc::read_message(&link.from)?
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
     match answer.kind {
         kind::GRANTED => {
             let conn = shards_vmm::platform::UnixStream::from_shared(&answer.payload)?;
             // Had: the spawner lets go of its copy, as on macOS (review 8.7).
-            let _ = shards_ipc::send(&link.to, kind::TAKEN, &[]);
+            let _ = shards_ipc::write_message(&link.to, kind::TAKEN, &[]);
             Ok(conn)
         }
         kind::ERR => Err(std::io::Error::new(

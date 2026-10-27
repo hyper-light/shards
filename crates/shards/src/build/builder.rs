@@ -653,7 +653,7 @@ fn kill(vm: &shards_ipc::Child) {
     #[cfg(unix)]
     let _ = vm.kill(libc::SIGKILL);
     #[cfg(windows)]
-    let _ = vm.kill();
+    let _ = vm.kill(shards_ipc::signal::SIGKILL);
 }
 
 /// The connection `listener` holds, the first its peer made, its listening ended with it,
@@ -867,10 +867,11 @@ impl Builder {
                 .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
             let mut payload = vec![u8::from(writable)];
             payload.extend((theirs as u64).to_le_bytes());
-            shards_ipc::send(&self.attach, kind::DISK_ATTACH, &payload)
+            shards_ipc::write_message(&self.attach, kind::DISK_ATTACH, &payload)
                 .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
         }
-        let m = shards_ipc::recv(&self.attach)
+        let m = self
+            .answer()
             .map_err(|e| format!("attaching a cache to the builder: {e}"))?
             .ok_or("the builder's VM went as a cache was attached")?;
         match (m.kind, m.payload.split_first_chunk::<8>()) {
@@ -905,15 +906,25 @@ impl Builder {
         self.attach(file, true)
     }
 
+    /// The VM process's answer on its attach link: a Unix socket's message, or on Windows an
+    /// AF_UNIX socket's, which carries no handle (shards_ipc).
+    fn answer(&self) -> std::io::Result<Option<shards_ipc::Message>> {
+        #[cfg(unix)]
+        return shards_ipc::recv(&self.attach);
+        #[cfg(windows)]
+        return shards_ipc::read_message(&self.attach);
+    }
+
     /// Lets go of the range that starts at `start`: the VM process closes its file.
     pub fn detach(&mut self, start: u64) -> Result<(), String> {
         use shards_ipc::kind;
         #[cfg(unix)]
         let sent = shards_ipc::send(&self.attach, kind::DISK_DETACH, &start.to_be_bytes(), &[]);
         #[cfg(windows)]
-        let sent = shards_ipc::send(&self.attach, kind::DISK_DETACH, &start.to_be_bytes());
+        let sent = shards_ipc::write_message(&self.attach, kind::DISK_DETACH, &start.to_be_bytes());
         sent.map_err(|e| format!("detaching a cache from the builder: {e}"))?;
-        let m = shards_ipc::recv(&self.attach)
+        let m = self
+            .answer()
             .map_err(|e| format!("detaching a cache from the builder: {e}"))?
             .ok_or("the builder's VM went as a cache was detached")?;
         match m.kind {

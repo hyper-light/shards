@@ -105,7 +105,7 @@ impl Dialer {
     }
 
     fn send(&mut self, kind: u8, payload: &[u8]) -> io::Result<()> {
-        shards_ipc::send(&mut self.unsent, kind, payload)?;
+        shards_ipc::write_message(&mut self.unsent, kind, payload)?;
         self.flush()
     }
 

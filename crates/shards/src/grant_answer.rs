@@ -463,11 +463,12 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
     let mut held_bound: Vec<shards_vmm::platform::UnixListener> = Vec::new();
     let mut started = false;
     let refuse = |e: String| {
-        let _ = shards_ipc::send(&link.to, kind::ERR, e.as_bytes());
+        let _ = shards_ipc::write_message(&link.to, kind::ERR, e.as_bytes());
         Err(e)
     };
     loop {
-        let asked = shards_ipc::recv(&link.from).map_err(|e| format!("a VM's request for access: {e}"))?;
+        let asked =
+            shards_ipc::read_message(&link.from).map_err(|e| format!("a VM's request for access: {e}"))?;
         held.clear();
         held_bound.clear();
         let Some(asked) = asked else {
@@ -487,8 +488,8 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
                 held.push(conn);
                 Ok(info)
             }) {
-                Ok(info) => shards_ipc::send(&link.to, kind::GRANTED, &info),
-                Err(e) => shards_ipc::send(&link.to, kind::ERR, e.as_bytes()),
+                Ok(info) => shards_ipc::write_message(&link.to, kind::GRANTED, &info),
+                Err(e) => shards_ipc::write_message(&link.to, kind::ERR, e.as_bytes()),
             };
             sent.map_err(|e| format!("answering a VM's dial: {e}"))?;
             continue;
@@ -534,7 +535,7 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
                 }
                 Err(e) => return refuse(e),
             };
-            shards_ipc::send(&link.to, kind::GRANTED, &payload)
+            shards_ipc::write_message(&link.to, kind::GRANTED, &payload)
                 .map_err(|e| format!("granting a VM {}: {e}", path.display()))?;
         }
     }

@@ -794,9 +794,9 @@ fn serve_attach(name: &str) -> Result<(), String> {
     std::thread::Builder::new()
         .name("attach".into())
         .spawn(move || {
-            while let Ok(Some(m)) = shards_ipc::recv(&socket) {
+            while let Ok(Some(m)) = shards_ipc::read_message(&socket) {
                 let (kind, payload) = answer(m).unwrap_or_else(|e| (kind::DISK_REFUSED, e.into_bytes()));
-                if shards_ipc::send(&socket, kind, &payload).is_err() {
+                if shards_ipc::write_message(&socket, kind, &payload).is_err() {
                     break;
                 }
             }

@@ -1166,7 +1166,7 @@ fn answer(sock: &UnixStream, kind: u8) -> io::Result<()> {
     #[cfg(unix)]
     return shards_ipc::send(sock, kind, &[], &[]);
     #[cfg(windows)]
-    return shards_ipc::send(sock, kind, &[]);
+    return shards_ipc::write_message(sock, kind, &[]);
 }
 
 /// Takes the guest's frames from the ring, `frames` of them at most, until it is empty or
@@ -2987,7 +2987,7 @@ mod tests {
         let mut to_itself = port.to_be_bytes().to_vec();
         to_itself.splice(0..0, [127, 0, 0, 1]);
         for id in [0u32, 1] {
-            let ask = shards_ipc::recv(&theirs).unwrap().unwrap();
+            let ask = shards_ipc::read_message(&theirs).unwrap().unwrap();
             assert_eq!(ask.kind, kind::DIAL);
             assert_eq!(
                 ask.payload,
@@ -2997,7 +2997,7 @@ mod tests {
         }
         // The second answered first, refused; then the first, connected.
         let answer = |id: u32, kind: u8, rest: &[u8]| {
-            shards_ipc::send(&theirs, kind, &[&id.to_be_bytes()[..], rest].concat()).unwrap();
+            shards_ipc::write_message(&theirs, kind, &[&id.to_be_bytes()[..], rest].concat()).unwrap();
         };
         answer(1, kind::ERR, b"refused");
         let conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -3006,7 +3006,7 @@ mod tests {
         // Each answer whole before the stack looks: it takes both at once.
         std::thread::sleep(std::time::Duration::from_millis(100));
         stack.on_dialer(false);
-        let taken = shards_ipc::recv(&theirs).unwrap().unwrap();
+        let taken = shards_ipc::read_message(&theirs).unwrap().unwrap();
         assert_eq!(
             (taken.kind, taken.payload),
             (kind::TAKEN, 0u32.to_be_bytes().to_vec())

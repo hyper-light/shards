@@ -436,7 +436,7 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
     let args: Vec<&std::ffi::OsStr> = ready.args.iter().map(std::ffi::OsString::as_os_str).collect();
     let err = std::io::stderr();
     let env = child_env();
-    let child = shards_ipc::spawn(&shards_ipc::Spawn {
+    let child = shards_ipc::spawn_confined(&shards_ipc::Spawn {
         program: &binary,
         args: &args,
         grants_at: 0,
@@ -499,7 +499,7 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
     let answer = |id: u32, kind: u8, rest: &[u8]| {
         let mut payload = id.to_be_bytes().to_vec();
         payload.extend(rest);
-        shards_ipc::send(link, kind, &payload)
+        shards_ipc::write_message(link, kind, &payload)
     };
     let mut connecting: Vec<(u32, std::net::TcpStream)> = Vec::new();
     let mut held: Vec<(u32, Held)> = Vec::new();
@@ -558,7 +558,7 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
         if fds.first().map_or(0, |fd| fd.revents) == 0 {
             continue;
         }
-        let Ok(Some(asked)) = shards_ipc::recv(link) else {
+        let Ok(Some(asked)) = shards_ipc::read_message(link) else {
             return;
         };
         let Some((id, rest)) = asked.payload.split_first_chunk::<4>() else {
@@ -630,7 +630,7 @@ fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
 pub fn reap(net: &NetProcess) {
     let grace = u32::try_from(GRACE.as_millis()).unwrap_or(u32::MAX);
     if !net.child.ended_within(grace) {
-        let _ = net.child.kill();
+        let _ = net.child.kill(shards_ipc::signal::SIGKILL);
         let _ = net.child.wait();
     }
 }
