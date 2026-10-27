@@ -33,12 +33,5 @@ jobs:
         run: |
           export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1
           date -u +%T
-          cargo test --locked -p shards --profile test-release --target x86_64-unknown-linux-gnu --test build -- --exact a_build_held_short_of_memory_has_its_builder_give_back --nocapture 2>&1 | grep -a -E 'REPRO|test result|panicked|SKIP' | cut -c1-300
-          date -u +%T
-      - name: Among its binary's tests
-        timeout-minutes: 45
-        run: |
-          export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1
-          date -u +%T
-          cargo test --locked -p shards --profile test-release --target x86_64-unknown-linux-gnu --test build -- --nocapture 2>&1 | grep -a -E 'REPRO|test result|panicked|has been running' | cut -c1-300
+          cargo test --locked -p shards --profile test-release --target x86_64-unknown-linux-gnu --test build -- --exact a_build_held_short_of_memory_has_its_builder_give_back --nocapture 2>&1 | grep -a -E 'REPRO|test result|panicked|SKIP' | cut -c1-900
           date -u +%T

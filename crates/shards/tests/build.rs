@@ -594,6 +594,8 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
 /// room the budget leaves (`ROOM`). Its log says what it gave back and asked to unplug, and
 /// what its guest held the build within, and it succeeds, its layers those of the same
 /// build held to nothing. Linux alone, with a user's manager, as the budget test of runs.
+static SAMPLED_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[test]
 fn a_build_held_short_of_memory_has_its_builder_give_back() {
     use std::io::BufRead as _;
@@ -715,12 +717,81 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
                 String::from_utf8_lossy(&budget.stderr)
             );
             set = true;
-            eprintln!("REPRO {:?} budget set: MemoryHigh={high} of current {current}", t0.elapsed());
+            eprintln!(
+                "REPRO {:?} budget set: MemoryHigh={high} of current {current}",
+                t0.elapsed()
+            );
+            // Scratch: the scope's memory and what its threads wait in, every 2 s.
+            let cg = format!("/sys/fs/cgroup{dir}");
+            std::thread::spawn(move || {
+                let read = |f: &str| std::fs::read_to_string(format!("{cg}/{f}")).unwrap_or_default();
+                let stat = |text: &str, key: &str| -> u64 {
+                    text.lines()
+                        .find_map(|l| l.strip_prefix(&format!("{key} ")))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0)
+                };
+                loop {
+                    let current = read("memory.current");
+                    if current.is_empty() || SAMPLED_STOP.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    let st = read("memory.stat");
+                    let events = read("memory.events");
+                    let pressure = read("memory.pressure");
+                    let full = pressure
+                        .lines()
+                        .find(|l| l.starts_with("full"))
+                        .and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix("total=")))
+                        .unwrap_or("?")
+                        .to_string();
+                    let mut waits: std::collections::BTreeMap<String, u32> = Default::default();
+                    for pid in read("cgroup.procs").lines() {
+                        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+                        if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+                            for t in tasks.flatten() {
+                                let w = std::fs::read_to_string(t.path().join("wchan")).unwrap_or_default();
+                                let state = std::fs::read_to_string(t.path().join("stat"))
+                                    .ok()
+                                    .and_then(|s| {
+                                        s.rsplit(')')
+                                            .next()
+                                            .and_then(|r| r.split_whitespace().next())
+                                            .map(str::to_string)
+                                    })
+                                    .unwrap_or_default();
+                                *waits.entry(format!("{}:{state}:{w}", comm.trim())).or_default() += 1;
+                            }
+                        }
+                    }
+                    let mut top: Vec<(String, u32)> =
+                        waits.into_iter().filter(|(k, _)| !k.ends_with(":S:0")).collect();
+                    top.sort_by(|a, b| b.1.cmp(&a.1));
+                    top.truncate(6);
+                    eprintln!(
+                        "REPRO {:?} host cur={}M high={} anon={}M shmem={}M file={}M kernel={}M high_events={} full_total_us={} pgsteal={} refault_file={} waits={:?}",
+                        t0.elapsed(),
+                        current.trim().parse::<u64>().unwrap_or(0) >> 20,
+                        read("memory.high").trim(),
+                        stat(&st, "anon") >> 20,
+                        stat(&st, "shmem") >> 20,
+                        stat(&st, "file") >> 20,
+                        stat(&st, "kernel") >> 20,
+                        stat(&events, "high"),
+                        full,
+                        stat(&st, "pgsteal"),
+                        stat(&st, "workingset_refault_file"),
+                        top
+                    );
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            });
         }
         eprintln!("REPRO {:?} | {line}", t0.elapsed());
         lines.push(line);
     }
     let status = held.wait().unwrap();
+    SAMPLED_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
     let shown = lines.join("\n");
     assert!(set, "its step never read the file:\n{shown}");
     assert!(status.success(), "{shown}");
