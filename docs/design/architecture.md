@@ -6636,7 +6636,11 @@ microVMs, 37 of 37 on each, the same eleven skipping: on windows-2022 (Windows S
 and windows-2025 at b7d8ee30 before (CI 40601221843). There it had first failed whole, every
 VM refused NUL (M351); then, on windows-2022, two tests whose cold boots ran beside others'
 waited past the daemon's 60 s, until cold boots waited their turn (M357). `shards_ipc`'s
-tests pass on both, their pipe's DACL read by SID (M354).
+tests pass on both, their pipe's DACL read by SID (M354). On jupiter again at 94c24b78
+(2026-10-28), after those changes: tests/daemon.rs 37 of 37 with real microVMs, and every
+command of the catalog, 64 put to one daemon, answered through its slots; while it served,
+its home held no reparse point (an AF_UNIX socket is one), its `requests/` the slots' lists
+`free` and `free-streams` alone.
 
 **Not on Windows yet**, each refused with a message that says so, each a later step of the
 parity plan: templates, warm pools and saves (step 4, on WHP's snapshots, D196); published
