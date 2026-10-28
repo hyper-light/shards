@@ -2356,7 +2356,7 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         return Err("a directory of sockets cannot be granted to a confined VM process".into());
     }
     if !paths.devices.is_empty() {
-        return Err("a host's device is passed through by VFIO, Linux's (D154)".into());
+        return Err(vm::NO_PASSTHROUGH.into());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read

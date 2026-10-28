@@ -2630,6 +2630,122 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
+/// A microVM under a group shards keeps (D183, slice 3), on macOS, whose host has no group
+/// of processes a user's tools make and cap: made with the group's directory of the home,
+/// its budget files `max`, the group's `memory.current` its VM processes' footprints; with
+/// its `memory.high` written short of what it holds, told so and asked to give back what it
+/// holds cold, its group within its budget again; and a microVM of the group that holds
+/// past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's OOM
+/// killer kills within it.
+#[test]
+fn a_microvm_under_a_group_is_held_to_its_budget() {
+    if !cfg!(target_os = "macos") || cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-group");
+    let (kernel, init) = (kernel(), guest_init());
+    // As the budget test's: its share's files come through FUSE into its guest's page
+    // cache, which is what it holds cold.
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let vol = TempDir::new("group-vol");
+    let files: Vec<String> = (0..512).map(|i| format!("/vol/f{i}")).collect();
+    for file in &files {
+        std::fs::File::create(vol.join(file.trim_start_matches("/vol/")))
+            .unwrap()
+            .set_len(1 << 20)
+            .unwrap();
+    }
+    let mount = format!("{}:/vol", vol.display());
+    let args = run_args(
+        &image,
+        &["-d", "--name", "held", "--cgroup-parent", "agents", "-v", &mount],
+        &["sleep"],
+    );
+    let started = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(started.status, Some(0), "{started}");
+    let group = home.join("groups").join("agents");
+    for file in ["memory.high", "memory.max"] {
+        assert_eq!(
+            std::fs::read_to_string(group.join(file)).unwrap(),
+            "max\n",
+            "{file}"
+        );
+    }
+    let log = home.join("daemon.log");
+    let said = || std::fs::read_to_string(&log).unwrap_or_default();
+    let current = || -> u64 {
+        std::fs::read_to_string(group.join("memory.current"))
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    let until = |what: &str, check: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while !check() {
+            assert!(std::time::Instant::now() < deadline, "{what}:\n{}", said());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let mut read = vec!["exec", "held", "/bin/testguest", "read"];
+    read.extend(files.iter().map(String::as_str));
+    let read = shards(&read);
+    assert_eq!(read.status, Some(0), "{read}");
+    // Its guest holds what it read: past 512 MiB in its VM process's footprint.
+    until("its group's memory.current never held what it read", &|| {
+        current() > 512 << 20
+    });
+    let holding = current();
+    let high = holding - (256 << 20);
+    std::fs::write(group.join("memory.high"), format!("{high}\n")).unwrap();
+    until("its group was not said short of its budget", &|| {
+        said().contains("group agents: its microVMs hold") && said().contains("past its budget")
+    });
+    until("nothing given back said", &|| {
+        said().contains("its microVMs gave back")
+    });
+    until("its group was not within its budget again", &|| {
+        said().contains("within its budget of") && current() <= high
+    });
+    // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it past,
+    // with nothing to give back.
+    std::fs::write(group.join("memory.high"), "max\n").unwrap();
+    std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
+    let args = run_args(
+        &image,
+        &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
+        &["alloc-hold", "768", "600"],
+    );
+    let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(hog.status, Some(0), "{hog}");
+    let waited = shards(&["wait", "hog"]);
+    assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
+    let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
+    assert_eq!(oom.stdout.trim(), "true", "{oom}");
+    assert!(said().contains("past its memory.max"), "{}", said());
+    // The other runs on: what it held it gave back, and held no more.
+    let ps = shards(&["ps", "-q", "--filter", "name=held"]);
+    assert_eq!(ps.stdout.lines().count(), 1, "{ps}");
+    assert_eq!(shards(&["kill", "held"]).status, Some(0));
+    let log = said();
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("group agents") || l.contains("gave back") || l.contains("memory.max"))
+        .collect();
+    eprintln!(
+        "its group held its microVMs to its budget, {holding} bytes held as it was set:\n{}",
+        lines.join("\n")
+    );
+}
+
 /// A microVM held to a budget reads a file through its volume's DAX window to its end
 /// (D188, D189): under a slice of the user's manager whose `MemoryHigh` is past the microVM
 /// idle and short of the file, the file is mapped through the window, its pages its host's

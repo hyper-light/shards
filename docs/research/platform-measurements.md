@@ -15529,6 +15529,61 @@ revision before comparing a changed API/implementation.
   Windows runners' limits are their own, far out (120 minutes for the tests' step, 150 for
   the job), until their runs say how long the slowest take, as M245's said the others'.
 
+### M355. A group shards keeps, on macOS, held to its budget by its microVMs' give-backs (D183)
+
+- **Question.** macOS has no group of processes a user's tools make and cap. Does a group
+  shards keeps (`--cgroup-parent NAME`, `groups/NAME` of the home) hold its microVMs to its
+  `memory.high` by their give-backs, and to its `memory.max` by stopping one, as a cgroup's
+  OOM killer does?
+- **Method.** `a_microvm_under_a_group_is_held_to_its_budget` (tests/containers.rs) on this
+  M5 Max (macOS, HVF), 2026-10-27: a microVM under the group reads 512 MiB of a share's files
+  through FUSE into its guest's page cache; the group's `memory.high` is written 256 MiB
+  under its `memory.current`; then, `memory.high` back to `max`, its `memory.max` 512 MiB
+  over what it holds, and a second microVM of the group holds 768 MiB its guest uses
+  (testguest `alloc-hold`). The daemon's log says what it did.
+- **Found.**
+  - The group held 1,254 MiB against a `memory.high` of 998 MiB: each microVM was told so
+    and asked to give back; they gave back 233 MiB they held cold of their files and asked
+    to unplug 640 MiB, and the group held 281 MiB, within its budget again, within one
+    pressure window.
+  - With the second microVM the group held 960 MiB against a `memory.max` of 793 MiB, and its
+    microVMs gave nothing back; the one that held 679 MiB of it was stopped, 137 and
+    OOM-killed, and the group held 278 MiB; the first ran on.
+  - The test took 12.4 s; it fails with no give-back (its group never within its budget)
+    and with no stop (the second's `wait` past its time).
+- **Consequence (D183, slice 3).** On macOS a group shards keeps holds its microVMs to its
+  memory budgets by their give-backs and, past `memory.max`, by stopping its largest.
+
+### M356. Whether macOS and Windows pass a host's PCI function through to a VM (D154)
+
+- **Question.** VFIO is how Linux gives a process, a VMM, a host's PCI function (D154).
+  What does each other host offer, for the parity plan's step 13?
+- **Method.** Apple's and Microsoft's own documentation and answers, read 2026-10-27; no
+  device was dismounted from a host here.
+- **Found.**
+  - macOS: Hypervisor.framework's API maps a process's memory into a VM and runs its vCPUs,
+    and assigns no device. Virtualization's passthrough is USB's, through
+    `VZUSBPassthroughDeviceConfiguration` (WWDC26, "Expand the capabilities of your
+    Virtualization app"), and Apple answers that it has "no general mechanism" past it
+    (Developer Forums thread 741785). A PCI function reaches a process only through a
+    DriverKit driver (PCIDriverKit) whose entitlement,
+    `com.apple.developer.driverkit.transport.pci`, lists the devices Apple grants it for
+    (developer.apple.com/documentation/bundleresources/entitlements/
+    com.apple.developer.driverkit.transport.pci; Forums thread 747029: a VM app's request
+    for one, its check failing in the kernel).
+  - Windows: WHP gives a partition a virtual PCI device of a host's function
+    (`WHvAllocateVpciResource`, then `WHvCreateVpciDevice`: Windows 10 20H2 on x64, Windows
+    11 24H2 26100.3915 on arm64, learn.microsoft.com/virtualization/api/hypervisor-platform/
+    funcs/whvcreatevpcidevice), once its administrator has dismounted the function from the
+    host (Discrete Device Assignment); and Microsoft's own guidance says device assignment
+    is not supported "on desktop-class hardware or client operating systems such as Windows
+    10 or 11 Pro" (learn.microsoft.com/troubleshoot/windows-server/virtualization/
+    troubleshoot-hyper-v-gpu-assignment-partitioning-passthrough-issues).
+- **Consequence (D154).** macOS refuses a function, naming that limit; Windows does too,
+  naming Windows Server's as the one that allows it, which is not built: it waits for a
+  Windows Server host with a function to give, which neither CI's runners, nested, nor
+  jupiter, Windows 11, is.
+
 ### M358. What a peer reads of an AF_UNIX socket closed while the peer may still write, on Windows (D140)
 
 - **Question.** An exec of a command that ends at once failed on CI's Windows runners as

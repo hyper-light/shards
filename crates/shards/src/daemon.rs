@@ -54,6 +54,10 @@ mod files;
 use crate::filters;
 pub(crate) mod budget;
 mod follow;
+/// The groups shards keeps for `--cgroup-parent` where its host has none (D183, slice 3):
+/// macOS's, built; Windows', with the parity plan's step 12.
+#[cfg(any(target_os = "macos", test))]
+mod groups;
 mod health;
 mod hostnet;
 pub(crate) mod images;
@@ -1154,6 +1158,9 @@ struct Daemon<D: Disk = Real> {
     watching: reclaim::Watching,
     /// The microVMs held to a budget, told what it leaves them (D188).
     budgets: budget::Budgets,
+    /// The groups shards keeps for `--cgroup-parent` (D183, slice 3), held by their thread.
+    #[cfg(target_os = "macos")]
+    groups: groups::Groups,
     /// When each running container's health check is next due (health.rs).
     checks: health::Checks,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
@@ -1610,6 +1617,8 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.start_collector(threads);
         daemon.start_pressure(threads);
         daemon.start_budgets(threads);
+        #[cfg(target_os = "macos")]
+        daemon.start_groups(threads);
         daemon.restart_at_start(threads);
         daemon.serve_slots(threads, requests);
         daemon.listen(threads, api);
@@ -1907,6 +1916,8 @@ impl<D: Disk> Daemon<D> {
             parents: parents::Parents::default(),
             watching: reclaim::Watching::default(),
             budgets: budget::Budgets::default(),
+            #[cfg(target_os = "macos")]
+            groups: groups::Groups::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
@@ -4961,6 +4972,8 @@ impl<D: Disk> Daemon<D> {
         // Held within what its budget leaves it, where it has one (D188).
         if !visit {
             self.budget_ran(pid);
+            #[cfg(target_os = "macos")]
+            self.group_ran(pid, id);
         }
         inbox
     }
@@ -5628,6 +5641,8 @@ impl<D: Disk> Daemon<D> {
             lock(&self.paused).remove(id);
             // What it held of its budget the others it held are told is theirs (D188).
             self.budget_left(pid);
+            #[cfg(target_os = "macos")]
+            self.group_left(pid);
             // Logged before anyone waiting hears of the end, as dockerd logs it in the
             // exit's handling (monitor.go), ahead of `stop`'s own event.
             if started {
@@ -7072,16 +7087,25 @@ impl<D: Disk> Daemon<D> {
         if parent.is_empty() {
             return Ok(None);
         }
-        let mut group = self.parents.group(parent, &self.home)?;
-        if shards_ipc::group_ended(group) {
-            log(format!("the spawner under {parent} has gone: placing another"));
-            self.parents.forget(parent, group);
-            group = self.parents.group(parent, &self.home)?;
+        // A group shards keeps (D183, slice 3): its microVMs made by the daemon's own
+        // spawner, and held to its budget by the groups' thread.
+        #[cfg(target_os = "macos")]
+        {
+            groups::made(&self.home, parent).map(|_| None)
         }
-        // The budget the slice may hold its microVMs to, watched as the host's memory is
-        // (D188).
-        self.watch_scope_of(group);
-        Ok(Some(group))
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut group = self.parents.group(parent, &self.home)?;
+            if shards_ipc::group_ended(group) {
+                log(format!("the spawner under {parent} has gone: placing another"));
+                self.parents.forget(parent, group);
+                group = self.parents.group(parent, &self.home)?;
+            }
+            // The budget the slice may hold its microVMs to, watched as the host's memory is
+            // (D188).
+            self.watch_scope_of(group);
+            Ok(Some(group))
+        }
     }
 
     /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,

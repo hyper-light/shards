@@ -991,6 +991,19 @@ pub struct Vfio {
     pub cdev: Option<PathBuf>,
 }
 
+/// Why this host passes no PCI function through to a microVM (D154, PM M356): VFIO, Linux's,
+/// is how a host gives a process one, its DMA translated by the host's IOMMU. macOS has no
+/// such path: Hypervisor.framework assigns no device to a VM, and a function reaches a
+/// process only through a DriverKit driver Apple has entitled to it. Windows gives a
+/// partition one only once its administrator has dismounted it from the host (Discrete
+/// Device Assignment), which Microsoft supports on Windows Server alone.
+#[cfg(not(target_os = "linux"))]
+pub const NO_PASSTHROUGH: &str = if cfg!(target_os = "macos") {
+    "this host passes no PCI function through to a microVM: macOS's Hypervisor.framework assigns no device to a VM, and a function reaches a process only through a DriverKit driver Apple entitles to it (D154)"
+} else {
+    "this host passes no PCI function through to a microVM: Windows gives a partition one only once its administrator dismounts it from the host (Discrete Device Assignment), which Microsoft supports on Windows Server alone (D154)"
+};
+
 impl Vfio {
     /// The host's function `name`, by the VFIO group it is in: it must be bound to
     /// vfio-pci, as must every other function in its IOMMU group.
@@ -1010,9 +1023,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!(
-            "{name}: a host's PCI devices are passed through by VFIO, Linux's (D154)"
-        ))
+        Err(format!("{name}: {NO_PASSTHROUGH}"))
     }
 
     /// The host's function whose VFIO device node is `cdev` (`/dev/vfio/devices/vfioN`),
@@ -1036,10 +1047,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!(
-            "{}: a host's PCI devices are passed through by VFIO, Linux's (D154)",
-            cdev.display()
-        ))
+        Err(format!("{}: {NO_PASSTHROUGH}", cdev.display()))
     }
 }
 
@@ -1595,7 +1603,7 @@ fn passed_through(
     _machine: &PciMachine<'_>,
     _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
-    Err("a host's PCI devices are passed through by VFIO, Linux's (D154)".into())
+    Err(NO_PASSTHROUGH.into())
 }
 
 /// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
@@ -2575,6 +2583,26 @@ mod tests {
         for outside in [0x8010_0000, 0x7fff_c000, 0x1_0020_0000, !(page - 1)] {
             let set = vec![touch(0x8000_0000), touch(outside)];
             assert!(usable_working_set(set, page, &ranges).is_empty(), "{outside:#x}");
+        }
+    }
+
+    /// Off Linux a host's PCI function is refused by name, with the OS's own limit: macOS's
+    /// Hypervisor.framework assigns no device, and Windows assigns one through Discrete Device
+    /// Assignment on Windows Server alone (D154, PM M356).
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn a_hosts_pci_function_is_refused_with_its_oss_own_limit() {
+        for refused in [
+            Vfio::of("0000:01:00.0").unwrap_err(),
+            Vfio::of_cdev(std::path::Path::new("/dev/vfio/devices/vfio0")).unwrap_err(),
+        ] {
+            assert!(refused.ends_with(NO_PASSTHROUGH), "{refused}");
+            let limit = if cfg!(target_os = "macos") {
+                "Hypervisor.framework assigns no device"
+            } else {
+                "Discrete Device Assignment"
+            };
+            assert!(refused.contains(limit), "{refused}");
         }
     }
 }
