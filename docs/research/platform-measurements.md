@@ -15707,3 +15707,108 @@ revision before comparing a changed API/implementation.
   A group's `memory.max` is its job memory limit, which refuses what would pass it as the
   commit is asked. `cpu.max` waits for a longer measurement of the CPU rate's hard cap,
   which let a 2 s spin past it by 21% and 36%.
+
+### M361. A job's CPU rate hard cap over 30 s, on Windows (D183)
+
+- **Question.** M359's 2 s spin in a job capped at 25% of 4 CPUs used 1.21 and 1.36 CPUs.
+  Over a longer run, does the cap hold its rate, and does it hold it each second, as
+  `cpu.max`'s quota holds a cgroup's threads each period?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m361.rs`, by `whp-run.yml`, run
+  40651635927 on branch `win-pools-stage` (61582922), 2026-10-28, on a windows-2022 (build
+  20348) and a windows-2025 (build 26100) runner of 4 CPUs each. A child spinning 4 threads
+  for 30 s in a group's job and its own (PROC_THREAD_ATTRIBUTE_JOB_LIST), the group's job
+  capped at 25% and at 50% of the host's CPUs (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE and
+  HARD_CAP, CpuRate 2500 and 5000), and uncapped; its CPU time read from outside each
+  second (GetProcessTimes); each second's CPUs as n, p50, p90, p99 and max (nearest
+  rank), and the 30 s mean. The first run, 40633528476, reached it on windows-2025 alone:
+  its 2022 job spent its 50 minutes in M213 (below).
+- **Found** (n 30 each):
+
+  | cap | runner | p50 | p90 | p99 | max | mean |
+  |---|---|---|---|---|---|---|
+  | 1.00 CPUs | 2022 | 1.06 | 1.36 | 2.19 | 2.19 | 1.04 |
+  | 1.00 CPUs | 2025 | 1.06 | 1.25 | 1.88 | 1.88 | 1.04 |
+  | 2.00 CPUs | 2022 | 2.08 | 2.52 | 2.61 | 2.61 | 2.05 |
+  | 2.00 CPUs | 2025 | 1.92 | 2.38 | 2.41 | 2.41 | 2.01 |
+  | none | 2022 | 3.94 | 4.19 | 4.55 | 4.55 | 3.99 |
+  | none | 2025 | 3.89 | 3.95 | 4.05 | 4.05 | 3.89 |
+
+  The cap holds the 30 s mean within 5%, and no second: under a cap of one CPU single
+  seconds ran 0.31 to 2.19 CPUs (2022) and 0.58 to 1.88 (2025), the first second highest
+  on both.
+- **Consequence (D183, slice 3).** A group's `cpu.max` on Windows is not its job's CPU
+  rate: a quota a cgroup holds each period ran 88% to 119% past it in a second. Its
+  microVMs hold themselves to it, as macOS's do, which have no host mechanism at all:
+  each VM process's governor charges one count of the group's (M370).
+- **Aside: M213 on windows-2022.** In run 40633528476 its case of an event and a
+  completion port's look, beside no idle socket, waited 35 minutes, and the job's limit
+  lost every probe after it. With its pinging side waiting 10 s at most for an answer and
+  each probe step a limit of its own (61582922), run 40651635927 ran that case to its end
+  (max 109.4 ms) and stopped M213 at its 15 minutes in its 10,000-socket cases (49 ms a
+  round trip under WSAPoll there), the probes after it run. Why the first run's case
+  waited was not seen.
+
+### M362. What NTFS keeps of a Linux guest's files, on Windows (D197)
+
+- **Question.** A host directory shared with a Linux guest (D38) keeps what the guest
+  makes: ownership, modes, symlinks, FIFOs, device nodes and sockets, names differing only
+  in case, a file removed or renamed over while open, hard links, and an inode number for
+  each. Can a server on Windows keep each on NTFS, as an unelevated user, as WSL keeps a
+  Linux tree there ("File Permissions for WSL", Microsoft Learn)?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m362.rs`, by `whp-run.yml`, run
+  40651635927 (61582922), 2026-10-28, on a windows-2022 and a windows-2025 runner, as the
+  runner's account (elevated) and as a standard user made for the run
+  (CreateProcessWithLogonW; not elevated): WSL's extended attributes `$LXUID`, `$LXGID`
+  and `$LXMOD` set and read back (NtSetEaFile, NtQueryEaFile); reparse points of the LX
+  tags set and read back (FSCTL_SET_REPARSE_POINT, FSCTL_GET_REPARSE_POINT), a symlink's
+  buffer as MS-FSCC 2.1.2.7 lays it out (version 2, then its target's bytes), a FIFO's, a
+  character and a block device's and a Unix socket's; an NTFS symlink, unprivileged
+  (CreateSymbolicLinkW, SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE); an open file's name
+  removed and made again while it is held (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS), and a
+  rename over a held file (FILE_RENAME_FLAG_POSIX_SEMANTICS); a hard link
+  (CreateHardLinkW); a directory made case-sensitive (FileCaseSensitiveInformation) and
+  two names differing in case made in it; a file's ID (FileIdInfo).
+- **Found** (both runners, both accounts alike): every step did as asked. The attributes
+  read back as set (1750, 1750, 100644); each LX reparse point read back byte for byte (26
+  bytes the symlink's, 8 each other's); the open file's name was gone while it was held
+  and made again, the held one reading what it held; the rename over a held file left the
+  name reading the new bytes and the held one the old; the hard link was made; the
+  case-sensitive directory held `A` and `a`; each file's ID fit its lower 8 bytes. The
+  unprivileged NTFS symlink was made too, which Microsoft documents needs Developer Mode:
+  "Developer Mode must first be enabled on the machine before this option will function"
+  (CreateSymbolicLinkW): these runners have it, and a user's machine may not.
+- **Consequence (D197).** A server of host directories on Windows keeps a Linux guest's
+  files as WSL does, unelevated: ownership and modes in the `$LX` attributes, every kind
+  but regular files and directories as an LX reparse point, a guest's symlink among them
+  (never an NTFS symlink, which needs Developer Mode), removal and rename by POSIX
+  semantics, and an inode its file's ID, each named by a call measured here.
+
+### M370. A group's `cpu.max` held across its microVMs each second (D183)
+
+- **Question.** Where the host caps no group of processes a user makes (macOS; Windows,
+  whose job CPU rate holds no second, M361), a group's microVMs hold themselves to its
+  `cpu.max`, each VM process charging one count of the group's (D183, slice 3). Does the
+  group stay at its budget each second, as a cgroup's quota holds it each period?
+- **Method.** The ignored test `a_groups_cpu_held_each_second` (crates/shards/tests/containers.rs),
+  run by `docs/research/measurements/cgroup-parent/cpu.sh 30` as a launchd job of the
+  user's session (`macos-sched/launchd-run.sh`, no QoS clamp), 2026-10-28, on an Apple M5
+  Max of 18 CPUs, macOS 26.4.1, load 11 to 13 from other work, at cc85e011 with D183's CPU
+  budget as committed after it. Two microVMs under a group, four threads burning in each
+  for 32 s (testguest `burn`), their two VM processes' CPU time read from the host each
+  second (proc_pid_rusage) for 30 s, one second in; under a `cpu.max` of `100000 100000`
+  (one CPU), `200000 100000` (two) and `max 100000`; each second's CPUs as n, p50, p90,
+  p99 and max (nearest rank), and the mean.
+- **Found** (n 30 each):
+
+  | budget | p50 | p90 | p99 | max | mean |
+  |---|---|---|---|---|---|
+  | one CPU | 1.06 | 1.07 | 1.07 | 1.07 | 1.06 |
+  | two CPUs | 2.09 | 2.10 | 2.12 | 2.12 | 2.09 |
+  | none | 7.96 | 7.97 | 7.97 | 7.97 | 7.96 |
+
+  Under one CPU every second ran 1.05 to 1.07 CPUs of the two VM processes' every thread,
+  where a Windows job's hard cap of one CPU let single seconds run 1.88 and 2.19 (M361).
+  The budget counts their vCPU threads' time, as D191's hold does: their devices'
+  threads and governors are the rest.
+- **Consequence (D183, slice 3).** A group's `cpu.max` is held by its microVMs on macOS
+  and on Windows alike, not by Windows' job CPU rate.

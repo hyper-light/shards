@@ -3627,6 +3627,26 @@ impl<D: Disk> Daemon<D> {
             flags |= shards_ipc::RUN_SWAP;
             fds.push(file.as_fd());
         }
+        // Its group's CPU budget (D183, slice 3), which every microVM of the group charges:
+        // a run under a group shards keeps, in a microVM of its own; a joiner's CPU is the
+        // microVM's it joins.
+        #[cfg(any(target_os = "macos", windows))]
+        let group_cpu = if run.cgroup_parent.is_empty() || joining {
+            None
+        } else {
+            match self.group_cpu(&run.cgroup_parent) {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    fails(&format!("{}: {e}", id.get(..12).unwrap_or(&id)));
+                    return None;
+                }
+            }
+        };
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let group_cpu: Option<File> = None;
+        if let Some(file) = &group_cpu {
+            fds.push(file.as_fd());
+        }
         if let Some(link) = link_fd {
             fds.push(link);
         }
@@ -3665,6 +3685,8 @@ impl<D: Disk> Daemon<D> {
                 &run.resources,
                 crate::resources::host_cpus(),
             )),
+            // And its group's budget (D183).
+            group: group_cpu.is_some(),
         }
         .encode_into(&mut payload);
         // A resumed run's command runs already: its request brings its save's tokens instead,

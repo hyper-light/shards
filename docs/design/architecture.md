@@ -5385,10 +5385,11 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   file's of letters, digits, `.`, `-` and `_` alone (daemon/groups.rs); its budgets
   files in cgroup v2's own formats, as a Linux user writes a cgroup's (cgroup-v2.rst):
   `memory.high` and `memory.max`, bytes with the kernel's binary suffixes or `max`
-  (mm/page_counter.c `page_counter_memparse`), and on Windows `cpu.max`, a quota and its
-  period in microseconds, each at least 1 ms, the period at most 1 s
-  (kernel/sched/core.c `tg_set_cfs_bandwidth`). Each starts `max`. The daemon watches the
-  files and holds the group's microVMs to them as they change:
+  (mm/page_counter.c `page_counter_memparse`), and `cpu.max`, a quota and its period in
+  microseconds, the period 100000 where left out, each at least 1 ms, the period at most
+  1 s (kernel/sched/core.c `cpu_period_quota_parse`, `tg_set_cfs_bandwidth`). Each starts
+  `max`. The daemon watches the files and holds the group's microVMs to them as they
+  change:
   - **macOS** (built): what the group holds is its microVMs' VM processes' footprints
     (proc_pid_rusage's `ri_phys_footprint`), summed every pressure window while it has
     microVMs, its files read again then, so that a budget written is heard within one.
@@ -5400,8 +5401,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`a_microvm_under_a_group_is_held_to_its_budget`, M355): 1,254 MiB held under a
     `memory.high` of 998 MiB, given back to 281; past a `memory.max` of 793 MiB, the
     microVM that held 679 MiB of 960 stopped, 137 and OOM-killed, the other running on.
-    Mutation-checked: no give-back; no stop. CPU is not held here yet: `cpu.max` is the
-    Windows half's, its job's CPU rate.
+    Mutation-checked: no give-back; no stop.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -5415,14 +5415,42 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`a_groups_job_holds_its_microvms_to_its_memory_max`, budget-e2e run 40624202863):
     under a `memory.max` of 1 GiB, a run that allocates 2 GiB never holds it, where one
     that allocates 2 GiB under no group, and one that allocates 128 MiB under it, run to
-    their ends. `cpu.max`, the job's CPU rate (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE and
-    HARD_CAP, in ten-thousandths of the host's CPUs), waits for a longer measurement of
-    what it holds to: capped at 25% of 4 CPUs, a 2 s spin used 1.21 and 1.36 CPUs (M359).
+    their ends. `cpu.max` is not the job's CPU rate (below).
+  - **CPU, on both** (built): a group's microVMs hold themselves to its `cpu.max`
+    together, as CFS bandwidth control holds a cgroup's threads
+    (Documentation/scheduler/sched-bwc.rst), where macOS has no mechanism to cap a group
+    of processes and Windows' job CPU rate holds no second: under a hard cap of one CPU,
+    a 30 s spin's mean was 1.04 CPUs, and single seconds ran up to 1.88 (windows-2025)
+    and 2.19 (windows-2022) (M361). The group's count is a file of its directory,
+    `.cpu-budget`, the daemon's, mapped shared by the daemon, which writes the budget as
+    the file says it (within a pressure window of a change), and by each of the group's
+    VM processes, handed it with its run (`RunHead::group`, after its swap); a joiner's
+    CPU is its microVM's. What it counts is the group's theoretical arrival time, the
+    generic cell rate algorithm's (ITU-T I.371): each VM process's second governor
+    (`vm::hold`, beside D191's own) reads its vCPU threads' CPU time as D191's does and
+    charges it, at the budget's rate, to that one word by compare-and-swap, on the host's
+    monotonic clock, one in every process (POSIX CLOCK_MONOTONIC; QueryPerformanceCounter,
+    "consistent ... even when measured on different threads or processes", Microsoft
+    Learn); while the group runs more than a period ahead of its rate, every microVM of
+    it holds its vCPUs out of its guest, by D191's kick, until it is within it. Over any
+    stretch the group uses at most its rate and a period's quota more, as a cgroup's
+    periodic quota allows, and over a long one its rate: nothing of a period wraps, and no
+    process waits on another. A budget of every CPU of the host's, or past what the word
+    holds (a host of more than 4,295 CPUs), holds nothing. Tested: `vm::group`'s own
+    (charges add up across mappings and threads, idle time no credit past a period),
+    `vm::hold`'s `machines_of_a_group_are_held_to_its_budget_together` (two machines of
+    two threads each under one CPU: 1.13 to 1.15 s of CPU in 1.14 to 1.15 s, three runs;
+    with the hold off, 4.52 s in 1.13) and `a_group_whose_budget_goes_holds_nothing`; the
+    groups' `cpu_budgets_read_as_the_kernel_reads_them`; and on real microVMs
+    `a_groups_microvms_are_held_to_its_cpu_max_together` (two microVMs of a group of one
+    CPU, four threads burning in each: on macOS 3.21 s of CPU in 3.02 s, with `max`
+    23.9 s; mutation-checked, the VM ignoring its group's budget, 23.85 s in 3.02 s,
+    which fails it). Each second's hold, M370.
   - Shown as given (inspect's `HostConfig.CgroupParent`); the group's `memory.current`
     file the daemon writes as it sums it, as a cgroup's says what it holds.
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
   where no user's manager is (designed, above). 3: macOS and Windows, groups shards keeps
-  (built, above; Windows' `cpu.max` to come). 4: the microVM's own engine's members (D181), a cgroup within the
+  (built, above). 4: the microVM's own engine's members (D181), a cgroup within the
   microVM, refused (501) until a need for it inside a microVM is shown.
 
 ### D184. A credential helper is asked at once and waited for only where its registry asks (built)

@@ -76,6 +76,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn hold_group(&self, _group: super::group::GroupCpu) -> Result<(), String> {
+        match self.0 {}
+    }
+
     pub fn pause(&self) -> Result<(), String> {
         match self.0 {}
     }

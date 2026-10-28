@@ -1805,7 +1805,8 @@ pub const RUN_SWAP: u8 = 128;
 /// (each segment's most bytes, how many segments it keeps), its log's first segment, the
 /// most memory its guest may plug in bytes (D148), its log's queue (D162): none where
 /// the run's output is kept as it comes, else the most bytes queued for its log; its I/O
-/// limits (D178); and the CPUs its microVM is held to (D191).
+/// limits (D178); the CPUs its microVM is held to (D191); and whether a group's CPU
+/// budget holds it too (D183).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunHead {
     pub flags: u8,
@@ -1821,6 +1822,9 @@ pub struct RunHead {
     /// The CPUs whose time its microVM's vCPUs may use of the host's together (D191), 0
     /// for every one.
     pub cpus: u64,
+    /// Its microVM is held by its group's CPU budget too (D183, slice 3): the budget's
+    /// file comes after its swap among the request's files.
+    pub group: bool,
 }
 
 /// The big-endian u64 `rest` begins with, `rest` then past it.
@@ -1832,8 +1836,9 @@ fn take_u64(rest: &mut &[u8]) -> Option<u64> {
 
 impl RunHead {
     /// Its length: the flags, four big-endian u64s, the queue's mode (0 blocking, 1
-    /// non-blocking), the queue's, the I/O limits' two, then the CPUs held to.
-    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8;
+    /// non-blocking), the queue's, the I/O limits' two, the CPUs held to, then whether a
+    /// group's budget holds it (0 or 1).
+    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);
@@ -1845,6 +1850,7 @@ impl RunHead {
         out.extend(self.io_bytes.to_be_bytes());
         out.extend(self.io_requests.to_be_bytes());
         out.extend(self.cpus.to_be_bytes());
+        out.push(u8::from(self.group));
     }
 
     /// The head `payload` begins with, and what follows it; why not, where it holds none.
@@ -1865,6 +1871,12 @@ impl RunHead {
         let io_bytes = take_u64(&mut rest).ok_or(SHORT)?;
         let io_requests = take_u64(&mut rest).ok_or(SHORT)?;
         let cpus = take_u64(&mut rest).ok_or(SHORT)?;
+        let (&group, rest) = rest.split_first().ok_or(SHORT)?;
+        let group = match group {
+            0 => false,
+            1 => true,
+            g => return Err(format!("a request whose group's mark is {g}")),
+        };
         let head = RunHead {
             flags,
             log_size,
@@ -1875,6 +1887,7 @@ impl RunHead {
             io_bytes,
             io_requests,
             cpus,
+            group,
         };
         Ok((head, rest))
     }
@@ -2198,6 +2211,7 @@ mod tests {
                 io_bytes: 10 << 20,
                 io_requests: 100,
                 cpus: 2,
+                group: queue.is_some(),
             };
             let mut bytes = Vec::new();
             head.encode_into(&mut bytes);
@@ -2212,6 +2226,13 @@ mod tests {
         assert_eq!(
             RunHead::decode(&bytes),
             Err("a request whose log's mode is 2".to_string())
+        );
+        let mut bytes = Vec::new();
+        RunHead::default().encode_into(&mut bytes);
+        bytes[RunHead::LEN - 1] = 2;
+        assert_eq!(
+            RunHead::decode(&bytes),
+            Err("a request whose group's mark is 2".to_string())
         );
     }
 

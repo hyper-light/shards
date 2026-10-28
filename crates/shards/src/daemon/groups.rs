@@ -2,9 +2,12 @@
 //! make and cap (D183, slice 3): macOS, and Windows. A group is a directory of the home,
 //! `groups/NAME`, made with the first run under it, whose budgets are files in cgroup v2's
 //! own formats, as a Linux user writes a cgroup's (Documentation/admin-guide/cgroup-v2.rst):
-//! `memory.high` and `memory.max`, bytes or `max`. The daemon holds the group's microVMs to
-//! them; on Windows each VM process of a group's is made in the group's job too, whose
-//! memory limit is its `memory.max` (PM M359).
+//! `memory.high` and `memory.max`, bytes or `max`, and `cpu.max`, a quota and its period.
+//! The daemon holds the group's microVMs to them; on Windows each VM process of a group's
+//! is made in the group's job too, whose memory limit is its `memory.max` (PM M359). Its
+//! `cpu.max` every microVM of the group holds itself to, charging one count of the group's
+//! (`shards_vmm::vm::group`), which the daemon keeps in [`CPU_BUDGET`] and writes the
+//! budget to.
 
 #[cfg(any(target_os = "macos", windows))]
 use std::collections::{HashMap, HashSet};
@@ -20,6 +23,15 @@ use crate::containers::Disk;
 /// The directory of the home groups are kept in.
 pub(super) const DIR: &str = "groups";
 
+/// The file of a group's directory its microVMs' CPU count is kept in, mapped by the daemon
+/// and by each of them (`shards_vmm::vm::group::GroupCpu`): the daemon's, not its user's.
+#[cfg(any(target_os = "macos", windows))]
+const CPU_BUDGET: &str = ".cpu-budget";
+
+/// `cpu.max`'s period where its file names none: the kernel's default
+/// (kernel/sched/core.c, `default_cfs_period`, 100 ms).
+const CPU_PERIOD: u64 = 100_000;
+
 /// What a group holds its microVMs to: each `None` where its file says `max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct Budget {
@@ -28,6 +40,8 @@ pub(super) struct Budget {
     /// `memory.max`: as `high`, and past it with nothing more given back, a microVM of it
     /// is stopped, as a cgroup's OOM killer kills within it.
     pub max: Option<u64>,
+    /// `cpu.max`: µs of CPU time its microVMs may use together each period of µs.
+    pub cpu: Option<(u64, u64)>,
 }
 
 impl Budget {
@@ -62,7 +76,11 @@ pub(super) fn made(home: &Path, name: &str) -> Result<PathBuf, String> {
     }
     let dir = home.join(DIR).join(name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for file in ["memory.high", "memory.max"] {
+    for (file, unset) in [
+        ("memory.high", "max\n"),
+        ("memory.max", "max\n"),
+        ("cpu.max", "max 100000\n"),
+    ] {
         let path = dir.join(file);
         match std::fs::OpenOptions::new()
             .write(true)
@@ -71,7 +89,7 @@ pub(super) fn made(home: &Path, name: &str) -> Result<PathBuf, String> {
         {
             Ok(mut f) => {
                 use std::io::Write as _;
-                f.write_all(b"max\n")
+                f.write_all(unset.as_bytes())
                     .map_err(|e| format!("{}: {e}", path.display()))?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -97,10 +115,46 @@ pub(super) fn budget(dir: &Path) -> Result<Budget, String> {
             None => Ok(None),
         }
     };
+    let cpu = match read("cpu.max")? {
+        Some(text) => cpu_max(&text).map_err(|e| format!("{}: {e}", dir.join("cpu.max").display()))?,
+        None => None,
+    };
     Ok(Budget {
         high: memory("memory.high")?,
         max: memory("memory.max")?,
+        cpu,
     })
+}
+
+/// A CPU budget as the kernel reads one written to `cpu.max` (kernel/sched/core.c,
+/// `cpu_period_quota_parse` and `tg_set_cfs_bandwidth`): `$MAX $PERIOD`, µs of CPU time
+/// each period of µs, `$MAX` `max` for none and `$PERIOD` [`CPU_PERIOD`] where it is left
+/// out; the period 1 ms to 1 s, a quota 1 ms or more and less than 2^44 µs.
+fn cpu_max(text: &str) -> Result<Option<(u64, u64)>, String> {
+    let bad = || format!("{:?}: not a quota and its period, or max", text.trim());
+    let mut words = text.split_whitespace();
+    let quota = words.next().ok_or_else(bad)?;
+    let period = match words.next() {
+        Some(p) if p.bytes().all(|b| b.is_ascii_digit()) => p.parse::<u64>().map_err(|_| bad())?,
+        Some(_) => return Err(bad()),
+        None => CPU_PERIOD,
+    };
+    if !(1_000..=1_000_000).contains(&period) {
+        return Err(format!("a period of {period} µs, where it is 1000 to 1000000"));
+    }
+    if quota == "max" {
+        return Ok(None);
+    }
+    if !quota.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let quota = quota.parse::<u64>().map_err(|_| bad())?;
+    if !(1_000..1 << 44).contains(&quota) {
+        return Err(format!(
+            "a quota of {quota} µs, where it is 1000 or more and less than 2^44"
+        ));
+    }
+    Ok(Some((quota, period)))
 }
 
 /// A memory budget as the kernel reads one written to `memory.max` (mm/page_counter.c,
@@ -146,15 +200,69 @@ struct Woke {
     left: Vec<u32>,
 }
 
-/// The groups' thread's word from the daemon, and what wakes it; on Windows each group's
-/// job too, by its name, with the `memory.max` it is held to.
+/// The groups' thread's word from the daemon, and what wakes it; each group's CPU budget,
+/// by its name, its file and the daemon's mapping of it; on Windows each group's job too,
+/// with the `memory.max` it is held to.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Default)]
 pub(super) struct Groups {
     woke: Mutex<Woke>,
     wake: Condvar,
+    cpus: Mutex<HashMap<String, (std::fs::File, shards_vmm::vm::group::GroupCpu)>>,
     #[cfg(windows)]
     jobs: Mutex<HashMap<String, (shards_ipc::GroupJob, Option<u64>)>>,
+}
+
+/// What a group's microVMs hold themselves to of its `cpu.max` (`GroupCpu::set_budget`):
+/// none where it lets them use every CPU of the host's, which they cannot pass, and none
+/// where a quota is past what the count's word holds, which takes a host of more than
+/// 4,295 CPUs.
+#[cfg(any(target_os = "macos", windows))]
+fn held_cpu(cpu: Option<(u64, u64)>) -> Option<(u32, u32)> {
+    let (quota, period) = cpu?;
+    let host = u64::try_from(crate::resources::host_cpus()).unwrap_or(u64::MAX);
+    if quota >= period.saturating_mul(host) {
+        return None;
+    }
+    Some((u32::try_from(quota).ok()?, u32::try_from(period).ok()?))
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl<D: Disk> Daemon<D> {
+    /// Group `name`'s CPU budget (D183, slice 3): the file its microVMs' count is kept in
+    /// ([`CPU_BUDGET`]), which every one of them charges, made with the group's first run,
+    /// its directory and budget files with it, its budget the group's `cpu.max` as the file
+    /// says now; a handle of its own, for a run's VM process.
+    pub(super) fn group_cpu(&self, name: &str) -> Result<std::fs::File, String> {
+        let dir = made(&self.home, name)?;
+        let at = |e: &dyn std::fmt::Display| format!("group {name}'s CPU budget: {e}");
+        let mut cpus = lock(&self.groups.cpus);
+        if let Some((file, _)) = cpus.get(name) {
+            return file.try_clone().map_err(|e| at(&e));
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(CPU_BUDGET))
+            .map_err(|e| at(&e))?;
+        file.set_len(shards_vmm::vm::group::LEN as u64)
+            .map_err(|e| at(&e))?;
+        let mapped = shards_vmm::vm::group::GroupCpu::map(file.try_clone().map_err(|e| at(&e))?)
+            .map_err(|e| at(&e))?;
+        mapped.set_budget(held_cpu(budget(&dir)?.cpu));
+        let given = file.try_clone().map_err(|e| at(&e))?;
+        cpus.insert(name.to_string(), (file, mapped));
+        Ok(given)
+    }
+
+    /// Group `name`'s CPU budget written as its `cpu.max` says now, where its count is kept.
+    fn budget_group_cpu(&self, name: &str, cpu: Option<(u64, u64)>) {
+        if let Some((_, mapped)) = lock(&self.groups.cpus).get(name) {
+            mapped.set_budget(held_cpu(cpu));
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -282,7 +390,9 @@ impl<D: Disk> Daemon<D> {
                 return;
             }
         };
-        // Its job's memory limit its `memory.max`, as the file now says it.
+        // Its microVMs' CPU budget its `cpu.max`, as the file now says it, and on Windows its
+        // job's memory limit its `memory.max`.
+        self.budget_group_cpu(name, budget.cpu);
         #[cfg(windows)]
         self.limit_group_job(name, budget.max);
         let footprints = || -> Vec<(usize, u64)> {
@@ -419,11 +529,54 @@ mod tests {
         }
     }
 
+    /// `cpu.max` read as the kernel reads it: a quota and its period in µs, `max` for none,
+    /// the period the kernel's default where it is left out; each within the kernel's bounds.
+    #[test]
+    fn cpu_budgets_read_as_the_kernel_reads_them() {
+        assert_eq!(cpu_max("max 100000\n"), Ok(None));
+        assert_eq!(cpu_max("max"), Ok(None));
+        assert_eq!(cpu_max("50000 100000"), Ok(Some((50_000, 100_000))));
+        assert_eq!(cpu_max("250000\n"), Ok(Some((250_000, 100_000))));
+        assert_eq!(cpu_max("1000 1000"), Ok(Some((1_000, 1_000))));
+        assert_eq!(cpu_max("200000 1000000 more"), Ok(Some((200_000, 1_000_000))));
+        for bad in [
+            "",
+            "lots",
+            "50000 lots",
+            "-1 100000",
+            "999 100000",
+            "50000 999",
+            "50000 1000001",
+            "max 999",
+            "17592186044416 100000",
+        ] {
+            assert!(cpu_max(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// A group's budget its microVMs hold themselves to: none where it lets them use every
+    /// CPU of the host's.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_cpu_budget_of_every_cpu_holds_nothing() {
+        let host = u64::try_from(crate::resources::host_cpus()).unwrap();
+        assert_eq!(held_cpu(None), None);
+        assert_eq!(held_cpu(Some((50_000, 100_000))), Some((50_000, 100_000)));
+        assert_eq!(held_cpu(Some((host * 100_000, 100_000))), None);
+    }
+
     #[test]
     fn a_group_is_made_once_and_kept_as_its_user_left_it() {
         let home = shards_testdir::TempDir::new("groups-made").unwrap();
         let dir = made(&home, "agents").unwrap();
         assert_eq!(budget(&dir), Ok(Budget::default()));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cpu.max")).unwrap(),
+            "max 100000\n"
+        );
+        std::fs::write(dir.join("cpu.max"), "50000\n").unwrap();
+        assert_eq!(budget(&dir).unwrap().cpu, Some((50_000, 100_000)));
+        std::fs::write(dir.join("cpu.max"), "max 100000\n").unwrap();
         std::fs::write(dir.join("memory.high"), "1G\n").unwrap();
         assert_eq!(made(&home, "agents").unwrap(), dir);
         let held = budget(&dir).unwrap();

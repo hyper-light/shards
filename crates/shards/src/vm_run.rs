@@ -1459,6 +1459,14 @@ fn serve_workload(
                             // hears of the run: what its workload may use whatever its
                             // guest does.
                             stopper.hold_cpus(request.cpus).inspect_err(|e| report(e))?;
+                            // Its group's CPU budget too (D183), which every microVM of
+                            // the group charges, before its guest hears of the run.
+                            if let Some(file) = request.group {
+                                shards_vmm::vm::group::GroupCpu::map(file)
+                                    .map_err(|e| format!("its group's CPU budget: {e}"))
+                                    .and_then(|group| stopper.hold_group(group))
+                                    .inspect_err(|e| report(e))?;
+                            }
                             // Its I/O limits, before its guest hears of the run (D178).
                             IO.set(request.io.0, request.io.1);
                             // Its swap (D159), mapped into the guest's swap window before

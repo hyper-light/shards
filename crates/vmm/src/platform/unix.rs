@@ -2494,6 +2494,23 @@ impl ThreadClock {
     }
 }
 
+/// The host's monotonic clock in nanoseconds: "the monotonic clock for the system"
+/// (POSIX, `clock_getres`, CLOCK_MONOTONIC), one reading in every process of the host, by
+/// which the processes that share a budget mark its time alike (a group's CPU, D183).
+pub fn monotonic_ns() -> io::Result<u64> {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the system's monotonic clock, and a timespec to write.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let secs = u64::try_from(t.tv_sec).unwrap_or(0);
+    let nanos = u64::try_from(t.tv_nsec).unwrap_or(0);
+    Ok(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
+}
+
 /// This process's page faults, page-ins from files, copy-on-write faults and context
 /// switches so far, every thread's (task_info(TASK_EVENTS_INFO), mach/task_info.h), each
 /// a counter that wraps: what a stretch of a thread's work took from its host, told

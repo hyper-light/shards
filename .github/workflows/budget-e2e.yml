@@ -19,7 +19,7 @@ on:
         description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, lib-windows:PACKAGE for a library's own on Windows, or windows:BINARY for a test binary of crates/shards on each Windows runner (windows:bin, the binary's own tests)
         default: daemon
       name:
-        description: its exact name; all, the whole binary
+        description: its exact name; all, the whole binary; on Windows, ignored:NAME runs the ignored test NAME, a measurement
         default: a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one
       times:
         description: runs on each runner, one after another
@@ -190,7 +190,11 @@ jobs:
         run: |
           binary="${TEST#windows:}"
           if [ "$binary" = bin ]; then target=(--bin shards); else target=(--test "$binary"); fi
-          if [ "$NAME" = all ]; then args=(-- --nocapture); else args=("$NAME" -- --nocapture); fi
+          case "$NAME" in
+            all) args=(-- --nocapture) ;;
+            ignored:*) args=("${NAME#ignored:}" -- --ignored --exact --nocapture) ;;
+            *) args=("$NAME" -- --nocapture) ;;
+          esac
           # The temp disk's free space, the free memory and the page file's use as the tests
           # run, every 5 s: whether they meet the runner's room.
           pwsh -NoProfile -Command 'while ($true) { $os = Get-CimInstance Win32_OperatingSystem; $p = (Get-CimInstance Win32_PageFileUsage | Measure-Object CurrentUsage -Sum).Sum; "{0:HH:mm:ss} {1} free {2:N1} GB, memory free {3:N1} GB, page file {4} MB" -f (Get-Date).ToUniversalTime(), $env:TEMP.Substring(0,2), ((Get-PSDrive $env:TEMP.Substring(0,1)).Free/1GB), ($os.FreePhysicalMemory/1MB), $p; Start-Sleep 5 }' > "$RUNNER_TEMP/host.log" 2>&1 &

@@ -896,6 +896,27 @@ pub fn run_time_critical() -> Result<(), String> {
     Ok(())
 }
 
+/// The host's monotonic clock in nanoseconds (QueryPerformanceCounter), whose results "are
+/// consistent across all processors in multi-core and multi-processor systems, even when
+/// measured on different threads or processes" ("Acquiring high-resolution time stamps",
+/// Microsoft Learn): by which the processes that share a budget mark its time alike (a
+/// group's CPU, D183).
+pub fn monotonic_ns() -> io::Result<u64> {
+    use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+    let (mut count, mut frequency) = (0i64, 0i64);
+    // SAFETY: a count to write.
+    if unsafe { QueryPerformanceCounter(&raw mut count) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a frequency to write.
+    if unsafe { QueryPerformanceFrequency(&raw mut frequency) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let ns = u128::from(count.unsigned_abs()).saturating_mul(1_000_000_000)
+        / u128::from(frequency.unsigned_abs()).max(1);
+    Ok(u64::try_from(ns).unwrap_or(u64::MAX))
+}
+
 /// A thread's CPU clock, read from any thread of the process while the thread lives
 /// (D191): its kernel and user times (GetThreadTimes), which Windows counts by its clock's
 /// ticks. The handle it holds is closed as it goes.

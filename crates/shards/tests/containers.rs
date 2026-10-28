@@ -2636,6 +2636,233 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
+/// A group's `cpu.max` (D183, slice 3) where the host has no group of processes a user may
+/// cap, macOS's and Windows': its microVMs hold themselves to it together, each VM process
+/// charging the group's one count. Two microVMs under a group of one CPU, four threads
+/// burning in each at once, use about one CPU's time over the burn; with the group's budget
+/// `max` again, the same two use more, on a host that gives a program's eight threads more.
+#[test]
+fn a_groups_microvms_are_held_to_its_cpu_max_together() {
+    if !cfg!(any(target_os = "macos", windows)) {
+        return;
+    }
+    let Some((home, image)) = home("containers-group-cpu") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let host = std::thread::available_parallelism().unwrap().get();
+    if host < 4 {
+        eprintln!("SKIP: {host} CPUs, too few to show two microVMs held to one");
+        return;
+    }
+    // Its budget written before its first microVM, as a user writes a cgroup's.
+    let group = home.join("groups").join("cpu");
+    std::fs::create_dir_all(&group).unwrap();
+    std::fs::write(group.join("cpu.max"), "100000 100000\n").unwrap();
+    let names = ["ga", "gb"];
+    let runs: Vec<Child> = names
+        .iter()
+        .map(|name| {
+            start(
+                &home,
+                &image,
+                &["--name", name, "--cgroup-parent", "cpu"],
+                &["sleep"],
+            )
+        })
+        .collect();
+    let pids: Vec<u32> = names
+        .iter()
+        .map(|name| {
+            shards(&["inspect", "-f", "{{.State.Pid}}", name])
+                .stdout
+                .trim()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    // Four threads for three seconds in each microVM at once: their VM processes' CPU time
+    // over the burn, and its wall time.
+    let burn = || -> (u64, u64) {
+        let cpu = || {
+            pids.iter()
+                .map(|&pid| shards_vmm::platform::process_usage(pid).unwrap().cpu_ns)
+                .sum::<u64>()
+        };
+        let (before, t0) = (cpu(), Instant::now());
+        let burned: Vec<Run> = std::thread::scope(|s| {
+            let each: Vec<_> = names
+                .iter()
+                .map(|name| s.spawn(move || shards(&["exec", name, "/bin/testguest", "burn", "4", "3000"])))
+                .collect();
+            each.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+        let used = cpu() - before;
+        for b in &burned {
+            assert!(b.stdout.ends_with("burned\n"), "{b}");
+        }
+        (used, wall)
+    };
+    let (used, wall) = burn();
+    eprintln!("two microVMs under a cpu.max of one CPU: {used} ns of CPU in {wall} ns");
+    // One CPU's time over the burn; the period's quota the group may run ahead; what each
+    // microVM's four threads may run of its first period, quiet till then, before it is
+    // held; and their VM processes' own threads, their devices'.
+    assert!(
+        used <= wall + 1_000_000_000,
+        "{used} ns of CPU in {wall} ns, two microVMs held to one CPU together"
+    );
+    assert!(
+        used >= wall / 4,
+        "{used} ns of CPU in {wall} ns: held, and never let go"
+    );
+    // What the host gives eight busy threads of a program's now: a busy guest's vCPUs share
+    // its CPUs as its programs do (D4, PM M317).
+    let given: f64 = std::thread::scope(|s| {
+        let spun: Vec<_> = (0..8)
+            .map(|_| {
+                s.spawn(|| {
+                    let clock = shards_vmm::platform::ThreadClock::current().unwrap();
+                    let until = Instant::now() + Duration::from_secs(1);
+                    while Instant::now() < until {
+                        std::hint::spin_loop();
+                    }
+                    clock.read().unwrap()
+                })
+            })
+            .collect();
+        spun.into_iter().map(|t| t.join().unwrap() as f64 / 1e9).sum()
+    });
+    // Its budget `max` again, heard by the daemon within a pressure window while the group
+    // has microVMs.
+    std::fs::write(group.join("cpu.max"), "max 100000\n").unwrap();
+    std::thread::sleep(shards_vmm::platform::PRESSURE_WINDOW * 3);
+    let (free, free_wall) = burn();
+    eprintln!("the same two under a cpu.max of max: {free} ns of CPU in {free_wall} ns");
+    if given >= 2.0 {
+        assert!(
+            free > free_wall + 1_000_000_000,
+            "{free} ns of CPU in {free_wall} ns under no budget, where the host gave a program's eight threads {given:.2} CPUs"
+        );
+    } else {
+        eprintln!(
+            "SKIP: under no budget, {free} ns of CPU in {free_wall} ns: the host gave a program's eight threads {given:.2} CPUs, too few to show a hold of one"
+        );
+    }
+    assert_eq!(shards(&["rm", "-f", "ga", "gb"]).status, Some(0));
+    for mut run in runs {
+        let _ = exit(&mut run);
+    }
+}
+
+/// PM M370: a group's `cpu.max` held across its microVMs each second (D183, slice 3), as
+/// M361 read a job's CPU rate hard cap: two microVMs under a group, four threads burning in
+/// each for `M370_SECS` seconds (30), their VM processes' CPU time read from the host each
+/// second, under a budget of one CPU's time each 100 ms period, of two, and of none; each
+/// second's CPUs told as n, p50, p90, p99 and max (nearest rank), with the burn's mean.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/cgroup-parent/cpu.sh"]
+fn a_groups_cpu_held_each_second() {
+    if !cfg!(any(target_os = "macos", windows)) {
+        return;
+    }
+    let Some((home, image)) = home("containers-m370") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let secs: u64 = std::env::var("M370_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let group = home.join("groups").join("cpu");
+    std::fs::create_dir_all(&group).unwrap();
+    std::fs::write(group.join("cpu.max"), "max 100000\n").unwrap();
+    let names = ["ma", "mb"];
+    let runs: Vec<Child> = names
+        .iter()
+        .map(|name| {
+            start(
+                &home,
+                &image,
+                &["--name", name, "--cgroup-parent", "cpu"],
+                &["sleep"],
+            )
+        })
+        .collect();
+    let pids: Vec<u32> = names
+        .iter()
+        .map(|name| {
+            shards(&["inspect", "-f", "{{.State.Pid}}", name])
+                .stdout
+                .trim()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    let cpu = || {
+        pids.iter()
+            .map(|&pid| shards_vmm::platform::process_usage(pid).unwrap().cpu_ns)
+            .sum::<u64>()
+    };
+    let quantile = |sorted: &[f64], q: f64| {
+        let rank = ((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
+        sorted[rank - 1]
+    };
+    let burn_ms = (secs * 1000 + 2000).to_string();
+    for (label, budget) in [
+        ("one CPU", "100000 100000"),
+        ("two CPUs", "200000 100000"),
+        ("no budget", "max 100000"),
+    ] {
+        std::fs::write(group.join("cpu.max"), format!("{budget}\n")).unwrap();
+        // Heard by the daemon within a pressure window while the group has microVMs.
+        std::thread::sleep(shards_vmm::platform::PRESSURE_WINDOW * 2);
+        let (each, mean) = std::thread::scope(|s| {
+            let burns: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    let burn_ms = &burn_ms;
+                    s.spawn(move || shards(&["exec", name, "/bin/testguest", "burn", "4", burn_ms]))
+                })
+                .collect();
+            // Both burning: a second in, then each second.
+            std::thread::sleep(Duration::from_secs(1));
+            let (first, t0) = (cpu(), Instant::now());
+            let (mut last, mut at) = (first, t0);
+            let mut each = Vec::new();
+            for i in 1..=secs {
+                std::thread::sleep((t0 + Duration::from_secs(i)).saturating_duration_since(Instant::now()));
+                let (now, then) = (cpu(), Instant::now());
+                each.push((now - last) as f64 / then.duration_since(at).as_nanos() as f64);
+                (last, at) = (now, then);
+            }
+            let mean = (last - first) as f64 / at.duration_since(t0).as_nanos() as f64;
+            for b in burns {
+                let burned = b.join().unwrap();
+                assert!(burned.stdout.ends_with("burned\n"), "{burned}");
+            }
+            (each, mean)
+        });
+        let mut sorted = each.clone();
+        sorted.sort_by(f64::total_cmp);
+        eprintln!(
+            "M370 {label}: CPUs used each second: n {} p50 {:.2} p90 {:.2} p99 {:.2} max {:.2}, mean {mean:.2}",
+            sorted.len(),
+            quantile(&sorted, 0.5),
+            quantile(&sorted, 0.9),
+            quantile(&sorted, 0.99),
+            quantile(&sorted, 1.0)
+        );
+        let said: Vec<String> = each.iter().map(|c| format!("{c:.2}")).collect();
+        eprintln!("M370 {label}: each second's CPUs: {}", said.join(" "));
+    }
+    assert_eq!(shards(&["rm", "-f", "ma", "mb"]).status, Some(0));
+    for mut run in runs {
+        let _ = exit(&mut run);
+    }
+}
+
 /// A group shards keeps on Windows (D183, slice 3, PM M359): its microVMs' VM processes made
 /// in the group's job, whose memory limit is the group's `memory.max`, so that what they
 /// commit together stays under it: a run under a group of 1 GiB that allocates 2 GiB has

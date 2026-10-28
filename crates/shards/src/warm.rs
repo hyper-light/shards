@@ -251,6 +251,9 @@ pub struct Request {
     /// guest's swap window; or, for a run its microVM was restored from a save of, a copy of
     /// the swap the save kept (D176).
     pub swap: Option<File>,
+    /// Its group's CPU budget (D183, slice 3), which its microVM's vCPUs are held by too,
+    /// every microVM of the group charging it.
+    pub group: Option<File>,
     /// A run its microVM was restored from a save of (D176): the save's tokens, which its
     /// guest dials the host again with; its request brings them in place of a command.
     pub tokens: Option<Vec<u8>>,
@@ -347,6 +350,8 @@ struct Head<'a> {
     io: (u64, u64),
     /// The CPUs its microVM is held to (D191), 0 for every one.
     cpus: u32,
+    /// A group's CPU budget holds it too (D183): its file comes after its swap.
+    group: bool,
     spec: &'a [u8],
 }
 
@@ -377,6 +382,7 @@ fn head(payload: &[u8]) -> Result<Head<'_>, String> {
         queue: head.queue,
         io: (head.io_bytes, head.io_requests),
         cpus: u32::try_from(head.cpus).unwrap_or(u32::MAX),
+        group: head.group,
         spec,
     })
 }
@@ -409,6 +415,7 @@ pub fn receive(
         queue,
         io,
         cpus,
+        group,
         spec,
     } = head(&request.payload)?;
     let (spec, tokens) = if resumed {
@@ -472,6 +479,8 @@ pub fn receive(
     } else {
         None
     };
+    // Its group's CPU budget (D183), which every microVM of the group charges.
+    let group = if group { Some(File::from(next()?)) } else { None };
     // Its share process (D38), where this VM was made with shared directories: Unix's
     // alone as yet.
     #[cfg(unix)]
@@ -535,6 +544,7 @@ pub fn receive(
         io,
         cpus,
         swap,
+        group,
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
         detached,

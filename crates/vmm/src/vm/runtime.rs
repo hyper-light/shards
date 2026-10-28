@@ -103,6 +103,27 @@ impl Handle {
         Ok(())
     }
 
+    /// Holds its vCPUs by their group's CPU budget too (D183, slice 3), `group`, which
+    /// every microVM of the group charges: its own governor's thread, as long as the
+    /// machine runs. A machine is of one group, its run's, from its start.
+    pub fn hold_group(&self, group: super::group::GroupCpu) -> Result<(), String> {
+        let sh = &self.shared;
+        let mut governor = lock(&sh.group_governor);
+        if governor.is_some() {
+            return Err("this microVM is held by a group's budget already".into());
+        }
+        if sh.exiting() {
+            return Ok(());
+        }
+        let shared = sh.clone();
+        let made = std::thread::Builder::new()
+            .name("hold-group".into())
+            .spawn(move || shared.hold.govern_group(&group, &|| shared.kick_all()))
+            .map_err(|e| format!("starting its group's hold on its vCPUs: {e}"))?;
+        *governor = Some(made);
+        Ok(())
+    }
+
     /// Pauses the machine where it is: every vCPU kicked out of its guest and held there,
     /// whatever its run's CPU share (the hold of D191), until [`resume`](Self::resume), as
     /// `pause` freezes a microVM. Returns once every vCPU is held: at once for vCPUs not
@@ -384,6 +405,8 @@ struct Shared {
     /// thread, made as the first limit comes and joined as the machine is taken apart.
     hold: Hold,
     governor: Mutex<Option<JoinHandle<()>>>,
+    /// Its group's governor's thread (D183), made as its run's group comes.
+    group_governor: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// What a snapshot the host asks for reads of the machine (D176): its VM and devices by
@@ -443,6 +466,7 @@ impl Shared {
             saved: Condvar::new(),
             hold: Hold::new(vcpus as usize),
             governor: Mutex::new(None),
+            group_governor: Mutex::new(None),
         }
     }
 
@@ -587,6 +611,9 @@ impl Running {
             let _ = t.join();
         }
         if let Some(t) = lock(&self.shared.governor).take() {
+            let _ = t.join();
+        }
+        if let Some(t) = lock(&self.shared.group_governor).take() {
             let _ = t.join();
         }
         // A save the host asked for holds the VM and its devices until it is done.
