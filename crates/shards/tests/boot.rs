@@ -1269,3 +1269,163 @@ fn a_guest_grows_and_gives_back_its_memory() {
         "the VM process held {held} KiB of the memory it gave back"
     );
 }
+
+/// What cold boots at once cost on a Windows host (PM M376): guests of as many vCPUs as the
+/// host has CPUs, as the daemon boots a run's, one, two, four and eight at once, then guests
+/// of one vCPU, eight and sixteen at once; each its console's lines as they come and the
+/// guest's own times on them, until its kernel, given no root, panics and resets; each VM
+/// process's CPU time, user and kernel, read once it has ended. Under CI's whole suite a
+/// run's cold boot took past 20 s, its VM process at 0.6 of a host CPU throughout (CI
+/// 40715919365, windows-2022): whether a guest's vCPUs waiting on one another make a boot
+/// cost more as more boot at once, which guests of one vCPU would not.
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boots_at_once_cost"]
+fn cold_boots_at_once_cost() {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if cannot_run_vms() {
+        return;
+    }
+    // The child of `cli` (the VM process), opened so that its times outlive it.
+    let open_vm = |cli: u32| -> HANDLE {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            // SAFETY: a snapshot of every process, closed below.
+            let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+            assert_ne!(snap, INVALID_HANDLE_VALUE);
+            let mut entry = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut vm = None;
+            // SAFETY: the snapshot, and an entry of its own size.
+            let mut more = unsafe { Process32FirstW(snap, &raw mut entry) } != 0;
+            while more {
+                if entry.th32ParentProcessID == cli {
+                    vm = Some(entry.th32ProcessID);
+                }
+                // SAFETY: as above.
+                more = unsafe { Process32NextW(snap, &raw mut entry) } != 0;
+            }
+            // SAFETY: the snapshot taken above.
+            unsafe { CloseHandle(snap) };
+            if let Some(vm) = vm {
+                // SAFETY: a process handle of the one right asked, closed by the caller.
+                let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, vm) };
+                if !h.is_null() {
+                    return h;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no VM process of {cli} in 10 s");
+    };
+    // Its CPU time in seconds, user and kernel; the handle closed.
+    let times = |h: HANDLE| -> (f64, f64) {
+        let mut t = [FILETIME::default(); 4];
+        let [c, e, k, u] = &mut t;
+        // SAFETY: the process, and four times to fill.
+        let ok = unsafe { GetProcessTimes(h, c, e, k, u) };
+        // SAFETY: the handle `open_vm` opened.
+        unsafe { CloseHandle(h) };
+        assert_ne!(ok, 0);
+        let s =
+            |t: &FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64 / 1e7;
+        (s(u), s(k))
+    };
+    // A console line's guest time, `[    1.529486] ...`.
+    let guest_at = |line: &str| -> Option<f64> {
+        let (at, _) = line.strip_prefix('[')?.split_once(']')?;
+        at.trim().parse().ok()
+    };
+    let host = std::thread::available_parallelism().unwrap().get();
+    let k = kernel();
+    eprintln!("M376 host CPUs {host}");
+    for (vcpus, at_once) in [(host, 1), (host, 2), (host, 4), (host, 8), (1, 8), (1, 16)] {
+        let t0 = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, Option<(Duration, String)>)>();
+        let mut vms: Vec<(std::process::Child, HANDLE)> = Vec::new();
+        for i in 0..at_once {
+            let mut child = common::command()
+                .args(["run", "--kernel"])
+                .arg(k)
+                .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
+                .args(["--cmdline", "console=ttyS0 earlycon panic=-1"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let out = child.stdout.take().unwrap();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    let _ = tx.send((i, Some((t0.elapsed(), line))));
+                }
+                let _ = tx.send((i, None));
+            });
+            let h = open_vm(child.id());
+            vms.push((child, h));
+        }
+        drop(tx);
+        let mut lines: Vec<Vec<(Duration, String)>> = vec![Vec::new(); at_once];
+        let mut ended = 0;
+        let deadline = t0 + Duration::from_secs(240);
+        while ended < at_once {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok((i, Some(line))) => lines[i].push(line),
+                Ok((_, None)) => ended += 1,
+                Err(_) => break,
+            }
+        }
+        let mut summary = Vec::new();
+        for (i, (mut child, h)) in vms.into_iter().enumerate() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let (user, kernel) = times(h);
+            let said = &lines[i];
+            let end = said.iter().find(|(_, l)| l.contains("Kernel panic"));
+            let first = said.first().map(|(at, _)| at.as_secs_f64());
+            let guest_end = said.iter().rev().find_map(|(_, l)| guest_at(l));
+            let mut gaps: Vec<(f64, &str)> = said
+                .windows(2)
+                .filter_map(|w| Some((guest_at(&w[1].1)? - guest_at(&w[0].1)?, w[1].1.as_str())))
+                .collect();
+            gaps.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let gaps: Vec<String> = gaps
+                .iter()
+                .take(4)
+                .map(|(g, l)| format!("+{g:.3}s {}", l.chars().take(110).collect::<String>()))
+                .collect();
+            let end_at = end.map(|(at, _)| at.as_secs_f64());
+            eprintln!(
+                "M376 vcpus={vcpus} at_once={at_once} vm={i}: first {first:.2?} s, panic {end_at:.2?} s, guest {guest_end:.2?} s, cpu user {user:.2} s kernel {kernel:.2} s, {} lines; longest guest gaps: {gaps:#?}",
+                said.len()
+            );
+            summary.push((end_at.unwrap_or(f64::INFINITY), user + kernel));
+        }
+        let mut ends: Vec<f64> = summary.iter().map(|s| s.0).collect();
+        let mut cpus: Vec<f64> = summary.iter().map(|s| s.1).collect();
+        ends.sort_by(f64::total_cmp);
+        cpus.sort_by(f64::total_cmp);
+        eprintln!(
+            "M376 SUMMARY vcpus={vcpus} at_once={at_once}: panic at p50 {:.2} s max {:.2} s; CPU a VM p50 {:.2} s max {:.2} s; wall {:.2} s",
+            ends[ends.len() / 2],
+            ends[ends.len() - 1],
+            cpus[cpus.len() / 2],
+            cpus[cpus.len() - 1],
+            t0.elapsed().as_secs_f64()
+        );
+    }
+}

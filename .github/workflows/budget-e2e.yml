@@ -214,3 +214,22 @@ jobs:
           cat "$RUNNER_TEMP/host.log"
           echo "== $NAME of $TEST failed $failed of $TIMES"
           [ "$failed" -eq 0 ]
+      # What the tests left behind them, whether they passed or not: shards' programs still
+      # running, and what the tests' directories still hold, each directory's files and
+      # bytes and the largest files (windows-2025's runner has 27 GB free on its temp
+      # disk, windows-2022's 78: CI's saved.rs ran out of it on windows-2025).
+      - name: What the tests left
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process | Where-Object { $_.ProcessName -like 'shards*' } | Format-Table Id, ProcessName, StartTime, CPU, WorkingSet64
+          $root = Join-Path $env:TEMP 'shards-tests'
+          if (Test-Path $root) {
+            $files = Get-ChildItem $root -Recurse -File -Force -ErrorAction SilentlyContinue
+            Get-ChildItem $root -Directory | ForEach-Object {
+              $mine = Get-ChildItem $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum
+              "{0}: {1} files, {2:N1} MB" -f $_.FullName, $mine.Count, ($mine.Sum / 1MB)
+            }
+            $files | Sort-Object Length -Descending | Select-Object -First 15 | Format-Table @{n='MB';e={[math]::Round($_.Length/1MB,1)}}, FullName -AutoSize
+          }
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
