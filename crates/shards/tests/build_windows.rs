@@ -322,3 +322,212 @@ fn run_steps_reach_the_clients_ssh_agent_by_socket_or_pipe() {
         }
     }
 }
+
+/// The OCI layout at `out`'s one image's layers, by their diff IDs.
+fn layers(out: &std::path::Path) -> serde_json::Value {
+    let blob = |digest: &str| -> serde_json::Value {
+        let path = out
+            .join("blobs")
+            .join("sha256")
+            .join(digest.trim_start_matches("sha256:"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    let top: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("index.json")).unwrap()).unwrap();
+    let manifest = blob(top["manifests"][0]["digest"].as_str().unwrap());
+    blob(manifest["config"]["digest"].as_str().unwrap())["rootfs"]["diff_ids"].clone()
+}
+
+/// The VM process of the builder under `build`, a build's process: its descendant named
+/// shards-vm.exe, as Windows' table of processes has them (CreateToolhelp32Snapshot).
+fn builder_vm(build: u32) -> Option<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: a snapshot of the system's processes, closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut listed = Vec::new();
+    // SAFETY: PROCESSENTRY32W is plain data, zeroes a valid value of it.
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = u32::try_from(size_of::<PROCESSENTRY32W>()).ok()?;
+    // SAFETY: the snapshot just taken, and an entry its size says it is.
+    let mut more = unsafe { Process32FirstW(snapshot, &raw mut entry) } != 0;
+    while more {
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+        listed.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snapshot, &raw mut entry) } != 0;
+    }
+    // SAFETY: the snapshot taken above.
+    unsafe { CloseHandle(snapshot) };
+    let mut todo = vec![build];
+    while let Some(parent) = todo.pop() {
+        for (pid, ppid, name) in &listed {
+            if *ppid != parent || *pid == parent {
+                continue;
+            }
+            if name.eq_ignore_ascii_case("shards-vm.exe") {
+                return Some(*pid);
+            }
+            todo.push(*pid);
+        }
+    }
+    None
+}
+
+/// A builder gives back what it holds cold at its build's word, on Windows (D188 for D133's
+/// builders; the platform parity plan's step 7), as tests/build.rs's test of the name has it
+/// on Unix: a step reads a 256 MiB file of a cache mount, which an earlier build wrote, into
+/// its builder's page cache, then waits; the build is told once that its host is short of
+/// memory, through a named pipe it opens as its builder starts (SHARDS_BUILD_PRESSURE), as no
+/// unprivileged process may raise Windows' low memory notification; and its builder gives
+/// back most of the file, its VM process then holding that much less, the step going on to
+/// its end; and the build's layers are the same as the same build's not told.
+#[test]
+fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
+    use std::io::{BufRead as _, Write as _};
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("bw-give-home");
+    let env = build_env(&home);
+    const MIB: u64 = 256;
+    let fill = context(
+        "bw-give-fill",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"{MIB}\"]\n"
+        ),
+    );
+    let filled = run_shards_env(
+        &["build"],
+        &["--progress=plain", fill.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(filled.status, Some(0), "{filled}");
+    let ctx = context(
+        "bw-give-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nARG TOLD\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"read-dropped\", \"/c/big\", \"20\", \"/sum\"]\n"
+        ),
+    );
+    // The pipe the build's watcher reads its host's word from, there before the build is.
+    let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
+    let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: a NUL-terminated name and plain arguments.
+    let server = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_WAIT,
+            1,
+            4096,
+            4096,
+            0,
+            std::ptr::null(),
+        )
+    };
+    assert_ne!(
+        server,
+        INVALID_HANDLE_VALUE,
+        "{pipe}: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: the pipe just made, ours alone.
+    let mut word = std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(server) });
+    let build = |told: bool, out: &std::path::Path| {
+        let mut cmd = common::command();
+        cmd.args([
+            "build",
+            "--progress=plain",
+            "--build-arg",
+            "SOURCE_DATE_EPOCH=0",
+            "--build-arg",
+        ])
+        .arg(format!("TOLD={told}"))
+        .arg("-o")
+        .arg(format!(
+            "type=oci,dest={},tar=false,rewrite-timestamp=true",
+            out.display()
+        ))
+        .arg(ctx.as_os_str())
+        .envs(env)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+        if told {
+            cmd.env("SHARDS_BUILD_PRESSURE", &pipe);
+        }
+        cmd.spawn().unwrap()
+    };
+    // What the VM process holds of this host's memory, in KiB, as boot.rs reads a guest's.
+    let held_kib = |vm: u32| {
+        shards_vmm::platform::process_usage(vm)
+            .ok()
+            .map(|u| u.footprint >> 10)
+    };
+    let told_out = TempDir::new("bw-give-told");
+    let mut told = build(true, &told_out);
+    let stderr = std::io::BufReader::new(told.stderr.take().unwrap());
+    let (mut lines, mut before, mut gave, mut after) = (Vec::new(), None, None, None);
+    for line in stderr.lines() {
+        let line = line.unwrap();
+        if before.is_none() && line.contains(&format!("read /c/big {}", MIB << 20)) {
+            let vm = builder_vm(told.id()).unwrap_or_else(|| panic!("no builder VM under {}", told.id()));
+            before = Some((vm, held_kib(vm)));
+            word.write_all(b"\n").unwrap();
+        }
+        if let Some((_, rest)) = line.split_once("the build's builders gave back ") {
+            gave = rest
+                .split_whitespace()
+                .next()
+                .and_then(|mib| mib.parse::<u64>().ok());
+            after = before.map(|(vm, _)| held_kib(vm));
+        }
+        lines.push(line);
+    }
+    let status = told.wait().unwrap();
+    let shown = lines.join("\n");
+    assert!(status.success(), "{shown}");
+    let gave = gave.unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
+    assert!(
+        gave >= MIB / 2,
+        "gave back {gave} MiB of the {MIB} MiB file:\n{shown}"
+    );
+    assert!(
+        shown.contains("dropped "),
+        "its step's page cache kept the file:\n{shown}"
+    );
+    let (Some((_, Some(before))), Some(Some(after))) = (before, after) else {
+        panic!("its builder's VM process's memory not read:\n{shown}");
+    };
+    let _ = writeln!(
+        std::io::stderr(),
+        "its builder gave back {gave} MiB of the {MIB} MiB file; its VM process held {before} KiB, then {after} KiB"
+    );
+    assert!(
+        before.saturating_sub(after) >= (gave << 10) / 2,
+        "its builder's VM process held {before} KiB, then {after} KiB, having given back {gave} MiB:\n{shown}"
+    );
+    let untold_out = TempDir::new("bw-give-untold");
+    let untold = build(false, &untold_out).wait_with_output().unwrap();
+    assert!(
+        untold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&untold.stderr)
+    );
+    assert_eq!(layers(&told_out), layers(&untold_out), "{shown}");
+}
