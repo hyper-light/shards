@@ -15854,3 +15854,35 @@ revision before comparing a changed API/implementation.
   reports it free (D151). A restored one's is not yet: Windows gives back the written
   pages of a copy-on-write view only as the whole view is unmapped, and a restore maps its
   RAM as one view (D196).
+
+### M372. A restore's RAM mapped as views of what free page reporting gives back (D151, D196)
+
+- **Question.** Windows gives back a copy-on-write view's written pages only as the whole
+  view is unmapped (M371), and a restore maps its RAM as one view (D196). Mapped as views of
+  2 MiB, pageblock_order's on x86 and so the least a guest reports, every range a guest
+  reports is whole views. What does a restore pay to map its RAM so, and what does giving a
+  view back cost and give?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m372.rs`, run on jupiter (AMD Ryzen
+  AI Max+ 395, Windows 10.0.26200), 2026-10-28: for RAM of 256 MiB, 1 GiB and 4 GiB, a
+  template's file of every page written, a placeholder reserved whole, split into views of
+  the size (VirtualFree, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER), each mapped copy-on-write
+  into its part (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER), ten times each; then 64 views of
+  2 MiB written whole, each unmapped to its placeholder and mapped again (UnmapViewOfFile2,
+  MEM_PRESERVE_PLACEHOLDER), the private working set (PROCESS_MEMORY_COUNTERS_EX2) read
+  around each.
+- **Found** (the whole map's time at p50; each view's split and map 2.1 to 5.2 µs at p50,
+  p99 at most 19.8 µs, its max 394.1 µs once of 20,480):
+
+  | RAM | one view | 64 MiB views | 16 MiB views | 2 MiB views |
+  |---|---|---|---|---|
+  | 256 MiB | 2.7 µs | 17.8 µs | 48.4 µs | 307.7 µs (128) |
+  | 1 GiB | 3.8 µs | 44.6 µs | 142.3 µs | 1,108.5 µs (512) |
+  | 4 GiB | 11.5 µs | 360.6 µs | 1,294.9 µs | 7,913.7 µs (2,048) |
+
+  A written 2 MiB view given back: 47.5 µs at p50 (p99 77.7) at 256 MiB, 48.6 (103.3) at
+  1 GiB, 98.8 (147.1) at 4 GiB; each gave back all it held, 131,072 KiB of 131,072 written.
+- **Consequence (D151 on Windows, open).** A restored microVM's freed memory can be given
+  back on Windows, each reported range's views unmapped and mapped again from its template,
+  at a restore's cost of about 2.2 µs per 2 MiB of RAM mapped as views (1.1 ms for 1 GiB)
+  where one view costs a few µs: which, and how, is decided with D151's restore on
+  Windows.
