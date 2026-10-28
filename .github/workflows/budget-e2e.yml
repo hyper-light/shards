@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, or lib-windows:PACKAGE for a library's own on Windows
+        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, lib-windows:PACKAGE for a library's own on Windows, or windows:BINARY for a test binary of crates/shards on each Windows runner (windows:bin, the binary's own tests)
         default: daemon
       name:
         description: its exact name; all, the whole binary
@@ -35,7 +35,7 @@ env:
 jobs:
   e2e:
     name: budget E2E (${{ matrix.copy }})
-    if: ${{ !startsWith(github.event.inputs.test || '', 'lib-windows:') }}
+    if: ${{ !startsWith(github.event.inputs.test || '', 'lib-windows:') && !startsWith(github.event.inputs.test || '', 'windows:') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
@@ -130,4 +130,62 @@ jobs:
               || failed=$((failed + 1))
           done
           echo "== $NAME failed $failed of $TIMES"
+          [ "$failed" -eq 0 ]
+
+  # A test binary of crates/shards, or the binary's own tests (windows:BINARY, windows:bin),
+  # on each Windows runner CI tests on, set up as CI's x86_64 Windows lanes are (ci.yml
+  # `native`): a change to the daemon's Windows paths checked before CI runs everything (the
+  # platform parity plan's steps 2 and 4). Its name a filter of test names here, `all` every
+  # one; each failing test's logs are shown as its directories go (crates/testdir).
+  windows-e2e:
+    name: Windows E2E (${{ matrix.runner }})
+    if: ${{ startsWith(github.event.inputs.test || '', 'windows:') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Host
+        shell: pwsh
+        run: |
+          [Environment]::ProcessorCount
+          (Get-CimInstance Win32_Processor).Name
+          [System.Environment]::OSVersion.VersionString
+      - name: Test
+        timeout-minutes: 120
+        shell: bash
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+          TEST: ${{ github.event.inputs.test }}
+          NAME: ${{ github.event.inputs.name }}
+          TIMES: ${{ github.event.inputs.times }}
+        run: |
+          binary="${TEST#windows:}"
+          if [ "$binary" = bin ]; then target=(--bin shards); else target=(--test "$binary"); fi
+          if [ "$NAME" = all ]; then args=(-- --nocapture); else args=("$NAME" -- --nocapture); fi
+          failed=0
+          for i in $(seq "$TIMES"); do
+            echo "== run $i of $TIMES"
+            cargo test --locked --profile test-release --target x86_64-pc-windows-msvc -p shards "${target[@]}" "${args[@]}" \
+              || failed=$((failed + 1))
+          done
+          echo "== $NAME of $TEST failed $failed of $TIMES"
           [ "$failed" -eq 0 ]
