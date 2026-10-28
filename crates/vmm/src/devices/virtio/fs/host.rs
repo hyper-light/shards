@@ -182,6 +182,55 @@ pub fn decode_dev(rdev: u32) -> libc::dev_t {
     }
 }
 
+/// A file's attributes as the server answers its guest about them: its host's own, in
+/// Linux's terms, and the key it is known by (`dev`, `ino`). On Unix its stat(2), the mode's
+/// type bits POSIX's own on every host; on Windows its file system's (D197).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stat {
+    pub dev: u64,
+    pub ino: u64,
+    /// Its type and permissions, Linux's `mode_t`'s bits.
+    pub mode: u32,
+    pub nlink: u32,
+    /// Its host's owner, which a guest's owner kept beside it overrides (server.rs `Owner`).
+    pub uid: u32,
+    pub size: u64,
+    pub blocks: u64,
+    pub blksize: u32,
+    /// Its host's device number, a device file's.
+    pub rdev: u64,
+    /// Seconds and nanoseconds since the epoch.
+    pub atime: (u64, u32),
+    pub mtime: (u64, u32),
+    pub ctime: (u64, u32),
+}
+
+#[cfg(unix)]
+impl From<&libc::stat> for Stat {
+    #[allow(
+        clippy::useless_conversion,
+        clippy::unnecessary_cast,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )]
+    fn from(st: &libc::stat) -> Stat {
+        Stat {
+            dev: st.st_dev as u64,
+            ino: st.st_ino as u64,
+            mode: st.st_mode as u32,
+            nlink: st.st_nlink as u32,
+            uid: st.st_uid as u32,
+            size: st.st_size as u64,
+            blocks: st.st_blocks as u64,
+            blksize: st.st_blksize as u32,
+            rdev: st.st_rdev as u64,
+            atime: (st.st_atime as u64, st.st_atime_nsec as u32),
+            mtime: (st.st_mtime as u64, st.st_mtime_nsec as u32),
+            ctime: (st.st_ctime as u64, st.st_ctime_nsec as u32),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

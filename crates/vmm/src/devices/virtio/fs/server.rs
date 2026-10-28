@@ -19,7 +19,7 @@ use std::ffi::{CStr, CString};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::{Mutex, PoisonError};
 
-use super::host::{self, linux};
+use super::host::{self, Stat, linux};
 pub use super::proto::{HEADER_BYTES, IN_HEADER_BYTES, MAX_PAGES, MAX_TABLES, MAX_WRITE};
 use super::proto::{OUT_HEADER_BYTES, op};
 use crate::snapshot::codec::{Reader, Writer};
@@ -51,9 +51,8 @@ const S_ISUID: u32 = libc::S_ISUID as u32;
 const S_ISGID: u32 = libc::S_ISGID as u32;
 
 /// A stat's mode as the guest's u32.
-#[allow(clippy::unnecessary_cast)]
-fn mode_of(st: &libc::stat) -> u32 {
-    st.st_mode as u32
+fn mode_of(st: &Stat) -> u32 {
+    st.mode
 }
 
 const OWNER_XATTR: &str = "com.docker.grpcfuse.ownership";
@@ -530,24 +529,24 @@ fn owner_xattr() -> Result<CString, Errno> {
     }
 }
 
-fn stat_fd(fd: RawFd) -> Result<libc::stat, Errno> {
+fn stat_fd(fd: RawFd) -> Result<Stat, Errno> {
     // SAFETY: an all-zero stat is a valid out-parameter for fstat(2).
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     // SAFETY: fstat(2) of a descriptor we hold.
     if unsafe { libc::fstat(fd, &mut st) } != 0 {
         return Err(last());
     }
-    Ok(st)
+    Ok(Stat::from(&st))
 }
 
-fn stat_at(dir: RawFd, name: &CStr) -> Result<libc::stat, Errno> {
+fn stat_at(dir: RawFd, name: &CStr) -> Result<Stat, Errno> {
     // SAFETY: as stat_fd.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     // SAFETY: fstatat(2) of a NUL-terminated name in a directory we hold, not following it.
     if unsafe { libc::fstatat(dir, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
         return Err(last());
     }
-    Ok(st)
+    Ok(Stat::from(&st))
 }
 
 #[cfg(test)]
@@ -580,7 +579,7 @@ fn open_regular(
     name: &CStr,
     flags: libc::c_int,
     mode: libc::c_uint,
-) -> Result<(OwnedFd, libc::stat), Errno> {
+) -> Result<(OwnedFd, Stat), Errno> {
     let exclusive = flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL;
     match stat_at(dir, name) {
         // An exclusive create of a name that exists fails at the open, opening nothing.
@@ -648,12 +647,11 @@ fn chmod_at(dir: RawFd, name: &CStr, mode: u32) -> Result<(), Errno> {
     }
 }
 
-fn key(st: &libc::stat) -> (u64, u64) {
-    #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
-    (st.st_dev as u64, st.st_ino as u64)
+fn key(st: &Stat) -> (u64, u64) {
+    (st.dev, st.ino)
 }
 
-fn is_dir(st: &libc::stat) -> bool {
+fn is_dir(st: &Stat) -> bool {
     mode_of(st) & S_IFMT == S_IFDIR
 }
 
@@ -680,22 +678,14 @@ impl Reply {
     }
     /// struct fuse_attr; `dax` where the guest maps the file into its DAX window
     /// ([`Server::dax_of`]).
-    fn attr(&mut self, st: &libc::stat, owner: Owner, dax: bool) -> &mut Self {
-        #[allow(clippy::useless_conversion, clippy::unnecessary_cast, clippy::cast_sign_loss)]
-        let (size, blocks, at, mt, ct) = (
-            st.st_size as u64,
-            st.st_blocks as u64,
-            (st.st_atime as u64, st.st_atime_nsec as u32),
-            (st.st_mtime as u64, st.st_mtime_nsec as u32),
-            (st.st_ctime as u64, st.st_ctime_nsec as u32),
-        );
+    fn attr(&mut self, st: &Stat, owner: Owner, dax: bool) -> &mut Self {
+        let (size, blocks, at, mt, ct) = (st.size, st.blocks, st.atime, st.mtime, st.ctime);
         let host_mode = mode_of(st);
         let perm = owner.mode.unwrap_or(host_mode & 0o7777);
         // A node the host keeps as an empty regular file, as the guest made it.
         let emulated = owner.kind.filter(|_| host_mode & S_IFMT == S_IFREG);
         let mode = emulated.unwrap_or(host_mode & S_IFMT) | (perm & 0o7777);
-        #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
-        let (nlink, host_rdev, blksize) = (st.st_nlink as u32, st.st_rdev as u64, st.st_blksize as u32);
+        let (nlink, host_rdev, blksize) = (st.nlink, st.rdev, st.blksize);
         let rdev = match emulated {
             Some(_) => owner.rdev.unwrap_or(0),
             None => host::encode_dev(host_rdev),
@@ -720,7 +710,7 @@ impl Reply {
             .u32(if emulated.is_none() && dax { ATTR_DAX } else { 0 })
     }
     /// struct fuse_entry_out.
-    fn entry(&mut self, nodeid: u64, st: &libc::stat, owner: Owner, dax: bool) -> &mut Self {
+    fn entry(&mut self, nodeid: u64, st: &Stat, owner: Owner, dax: bool) -> &mut Self {
         self.u64(nodeid)
             .u64(0)
             .u64(VALID_S)
@@ -945,7 +935,7 @@ impl Server {
                 );
             }
             #[allow(clippy::cast_sign_loss)]
-            let size = st.st_size as u64;
+            let size = st.size;
             carried = carried.saturating_add(size);
             if carried > MAX_TABLES as u64 {
                 return Err(format!(
@@ -1166,22 +1156,21 @@ impl Server {
     /// (D189): a regular file of at least [`DAX_SMALLEST`] the server may read, as a
     /// mapping does; and write, in a volume the guest may write, wherever a mapping's
     /// descriptor is opened to write too (window::SHARED_NEEDS_WRITE).
-    fn dax_of(&self, s: &State, node: u64, st: &libc::stat) -> bool {
+    fn dax_of(&self, s: &State, node: u64, st: &Stat) -> bool {
         static EUID: std::sync::OnceLock<libc::uid_t> = std::sync::OnceLock::new();
         // SAFETY: geteuid(2) takes nothing and cannot fail.
         let euid = *EUID.get_or_init(|| unsafe { libc::geteuid() });
         let mode = mode_of(st);
-        #[allow(clippy::unnecessary_cast)]
-        let size = st.st_size as i64;
+        let size = st.size;
         // The owner's bits where the server owns it, else others': a group's members are
         // not looked up, and a file only a group gives is read through FUSE.
         #[allow(clippy::unnecessary_cast)]
-        let (read, write) = if st.st_uid == euid {
+        let (read, write) = if st.uid == euid as u32 {
             (libc::S_IRUSR as u32, libc::S_IWUSR as u32)
         } else {
             (libc::S_IROTH as u32, libc::S_IWOTH as u32)
         };
-        let large = mode & S_IFMT == S_IFREG && u64::try_from(size).is_ok_and(|n| n >= DAX_SMALLEST);
+        let large = mode & S_IFMT == S_IFREG && size >= DAX_SMALLEST;
         let reachable = mode & read != 0
             && (!super::window::SHARED_NEEDS_WRITE || (mode & write != 0 && self.writable(s, node).is_ok()));
         large && reachable
@@ -2235,7 +2224,7 @@ fn node_has_owner(s: &mut State, nodeid: u64) -> bool {
 
 /// The guest's owner of a node: its attribute's, or root. `st`, the node's own stat where
 /// the caller has just taken it.
-fn node_owner(s: &mut State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, Errno> {
+fn node_owner(s: &mut State, nodeid: u64, st: Option<&Stat>) -> Result<Owner, Errno> {
     let Ok(fd) = node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) else {
         return Ok(Owner::default());
     };
@@ -2409,7 +2398,7 @@ fn reach(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
     Ok((dir, name))
 }
 
-fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
+fn node_stat(s: &mut State, nodeid: u64) -> Result<Stat, Errno> {
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if node.dir {
         return stat_fd(dir_fd(s, nodeid)?);
@@ -2420,7 +2409,7 @@ fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
 
 /// `name` in directory node `parent`: its node, counted once more and known by this name
 /// now, its attributes and its owner. A directory is not opened until it is used.
-fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, Owner), Errno> {
+fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner), Errno> {
     // A join share's root: its volumes, by name (D119).
     if s.joined && parent == ROOT {
         let id = *s.named.get(name).ok_or(ENOENT)?;
@@ -2762,7 +2751,7 @@ fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Re
     };
     // A file the removal leaves another name of needs no pin where there is no room: that
     // name reaches it, and the guest's lookup of it makes it the node's path.
-    if !room_for_pin(s) && !is_dir(&st) && st.st_nlink > 1 {
+    if !room_for_pin(s) && !is_dir(&st) && st.nlink > 1 {
         return Removal::Nothing;
     }
     let fd = if !room_for_pin(s) {
@@ -3135,7 +3124,7 @@ fn dirent_kind(kind: u32) -> u32 {
 /// attribute of the rest.
 fn emulated_at(dir: RawFd, name: &CStr) -> Option<u32> {
     let st = stat_at(dir, name).ok()?;
-    if mode_of(&st) & S_IFMT != S_IFREG || st.st_size != 0 || mode_of(&st) & 0o7777 != 0o600 {
+    if mode_of(&st) & S_IFMT != S_IFREG || st.size != 0 || mode_of(&st) & 0o7777 != 0o600 {
         return None;
     }
     let fd = open_meta(dir, name, Some(S_IFREG)).ok()?;
@@ -3325,7 +3314,7 @@ fn fallocate(fd: RawFd, mode: u32, offset: u64, length: u64) -> Result<(), Errno
     }
     #[cfg(target_os = "macos")]
     {
-        let size = stat_fd(fd)?.st_size as u64;
+        let size = stat_fd(fd)?.size;
         if end > size {
             let mut store = libc::fstore_t {
                 fst_flags: libc::F_ALLOCATEALL,
