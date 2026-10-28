@@ -1720,7 +1720,7 @@ fn fetch_one(
 }
 
 /// Sends a datagram to `addr` from a connected socket, and waits up to 5 s for an answer:
-/// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it; then
+/// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it, then
 /// `waited MS`, from the send to its end, by the guest's clock.
 fn udp(addr: &str) -> i32 {
     // A socket of the address's version.
@@ -1738,20 +1738,19 @@ fn udp(addr: &str) -> i32 {
         let mut buf = [0u8; 512];
         s.recv(&mut buf)
     });
-    let status = match answered {
+    match answered {
         Ok(n) => {
             let _ = writeln!(io::stdout(), "udp {n}");
             0
         }
         Err(e) => {
             let _ = writeln!(io::stdout(), "udp error {e}");
+            if let Some(sent) = sent {
+                let _ = writeln!(io::stdout(), "waited {}", sent.elapsed().as_millis());
+            }
             1
         }
-    };
-    if let Some(sent) = sent {
-        let _ = writeln!(io::stdout(), "waited {}", sent.elapsed().as_millis());
     }
-    status
 }
 
 /// Listens on TCP `port` at every address, says `ready`, then serves `connections`

@@ -328,13 +328,23 @@ mod tests {
         assert!(used > 0);
     }
 
-    /// A pause returns once every vCPU is held, and they use no CPU time until the machine
-    /// goes on, though a share of the host's would let them; then they run again.
+    /// A pause returns once every vCPU is held, and they use next to no CPU time until the
+    /// machine goes on, though a share of the host's would let them; then they run again.
     #[test]
     fn a_pause_holds_every_vcpu_until_the_machine_goes_on() {
+        /// Lets the threads go however the test ends: a failed assertion with them held
+        /// would leave the scope waiting on them.
+        struct Ends<'a>(&'a Hold, &'a AtomicBool);
+        impl Drop for Ends<'_> {
+            fn drop(&mut self) {
+                self.1.store(true, Ordering::Relaxed);
+                self.0.end();
+            }
+        }
         let hold = Hold::new(2);
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
+            let _ends = Ends(&hold, &stop);
             for index in 0..2 {
                 let (hold, stop) = (&hold, &stop);
                 s.spawn(move || {
@@ -353,15 +363,16 @@ mod tests {
             }
             assert!(hold.pause(2, &|| {}, &|| false));
             assert_eq!(lock(&hold.state).waiting, 2);
+            // Held, each thread's clock moves no more than its way into its wait does: well
+            // under the 400 ms the two would spin in the window.
             let base = hold.used();
             std::thread::sleep(Duration::from_millis(200));
-            assert_eq!(hold.used() - base, 0, "a paused vCPU ran");
+            let used = hold.used() - base;
+            assert!(used < 10_000_000, "a paused vCPU ran: {used} ns of CPU in 200 ms");
             hold.resume();
             let base = hold.used();
             std::thread::sleep(Duration::from_millis(200));
             assert!(hold.used() > base, "the machine went on, its vCPUs did not");
-            stop.store(true, Ordering::Relaxed);
-            hold.end();
         });
     }
 
