@@ -6512,7 +6512,10 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   a file's metadata by its path (M201), so on Windows a restore first reads which backing files
   the snapshot's state names (`snapshot::backing_named`), has them granted, then reads the
   generation, and refuses one whose backing files changed between, a snapshot saved again as
-  it was read.
+  it was read. Its writable layer, where NTFS clones no file for it, it copies from the
+  generation's into the empty file it is given: the ranges that hold data alone, which its
+  spawner reads for it (`kind::RANGES`, FSCTL_QUERY_ALLOCATED_RANGES), as its save copied
+  them, each layer's file sparse.
 - **A rename over a file Windows will not yet let go of.** The store replaced its pointer and a
   generation's working set by renaming a new file over the old (`write_in`, a POSIX rename,
   M344). On jupiter Windows refused such renames (STATUS_ACCESS_DENIED): a single writer's once
