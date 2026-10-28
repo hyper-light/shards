@@ -2498,10 +2498,13 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 /// share no window, `SHARDS_SHARE_WINDOW_MIB` 0, on any host: a window maps files of
 /// DAX_SMALLEST, a MiB, or more from its host's page cache, D189, and a host that gives a
 /// window by default, an Intel runner's, left its guest nothing to give back); a `MemoryHigh` set
-/// short of it, the daemon, watching the slice's budget, has it reclaim what it holds cold
-/// and report it free at once, idle as it is, which raises no pressure, says what it gave
-/// back and what it asked to unplug, and holds it within the budget's room, in which it
-/// reads a gigabyte, in files of a MiB, to the end. Linux alone: macOS has no group of
+/// a quarter GiB short of what its slice holds then (memory.current), the daemon, watching
+/// the slice's budget, has it reclaim what it holds cold and report it free at once, idle as
+/// it is, which raises no pressure, says what it gave back and what it asked to unplug with
+/// its budget's word, and holds it within the budget's room, in which it reads a gigabyte,
+/// in files of a MiB, to the end. The budget from what the microVM holds, not a size: one of
+/// 384 MiB held a microVM of fedora's 32 CPUs below its own footprint, its VM process
+/// throttled until its give-back missed its 10 s. Linux alone: macOS has no group of
 /// processes a budget holds.
 // Budgets and give-backs on Windows come with the platform parity plan's step 7.
 #[cfg(unix)]
@@ -2583,43 +2586,85 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             );
         }
     };
-    // Half of them read with no budget, held in its guest's page cache.
-    read(files.get(..512).unwrap());
-    // What the daemon says from the budget on: its host's own pressure, which a busy CI
-    // runner meets, has microVMs give back what they hold cold too, a few KiB of files
-    // just read, said as 0 MiB.
-    let before = said().len();
-    let since = || said().get(before..).unwrap_or_default().to_string();
-    let set = Command::new("systemctl")
-        .args(["--user", "set-property", "--runtime", &slice])
-        .args(["MemoryHigh=384M", "MemorySwapMax=0"])
-        .output()
-        .unwrap();
-    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    let set = |high: &str| {
+        let set = Command::new("systemctl")
+            .args(["--user", "set-property", "--runtime", &slice])
+            .args([format!("MemoryHigh={high}").as_str(), "MemorySwapMax=0"])
+            .output()
+            .unwrap();
+        assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    };
+    // The daemon's first line past `at` in its log with `words` in it.
+    let first = |at: usize, words: &[&str]| -> String {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let after = said().get(at..).unwrap_or_default().to_string();
+            if let Some(line) = after.lines().find(|l| words.iter().any(|w| l.contains(w))) {
+                return line.to_string();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "none of {words:?} said:\n{}",
+                said()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
     let mib_after = |line: &str, words: &str| -> u64 {
         line.split_once(words)
             .and_then(|(_, rest)| rest.split_whitespace().next())
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("no {words:?} in {line}"))
     };
-    // The first word of a give-back of a MiB or more.
-    let given = || {
-        since()
-            .lines()
-            .find(|l| l.contains("its microVMs gave back") && mib_after(l, "gave back ") > 0)
-            .map(str::to_string)
+    // What the slice holds: its microVM's VM process, its guest's page cache among it.
+    let group = Command::new("systemctl")
+        .args(["--user", "show", "-p", "ControlGroup", "--value", &slice])
+        .output()
+        .unwrap();
+    let group = std::path::PathBuf::from(format!(
+        "/sys/fs/cgroup{}",
+        String::from_utf8_lossy(&group.stdout).trim()
+    ));
+    let current = || -> u64 {
+        std::fs::read_to_string(group.join("memory.current"))
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0)
     };
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    // Half of them read with no budget, held in its guest's page cache; then the budget set
+    // short of what it holds, whose first word says what it gave back. Its host's own
+    // pressure, which a busy CI runner meets, has microVMs give back what they hold cold
+    // too, and where it took them first the microVM was within its budget as it was set,
+    // with nothing to give back (CI 40715919365: 220 MiB given back at its host's pressure,
+    // then 190 MiB of room): the budget is let go of and the files read again, a few times
+    // at most. Short of it with nothing given back is no such race.
+    let mut tries = 0;
     let gave = loop {
-        if let Some(gave) = given() {
-            break gave;
+        read(files.get(..512).unwrap());
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while current() <= 512 << 20 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "its slice never held what it read: {} bytes",
+                current()
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
+        let before = said().len();
+        set(&(current() - (256 << 20)).to_string());
+        let word = first(before, &["held within its budget", "budget is short by"]);
+        if word.contains("it gave back") && mib_after(&word, "warm VMs ended and ") > 0 {
+            break word;
+        }
+        tries += 1;
         assert!(
-            std::time::Instant::now() < deadline,
-            "nothing given back said:\n{}",
+            tries < 5 && word.contains("held within its budget"),
+            "nothing given back said, try {tries}: {word}\n{}",
             said()
         );
-        std::thread::sleep(Duration::from_millis(50));
+        let unset = said().len();
+        set("infinity");
+        first(unset, &["held to no budget"]);
     };
     read(&files);
     // Held within the room its budget leaves, or, short of it, within the least room a run
@@ -2632,7 +2677,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     );
     // What it asked to unplug of the memory it had plugged to hold them, said with what it
     // gave back of its files.
-    let _said = mib_after(&gave, "asked to unplug ");
+    let _said = mib_after(&gave, "asking to unplug ");
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 

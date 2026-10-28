@@ -226,7 +226,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Counts what a microVM gave back, and says it if it is due.
-    pub(super) fn gave(&self, gave: Gave) {
+    fn gave(&self, gave: Gave) {
         {
             let mut unsaid = lock(&self.watching.unsaid);
             unsaid.since.get_or_insert_with(Instant::now);

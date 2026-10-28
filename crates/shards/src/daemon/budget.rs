@@ -726,9 +726,10 @@ impl<D: Disk> Daemon<D> {
                 let before = resident_file(pid);
                 gave = self.give_back_of(&id);
                 lock(self.watching_giving()).remove(&vm);
+                // Said with its budget's word below, its own: not its host's shortage,
+                // which says what its pressure had given back at most once a minute.
                 if let Some(g) = gave {
                     self.budgets.gave_back(pid, before, g.freed);
-                    self.gave(g);
                 }
                 room = self::room(&dir, Path::new(ROOT), evicted);
             }
@@ -802,23 +803,34 @@ impl<D: Disk> Daemon<D> {
             ),
             _ => String::new(),
         };
+        // What its budget falling short had it do first, said with its word: the warm VMs
+        // it ended, what it gave back of what it held cold and what it asked to unplug, a
+        // MiB or more of either.
+        let (freed, unplugging) = gave.map_or((0, 0), |g| (g.freed >> 20, g.unplugging >> 20));
+        let did = ended > 0 || freed > 0 || unplugging > 0;
+        let done = format!(
+            ", past {ended} warm VMs ended and {freed} MiB it gave back of what it held cold of its files, asking to unplug {unplugging} MiB"
+        );
+        let done_if = || if did { done.as_str() } else { "" };
         match (had, told) {
-            (None, Some(r)) if r >= 0 => log(format!(
-                "container {id}: its microVM held within its budget, {} MiB of room{}{}",
+            // As it is first held, and as it is held within it again by what it did.
+            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did) => log(format!(
+                "container {id}: its microVM held within its budget, {} MiB of room{}{}{}",
                 r >> 20,
+                done_if(),
                 least(r),
                 parts()
             )),
-            (_, Some(r)) if r < 0 && !was_short => log(format!(
-                "container {id}: its microVM's budget is short by {} MiB, past {ended} warm VMs ended and {} MiB it gave back{}{}",
+            (_, Some(r)) if r < 0 && (!was_short || did) => log(format!(
+                "container {id}: its microVM's budget is short by {} MiB{done}{}{}",
                 r.unsigned_abs() >> 20,
-                gave.map_or(0, |g| g.freed) >> 20,
                 least(r),
                 parts()
             )),
             (_, Some(r)) if r >= 0 && was_short => log(format!(
-                "container {id}: its microVM's budget has room again, {} MiB{}",
+                "container {id}: its microVM's budget has room again, {} MiB{}{}",
                 r >> 20,
+                done_if(),
                 parts()
             )),
             (Some(_), None) => log(format!("container {id}: its microVM held to no budget")),
