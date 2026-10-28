@@ -290,6 +290,11 @@ impl Child {
         give(&self.process, handle)
     }
 
+    /// The child's handle `value`, duplicated into this process, of the same access.
+    pub fn take(&self, value: usize) -> io::Result<OwnedHandle> {
+        take(&self.process, value)
+    }
+
     /// A handle to the child that may only wait for its end (PROCESS_SYNCHRONIZE): for
     /// another child to watch it by, as a VM's network process watches its VM (D142).
     pub fn waitable(&self) -> io::Result<OwnedHandle> {
@@ -350,6 +355,35 @@ impl Process {
     pub fn give(&self, handle: BorrowedHandle<'_>) -> io::Result<usize> {
         give(&self.handle, handle)
     }
+
+    /// As [`Child::take`].
+    pub fn take(&self, value: usize) -> io::Result<OwnedHandle> {
+        take(&self.handle, value)
+    }
+}
+
+/// Handle `value` of `process`, duplicated into this process, of the same access: one a
+/// value that names no handle of `process`'s fails.
+fn take(process: &OwnedHandle, value: usize) -> io::Result<OwnedHandle> {
+    let mut ours: HANDLE = std::ptr::null_mut();
+    // SAFETY: a value of a process we made, duplicated into this one, of the same access; a
+    // value that is no handle of its fails the call.
+    if unsafe {
+        DuplicateHandle(
+            process.as_raw_handle(),
+            value as HANDLE,
+            GetCurrentProcess(),
+            &raw mut ours,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+    {
+        return Err(last());
+    }
+    // SAFETY: the handle just made, which nothing else owns.
+    Ok(unsafe { OwnedHandle::from_raw_handle(ours) })
 }
 
 /// `handle` duplicated into `process`, of the same access: its value there.
@@ -1160,14 +1194,18 @@ pub fn spawn_in(
 /// made with none of its own (CREATE_NO_WINDOW), where a console a daemon's child made would
 /// open a window.
 fn no_window() -> u32 {
-    use windows_sys::Win32::System::Console::GetConsoleWindow;
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-    // SAFETY: no arguments.
-    if unsafe { GetConsoleWindow() }.is_null() {
-        CREATE_NO_WINDOW
-    } else {
-        0
-    }
+    if has_console() { 0 } else { CREATE_NO_WINDOW }
+}
+
+/// Whether this process is attached to a console, one with a window or one without (a CI
+/// runner's): the processes attached to it counted (GetConsoleProcessList, which fails
+/// where there is none), where GetConsoleWindow answers no window for one without its own.
+/// A child made sharing it hears its events, an interrupt among them.
+fn has_console() -> bool {
+    let mut ids = [0u32; 1];
+    // SAFETY: a buffer of one ID, its length said.
+    unsafe { windows_sys::Win32::System::Console::GetConsoleProcessList(ids.as_mut_ptr(), 1) != 0 }
 }
 
 /// [`spawn`]'s child, its environment `env`.
@@ -1693,12 +1731,12 @@ fn create(
         let env = environment(s.env);
         // A spawner with no console (the daemon) makes its child none at all
         // (DETACHED_PROCESS): one made for a confined child, hidden or not, failed it as
-        // it started (STATUS_DLL_INIT_FAILED, on jupiter).
-        // SAFETY: no arguments.
-        let console = if unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null() {
-            windows_sys::Win32::System::Threading::DETACHED_PROCESS
-        } else {
+        // it started (STATUS_DLL_INIT_FAILED, on jupiter). One with a console, a window's or
+        // not, has its child share it, and hear its interrupts.
+        let console = if has_console() {
             0
+        } else {
+            windows_sys::Win32::System::Threading::DETACHED_PROCESS
         };
         // SAFETY: a command line we own and may be written; startup info and its
         // attributes, and the environment block, alive through the call.
