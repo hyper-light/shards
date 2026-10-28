@@ -14,7 +14,7 @@ use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::path::Path;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, POLLWRNORM, SD_BOTH, SD_RECEIVE,
@@ -167,6 +167,10 @@ pub struct UnixStream {
     read_ms: AtomicU32,
     /// How long a write waits for room, in milliseconds; 0, for ever (`set_write_timeout`).
     write_ms: AtomicU32,
+    /// Its socket waits for nothing (`set_nonblocking`): a read or write then neither
+    /// polls out its timeout first, as std's sockets wait out no timeout once
+    /// non-blocking, but says at once that it would block.
+    nonblocking: AtomicBool,
 }
 
 impl UnixStream {
@@ -175,6 +179,7 @@ impl UnixStream {
             socket,
             read_ms: AtomicU32::new(0),
             write_ms: AtomicU32::new(0),
+            nonblocking: AtomicBool::new(false),
         }
     }
 
@@ -182,7 +187,7 @@ impl UnixStream {
     /// WSAPoll first, as a read polls before it reads (`read_into`).
     fn write_from(&self, buf: &[u8]) -> io::Result<usize> {
         let ms = self.write_ms.load(Ordering::Relaxed);
-        if ms != 0 {
+        if ms != 0 && !self.nonblocking.load(Ordering::Relaxed) {
             let mut fd = WSAPOLLFD {
                 fd: self.socket.0,
                 events: POLLWRNORM,
@@ -209,7 +214,7 @@ impl UnixStream {
     /// state, to be closed, where a poll that times out leaves it as it was.
     fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ms = self.read_ms.load(Ordering::Relaxed);
-        if ms != 0 {
+        if ms != 0 && !self.nonblocking.load(Ordering::Relaxed) {
             let mut fd = WSAPOLLFD {
                 fd: self.socket.0,
                 events: POLLRDNORM,
@@ -313,7 +318,9 @@ impl UnixStream {
     }
 
     pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        self.socket.set_nonblocking(on)
+        self.socket.set_nonblocking(on)?;
+        self.nonblocking.store(on, Ordering::Relaxed);
+        Ok(())
     }
 
     /// A read waits at most `timeout`, or with `None` for ever, as std's does: kept by the
@@ -612,6 +619,26 @@ impl UnixListener {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A stream made non-blocking says at once that a read would block, whatever its read
+    /// timeout, as std's sockets do; made blocking again, a read waits out its timeout.
+    #[test]
+    fn a_nonblocking_stream_waits_out_no_timeout() {
+        use std::time::{Duration, Instant};
+        let (a, _b) = UnixStream::pair().unwrap();
+        a.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        a.set_nonblocking(true).unwrap();
+        let t = Instant::now();
+        let e = (&a).read(&mut [0u8; 1]).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::WouldBlock, "{e}");
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        a.set_nonblocking(false).unwrap();
+        a.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let t = Instant::now();
+        let e = (&a).read(&mut [0u8; 1]).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+        assert!(t.elapsed() >= Duration::from_millis(150), "{:?}", t.elapsed());
+    }
 
     /// A pair carries bytes each way, scatter-gather included; a half-close reads as
     /// end-of-stream while the other way still carries data (PM M199).

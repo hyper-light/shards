@@ -55,7 +55,7 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppContainer};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WriteFile,
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
 };
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
@@ -1352,7 +1352,7 @@ fn spawn_env(
             })?;
             told.push_str(&format!("{n}={theirs}\n"));
         }
-        if let Err(e) = File::from(write).write_all(told.as_bytes()) {
+        if let Err(e) = tell(write, told) {
             let _ = child.kill(SIGKILL);
             return Err(e);
         }
@@ -1561,29 +1561,27 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         let hex: String = info.iter().map(|b| format!("{b:02x}")).collect();
         told.push_str(&format!("{}=@{hex}\n", shared.name));
     }
-    let mut written = 0usize;
-    while written < told.len() {
-        let rest = told.as_bytes().get(written..).unwrap_or_default();
-        let mut n = 0u32;
-        // SAFETY: our pipe's write end; bytes we own.
-        if unsafe {
-            WriteFile(
-                pipe_write.as_raw_handle(),
-                rest.as_ptr(),
-                u32::try_from(rest.len()).unwrap_or(u32::MAX),
-                &raw mut n,
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            let e = last();
-            let _ = child.kill(SIGKILL);
-            return Err(e);
-        }
-        written += n as usize;
+    if let Err(e) = tell(pipe_write, told) {
+        let _ = child.kill(SIGKILL);
+        return Err(e);
     }
-    drop(pipe_write);
     Ok(Suspended { child, thread })
+}
+
+/// Writes `told`, a child's grants, into `pipe`, its grants pipe's write end, on a thread of
+/// its own, which ends once the child has read them all, or has gone (its read end closed):
+/// a pipe holds what its buffer holds, a size the system chooses (CreatePipe), and a child
+/// made suspended reads nothing until it runs, so a spawner that wrote it grants past the
+/// buffer before it ran waited for ever, as a network process given four sockets did (each
+/// socket's protocol info 628 bytes, written in hex: 5 KB, CI's windows-2022 and
+/// windows-2025 and jupiter, 2026-10-28).
+fn tell(pipe: OwnedHandle, told: String) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("grants".into())
+        .spawn(move || {
+            let _ = File::from(pipe).write_all(told.as_bytes());
+        })
+        .map(drop)
 }
 
 /// What process `pid` makes its own copy of `socket` from ([`adopt_socket`]):
@@ -2167,6 +2165,30 @@ mod tests {
             assert!(shown.contains("out"), "{shown:?}");
             assert_eq!(child.wait().unwrap(), 0);
         }
+    }
+
+    /// A child's grants are written whatever their length, the spawner never waiting for the
+    /// child to read them: 100 KB, past any pipe's buffer, told while nothing reads, all of
+    /// it read once the reader comes.
+    #[test]
+    fn grants_past_a_pipes_buffer_never_wait_for_their_reader() {
+        let (read, write) = pipe().unwrap();
+        let told: String = (0..2_000)
+            .map(|i| format!("socket-{i}=@{}\n", "ab".repeat(24)))
+            .collect();
+        assert!(told.len() > 100_000);
+        let (done, finished) = std::sync::mpsc::channel();
+        let telling = told.clone();
+        std::thread::spawn(move || {
+            tell(write, telling).unwrap();
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the spawner waited for a reader that had not come");
+        let mut text = String::new();
+        File::from(read).read_to_string(&mut text).unwrap();
+        assert_eq!(text, told);
     }
 
     /// A plain child killed ends at once, its status 128 and the signal, as a Unix child's
