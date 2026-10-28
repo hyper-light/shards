@@ -165,6 +165,8 @@ pub struct UnixStream {
     socket: Socket,
     /// How long a read waits, in milliseconds; 0, for ever (`set_read_timeout`).
     read_ms: AtomicU32,
+    /// How long a write waits for room, in milliseconds; 0, for ever (`set_write_timeout`).
+    write_ms: AtomicU32,
 }
 
 impl UnixStream {
@@ -172,7 +174,33 @@ impl UnixStream {
         UnixStream {
             socket,
             read_ms: AtomicU32::new(0),
+            write_ms: AtomicU32::new(0),
         }
+    }
+
+    /// A write of `buf`, waiting no longer than the stream's write timeout for room: a
+    /// WSAPoll first, as a read polls before it reads (`read_into`).
+    fn write_from(&self, buf: &[u8]) -> io::Result<usize> {
+        let ms = self.write_ms.load(Ordering::Relaxed);
+        if ms != 0 {
+            let mut fd = WSAPOLLFD {
+                fd: self.socket.0,
+                events: POLLWRNORM,
+                revents: 0,
+            };
+            // SAFETY: one entry, a socket this value owns.
+            let n = unsafe { WSAPoll(&raw mut fd, 1, i32::try_from(ms).unwrap_or(i32::MAX)) };
+            if n < 0 {
+                return Err(last());
+            }
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "no room within the write timeout",
+                ));
+            }
+        }
+        write_from(self.socket.0, buf)
     }
 
     /// A read of what has come into `buf`, waiting no longer than the stream's timeout: a
@@ -302,6 +330,23 @@ impl UnixStream {
             Some(t) => u32::try_from(t.as_millis().max(1)).unwrap_or(u32::MAX),
         };
         self.read_ms.store(ms, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// A write waits at most `timeout` for room, or with `None` for ever, as std's does:
+    /// kept by the stream and waited out by a poll before each write.
+    pub fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        let ms: u32 = match timeout {
+            None => 0,
+            Some(t) if t.is_zero() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "cannot set a 0 duration timeout",
+                ));
+            }
+            Some(t) => u32::try_from(t.as_millis().max(1)).unwrap_or(u32::MAX),
+        };
+        self.write_ms.store(ms, Ordering::Relaxed);
         Ok(())
     }
 
@@ -442,6 +487,26 @@ fn write_from(s: SOCKET, buf: &[u8]) -> io::Result<usize> {
     usize::try_from(n).map_err(|_| last())
 }
 
+impl From<std::os::windows::io::OwnedSocket> for UnixStream {
+    /// A connection this process holds already: one another process shared with it, made
+    /// its own (WSASocketW of the protocol info its sharer's WSADuplicateSocketW wrote).
+    fn from(socket: std::os::windows::io::OwnedSocket) -> UnixStream {
+        use std::os::windows::io::IntoRawSocket as _;
+        UnixStream::wrap(Socket(socket.into_raw_socket() as SOCKET))
+    }
+}
+
+impl From<UnixStream> for std::os::windows::io::OwnedSocket {
+    /// The connection's socket, to hand to another process (WSADuplicateSocketW) or keep.
+    fn from(stream: UnixStream) -> std::os::windows::io::OwnedSocket {
+        use std::os::windows::io::FromRawSocket as _;
+        let stream = std::mem::ManuallyDrop::new(stream);
+        // SAFETY: the socket the stream owned, whose close is forgone with its drop: owned
+        // from here alone.
+        unsafe { std::os::windows::io::OwnedSocket::from_raw_socket(stream.socket.0 as u64) }
+    }
+}
+
 impl Read for &UnixStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         UnixStream::read_into(self, buf)
@@ -456,7 +521,7 @@ impl Read for UnixStream {
 
 impl Write for &UnixStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        write_from(self.socket.0, buf)
+        UnixStream::write_from(self, buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -466,7 +531,7 @@ impl Write for &UnixStream {
 
 impl Write for UnixStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        write_from(self.socket.0, buf)
+        UnixStream::write_from(self, buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {

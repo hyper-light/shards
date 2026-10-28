@@ -172,9 +172,6 @@ fn home(name: &str) -> Option<(TempDir, String)> {
 /// each reaching the guest.
 #[test]
 fn many_published_ports_all_reach_the_guest() {
-    if common::later_on_windows(5, "published ports") {
-        return;
-    }
     use std::io::{Read as _, Write as _};
     let Some((home, image)) = home("containers-publish-many") else {
         return;
@@ -7709,9 +7706,6 @@ fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/network-host/release.sh"]
 fn ports_held_past_their_containers_end() {
-    if common::later_on_windows(5, "published ports") {
-        return;
-    }
     let Some((home, image)) = home("containers-m181") else {
         return;
     };
@@ -8464,9 +8458,6 @@ fn listeners_of(port: u16) -> String {
 /// as it has ended.
 #[test]
 fn published_ports_reach_the_guest() {
-    if common::later_on_windows(5, "published ports") {
-        return;
-    }
     use std::io::{Read as _, Write as _};
     use std::net::{SocketAddr, TcpStream};
     let Some((home, image)) = home("containers-publish") else {
@@ -8734,9 +8725,6 @@ fn published_ports_reach_the_guest() {
 /// would hold every one it had until that child's exec (PM M134, M158).
 #[test]
 fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
-    if common::later_on_windows(5, "published ports") {
-        return;
-    }
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     /// The other runs stop however this test's own ends, a panic's unwinding included:
@@ -8854,9 +8842,6 @@ fn children_of(parent: u32) -> Vec<(u32, String)> {
 #[test]
 fn published_udp_ports_carry_datagrams_both_ways() {
     use std::net::UdpSocket;
-    if common::later_on_windows(5, "published ports") {
-        return;
-    }
     let Some((home, image)) = home("containers-publish-udp") else {
         return;
     };

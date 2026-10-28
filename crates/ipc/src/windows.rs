@@ -1642,6 +1642,48 @@ pub fn adopt_socket(info: &[u8]) -> io::Result<std::os::windows::io::OwnedSocket
     Ok(unsafe { std::os::windows::io::OwnedSocket::from_raw_socket(s as u64) })
 }
 
+/// The bytes of one socket's protocol info, as [`share_socket`] gives it.
+pub const SHARED_SOCKET: usize = size_of::<windows_sys::Win32::Networking::WinSock::WSAPROTOCOL_INFOW>();
+
+/// A message's payload with `sockets` in it for process `pid`, as Windows hands a process a
+/// socket, where Unix passes descriptors beside a message (SCM_RIGHTS): their count, each
+/// one's protocol info shared with `pid` ([`share_socket`]), then `payload`, as
+/// [`adopt_sockets`] reads it. The sender keeps its own until its receiver says it has
+/// them: a socket shared and closed before it is taken is gone.
+pub fn with_sockets(payload: &[u8], sockets: &[u64], pid: u32) -> io::Result<Vec<u8>> {
+    let count = u8::try_from(sockets.len())
+        .ok()
+        .filter(|&n| usize::from(n) <= crate::MAX_FDS)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "too many sockets for one message"))?;
+    let mut out = Vec::with_capacity(1 + sockets.len() * SHARED_SOCKET + payload.len());
+    out.push(count);
+    for &socket in sockets {
+        out.extend(share_socket(socket, pid)?);
+    }
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+/// The sockets a payload [`with_sockets`] made shares with this process, each its own
+/// ([`adopt_socket`]), and the payload after them.
+pub fn adopt_sockets(payload: &[u8]) -> io::Result<(Vec<std::os::windows::io::OwnedSocket>, &[u8])> {
+    let short = || io::Error::new(io::ErrorKind::InvalidData, "a message's sockets cut short");
+    let (&count, mut rest) = payload.split_first().ok_or_else(short)?;
+    if usize::from(count) > crate::MAX_FDS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "more sockets than one message carries",
+        ));
+    }
+    let mut sockets = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let (info, after) = rest.split_at_checked(SHARED_SOCKET).ok_or_else(short)?;
+        sockets.push(adopt_socket(info)?);
+        rest = after;
+    }
+    Ok((sockets, rest))
+}
+
 /// A pipe: its read end, inheritable, for a child's list alone; its write end, not.
 fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
@@ -1980,6 +2022,32 @@ mod tests {
         assert!(held_path.exists());
         assert!(!left.exists());
         assert!(other.exists());
+    }
+
+    /// Sockets go in a message as Windows shares them, each its receiver's own once taken
+    /// out: a listener shared with this process and adopted, its sharer's copy closed,
+    /// takes a connection, and the payload after them is as it was sent; a message whose
+    /// sockets are cut short, or that counts more than a message carries, is refused.
+    #[test]
+    fn a_messages_sockets_are_its_receivers_own() {
+        use std::os::windows::io::AsRawSocket as _;
+        // std's bind starts Winsock, which sharing a socket needs.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let payload = with_sockets(b"after", &[listener.as_raw_socket()], std::process::id()).unwrap();
+        assert_eq!(payload.len(), 1 + SHARED_SOCKET + 5);
+        drop(listener);
+        let (sockets, rest) = adopt_sockets(&payload).unwrap();
+        assert_eq!(rest, b"after");
+        let [socket] = <[_; 1]>::try_from(sockets).unwrap();
+        let adopted = std::net::TcpListener::from(socket);
+        let _client = std::net::TcpStream::connect(at).unwrap();
+        adopted.accept().unwrap();
+        assert!(adopt_sockets(payload.get(..SHARED_SOCKET).unwrap()).is_err());
+        assert!(adopt_sockets(&[]).is_err());
+        let mut counted = vec![u8::try_from(crate::MAX_FDS + 1).unwrap()];
+        counted.resize(1 + (crate::MAX_FDS + 1) * SHARED_SOCKET, 0);
+        assert!(adopt_sockets(&counted).is_err());
     }
 
     /// A test process runs in no AppContainer.

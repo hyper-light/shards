@@ -19,8 +19,10 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::time::{Duration, Instant};
 
 use shards_abi::run::{HostBind, HostBound, HostListen, kind};
-use shards_ipc::Stream as UnixStream;
+#[cfg(unix)]
 use shards_ipc::fd::{AsFd as _, OwnedFd};
+
+use crate::netproc::{Control, Sock};
 #[cfg(unix)]
 use shards_vmm::devices::virtio::fs::host::linux_errno;
 
@@ -44,7 +46,7 @@ const EOPNOTSUPP: i32 = 95;
 /// answers, and how many of them are owed; each socket by its number.
 #[derive(Debug)]
 pub(super) struct HostNet {
-    net: UnixStream,
+    net: Control,
     incoming: shards_ipc::Incoming,
     owed: u32,
     patience: Duration,
@@ -56,7 +58,7 @@ pub(super) struct HostNet {
 /// it, and the container whose it is ([`HostBind::owner`]).
 #[derive(Debug)]
 struct Hosted {
-    fd: OwnedFd,
+    fd: Sock,
     proto: u8,
     published: bool,
     owner: u32,
@@ -65,7 +67,7 @@ struct Hosted {
 impl HostNet {
     /// What it sends the network process, and waits for of it, on the followers' loop,
     /// waits `patience` at most, as a run's start waits for that process's answers.
-    pub(super) fn new(net: UnixStream, patience: Duration) -> HostNet {
+    pub(super) fn new(net: Control, patience: Duration) -> HostNet {
         let _ = net.set_write_timeout(Some(patience));
         HostNet {
             net,
@@ -188,11 +190,11 @@ impl HostNet {
         let mut payload = l.number.to_be_bytes().to_vec();
         payload.extend_from_slice(&l.guest_port.to_be_bytes());
         payload.push(h.proto);
-        match shards_ipc::send(
+        match crate::netproc::send(
             &self.net,
             shards_ipc::kind::NET_PUBLISHED,
             &payload,
-            &[h.fd.as_fd()],
+            &[crate::netproc::lend(&h.fd)],
         ) {
             Ok(()) => {
                 h.published = true;
@@ -224,7 +226,7 @@ impl HostNet {
 
     fn unbind(&mut self, number: u32) {
         if self.sockets.remove(&number).is_some_and(|h| h.published)
-            && shards_ipc::send(
+            && crate::netproc::send(
                 &self.net,
                 shards_ipc::kind::NET_UNPUBLISHED,
                 &number.to_be_bytes(),
@@ -237,16 +239,23 @@ impl HostNet {
     }
 }
 
-/// Whether `sock` has something to read within `wait`.
+/// Whether `net` has something to read within `wait`.
 #[cfg(windows)]
-fn readable(sock: &UnixStream, wait: Duration) -> bool {
-    sock.wait_readable(None, Instant::now().checked_add(wait))
-        .unwrap_or(false)
+fn readable(net: &Control, wait: Duration) -> bool {
+    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAPOLLFD, WSAPoll};
+    let mut p = WSAPOLLFD {
+        fd: net.socket.raw(),
+        events: POLLRDNORM,
+        revents: 0,
+    };
+    let ms = i32::try_from(wait.as_millis().saturating_add(1)).unwrap_or(i32::MAX);
+    // SAFETY: WSAPoll of one entry, a socket of ours.
+    unsafe { WSAPoll(&raw mut p, 1, ms) > 0 }
 }
 
 /// Whether `sock` has something to read within `wait`.
 #[cfg(unix)]
-fn readable(sock: &UnixStream, wait: Duration) -> bool {
+fn readable(sock: &Control, wait: Duration) -> bool {
     let mut p = libc::pollfd {
         fd: sock.as_raw_fd(),
         events: libc::POLLIN,
@@ -267,7 +276,7 @@ fn errno() -> i32 {
 /// A socket of the host's for a guest's bind, on Windows, which makes none yet
 /// ([`EOPNOTSUPP`]).
 #[cfg(windows)]
-fn socket(_b: &HostBind) -> Result<(OwnedFd, u16), i32> {
+fn socket(_b: &HostBind) -> Result<(Sock, u16), i32> {
     Err(EOPNOTSUPP)
 }
 
@@ -370,6 +379,7 @@ fn bound_port(fd: &OwnedFd) -> Result<u16, i32> {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+    use std::os::unix::net::UnixStream;
 
     /// A guest's bind on the host's network (D124), as the host makes it: the port the
     /// host chose, a port the host holds refused as Linux says it, a listen given to the

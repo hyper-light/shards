@@ -388,6 +388,14 @@ pub mod kind {
     /// little-endian u64. Answered with a `GRANTED` of the ranges, each its offset and its
     /// length, little-endian u64s; or an `ERR` (D196).
     pub const RANGES: u8 = 76;
+
+    /// Whether a network process's control message of `kind` hands it sockets: published
+    /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
+    /// message on Unix; on Windows, where a socket is shared with a process by its protocol
+    /// info, before its payload, however many (`with_sockets`).
+    pub fn hands_sockets(kind: u8) -> bool {
+        matches!(kind, PUBLISH | NET_PUBLISHED | NET_PEER)
+    }
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

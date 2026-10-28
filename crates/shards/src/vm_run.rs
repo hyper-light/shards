@@ -2147,6 +2147,17 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
             .map_err(|e| format!("--net: net-wake-peer: {e}"))?;
         std::sync::Arc::new(shards_netring::Bell::Socket(rings))
     };
+    // Where its run's published ports close as it ends, where a daemon gave it one: a
+    // builder's spawner publishes nothing.
+    if let Some(at) = given
+        .iter()
+        .position(|(n, h)| n == "net-release" && matches!(h, shards_ipc::Handed::Socket(_)))
+        && let shards_ipc::Handed::Socket(info) = given.swap_remove(at).1
+    {
+        let release = shards_vmm::platform::UnixStream::from_shared(&info)
+            .map_err(|e| format!("--net: net-release: {e}"))?;
+        crate::warm::adopt_release(release)?;
+    }
     let mac = spec
         .parse::<shards_net::Mac>()
         .map_err(|e| format!("--net: {e}"))?

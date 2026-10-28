@@ -29,6 +29,15 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
+
+/// A socket a control message hands this process (PUBLISH, NET_PUBLISHED, NET_PEER): a
+/// descriptor passed beside it on Unix; on Windows one this process makes its own from the
+/// protocol info its sender shared it by, before the message's payload
+/// ([`shards_ipc::with_sockets`], PM M203).
+#[cfg(unix)]
+type Handed = OwnedFd;
+#[cfg(windows)]
+type Handed = std::os::windows::io::OwnedSocket;
 use std::time::{Duration, Instant};
 
 use shards_netring::{Consumer, Handle, Producer, RING, Region};
@@ -1028,42 +1037,54 @@ fn control(
         if !role.says(m.kind) {
             return false;
         }
-        // What hands this process sockets: the daemon's, on Unix, which no Windows host runs
-        // yet (D143).
-        #[cfg(windows)]
-        if matches!(
-            m.kind,
-            shards_ipc::kind::PUBLISH | shards_ipc::kind::NET_PUBLISHED | shards_ipc::kind::NET_PEER
-        ) {
-            return false;
-        }
-        #[cfg(unix)]
-        let answered = if m.kind == shards_ipc::kind::PUBLISH {
-            stack.publish(&m.payload, m.fds);
-            answer(sock, shards_ipc::kind::PUBLISH)
-        } else if m.kind == shards_ipc::kind::NET_PUBLISHED {
-            // A port of the host's network (D124): its number, then as PUBLISH's. Not
-            // answered: the daemon holds its copy of the socket until it lets the port go.
-            let Some((id, ports)) = m.payload.split_first_chunk::<4>() else {
+        let answered = if shards_ipc::kind::hands_sockets(m.kind) {
+            // Its sockets: passed beside it on Unix; on Windows shared before its payload.
+            #[cfg(unix)]
+            let (fds, payload) = (m.fds, m.payload.as_slice());
+            #[cfg(windows)]
+            let Ok((fds, payload)) = shards_ipc::adopt_sockets(&m.payload) else {
                 return false;
             };
-            let at = stack.published.len();
-            stack.publish(ports, m.fds);
-            if stack.published.len() > at {
-                stack.hosted.insert(u32::from_be_bytes(*id), at);
-            }
-            Ok(())
-        } else if m.kind == shards_ipc::kind::NET_PEER {
-            stack.add_peer(&m.payload, m.fds);
-            answer(sock, shards_ipc::kind::NET_PEER)
+            handed(stack, sock, m.kind, payload, fds)
         } else {
             answer_other(stack, sock, &m)
         };
-        #[cfg(windows)]
-        let answered = answer_other(stack, sock, &m);
         if answered.is_err() {
             return false;
         }
+    }
+}
+
+/// [`control`]'s answer to a message of `kind` that hands this process sockets, `fds`,
+/// with `payload`.
+fn handed(
+    stack: &mut Stack<'_>,
+    sock: &UnixStream,
+    kind: u8,
+    payload: &[u8],
+    fds: Vec<Handed>,
+) -> io::Result<()> {
+    if kind == shards_ipc::kind::PUBLISH {
+        stack.publish(payload, fds);
+        answer(sock, shards_ipc::kind::PUBLISH)
+    } else if kind == shards_ipc::kind::NET_PUBLISHED {
+        // A port of the host's network (D124): its number, then as PUBLISH's. Not
+        // answered: the daemon holds its copy of the socket until it lets the port go.
+        let Some((id, ports)) = payload.split_first_chunk::<4>() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a port of the host's network without its number",
+            ));
+        };
+        let at = stack.published.len();
+        stack.publish(ports, fds);
+        if stack.published.len() > at {
+            stack.hosted.insert(u32::from_be_bytes(*id), at);
+        }
+        Ok(())
+    } else {
+        stack.add_peer(payload, fds);
+        answer(sock, shards_ipc::kind::NET_PEER)
     }
 }
 
@@ -1241,11 +1262,10 @@ impl<'r> Stack<'r> {
         initial_seq(&self.isn_key, ticks, guest, key)
     }
 
-    #[cfg(unix)]
     /// Takes published ports' host sockets, each for the guest port and protocol its
     /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
     /// what does not pair up, or names another protocol, is closed.
-    fn publish(&mut self, ports: &[u8], fds: Vec<OwnedFd>) {
+    fn publish(&mut self, ports: &[u8], fds: Vec<Handed>) {
         for (fd, &[hi, lo, proto]) in fds.into_iter().zip(ports.as_chunks::<3>().0) {
             let listener = match proto {
                 wire::PROTO_TCP => Listener::Tcp(std::net::TcpListener::from(fd)),
@@ -1562,10 +1582,9 @@ impl<'r> Stack<'r> {
         self.frames.guest_mac = mac;
     }
 
-    #[cfg(unix)]
     /// A peer (`NET_PEER`): its guest's address, then its IPv6 one on a network with
     /// IPv6, and the socket to its network process.
-    fn add_peer(&mut self, payload: &[u8], fds: Vec<OwnedFd>) {
+    fn add_peer(&mut self, payload: &[u8], fds: Vec<Handed>) {
         let (Some((&[a, b, c, d], rest)), Some(fd)) =
             (payload.split_first_chunk::<4>(), fds.into_iter().next())
         else {

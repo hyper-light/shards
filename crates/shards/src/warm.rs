@@ -81,8 +81,9 @@ fn to_daemon(
 }
 
 /// The VM's socket to its network process, on which its run's published ports close as
-/// the run ends (`--net-release`).
-static RELEASE: std::sync::OnceLock<UnixStream> = std::sync::OnceLock::new();
+/// the run ends (`--net-release`; on Windows the AF_UNIX socket given it as `net-release`,
+/// which that process waits on with its own, PM M213).
+static RELEASE: std::sync::OnceLock<shards_vmm::platform::UnixStream> = std::sync::OnceLock::new();
 /// The run publishes ports (`RUN_PUBLISHED`): only then is there anything to close.
 static PUBLISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -142,6 +143,14 @@ pub fn adopt_release(fd: RawFd) -> Result<(), String> {
         .map_err(|_| "--net-release given twice".to_string())
 }
 
+/// Takes `socket`, its spawner's `net-release`, as [`RELEASE`] (Windows).
+#[cfg(windows)]
+pub fn adopt_release(socket: shards_vmm::platform::UnixStream) -> Result<(), String> {
+    RELEASE
+        .set(socket)
+        .map_err(|_| "net-release given twice".to_string())
+}
+
 /// Has the network process close the run's published ports, and waits until it has, so
 /// that they are free once the run's end is told, as dockerd frees a container's before
 /// its exit is (`docker run --rm -p 80 …; docker run -p 80 …` finds it free). A network
@@ -162,12 +171,26 @@ fn release_ports() {
         return;
     }
     let Some(release) = RELEASE.get() else { return };
-    if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
-        return;
+    #[cfg(unix)]
+    {
+        if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
+            return;
+        }
+        // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
+        // setsockopt(2) (confine.rs).
+        let _ = shards_ipc::recv_by(release, deadline);
     }
-    // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
-    // setsockopt(2) (confine.rs).
-    let _ = shards_ipc::recv_by(release, deadline);
+    #[cfg(windows)]
+    {
+        if shards_ipc::write_message(release, kind::UNPUBLISH, &[]).is_err() {
+            return;
+        }
+        // Bounded by a poll before the read (shards_afunix's read timeout).
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if !left.is_zero() && release.set_read_timeout(Some(left)).is_ok() {
+            let _ = shards_ipc::read_message(release);
+        }
+    }
 }
 
 #[cfg(unix)]

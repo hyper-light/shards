@@ -7,6 +7,104 @@
 #[cfg(unix)]
 use std::os::fd::{AsFd, OwnedFd};
 
+/// A socket handed to a network process (a published port's host socket, a peer's link):
+/// a descriptor on Unix; on Windows a socket, which Winsock closes (closesocket).
+#[cfg(unix)]
+pub type Sock = OwnedFd;
+#[cfg(windows)]
+pub type Sock = std::os::windows::io::OwnedSocket;
+
+/// A [`Sock`] lent to a message that hands it on.
+#[cfg(unix)]
+pub type Lent<'a> = std::os::fd::BorrowedFd<'a>;
+#[cfg(windows)]
+pub type Lent<'a> = std::os::windows::io::BorrowedSocket<'a>;
+
+/// [`Sock`]'s loan.
+pub fn lend(sock: &Sock) -> Lent<'_> {
+    #[cfg(unix)]
+    return sock.as_fd();
+    #[cfg(windows)]
+    return std::os::windows::io::AsSocket::as_socket(sock);
+}
+
+/// A VM's network process's control socket (D31), on which its run's published ports, its
+/// peers and its policy go: a Unix socket on Unix.
+#[cfg(unix)]
+pub type Control = std::os::unix::net::UnixStream;
+
+/// On Windows an AF_UNIX socket, which the network process waits on with its own sockets
+/// (PM M213), with the process's ID, which a socket handed to it is shared with
+/// (WSADuplicateSocketW, PM M203).
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct Control {
+    pub socket: shards_vmm::platform::UnixStream,
+    pub pid: u32,
+}
+
+#[cfg(windows)]
+impl Control {
+    pub fn try_clone(&self) -> std::io::Result<Control> {
+        Ok(Control {
+            socket: self.socket.try_clone()?,
+            pid: self.pid,
+        })
+    }
+
+    pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.socket.set_read_timeout(timeout)
+    }
+
+    pub fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.socket.set_write_timeout(timeout)
+    }
+}
+
+#[cfg(windows)]
+impl std::io::Read for &Control {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut &self.socket, buf)
+    }
+}
+
+/// Sends `kind`, with `payload` and the sockets `socks`, to the network process on its
+/// control `net`, as that process takes them (shards_net `control`): beside the message on
+/// Unix; on Windows each shared with the process, before its payload, in a message of a
+/// kind that hands sockets (`shards_ipc::kind::hands_sockets`).
+pub fn send(net: &Control, kind: u8, payload: &[u8], socks: &[Lent<'_>]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return shards_ipc::send(net, kind, payload, socks);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket as _;
+        if !shards_ipc::kind::hands_sockets(kind) {
+            if !socks.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "sockets with a message of a kind that hands none",
+                ));
+            }
+            return shards_ipc::write_message(&net.socket, kind, payload);
+        }
+        let raw: Vec<u64> = socks.iter().map(|s| s.as_raw_socket()).collect();
+        shards_ipc::write_message(
+            &net.socket,
+            kind,
+            &shards_ipc::with_sockets(payload, &raw, net.pid)?,
+        )
+    }
+}
+
+/// The next message the network process sends on its control `net`; none once it has
+/// hung up.
+pub fn recv(net: &Control) -> std::io::Result<Option<shards_ipc::Message>> {
+    #[cfg(unix)]
+    return shards_ipc::recv(net);
+    #[cfg(windows)]
+    return shards_ipc::read_message(&net.socket);
+}
+
 /// What a VM or network process is given of its spawner's environment: the variables it
 /// reads, and nothing else. A daemon's environment is that of the client that started
 /// it, which may hold secrets (an API key, an agent's socket), and these are the
@@ -276,14 +374,18 @@ pub fn reap(net: &shards_ipc::Child) {
 /// The VM's side of its network (Windows, D142): the ring and its two doorbells, handed
 /// to the VM process by name ([`VmSide::given`], [`VmSide::shared`]): the event it sleeps
 /// on, and the AF_UNIX socket it rings its network process by, which that process waits on
-/// with its sockets (PM M213). No ports are published there yet, a daemon's, so it has no
-/// control nor release, as a builder's on Unix uses neither.
+/// with its sockets (PM M213). And as on Unix, the spawner's control, on which published
+/// ports go, and the VM's release, on which they close as its run ends
+/// ([`VmSide::release`]): AF_UNIX sockets that process waits on too. A builder's spawner
+/// publishes nothing, and drops both.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct VmSide {
     pub region: std::os::windows::io::OwnedHandle,
     pub sleeps: std::os::windows::io::OwnedHandle,
     pub rings: shards_vmm::platform::UnixStream,
+    pub control: shards_vmm::platform::UnixStream,
+    pub release: shards_vmm::platform::UnixStream,
 }
 
 #[cfg(windows)]
@@ -315,6 +417,15 @@ impl VmSide {
             socket: self.rings.raw() as u64,
         }
     }
+
+    /// The socket its run's published ports close on as the run ends, by the name a VM
+    /// process takes it by (`--net`, vm_run.rs).
+    pub fn release(&self) -> shards_ipc::Shared<'_> {
+        shards_ipc::Shared {
+            name: "net-release",
+            socket: self.release.raw() as u64,
+        }
+    }
 }
 
 /// A VM's network process, made ready to start once its VM's process exists, whose end it
@@ -325,6 +436,9 @@ pub struct Ready {
     region: std::os::windows::io::OwnedHandle,
     sleeps: shards_vmm::platform::UnixStream,
     rings: std::os::windows::io::OwnedHandle,
+    /// Its ends of the spawner's control and of the VM's release ([`VmSide`]).
+    control: shards_vmm::platform::UnixStream,
+    release: shards_vmm::platform::UnixStream,
     args: Vec<std::ffi::OsString>,
     /// A build's proxy's socket, which its spawner dials for it (D110).
     proxy: Option<std::path::PathBuf>,
@@ -353,6 +467,10 @@ pub fn prepare(
         return Err("a VM's network: a doorbell of sockets".into());
     };
     let (policy, proxy) = policy_args(policy)?;
+    let pair =
+        || shards_vmm::platform::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
+    let (control, net_control) = pair()?;
+    let (release, net_release) = pair()?;
     let mut args: Vec<std::ffi::OsString> = vec![
         "--policy".into(),
         policy.into(),
@@ -360,6 +478,10 @@ pub fn prepare(
         shards_net::Mac(*mac).to_string().into(),
         "--bridge".into(),
         bridge.to_string().into(),
+        "--control".into(),
+        "net-control".into(),
+        "--release".into(),
+        "net-release".into(),
     ];
     for r in resolvers() {
         args.extend(["--resolver".into(), r.into()]);
@@ -387,6 +509,8 @@ pub fn prepare(
             region: region.try_clone().map_err(at)?,
             sleeps: net_sleeps,
             rings: net_rings,
+            control: net_control,
+            release: net_release,
             args,
             proxy,
         },
@@ -394,6 +518,8 @@ pub fn prepare(
             region,
             sleeps: vm_sleeps,
             rings: vm_rings,
+            control,
+            release,
         },
     ))
 }
@@ -426,6 +552,14 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         shards_ipc::Shared {
             name: "net-wake-me",
             socket: ready.sleeps.raw() as u64,
+        },
+        shards_ipc::Shared {
+            name: "net-control",
+            socket: ready.control.raw() as u64,
+        },
+        shards_ipc::Shared {
+            name: "net-release",
+            socket: ready.release.raw() as u64,
         },
     ];
     let args: Vec<&std::ffi::OsStr> = ready.args.iter().map(std::ffi::OsString::as_os_str).collect();

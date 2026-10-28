@@ -498,7 +498,7 @@ struct Ready {
     socket: UnixStream,
     /// Its network process's control socket, if it has one: where its run's published
     /// ports go.
-    net: Option<UnixStream>,
+    net: Option<crate::netproc::Control>,
     /// The guest's MAC on its network, if it has one.
     mac: Option<[u8; 6]>,
     /// The pool it came from.
@@ -760,7 +760,7 @@ struct Tracked {
     /// Its guest's MAC on its network, for `inspect`.
     mac: Option<[u8; 6]>,
     /// Its network process's control socket, where peers on its network come (D46).
-    net: Option<UnixStream>,
+    net: Option<crate::netproc::Control>,
     /// For a container joining another's network (D119), that container's ID: `vm` is its
     /// VM, which this run never ends, pauses or reads as its own.
     joined: Option<String>,
@@ -4731,7 +4731,8 @@ impl<D: Disk> Daemon<D> {
                     [hi, lo, l.proto]
                 })
                 .collect();
-            let fds: Vec<BorrowedFd<'_>> = batch.iter().map(|l| l.fd.as_fd()).collect();
+            let fds: Vec<crate::netproc::Lent<'_>> =
+                batch.iter().map(|l| crate::netproc::lend(&l.fd)).collect();
             asks.ask("published ports", kind::PUBLISH, &ports, &fds)?;
         }
         self.give_network(id, &mut asks, keep.mac.or(ready.mac), &keep.link_local)?;
@@ -7350,7 +7351,7 @@ impl<D: Disk> Daemon<D> {
         let mut sockets = Vec::new();
         if let Some((_, side)) = &network {
             given.extend(side.given());
-            sockets.push(side.shared());
+            sockets.extend([side.shared(), side.release()]);
         }
         let net_arg = net.map(|mac| OsString::from(crate::netproc::VmSide::arg(&mac)));
         let args: Vec<&OsStr> = args
@@ -7389,14 +7390,18 @@ impl<D: Disk> Daemon<D> {
         // Shared with it already, and its handles duplicated into it.
         drop((given, sockets));
         // Its network process, given the VM's process to watch, before the VM runs: ended
-        // with the suspended VM, a Job's, where it cannot start.
-        let net_process = match network {
+        // with the suspended VM, a Job's, where it cannot start. Its control is the
+        // daemon's, where the run's published ports go; the VM holds its release.
+        let (net_process, net_control) = match network {
             Some((ready, side)) => {
-                let started = crate::netproc::start(ready, &suspended);
-                drop(side);
-                Some(started?)
+                let started = crate::netproc::start(ready, &suspended)?;
+                let control = crate::netproc::Control {
+                    socket: side.control,
+                    pid: started.id(),
+                };
+                (Some(started), Some((control, net)))
             }
-            None => None,
+            None => (None, None),
         };
         let giver = suspended.giver().map_err(|e| format!("answering a VM: {e}"))?;
         let gives = suspended
@@ -7435,7 +7440,16 @@ impl<D: Disk> Daemon<D> {
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
             .spawn_scoped(threads, move || {
-                self.watch(threads, watched, ours, None, None, dest, net_process, layer);
+                self.watch(
+                    threads,
+                    watched,
+                    ours,
+                    None,
+                    net_control,
+                    dest,
+                    net_process,
+                    layer,
+                );
             });
         if let Err(e) = watching {
             if pooled {
@@ -7458,7 +7472,7 @@ impl<D: Disk> Daemon<D> {
         child: Arc<shards_ipc::Child>,
         socket: UnixStream,
         grants: Option<UnixStream>,
-        net: Option<(UnixStream, Option<[u8; 6]>)>,
+        net: Option<(crate::netproc::Control, Option<[u8; 6]>)>,
         dest: For,
         net_process: Option<crate::netproc::NetProcess>,
         layer: Option<layers::LayerFile>,

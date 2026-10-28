@@ -6475,7 +6475,13 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   at stage 2 (copy-on-write, read-only, shared or of the pagefile, M345); the guest's stores
   land in the view and never in the file, and every restore shares the file's pages in the
   cache until it writes one. The file is made sparse as it is made, by whoever makes it: for a
-  confined VM its spawner, since the VM process may make no FSCTL (D141).
+  confined VM its spawner, since the VM process may make no FSCTL (D141). So is a run's
+  swap kept by its save (D176), and every copy that skips zeros makes its file sparse
+  before it ends it at its length (`platform::copy_ranges`), or is refused where it may
+  not. Four saves of runs at once on windows-2025 took the 29.5 GB its temp disk had free
+  within 20 s and failed as it filled, its memory and page file steady (budget-e2e run
+  40627507997, its host sampled every 5 s); of a save's files only a run's swap was not
+  sparse, which NTFS takes whole as a copy sets its length (M349).
 - **One partition a process.** WHP maps no memory into a second partition of a process while
   another lives (STATUS_VID_PARTITION_ALREADY_EXISTS, until the first is deleted, M345). A VM
   process holds one; the partition that reads the host's vCPU limit is deleted before it.
@@ -10206,8 +10212,21 @@ on Windows as on Linux and macOS.
 - **Its VM's end** it learns as its doorbell's socket hangs up, as a pipe's does on Unix,
   and from the VM's process, a handle it may only wait on, which a thread-pool wait posts
   to its port once it ends. Its spawner gives it that handle before the VM runs (D143).
-- **No published ports yet**: those are the daemon's, which Windows has none of; a
-  builder publishes none.
+- **Published ports and peers** (the platform parity plan's step 5): bound by the daemon
+  as on Unix (D31) and handed to the network process on its control, an AF_UNIX socket it
+  waits on with its own, as its doorbell is. Each socket goes shared with that process
+  (WSADuplicateSocketW), its protocol info before the message's payload, where Unix passes
+  descriptors beside it (`shards_ipc::with_sockets`, `kind::hands_sockets`): a listener its
+  spawner bound and shared takes its spawner's connection, with or without capabilities
+  (M204). Each listener holds its address alone (SO_EXCLUSIVEADDRUSE): Windows lets a
+  process of the same user bind the port at one address over a listener at every address
+  and take what comes to it there, where Linux refuses that bind ("Using SO_REUSEADDR and
+  SO_EXCLUSIVEADDRUSE", Microsoft Learn: "All server applications must set
+  SO_EXCLUSIVEADDRUSE"); Windows' SO_REUSEADDR, which a Unix listener sets to bind over
+  connections left in TIME_WAIT, binds over a listener in use, and is not set. A run's
+  ports close as it ends on its VM's release, an AF_UNIX socket too, before its end is
+  told. A peer's link on a network (D46) is an AF_UNIX pair, an end shared with each
+  network process. A builder publishes none, and drops both.
 
 ### D141. The Windows VM process confined
 
