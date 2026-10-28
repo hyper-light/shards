@@ -12784,7 +12784,8 @@ fn an_image_of_gigabytes_boots() {
 /// does, not the half gigabyte, as a container's memory freed is its host's at once.
 #[test]
 fn a_runs_memory_freed_goes_back_to_the_host() {
-    if common::later_on_windows(7, "memory given back") {
+    // Its runs restore templates, which a host that restores no snapshot has none of.
+    if common::cannot_pool() {
         return;
     }
     let Some((home, image)) = home("containers-giveback") else {
