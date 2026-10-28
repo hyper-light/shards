@@ -32,6 +32,19 @@ mod mapped;
 /// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's, on x86_64 and
 /// arm64 (D154), and WHP's (D196).
 pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm", hv = "whp"));
+
+/// The most vCPUs of VMs booting at once that a host of `cpus` CPUs boots the most VMs a
+/// second with, on this build's backend. WHP's: twice its CPUs, the most boots a second CI's
+/// 4-CPU Windows runners gave of 4-vCPU VMs booted 1, 2, 4 and 8 at once, where four at once
+/// were slower than one after another on Windows Server 2022, and eight took 52 to 55 s
+/// each there where one took 1.6 (PM M357). Elsewhere unmeasured, and so unheld.
+pub fn booting_vcpus_at_most(cpus: usize) -> usize {
+    if cfg!(hv = "whp") {
+        cpus.saturating_mul(2).max(1)
+    } else {
+        usize::MAX
+    }
+}
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
 /// (vm::mapped). Not WHP's yet (D196).

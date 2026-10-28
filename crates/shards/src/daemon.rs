@@ -1156,6 +1156,9 @@ struct Daemon<D: Disk = Real> {
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
     booting: Mutex<HashMap<u64, mpsc::Sender<Result<Ready, String>>>>,
     next_cold: AtomicU64,
+    /// The cold boots under way, held to the vCPUs this host boots the most VMs a second
+    /// with (PM M357).
+    boots: Boots,
     /// The home's lock, held while this daemon lives.
     home_lock: File,
     /// The home's device and inode as this daemon took it: the directory it removes what
@@ -1907,6 +1910,9 @@ impl<D: Disk> Daemon<D> {
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
+            boots: Boots::new(shards_vmm::vm::booting_vcpus_at_most(
+                crate::resources::host_cpus(),
+            )),
             home_lock,
             home_id,
         })
@@ -5830,6 +5836,8 @@ impl<D: Disk> Daemon<D> {
         for (_, booting) in lock(&self.booting).drain() {
             let _ = booting.send(Err("the daemon is shutting down".into()));
         }
+        // Runs waiting their turn to boot look at `stopping` again.
+        self.boots.wake();
         self.stop_runs(threads);
         self.end_clients();
         // Runs waiting for a warm VM look at `stopping` again; the lock orders the wakeup
@@ -7000,6 +7008,11 @@ impl<D: Disk> Daemon<D> {
         };
         // Its writable layer, made empty, of the run's size (D190).
         let layer = layers::LayerFile::made(&self.home, layer)?;
+        // Its turn among the cold boots under way (PM M357), held until it is ready or has
+        // failed.
+        let _turn = self
+            .boots
+            .turn(usize::try_from(cfg.vcpus).unwrap_or(usize::MAX), &self.stopping)?;
         self.start_for_run(threads, &args, net, parent, Some(layer))
     }
 
@@ -7515,6 +7528,65 @@ fn with_its_process(child: &shards_ipc::Child, why: String) -> String {
     }
 }
 
+/// The cold boots under way, by their VMs' vCPUs: a boot waits its turn while those under
+/// way and its own would pass `most`, the vCPUs this host boots the most VMs a second with
+/// (PM M357), but one with none under way boots whatever its size. A restore takes no turn:
+/// it boots nothing.
+struct Boots {
+    vcpus: Mutex<usize>,
+    done: Condvar,
+    most: usize,
+}
+
+/// A cold boot's turn ([`Boots::turn`]): its vCPUs given back as it drops.
+struct BootTurn<'a> {
+    boots: &'a Boots,
+    vcpus: usize,
+}
+
+impl Boots {
+    fn new(most: usize) -> Boots {
+        Boots {
+            vcpus: Mutex::new(0),
+            done: Condvar::new(),
+            most,
+        }
+    }
+
+    /// The turn of a boot of `vcpus` vCPUs, waited for; none once `stopping` is set and
+    /// [`wake`](Boots::wake) has been called.
+    fn turn(&self, vcpus: usize, stopping: &AtomicBool) -> Result<BootTurn<'_>, String> {
+        let mut under_way = lock(&self.vcpus);
+        loop {
+            if stopping.load(Ordering::SeqCst) {
+                return Err("the daemon is shutting down".into());
+            }
+            if *under_way == 0 || under_way.saturating_add(vcpus) <= self.most {
+                break;
+            }
+            under_way = self.done.wait(under_way).unwrap_or_else(PoisonError::into_inner);
+        }
+        *under_way = under_way.saturating_add(vcpus);
+        Ok(BootTurn { boots: self, vcpus })
+    }
+
+    /// Wakes the boots waiting their turn, to look at `stopping` again: the lock orders the
+    /// wakeup after their last look.
+    fn wake(&self) {
+        drop(lock(&self.vcpus));
+        self.done.notify_all();
+    }
+}
+
+impl Drop for BootTurn<'_> {
+    fn drop(&mut self) {
+        let mut under_way = lock(&self.boots.vcpus);
+        *under_way = under_way.saturating_sub(self.vcpus);
+        drop(under_way);
+        self.boots.done.notify_all();
+    }
+}
+
 /// Why a warm VM did not say it took a run.
 #[derive(Debug, PartialEq, Eq)]
 enum Untaken {
@@ -7873,6 +7945,89 @@ fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use std::io::{Read, Write};
+
+    /// Cold boots wait their turn while the vCPUs under way and theirs would pass the most
+    /// (PM M357): two of 4 within 8 go at once, and a third waits until one of them has
+    /// ended; one past the most goes alone, and the next waits for it; and those waiting as
+    /// the daemon stops are told so. Each case lets its waiter go before its scope ends,
+    /// whatever it saw, so that a gate that keeps one waiting fails the test, not hangs it.
+    #[test]
+    fn cold_boots_wait_their_turn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        let (soon, long) = (Duration::from_millis(200), Duration::from_secs(10));
+        let (boots, stopping) = (super::Boots::new(8), AtomicBool::new(false));
+        let first = boots.turn(4, &stopping).unwrap();
+        let second = boots.turn(4, &stopping).unwrap();
+        std::thread::scope(|s| {
+            let (third, gone) = turn_on(s, &boots, &stopping, 4);
+            let early = gone.recv_timeout(soon).is_ok();
+            drop(first);
+            let went = gone.recv_timeout(long).is_ok();
+            drop(second);
+            stopping.store(true, Ordering::SeqCst);
+            boots.wake();
+            let _ = third.join();
+            assert!(!early, "a third went with 8 of 8 under way");
+            assert!(went, "the third never went as one of the 8 ended");
+        });
+        let (boots, stopping) = (super::Boots::new(8), AtomicBool::new(false));
+        std::thread::scope(|s| {
+            let (alone, gone) = turn_on(s, &boots, &stopping, 16);
+            let went = gone.recv_timeout(long).is_ok();
+            stopping.store(true, Ordering::SeqCst);
+            boots.wake();
+            let _ = alone.join();
+            assert!(went, "a boot past the most never went with none under way");
+        });
+        let (boots, stopping) = (super::Boots::new(8), AtomicBool::new(false));
+        let big = boots.turn(16, &stopping).unwrap();
+        std::thread::scope(|s| {
+            let (next, gone) = turn_on(s, &boots, &stopping, 1);
+            let early = gone.recv_timeout(soon).is_ok();
+            drop(big);
+            let went = gone.recv_timeout(long).is_ok();
+            stopping.store(true, Ordering::SeqCst);
+            boots.wake();
+            let _ = next.join();
+            assert!(!early, "one went beside a boot past the most");
+            assert!(went, "the next never went as the boot past the most ended");
+        });
+        let (boots, stopping) = (super::Boots::new(8), AtomicBool::new(false));
+        let held = boots.turn(8, &stopping).unwrap();
+        std::thread::scope(|s| {
+            let (told, gone) = turn_on(s, &boots, &stopping, 4);
+            let early = gone.recv_timeout(soon).is_ok();
+            stopping.store(true, Ordering::SeqCst);
+            boots.wake();
+            let heard = gone.recv_timeout(long).is_ok();
+            // A waiter not told goes once the turn is given back.
+            drop(held);
+            let said = told.join().unwrap();
+            assert!(!early && heard, "a waiter was not told of the stop");
+            assert_eq!(said, Err("the daemon is shutting down".to_string()));
+        });
+    }
+
+    /// A boot's turn of `vcpus` taken on a thread of `s`, which says once it has gone, and
+    /// gives the turn back.
+    fn turn_on<'scope>(
+        s: &'scope std::thread::Scope<'scope, '_>,
+        boots: &'scope super::Boots,
+        stopping: &'scope std::sync::atomic::AtomicBool,
+        vcpus: usize,
+    ) -> (
+        std::thread::ScopedJoinHandle<'scope, Result<(), String>>,
+        std::sync::mpsc::Receiver<()>,
+    ) {
+        let (went, gone) = std::sync::mpsc::channel();
+        let thread = s.spawn(move || {
+            let turn = boots.turn(vcpus, stopping).map(drop);
+            let _ = went.send(());
+            turn
+        });
+        (thread, gone)
+    }
 
     /// Senders take turns on a run's socket: messages bigger than its buffer, sent from
     /// four threads at once, each arrive whole and as sent. Without the turns, a send's
