@@ -1458,3 +1458,135 @@ fn boots_at_once(cases: &[(usize, usize, &str)]) {
         );
     }
 }
+
+/// Where a cold boot's CPU time goes in its VM process (PM M376): one guest of as many
+/// vCPUs as the host has CPUs booted to its kernel's panic, left there (`panic=0`), and as
+/// its panic is said each of the VM process's threads' CPU time, user and kernel, by its
+/// name (`vcpu0`, `vcpu1`, ...), the largest first; plain and told `quiet`. A guest of 32
+/// vCPUs used 7.7 s of CPU time in a boot of 1 s on jupiter, one of 1 vCPU 0.2 s.
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boot_threads_cost"]
+fn cold_boot_threads_cost() {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::Stdio;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+        TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetThreadDescription, GetThreadTimes, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+    };
+
+    if cannot_run_vms() {
+        return;
+    }
+    let s = |t: &FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64 / 1e7;
+    let host = std::thread::available_parallelism().unwrap().get();
+    for (vcpus, told) in [(host, ""), (host, " quiet"), (4.min(host), ""), (1, "")] {
+        let mut child = common::command()
+            .args(["run", "--kernel"])
+            .arg(kernel())
+            .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
+            .args(["--cmdline", &format!("console=ttyS0 earlycon panic=0{told}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = BufReader::new(child.stdout.take().unwrap());
+        let start = std::time::Instant::now();
+        let mut panicked = false;
+        for line in out.lines().map_while(Result::ok) {
+            if line.contains("Kernel panic") {
+                panicked = true;
+                break;
+            }
+        }
+        let wall = start.elapsed();
+        // The VM process: the child of the one started.
+        // SAFETY: a snapshot of every process and thread, closed below.
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPTHREAD, 0) };
+        assert_ne!(snap, INVALID_HANDLE_VALUE);
+        let mut p = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut vm = None;
+        // SAFETY: the snapshot, and an entry of its own size.
+        let mut more = unsafe { Process32FirstW(snap, &raw mut p) } != 0;
+        while more {
+            if p.th32ParentProcessID == child.id() {
+                vm = Some(p.th32ProcessID);
+            }
+            // SAFETY: as above.
+            more = unsafe { Process32NextW(snap, &raw mut p) } != 0;
+        }
+        let vm = vm.unwrap();
+        let mut t = THREADENTRY32 {
+            dwSize: size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut threads: Vec<(f64, f64, String)> = Vec::new();
+        // SAFETY: as above.
+        let mut more = unsafe { Thread32First(snap, &raw mut t) } != 0;
+        while more {
+            if t.th32OwnerProcessID == vm {
+                // SAFETY: a thread handle of the one right asked, closed below.
+                let h = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, t.th32ThreadID) };
+                if !h.is_null() {
+                    let mut f = [FILETIME::default(); 4];
+                    let [c, e, k, u] = &mut f;
+                    // SAFETY: the thread, and four times to fill.
+                    let ok = unsafe { GetThreadTimes(h, c, e, k, u) } != 0;
+                    let mut name = std::ptr::null_mut();
+                    // SAFETY: the thread; its description, freed by LocalFree's owner.
+                    let described = unsafe { GetThreadDescription(h, &raw mut name) } >= 0 && !name.is_null();
+                    let mut said = String::new();
+                    if described {
+                        // SAFETY: a NUL-terminated wide string the call returned.
+                        let len = (0..).take_while(|&i| unsafe { *name.add(i) } != 0).count();
+                        // SAFETY: as above, `len` units long.
+                        said = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name, len) });
+                        // SAFETY: the string GetThreadDescription allocated.
+                        unsafe { windows_sys::Win32::Foundation::LocalFree(name.cast()) };
+                    }
+                    if ok {
+                        threads.push((s(u), s(k), format!("{said}#{}", t.th32ThreadID)));
+                    }
+                    // SAFETY: the handle opened above.
+                    unsafe { CloseHandle(h) };
+                }
+            }
+            // SAFETY: as above.
+            more = unsafe { Thread32Next(snap, &raw mut t) } != 0;
+        }
+        // SAFETY: the snapshot taken above.
+        unsafe { CloseHandle(snap) };
+        let _ = child.kill();
+        let _ = child.wait();
+        threads.sort_by(|a, b| (b.0 + b.1).total_cmp(&(a.0 + a.1)));
+        let total: f64 = threads.iter().map(|t| t.0 + t.1).sum();
+        let vcpu0 = threads
+            .iter()
+            .find(|t| t.2.starts_with("vcpu0#"))
+            .map_or(0.0, |t| t.0 + t.1);
+        let aps: f64 = threads
+            .iter()
+            .filter(|t| t.2.starts_with("vcpu") && !t.2.starts_with("vcpu0#"))
+            .map(|t| t.0 + t.1)
+            .sum();
+        let top: Vec<String> = threads
+            .iter()
+            .take(6)
+            .map(|(u, k, n)| format!("{n} user {u:.3} kernel {k:.3}"))
+            .collect();
+        eprintln!(
+            "M376 THREADS vcpus={vcpus}{told}: panicked {panicked} at {:.2} s; {} threads, CPU {total:.2} s: vcpu0 {vcpu0:.2} s, the other vCPUs {aps:.2} s; most: {top:?}",
+            wall.as_secs_f64(),
+            threads.len()
+        );
+    }
+}

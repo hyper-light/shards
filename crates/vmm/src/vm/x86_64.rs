@@ -678,9 +678,10 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     debug!("kernel and initrd copied");
     // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
     config.share_window_mib = a.share_window_mib;
+    let told = super::kernel_cmdline(cfg);
     let mut cmdline = match &a.pci {
-        Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
-        None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),
+        Some(_) => format!("{told} {MACHINE_CMDLINE}"),
+        None => format!("{told} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}"),
     };
     if cfg!(hv = "whp") {
         cmdline = format!("{cmdline} {ONE_AT_A_TIME_CMDLINE}");

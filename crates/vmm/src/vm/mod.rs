@@ -829,6 +829,25 @@ impl gpu::Window for crate::hv::Window {
     }
 }
 
+/// The command line a guest's kernel boots with, of `cfg`'s: where nobody reads its console,
+/// told to write it only errors and worse (`quiet`), unless it names a level itself. Each
+/// byte a kernel writes to its console is an exit or two, and a boot writes some 18 KB: of a
+/// cold boot's kernel to its panic with no root, 1.64 s of 2.14 on CI's windows-2022, 0.99 of
+/// 1.49 on windows-2025, and 37 of 65 ms on an M5 Max's HVF (PM M376). What it says stays
+/// in its ring buffer, which `dmesg` reads.
+#[cfg(hv)]
+fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
+    let told = cfg
+        .cmdline
+        .split_whitespace()
+        .any(|word| word == "quiet" || word.starts_with("loglevel="));
+    if cfg.console == Console::Discard && !told {
+        format!("{} quiet", cfg.cmdline).into()
+    } else {
+        cfg.cmdline.as_str().into()
+    }
+}
+
 /// Where the serial console's output goes.
 #[cfg(hv)]
 fn console_out(console: Console) -> Result<Box<dyn std::io::Write + Send>, String> {
@@ -2042,6 +2061,27 @@ mod tests {
     use crate::snapshot::MachineConfig;
     #[cfg(unix)]
     use crate::snapshot::Snapshot;
+
+    /// A guest whose console nobody reads boots `quiet`, unless its command line names a
+    /// level itself; one whose console is read boots as it is told.
+    #[test]
+    fn a_console_nobody_reads_is_told_only_errors() {
+        let told = |cmdline: &str, console: Console| {
+            let mut cfg = Config::new("k".into(), None);
+            cfg.cmdline = cmdline.into();
+            cfg.console = console;
+            kernel_cmdline(&cfg).into_owned()
+        };
+        let base = "console=ttyS0 earlycon panic=-1";
+        assert_eq!(told(base, Console::Discard), format!("{base} quiet"));
+        assert_eq!(told(base, Console::Stdout), base);
+        for own in [format!("{base} loglevel=7"), format!("{base} quiet")] {
+            assert_eq!(told(&own, Console::Discard), own);
+        }
+        // A word that only starts with one is no level.
+        let other = format!("{base} quietly loglevels=1");
+        assert_eq!(told(&other, Console::Discard), format!("{other} quiet"));
+    }
 
     /// BARs are placed from the window's start, each at the next multiple of its size,
     /// and one past the window's end is refused, the window as it was.

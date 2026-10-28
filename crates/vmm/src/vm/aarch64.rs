@@ -873,10 +873,11 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     config.share_window_mib = a.share_window_mib;
     let mut rng_seed = [0u8; 64];
     platform::fill_random(&mut rng_seed).map_err(|e| format!("host entropy: {e}"))?;
+    let cmdline = super::kernel_cmdline(cfg);
     let fdt = boot::build_fdt(&boot::Machine {
         mpidrs: &a.mpidrs,
         ram_size: ram,
-        cmdline: &cfg.cmdline,
+        cmdline: &cmdline,
         initrd,
         gic_dist: (layout::GIC_DIST, a.gic_dist_size),
         gic_redist: (layout::GIC_REDIST, a.redist_total),
