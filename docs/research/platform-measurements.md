@@ -15886,3 +15886,37 @@ revision before comparing a changed API/implementation.
   at a restore's cost of about 2.2 µs per 2 MiB of RAM mapped as views (1.1 ms for 1 GiB)
   where one view costs a few µs: which, and how, is decided with D151's restore on
   Windows.
+
+### M373. What Windows' TCP says of the bytes its receiver has not acknowledged (D163 on Windows)
+
+- **Question.** D163's streams count a message delivered once its receiver's TCP has
+  acknowledged its last byte (M233: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO). Windows'
+  own count is SIO_TCP_INFO's TCP_INFO, whose documentation says BytesOut is "the total
+  number of bytes sent" and BytesInFlight "the current number of sent bytes that are
+  unacknowledged", but neither whether BytesOut counts bytes sent again nor whether
+  either counts a FIN. What of a sender's bytes has its receiver not acknowledged?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m373.rs`, run twice on jupiter
+  (Windows 10.0.26200), 2026-10-28: a loopback connection's sender, its TCP_INFO_v1 read
+  beside the bytes it wrote at each of acked.py's steps (M233): 1,000 bytes written, none
+  read; written on until it took no more, the receiver's buffer set to 4,096 bytes; the
+  window held shut 30 s, read every 5 s; all read; its shutdown(SD_SEND), at once and
+  200 ms on; its receiver's close. Then again with the receiver's buffer 1 byte from its
+  listener on, so that the persist timer's probes find no room and are sent again.
+- **Found** (both runs alike):
+  - 1,000 written, none read: BytesOut 1,000, in flight 0.
+  - Written until it took no more (197,608 bytes): BytesOut 130,792, in flight 0, the send
+    window 0. The 66,816 bytes held unsent are `written − (BytesOut − BytesInFlight)`.
+  - The window shut: each probe adds one byte to BytesOut, which the receiver took (the
+    held count falls by one each time), BytesRetrans 0 throughout.
+  - All read: BytesOut 197,608, the bytes written, in flight 0.
+  - Shut: FIN_WAIT_2 at once, in flight 0: a loopback FIN is acknowledged before a read
+    of it. Its receiver's close: CLOSED.
+  - The receiver's buffer 1 byte: its probes dropped and sent again, BytesRetrans counts
+    each (3, 4, 5 over 20 s) and BytesOut counts them too (7, 8, 9). All read: BytesOut
+    66,542 of 66,536 written, BytesRetrans 6: `written − (BytesOut − BytesRetrans −
+    BytesInFlight)` reads 0, and `written − (BytesOut − BytesInFlight)` −6.
+- **Consequence.** BytesOut counts every byte sent, those sent again among them, as RFC
+  4898's DataOctetsOut does. What a sender's receiver has not acknowledged is the bytes it
+  wrote less `BytesOut − BytesRetrans − BytesInFlight`, those held unsent among them; a
+  FIN is counted while the state is FIN_WAIT_1, CLOSING or LAST_ACK, as on macOS. D163's
+  shipper reads it so on Windows (daemon/ship/sockets.rs `unacknowledged`).

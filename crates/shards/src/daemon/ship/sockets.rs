@@ -149,25 +149,93 @@ pub(super) fn too_large(e: &io::Error) -> bool {
     matches!(e.raw_os_error(), Some(WSAEMSGSIZE | WSAENOBUFS))
 }
 
+/// What a connection's SIO_TCP_INFO has counted of the bytes it sent again: BytesRetrans
+/// is 32 bits, so each read's rise since the last is added, past its wraps (Windows).
+#[cfg(windows)]
+#[derive(Debug, Default)]
+pub(super) struct Retransmitted {
+    last: u32,
+    total: u64,
+}
+
+#[cfg(windows)]
+impl Retransmitted {
+    /// All its connection has sent again, its count read now as `read`.
+    fn now(&mut self, read: u32) -> u64 {
+        self.total = self.total.saturating_add(u64::from(read.wrapping_sub(self.last)));
+        self.last = read;
+        self.total
+    }
+}
+
+/// Of TCP connection `socket`, `written` bytes written on it: how many its receiver has
+/// not acknowledged, its FIN one of them until it is, and no RTO, which Windows does not
+/// say (its caller waits RFC 6298's least); an error where the connection has ended
+/// without them, reset or given up. SIO_TCP_INFO's counts (PM M373): BytesOut counts the
+/// bytes sent again too (`retransmitted` keeps its whole count), so those acknowledged are
+/// `BytesOut − BytesRetrans − BytesInFlight`, and the bytes written less them are the
+/// receiver's to acknowledge, those held unsent among them; the FIN while the state is
+/// FIN_WAIT_1, CLOSING or LAST_ACK, as on macOS.
+#[cfg(windows)]
+pub(super) fn unacknowledged(
+    socket: &TcpStream,
+    written: u64,
+    retransmitted: &mut Retransmitted,
+) -> io::Result<(u64, Duration)> {
+    use windows_sys::Win32::Networking::WinSock::{
+        SIO_TCP_INFO, SOCKET, TCP_INFO_v0, TCPSTATE_CLOSED, TCPSTATE_CLOSING, TCPSTATE_FIN_WAIT_1,
+        TCPSTATE_LAST_ACK, WSAIoctl,
+    };
+    if let Some(e) = socket.take_error()? {
+        return Err(e);
+    }
+    let raw = SOCKET::try_from(socket.as_raw_socket())
+        .map_err(|_| io::Error::other("a socket's value past SOCKET's range"))?;
+    let version: u32 = 0;
+    let mut info = TCP_INFO_v0::default();
+    let size = u32::try_from(std::mem::size_of::<TCP_INFO_v0>()).unwrap_or(u32::MAX);
+    let mut got = 0u32;
+    // SAFETY: SIO_TCP_INFO of version 0 into `info`, its size given, synchronous: no
+    // OVERLAPPED, no completion routine.
+    let asked = unsafe {
+        WSAIoctl(
+            raw,
+            SIO_TCP_INFO,
+            (&raw const version).cast(),
+            4,
+            (&raw mut info).cast(),
+            size,
+            &raw mut got,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if asked != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let acknowledged = info
+        .BytesOut
+        .saturating_sub(retransmitted.now(info.BytesRetrans))
+        .saturating_sub(u64::from(info.BytesInFlight));
+    let fin = u64::from(matches!(
+        info.State,
+        TCPSTATE_FIN_WAIT_1 | TCPSTATE_CLOSING | TCPSTATE_LAST_ACK
+    ));
+    let queued = written.saturating_sub(acknowledged).saturating_add(fin);
+    // Reset or given up, which take_error says; or both sides' FINs acknowledged: bytes
+    // unacknowledged in it never are now.
+    if info.State == TCPSTATE_CLOSED && queued > 0 {
+        return Err(ended());
+    }
+    Ok((queued, Duration::ZERO))
+}
+
 /// Of TCP connection `socket`: how many of the bytes written on it its receiver has not
 /// acknowledged, its FIN one of them until it is, and how long its kernel waits for an
 /// acknowledgement before it sends again; an error where the connection has ended without
 /// them, reset or given up (PM M233). Linux: SIOCOUTQ, which counts the FIN, and TCP_INFO
 /// (tcp(7)); macOS: TCP_CONNECTION_INFO's bytes in the send buffer, which keeps them until
 /// they are acknowledged, its state for the FIN, and its RTO (netinet/tcp.h).
-#[cfg(windows)]
-pub(super) fn unacknowledged(socket: &TcpStream) -> io::Result<(u64, Duration)> {
-    if let Some(e) = socket.take_error()? {
-        return Err(e);
-    }
-    // SIO_TCP_INFO's counts, measured as M233 measured Linux's and macOS's, bring it with
-    // the plan's step 8.
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "what a TCP connection's receiver has acknowledged is not read on Windows yet",
-    ))
-}
-
 #[cfg(unix)]
 pub(super) fn unacknowledged(socket: &TcpStream) -> io::Result<(u64, Duration)> {
     if let Some(e) = socket.take_error()? {
@@ -241,7 +309,6 @@ pub(super) fn unacknowledged(socket: &TcpStream) -> io::Result<(u64, Duration)> 
     }
 }
 
-#[cfg(unix)]
 fn ended() -> io::Error {
     io::Error::new(
         io::ErrorKind::ConnectionReset,

@@ -113,19 +113,36 @@ impl Wait<'_> {
         }
     }
 
-    /// Waits until `socket` is readable, or `d` has passed. On Windows a TCP connection is
-    /// waited on only as its acknowledgements are read (sockets.rs `unacknowledged`), which
-    /// the plan's step 8 brings there.
+    /// Waits until `socket` is readable, or `d` has passed; an error where the daemon stops
+    /// first: what it reads and its close as an event (WSAEventSelect), waited on with the
+    /// daemon's stop, and let go of after, the socket left not blocking, as its caller has
+    /// it.
     #[cfg(windows)]
     pub(super) fn readable(
         &self,
-        _: std::os::windows::io::BorrowedSocket<'_>,
-        _: Duration,
+        socket: std::os::windows::io::BorrowedSocket<'_>,
+        d: Duration,
     ) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "a log's TCP connection is not waited on on Windows yet",
-        ))
+        use std::os::windows::io::{AsHandle as _, AsRawSocket as _};
+        use windows_sys::Win32::Networking::WinSock::{FD_CLOSE, FD_READ, SOCKET, WSAEVENT, WSAEventSelect};
+        let raw = SOCKET::try_from(socket.as_raw_socket())
+            .map_err(|_| io::Error::other("a socket's value past SOCKET's range"))?;
+        let event = shards_ipc::Event::new()?;
+        // SAFETY: a socket its caller holds, and an event of ours, which outlives the
+        // selection: it is let go of below.
+        if unsafe { WSAEventSelect(raw, event.raw() as WSAEVENT, (FD_READ | FD_CLOSE) as i32) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let deadline = std::time::Instant::now().checked_add(d);
+        let waited = shards_ipc::await_any(&[self.0], &[event.as_handle()], deadline);
+        // SAFETY: as above: no event of the socket's is set from here on.
+        unsafe { WSAEventSelect(raw, 0, 0) };
+        let (stopped, _) = waited?;
+        if stopped.first().copied().unwrap_or(false) {
+            Err(stops())
+        } else {
+            Ok(())
+        }
     }
 }
 

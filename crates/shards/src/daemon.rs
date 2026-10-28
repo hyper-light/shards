@@ -2787,7 +2787,6 @@ impl<D: Disk> Daemon<D> {
         let kept = match self
             .log_retention()
             .and_then(|bound| crate::logging::kept(&run, bound))
-            .and_then(|kept| crate::logging::sent_here(&run).map(|()| kept))
         {
             Ok(kept) => kept,
             Err(e) => {
@@ -8059,8 +8058,34 @@ struct GrantError {
     started: bool,
 }
 
+/// How long a starting VM may go without saying it is ready before the log says what its
+/// process has done (Windows), and again as long after: a diagnostic's trigger, not a limit,
+/// which [`READY_TIMEOUT`] is. A sixth of it, as macOS's `GRANT_STALL`, so that both are
+/// said while a stalled VM is still stalled: the open p99 flake of a run that waits out the
+/// whole wait (CI's windows-2022 and windows-2025, `published_ports_are_free_at_once_while_
+/// the_daemon_makes_vms`), which only what its process did meanwhile can tell apart.
+#[cfg(windows)]
+const READY_STALL: Duration = Duration::from_secs(10);
+
 /// Waits for a starting VM to say it is ready.
 fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let began = Instant::now();
+        for n in 1..=2u32 {
+            if socket
+                .wait_readable(None, Some(began + READY_STALL * n))
+                .unwrap_or(true)
+            {
+                break;
+            }
+            log(format!(
+                "VM {pid}: not ready in {:?}: {}",
+                READY_STALL * n,
+                shards_ipc::process_activity(pid)
+            ));
+        }
+    }
     socket
         .set_read_timeout(Some(READY_TIMEOUT))
         .map_err(|e| format!("VM {pid}: {e}"))?;

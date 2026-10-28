@@ -64,7 +64,8 @@ pub fn write(level: Level, args: std::fmt::Arguments<'_>) {
     // A line a write, so that other processes' lines on the same file do not split it,
     // and under the sink's lock, so that [`to`] does not (review 8.10). Logging never
     // fails the caller, even with stderr closed.
-    let line = format!("[{:>10}us {tag}] {args}\n", uptime_us());
+    // Its process's ID first: the lines of every VM a daemon starts share its log.
+    let line = format!("[{} {:>10}us {tag}] {args}\n", std::process::id(), uptime_us());
     let sink = SINK.lock().unwrap_or_else(PoisonError::into_inner);
     let _ = match sink.as_ref() {
         Some(file) => (&*file).write_all(line.as_bytes()),

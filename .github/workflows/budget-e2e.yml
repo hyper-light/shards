@@ -184,6 +184,8 @@ jobs:
         env:
           SHARDS_REQUIRE_VMS: "1"
           SHARDS_LOG: ${{ github.event.inputs.log }}
+          # A failing test's logs whole where its programs log at debug (crates/testdir).
+          SHARDS_TEST_LOG_SHOWN: ${{ github.event.inputs.log == 'debug' && '16777216' || '' }}
           TEST: ${{ github.event.inputs.test }}
           NAME: ${{ github.event.inputs.name }}
           TIMES: ${{ github.event.inputs.times }}

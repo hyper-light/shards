@@ -171,6 +171,15 @@ fn address(given: &str) -> Result<To, String> {
             if !rest.starts_with('/') {
                 return Err(said("a socket's absolute path, after the scheme's three slashes"));
             }
+            // Windows' AF_UNIX is SOCK_STREAM's alone (its socket() refuses SOCK_DGRAM, as
+            // `windows_has_no_unix_datagram_sockets` holds it to): a run that asks for one is
+            // refused as it is made, not left to wait for a socket that cannot be.
+            #[cfg(windows)]
+            if scheme == "unixgram" {
+                return Err(said(
+                    "Windows has no unix datagram sockets: unix:///PATH takes a stream, udp://HOST[:PORT] datagrams",
+                ));
+            }
             // On Windows a drive's path follows the third slash, as a file URL's does
             // (RFC 8089): unix:///C:/logs/syslog.sock.
             #[cfg(windows)]
@@ -571,12 +580,16 @@ mod tests {
         for socket in ["stream.sock", "gram.sock"] {
             std::fs::write(dir.join(socket), b"").unwrap();
         }
-        let deviations = [
+        let mut deviations = vec![
             // Go's parser takes `host` for the URL's host, and moby's driver its path.
             "syslog-address=unix://host{dir}/stream.sock",
             // shards sends a log only to a server whose certificate it verifies.
             "syslog-tls-skip-verify=true",
         ];
+        // Windows has no unix datagram sockets (`windows_has_no_unix_datagram_sockets`).
+        if cfg!(windows) {
+            deviations.push("syslog-address=unixgram://{dir}/gram.sock");
+        }
         let oracle = oracle();
         for case in oracle["options"].as_array().unwrap() {
             let option = case["option"].as_str().unwrap();
@@ -608,6 +621,43 @@ mod tests {
                 if refused { "refused" } else { "took" }
             );
         }
+    }
+
+    /// Windows' socket() refuses a unix datagram socket, so a unixgram address is refused
+    /// as a run is made there, in shards' words.
+    #[cfg(windows)]
+    #[test]
+    fn windows_has_no_unix_datagram_sockets() {
+        use windows_sys::Win32::Networking::WinSock::{
+            AF_UNIX, INVALID_SOCKET, SOCK_DGRAM, WSA_FLAG_NO_HANDLE_INHERIT, WSASocketW, closesocket,
+        };
+        shards_vmm::platform::winsock().unwrap();
+        // SAFETY: a socket asked for, closed below if made.
+        let s = unsafe {
+            WSASocketW(
+                i32::from(AF_UNIX),
+                SOCK_DGRAM,
+                0,
+                std::ptr::null(),
+                0,
+                WSA_FLAG_NO_HANDLE_INHERIT,
+            )
+        };
+        if s != INVALID_SOCKET {
+            // SAFETY: the socket just made.
+            unsafe { closesocket(s) };
+        }
+        assert_eq!(s, INVALID_SOCKET, "Windows made a unix datagram socket");
+        let dir = shards_testdir::TempDir::new("gram").unwrap();
+        let path = dir.path().join("g");
+        std::fs::write(&path, b"").unwrap();
+        let given = format!("unixgram:///{}", path.display());
+        assert!(
+            address(&given).is_err_and(|e| e.contains("Windows has no unix datagram sockets")),
+            "{given}"
+        );
+        let given = format!("unix:///{}", path.display());
+        assert_eq!(address(&given), Ok(To::Unix(path)));
     }
 
     /// Addresses as moby reads them, its port 514 unless given; and the tag kept to its

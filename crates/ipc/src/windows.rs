@@ -1199,6 +1199,58 @@ pub fn footprint_kib() -> u64 {
     memory().map_or(0, |m| (m.WorkingSetSize / 1024) as u64)
 }
 
+/// What process `pid` has done so far, for a log that says why it seems stuck: its CPU time
+/// in user mode and in the kernel (GetProcessTimes) and its working set, two of which, a
+/// while apart, tell one that never ran from one that runs on and one that ran and waits;
+/// or why it cannot say (a process gone, or not this user's).
+pub fn process_activity(pid: u32) -> String {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: a process opened by its ID, for its times and counters alone, not inherited.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        return format!("its process: {}", io::Error::last_os_error());
+    }
+    // SAFETY: the handle just opened, which nothing else owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the process's handle, and four FILETIMEs for the call to fill.
+    let timed = unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+    if timed == 0 {
+        return format!("its times: {}", io::Error::last_os_error());
+    }
+    // A FILETIME counts 100 ns.
+    let ms = |t: FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) / 10_000;
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).unwrap_or(0),
+        ..Default::default()
+    };
+    // SAFETY: the process's handle, and counters of the size their `cb` says.
+    let counted =
+        unsafe { GetProcessMemoryInfo(process.as_raw_handle(), &raw mut counters, counters.cb) } != 0;
+    let working = if counted {
+        format!("{} KiB", counters.WorkingSetSize / 1024)
+    } else {
+        io::Error::last_os_error().to_string()
+    };
+    format!(
+        "its CPU time {} ms in user mode and {} ms in the kernel, its working set {working}",
+        ms(user),
+        ms(kernel)
+    )
+}
+
 /// The variable a child of [`spawn`]'s finds its grants pipe by: the handles it was given
 /// past its standard ones ([`given_fd`]).
 const GIVEN: &str = "SHARDS_GIVEN";

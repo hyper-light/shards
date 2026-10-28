@@ -16,11 +16,11 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 #[cfg(unix)]
 use std::os::fd::AsFd as _;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use shards_vmm::platform::UnixStream;
 
 use super::Wait;
 
@@ -56,7 +56,8 @@ impl Stream {
         }
     }
 
-    /// A stream to the unix socket at `path`, on `socket`, connected to it already.
+    /// A stream to the unix socket at `path`, on `socket`, connected to it already: the
+    /// host's own syslog's, which Windows keeps none of.
     #[cfg(unix)]
     pub(super) fn unix(path: PathBuf, socket: UnixStream) -> Stream {
         Stream {
@@ -104,10 +105,10 @@ impl Stream {
     /// Lets go of the messages delivered: those whose last byte their receiver's TCP has
     /// acknowledged. A connection that cannot say, or has ended, lets go of none.
     fn settle(&mut self) {
-        let Some(tcp) = self.conn.as_ref().and_then(Conn::tcp) else {
+        let Some(tcp) = self.conn.as_mut().and_then(Conn::tcp_mut) else {
             return;
         };
-        let Ok((unacknowledged, _)) = super::sockets::unacknowledged(&tcp.socket) else {
+        let Ok((unacknowledged, _)) = tcp.unacknowledged() else {
             return;
         };
         let acknowledged = tcp.written.saturating_sub(unacknowledged);
@@ -163,7 +164,6 @@ impl Read for Stream {
 enum Conn {
     Tcp(Counted),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, Counted>>),
-    #[cfg(unix)]
     Unix(UnixStream),
 }
 
@@ -171,6 +171,29 @@ enum Conn {
 struct Counted {
     socket: TcpStream,
     written: u64,
+    /// What it has sent again, as Windows counts it (sockets.rs `unacknowledged`).
+    #[cfg(windows)]
+    retransmitted: super::sockets::Retransmitted,
+}
+
+impl Counted {
+    fn new(socket: TcpStream) -> Counted {
+        Counted {
+            socket,
+            written: 0,
+            #[cfg(windows)]
+            retransmitted: super::sockets::Retransmitted::default(),
+        }
+    }
+
+    /// How many of the bytes written on it its receiver has not acknowledged, and its
+    /// kernel's RTO (sockets.rs `unacknowledged`).
+    fn unacknowledged(&mut self) -> io::Result<(u64, Duration)> {
+        #[cfg(unix)]
+        return super::sockets::unacknowledged(&self.socket);
+        #[cfg(windows)]
+        return super::sockets::unacknowledged(&self.socket, self.written, &mut self.retransmitted);
+    }
 }
 
 impl Read for Counted {
@@ -196,7 +219,6 @@ impl Read for Conn {
         match self {
             Conn::Tcp(c) => c.read(buf),
             Conn::Tls(s) => s.read(buf),
-            #[cfg(unix)]
             Conn::Unix(s) => shards_ipc::read(&*s, buf),
         }
     }
@@ -207,7 +229,6 @@ impl Write for Conn {
         match self {
             Conn::Tcp(c) => c.write(buf),
             Conn::Tls(s) => s.write(buf),
-            #[cfg(unix)]
             Conn::Unix(s) => s.write(buf),
         }
     }
@@ -216,7 +237,6 @@ impl Write for Conn {
         match self {
             Conn::Tcp(c) => c.flush(),
             Conn::Tls(s) => s.flush(),
-            #[cfg(unix)]
             Conn::Unix(s) => s.flush(),
         }
     }
@@ -228,7 +248,7 @@ impl Conn {
             let socket = TcpStream::connect(address)?;
             socket.set_write_timeout(write)?;
             socket.set_read_timeout(read)?;
-            Ok(Counted { socket, written: 0 })
+            Ok(Counted::new(socket))
         };
         Ok(match to {
             To::Tcp(address) => Conn::Tcp(tcp(address)?),
@@ -243,24 +263,14 @@ impl Conn {
                 let conn = rustls::ClientConnection::new(config.clone(), name).map_err(io::Error::other)?;
                 Conn::Tls(Box::new(rustls::StreamOwned::new(conn, tcp(address)?)))
             }
-            #[cfg(unix)]
+            // Windows' AF_UNIX streams, which std does not open: afunix's, Winsock started.
             To::Unix(path) => {
+                #[cfg(windows)]
+                shards_vmm::platform::winsock()?;
                 let socket = UnixStream::connect(path)?;
                 socket.set_write_timeout(write)?;
                 socket.set_read_timeout(read)?;
                 Conn::Unix(socket)
-            }
-            // AF_UNIX's streams on Windows, which std does not open, come with the plan's
-            // step 8.
-            #[cfg(windows)]
-            To::Unix(path) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "{}: a unix socket's log is not sent from Windows yet",
-                        path.display()
-                    ),
-                ));
             }
         })
     }
@@ -270,30 +280,37 @@ impl Conn {
         match self {
             Conn::Tcp(c) => Some(c),
             Conn::Tls(s) => Some(&s.sock),
-            #[cfg(unix)]
+            Conn::Unix(_) => None,
+        }
+    }
+
+    /// [`Conn::tcp`], to be asked what its receiver has.
+    fn tcp_mut(&mut self) -> Option<&mut Counted> {
+        match self {
+            Conn::Tcp(c) => Some(c),
+            Conn::Tls(s) => Some(&mut s.sock),
             Conn::Unix(_) => None,
         }
     }
 
     /// Ends the connection once its receiver has all written on it.
     fn finish(self, wait: &Wait<'_>) -> io::Result<()> {
-        let mut socket = match self {
-            #[cfg(unix)]
+        let mut tcp = match self {
             Conn::Unix(_) => return Ok(()),
-            Conn::Tcp(c) => c.socket,
+            Conn::Tcp(c) => c,
             Conn::Tls(mut s) => {
                 s.conn.send_close_notify();
                 s.flush()?;
-                s.into_parts().1.socket
+                s.into_parts().1
             }
         };
-        socket.shutdown(Shutdown::Write)?;
-        socket.set_nonblocking(true)?;
+        tcp.socket.shutdown(Shutdown::Write)?;
+        tcp.socket.set_nonblocking(true)?;
         let mut ended = false;
         let mut scrap = [0u8; 4096];
         loop {
             while !ended {
-                match socket.read(&mut scrap) {
+                match tcp.socket.read(&mut scrap) {
                     Ok(0) => ended = true,
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -301,7 +318,7 @@ impl Conn {
                     Err(e) => return Err(e),
                 }
             }
-            let (unacknowledged, rto) = super::sockets::unacknowledged(&socket)?;
+            let (unacknowledged, rto) = tcp.unacknowledged()?;
             if unacknowledged == 0 {
                 return Ok(());
             }
@@ -314,21 +331,65 @@ impl Conn {
                 }
             } else {
                 #[cfg(unix)]
-                wait.readable(socket.as_fd(), rto)?;
+                wait.readable(tcp.socket.as_fd(), rto)?;
                 #[cfg(windows)]
-                wait.readable(std::os::windows::io::AsSocket::as_socket(&socket), rto)?;
+                wait.readable(std::os::windows::io::AsSocket::as_socket(&tcp.socket), rto)?;
             }
         }
     }
 }
 
-// Each closes a TCP connection once its receiver has all written on it, which Windows reads
-// with the plan's step 8 (sockets.rs `unacknowledged`).
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    /// Sets the socket option `option` of `socket` to `value`'s ints: SO_RCVBUF's one,
+    /// SO_LINGER's two (Unix's `linger`; Windows' LINGER, two u16s).
+    #[cfg(unix)]
+    fn set(socket: &impl std::os::fd::AsRawFd, option: libc::c_int, value: &[libc::c_int]) {
+        // SAFETY: setsockopt(2) of `value`'s ints, its length theirs.
+        let set = unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                option,
+                value.as_ptr().cast(),
+                std::mem::size_of_val(value) as libc::socklen_t,
+            )
+        };
+        assert_eq!(set, 0);
+    }
+
+    #[cfg(windows)]
+    fn set(socket: &impl std::os::windows::io::AsRawSocket, option: i32, value: &[i32]) {
+        use windows_sys::Win32::Networking::WinSock::{SO_LINGER, SOCKET, SOL_SOCKET, setsockopt};
+        let linger: Vec<u16> = value.iter().map(|&v| u16::try_from(v).unwrap()).collect();
+        let bytes: &[u8] = if option == SO_LINGER {
+            // SAFETY: the u16s' own bytes.
+            unsafe { std::slice::from_raw_parts(linger.as_ptr().cast(), linger.len() * 2) }
+        } else {
+            // SAFETY: the i32s' own bytes.
+            unsafe { std::slice::from_raw_parts(value.as_ptr().cast(), std::mem::size_of_val(value)) }
+        };
+        // SAFETY: setsockopt of `bytes`, its length theirs.
+        let set = unsafe {
+            setsockopt(
+                socket.as_raw_socket() as SOCKET,
+                SOL_SOCKET,
+                option,
+                bytes.as_ptr(),
+                i32::try_from(bytes.len()).unwrap(),
+            )
+        };
+        assert_eq!(set, 0);
+    }
+
+    #[cfg(unix)]
+    use libc::{SO_LINGER, SO_RCVBUF};
+    #[cfg(windows)]
+    use windows_sys::Win32::Networking::WinSock::{SO_LINGER, SO_RCVBUF};
 
     /// A TLS server's config for `localhost`, and a client's that trusts its CA.
     fn tls() -> (Arc<rustls::ServerConfig>, Arc<rustls::ClientConfig>) {
@@ -371,7 +432,7 @@ mod tests {
     #[test]
     fn a_stream_closed_delivers_all_it_wrote() {
         let (server, client) = tls();
-        let (_stop, stopped) = UnixStream::pair().unwrap();
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
         for _ in 0..20 {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = format!("localhost:{}", listener.local_addr().unwrap().port());
@@ -402,6 +463,67 @@ mod tests {
         }
     }
 
+    /// A stream over TLS whose server's certificate a CA given beside the platform's roots
+    /// vouches for, as syslog's `syslog-tls-ca-cert` gives one (shards_registry's
+    /// `client_config`, the platform's verifier): what it writes reaches its server whole,
+    /// ended with TLS's close_notify, on every host.
+    #[test]
+    fn a_stream_trusts_a_ca_given_beside_the_platforms() {
+        let now = time::OffsetDateTime::now_utc();
+        let mut ca = rcgen::CertificateParams::new(Vec::new()).unwrap();
+        ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca.not_before = now - time::Duration::hours(1);
+        ca.not_after = now + time::Duration::days(1);
+        ca.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::DigitalSignature,
+        ];
+        let ca = rcgen::CertifiedIssuer::self_signed(ca, rcgen::KeyPair::generate().unwrap()).unwrap();
+        let mut leaf = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        leaf.not_before = now - time::Duration::hours(1);
+        leaf.not_after = now + time::Duration::days(1);
+        leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = leaf.signed_by(&key, &ca).unwrap();
+        let server = Arc::new(
+            rustls::ServerConfig::builder_with_provider(Arc::new(
+                rustls::crypto::aws_lc_rs::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.der().clone()],
+                rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+            )
+            .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("localhost:{}", listener.local_addr().unwrap().port());
+        let reading = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(server).unwrap(), socket);
+            let mut got = Vec::new();
+            let ended = tls.read_to_end(&mut got).map(|_| ()).map_err(|e| e.to_string());
+            (got, ended)
+        });
+        let client = shards_registry::tls::client_config(vec![ca.der().clone()], None).unwrap();
+        let mut stream = Stream::new(To::Tls(address, client), [None; 2]);
+        let sent = stream.send(b"line\n");
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+        let closed = stream.close(&Wait(&stopped));
+        let (got, ended) = reading.join().unwrap();
+        assert_eq!(
+            (sent.map_err(|e| e.to_string()), closed.map_err(|e| e.to_string())),
+            (Ok(()), Ok(()))
+        );
+        assert_eq!(
+            (String::from_utf8(got).unwrap(), ended),
+            ("line\n".into(), Ok(()))
+        );
+    }
+
     /// What its receiver had not acknowledged when its connection was dropped, a stream
     /// writes again on its next, in order, before what comes after (PM M233). Its receiver
     /// reads none: messages go until a write makes no progress for the stream's write
@@ -412,23 +534,9 @@ mod tests {
     /// held messages to it, and one hung).
     #[test]
     fn what_a_dropped_connection_had_not_delivered_goes_on_the_next() {
-        use std::os::fd::AsRawFd as _;
-        let set = |fd: std::os::fd::RawFd, option: libc::c_int, value: &[libc::c_int]| {
-            // SAFETY: setsockopt(2) of `value`'s ints, its length theirs.
-            let set = unsafe {
-                libc::setsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    option,
-                    value.as_ptr().cast(),
-                    std::mem::size_of_val(value) as libc::socklen_t,
-                )
-            };
-            assert_eq!(set, 0);
-        };
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         // The least receive buffer the kernel takes, so that the buffers fill soon.
-        set(listener.as_raw_fd(), libc::SO_RCVBUF, &[1]);
+        set(&listener, SO_RCVBUF, &[1]);
         let mut stream = Stream::new(
             To::Tcp(listener.local_addr().unwrap().to_string()),
             [Some(Duration::from_millis(300)), None],
@@ -445,7 +553,7 @@ mod tests {
         );
         // Its receiver resets the connection: a close with SO_LINGER 0.
         let (first, _) = listener.accept().unwrap();
-        set(first.as_raw_fd(), libc::SO_LINGER, &[1, 0]);
+        set(&first, SO_LINGER, &[1, 0]);
         drop(first);
         let held: Vec<Vec<u8>> = stream.held.iter().map(|(m, _)| m.clone()).collect();
         assert!(held.len() >= 2, "{} held", held.len());
@@ -455,7 +563,7 @@ mod tests {
             second.read_to_end(&mut got).unwrap();
             got
         });
-        let (_stop, stopped) = UnixStream::pair().unwrap();
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
         stream.send(b"last").unwrap();
         stream.close(&Wait(&stopped)).unwrap();
         // The messages held are the last sent, in order; and after them, the next.

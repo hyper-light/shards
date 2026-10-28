@@ -14652,7 +14652,6 @@ fn accept_within(listener: &std::net::TcpListener) -> Option<std::net::TcpStream
 
 /// What a syslog server reads on `listener`'s first connection: its lines until `lines`
 /// have come, or all it gets until the connection ends; none where none comes.
-#[cfg(unix)]
 fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::JoinHandle<Vec<String>> {
     std::thread::spawn(move || {
         let Some(conn) = accept_within(&listener) else {
@@ -14674,7 +14673,6 @@ fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::J
 }
 
 /// A port nothing listens on now, which a test may listen on later.
-#[cfg(unix)]
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -14696,8 +14694,6 @@ fn free_port() -> u16 {
 /// whose daemon restarted meanwhile: Docker's would not start without its server, and
 /// would lose what was not yet sent. `logs` reads the local copy, and refuses where
 /// `cache-disabled` keeps it. The refusals are in shards' words.
-// A log sent elsewhere from Windows comes with the platform parity plan's step 8.
-#[cfg(unix)]
 #[test]
 fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     let Some((home, image)) = home("containers-syslog") else {
@@ -14873,39 +14869,90 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         .collect();
     assert_eq!(said, [("27".into(), "err".into()), ("30".into(), "out".into())]);
 
-    // A unix datagram socket; a line of 40,000 bytes in parts of 16 KiB.
+    // A unix datagram socket; a line of 40,000 bytes in parts of 16 KiB. Windows has none,
+    // and refuses one's address as a run is made: its parts go on a unix stream there.
     let sockets = TempDir::new("sl");
-    let gram = sockets.join("g");
-    let unixgram = std::os::unix::net::UnixDatagram::bind(&gram).unwrap();
-    unixgram.set_read_timeout(Some(TIMEOUT)).unwrap();
-    // Room for a part whole: macOS's receive buffer takes no datagram longer (PM M232).
-    let room: libc::c_int = 1 << 16;
-    // SAFETY: setsockopt(2) of an int from `room` on a socket this test holds.
-    let set = unsafe {
-        libc::setsockopt(
-            std::os::fd::AsRawFd::as_raw_fd(&unixgram),
-            libc::SOL_SOCKET,
-            libc::SO_RCVBUF,
-            (&raw const room).cast(),
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        )
-    };
-    assert_eq!(set, 0);
-    syslog(
-        "gram",
-        &[&format!("syslog-address=unixgram://{}", gram.display()), "tag=g"],
-        &["wide", "40000"],
-    );
-    let mut parts = Vec::new();
-    for _ in 0..3 {
-        let mut b = vec![0u8; 1 << 16];
-        let n = unixgram.recv(&mut b).unwrap();
-        let m = String::from_utf8(b[..n].to_vec()).unwrap();
-        let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
-        assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
-        parts.push(body.len());
+    #[cfg(windows)]
+    {
+        let gram = sockets.join("g");
+        std::fs::write(&gram, b"").unwrap();
+        let address = format!("syslog-address=unixgram:///{}", gram.display());
+        let r = run_in(
+            &home,
+            &image,
+            &["--log-driver", "syslog", "--log-opt", &address],
+            &["exit", "0"],
+        );
+        assert_eq!(r.status, Some(125), "{r}");
+        assert!(r.stderr.contains("Windows has no unix datagram sockets"), "{r}");
+        let path = sockets.join("s");
+        shards_vmm::platform::winsock().unwrap();
+        let unix = shards_vmm::platform::UnixListener::bind(&path).unwrap();
+        let reading = std::thread::spawn(move || {
+            let (conn, ()) = unix.accept().unwrap();
+            conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+            let mut read = BufReader::new(conn);
+            (0..3)
+                .map(|_| {
+                    let mut line = String::new();
+                    read.read_line(&mut line).unwrap();
+                    line
+                })
+                .collect::<Vec<String>>()
+        });
+        syslog(
+            "gram",
+            &[&format!("syslog-address=unix:///{}", path.display()), "tag=g"],
+            &["wide", "40000"],
+        );
+        let parts: Vec<usize> = reading
+            .join()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
+                assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
+                body.len()
+            })
+            .collect();
+        assert_eq!(parts, [16384, 16384, 7232]);
     }
-    assert_eq!(parts, [16384, 16384, 7232]);
+    #[cfg(unix)]
+    let gram = sockets.join("g");
+    #[cfg(unix)]
+    let unixgram = std::os::unix::net::UnixDatagram::bind(&gram).unwrap();
+    #[cfg(unix)]
+    {
+        unixgram.set_read_timeout(Some(TIMEOUT)).unwrap();
+        // Room for a part whole: macOS's receive buffer takes no datagram longer (PM M232).
+        let room: libc::c_int = 1 << 16;
+        // SAFETY: setsockopt(2) of an int from `room` on a socket this test holds.
+        let set = unsafe {
+            libc::setsockopt(
+                std::os::fd::AsRawFd::as_raw_fd(&unixgram),
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                (&raw const room).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(set, 0);
+        syslog(
+            "gram",
+            &[&format!("syslog-address=unixgram://{}", gram.display()), "tag=g"],
+            &["wide", "40000"],
+        );
+        let mut parts = Vec::new();
+        for _ in 0..3 {
+            let mut b = vec![0u8; 1 << 16];
+            let n = unixgram.recv(&mut b).unwrap();
+            let m = String::from_utf8(b[..n].to_vec()).unwrap();
+            let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
+            assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
+            parts.push(body.len());
+        }
+        assert_eq!(parts, [16384, 16384, 7232]);
+    }
 
     // A server that comes up only after the run: its log waits in the store, and goes.
     let port = free_port();
@@ -15068,9 +15115,6 @@ fn gelf_messages(datagrams: &[Vec<u8>]) -> Vec<serde_json::Value> {
 /// when its output came, to the millisecond.
 #[test]
 fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
-    if common::later_on_windows(8, "a log sent elsewhere") {
-        return;
-    }
     let Some((home, image)) = home("containers-gelf") else {
         return;
     };
@@ -15207,7 +15251,6 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
 /// time, record, options), until `count` have come: each its tag, its time in nanoseconds
 /// (whole seconds, or an EventTime's), its record, and its options. Where the options ask
 /// for an ack, it is sent back, as fluentd does.
-#[cfg(unix)]
 fn fluentd_events(
     conn: &mut (impl std::io::Read + std::io::Write),
     count: usize,
@@ -15294,8 +15337,6 @@ fn fluentd_events(
 /// container's ID and name, the stream, the line, the attributes asked for, and a part's
 /// place in a line longer than 16 KiB), and an ack asked for where told. Over TCP and a
 /// unix socket.
-// A log sent elsewhere from Windows comes with the platform parity plan's step 8.
-#[cfg(unix)]
 #[test]
 fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     let Some((home, image)) = home("containers-fluentd") else {
@@ -15370,7 +15411,14 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     // A unix socket, whole seconds, a line of 40,000 bytes in parts.
     let sockets = TempDir::new("fd");
     let path = sockets.join("f");
+    #[cfg(unix)]
     let unix = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    // Windows' AF_UNIX streams, which std does not open: afunix's, Winsock started.
+    #[cfg(windows)]
+    let unix = {
+        shards_vmm::platform::winsock().unwrap();
+        shards_vmm::platform::UnixListener::bind(&path).unwrap()
+    };
     let reading = std::thread::spawn(move || {
         let (mut conn, _) = unix.accept().unwrap();
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
@@ -15378,7 +15426,7 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     });
     fluentd(
         "parts",
-        &[&format!("fluentd-address=unix://{}", path.display())],
+        &[&format!("fluentd-address=unix:///{}", path.display())],
         &["wide", "40000"],
     );
     let events = reading.join().unwrap();
@@ -15741,9 +15789,6 @@ fn hec_events(body: &[u8]) -> Vec<serde_json::Value> {
 /// shards' words.
 #[test]
 fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
-    if common::later_on_windows(8, "a log sent elsewhere") {
-        return;
-    }
     let Some((home, image)) = home("containers-splunk") else {
         return;
     };
@@ -15860,18 +15905,25 @@ fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
     assert_eq!(channels.len(), 1, "one channel: {channels:?}");
     assert_eq!(asked[0], format!("/services/collector/ack?channel={channel}"));
 
-    for (opts, said) in [
+    // A file not found exits 127 where its OS's words say so: Windows' "The system cannot
+    // find the file specified" among docker/cli's (run.go `toStatusError`), Unix's "No such
+    // file or directory" not, its first letter upper case.
+    let not_found = if cfg!(windows) { 127 } else { 125 };
+    for (opts, said, status) in [
         (
             &["splunk-insecureskipverify=true"][..],
             "shards: --log-opt splunk-insecureskipverify: shards posts a log only to a Splunk whose certificate it verifies",
+            125,
         ),
         (
             &["splunk-capath=/nonexistent"],
             "shards: --log-opt splunk-capath=/nonexistent: ",
+            not_found,
         ),
         (
             &["splunk-format=xml"],
             "shards: --log-opt splunk-format=xml: inline, json or raw",
+            125,
         ),
     ] {
         let mut flags = vec![
@@ -15886,7 +15938,7 @@ fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
             flags.extend(["--log-opt", o]);
         }
         let r = run_in(&home, &image, &flags, &["exit", "0"]);
-        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert_eq!(r.status, Some(status), "{opts:?}: {r}");
         assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
     }
 }
@@ -16010,9 +16062,6 @@ fn cloudwatch(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<Clo
 /// the request the daemon keeps on disk; the refusals in shards' words.
 #[test]
 fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
-    if common::later_on_windows(8, "a log sent elsewhere") {
-        return;
-    }
     let Some((home, image)) = home("containers-awslogs") else {
         return;
     };
@@ -16038,7 +16087,6 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
         "1 first\n  more\n2 second\n  more\n3 third\n",
     )
     .unwrap();
-    let bind = format!("{}:/data:ro", lines.display());
     let first: &[(&str, &str)] = &[
         ("AWS_ACCESS_KEY_ID", "AKIDFIRST"),
         ("AWS_SECRET_ACCESS_KEY", "first-secret-key"),
@@ -16241,14 +16289,37 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
         "{targets:?}"
     );
 
-    // Lines joined where a pattern says where an event starts.
-    let ran = awslogs(
-        "joined",
-        &["-v", &bind],
-        &["awslogs-group=existing", "awslogs-multiline-pattern=^[0-9]"],
-        &["lines", "/data/lines.txt", ""],
+    // Lines joined where a pattern says where an event starts: the lines in its own files,
+    // put there (`cp`) before it starts, as every host serves.
+    let made = shards_with(
         first,
+        &[
+            "create",
+            "--pull",
+            "never",
+            "--name",
+            "joined",
+            "--log-driver",
+            "awslogs",
+            "--log-opt",
+            "awslogs-region=us-east-1",
+            "--log-opt",
+            &endpoint,
+            "--log-opt",
+            "awslogs-group=existing",
+            "--log-opt",
+            "awslogs-multiline-pattern=^[0-9]",
+            &image,
+            "lines",
+            "/lines.txt",
+            "",
+        ],
     );
+    assert_eq!(made.status, Some(0), "{made}");
+    let source = lines.join("lines.txt").display().to_string();
+    let copied = shards(&["cp", &source, "joined:/lines.txt"]);
+    assert_eq!(copied.status, Some(0), "{copied}");
+    let ran = shards_with(first, &["start", "-a", "joined"]);
     assert_eq!(ran.status, Some(0), "{ran}");
     let (_, events) = put(&id_of("joined"), 3);
     let messages: Vec<&str> = events.iter().map(|e| e["message"].as_str().unwrap()).collect();
@@ -16390,9 +16461,6 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
 /// own log name, or the one the options give; the refusals in shards' words.
 #[test]
 fn a_runs_log_is_sent_to_cloud_logging_as_its_options_say() {
-    if common::later_on_windows(8, "a log sent elsewhere") {
-        return;
-    }
     let Some((home, image)) = home("containers-gcplogs") else {
         return;
     };

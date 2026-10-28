@@ -8791,8 +8791,13 @@ and the way every later one sends.
 - **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
   stream socket, a message counts as sent only once its receiver has it.
   - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
-    kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO. A unix socket's
-    bytes are in its receiver's buffer as they are written.
+    kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO, Windows'
+    SIO_TCP_INFO, whose BytesOut counts the bytes sent again too (PM M373): there the
+    bytes written less `BytesOut − BytesRetrans − BytesInFlight`, BytesRetrans's 32 bits
+    counted past their wraps, the FIN while FIN_WAIT_1, CLOSING or LAST_ACK. A unix
+    socket's bytes are in its receiver's buffer as they are written; on Windows an AF_UNIX
+    stream's (afunix), Windows having no AF_UNIX datagrams: a `unixgram` address is
+    refused there as its run is made, in shards' words.
   - The shipper keeps its place only as far as what is delivered. So a daemon that stops
     or dies costs sending again what was not yet delivered, and loses no line.
   - What a connection had not delivered when it ended (a reset, a receiver that
