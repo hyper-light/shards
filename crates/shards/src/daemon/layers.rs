@@ -39,6 +39,17 @@ pub(super) struct LayerFile {
     of: Option<String>,
 }
 
+/// What of `from` holds data, copied into a new sparse file at `to` of its length: a
+/// restore's layer, where Windows makes no clone of the generation's.
+#[cfg(windows)]
+fn copied(from: &Path, to: &Path) -> std::io::Result<()> {
+    let source = std::fs::File::open(from)?;
+    let len = source.metadata()?.len();
+    let target = create(to)?;
+    shards_vmm::platform::sparse(&target)?;
+    shards_vmm::platform::copy_used(&source, &target, len)
+}
+
 impl LayerFile {
     /// An empty file, which a restoring microVM fills with its snapshot's layer.
     pub(super) fn empty(home: &Path) -> Result<LayerFile, String> {
@@ -77,6 +88,27 @@ impl LayerFile {
                     .map_err(|e| format!("{}: {e}", layer.path.display()))?;
                     return Ok(layer);
                 }
+                // No clone on this host's file system (NTFS): a copy of what holds data in the
+                // generation's, made here, where the file system says what that is (a
+                // confined VM may ask it nothing, D141), so that the restore copies nothing,
+                // its file sparse as the generation's is.
+                #[cfg(windows)]
+                Ok(false) => match copied(&from, &path) {
+                    Ok(()) => {
+                        return Ok(LayerFile {
+                            path,
+                            of: Some(name.to_string()),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&path);
+                        super::log(format!(
+                            "{}: copying it for a restore: {e}; the restore copies it",
+                            from.display()
+                        ));
+                    }
+                },
+                #[cfg(not(windows))]
                 Ok(false) => {}
                 // Replaced meanwhile: the microVM reads the generation that replaced it.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

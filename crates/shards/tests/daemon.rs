@@ -2964,8 +2964,19 @@ fn warm_vms_are_given_their_templates_root_filesystem() {
             .collect()
     };
     eventually("the pool refilled", || !warm().is_empty());
+    // An absolute path in its host's own form: `/...` on Unix, a drive's (`\\?\C:\...`) on
+    // Windows.
+    let rootfs = if cfg!(windows) { "\\rootfs\\" } else { "/rootfs/" };
     for vm in warm() {
-        assert!(vm.contains(" --backing /") && vm.contains("/rootfs/"), "{vm}");
+        let backing = vm
+            .split(" --backing ")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .unwrap_or_default();
+        assert!(
+            Path::new(backing).is_absolute() && backing.contains(rootfs),
+            "{vm}"
+        );
     }
 }
 
@@ -3157,8 +3168,9 @@ fn what_a_moved_tag_named_is_collected() {
             .unwrap_or_default();
         paths.retain(|p| {
             let name = p.file_name().unwrap().to_string_lossy();
-            // A template's origin is a record beside it (D117), not a template.
-            !name.starts_with('.') && !name.contains(".new-") && !name.ends_with(".origin")
+            // A template's origin is a record beside it (D117), not a template, its newer
+            // versions too where Windows keeps them (`.origin.~N`, platform `write_in`).
+            !name.starts_with('.') && !name.contains(".new-") && !name.contains(".origin")
         });
         paths.sort();
         paths
