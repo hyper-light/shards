@@ -99,7 +99,7 @@ mod granted;
 #[cfg(windows)]
 pub use granted::input_file_id;
 pub use granted::{
-    Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix,
+    Kept, Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix,
     open_beneath_input, open_input, open_newest_beneath_input, set_dialer, set_stager, stager,
 };
 

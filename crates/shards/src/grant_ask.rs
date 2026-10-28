@@ -355,47 +355,53 @@ pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm:
 }
 
 /// A snapshot generation the spawner on `link` stages in `dir`, a directory it granted this
-/// VM to write in (`kind::STAGE`, D196): its name, then its memory file and its state file,
-/// handles the spawner duplicated into this process.
+/// VM to write in (`kind::STAGE`, D196), with what the VM keeps beside its memory and state
+/// (`kept`): its name, then its files in [`Kept::files`]'s order, handles the spawner
+/// duplicated into this process.
+///
+/// [`Kept::files`]: shards_vmm::platform::Kept::files
 #[cfg(windows)]
 pub fn stage(
     link: &crate::grant::Link,
     dir: &std::path::Path,
-) -> std::io::Result<(String, std::fs::File, std::fs::File)> {
+    kept: shards_vmm::platform::Kept,
+) -> std::io::Result<(String, Vec<std::fs::File>)> {
     use shards_ipc::kind;
     use std::os::windows::io::FromRawHandle as _;
-    shards_ipc::write_message(&link.to, kind::STAGE, &crate::grant::path_bytes(dir))?;
+    let asked = [&[kept.bits()][..], &crate::grant::path_bytes(dir)].concat();
+    shards_ipc::write_message(&link.to, kind::STAGE, &asked)?;
     let answer = shards_ipc::read_message(&link.from)?
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
     let refused = |why: String| std::io::Error::other(why);
     match answer.kind {
         kind::GRANTED => {
-            let (memory, rest) = answer
+            let (handles, name) = answer
                 .payload
-                .split_first_chunk::<8>()
+                .split_at_checked(8 * kept.files())
                 .ok_or_else(|| refused("a stage answered cut short".into()))?;
-            let (state, name) = rest
-                .split_first_chunk::<8>()
-                .ok_or_else(|| refused("a stage answered cut short".into()))?;
+            // Every handle owned first, so that an answer refused below closes them all.
+            let mut files = Vec::with_capacity(kept.files());
+            let mut none = false;
+            for value in handles.as_chunks::<8>().0 {
+                match usize::try_from(u64::from_le_bytes(*value))
+                    .ok()
+                    .filter(|&v| v != 0)
+                {
+                    // SAFETY: a handle the spawner duplicated into this process for this
+                    // generation alone, owned from here on.
+                    Some(handle) => files.push(unsafe {
+                        std::fs::File::from_raw_handle(handle as std::os::windows::io::RawHandle)
+                    }),
+                    None => none = true,
+                }
+            }
+            if none {
+                return Err(refused("a stage answered with no handle".into()));
+            }
             let name = std::str::from_utf8(name)
                 .map_err(|_| refused("a generation named in no UTF-8".into()))?
                 .to_string();
-            let handle = |value: &[u8; 8]| {
-                usize::try_from(u64::from_le_bytes(*value))
-                    .ok()
-                    .filter(|&v| v != 0)
-                    .ok_or_else(|| refused("a stage answered with no handle".into()))
-            };
-            let (memory, state) = (handle(memory)?, handle(state)?);
-            // SAFETY: handles the spawner duplicated into this process for this generation
-            // alone, owned from here on.
-            let files = unsafe {
-                (
-                    std::fs::File::from_raw_handle(memory as std::os::windows::io::RawHandle),
-                    std::fs::File::from_raw_handle(state as std::os::windows::io::RawHandle),
-                )
-            };
-            Ok((name, files.0, files.1))
+            Ok((name, files))
         }
         kind::ERR => Err(refused(String::from_utf8_lossy(&answer.payload).into_owned())),
         other => Err(refused(format!(

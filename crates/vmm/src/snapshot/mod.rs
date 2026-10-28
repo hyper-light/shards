@@ -734,10 +734,9 @@ pub fn stage(
 }
 
 /// [`stage`] for a process that writes in no directory of its own: its spawner stages the
-/// generation in `dir` and hands it the generation's memory and state files, which it fills
-/// ([`fill`]) and its commit has the spawner make durable and the one in use (D196). What
-/// a machine keeps beside its memory, its writable layer and its DAX windows' heads, no
-/// spawner stages yet.
+/// generation in `dir` and hands it the generation's files, its memory and state and what
+/// the machine keeps `beside` them, which it fills as [`stage_with`] fills its own, and its
+/// commit has the spawner make durable and the one in use (D196).
 fn stage_by(
     by: &'static dyn platform::Stager,
     dir: &Path,
@@ -746,20 +745,43 @@ fn stage_by(
     beside: Beside<'_>,
 ) -> Result<Staged, String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
-    if beside.layer.is_some() || beside.window_heads.is_some() {
-        return Err(at(
-            &"a snapshot its spawner stages keeps no writable layer nor DAX windows' heads",
-        ));
+    let kept = platform::Kept {
+        layer: beside.layer.is_some(),
+        window_heads: beside.window_heads.is_some(),
+    };
+    let (name, files) = by.stage(dir, kept).map_err(|e| at(&e))?;
+    if files.len() != kept.files() {
+        return Err(at(&format!(
+            "its spawner staged {} files of the {} it keeps",
+            files.len(),
+            kept.files()
+        )));
     }
-    let (name, memory_file, state_file) = by.stage(dir).map_err(|e| at(&e))?;
-    fill(&name, snap, memory, &memory_file, &state_file).map_err(|e| at(&e))?;
+    let file = |i: usize| {
+        files
+            .get(i)
+            .ok_or_else(|| at(&"a file its spawner did not stage"))
+    };
+    fill(&name, snap, memory, file(0)?, file(1)?).map_err(|e| at(&e))?;
+    let mut next = 2;
+    let mut layer_head = None;
+    if let Some(layer) = beside.layer {
+        layer.save(file(next)?, file(next + 1)?).map_err(|e| at(&e))?;
+        layer_head = Some(next);
+        next += 2;
+    }
+    let mut window_heads = None;
+    if let Some(heads) = beside.window_heads {
+        heads.save(file(next)?).map_err(|e| at(&e))?;
+        window_heads = Some(next);
+    }
     Ok(Staged {
         dir: dir.to_path_buf(),
         staging: dir.join(format!(".{name}.tmp")),
         name,
-        files: vec![memory_file, state_file],
-        layer_head: None,
-        window_heads: None,
+        files,
+        layer_head,
+        window_heads,
         committed: false,
         _lock: None,
         by: Some(by),
@@ -822,11 +844,33 @@ fn stage_with(
 /// its DAX windows' heads (D189), which a machine without them leaves empty. The VM's are [`Staged::handed`]; the commit
 /// makes the generation durable and the one in use once the VM has filled them.
 pub fn prepare(dir: &Path, run: bool) -> Result<Staged, String> {
-    let mut staged = staging(dir, fresh_name())?;
     let names = [MEMORY, STATE, SWAP, LAYER_HEAD, LAYER, WINDOW_HEADS];
+    prepare_named(
+        dir,
+        names.get(..if run { names.len() } else { 2 }).unwrap_or_default(),
+    )
+}
+
+/// Stages an empty generation in `dir` for a VM whose snapshots its spawner stages (D196):
+/// its memory and state, and what it keeps beside them (`kept`: its layer's head and file
+/// system, its windows' heads), in that order, which the VM fills ([`stage`]).
+pub fn prepare_kept(dir: &Path, kept: platform::Kept) -> Result<Staged, String> {
+    let mut names = vec![MEMORY, STATE];
+    if kept.layer {
+        names.extend([LAYER_HEAD, LAYER]);
+    }
+    if kept.window_heads {
+        names.push(WINDOW_HEADS);
+    }
+    prepare_named(dir, &names)
+}
+
+/// An empty generation in `dir` of the files `names`, each made sparse where it is the
+/// memory, as the VM that fills it may not make it (D196).
+fn prepare_named(dir: &Path, names: &[&str]) -> Result<Staged, String> {
+    let mut staged = staging(dir, fresh_name())?;
     let made = names
         .iter()
-        .take(if run { names.len() } else { 2 })
         .map(|&name| {
             // Its memory sparse already, as the VM that fills it may not make it (D196).
             create_unsynced(&staged.staging.join(name), |file| match name {
@@ -1657,15 +1701,12 @@ mod tests {
         struct Spawner(std::sync::Mutex<Vec<Staged>>);
 
         impl platform::Stager for Spawner {
-            fn stage(&self, dir: &Path) -> io::Result<(String, File, File)> {
-                let staged = prepare(dir, false).map_err(io::Error::other)?;
-                let mut handed = staged.handed().map_err(io::Error::other)?.into_iter();
-                let (Some(memory), Some(state), None) = (handed.next(), handed.next(), handed.next()) else {
-                    return Err(io::Error::other("not a memory file and a state file"));
-                };
+            fn stage(&self, dir: &Path, kept: platform::Kept) -> io::Result<(String, Vec<File>)> {
+                let staged = prepare_kept(dir, kept).map_err(io::Error::other)?;
+                let handed = staged.handed().map_err(io::Error::other)?;
                 let name = staged.name().to_string();
                 self.0.lock().unwrap().push(staged);
-                Ok((name, memory, state))
+                Ok((name, handed))
             }
 
             fn commit(&self, _: &Path, name: &str) -> io::Result<()> {

@@ -365,9 +365,12 @@ pub mod kind {
     pub const INTERRUPTED: u8 = 71;
     /// VM → its spawner, on its grants link, where it writes in no directory of its own
     /// (Windows' AppContainer, D141): stage a snapshot generation in the directory it was
-    /// granted to write in, named as `GRANT` names a path. Answered with a `GRANTED`
-    /// carrying the generation's memory file's and state file's handles in the VM, each a
-    /// little-endian u64, then the generation's name; or an `ERR` (D196).
+    /// granted to write in, named as `GRANT` names a path, after a byte that says what the
+    /// generation keeps beside its memory and state (1 its writable layer, 2 its DAX
+    /// windows' heads). Answered with a `GRANTED` carrying the handles in the VM of the
+    /// generation's memory file, state file, layer head and layer file, and windows' heads
+    /// file, those it keeps, each a little-endian u64, then the generation's name; or an
+    /// `ERR` (D196).
     pub const STAGE: u8 = 72;
     /// VM → its spawner: the generation the payload names, staged and filled, is to be made
     /// durable and the one in use. Answered with an empty `GRANTED`, or an `ERR` (D196).

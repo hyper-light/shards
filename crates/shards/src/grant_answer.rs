@@ -627,9 +627,13 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
     }
 }
 
-/// A generation staged for the VM in the directory a `STAGE`'s payload names, which must be
-/// one granted it, and the answer that hands it the generation's memory and state files,
-/// put in `to`: their handles there, little-endian u64s, then the generation's name.
+/// A generation staged for the VM in the directory a `STAGE`'s payload names, after what it
+/// keeps beside its memory and state (its first byte, [`Kept::bits`]), which must be one
+/// granted it, and the answer that hands it the generation's files, put in `to`: their
+/// handles there, little-endian u64s in [`Kept::files`]'s order, then the generation's name.
+///
+/// [`Kept::bits`]: shards_vmm::platform::Kept::bits
+/// [`Kept::files`]: shards_vmm::platform::Kept::files
 #[cfg(windows)]
 fn stage(
     asked: &[u8],
@@ -637,24 +641,27 @@ fn stage(
     to: &dyn Recipient,
 ) -> Result<(shards_vmm::snapshot::Staged, Vec<u8>), String> {
     use std::os::windows::io::AsHandle as _;
-    let dir = crate::grant::path_from(asked).ok_or("a VM asked to stage at no path")?;
+    let (&bits, path) = asked.split_first().ok_or("a VM asked to stage at no path")?;
+    let kept =
+        shards_vmm::platform::Kept::from_bits(bits).ok_or("a VM asked to stage what no generation keeps")?;
+    let dir = crate::grant::path_from(path).ok_or("a VM asked to stage at no path")?;
     if !dirs.contains(&dir) {
         return Err(format!(
             "{}: not a directory the VM was granted to write in",
             dir.display()
         ));
     }
-    let generation = shards_vmm::snapshot::prepare(&dir, false)?;
+    let generation = shards_vmm::snapshot::prepare_kept(&dir, kept)?;
     let files = generation.handed()?;
-    let [memory, state] = files.as_slice() else {
+    if files.len() != kept.files() {
         return Err(format!(
             "{}: a generation of {} files",
             dir.display(),
             files.len()
         ));
-    };
-    let mut payload = Vec::with_capacity(16 + generation.name().len());
-    for file in [memory, state] {
+    }
+    let mut payload = Vec::with_capacity(8 * files.len() + generation.name().len());
+    for file in &files {
         let value = to
             .give(file.as_handle())
             .map_err(|e| format!("giving a VM its snapshot's files: {e}"))?;
@@ -821,6 +828,7 @@ mod windows_tests {
     #[test]
     fn a_spawner_stages_and_commits_a_vms_snapshots() {
         use crate::grant_ask::{commit, stage};
+        use shards_vmm::platform::Kept;
         let dir = shards_testdir::TempDir::new("stage").unwrap();
         let snapshot = dir.join("snapshot");
         let (spawner, vm) = link();
@@ -828,31 +836,41 @@ mod windows_tests {
             let serving = scope.spawn(|| serve(&spawner, &Here));
             obtain(&vm, &[(Access::MakeDir, snapshot.clone())]).unwrap();
             assert!(snapshot.is_dir());
-            let elsewhere = stage(&vm, &dir.join("other")).unwrap_err().to_string();
+            let elsewhere = stage(&vm, &dir.join("other"), Kept::default())
+                .unwrap_err()
+                .to_string();
             assert!(
                 elsewhere.contains("not a directory the VM was granted"),
                 "{elsewhere}"
             );
             let unstaged = commit(&vm, "g-1").unwrap_err().to_string();
             assert!(unstaged.contains("no generation of that name"), "{unstaged}");
-            let (name, memory, state) = stage(&vm, &snapshot).unwrap();
-            (&memory).write_all(b"memory").unwrap();
-            (&state).write_all(b"state").unwrap();
-            drop((memory, state));
+            // With what a run's machine keeps beside its memory: its layer's head and file
+            // system, and its DAX windows' heads, each in the generation once committed.
+            let kept = Kept {
+                layer: true,
+                window_heads: true,
+            };
+            let (name, files) = stage(&vm, &snapshot, kept).unwrap();
+            let names = ["memory", "state", "layer-head", "layer", "window-heads"];
+            assert_eq!(files.len(), names.len());
+            for (mut file, name) in files.iter().zip(names) {
+                file.write_all(name.as_bytes()).unwrap();
+            }
+            drop(files);
             // The pointer as its readers take it, its newest version (platform `write_in`).
             let pointer = || shards_vmm::platform::read_newest_beneath(&snapshot, &["current"], 64).unwrap();
             assert_eq!(pointer(), None, "none in use until its commit");
             commit(&vm, &name).unwrap();
             assert_eq!(pointer(), Some(format!("{name}\n").into_bytes()));
-            assert_eq!(
-                std::fs::read(snapshot.join(&name).join("memory")).unwrap(),
-                b"memory"
-            );
-            assert_eq!(
-                std::fs::read(snapshot.join(&name).join("state")).unwrap(),
-                b"state"
-            );
-            let again = stage(&vm, &snapshot).unwrap_err().to_string();
+            for file in names {
+                assert_eq!(
+                    std::fs::read(snapshot.join(&name).join(file)).unwrap(),
+                    file.as_bytes(),
+                    "{file}"
+                );
+            }
+            let again = stage(&vm, &snapshot, Kept::default()).unwrap_err().to_string();
             assert!(again.contains("not a directory the VM was granted"), "{again}");
             drop(vm);
             assert!(serving.join().unwrap().is_ok());
@@ -862,8 +880,9 @@ mod windows_tests {
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, &Here));
             obtain(&vm, &[(Access::MakeDir, abandoned.clone())]).unwrap();
-            let (_, memory, state) = stage(&vm, &abandoned).unwrap();
-            drop((memory, state, vm));
+            let (_, files) = stage(&vm, &abandoned, Kept::default()).unwrap();
+            assert_eq!(files.len(), 2, "its memory and state alone");
+            drop((files, vm));
             assert!(serving.join().unwrap().is_ok());
         });
         let left: Vec<_> = std::fs::read_dir(&abandoned)

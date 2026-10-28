@@ -6451,15 +6451,19 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
 - **A confined VM writes its snapshot through its spawner.** An AppContainer writes in no
   directory of its user's (D141), and a directory handle would give it every name in it: the
   spawner makes the snapshot's directory the VM asks to write in, stages each generation there
-  on the VM's word (`kind::STAGE`), hands the VM the generation's memory and state files to
-  fill, and makes it durable and the one in use on its next (`kind::COMMIT`), as the daemon
-  stages a run's save (D176), every file of the generation closed first: NTFS renames no
+  on the VM's word (`kind::STAGE`), hands the VM the generation's files to fill, its memory
+  and state and what its machine keeps beside them, its writable layer's head and file
+  system (D190) and its DAX windows' heads (D189), as `STAGE`'s first byte asks
+  (`platform::Kept`), and makes it durable and the one in use on its next (`kind::COMMIT`),
+  as the daemon stages a run's save (D176), every file of the generation closed first: NTFS renames no
   directory a file in which is open (ERROR_ACCESS_DENIED, M345), so the VM's handed files go
   with its save, and a commit's own close before the rename that puts the generation in
   place, on every host. Once a generation is committed the spawner gives the directory
   up, as a Unix VM seals its own (vm_run.rs `seal`): a guest that took the VM's process over
   later cannot have every later restore of the template restore what it wrote. One staged and
-  never committed goes with the VM.
+  never committed goes with the VM. A template is saved by its image's first run, whose
+  machine has a layer: staged with its memory and state alone, it was refused, and a Windows
+  daemon's pools never filled (CI run 40602662393, 2026-10-27).
 - **A restore reads its template through its grants**, as on macOS: the pointer, then the files
   of the generation it names (`granted_template`). A backing file's identity is its volume's
   serial number and its file index, as a Unix file's device and inode are: a file of the same

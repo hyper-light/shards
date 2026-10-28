@@ -2424,7 +2424,11 @@ struct SpawnerStages;
 
 #[cfg(windows)]
 impl shards_vmm::platform::Stager for SpawnerStages {
-    fn stage(&self, dir: &Path) -> std::io::Result<(String, std::fs::File, std::fs::File)> {
+    fn stage(
+        &self,
+        dir: &Path,
+        kept: shards_vmm::platform::Kept,
+    ) -> std::io::Result<(String, Vec<std::fs::File>)> {
         let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let link = grants.as_ref().ok_or_else(|| {
             std::io::Error::new(
@@ -2432,7 +2436,7 @@ impl shards_vmm::platform::Stager for SpawnerStages {
                 "no spawner to stage a snapshot through",
             )
         })?;
-        crate::grant_ask::stage(link, dir)
+        crate::grant_ask::stage(link, dir, kept)
     }
 
     fn commit(&self, _dir: &Path, name: &str) -> std::io::Result<()> {
