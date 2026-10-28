@@ -381,7 +381,7 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     let Some((home, image)) = home("saved-refused") else {
         return;
     };
-    if cannot_pool() {
+    if cannot_pool() || common::later_on_windows(6, "a volume's files") {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);

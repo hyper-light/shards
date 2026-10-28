@@ -169,6 +169,12 @@ jobs:
           [Environment]::ProcessorCount
           (Get-CimInstance Win32_Processor).Name
           [System.Environment]::OSVersion.VersionString
+          # What the tests have room for: each disk's free space, the memory, the page file.
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Root, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
+          $os = Get-CimInstance Win32_OperatingSystem
+          "memory: {0:N1} GB, {1:N1} GB free" -f ($os.TotalVisibleMemorySize/1MB), ($os.FreePhysicalMemory/1MB)
+          Get-CimInstance Win32_PageFileUsage | Format-Table Name, AllocatedBaseSize, CurrentUsage, PeakUsage
+          "TEMP: $env:TEMP"
       - name: Test
         timeout-minutes: 120
         shell: bash
@@ -181,11 +187,18 @@ jobs:
           binary="${TEST#windows:}"
           if [ "$binary" = bin ]; then target=(--bin shards); else target=(--test "$binary"); fi
           if [ "$NAME" = all ]; then args=(-- --nocapture); else args=("$NAME" -- --nocapture); fi
+          # The temp disk's free space, the free memory and the page file's use as the tests
+          # run, every 5 s: whether they meet the runner's room.
+          pwsh -NoProfile -Command 'while ($true) { $os = Get-CimInstance Win32_OperatingSystem; $p = (Get-CimInstance Win32_PageFileUsage | Measure-Object CurrentUsage -Sum).Sum; "{0:HH:mm:ss} {1} free {2:N1} GB, memory free {3:N1} GB, page file {4} MB" -f (Get-Date).ToUniversalTime(), $env:TEMP.Substring(0,2), ((Get-PSDrive $env:TEMP.Substring(0,1)).Free/1GB), ($os.FreePhysicalMemory/1MB), $p; Start-Sleep 5 }' > "$RUNNER_TEMP/host.log" 2>&1 &
+          sampler=$!
           failed=0
           for i in $(seq "$TIMES"); do
             echo "== run $i of $TIMES"
             cargo test --locked --profile test-release --target x86_64-pc-windows-msvc -p shards "${target[@]}" "${args[@]}" \
               || failed=$((failed + 1))
           done
+          kill "$sampler" 2>/dev/null
+          echo "== the host as the tests ran"
+          cat "$RUNNER_TEMP/host.log"
           echo "== $NAME of $TEST failed $failed of $TIMES"
           [ "$failed" -eq 0 ]
