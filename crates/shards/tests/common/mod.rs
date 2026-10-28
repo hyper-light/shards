@@ -700,6 +700,17 @@ pub fn alive(pid: i32) -> bool {
 /// and answer what it asks for, where Unix's become it.
 #[cfg(windows)]
 pub fn vm_processes(parent: u32) -> Vec<u32> {
+    processes()
+        .into_iter()
+        .filter(|(_, ppid, name)| *ppid == parent && name.eq_ignore_ascii_case("shards-vm.exe"))
+        .map(|(pid, _, _)| pid)
+        .collect()
+}
+
+/// Every process of the system's, as its snapshot of them says (Toolhelp32): its ID, its
+/// parent's, and its executable's name.
+#[cfg(windows)]
+pub fn processes() -> Vec<(u32, u32, String)> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -720,10 +731,11 @@ pub fn vm_processes(parent: u32) -> Vec<u32> {
             .iter()
             .position(|&c| c == 0)
             .unwrap_or(entry.szExeFile.len());
-        let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
-        if entry.th32ParentProcessID == parent && name.eq_ignore_ascii_case("shards-vm.exe") {
-            found.push(entry.th32ProcessID);
-        }
+        found.push((
+            entry.th32ProcessID,
+            entry.th32ParentProcessID,
+            String::from_utf16_lossy(&entry.szExeFile[..end]),
+        ));
         // SAFETY: as above.
         more = unsafe { Process32NextW(snap, &raw mut entry) } != 0;
     }

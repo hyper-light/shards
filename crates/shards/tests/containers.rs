@@ -7643,15 +7643,28 @@ fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
     (child, port)
 }
 
+/// A port another program holds, in its host's words, as the daemon says it (Go's, Docker
+/// Desktop's on Windows: FormatMessage's text): EADDRINUSE's, WSAEADDRINUSE's.
+fn in_use() -> String {
+    #[cfg(unix)]
+    let code = libc::EADDRINUSE;
+    #[cfg(windows)]
+    let code = windows_sys::Win32::Networking::WinSock::WSAEADDRINUSE;
+    shards_cmdline::buildflags::os_error(&std::io::Error::from_raw_os_error(code))
+}
+
 /// What a connection to `at` is first told, and what it is sent back of `sent`.
 fn talk(at: std::net::SocketAddr, sent: &str) -> String {
     use std::io::{Read as _, Write as _};
-    let mut c = std::net::TcpStream::connect_timeout(&at, TIMEOUT).unwrap();
+    let t = Instant::now();
+    let mut c = std::net::TcpStream::connect_timeout(&at, TIMEOUT)
+        .unwrap_or_else(|e| panic!("connecting to {at}: {e}, after {:?}", t.elapsed()));
     c.set_read_timeout(Some(TIMEOUT)).unwrap();
     c.write_all(sent.as_bytes()).unwrap();
     c.shutdown(std::net::Shutdown::Write).unwrap();
     let mut got = String::new();
-    c.read_to_string(&mut got).unwrap();
+    c.read_to_string(&mut got)
+        .unwrap_or_else(|e| panic!("hearing {at}: {e}, after {:?}, {got:?} come", t.elapsed()));
     got
 }
 
@@ -8762,17 +8775,35 @@ fn published_ports_reach_the_guest() {
         "{ps}"
     );
     // What the guest says first, and what it sent back of `payload`.
+    // The writer holds the connection's own socket, the reader a copy: on Windows a
+    // shutdown through a copy (try_clone, WSADuplicateSocketW) of a connection to a
+    // network process's port was refused, WSAENOTCONN, its FIN never sent (jupiter, 3 of
+    // 3 runs), where the socket's own sent it (3 of 3).
     let exchange = |at: SocketAddr, payload: Vec<u8>| -> (String, Vec<u8>) {
-        let mut c = TcpStream::connect_timeout(&at, TIMEOUT).unwrap();
+        let mut writer = TcpStream::connect_timeout(&at, TIMEOUT).unwrap();
+        let mut c = writer.try_clone().unwrap();
         c.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut writer = c.try_clone().unwrap();
+        let len = payload.len();
+        let t = Instant::now();
         let writing = std::thread::spawn(move || {
-            writer.write_all(&payload).unwrap();
-            writer.shutdown(std::net::Shutdown::Write).unwrap();
+            let wrote = writer
+                .write_all(&payload)
+                .map_err(|e| format!("writing: {e} after {:?}", t.elapsed()));
+            let shut = writer
+                .shutdown(std::net::Shutdown::Write)
+                .map_err(|e| format!("shutting: {e} after {:?}", t.elapsed()));
+            (wrote, shut)
         });
         let mut got = Vec::new();
-        c.read_to_end(&mut got).unwrap();
-        writing.join().unwrap();
+        let read = c.read_to_end(&mut got);
+        let wrote = writing.join().unwrap();
+        if read.is_err() || wrote.0.is_err() || wrote.1.is_err() {
+            panic!(
+                "exchanging {len} bytes with {at}: read {} bytes, {read:?}, after {:?}; writer {wrote:?}",
+                got.len(),
+                t.elapsed()
+            );
+        }
         let at = got.iter().position(|&b| b == b'\n').unwrap();
         let rest = got.split_off(at + 1);
         (String::from_utf8(got).unwrap(), rest)
@@ -8866,7 +8897,8 @@ fn published_ports_reach_the_guest() {
     assert_eq!(refused.status, Some(125), "{refused}");
     assert!(
         refused.stderr.contains(&format!(
-            "0.0.0.0:{h}/tcp: the host's port is taken: address already in use{help}"
+            "0.0.0.0:{h}/tcp: the host's port is taken: {}{help}",
+            in_use()
         )),
         "{refused}"
     );
@@ -8930,7 +8962,8 @@ fn published_ports_reach_the_guest() {
     );
     assert!(
         refused.stderr.contains(&format!(
-            "0.0.0.0:{p}/tcp: the host's port is taken: address already in use"
+            "0.0.0.0:{p}/tcp: the host's port is taken: {}",
+            in_use()
         )),
         "{refused}"
     );
@@ -8994,7 +9027,8 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
     assert_eq!(other_failed.into_inner().unwrap(), None, "another run");
     assert!(others >= 3, "{others} other runs: too few to tell");
     // Whatever the timing: a running VM is its spawner's child, not the daemon's, whose
-    // one child is the spawner.
+    // one child is the spawner; on Windows, where a process is made, not forked, there is
+    // no spawner and a VM is the daemon's own (D158, D195).
     let mut asleep = start(&home, &image, &["--name", "asleep"], &["sleep"]);
     let daemon: u32 = std::fs::read_to_string(home.join("daemon.pid"))
         .unwrap()
@@ -9002,9 +9036,13 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
         .parse()
         .unwrap();
     let children = children_of(daemon);
-    let spawner = match children.as_slice() {
-        [(pid, args)] if args.ends_with(" spawner") => *pid,
-        _ => panic!("the daemon's children: {children:?}"),
+    let spawner = if cfg!(windows) {
+        daemon
+    } else {
+        match children.as_slice() {
+            [(pid, args)] if args.ends_with(" spawner") => *pid,
+            _ => panic!("the daemon's children: {children:?}"),
+        }
     };
     let made = children_of(spawner);
     assert!(
@@ -9016,7 +9054,8 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
 }
 
 /// The processes whose parent is `parent`, each with its command line: from /proc on
-/// Linux, whatever ps the host has, elsewhere as ps lists them.
+/// Linux, whatever ps the host has, elsewhere as ps lists them; on Windows each with its
+/// executable's name alone, from the system's snapshot of its processes (Toolhelp32).
 fn children_of(parent: u32) -> Vec<(u32, String)> {
     #[cfg(target_os = "linux")]
     {
@@ -9035,7 +9074,15 @@ fn children_of(parent: u32) -> Vec<(u32, String)> {
             })
             .collect()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        common::processes()
+            .into_iter()
+            .filter(|(_, ppid, _)| *ppid == parent)
+            .map(|(pid, _, name)| (pid, name))
+            .collect()
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         let out = Command::new("ps")
             .args(["-A", "-o", "pid=,ppid=,command="])
@@ -9091,7 +9138,9 @@ fn published_udp_ports_carry_datagrams_both_ways() {
     // UDP sockets on the port (a lost answer, 2026-10-06 and 2026-10-10, under load).
     let ask = |client: &UdpSocket, to: std::net::SocketAddr, payload: &[u8]| {
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
-        client.send_to(payload, to).unwrap();
+        client
+            .send_to(payload, to)
+            .unwrap_or_else(|e| panic!("sending to {to} from {:?}: {e}", client.local_addr()));
         let mut buf = [0u8; 2048];
         let (len, from) = common::recv_from(client, &mut buf).unwrap_or_else(|e| {
             let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
@@ -9136,14 +9185,18 @@ fn published_udp_ports_carry_datagrams_both_ways() {
     assert_eq!(gateway_port(&first, "one"), gateway_port(&again, "one"));
     assert_ne!(gateway_port(&first, "one"), gateway_port(&second, "two"));
     // Asked at the host's own address from its loopback, the answer comes from the
-    // address asked, not the one the route back would pick.
+    // address asked, not the one the route back would pick. Windows sends nothing from its
+    // loopback to its other addresses (WSAENETUNREACH, jupiter 2026-10-28): there the ask
+    // comes from a socket of the unspecified address.
     let host = UdpSocket::bind("0.0.0.0:0")
         .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
         .and_then(|s| s.local_addr());
+    let any = UdpSocket::bind("0.0.0.0:0").unwrap();
+    let asker = if cfg!(windows) { &any } else { &a };
     match host {
         Ok(host) => {
             let at = std::net::SocketAddr::new(host.ip(), n);
-            let (answer, from) = ask(&a, at, b"one");
+            let (answer, from) = ask(asker, at, b"one");
             assert_eq!(from, at);
             gateway_port(&answer, "one");
         }
