@@ -1176,10 +1176,27 @@ pub fn peak_rss_kib() -> u64 {
     memory().map_or(0, |m| (m.PeakWorkingSetSize / 1024) as u64)
 }
 
-/// This process's own memory now, in KiB: its private bytes committed (PrivateUsage), what
-/// no other process shares; 0 where unknown.
+/// This process's own memory now, in KiB: its private working set, what it holds of the
+/// host's memory that no other process shares (PROCESS_MEMORY_COUNTERS_EX2), as the daemon
+/// reads a VM process's (`platform::process_usage`); where Windows counts none, its working
+/// set. Not its private bytes committed (PrivateUsage), which stay as they are whatever it
+/// gives back (PM M371); 0 where unknown.
 pub fn footprint_kib() -> u64 {
-    memory().map_or(0, |m| (m.PrivateUsage / 1024) as u64)
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2};
+    let Ok(cb) = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX2>()) else {
+        return 0;
+    };
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX2 {
+        cb,
+        ..Default::default()
+    };
+    // SAFETY: this process, and counters of the size their `cb` says, for the call to fill.
+    if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), cb) } != 0
+        && counters.PrivateWorkingSetSize != 0
+    {
+        return (counters.PrivateWorkingSetSize / 1024) as u64;
+    }
+    memory().map_or(0, |m| (m.WorkingSetSize / 1024) as u64)
 }
 
 /// The variable a child of [`spawn`]'s finds its grants pipe by: the handles it was given

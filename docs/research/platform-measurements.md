@@ -15818,3 +15818,39 @@ revision before comparing a changed API/implementation.
   D191's hold does: their devices' threads and governors are the rest.
 - **Consequence (D183, slice 3).** A group's `cpu.max` is held by its microVMs on macOS
   and on Windows alike, not by Windows' job CPU rate.
+
+### M371. What gives a guest's freed memory back to Windows (D151, D196)
+
+- **Question.** On windows-2025 a restored microVM reported 1 GiB its guest freed and held
+  it all (`a_runs_memory_freed_goes_back_to_the_host`, budget-e2e run 40663074754: its private
+  bytes 1,257,976 KiB against 469,992 idle). Its RAM is its template's file mapped
+  copy-on-write (D196), where `platform::discard` decommits and commits again, as it does a
+  cold boot's private RAM. What does Windows give back, of each, by each way it has, and
+  what does each count show?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m371.rs`, run on jupiter (AMD Ryzen
+  AI Max+ 395, Windows 10.0.26200), 2026-10-28: 64 MiB of private memory (VirtualAlloc) and
+  64 MiB of a file's view mapped copy-on-write into a placeholder (MapViewOfFile3,
+  PAGE_WRITECOPY), every page written, then given back by each way, the process's private
+  bytes (PrivateUsage) and private working set (PROCESS_MEMORY_COUNTERS_EX2) read before
+  and after, and a page read after.
+- **Found.**
+
+  | memory | way | result | private bytes | private working set | a page reads |
+  |---|---|---|---|---|---|
+  | private | decommitted and committed again | ok | +0 | −64 MiB | 0 |
+  | private | DiscardVirtualMemory | ok | +0 | −64 MiB | 0 |
+  | private | MEM_RESET, then VirtualUnlock | ok | +0 | −64 MiB | what was written |
+  | a copy-on-write view | decommitted | ERROR_INVALID_PARAMETER | +0 | +0 | |
+  | a copy-on-write view | DiscardVirtualMemory | ERROR_USER_MAPPED_FILE | +0 | +0 | |
+  | a copy-on-write view | MEM_RESET, then VirtualUnlock | ERROR_USER_MAPPED_FILE | +0 | +0 | |
+  | a copy-on-write view | unmapped, its placeholder kept, mapped again | ok | +0 | −64 MiB | the file's bytes |
+
+  A page of the view is PAGE_WRITECOPY as mapped and PAGE_READWRITE once written. Private
+  bytes moved by none of them: they count what is committed, which each way that leaves
+  the memory usable commits again.
+- **Consequence.** A VM process's footprint on Windows is its private working set, as the
+  daemon reads it already (`platform::process_usage`), not its private bytes
+  (`shards_ipc::footprint_kib`). A cold-booted microVM's RAM is given back as its guest
+  reports it free (D151). A restored one's is not yet: Windows gives back the written
+  pages of a copy-on-write view only as the whole view is unmapped, and a restore maps its
+  RAM as one view (D196).

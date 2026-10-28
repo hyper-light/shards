@@ -13317,6 +13317,11 @@ fn a_runs_memory_freed_goes_back_to_the_host() {
     // it reports free in turn. Measured 94 MiB idle, and 57 and 132 MiB after 512 MiB
     // freed, a peak of 578 and 645 MiB; with none given back, the peak.
     let (idle, held) = (idle.footprint_kib().unwrap(), r.footprint_kib().unwrap());
+    // A restore's RAM on Windows is one copy-on-write view of its template's file (D196),
+    // whose written pages Windows gives back only as the whole view is unmapped (PM M371).
+    if common::later_on_windows(7, "a restored microVM's freed memory given back") {
+        return;
+    }
     assert!(
         held < idle + (512 << 10) / 2,
         "{held} KiB held of 512 MiB freed, {idle} KiB idle: {r}"

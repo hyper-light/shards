@@ -9856,9 +9856,14 @@ container's memory freed is its host's at once.
   touched. Only the host's whole pages of guest RAM in a range are given back; one the
   host could not give back is kept, and said once.
 - **Where.** Every run's microVM, last of its devices, so that no other device's window
-  moves; its templates with it (snapshot format 14). Builders on Linux and macOS: a
-  build's peak is not held to its end. Not over WHP yet, whose taking a part of guest
-  RAM away and back is unmeasured.
+  moves; its templates with it (snapshot format 14). Builders on every host: a build's
+  peak is not held to its end. On Windows a cold-booted microVM's RAM, private memory, is
+  given back as decommitted and committed again (PM M371: its private working set 64 MiB
+  less of 64). Not yet a restored one's: its RAM is its template's file mapped
+  copy-on-write as one view (D196), and Windows gives back a view's written pages only as
+  the whole view is unmapped (M371: decommit refused, ERROR_INVALID_PARAMETER;
+  DiscardVirtualMemory and MEM_RESET refused, ERROR_USER_MAPPED_FILE), which takes a
+  restore's RAM mapped in views of what reporting gives back.
 - **What the host holds none of is left alone.** A range none of whose pages the host
   holds (`platform::untouched`: never touched, or a restored guest's that is still its
   template's file's) is answered as it is, no stage 2 touched.
