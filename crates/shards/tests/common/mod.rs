@@ -1578,11 +1578,71 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     run_command(cmd, &asked, timeout)
 }
 
+/// What a client that never ended shows before it is killed: its home's runs as its daemon
+/// has them (`ps -a`), whether the daemon took its run at all; and on Windows its threads'
+/// stacks and its daemon's, where this host has Microsoft's console debugger (cdb, the
+/// Windows SDK's Debugging Tools), attached without stopping them (`-pv`).
+fn stuck(pid: u32, home: Option<&Path>) -> String {
+    // What `cmd` said by `timeout`; a word that it said nothing where it never ended, so
+    // that the failure this adds to is never lost to one of its own.
+    let said_by = |cmd: &mut Command, timeout: Duration| match std::panic::catch_unwind(
+        std::panic::AssertUnwindSafe(|| output_within(cmd, timeout)),
+    ) {
+        Ok(out) => format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(_) => format!("(it did not end within {timeout:?})"),
+    };
+    let mut said = String::new();
+    if let Some(home) = home {
+        let mut ps = command();
+        ps.args(["ps", "-a", "--no-trunc"])
+            .env("SHARDS_HOME", home)
+            .stdin(Stdio::null());
+        said.push_str(&format!(
+            "\n--- ps -a in its home\n{}",
+            said_by(&mut ps, Duration::from_secs(20))
+        ));
+    }
+    #[cfg(windows)]
+    {
+        let cdb = Path::new(r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe");
+        if cdb.is_file() {
+            let daemon = home
+                .and_then(|h| std::fs::read_to_string(h.join("daemon.pid")).ok())
+                .and_then(|p| p.trim().parse::<u32>().ok());
+            for (who, pid) in std::iter::once(("its client", pid)).chain(daemon.map(|d| ("its daemon", d))) {
+                let mut stacks = Command::new(cdb);
+                stacks
+                    .args(["-pv", "-p", &pid.to_string(), "-c", "~*kn 40; qd"])
+                    .stdin(Stdio::null());
+                said.push_str(&format!(
+                    "\n--- {who} ({pid}): its threads' stacks (cdb)\n{}",
+                    said_by(&mut stacks, Duration::from_secs(120))
+                ));
+            }
+        } else {
+            said.push_str("\n(no cdb on this host for the stacks)");
+        }
+    }
+    // Its stacks are Windows' alone here: Linux CI's hang watcher takes them there.
+    #[cfg(not(windows))]
+    let _ = pid;
+    said
+}
+
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
 /// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
 /// after `timeout`, `asked` naming it then.
 pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run {
     let start = Instant::now();
+    // Its home, for what is shown of a run that never ends ([`stuck`]).
+    let home: Option<PathBuf> = cmd
+        .get_envs()
+        .find(|(k, _)| *k == "SHARDS_HOME")
+        .and_then(|(_, v)| v.map(PathBuf::from));
     let mut child = cmd
         .env("SHARDS_TIMING", "1")
         .stdin(Stdio::null())
@@ -1636,10 +1696,11 @@ pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run
             break st;
         }
         if start.elapsed() > timeout {
+            let seen = stuck(child.id(), home.as_deref());
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
+                "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
                 asked.join(" "),
                 took(&out),
                 took(&err)
