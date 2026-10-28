@@ -17099,11 +17099,21 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
         ),
         "{details}"
     );
-    for (flags, said) in [
+    // Another OS's own log, which this host keeps none of: Windows sends a run's to ETW
+    // (D198), macOS to its unified log (D199).
+    let (foreign, foreign_said) = if cfg!(windows) {
         (
-            &["--log-driver", "etwlogs"][..],
+            "oslog",
+            "shards: --log-driver oslog: the unified log is macOS's own",
+        )
+    } else {
+        (
+            "etwlogs",
             "shards: --log-driver etwlogs: Event Tracing for Windows is Windows' own",
-        ),
+        )
+    };
+    for (flags, said) in [
+        (&["--log-driver", foreign][..], foreign_said),
         (
             &["--log-driver", "bogus"],
             "shards: --log-driver bogus: no such log driver",
