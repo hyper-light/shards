@@ -1282,6 +1282,35 @@ fn a_guest_grows_and_gives_back_its_memory() {
 #[test]
 #[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boots_at_once_cost"]
 fn cold_boots_at_once_cost() {
+    let host = std::thread::available_parallelism().unwrap().get();
+    boots_at_once(&[(host, 1), (host, 2), (host, 4), (host, 8), (1, 8), (1, 16)].map(|(v, n)| (v, n, "")));
+}
+
+/// The same, each case beside its kernel told `quiet`, which writes only warnings and worse
+/// to its console: whether a boot's console lines, each byte two port exits, are what it
+/// spends (PM M376).
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boots_at_once_cost_quiet"]
+fn cold_boots_at_once_cost_quiet() {
+    let host = std::thread::available_parallelism().unwrap().get();
+    boots_at_once(&[
+        (host, 1, ""),
+        (host, 4, ""),
+        (host, 1, " quiet"),
+        (host, 2, " quiet"),
+        (host, 4, " quiet"),
+        (host, 8, " quiet"),
+        (1, 8, " quiet"),
+        (1, 16, " quiet"),
+    ]);
+}
+
+/// Boots each case's guests at once, as [`cold_boots_at_once_cost`] says: of its vCPUs,
+/// as many at once, its kernel told the words past its console.
+#[cfg(windows)]
+#[allow(clippy::print_stderr, clippy::unwrap_used, clippy::indexing_slicing)]
+fn boots_at_once(cases: &[(usize, usize, &str)]) {
     use std::io::{BufRead as _, BufReader};
     use std::process::Stdio;
     use std::time::Instant;
@@ -1352,7 +1381,7 @@ fn cold_boots_at_once_cost() {
     let host = std::thread::available_parallelism().unwrap().get();
     let k = kernel();
     eprintln!("M376 host CPUs {host}");
-    for (vcpus, at_once) in [(host, 1), (host, 2), (host, 4), (host, 8), (1, 8), (1, 16)] {
+    for &(vcpus, at_once, told) in cases {
         let t0 = Instant::now();
         let (tx, rx) = std::sync::mpsc::channel::<(usize, Option<(Duration, String)>)>();
         let mut vms: Vec<(std::process::Child, HANDLE)> = Vec::new();
@@ -1361,7 +1390,7 @@ fn cold_boots_at_once_cost() {
                 .args(["run", "--kernel"])
                 .arg(k)
                 .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
-                .args(["--cmdline", "console=ttyS0 earlycon panic=-1"])
+                .args(["--cmdline", &format!("console=ttyS0 earlycon panic=-1{told}")])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -1410,7 +1439,7 @@ fn cold_boots_at_once_cost() {
                 .collect();
             let end_at = end.map(|(at, _)| at.as_secs_f64());
             eprintln!(
-                "M376 vcpus={vcpus} at_once={at_once} vm={i}: first {first:.2?} s, panic {end_at:.2?} s, guest {guest_end:.2?} s, cpu user {user:.2} s kernel {kernel:.2} s, {} lines; longest guest gaps: {gaps:#?}",
+                "M376 vcpus={vcpus} at_once={at_once}{told} vm={i}: first {first:.2?} s, panic {end_at:.2?} s, guest {guest_end:.2?} s, cpu user {user:.2} s kernel {kernel:.2} s, {} lines; longest guest gaps: {gaps:#?}",
                 said.len()
             );
             summary.push((end_at.unwrap_or(f64::INFINITY), user + kernel));
@@ -1420,7 +1449,7 @@ fn cold_boots_at_once_cost() {
         ends.sort_by(f64::total_cmp);
         cpus.sort_by(f64::total_cmp);
         eprintln!(
-            "M376 SUMMARY vcpus={vcpus} at_once={at_once}: panic at p50 {:.2} s max {:.2} s; CPU a VM p50 {:.2} s max {:.2} s; wall {:.2} s",
+            "M376 SUMMARY vcpus={vcpus} at_once={at_once}{told}: panic at p50 {:.2} s max {:.2} s; CPU a VM p50 {:.2} s max {:.2} s; wall {:.2} s",
             ends[ends.len() / 2],
             ends[ends.len() - 1],
             cpus[cpus.len() / 2],
