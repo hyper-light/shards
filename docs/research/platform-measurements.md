@@ -15943,3 +15943,44 @@ revision before comparing a changed API/implementation.
   never through syslogd's socket, so a syslog driver's local default keeps nothing there;
   and a line of more than 1,015 bytes goes in parts of at most that many bytes, each cut
   at a character's boundary, or the log keeps only its first part.
+
+### M375. A copy-on-write view of a WHP guest's RAM given back while its partition maps it (D151, D196)
+
+- **Question.** Windows gives back a copy-on-write view's written pages only as the view is
+  unmapped (M371), and a restore's RAM mapped as views of 2 MiB lets each range a guest
+  reports be given back whole (M372). But a guest's RAM is mapped into its partition
+  (WHvMapGpaRange, whose source is "a region in the caller's process"): may a view be
+  unmapped to its placeholder and mapped again under a partition that maps it, and does the
+  guest then read the file's bytes and write into the new view? Or must its stage 2 be
+  unmapped first and mapped again after (WHvUnmapGpaRange, WHvMapGpaRange)? What does each
+  cost?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m375.rs`, run three times on
+  jupiter (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200), 2026-10-28: a partition of
+  one vCPU whose 4 MiB of RAM are two views of 2 MiB of a file (PAGE_WRITECOPY, each into
+  its part of a split placeholder), mapped at stage 2 whole, its guest an interpreter of
+  loads and stores the host asks at port exits. The guest stores into the second view; the
+  host gives it back, unmapping it to its placeholder (UnmapViewOfFile2,
+  MEM_PRESERVE_PLACEHOLDER) and mapping it again (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER),
+  A with stage 2 left as it is, B with the range unmapped from the partition first and
+  mapped again after. Then the guest loads and stores there again; and 200 times, every
+  page of the view written by the guest, given back as before, timed, the private working
+  set (PROCESS_MEMORY_COUNTERS_EX2) read around it; after the last, each of its 512 pages
+  loaded by the guest.
+- **Found** (alike in all three runs):
+
+  | | given back | a guest's load after | its store after | a written 2 MiB view given back | private working set given back | pages other than the file's after the last |
+  |---|---|---|---|---|---|---|
+  | A, stage 2 as it is | ok | the file's bytes | reaches the new view | p50 85.6-86.2 µs, p90 88.9-99.5, p99 141.7-552.9, max 148.6-772.7 (n=200 each) | 2,048 KiB each time | 0 of 512 |
+  | B, stage 2 unmapped and mapped again | ok | the file's bytes | reaches the new view | p50 398.7-422.9 µs, p90 556.7-598.5, p99 669.3-708.0, max 687.1-975.5 (n=200 each) | 2,048 KiB each time | 0 of 512 |
+
+  So the partition's stage 2 here follows what the process maps at the source's
+  addresses, as the documentation's words have it. Where a cold boot's private memory was
+  decommitted and committed again under a partition that mapped it, the guest kept the
+  old pages (M193): the two kinds of memory are not alike under it.
+- **Consequence (D151 on Windows, open).** A restored microVM's reported ranges can be given
+  back as views swapped, its guest reading its template's bytes after, as it would after a
+  restore. Through stage 2 (B) the hypervisor is told, as D151 tells it of a cold boot's
+  private memory, at 0.4 ms a 2 MiB block; A is 4.7 times cheaper but rests on what one
+  Windows build does where its documentation says nothing of a source remapped, and
+  private memory behaves otherwise: B is the one to build on, A measured again where the
+  restores are (windows-2025) before any use of it.
