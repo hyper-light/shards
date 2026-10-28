@@ -549,6 +549,67 @@ fn stat_at(dir: RawFd, name: &CStr) -> Result<Stat, Errno> {
     Ok(Stat::from(&st))
 }
 
+/// What the symlink `name` in `dir` holds (readlinkat(2)).
+fn readlink_at(dir: RawFd, name: &CStr) -> Result<Vec<u8>, Errno> {
+    let mut buf = vec![0u8; 4096];
+    // SAFETY: readlinkat(2) into a buffer of its length.
+    let n = unsafe { libc::readlinkat(dir, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    if n < 0 {
+        return Err(last());
+    }
+    buf.truncate(usize::try_from(n).unwrap_or(0));
+    Ok(buf)
+}
+
+/// A symlink `name` in `dir` holding `target` (symlinkat(2)).
+fn symlink_at(target: &CStr, dir: RawFd, name: &CStr) -> Result<(), Errno> {
+    // SAFETY: symlinkat(2) of NUL-terminated strings in a directory we hold.
+    if unsafe { libc::symlinkat(target.as_ptr(), dir, name.as_ptr()) } != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
+/// A node `name` in `dir` of `mode` (its kind and permissions) and the guest's device
+/// number `rdev` (mknodat(2)).
+fn mknod_at(dir: RawFd, name: &CStr, mode: u32, rdev: u32) -> Result<(), Errno> {
+    #[allow(clippy::cast_possible_truncation)]
+    // SAFETY: mknodat(2) of a NUL-terminated name in a directory we hold.
+    if unsafe { libc::mknodat(dir, name.as_ptr(), mode as libc::mode_t, host::decode_dev(rdev)) } != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
+/// A directory `name` in `dir` of the host's permissions `perm` (mkdirat(2)).
+fn mkdir_at(dir: RawFd, name: &CStr, perm: u32) -> Result<(), Errno> {
+    #[allow(clippy::cast_possible_truncation)]
+    // SAFETY: mkdirat(2) of a NUL-terminated name in a directory we hold.
+    if unsafe { libc::mkdirat(dir, name.as_ptr(), perm as libc::mode_t) } != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
+/// Removes `name` from `dir`, a directory if `rmdir` (unlinkat(2)).
+fn unlink_at(dir: RawFd, name: &CStr, rmdir: bool) -> Result<(), Errno> {
+    let flags = if rmdir { libc::AT_REMOVEDIR } else { 0 };
+    // SAFETY: unlinkat(2) of a NUL-terminated name in a directory we hold.
+    if unsafe { libc::unlinkat(dir, name.as_ptr(), flags) } != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
+/// Another name, `name` in `dir`, of `oname` in `odir` (linkat(2)).
+fn link_at(odir: RawFd, oname: &CStr, dir: RawFd, name: &CStr) -> Result<(), Errno> {
+    // SAFETY: linkat(2) of NUL-terminated names in directories we hold.
+    if unsafe { libc::linkat(odir, oname.as_ptr(), dir, name.as_ptr(), 0) } != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! {
     /// The names this thread's server has opened, for a test of what it never opens.
@@ -1437,24 +1498,14 @@ impl Server {
             }
             op::READLINK => {
                 let (dir, name) = at(s, nodeid)?;
-                let mut buf = vec![0u8; 4096];
-                // SAFETY: readlinkat(2) into a buffer of its length.
-                let n = unsafe { libc::readlinkat(dir, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
-                if n < 0 {
-                    return Err(last());
-                }
-                buf.truncate(usize::try_from(n).unwrap_or(0));
-                r.bytes(&buf);
+                r.bytes(&readlink_at(dir, &name)?);
             }
             op::SYMLINK => {
                 self.writable(s, nodeid)?;
                 let name = a.name()?;
                 let target = a.cstr()?;
                 let dir = dir_fd(s, nodeid)?;
-                // SAFETY: symlinkat(2) of NUL-terminated strings in a directory we hold.
-                if unsafe { libc::symlinkat(target.as_ptr(), dir, name.as_ptr()) } != 0 {
-                    return Err(last());
-                }
+                symlink_at(&target, dir, &name)?;
                 self.made(s, nodeid, &name, caller, Kept::default(), r)?;
             }
             op::MKNOD => {
@@ -1489,23 +1540,14 @@ impl Server {
                     } else {
                         host_perm(perm, false)
                     };
-                    // SAFETY: mknodat(2) of a NUL-terminated name in a directory we hold.
-                    let made = unsafe {
-                        libc::mknodat(
-                            dir,
-                            name.as_ptr(),
-                            (kind | on_host) as libc::mode_t,
-                            host::decode_dev(rdev),
-                        )
-                    } == 0;
-                    match (made, last()) {
-                        (true, _) => Kept::mode(perm),
+                    match mknod_at(dir, &name, kind | on_host, rdev) {
+                        Ok(()) => Kept::mode(perm),
                         // A node the host makes only for a privileged process (a device,
                         // the whiteout overlayfs marks a removal with: one of 0/0): an
                         // empty regular file, the guest's kind and number kept beside it,
                         // as the guest sees it. The guest's kernel opens a device node
                         // itself, never through the share.
-                        (false, EPERM) => {
+                        Err(EPERM) => {
                             empty(0o600)?;
                             Kept {
                                 mode: Some(perm),
@@ -1513,7 +1555,7 @@ impl Server {
                                 rdev: Some(rdev),
                             }
                         }
-                        (false, e) => return Err(e),
+                        Err(e) => return Err(e),
                     }
                 };
                 self.made(s, nodeid, &name, caller, kept, r)?;
@@ -1524,10 +1566,7 @@ impl Server {
                 let _umask = a.u32()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
-                // SAFETY: mkdirat(2) of a NUL-terminated name in a directory we hold.
-                if unsafe { libc::mkdirat(dir, name.as_ptr(), host_perm(mode, true) as libc::mode_t) } != 0 {
-                    return Err(last());
-                }
+                mkdir_at(dir, &name, host_perm(mode, true))?;
                 self.made(s, nodeid, &name, caller, Kept::mode(mode), r)?;
             }
             op::UNLINK | op::RMDIR => {
@@ -1535,13 +1574,7 @@ impl Server {
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
                 let removal = pin_before_removal(s, volume_of(s, nodeid), dir, &name);
-                let flags = if opcode == op::RMDIR {
-                    libc::AT_REMOVEDIR
-                } else {
-                    0
-                };
-                // SAFETY: unlinkat(2) of a NUL-terminated name in a directory we hold.
-                let failed = (unsafe { libc::unlinkat(dir, name.as_ptr(), flags) } != 0).then(last);
+                let failed = unlink_at(dir, &name, opcode == op::RMDIR).err();
                 removed(s, removal, failed.is_none());
                 if let Some(e) = failed {
                     return Err(e);
@@ -1580,10 +1613,7 @@ impl Server {
                 let name = a.name()?;
                 let (odir, oname) = at(s, old)?;
                 let dir = dir_fd(s, nodeid)?;
-                // SAFETY: linkat(2) of NUL-terminated names in directories we hold.
-                if unsafe { libc::linkat(odir, oname.as_ptr(), dir, name.as_ptr(), 0) } != 0 {
-                    return Err(last());
-                }
+                link_at(odir, &oname, dir, &name)?;
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
                 let dax = self.dax_of(s, id, &st);
                 r.entry(id, &st, owner, dax);
