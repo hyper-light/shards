@@ -1230,10 +1230,17 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
     };
-    // Its Ctrl-C is the VM's, which shares this console; made after it, so that it keeps
-    // the default (SetConsoleCtrlHandler: the setting is inherited).
-    // SAFETY: no handler, ignoring Ctrl-C in this process.
-    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1) };
+    // Its console's interrupts, Ctrl+C and Ctrl+Break, are the VM's, which shares this
+    // console and gives its guest each as SIGINT (workload::forward_signals): this process
+    // takes them and goes on waiting for it. Not by ignoring Ctrl+C alone (a null handler),
+    // which leaves Ctrl+Break to the default handler that ends this process, the event a
+    // process group is sent (GenerateConsoleCtrlEvent).
+    unsafe extern "system" fn interrupts(event: u32) -> windows_sys::core::BOOL {
+        use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+        i32::from(matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT))
+    }
+    // SAFETY: a handler of this process's that lives as long as it does.
+    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(interrupts), 1) };
     let link = crate::grant::Link {
         from: std::fs::File::from(OwnedHandle::from(asks_from)),
         to: std::fs::File::from(OwnedHandle::from(answers_to)),
