@@ -87,6 +87,8 @@ windows-sys = { workspace = true, features = [
 [build-dependencies]
 # The helpers' digests (build.rs).
 sha2 = "0.11"
+# The oslog driver's shim of os_log's macros (build.rs `oslog`, D199), on macOS.
+cc = "1.5"
 
 [target.'cfg(windows)'.dev-dependencies]
 # What tests/confined.rs reads of a running VM process; how tests/daemon.rs interrupts a

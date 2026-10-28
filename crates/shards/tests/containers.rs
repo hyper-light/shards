@@ -16462,6 +16462,103 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
     });
 }
 
+/// The entries of macOS's unified log under subsystem `shards` and `category`, each its type
+/// and its message, as `log show` gives them, waiting up to TIMEOUT for `count`: a run's
+/// lines are sent from the store after it, not as it ends.
+#[cfg(target_os = "macos")]
+fn unified_log(category: &str, count: usize) -> Vec<(String, String)> {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let out = common::output_within(
+            std::process::Command::new("/usr/bin/log").args([
+                "show",
+                "--last",
+                "10m",
+                "--style",
+                "ndjson",
+                "--predicate",
+                &format!("subsystem == \"shards\" AND category == \"{category}\""),
+            ]),
+            TIMEOUT,
+        );
+        let entries: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|e| e["category"] == category)
+            .map(|e| {
+                (
+                    e["messageType"].as_str().unwrap_or_default().to_string(),
+                    e["eventMessage"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        if entries.len() >= count || Instant::now() > deadline {
+            return entries;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// A run's log sent to macOS's own log (oslog, D199): each line an entry of its unified log,
+/// subsystem `shards`, category the run's tag, stdout's of the default type and stderr's of
+/// the error type, a line longer than the 1,015 bytes os_log keeps whole in parts of at most
+/// that many (PM M374); and syslog's local default there the same, macOS's syslogd keeping
+/// nothing sent to its socket. Refused elsewhere in shards' words.
+#[test]
+fn a_runs_log_is_sent_to_macos_own_log_as_its_options_say() {
+    let Some((home, image)) = home("containers-oslog") else {
+        return;
+    };
+    #[cfg(not(target_os = "macos"))]
+    {
+        let r = run_in(&home, &image, &["--log-driver", "oslog"], &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{r}");
+        assert!(
+            r.stderr
+                .contains("--log-driver oslog: the unified log is macOS's own"),
+            "{r}"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let tag = format!(
+            "shards-test-{}-{}",
+            std::process::id(),
+            home.file_name().unwrap().to_string_lossy()
+        );
+        let ran = |driver: &str, tag: &str, command: &[&str]| {
+            let r = run_in(
+                &home,
+                &image,
+                &["--log-driver", driver, "--log-opt", &format!("tag={tag}")],
+                command,
+            );
+            assert_eq!(r.status, Some(0), "{r}");
+        };
+        ran("oslog", &tag, &["streams", "out", "err"]);
+        let mut got = unified_log(&tag, 2);
+        got.sort();
+        assert_eq!(
+            got,
+            [("Default".into(), "out".into()), ("Error".into(), "err".into())],
+            "{got:?}"
+        );
+        let wide = format!("{tag}-wide");
+        ran("oslog", &wide, &["wide", "3000"]);
+        let parts: Vec<usize> = unified_log(&wide, 3).iter().map(|(_, m)| m.len()).collect();
+        assert_eq!(parts, [1015, 1015, 970]);
+        let local = format!("{tag}-syslog");
+        ran("syslog", &local, &["streams", "out", "err"]);
+        let mut got = unified_log(&local, 2);
+        got.sort();
+        assert_eq!(
+            got,
+            [("Default".into(), "out".into()), ("Error".into(), "err".into())],
+            "{got:?}"
+        );
+    }
+}
+
 /// A real-time ETW session of a test's own that listens for moby's etwlogs provider
 /// {a3693192-9ed6-46d2-a981-f8226c8363bd}: each event's string as it comes, until the
 /// session is dropped, which stops it.

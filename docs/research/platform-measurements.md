@@ -15920,3 +15920,26 @@ revision before comparing a changed API/implementation.
   wrote less `BytesOut − BytesRetrans − BytesInFlight`, those held unsent among them; a
   FIN is counted while the state is FIN_WAIT_1, CLOSING or LAST_ACK, as on macOS. D163's
   shipper reads it so on Windows (daemon/ship/sockets.rs `unacknowledged`).
+
+### M374. Where macOS's own log takes a program's lines, and how long one it keeps whole (the journal's counterpart on macOS)
+
+- **Question.** Linux keeps a journal (D166) and Windows its event tracing (D198); macOS
+  keeps its unified log. Does a syslog driver's local default, `/var/run/syslog`, reach it,
+  as it reaches a Linux host's syslog? And through os_log, its own interface, how long a
+  line does it keep whole?
+- **Method.** `docs/research/measurements/macos-log/run.sh` (sizes.c, edge.c), run twice on
+  the M5 Max, macOS 26.4.1, 2026-10-28, as the user, no root: a syslog datagram at info,
+  notice and err sent to `/var/run/syslog`; the same line through syslog(3) (`logger`); and
+  os_log_with_type of a `%{public}s` line of 512 bytes to 64 KiB, then of each length from
+  1,008 to 1,024 bytes; each read back with `log show`, and `/var/log/system.log` searched.
+- **Found** (both runs alike):
+  - The datagrams are in neither the unified log nor `/var/log/system.log`, at any of the
+    three levels: macOS's syslogd takes the socket's messages and keeps none of them.
+  - syslog(3)'s line is in the unified log, as `logger`'s own: macOS's syslog(3) logs
+    through os_log, not the socket.
+  - os_log keeps a line whole up to 1,015 bytes. One of 1,016 bytes or more, to 64 KiB, is
+    kept as its first 1,015 bytes and `<…>`.
+- **Consequence.** A run's log reaches macOS's own log only through os_log in the sender,
+  never through syslogd's socket, so a syslog driver's local default keeps nothing there;
+  and a line of more than 1,015 bytes goes in parts of at most that many bytes, each cut
+  at a character's boundary, or the log keeps only its first part.

@@ -31,18 +31,20 @@ pub mod syslog;
 
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
-/// The drivers that send a log elsewhere, from shards' store (D163 to D169); journald's on
-/// Linux alone, whose systemd keeps the journal, and etwlogs' on Windows alone, Event
-/// Tracing for Windows.
-const SENDS: [&str; 8] = [
-    "syslog", "gelf", "fluentd", "splunk", "awslogs", "gcplogs", "journald", "etwlogs",
+/// The drivers that send a log elsewhere, from shards' store (D163 to D169); each host's own
+/// log on that host alone: journald's on Linux, whose systemd keeps the journal; etwlogs' on
+/// Windows, Event Tracing for Windows (D198); oslog's on macOS, its unified log (D199).
+const SENDS: [&str; 9] = [
+    "syslog", "gelf", "fluentd", "splunk", "awslogs", "gcplogs", "journald", "etwlogs", "oslog",
 ];
 /// What a run's log can be, as a refusal says it.
 #[cfg(target_os = "linux")]
 const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs), Cloud Logging (gcplogs) or the journal (journald), or keeps none (none)";
 #[cfg(windows)]
 const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs), Cloud Logging (gcplogs) or Event Tracing for Windows (etwlogs), or keeps none (none)";
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs), Cloud Logging (gcplogs) or macOS's own log (oslog), or keeps none (none)";
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs) or Cloud Logging (gcplogs), or keeps none (none)";
 /// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
 const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
@@ -126,6 +128,11 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
             "--log-driver etwlogs: Event Tracing for Windows is Windows' own, and this host keeps none: {KINDS}"
         ));
     }
+    if name == "oslog" && !cfg!(target_os = "macos") {
+        return Err(format!(
+            "--log-driver oslog: the unified log is macOS's own, and this host keeps none: {KINDS}"
+        ));
+    }
     if name == "journald" && !cfg!(target_os = "linux") {
         return Err(format!(
             "--log-driver journald: the journal is systemd's, on Linux, and this host keeps none: {KINDS}"
@@ -140,8 +147,8 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
         "gelf" => &gelf::OPTIONS,
         "fluentd" => &fluentd::OPTIONS,
         "journald" => &journald::OPTIONS,
-        // moby's etwlogs reads no option of its own.
-        "etwlogs" => &[],
+        // moby's etwlogs reads no option of its own, nor oslog, whose category is the tag.
+        "etwlogs" | "oslog" => &[],
         "splunk" => &splunk::OPTIONS,
         "awslogs" => &awslogs::OPTIONS,
         "gcplogs" => &gcplogs::OPTIONS,
@@ -259,6 +266,8 @@ pub enum Remote {
     Journald,
     /// Event Tracing for Windows, moby's etwlogs provider (daemon/ship/etwlogs.rs).
     Etwlogs,
+    /// macOS's unified log, through os_log (daemon/ship/oslog.rs).
+    Oslog,
     Splunk(splunk::Config),
     Awslogs(awslogs::Config),
     Gcplogs(gcplogs::Config),
@@ -277,6 +286,7 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
         "fluentd" => Ok(Some(Remote::Fluentd(fluentd::config(opts)?))),
         "journald" => Ok(Some(Remote::Journald)),
         "etwlogs" => Ok(Some(Remote::Etwlogs)),
+        "oslog" => Ok(Some(Remote::Oslog)),
         "splunk" => Ok(Some(Remote::Splunk(splunk::config(opts)?))),
         "awslogs" => Ok(Some(Remote::Awslogs(awslogs::config(opts)?))),
         "gcplogs" => Ok(Some(Remote::Gcplogs(gcplogs::config(opts)?))),

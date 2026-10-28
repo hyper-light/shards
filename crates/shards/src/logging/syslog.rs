@@ -159,6 +159,8 @@ pub fn config(opts: &BTreeMap<String, String>) -> Result<Config, String> {
 /// which is there. Where Go's URL parser would take a `unix://` address's first name for a
 /// host and drop it, this says so.
 fn address(given: &str) -> Result<To, String> {
+    // The host's own syslog; on macOS its unified log, its syslogd keeping nothing sent to
+    // its socket (PM M374, daemon/ship.rs).
     if given.is_empty() {
         return Ok(To::Local);
     }

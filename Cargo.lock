@@ -1152,6 +1152,7 @@ dependencies = [
  "aws-lc-rs",
  "base64",
  "bzip2",
+ "cc",
  "flate2",
  "libc",
  "lzma-rust2",

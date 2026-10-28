@@ -6471,6 +6471,38 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D199. A run's log sent to macOS's own log: `oslog`, and syslog's local default there (built)
+
+`--log-driver oslog` is served on macOS, the journal's counterpart there (D166, D198): a
+run's lines go to macOS's unified log, which `log show` and Console read. Docker has no
+driver of macOS's, whose engine runs in a Linux VM there. Sent as every driver's are, from
+shards' store, by the daemon's shipper (D163).
+
+- **Through os_log, in the daemon.** macOS keeps nothing sent to syslogd's socket,
+  `/var/run/syslog`, at any level, while its syslog(3) and os_log reach the unified log
+  (PM M374). So a line is an entry the daemon writes with os_log_with_type, through a shim
+  of its macros that only a C compiler expands (daemon/ship/oslog.c, libSystem's, no launch
+  cost). Its message is public: what a run wrote is no secret of shards' to redact.
+- **Found as journald's are.** Its subsystem is `shards` and its category the run's tag
+  (its short ID unless `tag` says), as journald's SYSLOG_IDENTIFIER is: `log show
+  --predicate 'subsystem == "shards" AND category == "web"'`. stdout's lines are of the
+  default type and stderr's of the error type, as journald's priorities 6 and 3.
+- **Whole lines, in parts os_log keeps.** os_log keeps a line whole up to 1,015 bytes, and
+  of a longer one its first 1,015 bytes and `<…>` (M374). A longer line goes in parts of at
+  most 1,015 bytes, each cut at a character's boundary, none of it lost. Bytes that are no
+  UTF-8, and a NUL, are U+FFFD.
+- **syslog's local default, there.** `--log-driver syslog` with no `syslog-address` sends
+  to the host's own syslog, which on macOS is its unified log: there it is sent as oslog's,
+  the run's tag its category. Sent to syslogd's socket, as before, every line went nowhere.
+- **Its options** are every driver's (tag, labels, env, mode, the local copy's).
+- **macOS's.** Elsewhere it is refused as its run is made, in shards' words: the unified
+  log is macOS's own.
+
+Tested on real microVMs on macOS (`a_runs_log_is_sent_to_macos_own_log_as_its_options_say`):
+`log show` has a run's line on each stream with its type, a 3,000-byte line in parts of
+1,015, 1,015 and 970 bytes, and syslog's local default's lines alike. Elsewhere it tests the
+refusal. A unit test holds the parts to os_log's bound and to characters' boundaries.
+
 ### D198. A run's log sent to Event Tracing for Windows: `etwlogs` (built)
 
 `--log-driver etwlogs` is served on Windows, the journal's counterpart there (D166): a run's

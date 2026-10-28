@@ -32,6 +32,25 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// On macOS, the oslog driver's shim of os_log's macros (daemon/ship/oslog.c, D199), which
+/// only a C compiler expands, compiled into `shards` itself.
+fn oslog() -> Result<(), String> {
+    let _ = writeln!(
+        io::stdout().lock(),
+        "cargo::rerun-if-changed=src/daemon/ship/oslog.c"
+    );
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return Ok(());
+    }
+    cc::Build::new()
+        .file("src/daemon/ship/oslog.c")
+        .warnings(true)
+        .extra_warnings(true)
+        .warnings_into_errors(true)
+        .try_compile("shards_oslog")
+        .map_err(|e| format!("the oslog driver's shim: {e}"))
+}
+
 fn main() {
     if let Err(e) = build() {
         let mut out = io::stdout().lock();
@@ -43,6 +62,7 @@ fn main() {
 
 fn build() -> Result<(), String> {
     helpers()?;
+    oslog()?;
     let mut out = io::stdout().lock();
     // The compiler that built it, which `version` names where Docker names Go's.
     let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());

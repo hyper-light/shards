@@ -30,6 +30,8 @@ mod gcplogs;
 mod gelf;
 #[cfg(target_os = "linux")]
 mod journald;
+#[cfg(target_os = "macos")]
+mod oslog;
 mod sockets;
 mod splunk;
 mod stream;
@@ -805,6 +807,13 @@ impl<D: Disk> Daemon<D> {
         let details = self.log_details(id)?;
         let tag = crate::logging::tag(run, &details.info())?;
         Ok(Some(match remote {
+            // macOS keeps nothing sent to its syslogd's socket (PM M374): its own syslog,
+            // the local default's, is its unified log, which os_log writes, the run's tag
+            // its category (D199).
+            #[cfg(target_os = "macos")]
+            crate::logging::Remote::Syslog(config) if config.to == crate::logging::syslog::To::Local => {
+                Box::new(oslog::Oslog::new(&tag).map_err(|e| e.to_string())?)
+            }
             crate::logging::Remote::Syslog(config) => Box::new(syslog::Syslog::new(
                 config,
                 crate::logging::syslog::From {
@@ -921,6 +930,14 @@ impl<D: Disk> Daemon<D> {
                 return Err(
                     "--log-driver etwlogs: Event Tracing for Windows is Windows' own, and this host keeps none"
                         .into(),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            crate::logging::Remote::Oslog => Box::new(oslog::Oslog::new(&tag).map_err(|e| e.to_string())?),
+            #[cfg(not(target_os = "macos"))]
+            crate::logging::Remote::Oslog => {
+                return Err(
+                    "--log-driver oslog: the unified log is macOS's own, and this host keeps none".into(),
                 );
             }
         }))
