@@ -390,7 +390,6 @@ impl MemoryPressure {
     pub fn wait(&mut self) -> io::Result<()> {
         use windows_sys::Win32::System::Threading::INFINITE;
         if self.raised {
-            std::thread::sleep(REPEAT);
             if self.signalled(0)? {
                 // Still low, as it was REPEAT ago.
                 return Ok(());
