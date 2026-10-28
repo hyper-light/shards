@@ -410,6 +410,11 @@ fn beside(idle: usize, how: Waits) -> Result<Vec<f64>, String> {
             }
             Ok(())
         });
+        // A loop side that has given up answers nothing more: a reply waited for at most
+        // 10 s, so that its error is told rather than waited on for ever.
+        let wait_ms: u32 = 10_000;
+        // SAFETY: an option of its own size on our socket.
+        unsafe { setsockopt(ping, SOL_SOCKET, SO_RCVTIMEO, (&raw const wait_ms).cast(), 4) };
         let mut us = Vec::with_capacity(ROUNDS);
         for _ in 0..ROUNDS {
             let t = Instant::now();
