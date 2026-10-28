@@ -773,7 +773,8 @@ mod tests {
     }
 
     /// A FIFO's lines are its words of pressure, each heard once, and a writer that goes is
-    /// no end of them.
+    /// no end of them. A FIFO is Unix's: Windows' named pipe is build_windows.rs's.
+    #[cfg(unix)]
     #[test]
     fn a_fifo_tells_its_pressure_a_line_at_a_time() {
         let dir = shards_testdir::TempDir::new("told").unwrap();

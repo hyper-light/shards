@@ -102,9 +102,7 @@ pub struct Builder {
     _container: shards_ipc::AppContainer,
     conn: UnixStream,
     /// Where its host asks it to give back what it holds cold (build::GIVE_PORT, D188),
-    /// where its init dialed it. Unix's alone: a Windows host has no memory pressure
-    /// watched and no free page reporting under WHP (D188), so asks nothing.
-    #[cfg(unix)]
+    /// where its init dialed it.
     give: Option<UnixStream>,
     /// Where its steps' SSH agent sockets are relayed to (build::SSH_PORT).
     ssh: UnixListener,
@@ -125,7 +123,6 @@ pub struct Builder {
 /// A builder's give-back connection, as its build's memory pressure watcher asks through it
 /// (build::GIVE_PORT, D188): one ask out at a time, a give-back or its budget's room, its
 /// answer read whole however it comes.
-#[cfg(unix)]
 #[derive(Debug)]
 pub struct Giver {
     conn: UnixStream,
@@ -137,7 +134,6 @@ pub struct Giver {
 }
 
 /// What a builder answered an ask with (build::GIVE_PORT).
-#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     /// What its files freed, and what it asked to unplug (`GAVE`).
@@ -149,7 +145,6 @@ pub enum Answer {
     Refused(String),
 }
 
-#[cfg(unix)]
 impl Giver {
     /// The giver of the builder at the other end of `conn`, nothing asked of it yet.
     pub(super) fn new(conn: UnixStream) -> Giver {
@@ -258,7 +253,6 @@ impl Giver {
 
 /// A builder's answer of kind `which` saying `said`: `GAVE`'s bytes freed and asked to
 /// unplug, `HELD`'s bytes held within or nothing; else its words of why not.
-#[cfg(unix)]
 fn parse_answer(which: u8, said: &str) -> Answer {
     let mut amounts = said.split_whitespace().map(str::parse::<u64>);
     match (which, amounts.next(), amounts.next(), amounts.next()) {
@@ -720,7 +714,6 @@ fn kill(vm: &shards_ipc::Child) {
 /// The connection `listener` holds, the first its peer made, its listening ended with it,
 /// so that it takes no other (build::GIVE_PORT, which a builder's init dials before any step
 /// runs): none where none was made.
-#[cfg(unix)]
 fn take_first(listener: UnixListener) -> Option<UnixStream> {
     let taken = listener.accept();
     drop(listener);
@@ -742,7 +735,6 @@ impl Builder {
             .map_err(|e| format!("the builder's port: {e}"))?;
         // Where its init dials its give-back connection (build::GIVE_PORT, D188), before the
         // build's: taken as the build's is, or never.
-        #[cfg(unix)]
         let give = {
             let mut at = vsock.clone().into_os_string();
             at.push(format!("_{}", build::GIVE_PORT));
@@ -815,11 +807,9 @@ impl Builder {
             args.push("--gpu".into());
         }
         // Memory its steps free given back to the host as the guest reports it free
-        // (D151): a build's peak is not held to its end. Not yet over WHP, whose taking a
-        // part of guest RAM away and back is unmeasured.
-        if cfg!(unix) {
-            args.push("--reporting".into());
-        }
+        // (D151): a build's peak is not held to its end, on WHP as a run's is
+        // (`platform::discard`).
+        args.push("--reporting".into());
         // The files this process attaches to its join disk for its steps' caches (D134).
         let (attach, attach_theirs) =
             UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;
@@ -860,7 +850,6 @@ impl Builder {
             .map_err(|e| format!("the builder's connection: {e}"))?;
         // Its init dialed its give-back connection before the build's, so it waits now, or
         // there is none (an init that gives nothing back).
-        #[cfg(unix)]
         let give = take_first(give);
         let mut builder = Builder {
             vm,
@@ -868,7 +857,6 @@ impl Builder {
             #[cfg(windows)]
             _container: launched.container,
             conn,
-            #[cfg(unix)]
             give,
             ssh,
             _dir: dir,
@@ -1006,7 +994,6 @@ impl Builder {
     /// What its build's memory pressure watcher asks it to give back through (D188), on
     /// its give-back connection, while the build goes on over the build's: none where its
     /// init dialed none.
-    #[cfg(unix)]
     pub fn giver(&self) -> Option<Giver> {
         Some(Giver::new(self.give.as_ref()?.try_clone().ok()?))
     }
@@ -1451,7 +1438,6 @@ mod tests {
     /// The give-back port takes its peer's first connection, blocking, and refuses any after
     /// it, so that no step's process reaches it (build::GIVE_PORT, D188); where none was
     /// made, it has none.
-    #[cfg(unix)]
     #[test]
     fn the_give_back_port_takes_its_first_connection_alone() {
         use std::io::Write as _;
@@ -1482,7 +1468,6 @@ mod tests {
     }
 
     /// The next frame a giver sent: its kind and length.
-    #[cfg(unix)]
     fn asked(theirs: &UnixStream) -> (u8, u32) {
         let mut h = [0u8; run::HEADER];
         (&*theirs).read_exact(&mut h).unwrap();
@@ -1494,7 +1479,6 @@ mod tests {
     /// heard next, past any frame of another kind before it, and the ask after that is sent
     /// anew. An answer of why nothing was given back is heard as such, its builder asked
     /// again after; a connection ended is an error.
-    #[cfg(unix)]
     #[test]
     fn a_giver_asks_once_and_hears_its_answer_whole() {
         use std::io::Write as _;
@@ -1558,7 +1542,6 @@ mod tests {
     /// build is held within, none with no budget, or why not; no give-back is asked while a
     /// room is out, and an answer of another kind before its own is passed over. A room
     /// told first is asked nothing of: its answer passed over likewise.
-    #[cfg(unix)]
     #[test]
     fn a_giver_tells_its_room_and_hears_what_it_is_held_within() {
         use std::io::Write as _;

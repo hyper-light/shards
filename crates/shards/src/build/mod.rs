@@ -45,7 +45,6 @@ mod exec;
 pub mod gc;
 mod gha;
 mod git;
-#[cfg(unix)]
 mod give;
 pub(crate) mod http;
 mod live;
@@ -3992,7 +3991,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     // Asked to give back what it holds cold as its host runs short of memory
                     // (D188), what its builders gave back said where the plain display's
                     // lines go.
-                    #[cfg(unix)]
                     if let Some(giver) = builder.as_ref().and_then(builder::Builder::giver) {
                         let p = progress.borrow();
                         give::watch(giver, p.live.is_none() && !p.quiet);

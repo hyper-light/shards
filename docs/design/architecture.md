@@ -6077,9 +6077,12 @@ none. Plugged memory stays the kernel's own (D133).
 is all anonymous memory, which its host cannot take back without swap, and a read under
 such a budget is throttled for as long as it runs (761 to 1,729 s a gigabyte, PM M318),
 where one restored from its template holds that template's clean pages beside as much
-anonymous memory, which its host may take back. Builders (D133) give back
-nothing at pressure: a build runs in `shards build`'s
-own process, not the daemon's. And they hold little a pass could take (PM M295): what a
+anonymous memory, which its host may take back. Builders (D133) give back at their build's
+word on their give-back port (`build::GIVE_PORT`, build/give.rs), a build running in `shards
+build`'s own process, not the daemon's; on Windows too since 2026-10-28, free page reporting
+(D151) theirs there as a run's: on jupiter's WHP a builder holding a step's 256 MiB file
+gave back 253 MiB of it, its VM process from 350,516 KiB to 96,168
+(`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`). And they hold little a pass could take (PM M295): what a
 builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
 MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
 leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
@@ -6456,6 +6459,51 @@ template pays it once; what its restores pay is to be measured with mappings.
   scheduler put a run on (M302). A window takes none of its guest's memory on either
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
+
+### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (designed; slice 1 begun)
+
+**Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,
+docs/audit/2026-10-27_platform-parity.md's host directories on Windows): a microVM's volumes
+and binds reach it as virtio-fs shares (D38), whose device, FUSE wire and WHP DAX window
+(D189, `fs/window_whp.rs`) Windows builds, but whose server (`fs/server.rs`), share process
+and budgets are Unix's, so a run with `-v` or `--mount` is refused there.
+
+**What a Linux guest's files need of NTFS, measured (PM M362, CI's windows-2022 and
+windows-2025, as the runner's account and as a standard user, unelevated): every call below
+did as asked.**
+
+- **One server, its host behind a layer.** `fs/server.rs` answers FUSE requests in Linux's
+  terms on every host; each call it makes of its host's file system is a function of its
+  own (`host::Stat`, the `*_at` calls), Unix's the libc calls it makes now, Windows' the
+  NT calls below. Its tests run on both.
+- **Nothing past the share.** Each operation is relative to a handle of the shared tree, its
+  name one component: NtCreateFile with that directory as its RootDirectory and
+  FILE_OPEN_REPARSE_POINT, so a final reparse point is never followed, as `O_NOFOLLOW`
+  holds Unix's server.
+- **Owners, modes and device numbers** in WSL's extended attributes, `$LXUID`, `$LXGID`,
+  `$LXMOD` and `$LXDEV` ("File Permissions for WSL", Microsoft Learn), set and read
+  unelevated (M362), where Unix's server keeps them in Docker Desktop's
+  `com.docker.grpcfuse.ownership` xattr: a file WSL made reads as WSL made it, and a file
+  with none is root's, as Unix's.
+- **Every other kind as WSL makes it.** Regular files and directories are NTFS's; a
+  symlink, a FIFO, a character or block device and a Unix socket are reparse points of the
+  LX tags, a symlink's buffer as MS-FSCC 2.1.2.7 lays it out, never an NTFS symlink, which
+  "Developer Mode must first be enabled on the machine" to make unelevated
+  (CreateSymbolicLinkW, Microsoft Learn).
+- **Removal and rename as Linux's**: an open file's name gone at once
+  (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS), a rename over a file held open
+  (FILE_RENAME_FLAG_POSIX_SEMANTICS), the holder reading what it held.
+- **Names**: a directory the guest makes is case-sensitive (FileCaseSensitiveInformation),
+  as WSL makes its own; a host directory keeps the flag its user gave it.
+- **Inodes**: a file's ID (FileIdInfo), whose upper 8 bytes NTFS left unused (M362).
+- **Its stream to the VM** a duplex named pipe, as a served share's on Windows (D38,
+  `--slates-fs-handle`, PM M340).
+
+**Slices.** 1: the server's host calls behind functions of their own, Unix unchanged
+(begun: `host::Stat`, a8117424's `readlink_at`, `symlink_at`, `mknod_at`, `mkdir_at`,
+`unlink_at`, `link_at`). 2: Windows' calls, the server's own tests on Windows. 3: the share
+process and the daemon's shares on Windows, and the volume, bind and DAX tests on CI's
+Windows runners.
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
