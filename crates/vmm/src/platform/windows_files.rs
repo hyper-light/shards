@@ -1111,6 +1111,53 @@ mod tests {
         assert_eq!(names_in(&dir).unwrap().len(), many);
     }
 
+    /// The clusters the file at `path` takes of its volume (GetCompressedFileSizeW).
+    fn allocated(path: &std::path::Path) -> u64 {
+        use std::os::windows::ffi::OsStrExt as _;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut high = 0u32;
+        // SAFETY: a NUL-terminated wide path and a local for the high word.
+        let low = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW(wide.as_ptr(), &mut high)
+        };
+        (u64::from(high) << 32) | u64::from(low)
+    }
+
+    /// A copy takes no more of the volume than what it copies, into a file not made sparse
+    /// before it too (`copy_ranges`, PM M349): 1 MiB of 64 MiB, the rest zeros, holds a few
+    /// MiB at most where it held all 64; and reads back as it was.
+    #[test]
+    fn a_copy_takes_its_data_alone_of_the_disk() {
+        const MIB: u64 = 1 << 20;
+        let base = shards_testdir::TempDir::new("copy-sparse").unwrap();
+        let (from_path, to_path) = (base.join("from"), base.join("to"));
+        let from = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&from_path)
+            .unwrap();
+        from.set_len(64 * MIB).unwrap();
+        std::os::windows::fs::FileExt::seek_write(&from, &vec![0x5a; MIB as usize], 32 * MIB).unwrap();
+        let to = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&to_path)
+            .unwrap();
+        super::super::copy_used(&from, &to, 64 * MIB).unwrap();
+        drop((from, to));
+        assert!(
+            allocated(&to_path) <= 4 * MIB,
+            "{} bytes taken",
+            allocated(&to_path)
+        );
+        assert_eq!(
+            std::fs::read(&to_path).unwrap(),
+            std::fs::read(&from_path).unwrap()
+        );
+    }
+
     /// A hole punched reads as zeros and holds fewer of the volume's bytes, the rest as it
     /// was.
     #[test]

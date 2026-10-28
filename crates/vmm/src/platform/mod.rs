@@ -288,10 +288,15 @@ pub fn copy_used(from: &File, to: &File, len: u64) -> io::Result<()> {
 
 /// Copies `ranges` of `from`'s first `len` bytes, `(offset, length)` as [`data_ranges`]
 /// gives them, into `to`, which is `len` bytes long after: of them only the blocks not all
-/// zeros.
+/// zeros. `to` sparse first, where a file system keeps no hole it is not told to: NTFS takes
+/// every cluster up to a file's end as it is extended unless the file is sparse (PM M349),
+/// and four saves of a run's swap on windows-2025 took its temp disk's 29 GB at once. A
+/// process that may make no FSCTL (a confined VM, D141) is handed files sparse already, and
+/// one that is not is refused here rather than taking its length of the disk.
 pub fn copy_ranges(from: &File, to: &File, len: u64, ranges: &[(u64, u64)]) -> io::Result<()> {
     const CHUNK: usize = 1 << 20;
     const BLOCK: usize = 4 << 10;
+    sparse(to)?;
     to.set_len(0)?;
     let mut buf = vec![0u8; CHUNK];
     for &(start, n) in ranges {

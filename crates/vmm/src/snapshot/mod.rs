@@ -866,15 +866,17 @@ pub fn prepare_kept(dir: &Path, kept: platform::Kept) -> Result<Staged, String> 
 }
 
 /// An empty generation in `dir` of the files `names`, each made sparse where it is the
-/// memory or the layer's file system, as the VM that fills it may not make it (D196).
+/// memory, a run's swap or the layer's file system, as the VM that fills it may not make it
+/// (D196): each is filled by a copy that skips what is zeros and ends at the file's length
+/// (`platform::copy_ranges`), which takes the disk whole on NTFS unless the file is sparse
+/// (PM M349).
 fn prepare_named(dir: &Path, names: &[&str]) -> Result<Staged, String> {
     let mut staged = staging(dir, fresh_name())?;
     let made = names
         .iter()
         .map(|&name| {
-            // Its memory sparse already, as the VM that fills it may not make it (D196).
             create_unsynced(&staged.staging.join(name), |file| match name {
-                MEMORY | LAYER => platform::sparse(file),
+                MEMORY | SWAP | LAYER => platform::sparse(file),
                 _ => Ok(()),
             })
         })
