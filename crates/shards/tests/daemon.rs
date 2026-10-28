@@ -368,9 +368,10 @@ fn parallel_runs_keep_their_own_stdio() {
 }
 
 /// What runs cost this host as its daemon serves them (PM M357): runs one after another,
-/// each client to its end; eight at once, as `parallel_runs_keep_their_own_stdio` starts
-/// them, round after round; and an idle run's microVM's own CPU and its daemon's, over ten
-/// seconds. Where the daemon boots every run cold (Windows until the parity plan's step
+/// each client to its end; a detached run's start, and its microVM's CPU to it; 1, 2, 4
+/// and 8 at once (`parallel_runs_keep_their_own_stdio` starts 8), round after round, with
+/// the runs that failed counted; and an idle run's microVM's own CPU and its daemon's, over
+/// ten seconds. Where the daemon boots every run cold (Windows until the parity plan's step
 /// 4), what cold boots cost. Each result a `COSTS` line: n, p50, p90, p99 and max.
 #[test]
 #[ignore = "a measurement: SHARDS_COSTS_N=20 cargo test --profile test-release -p shards --test daemon -- --ignored --exact runs_cost_this_host --nocapture"]
@@ -413,41 +414,71 @@ fn runs_cost_this_host() {
         })
         .collect();
     say("alone", alone);
-    let mut together = Vec::new();
-    for _ in 0..n.div_ceil(8) {
+    let (mut started, mut cpu) = (Vec::new(), Vec::new());
+    for i in 0..n {
+        let name = format!("boot{i}");
         let began = Instant::now();
-        let mut runs: Vec<Option<Child>> = (0..8)
-            .map(|_| {
-                Some(
-                    common::command()
-                        .args(["run", "--rm", "--pull", "never", &image, "exit", "0"])
-                        .env("SHARDS_HOME", &*home)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .unwrap(),
-                )
-            })
-            .collect();
-        while runs.iter().any(Option::is_some) {
-            assert!(
-                began.elapsed() < patience,
-                "eight runs at once took past {patience:?}"
-            );
-            for slot in &mut runs {
-                if let Some(run) = slot
-                    && let Some(status) = run.try_wait().unwrap()
-                {
-                    assert!(status.success(), "{status:?}");
-                    together.push(began.elapsed());
-                    *slot = None;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let run = run_shards_env(
+            &["run"],
+            &["-d", "--name", &name, "--pull", "never", &image, "sleep"],
+            &env,
+            patience,
+        );
+        assert_eq!(run.status, Some(0), "{}", run.stderr);
+        started.push(began.elapsed());
+        let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", &name], &env, TIMEOUT);
+        let vm: i32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+        cpu.push(cpu_time(vm));
+        let gone = run_shards_env(&["rm"], &["-f", &name], &env, TIMEOUT);
+        assert_eq!(gone.status, Some(0), "{}", gone.stderr);
     }
-    say("together (8 at once)", together);
+    say("a detached run started", started);
+    say("its microVM's CPU to its start", cpu);
+    for at_once in [1, 2, 4, 8] {
+        let (mut each, mut rounds, mut failed) = (Vec::new(), Vec::new(), 0);
+        for _ in 0..(n / at_once).max(1) {
+            let began = Instant::now();
+            let mut runs: Vec<Option<Child>> = (0..at_once)
+                .map(|_| {
+                    Some(
+                        common::command()
+                            .args(["run", "--rm", "--pull", "never", &image, "exit", "0"])
+                            .env("SHARDS_HOME", &*home)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn()
+                            .unwrap(),
+                    )
+                })
+                .collect();
+            while runs.iter().any(Option::is_some) {
+                assert!(
+                    began.elapsed() < patience,
+                    "{at_once} runs at once took past {patience:?}"
+                );
+                for slot in &mut runs {
+                    if let Some(run) = slot
+                        && let Some(status) = run.try_wait().unwrap()
+                    {
+                        if status.success() {
+                            each.push(began.elapsed());
+                        } else {
+                            failed += 1;
+                        }
+                        *slot = None;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            rounds.push(began.elapsed());
+        }
+        println!("COSTS {at_once} at once: {failed} failed");
+        if !each.is_empty() {
+            say(&format!("{at_once} at once, each"), each);
+        }
+        say(&format!("{at_once} at once, the round"), rounds);
+    }
     let idle = run_shards_env(
         &["run"],
         &["-d", "--name", "idle", "--pull", "never", &image, "sleep"],
@@ -3378,12 +3409,29 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
             "100 followers never let their daemon rest: {second:?} of CPU in the last second"
         );
     }
+    // Which of its threads ran meanwhile, where they can be read, said if it cost too much.
+    #[cfg(any(target_os = "linux", windows))]
+    let threads = threads_run(daemon);
     let before = cpu_time(daemon);
     std::thread::sleep(Duration::from_secs(3));
     let spent = cpu_time(daemon).saturating_sub(before);
+    #[cfg(any(target_os = "linux", windows))]
+    let ran = {
+        let unit = if cfg!(windows) { "cycles" } else { "switches" };
+        let ran: Vec<String> = threads_run(daemon)
+            .into_iter()
+            .filter_map(|(tid, (name, n))| {
+                let was = threads.get(&tid).map_or(0, |(_, was)| *was);
+                (n > was).then(|| format!("{name} ({tid}) {} {unit}", n - was))
+            })
+            .collect();
+        ran.join(", ")
+    };
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let ran = "unread here";
     assert!(
         spent < Duration::from_millis(100),
-        "100 idle followers cost {spent:?} of CPU in 3 s"
+        "100 idle followers cost {spent:?} of CPU in 3 s; its threads that ran: {ran}"
     );
     let killed = run_shards_env(&["kill"], &["up"], &env, TIMEOUT);
     assert_eq!(killed.status, Some(0), "{}", killed.stderr);
