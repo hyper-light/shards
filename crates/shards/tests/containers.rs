@@ -3484,9 +3484,6 @@ fn a_stopped_microvms_files_are_read_and_written() {
 /// every command reaches it at once after, another start among them (D37).
 #[test]
 fn a_refused_start_leaves_its_container_as_it_was() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-start-refused") else {
         return;
     };
@@ -3645,9 +3642,6 @@ fn an_endpoints_sysctls_are_its_interfaces() {
 /// The option is refused where it names no destination, or where nothing could reach one.
 #[test]
 fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     use std::io::Write as _;
     if cannot_run_vms() {
         return;
@@ -3773,9 +3767,6 @@ fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
 
 #[test]
 fn a_runs_mac_is_its_own() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     use std::io::{Read as _, Write as _};
     let Some((home, image)) = home("containers-mac") else {
         return;
@@ -3982,9 +3973,6 @@ fn a_runs_mac_is_its_own() {
 /// MAC, as on dockerd's bridge.
 #[test]
 fn a_runs_link_local_addresses_are_its_own() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-link-local") else {
         return;
     };
@@ -7756,9 +7744,6 @@ fn ports_held_past_their_containers_end() {
 /// of 10 times, the last one's end not yet taken.
 #[test]
 fn an_asked_address_is_free_once_its_run_has_ended() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-ip-reuse") else {
         return;
     };
@@ -7782,9 +7767,6 @@ fn an_asked_address_is_free_once_its_run_has_ended() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/exit-drain/run.sh"]
 fn datagrams_a_command_sends_as_it_ends() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-m182") else {
         return;
     };
@@ -7870,9 +7852,6 @@ fn datagrams_a_command_sends_as_it_ends() {
 /// the answer was lost as the run's ports went.
 #[test]
 fn a_runs_gateway_is_its_neighbor_from_its_start() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-gateway-mac") else {
         return;
     };
@@ -7925,6 +7904,9 @@ fn a_runs_gateway_is_its_neighbor_from_its_start() {
             format!("fd7e::1 {own} permanent")
         ]
     );
+    if common::later_on_windows(5, "the host's network") {
+        return;
+    }
     let got = neighbors(&["-u", "root", "--network", "host"]);
     assert_eq!(got.len(), 2, "{got:?}");
     assert!(got.contains(&on_bridge), "{got:?}");
@@ -7944,9 +7926,6 @@ fn a_runs_gateway_is_its_neighbor_from_its_start() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/dns-lookup/run.sh"]
 fn a_names_lookup_round_trip() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-m247") else {
         return;
     };
@@ -12155,9 +12134,6 @@ fn attach_joins_a_running_microvm() {
 /// dockerd does.
 #[test]
 fn microvms_on_an_ipv6_network_reach_one_another() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-ipv6") else {
         return;
     };
@@ -12263,9 +12239,6 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
 /// network says what it does.
 #[test]
 fn a_networks_options_are_what_its_microvms_do() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-netopts") else {
         return;
     };
@@ -12427,9 +12400,6 @@ fn a_networks_options_are_what_its_microvms_do() {
 /// 29.3.1).
 #[test]
 fn microvms_on_a_network_reach_one_another_by_name() {
-    if common::later_on_windows(5, "networks of a user's own") {
-        return;
-    }
     let Some((home, image)) = home("containers-networks") else {
         return;
     };
