@@ -745,64 +745,6 @@ pub fn giver(pid: u32) -> std::os::windows::io::OwnedHandle {
     unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) }
 }
 
-/// Process `pid`'s threads, each suspended until the value drops (SuspendThread, as
-/// SIGSTOP stops a Unix process): what it holds, it holds while they are.
-#[cfg(windows)]
-pub struct Frozen(Vec<std::os::windows::io::OwnedHandle>);
-
-#[cfg(windows)]
-impl Frozen {
-    pub fn new(pid: u32) -> Frozen {
-        use std::os::windows::io::FromRawHandle as _;
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
-        };
-        use windows_sys::Win32::System::Threading::{OpenThread, SuspendThread, THREAD_SUSPEND_RESUME};
-        // SAFETY: a snapshot of every thread, closed below.
-        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-        assert_ne!(snap, INVALID_HANDLE_VALUE);
-        let mut entry = THREADENTRY32 {
-            dwSize: size_of::<THREADENTRY32>() as u32,
-            ..Default::default()
-        };
-        let mut threads = Vec::new();
-        // SAFETY: the snapshot, and an entry of its own size.
-        let mut more = unsafe { Thread32First(snap, &raw mut entry) } != 0;
-        while more {
-            if entry.th32OwnerProcessID == pid {
-                // SAFETY: a thread's handle of the one right asked, owned below.
-                let raw = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
-                if !raw.is_null() {
-                    // SAFETY: the handle just opened, which nothing else owns.
-                    let thread = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) };
-                    // SAFETY: a thread of ours to suspend, resumed as the value drops.
-                    if unsafe { SuspendThread(raw) } != u32::MAX {
-                        threads.push(thread);
-                    }
-                }
-            }
-            // SAFETY: as above.
-            more = unsafe { Thread32Next(snap, &raw mut entry) } != 0;
-        }
-        // SAFETY: the snapshot taken above, closed once.
-        unsafe { CloseHandle(snap) };
-        assert!(!threads.is_empty(), "process {pid} has no thread to suspend");
-        Frozen(threads)
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Frozen {
-    fn drop(&mut self) {
-        use std::os::windows::io::AsRawHandle as _;
-        for thread in &self.0 {
-            // SAFETY: a thread this value suspended, resumed once.
-            unsafe { windows_sys::Win32::System::Threading::ResumeThread(thread.as_raw_handle()) };
-        }
-    }
-}
-
 /// Whether process `pid` has yet to end: its exit code still STILL_ACTIVE
 /// (GetExitCodeProcess), which a process that ended with that code would be taken for.
 #[cfg(windows)]

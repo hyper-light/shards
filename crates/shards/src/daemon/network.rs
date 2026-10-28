@@ -628,15 +628,7 @@ mod tests {
     /// and libnetwork's words.
     #[test]
     fn the_hosts_network_is_taken_alone() {
-        let host = check_with(&run(&["host"]));
-        if cfg!(windows) {
-            assert!(
-                host.as_ref().is_err_and(|e| e.starts_with("--network host: ")),
-                "{host:?}"
-            );
-        } else {
-            assert_eq!(host, Ok(Start::Attach(Net::Host)));
-        }
+        assert_eq!(check_with(&run(&["host"])), Ok(Start::Attach(Net::Host)));
         let mut tuned = run(&["host"]);
         tuned.sysctls = vec!["kernel.shmmax=1".into(), "net.core.somaxconn=1024".into()];
         assert_eq!(

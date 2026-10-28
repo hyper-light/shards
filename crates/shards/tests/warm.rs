@@ -510,6 +510,7 @@ impl Client {
         shards_ipc::send(&self.conn, kind::SIGNAL, &linux.to_be_bytes(), &[]).unwrap();
     }
 
+    #[cfg(unix)]
     fn stdout_ends(&mut self) -> bool {
         ends(&mut self.stdout)
     }
@@ -538,11 +539,18 @@ fn ends(stdout: &mut BufReader<File>) -> bool {
 /// meanwhile.
 #[cfg(windows)]
 fn ends(stdout: &mut BufReader<File>) -> bool {
+    ends_within(stdout, Duration::from_secs(1))
+}
+
+/// Whether `stdout` reads end of file within `wait`, what it holds read meanwhile: with no
+/// wait, whether it has ended once what it holds is read.
+#[cfg(windows)]
+fn ends_within(stdout: &mut BufReader<File>, wait: Duration) -> bool {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     let handle = stdout.get_ref().as_raw_handle();
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + wait;
     let mut sink = vec![0u8; 64 << 10];
     loop {
         let mut held = 0u32;
@@ -762,11 +770,18 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
     warm.ready();
     let mut client = warm.run(&["/bin/testguest", "exit", "0"], false);
     assert_eq!(client.exit(), 0);
-    // Frozen before it can tear down: whatever it still held, it would hold now.
+    // Frozen before it can tear down: whatever it still held, it would hold now. A Windows
+    // warm VM is gone sooner than any freeze takes its threads (a snapshot of the host's
+    // threads, on jupiter), so its client's stdout is looked at once its exit status is
+    // read, waiting for nothing: it must have ended by then, the VM letting go of it before
+    // saying it.
+    #[cfg(unix)]
     let ended = {
         let _frozen = freeze(warm.vm.unwrap());
         client.stdout_ends()
     };
+    #[cfg(windows)]
+    let ended = ends_within(&mut client.stdout, Duration::ZERO);
     assert!(ended, "the warm VM held the client's stdout past its exit status");
     warm.ends(0, None);
 
@@ -788,8 +803,7 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
     warm.child.wait().unwrap();
 }
 
-/// Process `pid` stopped until the value drops: SIGSTOP, then SIGCONT, on Unix; each of its
-/// threads suspended on Windows ([`common::Frozen`]).
+/// Process `pid` stopped until the value drops: SIGSTOP, then SIGCONT.
 #[cfg(unix)]
 fn freeze(pid: u32) -> impl Drop {
     struct Stopped(libc::pid_t);
@@ -803,9 +817,4 @@ fn freeze(pid: u32) -> impl Drop {
     // SAFETY: kill(2) of our own child, reaped only in `ends`.
     unsafe { libc::kill(pid, libc::SIGSTOP) };
     Stopped(pid)
-}
-
-#[cfg(windows)]
-fn freeze(pid: u32) -> common::Frozen {
-    common::Frozen::new(pid)
 }

@@ -7885,9 +7885,6 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
 /// provider's ports free once its end is told, the joiner's once its own is.
 #[test]
 fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
-    if common::later_on_windows(5, "the host's network") {
-        return;
-    }
     let Some((home, image)) = home("containers-host-join") else {
         return;
     };
@@ -8153,9 +8150,6 @@ fn a_runs_gateway_is_its_neighbor_from_its_start() {
             format!("fd7e::1 {own} permanent")
         ]
     );
-    if common::later_on_windows(5, "the host's network") {
-        return;
-    }
     let got = neighbors(&["-u", "root", "--network", "host"]);
     assert_eq!(got.len(), 2, "{got:?}");
     assert!(got.contains(&on_bridge), "{got:?}");
@@ -8207,9 +8201,6 @@ fn a_names_lookup_round_trip() {
 #[test]
 #[ignore = "a measurement: docs/research/measurements/gateway-neighbor/run.sh"]
 fn answers_lost_without_the_gateways_mac() {
-    if common::later_on_windows(5, "the host's network") {
-        return;
-    }
     let Some((home, image)) = home("containers-m180") else {
         return;
     };
