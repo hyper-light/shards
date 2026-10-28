@@ -6475,10 +6475,12 @@ fn usage_mistakes_are_answered_without_a_daemon() {
 /// On Unix it is in a directory of its own, with a VM process binary (`SHARDS_VM_BINARY`)
 /// that waits for the gate to open before it becomes this build's. Windows has no exec,
 /// and a VM process opens nothing but what its daemon opens for it (D30): there the gate
-/// is a copy of the kernel its runs boot, held open sharing nothing under an oplock
+/// is a copy of the init its runs boot, held open sharing nothing under an oplock
 /// ([`Oplocked`]), so that the daemon's open of it for a VM waits until the gate opens.
+/// Not the kernel's: the daemon reads that as it makes the run, before its container, for
+/// the version its seccomp profile is held to (`guest::version_of`).
 struct Gated {
-    // Before the directory: the gate opens before its kernel is removed.
+    // Before the directory: the gate opens before its init is removed.
     #[cfg(windows)]
     held: std::cell::RefCell<Option<Oplocked>>,
     dir: TempDir,
@@ -6510,8 +6512,8 @@ impl Gated {
     #[cfg(windows)]
     fn new(name: &str) -> Gated {
         let dir = TempDir::new(name);
-        std::fs::copy(kernel(), dir.join("kernel")).unwrap();
-        let held = Oplocked::new(&dir.join("kernel"));
+        std::fs::copy(guest_init(), dir.join("init")).unwrap();
+        let held = Oplocked::new(&dir.join("init"));
         Gated {
             held: std::cell::RefCell::new(Some(held)),
             dir,
@@ -6541,12 +6543,12 @@ impl Gated {
         Command::new(common::shards())
     }
 
-    /// The kernel its runs boot: the gated copy, on Windows.
-    fn kernel(&self) -> std::path::PathBuf {
+    /// The init its runs boot: the gated copy, on Windows.
+    fn init(&self) -> std::path::PathBuf {
         if cfg!(windows) {
-            self.dir.join("kernel")
+            self.dir.join("init")
         } else {
-            kernel().to_path_buf()
+            guest_init().to_path_buf()
         }
     }
 
@@ -6558,8 +6560,8 @@ impl Gated {
             common::as_tests_run(&mut self.command())
                 .args(args)
                 .env("SHARDS_HOME", home)
-                .env("SHARDS_KERNEL", self.kernel())
-                .env("SHARDS_INIT", guest_init())
+                .env("SHARDS_KERNEL", kernel())
+                .env("SHARDS_INIT", self.init())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
