@@ -10224,8 +10224,14 @@ was built on [PM M200-M203]:
   its spawner found it at (GetFinalPathNameByHandleW refuses an AppContainer [PM M203]);
   sockets by WSADuplicateSocketW, as Winsock documents, 6-10 µs more a dial than
   DuplicateHandle at p50 [PM M203]. The spawner of `shards run --kernel` answers in its own
-  process, since Windows has no exec: the VM is its child, which takes the console's Ctrl-C.
-  Nothing more is granted once its vsock path is, and without one the link closes.
+  process, since Windows has no exec: the VM is its child, which shares its console, one
+  with a window or one without, as a CI runner's is (counted by GetConsoleProcessList, where
+  GetConsoleWindow answers none for one without: its VM was made detached there, and heard
+  no interrupt), and gives the console's Ctrl+C and Ctrl+Break to its guest as SIGINT;
+  the spawner takes both and waits on, where ignoring Ctrl+C alone (a null handler) left a
+  process group's Ctrl+Break to end it (run.rs `signals_reach_the_command`, CI's
+  windows-2022 and windows-2025, 2026-10-28). Nothing more is granted once its vsock path
+  is, and without one the link closes.
 - **A Job and Windows' mitigations**, given as the process is made, suspended, its handles
   duplicated into it and their values told it through a pipe, its one inherited handle:
   none is made inheritable where another child could take it [PM M201]. Dynamic code it
