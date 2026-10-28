@@ -1175,17 +1175,25 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             stack.cfg.guest_link_local = addresses;
             answer(sock, shards_ipc::kind::NET_LINK_LOCAL)
         } else {
-            // Flows left answer nobody: their sockets are forgotten, and closed.
-            for (i, slot) in stack.published.iter().enumerate() {
-                if let Some((listener, _)) = slot {
-                    let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
-                    let _ = stack.poller.set(
+            // Flows left answer nobody: their sockets are forgotten, and closed. Each is
+            // forgotten before it closes, as the poller has a socket closed: on Windows a
+            // registration it keeps by the socket's value would be taken for the next socket
+            // given that value, which it would never register (a joiner's listener on the
+            // host's network never accepting, jupiter 7 of 20 runs).
+            let listening: Vec<(RawSock, u64)> = stack
+                .published
+                .iter()
+                .enumerate()
+                .filter_map(|(i, slot)| {
+                    let (listener, _) = slot.as_ref()?;
+                    Some((
                         listener.raw_sock(),
-                        named,
-                        poll::Interest::READ,
-                        poll::Interest::NONE,
-                    );
-                }
+                        token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX)),
+                    ))
+                })
+                .collect();
+            for (sock, named) in listening {
+                stack.forget(sock, named, poll::Interest::READ);
             }
             stack.published.clear();
             stack.hosted.clear();
@@ -1319,13 +1327,10 @@ impl<'r> Stack<'r> {
         if let Some(slot) = self.published.get_mut(i)
             && let Some((listener, _)) = slot.take()
         {
+            // Forgotten before it closes ([`Poller::forget`]): on Windows a registration kept
+            // by its value would be taken for the next socket given that value.
             let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
-            let _ = self.poller.set(
-                listener.raw_sock(),
-                named,
-                poll::Interest::READ,
-                poll::Interest::NONE,
-            );
+            self.forget(listener.raw_sock(), named, poll::Interest::READ);
         }
         self.inbound_ports.retain(|(published, _), _| *published != i);
         self.inbound.retain(|_, f| f.published != i);
@@ -2581,6 +2586,61 @@ mod tests {
             dialer: None,
             #[cfg(windows)]
             dialer_waits: poll::Interest::NONE,
+        }
+    }
+
+    /// A published port let go of has its listener forgotten before it closes, so that the
+    /// next socket given its value is waited on as its own: on Windows the poller keeps a
+    /// registration by its socket's value, and a listener let go of without that kept the
+    /// next listener given its value from ever being waited on (a joiner on the host's
+    /// network that never accepted, jupiter 7 of 20 runs). Eight in turn, each ready once a
+    /// connection waits on it.
+    #[test]
+    fn a_listener_let_go_of_leaves_its_socket_value_to_the_next() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        for round in 0u32..8 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let at = listener.local_addr().unwrap();
+            let index = stack.published.len();
+            stack.publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)]);
+            assert_eq!(stack.published.len(), index + 1, "round {round}: not taken");
+            stack.hosted.insert(round, index);
+            let waiting = std::net::TcpStream::connect(at).unwrap();
+            let listening = token::of(token::LISTENER, 0, u32::try_from(index).unwrap());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut events = Vec::new();
+            while !events.iter().any(|e: &poll::Event| e.token == listening) {
+                assert!(
+                    Instant::now() < deadline,
+                    "round {round}: its listener never ready"
+                );
+                stack
+                    .poller
+                    .wait(&mut events, Some(Duration::from_millis(100)))
+                    .unwrap();
+            }
+            // Waited on again, as the loop's next wait arms what a notice disarmed; then
+            // let go of, the last socket closed, so that the next one made is likeliest to
+            // be given its value.
+            stack.poller.wait(&mut events, Some(Duration::ZERO)).unwrap();
+            drop(waiting);
+            #[cfg(windows)]
+            let value = stack
+                .published
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(|(l, _)| l.raw_sock())
+                .unwrap();
+            stack.unpublish(round);
+            // Nothing kept of its value, whatever the next socket given it is.
+            #[cfg(windows)]
+            assert!(!stack.poller.keeps(value), "round {round}: its registration kept");
         }
     }
 

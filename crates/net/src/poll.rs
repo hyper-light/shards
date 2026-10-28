@@ -475,6 +475,14 @@ mod windows {
             Ok(())
         }
 
+        /// Whether it keeps a registration for a socket of value `sock`: none once the
+        /// socket is forgotten, so that the next socket given the value is registered as
+        /// its own.
+        #[cfg(test)]
+        pub fn keeps(&self, sock: RawSock) -> bool {
+            self.sockets.borrow().contains_key(&sock)
+        }
+
         /// Forgets `sock` before the caller closes it: its registration removed, and its
         /// notices let go of as they come, its removal's own among them.
         pub fn forget(&self, sock: RawSock, _token: u64, _had: Interest) -> io::Result<()> {
