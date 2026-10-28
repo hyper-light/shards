@@ -667,7 +667,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             "" => String::new(),
             // A client's over a context, whose own path it is (`context::CIDFILE`).
             path if told_cidfile() => path.to_string(),
-            path => std::path::absolute(path)
+            path => absolute_as_given(path)
                 .map_err(|e| format!("failed to create the container ID file: {e}"))?
                 .to_string_lossy()
                 .into_owned(),
@@ -807,6 +807,18 @@ pub(crate) fn check_platform(platform: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// `path` absolute, joined to the working directory where it is relative, its own text
+/// kept, so that what an open of it says says it as it was given, as docker/cli's
+/// newCIDFile does: std's `absolute` rewrites a Windows path's every separator a backslash
+/// (GetFullPathNameW).
+fn absolute_as_given(path: &str) -> std::io::Result<PathBuf> {
+    let given = std::path::Path::new(path);
+    if given.is_absolute() {
+        return Ok(given.to_path_buf());
+    }
+    Ok(std::env::current_dir()?.join(given))
 }
 
 /// `--cidfile`'s file, as docker/cli's cidFile keeps it: made before the container, its ID

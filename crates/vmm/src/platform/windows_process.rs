@@ -28,8 +28,9 @@ pub struct Usage {
     /// as macOS's physical footprint and Linux's `RssAnon` count what is its own; not its
     /// private commit (PrivateUsage), which counts what it committed and never touched, a
     /// guest's whole RAM. A Windows without EX2 (its documentation: Windows 10 and 11 22H2
-    /// with the September 2023 update) answers its whole working set instead, its own pages
-    /// and those it shares: never less than its own.
+    /// with the September 2023 update), or one that takes EX2's size and leaves its private
+    /// working set 0 (Windows Server 2022, build 20348, for a process that runs), answers its
+    /// whole working set instead, its own pages and those it shares: never less than its own.
     pub footprint: u64,
     pub cpu_ns: u64,
 }
@@ -85,7 +86,9 @@ fn memory(process: &OwnedHandle) -> io::Result<(u64, u64)> {
         ..Default::default()
     };
     // SAFETY: counters of the size their `cb` says, of a process handle `process` holds.
-    if unsafe { GetProcessMemoryInfo(process.as_raw_handle(), (&raw mut ex2).cast(), ex2.cb) } != 0 {
+    if unsafe { GetProcessMemoryInfo(process.as_raw_handle(), (&raw mut ex2).cast(), ex2.cb) } != 0
+        && ex2.PrivateWorkingSetSize != 0
+    {
         return Ok((ex2.WorkingSetSize as u64, ex2.PrivateWorkingSetSize as u64));
     }
     let mut ex = PROCESS_MEMORY_COUNTERS_EX {
@@ -183,14 +186,16 @@ mod tests {
         let before = process_usage(std::process::id()).unwrap();
         assert!(before.resident > 0 && before.footprint > 0, "{before:?}");
         assert!(before.footprint <= before.resident, "{before:?}");
-        // Where Windows has EX2, its own pages are fewer than all it holds: its DLLs' are
+        // Where Windows fills EX2, its own pages are fewer than all it holds: its DLLs' are
         // shared.
         let mut ex2 = PROCESS_MEMORY_COUNTERS_EX2 {
             cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX2>()).unwrap(),
             ..Default::default()
         };
         // SAFETY: counters of the size their `cb` says, of this process.
-        if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut ex2).cast(), ex2.cb) } != 0 {
+        if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut ex2).cast(), ex2.cb) } != 0
+            && ex2.PrivateWorkingSetSize != 0
+        {
             assert!(before.footprint < before.resident, "{before:?}");
         }
         let start = std::time::Instant::now();
