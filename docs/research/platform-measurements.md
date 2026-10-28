@@ -15674,3 +15674,36 @@ revision before comparing a changed API/implementation.
   `what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes` holds a
   host's reads to the guest's bytes, whole, then end-of-stream, though it sent data the
   guest took none of and wrote again after the guest's end.
+
+### M359. A group of VM processes in a job of its own, on Windows (D183)
+
+- **Question.** D183's Windows half puts a group's microVMs in a job object of the group's,
+  nested above each VM process's own (its last handle's close ending it, one active
+  process). Can a VM process already in its own job, as a warm VM is before a run takes it,
+  be put in a group's job then? And what do the group's job memory limit and CPU rate do?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m359.rs`, by `whp-run.yml`, run
+  40616669423 on branch `win-pools-stage`, 2026-10-28, on a windows-2022 (build 20348) and a
+  windows-2025 (build 26100) runner, each an AMD EPYC 7763 of 4 CPUs. Children of the
+  probe's own, each in a job of its own as a VM process is: one put in an empty group's
+  job afterwards (AssignProcessToJobObject), then a second in the group's holding the
+  first; children made in a group's job and their own at once (PROC_THREAD_ATTRIBUTE_JOB_LIST,
+  the group's first), the group's job memory limit 256 MiB (JOB_OBJECT_LIMIT_JOB_MEMORY), one
+  committing 512 MiB, then two 160 MiB each; and one spinning 4 threads for 2 s in a group
+  whose CPU rate is hard capped at 25% of the host's CPUs
+  (JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, CpuRate 2500).
+- **Found** (both runners alike but where said):
+  - The first child, in its own job, was put in the empty group's job; the second, in its
+    own, was refused the group's holding the first: `Access is denied. (os error 5)`.
+  - Made in the group's job and their own at once, children run. The group's limit refused
+    a commit of 512 MiB, and a second child's 160 MiB beside a first's 160 MiB: `The paging
+    file is too small for this operation to complete. (os error 1455)`
+    (ERROR_COMMITMENT_LIMIT), each child's own commit within it.
+  - Capped at 25% of 4 CPUs, the spinning child used 2.89 s of CPU in 2.39 s on
+    windows-2022 and 2.72 s in 2.00 s on windows-2025: 1.21 and 1.36 CPUs, where a cap
+    held to its rate allows 1.0.
+- **Consequence (D183, slice 3).** A run's microVM under `--cgroup-parent NAME` on Windows
+  is made in the group's job as its VM process is made, its own job nested under it; no
+  warm VM, made before the run that takes it, joins a group whose job holds another.
+  A group's `memory.max` is its job memory limit, which refuses what would pass it as the
+  commit is asked. `cpu.max` waits for a longer measurement of the CPU rate's hard cap,
+  which let a 2 s spin past it by 21% and 36%.

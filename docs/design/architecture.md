@@ -5406,10 +5406,16 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     object of NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST,
     the group's first; Job Objects, "Nested Jobs", Windows 8 on), whose
     limits are the files': `memory.max` its job memory limit (JOB_OBJECT_LIMIT_JOB_MEMORY,
-    which refuses its processes' commits past it), `cpu.max` its CPU rate
+    which refuses its processes' commits past it: 512 MiB alone, and 160 MiB beside
+    another's 160, under 256, M359), `cpu.max` its CPU rate
     (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE and HARD_CAP, in ten-thousandths of the host's
-    CPUs); `memory.high` a budget its microVMs are told their room of and give back to,
-    as on macOS (step 7's give-backs).
+    CPUs), once a longer measurement says what it holds to: capped at 25% of 4 CPUs, a
+    2 s spin used 1.21 and 1.36 CPUs (M359); `memory.high` a budget its microVMs are told
+    their room of and give back to, as on macOS (step 7's give-backs). A run under a group
+    takes no warm VM: made before the run that takes it, in its own job, a VM process may
+    join a group's job only while that holds nothing (the second was refused, M359), so
+    the run's VM process is made as the run begins, in the group's job, and restores its
+    template there.
   - Shown as given (inspect's `HostConfig.CgroupParent`); the group's `memory.current`
     file the daemon writes as it sums it, as a cgroup's says what it holds.
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
