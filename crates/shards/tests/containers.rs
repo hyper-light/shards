@@ -14789,6 +14789,12 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     let now = time::OffsetDateTime::now_utc();
     let mut ca = rcgen::CertificateParams::new(Vec::new()).unwrap();
     ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    // Named apart: Windows' chain engine takes a certificate whose subject is its issuer's
+    // for one that signed itself, and checks its signature by its own key
+    // (TRUST_E_CERT_SIGNATURE), where rcgen names both alike unless told.
+    ca.distinguished_name = rcgen::DistinguishedName::new();
+    ca.distinguished_name
+        .push(rcgen::DnType::CommonName, "shards test CA");
     ca.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,
         rcgen::KeyUsagePurpose::DigitalSignature,
@@ -14798,6 +14804,9 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     let ca_key = rcgen::KeyPair::generate().unwrap();
     let ca = rcgen::CertifiedIssuer::self_signed(ca, ca_key).unwrap();
     let mut leaf = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+    leaf.distinguished_name = rcgen::DistinguishedName::new();
+    leaf.distinguished_name
+        .push(rcgen::DnType::CommonName, "localhost");
     leaf.not_before = now - time::Duration::hours(1);
     leaf.not_after = now + time::Duration::days(1);
     leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
