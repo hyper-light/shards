@@ -16462,6 +16462,205 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
     });
 }
 
+/// A real-time ETW session of a test's own that listens for moby's etwlogs provider
+/// {a3693192-9ed6-46d2-a981-f8226c8363bd}: each event's string as it comes, until the
+/// session is dropped, which stops it.
+#[cfg(windows)]
+struct EtwSession {
+    name: Vec<u16>,
+    control: windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE,
+    trace: u64,
+    /// EVENT_TRACE_PROPERTIES, then room for the session's name, 8-byte aligned.
+    properties: Vec<u64>,
+    events: Box<std::sync::Mutex<Vec<String>>>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl EtwSession {
+    /// None where this host's user may start no session, which takes an administrator or
+    /// one of Performance Log Users (StartTrace's ERROR_ACCESS_DENIED), said with a SKIP line.
+    fn start() -> Option<EtwSession> {
+        use std::io::Write as _;
+        use windows_sys::Win32::System::Diagnostics::Etw::*;
+        const PROVIDER: windows_sys::core::GUID =
+            windows_sys::core::GUID::from_u128(0xa3693192_9ed6_46d2_a981_f8226c8363bd);
+        unsafe extern "system" fn heard(record: *mut EVENT_RECORD) {
+            // SAFETY: the record ETW hands its callback, valid for the call.
+            let r = unsafe { &*record };
+            let id = r.EventHeader.ProviderId;
+            if (id.data1, id.data2, id.data3, id.data4)
+                != (PROVIDER.data1, PROVIDER.data2, PROVIDER.data3, PROVIDER.data4)
+            {
+                return;
+            }
+            // SAFETY: the session's Context, the events' list, which outlives its reader;
+            // and the event's data, its UTF-16 string, of the length it says.
+            let (events, words) = unsafe {
+                (
+                    &*(r.UserContext as *const std::sync::Mutex<Vec<String>>),
+                    std::slice::from_raw_parts(r.UserData as *const u16, usize::from(r.UserDataLength) / 2),
+                )
+            };
+            let text = String::from_utf16_lossy(words).trim_end_matches('\0').to_string();
+            events.lock().unwrap().push(text);
+        }
+        let name: Vec<u16> = format!("shards-test-etw-{}", std::process::id())
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        let head = size_of::<EVENT_TRACE_PROPERTIES>();
+        let bytes = head + name.len() * 2;
+        let mut properties = vec![0u64; bytes.div_ceil(8)];
+        let p = properties.as_mut_ptr().cast::<EVENT_TRACE_PROPERTIES>();
+        // SAFETY: zeroed properties of the size they say, the name's room after them.
+        unsafe {
+            (*p).Wnode.BufferSize = u32::try_from(bytes).unwrap();
+            (*p).Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+            (*p).Wnode.ClientContext = 1;
+            (*p).LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+            (*p).LoggerNameOffset = u32::try_from(head).unwrap();
+        }
+        let mut control = CONTROLTRACE_HANDLE::default();
+        // SAFETY: a NUL-terminated name and the properties above.
+        let started = unsafe { StartTraceW(&raw mut control, name.as_ptr(), p) };
+        if started == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED {
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIP: an ETW session is an administrator's or Performance Log Users', and this host's user is neither"
+            );
+            return None;
+        }
+        assert_eq!(started, 0, "StartTraceW");
+        // SAFETY: the session just started, and the provider's GUID.
+        let enabled = unsafe {
+            EnableTraceEx2(
+                control,
+                &PROVIDER,
+                EVENT_CONTROL_CODE_ENABLE_PROVIDER,
+                u8::try_from(TRACE_LEVEL_VERBOSE).unwrap(),
+                0,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(enabled, 0, "EnableTraceEx2");
+        let events = Box::new(std::sync::Mutex::new(Vec::new()));
+        let mut logfile = EVENT_TRACE_LOGFILEW {
+            LoggerName: name.as_ptr().cast_mut(),
+            Anonymous1: EVENT_TRACE_LOGFILEW_0 {
+                ProcessTraceMode: PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD,
+            },
+            Anonymous2: EVENT_TRACE_LOGFILEW_1 {
+                EventRecordCallback: Some(heard),
+            },
+            Context: std::ptr::from_ref(&*events).cast_mut().cast(),
+            ..Default::default()
+        };
+        // SAFETY: the logfile above, its name and context outliving the trace.
+        let trace = unsafe { OpenTraceW(&raw mut logfile) }.Value;
+        assert_ne!(trace, u64::MAX, "OpenTraceW");
+        let reader = std::thread::spawn(move || {
+            let handle = PROCESSTRACE_HANDLE { Value: trace };
+            // SAFETY: the trace opened above, read until the session stops.
+            unsafe { ProcessTrace(&handle, 1, std::ptr::null(), std::ptr::null()) };
+        });
+        Some(EtwSession {
+            name,
+            control,
+            trace,
+            properties,
+            events,
+            reader: Some(reader),
+        })
+    }
+
+    /// The events' strings come so far, waiting up to TIMEOUT for `count`.
+    fn events(&self, count: usize) -> Vec<String> {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let got = self.events.lock().unwrap().clone();
+            if got.len() >= count || Instant::now() > deadline {
+                return got;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for EtwSession {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Diagnostics::Etw::*;
+        // SAFETY: the session this started, stopped by its name with its properties; its
+        // trace closed, which ends the reader's ProcessTrace.
+        unsafe {
+            ControlTraceW(
+                self.control,
+                self.name.as_ptr(),
+                self.properties.as_mut_ptr().cast(),
+                EVENT_TRACE_CONTROL_STOP,
+            );
+            CloseTrace(PROCESSTRACE_HANDLE { Value: self.trace });
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+/// A run's log sent to Event Tracing for Windows (etwlogs): each line an event of moby's
+/// etwlogs provider, its words moby's (`container_name: ..., log: LINE`), as a session
+/// that listens for the provider has it; its own copy kept, `logs` reading it. Refused
+/// elsewhere in shards' words: ETW is Windows' own.
+#[test]
+fn a_runs_log_is_sent_to_etw_as_its_options_say() {
+    let Some((home, image)) = home("containers-etw") else {
+        return;
+    };
+    #[cfg(not(windows))]
+    {
+        let r = run_in(&home, &image, &["--log-driver", "etwlogs"], &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{r}");
+        assert!(
+            r.stderr
+                .contains("--log-driver etwlogs: Event Tracing for Windows is Windows' own"),
+            "{r}"
+        );
+    }
+    #[cfg(windows)]
+    {
+        let Some(session) = EtwSession::start() else {
+            return;
+        };
+        let r = run_in(
+            &home,
+            &image,
+            &["--name", "etw", "--log-driver", "etwlogs"],
+            &["streams", "out", "err"],
+        );
+        assert_eq!(r.status, Some(0), "{r}");
+        let id = shards_in(&home, &["inspect", "-f", "{{.Id}}", "etw"]).stdout;
+        let image_id = shards_in(&home, &["inspect", "-f", "{{.Image}}", "etw"]).stdout;
+        let head = format!(
+            "container_name: etw, image_name: {image}, container_id: {}, image_id: {}, ",
+            id.trim(),
+            image_id.trim()
+        );
+        let mut events = session.events(2);
+        events.sort();
+        assert_eq!(
+            events,
+            [
+                format!("{head}source: stderr, log: err"),
+                format!("{head}source: stdout, log: out")
+            ]
+        );
+        assert_eq!(shards_in(&home, &["logs", "etw"]).stdout, "out\n");
+    }
+}
+
 /// A run's log sent to Cloud Logging (D169), to Google in the test: each line an entry at
 /// its output's time, its payload the run's details and its line, its stream a label;
 /// written with an access token the environment of the client that started the run finds:

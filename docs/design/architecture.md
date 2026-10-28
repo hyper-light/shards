@@ -6471,6 +6471,37 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D198. A run's log sent to Event Tracing for Windows: `etwlogs` (built)
+
+`--log-driver etwlogs` is served on Windows, the journal's counterpart there (D166): a run's
+lines go to the host's own event tracing, as Docker's Windows driver sends them. Sent as
+every driver's are, from shards' store, by the daemon's shipper (D163).
+
+- **Docker's provider and words.** Each line, and each 16 KiB part of a longer one, is an
+  event of moby's provider, `{a3693192-9ed6-46d2-a981-f8226c8363bd}`, written by
+  EventWriteString at level 0 and keyword 0, its string moby's createLogMessage's:
+  `container_name: NAME, image_name: IMAGE, container_id: ID, image_id: IMAGE_ID, source:
+  STREAM, log: LINE` (daemon/logger/etwlogs/etwlogs_windows.go). A session listening for
+  the provider has each, `logman start -ets NAME -p {a3693192-...}` and tracerpt among
+  them, as for Docker's.
+- **Registered once.** The daemon registers the provider with the first run that asks for
+  it and keeps it for its life, as moby keeps one registration while any of its loggers
+  lives; one that fails is asked for again by the next run.
+- **Delivered as written.** An event is ETW's once written: a session that listens has it,
+  and none that does not, for every sender alike. Its options are every driver's (tag,
+  labels, env, mode, the local copy's); moby's reads none of its own.
+- **Where Docker is wrong, shards is not.** A line holding a NUL fails Go's
+  UTF16FromString, and moby's driver loses it; shards writes it, the NUL U+FFFD, as its bytes
+  that are no UTF-8 are.
+- **Windows'.** Elsewhere it is refused as its run is made, in shards' words: Event
+  Tracing for Windows is Windows' own.
+
+Tested on real microVMs on Windows (`a_runs_log_is_sent_to_etw_as_its_options_say`): a
+real-time ETW session of the test's own, its provider enabled, has a run's line on each
+stream, word for word, and `logs` reads the run's own copy; an ETW session is an
+administrator's or Performance Log Users', and a host whose user is neither says SKIP.
+Elsewhere it tests the refusal. A unit test holds each event's words to moby's.
+
 ### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (designed; slice 1 begun)
 
 **Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,

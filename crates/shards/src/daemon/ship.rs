@@ -23,6 +23,8 @@ use crate::containers::Disk;
 use crate::spec::LOG_STDERR;
 
 mod awslogs;
+#[cfg(windows)]
+mod etwlogs;
 mod fluentd;
 mod gcplogs;
 mod gelf;
@@ -907,6 +909,17 @@ impl<D: Disk> Daemon<D> {
             crate::logging::Remote::Journald => {
                 return Err(
                     "--log-driver journald: the journal is systemd's, on Linux, and this host keeps none"
+                        .into(),
+                );
+            }
+            #[cfg(windows)]
+            crate::logging::Remote::Etwlogs => {
+                Box::new(etwlogs::Etwlogs::new(&details).map_err(|e| e.to_string())?)
+            }
+            #[cfg(not(windows))]
+            crate::logging::Remote::Etwlogs => {
+                return Err(
+                    "--log-driver etwlogs: Event Tracing for Windows is Windows' own, and this host keeps none"
                         .into(),
                 );
             }

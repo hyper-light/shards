@@ -32,14 +32,17 @@ pub mod syslog;
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
 /// The drivers that send a log elsewhere, from shards' store (D163 to D169); journald's on
-/// Linux alone, whose systemd keeps the journal.
-const SENDS: [&str; 7] = [
-    "syslog", "gelf", "fluentd", "splunk", "awslogs", "gcplogs", "journald",
+/// Linux alone, whose systemd keeps the journal, and etwlogs' on Windows alone, Event
+/// Tracing for Windows.
+const SENDS: [&str; 8] = [
+    "syslog", "gelf", "fluentd", "splunk", "awslogs", "gcplogs", "journald", "etwlogs",
 ];
 /// What a run's log can be, as a refusal says it.
 #[cfg(target_os = "linux")]
 const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs), Cloud Logging (gcplogs) or the journal (journald), or keeps none (none)";
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs), Cloud Logging (gcplogs) or Event Tracing for Windows (etwlogs), or keeps none (none)";
+#[cfg(not(any(target_os = "linux", windows)))]
 const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs) or Cloud Logging (gcplogs), or keeps none (none)";
 /// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
 const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
@@ -118,10 +121,9 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
             None => Ok(None),
         };
     }
-    // Event Tracing for Windows is Windows' own, and shards' daemon is not there yet.
-    if name == "etwlogs" {
+    if name == "etwlogs" && !cfg!(windows) {
         return Err(format!(
-            "--log-driver etwlogs: Event Tracing for Windows is Windows' own, and this host's daemon sends no log to it: {KINDS}"
+            "--log-driver etwlogs: Event Tracing for Windows is Windows' own, and this host keeps none: {KINDS}"
         ));
     }
     if name == "journald" && !cfg!(target_os = "linux") {
@@ -138,6 +140,8 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
         "gelf" => &gelf::OPTIONS,
         "fluentd" => &fluentd::OPTIONS,
         "journald" => &journald::OPTIONS,
+        // moby's etwlogs reads no option of its own.
+        "etwlogs" => &[],
         "splunk" => &splunk::OPTIONS,
         "awslogs" => &awslogs::OPTIONS,
         "gcplogs" => &gcplogs::OPTIONS,
@@ -253,6 +257,8 @@ pub enum Remote {
     Gelf(gelf::Config),
     Fluentd(fluentd::Config),
     Journald,
+    /// Event Tracing for Windows, moby's etwlogs provider (daemon/ship/etwlogs.rs).
+    Etwlogs,
     Splunk(splunk::Config),
     Awslogs(awslogs::Config),
     Gcplogs(gcplogs::Config),
@@ -270,6 +276,7 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
         "gelf" => Ok(Some(Remote::Gelf(gelf::config(opts)?))),
         "fluentd" => Ok(Some(Remote::Fluentd(fluentd::config(opts)?))),
         "journald" => Ok(Some(Remote::Journald)),
+        "etwlogs" => Ok(Some(Remote::Etwlogs)),
         "splunk" => Ok(Some(Remote::Splunk(splunk::config(opts)?))),
         "awslogs" => Ok(Some(Remote::Awslogs(awslogs::config(opts)?))),
         "gcplogs" => Ok(Some(Remote::Gcplogs(gcplogs::config(opts)?))),
@@ -620,8 +627,12 @@ mod tests {
             ),
             (
                 "etwlogs",
-                &[],
-                "--log-driver etwlogs: Event Tracing for Windows is Windows' own",
+                &["max-size=10m"],
+                if cfg!(windows) {
+                    "--log-opt max-size: --log-driver etwlogs takes labels"
+                } else {
+                    "--log-driver etwlogs: Event Tracing for Windows is Windows' own"
+                },
             ),
             ("bogus", &[], "--log-driver bogus: no such log driver"),
             (
