@@ -388,29 +388,33 @@ impl MemoryPressure {
     /// Waits until the system's memory is low, or [`REPEAT`] after the last time it said so
     /// while it still is.
     pub fn wait(&mut self) -> io::Result<()> {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0};
-        use windows_sys::Win32::System::Memory::QueryMemoryResourceNotification;
-        use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+        use windows_sys::Win32::System::Threading::INFINITE;
         if self.raised {
             std::thread::sleep(REPEAT);
-            let mut low = 0;
-            // SAFETY: the notification this holds, and a BOOL to write.
-            if unsafe { QueryMemoryResourceNotification(self.low.as_raw_handle(), &raw mut low) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if low != 0 {
+            if self.signalled(0)? {
                 // Still low, as it was REPEAT ago.
                 return Ok(());
             }
             self.raised = false;
         }
-        // SAFETY: a wait on the notification this holds.
-        match unsafe { WaitForSingleObject(self.low.as_raw_handle(), INFINITE) } {
-            WAIT_OBJECT_0 => {
-                self.raised = true;
-                Ok(())
-            }
+        if self.signalled(INFINITE)? {
+            self.raised = true;
+        }
+        Ok(())
+    }
+
+    /// Whether the notification is signalled within `ms` milliseconds: the system's memory
+    /// low (the object is signalled while it is, CreateMemoryResourceNotification), as
+    /// QueryMemoryResourceNotification would say it, and an event that stands in for it
+    /// says it too.
+    fn signalled(&self, ms: u32) -> io::Result<bool> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: a wait on the object this holds.
+        match unsafe { WaitForSingleObject(self.low.as_raw_handle(), ms) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
             WAIT_FAILED => Err(io::Error::last_os_error()),
             other => Err(io::Error::other(format!("a wait answered {other}"))),
         }
@@ -559,5 +563,66 @@ mod tests {
         }
         let (watched, _) = watched.unwrap();
         assert!(!watched.describe().is_empty());
+    }
+
+    /// On Windows each low-memory signal is a word, one that lasts said again every
+    /// [`REPEAT`], and none while memory is not low: an event stands in for the system's
+    /// notification, a waitable object signalled while its memory is low
+    /// (CreateMemoryResourceNotification).
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn each_low_memory_signal_is_a_word_and_one_that_lasts_is_said_again() {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use std::time::Instant;
+        use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent};
+        // SAFETY: a manual-reset event, unsignalled, owned below.
+        let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert!(!raw.is_null());
+        // SAFETY: the handle just made, which nothing else owns.
+        let event = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let low = |on: bool| {
+            // SAFETY: the event made above.
+            let done = unsafe {
+                if on {
+                    SetEvent(event.as_raw_handle())
+                } else {
+                    ResetEvent(event.as_raw_handle())
+                }
+            };
+            assert_ne!(done, 0);
+        };
+        let mut pressure = MemoryPressure {
+            low: event.try_clone().unwrap(),
+            raised: false,
+        };
+        let (said, words) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                for _ in 0..3 {
+                    pressure.wait().unwrap();
+                    said.send(Instant::now()).unwrap();
+                }
+            });
+            assert!(
+                words.recv_timeout(Duration::from_millis(300)).is_err(),
+                "a word unasked"
+            );
+            low(true);
+            let first = words.recv_timeout(Duration::from_secs(5)).unwrap();
+            let again = words.recv_timeout(REPEAT * 3).unwrap();
+            assert!(
+                again.duration_since(first) >= REPEAT,
+                "said again {:?} on",
+                again.duration_since(first)
+            );
+            low(false);
+            assert!(
+                words.recv_timeout(REPEAT * 2).is_err(),
+                "a word with memory not low"
+            );
+            low(true);
+            words.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
     }
 }
