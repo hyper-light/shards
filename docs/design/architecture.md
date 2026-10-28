@@ -6692,13 +6692,21 @@ run, saved, warm): its daemon boots every run cold until then, though WHP takes 
 descriptor limits, systemd's slices) or a later step's (the Engine API's stream, step 8;
 FUSE under a budget, steps 6 and 7). Every command of the catalog was asked of a daemon
 there once and answered; `pause` said a microVM was not paused on Windows yet, until a
-pause became the VMM's own on every host (D191, step 2).
+pause became the VMM's own on every host (D191, step 2). On CI's Windows runners, nested in
+Azure VMs of 4 CPUs, tests/daemon.rs passes too with real microVMs, 37 of 37 on each, the
+same eleven skipping: on windows-2022 (Windows Server 2022, 10.0.20348) and windows-2025
+(Windows Server 2025, 10.0.26100) at 61a07442 (CI 40618994939), and windows-2025 at
+b7d8ee30 before (CI 40601221843). There it had first failed whole, every VM refused NUL
+(M351); then, on windows-2022, two tests whose cold boots ran beside others' waited past
+the daemon's 60 s, until cold boots waited their turn (M357). `shards_ipc`'s tests pass on
+both, their pipe's DACL read by SID (M354).
 
 **Not on Windows yet**, each refused with a message that says so, each a later step of the
-parity plan: templates, warm pools and saves (step 4, on WHP's snapshots, D196); published
-ports and a host's network (step 5); a host's directories as volumes and binds (step 6);
-memory given back (step 7); the Engine API, another machine's clients, `--use-api-socket`
-and what log drivers wait on a TCP connection for (step 8).
+parity plan: a host's network (step 5); a host's directories as volumes and binds (step 6);
+memory given back under a budget (step 7); the Engine API, another machine's clients,
+`--use-api-socket` and what log drivers wait on a TCP connection for (step 8). Templates,
+warm pools and saves are served (step 4, on WHP's snapshots, D196), and published ports
+(step 5, D142).
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
