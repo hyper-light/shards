@@ -736,8 +736,8 @@ impl<D: Disk> Daemon<D> {
         tokens: &[u8],
         leave_running: bool,
     ) -> Result<(), String> {
-        let (inbox, socket, vm) = match lock(&self.runs).get(id) {
-            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone(), t.vm.clone()),
+        let (inbox, socket) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
             _ => return Err("it is not running".into()),
         };
         let microvm = lock(&self.containers)
@@ -775,9 +775,10 @@ impl<D: Disk> Daemon<D> {
             lock(&inbox).saving = None;
             return Err(format!("asking its microVM: {e}"));
         }
+        // A paused microVM's guest goes quiet for its save, so it goes on for it.
         let frozen = lock(&self.paused).contains(id);
         if frozen {
-            let _ = vm.kill(shards_ipc::signal::SIGCONT);
+            let _ = self.pause_vm(id, false);
         }
         // As long as the save takes, which is its memory's writing: its VM answers, or
         // ends, and the run's end tells this then.
@@ -785,7 +786,7 @@ impl<D: Disk> Daemon<D> {
             .recv()
             .unwrap_or_else(|_| Err("its microVM stopped".into()));
         if frozen && leave_running && lock(&self.paused).contains(id) {
-            let _ = vm.kill(shards_ipc::signal::SIGSTOP);
+            let _ = self.pause_vm(id, true);
         }
         answered
     }

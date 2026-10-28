@@ -3,7 +3,8 @@
 //! cgroups, as CFS bandwidth control holds a cgroup's threads
 //! (Documentation/scheduler/sched-bwc.rst). A governor reads each vCPU thread's CPU time;
 //! once a period's share is spent, every vCPU is held out of its guest until the period
-//! ends, and what a period overran comes off the next ones.
+//! ends, and what a period overran comes off the next ones. A pause holds every vCPU out
+//! of its guest whatever its share, until the machine goes on.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -27,7 +28,10 @@ pub(super) struct Hold {
     changed: Condvar,
     /// vCPUs wait on it while held.
     released: Condvar,
-    /// `State::held`, for a vCPU's look before each entry to its guest without the lock.
+    /// A pause waits on it for its vCPUs to be held.
+    waited: Condvar,
+    /// `State::held` or `State::paused`, for a vCPU's look before each entry to its guest
+    /// without the lock.
     held: AtomicBool,
     /// Each vCPU thread's clock, which it gives as it starts.
     clocks: Box<[OnceLock<ThreadClock>]>,
@@ -40,6 +44,10 @@ struct State {
     /// Bumped by each new limit, which begins a period of its own.
     generation: u64,
     held: bool,
+    /// Held whatever the share: the machine paused, until it goes on.
+    paused: bool,
+    /// The vCPUs waiting in [`Hold::wait`], each out of its guest.
+    waiting: usize,
     ended: bool,
 }
 
@@ -49,6 +57,7 @@ impl Hold {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
             released: Condvar::new(),
+            waited: Condvar::new(),
             held: AtomicBool::new(false),
             clocks: (0..vcpus).map(|_| OnceLock::new()).collect(),
         }
@@ -80,9 +89,43 @@ impl Hold {
             return;
         }
         let mut s = lock(&self.state);
-        while s.held && !stop() {
+        s.waiting = s.waiting.saturating_add(1);
+        self.waited.notify_all();
+        while (s.held || s.paused) && !stop() {
             s = wait(&self.released, s);
         }
+        s.waiting = s.waiting.saturating_sub(1);
+    }
+
+    /// The machine paused: every vCPU held out of its guest whatever its share, `kick`
+    /// taking each out, until [`resume`](Self::resume). Returns once all `vcpus` wait held,
+    /// whether they entered their guest already or not (`out`: they never left their
+    /// start, or are all out already); false where the machine ends first.
+    #[cfg(any(hv, test))]
+    pub(super) fn pause(&self, vcpus: usize, kick: &dyn Fn(), out: &dyn Fn() -> bool) -> bool {
+        let mut s = lock(&self.state);
+        if s.ended {
+            return false;
+        }
+        s.paused = true;
+        self.held.store(true, Ordering::Release);
+        drop(s);
+        kick();
+        let mut s = lock(&self.state);
+        while s.waiting < vcpus && !s.ended && !out() {
+            s = wait(&self.waited, s);
+        }
+        !s.ended
+    }
+
+    /// The machine goes on: its vCPUs held no more but by their share.
+    #[cfg(any(hv, test))]
+    pub(super) fn resume(&self) {
+        let mut s = lock(&self.state);
+        s.paused = false;
+        self.held.store(s.held, Ordering::Release);
+        drop(s);
+        self.released.notify_all();
     }
 
     /// Wakes vCPUs held, to look at what their `stop` says again. Only the running
@@ -99,16 +142,18 @@ impl Hold {
         let mut s = lock(&self.state);
         s.ended = true;
         s.held = false;
+        s.paused = false;
         self.held.store(false, Ordering::Release);
         drop(s);
         self.changed.notify_all();
         self.released.notify_all();
+        self.waited.notify_all();
     }
 
     fn set_held(&self, held: bool) {
         let mut s = lock(&self.state);
         s.held = held && !s.ended;
-        self.held.store(s.held, Ordering::Release);
+        self.held.store(s.held || s.paused, Ordering::Release);
         drop(s);
         if !held {
             self.released.notify_all();
@@ -281,6 +326,63 @@ mod tests {
         assert!(!hold.held.load(Ordering::Acquire));
         // Whatever the host gave them: nothing held them.
         assert!(used > 0);
+    }
+
+    /// A pause returns once every vCPU is held, and they use no CPU time until the machine
+    /// goes on, though a share of the host's would let them; then they run again.
+    #[test]
+    fn a_pause_holds_every_vcpu_until_the_machine_goes_on() {
+        let hold = Hold::new(2);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            for index in 0..2 {
+                let (hold, stop) = (&hold, &stop);
+                s.spawn(move || {
+                    hold.register(index).unwrap();
+                    while !stop.load(Ordering::Relaxed) {
+                        hold.wait(&|| stop.load(Ordering::Relaxed));
+                        let t = Instant::now();
+                        while t.elapsed() < Duration::from_micros(200) {
+                            std::hint::spin_loop();
+                        }
+                    }
+                });
+            }
+            while hold.clocks.iter().any(|c| c.get().is_none()) {
+                std::thread::yield_now();
+            }
+            assert!(hold.pause(2, &|| {}, &|| false));
+            assert_eq!(lock(&hold.state).waiting, 2);
+            let base = hold.used();
+            std::thread::sleep(Duration::from_millis(200));
+            assert_eq!(hold.used() - base, 0, "a paused vCPU ran");
+            hold.resume();
+            let base = hold.used();
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(hold.used() > base, "the machine went on, its vCPUs did not");
+            stop.store(true, Ordering::Relaxed);
+            hold.end();
+        });
+    }
+
+    /// A pause waits for no vCPU that is out of its guest by other means, and returns
+    /// false once the machine ends before its vCPUs are held.
+    #[test]
+    fn a_pause_returns_for_vcpus_out_already_and_for_the_end() {
+        let hold = Hold::new(1);
+        assert!(hold.pause(1, &|| {}, &|| true));
+        hold.resume();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                hold.end();
+            });
+            assert!(!hold.pause(1, &|| {}, &|| false));
+        });
+        assert!(
+            !hold.pause(1, &|| {}, &|| false),
+            "an ended machine is no pause's"
+        );
     }
 
     /// A vCPU waiting while held goes once the machine ends.

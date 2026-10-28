@@ -87,16 +87,17 @@ fn local(path: &str) -> Result<PathBuf, String> {
     ))
 }
 
-/// filepath.Clean of an absolute path.
+/// filepath.Clean of an absolute path, its volume (a Windows drive or share) kept.
 fn clean(path: &Path) -> PathBuf {
-    let mut out = PathBuf::from("/");
+    let mut out = PathBuf::new();
     for c in path.components() {
         match c {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => out.push(c),
             std::path::Component::Normal(n) => out.push(n),
             std::path::Component::ParentDir => {
                 out.pop();
             }
-            _ => {}
+            std::path::Component::CurDir => {}
         }
     }
     out
@@ -155,12 +156,14 @@ fn is_device(m: &std::fs::Metadata) -> bool {
     }
 }
 
+/// What the daemon is asked of `path` in `container`: the path with slashes, as the moby
+/// client sends it, whatever separators the copy rules gave it here.
 fn step(what: &str, container: &str, path: &str) -> Vec<String> {
     vec![
         shards_ipc::COPY_STEP.to_string(),
         what.to_string(),
         container.to_string(),
-        path.to_string(),
+        copy::to_slash(Path::new(path)).display().to_string(),
     ]
 }
 
@@ -362,15 +365,10 @@ fn to_container(ask: &Ask<'_>, o: &Options, container: &str, src: &str, dst: &st
     let done = with_progress(o.quiet, "Copying to container - ", &copied, || {
         std::thread::scope(|scope| {
             let packing = scope.spawn(packer);
+            let mut asking = step("extract", container, &dir.display().to_string());
+            asking.extend([if o.uid_gid { "1" } else { "0" }.into(), "0".into()]);
             let asked = ask(
-                vec![
-                    shards_ipc::COPY_STEP.to_string(),
-                    "extract".into(),
-                    container.to_string(),
-                    dir.display().to_string(),
-                    if o.uid_gid { "1" } else { "0" }.into(),
-                    "0".into(),
-                ],
+                asking,
                 &[crate::cli::Stream::From(shards_ipc::fd::AsFd::as_fd(&reader))],
             );
             drop(reader);

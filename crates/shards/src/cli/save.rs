@@ -240,10 +240,12 @@ fn random() -> Result<u32, String> {
     Ok(u32::from_le_bytes(b))
 }
 
-/// atomicwriter's validateDestination.
+/// atomicwriter's validateDestination: its directory as Go's filepath.Dir has it, and each
+/// error as os.Stat and os.Lstat give it on this platform ([`stat_op`]).
 fn validate(name: &str) -> Result<(), String> {
     let path = Path::new(name);
-    let dir = path.parent().map(Path::as_os_str).unwrap_or_default();
+    let dir = shards_archive::copy::dir(path);
+    let dir = dir.as_os_str();
     if !dir.is_empty() && dir != "." && dir != ".." {
         match std::fs::metadata(dir) {
             Ok(m) if m.is_dir() => {}
@@ -255,7 +257,8 @@ fn validate(name: &str) -> Result<(), String> {
             }
             Err(e) => {
                 return Err(format!(
-                    "invalid output path: stat {}: {}",
+                    "invalid output path: {} {}: {}",
+                    stat_op(&e, "stat"),
                     dir.to_string_lossy(),
                     go(&e)
                 ));
@@ -264,10 +267,39 @@ fn validate(name: &str) -> Result<(), String> {
     }
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("failed to stat output path: lstat {name}: {}", go(&e))),
+        Err(e) if not_there(&e) => return Ok(()),
+        Err(e) => {
+            return Err(format!(
+                "failed to stat output path: {} {name}: {}",
+                stat_op(&e, "lstat"),
+                go(&e)
+            ));
+        }
     };
     unwritable(&meta).map_or(Ok(()), |why| Err(why.to_string()))
+}
+
+/// Whether `e` is os.ErrNotExist's: on Windows ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+/// or ERROR_BAD_NETPATH (syscall_windows.go, `Errno.Is`), where std's NotFound takes more.
+fn not_there(e: &std::io::Error) -> bool {
+    if cfg!(windows) {
+        matches!(e.raw_os_error(), Some(2 | 3 | 53))
+    } else {
+        e.kind() == std::io::ErrorKind::NotFound
+    }
+}
+
+/// The call Go's os.Stat and os.Lstat name in an error of theirs: `unix`'s off Windows; on
+/// Windows GetFileAttributesEx's for a path not there, else CreateFile's, which they try
+/// next (os/stat_windows.go, `stat`).
+fn stat_op(e: &std::io::Error, unix: &'static str) -> &'static str {
+    if !cfg!(windows) {
+        unix
+    } else if not_there(e) {
+        "GetFileAttributesEx"
+    } else {
+        "CreateFile"
+    }
 }
 
 /// What atomicwriter refuses of an existing destination, by its type and mode.

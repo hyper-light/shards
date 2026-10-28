@@ -372,6 +372,13 @@ pub mod kind {
     /// VM → its spawner: the generation the payload names, staged and filled, is to be made
     /// durable and the one in use. Answered with an empty `GRANTED`, or an `ERR` (D196).
     pub const COMMIT: u8 = 73;
+    /// Daemon → a running run's VM: its microVM paused where it is (1), every vCPU held out
+    /// of its guest, or let go on (0), as `pause` and `unpause` ask; then the ask's number
+    /// (8, big-endian). Answered with a `PAUSED`.
+    pub const PAUSE: u8 = 74;
+    /// Warm VM → daemon: the `PAUSE` its number (8, big-endian) names done, every vCPU held
+    /// or let go (nothing after it), or why not.
+    pub const PAUSED: u8 = 75;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

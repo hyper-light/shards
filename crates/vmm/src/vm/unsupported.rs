@@ -76,6 +76,14 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn pause(&self) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn resume(&self) {
+        match self.0 {}
+    }
+
     pub fn layer_reads_ahead(&self) {
         match self.0 {}
     }

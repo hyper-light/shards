@@ -1559,6 +1559,34 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
+    /// Pauses the microVM of run `id` where it is (`frozen`), every vCPU held out of its
+    /// guest, or lets it go on: its VM asked (`PAUSE`), and its answer (`PAUSED`) waited
+    /// for, as a save's is. A VM that ends first did neither.
+    pub(super) fn pause_vm(&self, id: &str, frozen: bool) -> Result<(), String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (inbox, socket) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
+            _ => return Err("it is not running".into()),
+        };
+        let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (told, answer) = std::sync::mpsc::channel();
+        {
+            let mut inbox = lock(&inbox);
+            if inbox.ended {
+                return Err("it is not running".into());
+            }
+            inbox.pausing.push((number, told));
+        }
+        let ask = [&[u8::from(frozen)][..], &number.to_be_bytes()].concat();
+        if let Err(e) = socket.send(shards_ipc::kind::PAUSE, &ask, &[]) {
+            lock(&inbox).pausing.retain(|(n, _)| *n != number);
+            return Err(format!("asking its microVM: {e}"));
+        }
+        answer
+            .recv()
+            .unwrap_or_else(|_| Err("its microVM stopped".into()))
+    }
+
     /// Whether container `id` runs joined to another's network (D119): in its provider's
     /// microVM, keeping no layer of its own yet.
     pub(super) fn joined_run(&self, id: &str) -> bool {
@@ -1595,28 +1623,27 @@ impl<D: crate::containers::Disk> Daemon<D> {
         sent
     }
 
-    /// Lets paused container `id`'s VM go on (SIGCONT); whether it could.
+    /// Lets paused container `id`'s microVM go on ([`pause_vm`](Self::pause_vm)); whether
+    /// it could.
     fn thaw(&self, id: &str) -> bool {
         // A joiner's cgroup is thawed in its provider's guest (D119): its VM is its
         // provider's, which goes on as it did.
         let resumed = if self.joined_run(id) {
             self.freeze(id, false).is_ok()
         } else {
-            match lock(&self.runs).get(id) {
-                Some(RunState::Tracked(t)) => t.vm.kill(shards_ipc::signal::SIGCONT).is_ok(),
-                _ => false,
-            }
+            self.pause_vm(id, false).is_ok()
         };
         lock(&self.paused).remove(id);
         resumed
     }
 
     /// `shards pause` and `unpause` (moby daemon/pause.go, unpause.go): each running
-    /// container's whole microVM frozen where it is, its vCPUs and devices alike, by
-    /// stopping its VM process (SIGSTOP), as dockerd freezes a container's cgroup; or let
-    /// go on (SIGCONT). A frozen microVM takes no CPU, keeps its memory, and hears what it
-    /// is sent once it goes on. Answers as the CLI does (pause.go): each name done, then
-    /// the errors.
+    /// container's whole microVM frozen where it is, every vCPU held out of its guest by
+    /// its VMM, as dockerd freezes a container's cgroup, on every hypervisor alike (WHP's
+    /// host stops a process no documented way); or let go on. A frozen microVM runs none
+    /// of its guest, keeps its memory, and hears what it is sent once it goes on, its VM
+    /// answering its daemon throughout. Answers as the CLI does (pause.go): each name done,
+    /// then the errors.
     fn pause(&self, parsed: &Parsed, freeze: bool, styled: bool, reply: &Reply<'_>) -> u8 {
         let args = self.by_image(&parsed.args, true);
         self.each(
@@ -1643,12 +1670,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     // A joiner's VM is its provider's (D119): its own cgroup is frozen in
                     // the guest, as Docker freezes a container's, and the VM goes on.
                     let frozen = if self.joined_run(&id) {
-                        self.freeze(&id, true).map_err(io::Error::other)
+                        self.freeze(&id, true)
                     } else {
-                        match lock(&self.runs).get(&id) {
-                            Some(RunState::Tracked(t)) => t.vm.kill(shards_ipc::signal::SIGSTOP),
-                            _ => Err(io::Error::from(io::ErrorKind::NotFound)),
-                        }
+                        self.pause_vm(&id, true)
                     };
                     return Step::Now(match frozen {
                         Ok(()) => {

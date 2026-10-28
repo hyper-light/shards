@@ -692,6 +692,18 @@ pub fn hold_cpus(cpus: u32) -> Result<(), String> {
         .hold_cpus(cpus)
 }
 
+/// This VM paused where it is, every vCPU held out of its guest (`frozen`), or let go on
+/// (`PAUSE`): returns once each is held.
+pub fn pause(frozen: bool) -> Result<(), String> {
+    let running = RUNNING.get().ok_or("the microVM has not started")?;
+    if frozen {
+        running.pause()
+    } else {
+        running.resume();
+        Ok(())
+    }
+}
+
 /// This VM's join disk, for its device.
 fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
     HAS_JOIN.store(true, std::sync::atomic::Ordering::Release);

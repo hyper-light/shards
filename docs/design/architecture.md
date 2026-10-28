@@ -2675,7 +2675,11 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   pipe the daemon hands on, never through the daemon. Two of the CLI's faults are not
   kept: its progress line adds the running total to itself (`last += n`) where shards
   keeps what it drew, and a copy from stdin reports `0B` where shards counts what came.
-  A stopped microVM's files are copied as a running one's.
+  A stopped microVM's files are copied as a running one's. On Windows the copy rules are
+  Windows' (the client's paths' drives and separators), and a microVM's path goes to the
+  daemon with slashes, as the moby client sends one (`filepath.ToSlash`,
+  client/container_copy.go): sent as the rules left it, `/note`'s directory was `\`, a
+  file of that name in the microVM.
 - **Tests:** `start_runs_a_stopped_microvm_again_over_its_own_files` (files and
   deletions survive, `create`, `restart`, errors);
   `cp_copies_files_into_and_out_of_a_microvm`,
@@ -3157,7 +3161,7 @@ stopped container under `-a` shows zeros, as Docker's does. Every container is s
 once, each on its own thread. The CPU's denominator is the host's clock between the
 samples, where docker/cli's is the system's CPU time from /proc/stat: inside a VM on a
 loaded host that does not keep time (one spinning vCPU read 329% and 2503%). A paused
-container's VM cannot answer; it shows the sample taken as it was paused, its CPU 0%,
+container's guest cannot answer; it shows the sample taken as it was paused, its CPU 0%,
 where dockerd reads a frozen cgroup's files from outside it. Before, `stats` showed the VM process's own CPU and
 resident memory and `--` for the rest. Memory is the guest's truth: the files a
 container writes are memory while its writable layer is in guest memory (D37's open
@@ -4444,8 +4448,8 @@ takes it as its own CLI would, over its socket, the stream's pipes the step's de
 it). So the paths here are the client's, relative ones from its own directory, the
 archive passes through the stream once, staged nowhere, and what the copy says is what it
 says here (its sizes, Docker's errors). What steers a command steers no step: a signal
-ends the client, and a step there ends with its stream. A Windows client refuses `cp`
-until cli/cp.rs serves Windows' files.
+ends the client, and a step there ends with its stream. A Windows client copies as the
+Windows Docker CLI does (below).
 
 Tested in `tests/context.rs` (`a_microvms_files_are_copied_to_and_from_the_client`): a
 directory here into a running microVM there and back, as it was; a file into a directory
@@ -6626,7 +6630,8 @@ run, saved, warm): its daemon boots every run cold until then, though WHP takes 
 (D196). Those it leaves out on Windows are Unix's by nature (a terminal's job control,
 descriptor limits, systemd's slices) or a later step's (the Engine API's stream, step 8;
 FUSE under a budget, steps 6 and 7). Every command of the catalog was asked of a daemon
-there once and answered; `pause` says a microVM is not paused on Windows yet (step 2).
+there once and answered; `pause` said a microVM was not paused on Windows yet, until a
+pause became the VMM's own on every host (D191, step 2).
 
 **Not on Windows yet**, each refused with a message that says so, each a later step of the
 parity plan: templates, warm pools and saves (step 4, on WHP's snapshots, D196); published
@@ -6829,6 +6834,16 @@ the user told).
   a microVM of those CPUs alone could use, where the cpuset alone bounds only a workload
   that stays in its cgroup. It comes with the run (the `RUN` head's `cpus`), before the
   guest hears of the run, and `update` moves it (below).
+- **A pause is the same hold, whole** (`Handle::pause`, the daemon's `PAUSE`, 2026-10-28):
+  every vCPU kicked out of its guest and held there, whatever its share, until the microVM
+  goes on; the daemon answers `pause` once its VM says each is held. It replaced a stop of
+  the VM process (SIGSTOP), which Windows has no documented call for (NtSuspendProcess is
+  ntdll's, undocumented), where WHP's kick is WHvCancelRunVirtualProcessor, documented,
+  and holds for a run that has not begun (M198): one pause on every host. The VM process
+  goes on answering its daemon and serving its devices as its guest is frozen, and a
+  frozen microVM's VM process takes next to no CPU time, as
+  `pause_freezes_a_microvm_until_unpause_or_stop` reads it from the host. A save of a
+  paused microVM lets it go on for its guest to go quiet, as the stop's continue did.
 - **`update` moves them, both ways.** A running run's `--cpus`, quota, `--cpu-count` or
   `--cpuset-cpus` changed writes its cpuset and quota at once (`builtin::CGROUP`, D40), a
   raise giving it CPUs it had not; before, a raise past its microVM's vCPUs bound at them.

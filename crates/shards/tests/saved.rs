@@ -1,8 +1,8 @@
 //! MicroVMs saved whole as they run (D176), end to end: `shards save vm` of real
 //! microVMs, from the test image a loopback registry serves (tests/common, `served`),
-//! booted from SHARDS_KERNEL and SHARDS_INIT.
+//! booted from SHARDS_KERNEL and SHARDS_INIT. Those of a volume's share are Unix's until
+//! the parity plan's step 6 serves shares on Windows.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -492,6 +492,8 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
 /// it holds open in the volume, in the volume's directory it works in, it writes on
 /// through, its share's server given the tables of the one that served it; the volume holds
 /// every count once, up to the save and on from it.
+// A volume's share: Unix's until the parity plan's step 6 serves shares on Windows.
+#[cfg(unix)]
 #[test]
 fn a_saved_microvm_writes_on_through_its_volume() {
     let Some((home, image)) = home("saved-volume") else {
@@ -579,6 +581,8 @@ fn a_saved_microvm_writes_on_through_its_volume() {
 /// with its mappings (D176): its restore maps each range again from its new share process
 /// before its guest runs, and the guest reads the file on through the window, a byte the
 /// host wrote while it was saved among it.
+// A volume's share: Unix's until the parity plan's step 6 serves shares on Windows.
+#[cfg(unix)]
 #[test]
 fn a_saved_microvm_reads_on_through_its_dax_window() {
     if cannot_run_vms() || cannot_pool() {
@@ -836,8 +840,6 @@ fn a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored() {
 /// M330).
 #[test]
 fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
-    use std::io::Write as _;
-    use std::os::fd::AsRawFd as _;
     let Some((home, image)) = home("resumed-stdin") else {
         return;
     };
@@ -852,16 +854,7 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
     // An exec that reads none of its stdin, given it until nothing takes more: its pipe,
     // what init holds for it, its connection and the client between them all full, the
     // rest of what its connection took unread in the guest as the save is taken.
-    let (stdin, mut writer) = std::io::pipe().unwrap();
-    // SAFETY: fcntl(2) setting the flags of a descriptor this test holds open.
-    unsafe {
-        let fd = writer.as_raw_fd();
-        libc::fcntl(
-            fd,
-            libc::F_SETFL,
-            libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
-        );
-    }
+    let (stdin, writer) = std::io::pipe().unwrap();
     let mut exec = common::command()
         .args(["exec", "-i", "reader", "/bin/testguest", "sleep"])
         .env("SHARDS_HOME", &*home)
@@ -872,22 +865,7 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let chunk = vec![b'x'; 64 << 10];
-    let (mut given, mut full_since) = (0usize, None::<Instant>);
-    while full_since.is_none_or(|at| at.elapsed() < Duration::from_secs(1)) {
-        match writer.write(&chunk) {
-            Ok(n) => {
-                given += n;
-                full_since = None;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                full_since.get_or_insert_with(Instant::now);
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => panic!("the exec's stdin: {e}"),
-        }
-        assert!(given < 64 << 20, "the exec took 64 MiB of stdin");
-    }
+    let given = filled(writer);
     let saved = shards(&["save", "vm", "reader", "snap"]);
     assert_eq!(saved.status, Some(0), "{saved}");
     let _ = exit(&mut exec);
@@ -905,6 +883,69 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
         "{given} bytes of stdin given; stopped in {took:?}\n{}",
         evidence(&home, "reader")
     );
+}
+
+/// Writes `writer` until it takes nothing more for a second, its reader's pipe and all
+/// between it and its reader full, and says how much it took: on Unix without blocking; on
+/// Windows, whose anonymous pipes do not, on a thread of its own, which its count stops,
+/// and which ends as its reader goes.
+fn filled(writer: std::io::PipeWriter) -> usize {
+    use std::io::Write as _;
+    let chunk = vec![b'x'; 64 << 10];
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        let mut writer = writer;
+        // SAFETY: fcntl(2) setting the flags of a descriptor this test holds open.
+        unsafe {
+            let fd = writer.as_raw_fd();
+            libc::fcntl(
+                fd,
+                libc::F_SETFL,
+                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+            );
+        }
+        let (mut given, mut full_since) = (0usize, None::<Instant>);
+        while full_since.is_none_or(|at| at.elapsed() < Duration::from_secs(1)) {
+            match writer.write(&chunk) {
+                Ok(n) => {
+                    given += n;
+                    full_since = None;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    full_since.get_or_insert_with(Instant::now);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("the exec's stdin: {e}"),
+            }
+            assert!(given < 64 << 20, "the exec took 64 MiB of stdin");
+        }
+        given
+    }
+    #[cfg(windows)]
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static GIVEN: AtomicUsize = AtomicUsize::new(0);
+        GIVEN.store(0, Ordering::SeqCst);
+        let mut writer = writer;
+        std::thread::spawn(move || {
+            while writer
+                .write(&chunk)
+                .is_ok_and(|n| GIVEN.fetch_add(n, Ordering::SeqCst) < 64 << 20)
+            {}
+        });
+        let (mut last, mut since) = (usize::MAX, Instant::now());
+        loop {
+            let given = GIVEN.load(Ordering::SeqCst);
+            assert!(given < 64 << 20, "the exec took 64 MiB of stdin");
+            if given != last {
+                (last, since) = (given, Instant::now());
+            } else if since.elapsed() >= Duration::from_secs(1) {
+                return given;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 /// An exec reading its stdin through a save ends once its microVM is restored: its stdin

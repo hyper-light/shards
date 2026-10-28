@@ -1708,7 +1708,8 @@ fn fetch_one(
 }
 
 /// Sends a datagram to `addr` from a connected socket, and waits up to 5 s for an answer:
-/// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it.
+/// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it; then
+/// `waited MS`, from the send to its end, by the guest's clock.
 fn udp(addr: &str) -> i32 {
     // A socket of the address's version.
     let any = if addr.starts_with('[') {
@@ -1716,14 +1717,16 @@ fn udp(addr: &str) -> i32 {
     } else {
         "0.0.0.0:0"
     };
+    let mut sent = None;
     let answered = std::net::UdpSocket::bind(any).and_then(|s| {
         s.connect(addr)?;
         s.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        sent = Some(std::time::Instant::now());
         s.send(b"?")?;
         let mut buf = [0u8; 512];
         s.recv(&mut buf)
     });
-    match answered {
+    let status = match answered {
         Ok(n) => {
             let _ = writeln!(io::stdout(), "udp {n}");
             0
@@ -1732,7 +1735,11 @@ fn udp(addr: &str) -> i32 {
             let _ = writeln!(io::stdout(), "udp error {e}");
             1
         }
+    };
+    if let Some(sent) = sent {
+        let _ = writeln!(io::stdout(), "waited {}", sent.elapsed().as_millis());
     }
+    status
 }
 
 /// Listens on TCP `port` at every address, says `ready`, then serves `connections`

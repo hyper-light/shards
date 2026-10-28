@@ -103,6 +103,27 @@ impl Handle {
         Ok(())
     }
 
+    /// Pauses the machine where it is: every vCPU kicked out of its guest and held there,
+    /// whatever its run's CPU share (the hold of D191), until [`resume`](Self::resume), as
+    /// `pause` freezes a microVM. Returns once every vCPU is held: at once for vCPUs not
+    /// released yet, which go into their guest only through the hold.
+    pub fn pause(&self) -> Result<(), String> {
+        let sh = &self.shared;
+        let held = sh.hold.pause(sh.kickers.len(), &|| sh.kick_all(), &|| {
+            sh.released_at_us.get().is_none()
+        });
+        if held {
+            Ok(())
+        } else {
+            Err("the microVM has stopped".into())
+        }
+    }
+
+    /// A paused machine goes on, its vCPUs held no more but by their share.
+    pub fn resume(&self) {
+        self.shared.hold.resume();
+    }
+
     /// Maps `file`, a run's swap, into the guest's swap window (D159), writable by the guest;
     /// returns its length, or nothing where a run's is mapped already, which the guest's
     /// members share. An error where the VM has no swap window.

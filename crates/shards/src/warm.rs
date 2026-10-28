@@ -583,6 +583,35 @@ enum From<'a> {
     Joiner(mpsc::Sender<Segment>, &'a std::sync::atomic::AtomicU32),
 }
 
+/// A pause (true) or resume the daemon asked for: its number, and a copy of the daemon's
+/// connection to answer on.
+type Pause = (bool, [u8; 8], UnixStream);
+
+/// The pauses and resumes the daemon asks of this VM (`PAUSE`), done in order on a thread
+/// of their own, each answered (`PAUSED`) on its own copy of the daemon's connection as it
+/// is done: a pause waits for every vCPU to be held, which a vCPU busy with an exit this
+/// connection serves must not wait out.
+fn pauses() -> Result<&'static mpsc::Sender<Pause>, String> {
+    static PAUSES: std::sync::OnceLock<Result<mpsc::Sender<Pause>, String>> = std::sync::OnceLock::new();
+    PAUSES
+        .get_or_init(|| {
+            let (asks, asked) = mpsc::channel::<Pause>();
+            std::thread::Builder::new()
+                .name("pauses".into())
+                .spawn(move || {
+                    for (frozen, number, answer) in asked {
+                        let done = crate::vm_run::pause(frozen);
+                        let said = done.as_ref().err().map(String::as_bytes).unwrap_or_default();
+                        let _ = to_daemon(&answer, kind::PAUSED, &[&number[..], said].concat(), &[]);
+                    }
+                })
+                .map(|_| asks)
+                .map_err(|e| format!("its pauses' thread: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
 /// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
 /// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
@@ -640,6 +669,22 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                         crate::vm_run::hold_cpus(u32::try_from(u64::from_be_bytes(bytes)).unwrap_or(u32::MAX))
                 {
                     let _ = writeln!(io::stderr(), "shards: its CPUs' hold: {e}");
+                }
+            }
+            // Paused where it is, or let go on (`pause`, `unpause`): in order, each
+            // answered once done ([`pauses`]).
+            kind::PAUSE if matches!(from, From::Daemon(_)) => {
+                if let Some((&frozen, number)) = message.payload.split_first()
+                    && let Ok(number) = <[u8; 8]>::try_from(number)
+                {
+                    let asked = conn.try_clone().map_err(|e| e.to_string()).and_then(|answer| {
+                        pauses()?
+                            .send((frozen == 1, number, answer))
+                            .map_err(|_| "its pauses' thread has ended".to_string())
+                    });
+                    if let Err(e) = asked {
+                        let _ = to_daemon(conn, kind::PAUSED, &[&number[..], e.as_bytes()].concat(), &[]);
+                    }
                 }
             }
             // A file a share's DAX window maps, cut short by another process (D189): mapped

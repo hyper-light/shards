@@ -2759,6 +2759,22 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     assert_eq!(again.status, Some(1));
     assert!(again.stderr.ends_with("is paused already\n"), "{again}");
     assert!(cpu() < 5.0, "a frozen microVM spun");
+    // As the host reads its VM process, where `stats` shows a frozen microVM's last
+    // sample: its spinning guest held, it takes next to no CPU time.
+    let pid: u32 = shards(&["inspect", "-f", "{{.State.Pid}}", "frozen"])
+        .stdout
+        .trim()
+        .parse()
+        .unwrap();
+    let before = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns;
+    let t0 = Instant::now();
+    std::thread::sleep(Duration::from_secs(1));
+    let used = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns - before;
+    let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+    assert!(
+        used < wall / 20,
+        "a frozen microVM's VM process used {used} ns of CPU in {wall} ns"
+    );
     let ps = shards(&["ps"]);
     assert!(ps.stdout.contains(" (Paused) "), "{ps}");
     let inspected = shards(&["container", "inspect", "frozen"]);
@@ -5152,7 +5168,8 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
         "{again}"
     );
     assert_eq!(std::fs::read_to_string(&cid).unwrap().len(), 64);
-    // A directory that is not there: toStatusError's 127.
+    // A directory that is not there, in the host's own words: toStatusError's 127 for
+    // Unix's, and 125 for Windows', whose "path" it does not look for.
     let lost = home.join("nowhere/x.cid");
     let missing = run_in(
         &home,
@@ -5160,10 +5177,15 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
         &["--cidfile", lost.to_str().unwrap()],
         &["exit", "0"],
     );
-    assert_eq!(missing.status, Some(127), "{missing}");
+    let (status, why) = if cfg!(windows) {
+        (125, "The system cannot find the path specified.")
+    } else {
+        (127, "no such file or directory")
+    };
+    assert_eq!(missing.status, Some(status), "{missing}");
     assert!(
         missing.stderr.starts_with(&format!(
-            "shards: failed to create the container ID file: open {}: no such file or directory\n",
+            "shards: failed to create the container ID file: open {}: {why}\n",
             lost.display()
         )),
         "{missing}"
@@ -6983,10 +7005,6 @@ fn a_refused_datagram_is_said_refused_at_once() {
     let Some((home, image)) = home("containers-udp-refused") else {
         return;
     };
-    // The home's first run boots its VM and saves its template; the probe's alone is timed.
-    let warm = run_in(&home, &image, &["--rm"], &["exit", "0"]);
-    assert_eq!(warm.status, Some(0), "{warm}");
-    let t0 = std::time::Instant::now();
     let ran = run_in(&home, &image, &["--rm", "-u", "root"], &["udp", "192.0.2.1:53"]);
     assert_eq!(ran.status, Some(1), "{ran}");
     // EHOSTUNREACH, Linux's 113 on every architecture shards runs (asm-generic/errno.h).
@@ -6994,8 +7012,15 @@ fn a_refused_datagram_is_said_refused_at_once() {
         ran.stdout.starts_with("udp error ") && ran.stdout.contains("(os error 113)"),
         "{ran}"
     );
-    // The probe waits 5 s for an answer that never comes.
-    assert!(t0.elapsed() < Duration::from_secs(4), "{:?}", t0.elapsed());
+    // At once, by the guest's clock, which a host that boots its microVM slowly leaves
+    // alone: the probe waits 5 s for an answer that never comes.
+    let waited: u64 = ran
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("waited "))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or(u64::MAX);
+    assert!(waited < 2000, "{waited} ms: {ran}");
 }
 
 /// `--network none`: a loopback alone, as dockerd's `none` gives a container. The run
@@ -9301,14 +9326,14 @@ fn save_writes_images() {
     );
     assert!(!missing.exists());
     assert_eq!(std::fs::read_dir(&*out).unwrap().count(), 1, "only image.tar");
+    // In the host's own words, as Go's os.Stat says them there (os/stat_windows.go).
     let bad = shards(&["save", "-o", "/nonexistent-dir/x.tar", &image]);
-    assert_eq!(
-        (bad.status, bad.stderr.as_str()),
-        (
-            Some(1),
-            "failed to save image: invalid output path: stat /nonexistent-dir: no such file or directory\n"
-        )
-    );
+    let said = if cfg!(windows) {
+        "failed to save image: invalid output path: GetFileAttributesEx \\nonexistent-dir: The system cannot find the file specified.\n"
+    } else {
+        "failed to save image: invalid output path: stat /nonexistent-dir: no such file or directory\n"
+    };
+    assert_eq!((bad.status, bad.stderr.as_str()), (Some(1), said));
     let dir = shards(&["save", "-o", out.to_str().unwrap(), &image]);
     assert_eq!(dir.stderr, "failed to save image: cannot write to a directory\n");
     // A blob that cannot be read past the archive's start: the save fails, and its file
@@ -9767,11 +9792,14 @@ fn load_reads_archives() {
         (Some(1), "unexpected EOF\n"),
         "{refused}"
     );
+    // In the host's own words, as Go's open says them there.
     let missing = shards(&["load", "-i", "/nonexistent.tar"]);
-    assert_eq!(
-        missing.stderr,
+    let said = if cfg!(windows) {
+        "open /nonexistent.tar: The system cannot find the file specified.\n"
+    } else {
         "open /nonexistent.tar: no such file or directory\n"
-    );
+    };
+    assert_eq!(missing.stderr, said);
 }
 
 /// `shards push` as `docker push` uploads images (dockerd 29.3.1's lines; pushed to a
@@ -12469,9 +12497,11 @@ fn cdi_devices_are_given_to_microvms() {
             {"name": "fuse", "containerEdits": {
                 "env": ["CDI_DEV=fuse"],
                 "deviceNodes": [{"path": "/dev/cdi-fuse", "hostPath": "/dev/fuse", "permissions": "rw"}],
-                "mounts": [{"hostPath": shared.to_str().unwrap(), "containerPath": "/cdi",
-                            "options": ["ro", "nosuid", "nodev", "bind"]}],
                 "additionalGids": [4242, 0]
+            }},
+            {"name": "shared", "containerEdits": {
+                "mounts": [{"hostPath": shared.to_str().unwrap(), "containerPath": "/cdi",
+                            "options": ["ro", "nosuid", "nodev", "bind"]}]
             }},
             {"name": "hook", "containerEdits": {
                 "hooks": [{"hookName": "createRuntime", "path": "/bin/true"}]
@@ -12513,28 +12543,33 @@ fn cdi_devices_are_given_to_microvms() {
         .to_string();
     let r = run(&given, &["stat", "/dev/cdi-fuse"]);
     assert_eq!(r.stdout, format!("/dev/cdi-fuse other 666 1000:{gid} 0\n"), "{r}");
-    let r = run(
-        &given,
-        &[
-            "fs",
-            "open:r:/dev/cdi-fuse",
-            "print:/cdi/hello",
-            "print:/proc/self/mounts",
-        ],
-    );
-    assert_eq!(r.status, Some(0), "{r}");
-    assert!(r.stdout.starts_with("from the host\n"), "{r}");
-    let cdi = r
-        .stdout
-        .lines()
-        .find(|l| l.split(' ').nth(1) == Some("/cdi"))
-        .unwrap_or_default();
-    let options: Vec<&str> = cdi.split(' ').nth(3).unwrap_or_default().split(',').collect();
-    for o in ["ro", "nosuid", "nodev"] {
-        assert!(options.contains(&o), "{o}: {cdi}\n{r}");
+    // Its host directory, a device of its own, as a mount's.
+    if !common::later_on_windows(6, "host directories and volumes") {
+        let mut both = given.to_vec();
+        both.extend(["--device", "test.example/dev=shared"]);
+        let r = run(
+            &both,
+            &[
+                "fs",
+                "open:r:/dev/cdi-fuse",
+                "print:/cdi/hello",
+                "print:/proc/self/mounts",
+            ],
+        );
+        assert_eq!(r.status, Some(0), "{r}");
+        assert!(r.stdout.starts_with("from the host\n"), "{r}");
+        let cdi = r
+            .stdout
+            .lines()
+            .find(|l| l.split(' ').nth(1) == Some("/cdi"))
+            .unwrap_or_default();
+        let options: Vec<&str> = cdi.split(' ').nth(3).unwrap_or_default().split(',').collect();
+        for o in ["ro", "nosuid", "nodev"] {
+            assert!(options.contains(&o), "{o}: {cdi}\n{r}");
+        }
+        let r = run(&both, &["fs", "write:/cdi/x=1"]);
+        assert!(r.stderr.contains("Read-only file system"), "{r}");
     }
-    let r = run(&given, &["fs", "write:/cdi/x=1"]);
-    assert!(r.stderr.contains("Read-only file system"), "{r}");
     // A name no spec has: made, then refused as it starts.
     let made = shards(&[
         "create",
@@ -12633,6 +12668,9 @@ fn an_image_of_gigabytes_boots() {
 /// does, not the half gigabyte, as a container's memory freed is its host's at once.
 #[test]
 fn a_runs_memory_freed_goes_back_to_the_host() {
+    if common::later_on_windows(7, "memory given back") {
+        return;
+    }
     let Some((home, image)) = home("containers-giveback") else {
         return;
     };
@@ -12818,6 +12856,9 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
     }
     // The templates, each a directory: the daemon's record of each is a file beside it.
     // The runs with a limit and without share one, each told its own most to plug.
+    if common::cannot_pool() {
+        return;
+    }
     let templates: Vec<_> = std::fs::read_dir(home.join("templates"))
         .unwrap()
         .map(|e| e.unwrap())

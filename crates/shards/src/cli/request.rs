@@ -838,7 +838,7 @@ impl CidFile {
             Err(e) => {
                 return Err(format!(
                     "failed to create the container ID file: open {path}: {}",
-                    go_errno(&e)
+                    shards_cmdline::buildflags::os_error(&e)
                 ));
             }
         };
@@ -861,7 +861,7 @@ impl CidFile {
             format!(
                 "failed to write the container ID ({id}) to file: write {}: {}",
                 self.path.display(),
-                go_errno(&e)
+                shards_cmdline::buildflags::os_error(&e)
             )
         })?;
         self.written = true;
@@ -917,7 +917,8 @@ pub(crate) fn for_test(args: &[String]) -> Result<Run, String> {
 /// the environment's value of it with `lookup` (`--env-file`), and dropped without it
 /// (`--label-file`), or where it is not set.
 pub(crate) fn kv_file(path: &str, lookup: bool) -> Result<Vec<String>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("open {path}: {}", go_errno(&e)))?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("open {path}: {}", shards_cmdline::buildflags::os_error(&e)))?;
     let invalid = |why: String| format!("invalid env file ({path}): {why}");
     let mut out = Vec::new();
     // bufio.ScanLines: a last line without its newline is a line; a \r before one goes.
@@ -1145,7 +1146,7 @@ pub(crate) fn seccomp_profile(v: &str) -> Result<String, String> {
             _ => {
                 return Err(format!(
                     "opening seccomp profile ({v}) failed: open {v}: {}",
-                    go_errno(&e)
+                    shards_cmdline::buildflags::os_error(&e)
                 ));
             }
         },
@@ -1266,19 +1267,6 @@ fn is_cdi_name(device: &str) -> bool {
         && name_ok(vendor, &letter, false)
         && name_ok(class, &letter, false)
         && name_ok(name, &alnum, true)
-}
-
-/// An I/O error as Go's syscall.Errno says it.
-fn go_errno(e: &std::io::Error) -> String {
-    match e.kind() {
-        std::io::ErrorKind::NotFound => "no such file or directory".into(),
-        std::io::ErrorKind::PermissionDenied => "permission denied".into(),
-        std::io::ErrorKind::IsADirectory => "is a directory".into(),
-        _ => {
-            let text = e.to_string();
-            text.split(" (os error").next().unwrap_or(&text).to_lowercase()
-        }
-    }
 }
 
 /// The health check the command line sets, as the CLI reads it (docker/cli

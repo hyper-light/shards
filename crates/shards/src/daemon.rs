@@ -839,6 +839,9 @@ struct Inbox {
     provider: Option<Arc<Mutex<Inbox>>>,
     /// A save its VM was asked for and has yet to answer (D176).
     saving: Option<snapshots::Saving>,
+    /// The pauses and resumes its VM was asked for (`PAUSE`) and has yet to answer, each
+    /// by its number.
+    pausing: Vec<(u64, mpsc::Sender<Result<(), String>>)>,
     /// The snapshot it was saved as, where the save stops it: its end is the save's.
     saved_as: Option<String>,
     /// Its microVM's own engine (D181): the connections its VM hands over are its
@@ -4925,6 +4928,7 @@ impl<D: Disk> Daemon<D> {
             joiners: 0,
             provider,
             saving: None,
+            pausing: Default::default(),
             saved_as: None,
             engine,
         }));
@@ -4994,9 +4998,13 @@ impl<D: Disk> Daemon<D> {
                     // The files its windows mapped are watched for it no more (D189).
                     #[cfg(target_os = "linux")]
                     cuts::forget(id);
-                    // A save it never answered is not written (D176).
+                    // A save it never answered is not written (D176), and a pause it
+                    // never answered not done.
                     if let Some(saving) = inbox.saving.take() {
                         let _ = saving.told.send(Err("its microVM stopped".into()));
+                    }
+                    for (_, told) in inbox.pausing.drain(..) {
+                        let _ = told.send(Err("its microVM stopped".into()));
                     }
                     if !inbox.ended {
                         self.run_ended(id, inbox, None);
@@ -5124,6 +5132,22 @@ impl<D: Disk> Daemon<D> {
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
+                // Its VM's answer to a pause or resume it was asked for.
+                kind::PAUSED => {
+                    if let Some((number, said)) = m.payload.split_first_chunk::<8>()
+                        && let Some(i) = inbox
+                            .pausing
+                            .iter()
+                            .position(|(n, _)| *n == u64::from_be_bytes(*number))
+                    {
+                        let (_, told) = inbox.pausing.swap_remove(i);
+                        let _ = told.send(if said.is_empty() {
+                            Ok(())
+                        } else {
+                            Err(String::from_utf8_lossy(said).into_owned())
+                        });
+                    }
+                }
                 kind::EXEC_TAKEN => {
                     if let Ok(n) = <[u8; 8]>::try_from(m.payload.as_slice()).map(u64::from_be_bytes) {
                         inbox.execs_in_flight.retain(|(held, _)| *held != n);
