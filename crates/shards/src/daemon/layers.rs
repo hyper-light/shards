@@ -43,7 +43,9 @@ impl LayerFile {
     /// An empty file, which a restoring microVM fills with its snapshot's layer.
     pub(super) fn empty(home: &Path) -> Result<LayerFile, String> {
         let path = fresh(home)?;
-        create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        create(&path)
+            .and_then(|f| shards_vmm::platform::sparse(&f))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(LayerFile { path, of: None })
     }
 
@@ -100,6 +102,10 @@ impl LayerFile {
         let layer = LayerFile { path, of: None };
         let at = |e: &dyn std::fmt::Display| format!("{}: {e}", layer.path.display());
         let mut file = create(&layer.path).map_err(|e| at(&e))?;
+        // Sparse, as a Unix file system makes a file a length set leaves unwritten: the
+        // blocks its file system writes alone are held, and a copy of it reads them alone
+        // (`platform::data_ranges`).
+        shards_vmm::platform::sparse(&file).map_err(|e| at(&e))?;
         file.set_len(bytes).map_err(|e| at(&e))?;
         let mut ids = [0u8; 32];
         shards_vmm::platform::fill_random(&mut ids).map_err(|e| at(&e))?;

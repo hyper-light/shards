@@ -382,6 +382,12 @@ pub mod kind {
     /// Warm VM → daemon: the `PAUSE` its number (8, big-endian) names done, every vCPU held
     /// or let go (nothing after it), or why not.
     pub const PAUSED: u8 = 75;
+    /// VM → its spawner, on its grants link, where it may ask its file system nothing of a
+    /// file's ranges (Windows' AppContainer, which makes no FSCTL, D141): which of a file of
+    /// the VM's hold data, the file's handle in the VM and the bytes looked at, each a
+    /// little-endian u64. Answered with a `GRANTED` of the ranges, each its offset and its
+    /// length, little-endian u64s; or an `ERR` (D196).
+    pub const RANGES: u8 = 76;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

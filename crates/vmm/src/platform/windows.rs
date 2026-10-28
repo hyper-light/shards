@@ -507,10 +507,68 @@ pub unsafe fn map_file_shared_at(_file: &File, _len: usize, _at: NonNull<u8>) ->
     Err(io::ErrorKind::Unsupported.into())
 }
 
-/// The ranges of `file`'s first `len` bytes that hold data: all of it, as no Windows
-/// backend takes snapshots, whose saves alone ask (`vm::SNAPSHOTS`).
-pub fn data_ranges(_file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
-    Ok(vec![(0, len)])
+/// The ranges of `file`'s first `len` bytes that hold data ([`allocated_ranges`]): as its
+/// spawner finds them, where it stages this process's snapshots, as a confined process may
+/// make no FSCTL (D141). A snapshot's copy of a writable layer copies them alone, where all
+/// of a layer's length, its holes too, took past a minute (D196).
+pub fn data_ranges(file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
+    match super::stager() {
+        Some(by) => by.data_ranges(file, len),
+        None => allocated_ranges(file, len),
+    }
+}
+
+/// The ranges of `file`'s first `len` bytes that its file system holds allocated
+/// (FSCTL_QUERY_ALLOCATED_RANGES): a sparse file's holes left out, and a file not sparse all
+/// of it, as the call's documentation says.
+pub fn allocated_ranges(file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
+    use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::{FILE_ALLOCATED_RANGE_BUFFER, FSCTL_QUERY_ALLOCATED_RANGES};
+    let end = i64::try_from(len).map_err(io::Error::other)?;
+    let size = size_of::<FILE_ALLOCATED_RANGE_BUFFER>();
+    let mut found = vec![FILE_ALLOCATED_RANGE_BUFFER::default(); 64];
+    let mut ranges = Vec::new();
+    let mut from = 0i64;
+    while from < end {
+        let asked = FILE_ALLOCATED_RANGE_BUFFER {
+            FileOffset: from,
+            Length: end - from,
+        };
+        let mut returned = 0u32;
+        // SAFETY: a range asked of a file this process holds, and room for what answers it.
+        let done = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_QUERY_ALLOCATED_RANGES,
+                (&raw const asked).cast(),
+                u32::try_from(size).map_err(io::Error::other)?,
+                found.as_mut_ptr().cast(),
+                u32::try_from(found.len() * size).map_err(io::Error::other)?,
+                &raw mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        let more = if done != 0 {
+            false
+        } else {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
+                return Err(e);
+            }
+            true
+        };
+        let got = found.get(..returned as usize / size).unwrap_or_default();
+        for r in got {
+            let (at, n) = (u64::try_from(r.FileOffset), u64::try_from(r.Length));
+            ranges.push((at.map_err(io::Error::other)?, n.map_err(io::Error::other)?));
+        }
+        match got.last() {
+            Some(last) if more => from = last.FileOffset.saturating_add(last.Length),
+            _ => break,
+        }
+    }
+    Ok(ranges)
 }
 
 /// Unmaps what [`map_file_shared`] mapped.

@@ -410,6 +410,42 @@ pub fn stage(
     }
 }
 
+/// Which of `file`'s first `len` bytes hold data, as the spawner on `link` finds them for
+/// this VM, which may ask its file system nothing of the file's ranges (`kind::RANGES`,
+/// D196): the file named by its handle here, which the spawner takes.
+#[cfg(windows)]
+pub fn ranges(link: &crate::grant::Link, file: &std::fs::File, len: u64) -> std::io::Result<Vec<(u64, u64)>> {
+    use shards_ipc::kind;
+    use std::os::windows::io::AsRawHandle as _;
+    let handle = file.as_raw_handle() as usize as u64;
+    let asked = [handle.to_le_bytes(), len.to_le_bytes()].concat();
+    shards_ipc::write_message(&link.to, kind::RANGES, &asked)?;
+    let answer = shards_ipc::read_message(&link.from)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
+    match answer.kind {
+        kind::GRANTED => {
+            let (pairs, rest) = answer.payload.as_chunks::<16>();
+            if !rest.is_empty() {
+                return Err(std::io::Error::other("ranges answered cut short"));
+            }
+            Ok(pairs
+                .iter()
+                .map(|pair| {
+                    let (at, n) = pair.split_at(8);
+                    let word = |b: &[u8]| <[u8; 8]>::try_from(b).map(u64::from_le_bytes).unwrap_or(0);
+                    (word(at), word(n))
+                })
+                .collect())
+        }
+        kind::ERR => Err(std::io::Error::other(
+            String::from_utf8_lossy(&answer.payload).into_owned(),
+        )),
+        other => Err(std::io::Error::other(format!(
+            "the spawner answered ranges with message kind {other}"
+        ))),
+    }
+}
+
 /// Has the spawner on `link` make generation `name`, which this VM filled, durable and the
 /// one in use (`kind::COMMIT`, D196).
 #[cfg(windows)]

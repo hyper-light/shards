@@ -2439,6 +2439,17 @@ impl shards_vmm::platform::Stager for SpawnerStages {
         crate::grant_ask::stage(link, dir, kept)
     }
 
+    fn data_ranges(&self, file: &std::fs::File, len: u64) -> std::io::Result<Vec<(u64, u64)>> {
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no spawner to read a file's ranges through",
+            )
+        })?;
+        crate::grant_ask::ranges(link, file, len)
+    }
+
     fn commit(&self, _dir: &Path, name: &str) -> std::io::Result<()> {
         let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let link = grants.as_ref().ok_or_else(|| {

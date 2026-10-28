@@ -866,7 +866,7 @@ pub fn prepare_kept(dir: &Path, kept: platform::Kept) -> Result<Staged, String> 
 }
 
 /// An empty generation in `dir` of the files `names`, each made sparse where it is the
-/// memory, as the VM that fills it may not make it (D196).
+/// memory or the layer's file system, as the VM that fills it may not make it (D196).
 fn prepare_named(dir: &Path, names: &[&str]) -> Result<Staged, String> {
     let mut staged = staging(dir, fresh_name())?;
     let made = names
@@ -874,7 +874,7 @@ fn prepare_named(dir: &Path, names: &[&str]) -> Result<Staged, String> {
         .map(|&name| {
             // Its memory sparse already, as the VM that fills it may not make it (D196).
             create_unsynced(&staged.staging.join(name), |file| match name {
-                MEMORY => platform::sparse(file),
+                MEMORY | LAYER => platform::sparse(file),
                 _ => Ok(()),
             })
         })
@@ -1707,6 +1707,11 @@ mod tests {
                 let name = staged.name().to_string();
                 self.0.lock().unwrap().push(staged);
                 Ok((name, handed))
+            }
+
+            fn data_ranges(&self, file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
+                let _ = file;
+                Ok(vec![(0, len)])
             }
 
             fn commit(&self, _: &Path, name: &str) -> io::Result<()> {

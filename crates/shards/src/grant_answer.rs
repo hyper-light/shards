@@ -377,6 +377,8 @@ pub fn broker() -> std::process::ExitCode {
 pub trait Recipient {
     /// `handle` duplicated into it: its value there.
     fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize>;
+    /// Its handle `value`, duplicated into this process.
+    fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle>;
     /// Its process ID, which a socket is shared with.
     fn id(&self) -> u32;
 }
@@ -385,6 +387,10 @@ pub trait Recipient {
 impl Recipient for shards_ipc::Child {
     fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize> {
         shards_ipc::Child::give(self, handle)
+    }
+
+    fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+        shards_ipc::Child::take(self, value)
     }
 
     fn id(&self) -> u32 {
@@ -396,6 +402,10 @@ impl Recipient for shards_ipc::Child {
 impl Recipient for shards_ipc::Process {
     fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize> {
         shards_ipc::Process::give(self, handle)
+    }
+
+    fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+        shards_ipc::Process::take(self, value)
     }
 
     fn id(&self) -> u32 {
@@ -542,6 +552,13 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
             sent.map_err(|e| format!("answering a VM's dial: {e}"))?;
             continue;
         }
+        // A file of the VM's, its ranges read for it (D196): taken out of the VM by its
+        // handle there, which names no file of this process's.
+        if asked.kind == kind::RANGES {
+            let answer = ranges(&asked.payload, to);
+            reply(link, answer, "a VM's ranges")?;
+            continue;
+        }
         if asked.kind == kind::STAGE {
             let answer = stage(&asked.payload, &dirs, to).map(|(generation, payload)| {
                 // One generation at a time a directory: one staged and never committed goes.
@@ -671,6 +688,29 @@ fn stage(
     Ok((generation, payload))
 }
 
+/// The ranges of a file of the VM's that hold data, as a `RANGES`'s payload names it (its
+/// handle in the VM, and the bytes looked at), and the answer: each range's offset and
+/// length, little-endian u64s.
+#[cfg(windows)]
+fn ranges(asked: &[u8], from: &dyn Recipient) -> Result<Vec<u8>, String> {
+    let (value, len) = asked
+        .split_first_chunk::<8>()
+        .and_then(|(v, rest)| Some((u64::from_le_bytes(*v), <[u8; 8]>::try_from(rest).ok()?)))
+        .ok_or("a VM asked for ranges malformed")?;
+    let value = usize::try_from(value).map_err(|e| e.to_string())?;
+    let file = std::fs::File::from(
+        from.take(value)
+            .map_err(|e| format!("taking the file a VM asked the ranges of: {e}"))?,
+    );
+    let found = shards_vmm::platform::allocated_ranges(&file, u64::from_le_bytes(len))
+        .map_err(|e| format!("a VM's file's ranges: {e}"))?;
+    Ok(found
+        .iter()
+        .flat_map(|&(at, n)| [at.to_le_bytes(), n.to_le_bytes()])
+        .flatten()
+        .collect())
+}
+
 /// Answers the VM with `GRANTED` and `answer`'s payload, or `ERR` and why not.
 #[cfg(windows)]
 fn reply(link: &crate::grant::Link, answer: Result<Vec<u8>, String>, what: &str) -> Result<(), String> {
@@ -698,6 +738,12 @@ mod windows_tests {
     impl Recipient for Here {
         fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize> {
             Ok(handle.try_clone_to_owned()?.into_raw_handle() as usize)
+        }
+
+        fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+            use std::os::windows::io::{BorrowedHandle, RawHandle};
+            // SAFETY: a value this test's own process gave, open while it asks.
+            unsafe { BorrowedHandle::borrow_raw(value as RawHandle) }.try_clone_to_owned()
         }
 
         fn id(&self) -> u32 {
@@ -891,6 +937,44 @@ mod windows_tests {
             .filter(|n| n != ".lock")
             .collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// The ranges of a VM's file that hold data are read for it by its spawner, which takes
+    /// the file out of the VM by its handle there (`RANGES`, D196): a sparse file's data,
+    /// and not its holes; a value that names no handle of the VM's is refused.
+    #[test]
+    fn a_vms_files_ranges_are_read_for_it() {
+        use std::os::windows::fs::FileExt as _;
+        let dir = shards_testdir::TempDir::new("ranges").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dir.join("layer"))
+            .unwrap();
+        shards_vmm::platform::sparse(&file).unwrap();
+        let len = 64u64 << 20;
+        file.set_len(len).unwrap();
+        file.seek_write(b"data", 32 << 20).unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            let found = crate::grant_ask::ranges(&vm, &file, len).unwrap();
+            let held: u64 = found.iter().map(|&(_, n)| n).sum();
+            assert!(
+                found.iter().any(|&(at, n)| at <= 32 << 20 && at + n > 32 << 20),
+                "{found:?}"
+            );
+            assert!(held < len, "its holes held too: {found:?}");
+            // A value that names no handle: a multiple of four past any this test holds.
+            let asked = [(1u64 << 40).to_le_bytes(), len.to_le_bytes()].concat();
+            shards_ipc::write_message(&vm.to, shards_ipc::kind::RANGES, &asked).unwrap();
+            let refused = shards_ipc::read_message(&vm.from).unwrap().unwrap();
+            assert_eq!(refused.kind, shards_ipc::kind::ERR);
+            drop(vm);
+            assert!(serving.join().unwrap().is_ok());
+        });
     }
 
     /// A VM's vsock path is bound for it, replacing a socket an earlier VM left there that

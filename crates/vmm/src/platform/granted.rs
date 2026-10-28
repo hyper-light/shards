@@ -296,6 +296,10 @@ pub trait Stager: Send + Sync + std::fmt::Debug {
     /// memory and state, then what it keeps beside them (`kept`), in [`Kept::files`]'s
     /// order.
     fn stage(&self, dir: &Path, kept: Kept) -> io::Result<(String, Vec<File>)>;
+    /// The ranges of `file`, one of this process's, that hold data within its first `len`
+    /// bytes, as the spawner finds them, which may ask the file system where this process
+    /// may not (Windows' AppContainer, which makes no FSCTL, D141).
+    fn data_ranges(&self, file: &File, len: u64) -> io::Result<Vec<(u64, u64)>>;
     /// Makes generation `name` of `dir`, filled, durable and the one in use.
     fn commit(&self, dir: &Path, name: &str) -> io::Result<()>;
 }
