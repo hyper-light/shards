@@ -55,8 +55,8 @@ use crate::filters;
 pub(crate) mod budget;
 mod follow;
 /// The groups shards keeps for `--cgroup-parent` where its host has none (D183, slice 3):
-/// macOS's, built; Windows', with the parity plan's step 12.
-#[cfg(any(target_os = "macos", test))]
+/// macOS's and Windows'.
+#[cfg(any(target_os = "macos", windows, test))]
 mod groups;
 mod health;
 mod hostnet;
@@ -1159,7 +1159,7 @@ struct Daemon<D: Disk = Real> {
     /// The microVMs held to a budget, told what it leaves them (D188).
     budgets: budget::Budgets,
     /// The groups shards keeps for `--cgroup-parent` (D183, slice 3), held by their thread.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     groups: groups::Groups,
     /// When each running container's health check is next due (health.rs).
     checks: health::Checks,
@@ -1620,7 +1620,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.start_collector(threads);
         daemon.start_pressure(threads);
         daemon.start_budgets(threads);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         daemon.start_groups(threads);
         daemon.restart_at_start(threads);
         daemon.serve_slots(threads, requests);
@@ -1919,7 +1919,7 @@ impl<D: Disk> Daemon<D> {
             parents: parents::Parents::default(),
             watching: reclaim::Watching::default(),
             budgets: budget::Budgets::default(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             groups: groups::Groups::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
@@ -4978,7 +4978,7 @@ impl<D: Disk> Daemon<D> {
         // Held within what its budget leaves it, where it has one (D188).
         if !visit {
             self.budget_ran(pid);
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             self.group_ran(pid, id);
         }
         inbox
@@ -5647,7 +5647,7 @@ impl<D: Disk> Daemon<D> {
             lock(&self.paused).remove(id);
             // What it held of its budget the others it held are told is theirs (D188).
             self.budget_left(pid);
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             self.group_left(pid);
             // Logged before anyone waiting hears of the end, as dockerd logs it in the
             // exit's handling (monitor.go), ahead of `stop`'s own event.
@@ -7096,12 +7096,14 @@ impl<D: Disk> Daemon<D> {
     /// The spawner a microVM's processes under `parent` are made by (D183): none for the
     /// daemon's own place; the parent's, placed once, or again where the last has gone (its
     /// slice stopped, say).
+    #[cfg(unix)]
     fn group_of(&self, parent: &str) -> Result<Option<shards_ipc::Group>, String> {
         if parent.is_empty() {
             return Ok(None);
         }
         // A group shards keeps (D183, slice 3): its microVMs made by the daemon's own
-        // spawner, and held to its budget by the groups' thread.
+        // spawner, and held to its budget by the groups' thread. Windows' are made in the
+        // group's job besides (`group_job`).
         #[cfg(target_os = "macos")]
         {
             groups::made(&self.home, parent).map(|_| None)
@@ -7297,9 +7299,13 @@ impl<D: Disk> Daemon<D> {
         layer: Option<layers::LayerFile>,
     ) -> Result<(), String> {
         use std::os::windows::io::{AsHandle as _, OwnedHandle};
-        // None but the daemon's own place on Windows yet (D183): one under a parent is
-        // refused here.
-        let _ = self.group_of(parent)?;
+        // Under a parent, a group shards keeps (D183, slice 3): the VM process made in its
+        // job, its own nested under it, as a warm VM of the parent's pool is made (PM M359).
+        let group = if parent.is_empty() {
+            None
+        } else {
+            Some(self.group_job(parent)?)
+        };
         let network = match &net {
             Some(mac) => {
                 let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
@@ -7377,6 +7383,7 @@ impl<D: Disk> Daemon<D> {
             env: &crate::netproc::env_pairs(&env),
             container: Some(&container),
             holds: shards_ipc::Holds::Hypervisor,
+            group: group.as_ref(),
         })
         .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
         // Shared with it already, and its handles duplicated into it.

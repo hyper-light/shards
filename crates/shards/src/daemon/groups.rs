@@ -3,17 +3,18 @@
 //! `groups/NAME`, made with the first run under it, whose budgets are files in cgroup v2's
 //! own formats, as a Linux user writes a cgroup's (Documentation/admin-guide/cgroup-v2.rst):
 //! `memory.high` and `memory.max`, bytes or `max`. The daemon holds the group's microVMs to
-//! them.
+//! them; on Windows each VM process of a group's is made in the group's job too, whose
+//! memory limit is its `memory.max` (PM M359).
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::{Condvar, Mutex, PoisonError};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use super::{Daemon, TAKE_TIMEOUT, Threads, lock, log};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use crate::containers::Disk;
 
 /// The directory of the home groups are kept in.
@@ -129,7 +130,7 @@ fn bytes(text: &str) -> Result<Option<u64>, String> {
         .ok_or_else(|| format!("{text:?}: more bytes than a budget holds"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone)]
 struct Member {
     pid: u32,
@@ -138,22 +139,62 @@ struct Member {
 
 /// What the groups' thread hears of runs (D183, slice 3): those begun, by VM process and
 /// container, and those ended, by VM process.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Default)]
 struct Woke {
     ran: Vec<Member>,
     left: Vec<u32>,
 }
 
-/// The groups' thread's word from the daemon, and what wakes it.
-#[cfg(target_os = "macos")]
+/// The groups' thread's word from the daemon, and what wakes it; on Windows each group's
+/// job too, by its name, with the `memory.max` it is held to.
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Default)]
 pub(super) struct Groups {
     woke: Mutex<Woke>,
     wake: Condvar,
+    #[cfg(windows)]
+    jobs: Mutex<HashMap<String, (shards_ipc::GroupJob, Option<u64>)>>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(windows)]
+impl<D: Disk> Daemon<D> {
+    /// Group `name`'s job, which a VM process of the group's is made in (D183, slice 3, PM
+    /// M359): made with the group's first, its directory and budget files with it, held to
+    /// its `memory.max`, and kept as long as the daemon runs, as the group's directory
+    /// stays; a handle of its own, for the VM process's making.
+    pub(super) fn group_job(&self, name: &str) -> Result<shards_ipc::GroupJob, String> {
+        let dir = made(&self.home, name)?;
+        let at = |e: &dyn std::fmt::Display| format!("group {name}'s job: {e}");
+        let mut jobs = lock(&self.groups.jobs);
+        if let Some((job, _)) = jobs.get(name) {
+            return job.try_clone().map_err(|e| at(&e));
+        }
+        let max = budget(&dir)?.max;
+        let job = shards_ipc::GroupJob::new().map_err(|e| at(&e))?;
+        job.limit_memory(max).map_err(|e| at(&e))?;
+        let given = job.try_clone().map_err(|e| at(&e))?;
+        jobs.insert(name.to_string(), (job, max));
+        Ok(given)
+    }
+
+    /// Group `name`'s job held to `max` from now, where it is held to another.
+    fn limit_group_job(&self, name: &str, max: Option<u64>) {
+        let mut jobs = lock(&self.groups.jobs);
+        let Some((job, held)) = jobs.get_mut(name) else {
+            return;
+        };
+        if *held == max {
+            return;
+        }
+        match job.limit_memory(max) {
+            Ok(()) => *held = max,
+            Err(e) => log(format!("group {name}: its job's memory limit: {e}")),
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
 impl<D: Disk> Daemon<D> {
     /// Starts the thread that holds the groups shards keeps to their budgets ([`Groups`]),
     /// as long as the daemon runs: it exits from within, its threads unwaited for.
@@ -241,6 +282,9 @@ impl<D: Disk> Daemon<D> {
                 return;
             }
         };
+        // Its job's memory limit its `memory.max`, as the file now says it.
+        #[cfg(windows)]
+        self.limit_group_job(name, budget.max);
         let footprints = || -> Vec<(usize, u64)> {
             members
                 .iter()

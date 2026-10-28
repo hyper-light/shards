@@ -2630,6 +2630,55 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
+/// A group shards keeps on Windows (D183, slice 3, PM M359): its microVMs' VM processes made
+/// in the group's job, whose memory limit is the group's `memory.max`, so that what they
+/// commit together stays under it: a run under a group of 1 GiB that allocates 2 GiB has
+/// its guest's memory refused past it, its command never holding it all, where a run that
+/// allocates as much under no group, and one that allocates within the group's room, run to
+/// their ends. The macOS test below holds its group by give-backs from a host directory's
+/// files, which Windows shares with the platform parity plan's step 6.
+#[test]
+fn a_groups_job_holds_its_microvms_to_its_memory_max() {
+    if !cfg!(windows) {
+        return;
+    }
+    let Some((home, image)) = home("containers-group-job") else {
+        return;
+    };
+    // Its budget written before its first microVM, as a user writes a cgroup's: the group's
+    // directory, as its first run would make it, its files as the user left them.
+    let group = home.join("groups").join("capped");
+    std::fs::create_dir_all(&group).unwrap();
+    std::fs::write(group.join("memory.max"), "1G\n").unwrap();
+    std::fs::write(group.join("memory.high"), "max\n").unwrap();
+    // As much under no group: its memory grows as its workload needs it (D148).
+    let free = run_in(&home, &image, &["--rm"], &["alloc-hold", "2048", "0"]);
+    assert_eq!(
+        (free.status, free.stdout.as_str()),
+        (Some(0), "allocated 2048\n"),
+        "{free}"
+    );
+    let within = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroup-parent", "capped"],
+        &["alloc-hold", "128", "0"],
+    );
+    assert_eq!(
+        (within.status, within.stdout.as_str()),
+        (Some(0), "allocated 128\n"),
+        "{within}"
+    );
+    let past = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroup-parent", "capped"],
+        &["alloc-hold", "2048", "0"],
+    );
+    assert_ne!(past.status, Some(0), "{past}");
+    assert!(!past.stdout.contains("allocated 2048"), "{past}");
+}
+
 /// A microVM under a group shards keeps (D183, slice 3), on macOS, whose host has no group
 /// of processes a user's tools make and cap: made with the group's directory of the home,
 /// its budget files `max`, the group's `memory.current` its VM processes' footprints; with

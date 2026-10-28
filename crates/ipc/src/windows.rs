@@ -58,9 +58,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WriteFile,
 };
 use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
-    TerminateJobObject,
+    CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
@@ -174,6 +174,54 @@ impl Job {
 
     fn raw(&self) -> HANDLE {
         self.0.as_raw_handle()
+    }
+}
+
+/// A group's job (D183, slice 3, PM M359): what a run's VM process under a group shards
+/// keeps is made in, its own Job nested under it, so that the group's `memory.max` is this
+/// job's memory limit, which refuses its processes' commits past it. A process already in
+/// a Job of its own joins none that holds another (M359), so each is made in it.
+#[derive(Debug)]
+pub struct GroupJob(OwnedHandle);
+
+impl GroupJob {
+    /// A job of no limit yet.
+    pub fn new() -> io::Result<GroupJob> {
+        // SAFETY: an anonymous job, owned below.
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw.is_null() {
+            return Err(last());
+        }
+        // SAFETY: a handle just made, which nothing else owns.
+        Ok(GroupJob(unsafe { OwnedHandle::from_raw_handle(raw) }))
+    }
+
+    /// Its processes' commits held to `bytes` together from now (JOB_OBJECT_LIMIT_JOB_MEMORY),
+    /// or to no limit where `None`.
+    pub fn limit_memory(&self, bytes: Option<u64>) -> io::Result<()> {
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        if let Some(bytes) = bytes {
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY;
+            limits.JobMemoryLimit = usize::try_from(bytes).unwrap_or(usize::MAX);
+        }
+        // SAFETY: limits of their own size, on our job.
+        if unsafe {
+            SetInformationJobObject(
+                self.0.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        } == 0
+        {
+            return Err(last());
+        }
+        Ok(())
+    }
+
+    /// The same job again, a handle of its own.
+    pub fn try_clone(&self) -> io::Result<GroupJob> {
+        self.0.try_clone().map(GroupJob)
     }
 }
 
@@ -911,6 +959,8 @@ pub struct Spawn<'a> {
     /// Its container, which holds what `holds` says.
     pub container: Option<&'a AppContainer>,
     pub holds: Holds,
+    /// The job of the group it is made in, if any, its own Job nested under it (D183).
+    pub group: Option<&'a GroupJob>,
 }
 
 /// A child [`spawn_suspended`] made, handed all it is given, which runs once resumed.
@@ -1640,7 +1690,13 @@ fn create(
             inherited.push(h);
         }
     }
-    let jobs = [job.raw()];
+    // The group's job first, the outermost, then its own (PROC_THREAD_ATTRIBUTE_JOB_LIST).
+    let jobs: Vec<HANDLE> = s
+        .group
+        .map(|g| g.0.as_raw_handle())
+        .into_iter()
+        .chain(std::iter::once(job.raw()))
+        .collect();
     let child_policy = CHILD_PROCESS_RESTRICTED;
     let words = MITIGATIONS;
     let mut held: Vec<SID_AND_ATTRIBUTES> = caps
@@ -1697,7 +1753,7 @@ fn create(
         update(
             PROC_THREAD_ATTRIBUTE_JOB_LIST,
             jobs.as_ptr().cast(),
-            size_of::<HANDLE>(),
+            jobs.len() * size_of::<HANDLE>(),
         )?;
         update(
             PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,

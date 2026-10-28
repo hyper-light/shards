@@ -1223,6 +1223,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         env: &crate::netproc::env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,
+        group: None,
     });
     // The VM's ends are its own now: its exit ends the requests.
     drop((asks_to, answers_from));

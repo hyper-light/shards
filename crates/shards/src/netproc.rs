@@ -456,6 +456,7 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         env: &env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Network,
+        group: None,
     })
     .map_err(|e| format!("starting {}: {e}", binary.display()))?;
     drop(theirs);

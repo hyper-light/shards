@@ -685,6 +685,7 @@ fn launch(
         env: &crate::netproc::env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,
+        group: None,
     })
     .map_err(|e| format!("starting the builder: {e}"))?;
     // Ended with the suspended VM, a Job's, where its network process does not start.

@@ -21,7 +21,7 @@ pub(super) fn check(run: &Run) -> Result<(), String> {
         return Ok(());
     }
     // Where the host has no group a user's tools cap, one shards keeps (D183, slice 3).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         if !super::groups::is_group_name(given) {
             return Err(format!(
@@ -30,7 +30,7 @@ pub(super) fn check(run: &Run) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         if !cfg!(target_os = "linux") {
             return Err(format!(
@@ -61,7 +61,7 @@ pub(super) fn check(run: &Run) -> Result<(), String> {
 /// `slice_name_is_valid`, `unit_name_is_valid`): `-.slice`, the root slice; or a name
 /// shorter than 256 bytes ending `.slice`, before it letters, digits and `:-_.\` alone,
 /// no `-` first or last, and none beside another.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
 pub(super) fn is_slice_name(name: &str) -> bool {
     if name == "-.slice" {
         return true;
@@ -82,7 +82,7 @@ pub(super) fn is_slice_name(name: &str) -> bool {
 /// A parent's spawner: being placed by the run that first asked for it, or placed. None on
 /// macOS, whose parents are groups shards keeps (groups.rs).
 #[derive(Debug)]
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
 enum Entry {
     Placing,
     Placed(Group),
@@ -93,10 +93,10 @@ enum Entry {
 #[derive(Debug, Default)]
 pub(super) struct Parents {
     by_slice: Mutex<HashMap<String, Entry>>,
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     placed: Condvar,
     /// Spawners placed so far, which name their scopes apart.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     made: AtomicU64,
 }
 
@@ -104,7 +104,7 @@ impl Parents {
     /// `slice`'s spawner: placed already, or made and placed now, as the one process of a
     /// scope of its own in `slice`. One whose placement the user's manager refuses is
     /// ended, and what the manager said is said.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     pub(super) fn group(&self, slice: &str, home: &Path) -> Result<Group, String> {
         let mut held = lock(&self.by_slice);
         loop {
@@ -144,7 +144,7 @@ impl Parents {
 
     /// Forgets `slice`'s spawner `group`, which has gone (its slice stopped, say), and
     /// ends it: the next run under `slice` places another.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     pub(super) fn forget(&self, slice: &str, group: Group) {
         let mut held = lock(&self.by_slice);
         if matches!(held.get(slice), Some(Entry::Placed(g)) if *g == group) {
@@ -178,7 +178,7 @@ impl Parents {
 
     /// Where no user's manager places a process: refused by [`check`] before any run asks.
     #[cfg(not(target_os = "linux"))]
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     fn place(&self, slice: &str, _home: &Path) -> Result<Group, String> {
         let _ = self.made.load(Ordering::Relaxed);
         Err(format!(

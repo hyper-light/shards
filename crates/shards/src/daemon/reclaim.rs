@@ -22,7 +22,7 @@ pub(super) struct Watching {
     watches: Mutex<Option<PressureWatches>>,
     /// The spawners whose scopes are watched, by process ID: none on macOS, whose parents
     /// are groups shards keeps (groups.rs).
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     scopes: Mutex<HashSet<u32>>,
     /// The microVMs giving back what they hold cold now, each by its own run's ID: none is
     /// asked again until its last give-back has ended, and none waits on another's, so
@@ -81,7 +81,7 @@ impl<D: Disk> Daemon<D> {
     /// Has the memory pressure of the scope `group` is the one process of watched as well
     /// (D183): where the user's slice holds its microVMs to a budget, they are short of
     /// memory before their host says so. Once each.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     pub(super) fn watch_scope_of(&self, group: shards_ipc::Group) {
         if !lock(&self.watching.scopes).insert(group.pid()) {
             return;
