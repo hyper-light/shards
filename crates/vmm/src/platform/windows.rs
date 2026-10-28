@@ -512,9 +512,15 @@ pub unsafe fn map_file_shared_at(_file: &File, _len: usize, _at: NonNull<u8>) ->
 /// make no FSCTL (D141). A snapshot's copy of a writable layer copies them alone, where all
 /// of a layer's length, its holes too, took past a minute (D196).
 pub fn data_ranges(file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
     match super::stager() {
         Some(by) => by.data_ranges(file, len),
-        None => allocated_ranges(file, len),
+        None => match allocated_ranges(file, len) {
+            // A process that may make no FSCTL and has no spawner left to ask: all of it,
+            // as a copy then reads its holes as zeros and writes none of them.
+            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => Ok(vec![(0, len)]),
+            other => other,
+        },
     }
 }
 

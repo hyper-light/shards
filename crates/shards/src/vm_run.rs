@@ -2507,7 +2507,10 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
         let stages = !paths.write_under.is_empty();
-        if stages {
+        // Its spawner stages its snapshots and reads its files' ranges for it, as long as
+        // the link stays: it may make no FSCTL (D141), and a restore copies a template's
+        // writable layer by its ranges (D196).
+        if stages || paths.vsock.is_some() {
             shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
         }
         match &paths.vsock {
