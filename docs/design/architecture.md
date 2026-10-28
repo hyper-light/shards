@@ -5278,7 +5278,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   or disconnected, with no grants built again; disconnected keeping its address; its last
   network taken; no way out through its next network.
 
-### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slice 1 built)
+### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1 and 3 built)
 
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
 
@@ -5317,8 +5317,8 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   parent's from its first page, and none of another parent's is taken.
 - **Refused before anything starts, each with why**: on Linux, a value that is no slice
   name (a path names a cgroup the user's manager owns, not the user), no user manager on
-  the user's bus, a slice the manager refuses (its own words); on macOS, a name no group
-  shards keeps may have (slice 3); on Windows, until slice 3's Windows half.
+  the user's bus, a slice the manager refuses (its own words); on macOS and Windows, a name
+  no group shards keeps may have (slice 3).
 - **Shown as given**: inspect's `HostConfig.CgroupParent`.
 - **Past a container's cgroup parent.** Rootless with nothing to set up, from an ssh login
   as from a desktop session; the microVM's whole host footprint, guest memory, vCPUs and
@@ -5376,8 +5376,8 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   that sub-hierarchy, the daemon's own cgroup in it, and the parent's spawner be moved
   into a leaf of its own there once (a move, PM M248's cost, once per parent), its
   children born there as slice 1's are. Built once a host needs it.
-- **Slice 3, built on macOS, designed on Windows: groups shards keeps, where its host has
-  none a user's tools cap.**
+- **Slice 3, built on macOS and Windows: groups shards keeps, where its host has none a
+  user's tools cap.**
   macOS has no group of processes a user may make and cap (its jetsam bands and
   coalitions are the system's own), and Windows' job objects are made by programs, none
   named by a tool of its user's. There `--cgroup-parent NAME` names a group shards keeps,
@@ -5402,25 +5402,27 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     microVM that held 679 MiB of 960 stopped, 137 and OOM-killed, the other running on.
     Mutation-checked: no give-back; no stop. CPU is not held here yet: `cpu.max` is the
     Windows half's, its job's CPU rate.
-  - **Windows** (designed): every process of a microVM under NAME is made in a job
-    object of NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST,
-    the group's first; Job Objects, "Nested Jobs", Windows 8 on), whose
-    limits are the files': `memory.max` its job memory limit (JOB_OBJECT_LIMIT_JOB_MEMORY,
+  - **Windows** (built): every process of a microVM under NAME is made in a job object of
+    NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
+    group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
+    process in a job of its own may join a group's job only while that holds nothing (the
+    second was refused, M359), so a group's warm VMs are made in its job from their start,
+    its pool its own. `memory.max` is the job's memory limit (JOB_OBJECT_LIMIT_JOB_MEMORY,
     which refuses its processes' commits past it: 512 MiB alone, and 160 MiB beside
-    another's 160, under 256, M359), `cpu.max` its CPU rate
-    (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE and HARD_CAP, in ten-thousandths of the host's
-    CPUs), once a longer measurement says what it holds to: capped at 25% of 4 CPUs, a
-    2 s spin used 1.21 and 1.36 CPUs (M359); `memory.high` a budget its microVMs are told
-    their room of and give back to, as on macOS (step 7's give-backs). A run under a group
-    takes no warm VM: made before the run that takes it, in its own job, a VM process may
-    join a group's job only while that holds nothing (the second was refused, M359), so
-    the run's VM process is made as the run begins, in the group's job, and restores its
-    template there.
+    another's 160, under 256, M359), set again as the file changes; `memory.high` the room
+    its microVMs are told, as on macOS, whose give-backs on Windows are the platform parity
+    plan's step 7. Tested on real microVMs on CI's windows-2022 and windows-2025
+    (`a_groups_job_holds_its_microvms_to_its_memory_max`, budget-e2e run 40624202863):
+    under a `memory.max` of 1 GiB, a run that allocates 2 GiB never holds it, where one
+    that allocates 2 GiB under no group, and one that allocates 128 MiB under it, run to
+    their ends. `cpu.max`, the job's CPU rate (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE and
+    HARD_CAP, in ten-thousandths of the host's CPUs), waits for a longer measurement of
+    what it holds to: capped at 25% of 4 CPUs, a 2 s spin used 1.21 and 1.36 CPUs (M359).
   - Shown as given (inspect's `HostConfig.CgroupParent`); the group's `memory.current`
     file the daemon writes as it sums it, as a cgroup's says what it holds.
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
   where no user's manager is (designed, above). 3: macOS and Windows, groups shards keeps
-  (designed, above). 4: the microVM's own engine's members (D181), a cgroup within the
+  (built, above; Windows' `cpu.max` to come). 4: the microVM's own engine's members (D181), a cgroup within the
   microVM, refused (501) until a need for it inside a microVM is shown.
 
 ### D184. A credential helper is asked at once and waited for only where its registry asks (built)
