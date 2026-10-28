@@ -15257,6 +15257,31 @@ revision before comparing a changed API/implementation.
   (vm/x86_64.rs, `cpuhp.parallel=0` beside `reboot=k`): never slower here, at 4 vCPUs as at
   240. Unmeasured on KVM and HVF, which keep parallel.
 
+### M355. A group shards keeps, on macOS, held to its budget by its microVMs' give-backs (D183)
+
+- **Question.** macOS has no group of processes a user's tools make and cap. Does a group
+  shards keeps (`--cgroup-parent NAME`, `groups/NAME` of the home) hold its microVMs to its
+  `memory.high` by their give-backs, and to its `memory.max` by stopping one, as a cgroup's
+  OOM killer does?
+- **Method.** `a_microvm_under_a_group_is_held_to_its_budget` (tests/containers.rs) on this
+  M5 Max (macOS, HVF), 2026-10-27: a microVM under the group reads 512 MiB of a share's files
+  through FUSE into its guest's page cache; the group's `memory.high` is written 256 MiB
+  under its `memory.current`; then, `memory.high` back to `max`, its `memory.max` 512 MiB
+  over what it holds, and a second microVM of the group holds 768 MiB its guest uses
+  (testguest `alloc-hold`). The daemon's log says what it did.
+- **Found.**
+  - The group held 1,254 MiB against a `memory.high` of 998 MiB: each microVM was told so
+    and asked to give back; they gave back 233 MiB they held cold of their files and asked
+    to unplug 640 MiB, and the group held 281 MiB, within its budget again, within one
+    pressure window.
+  - With the second microVM the group held 960 MiB against a `memory.max` of 793 MiB, and its
+    microVMs gave nothing back; the one that held 679 MiB of it was stopped, 137 and
+    OOM-killed, and the group held 278 MiB; the first ran on.
+  - The test took 12.4 s; it fails with no give-back (its group never within its budget)
+    and with no stop (the second's `wait` past its time).
+- **Consequence (D183, slice 3).** On macOS a group shards keeps holds its microVMs to its
+  memory budgets by their give-backs and, past `memory.max`, by stopping its largest.
+
 ### M356. Whether macOS and Windows pass a host's PCI function through to a VM (D154)
 
 - **Question.** VFIO is how Linux gives a process, a VMM, a host's PCI function (D154).

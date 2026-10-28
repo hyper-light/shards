@@ -5312,8 +5312,8 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   parent's from its first page, and none of another parent's is taken.
 - **Refused before anything starts, each with why**: on Linux, a value that is no slice
   name (a path names a cgroup the user's manager owns, not the user), no user manager on
-  the user's bus, a slice the manager refuses (its own words); on macOS, which has no
-  host resource group a process can be placed in; on Windows, until slice 3.
+  the user's bus, a slice the manager refuses (its own words); on macOS, a name no group
+  shards keeps may have (slice 3); on Windows, until slice 3's Windows half.
 - **Shown as given**: inspect's `HostConfig.CgroupParent`.
 - **Past a container's cgroup parent.** Rootless with nothing to set up, from an ssh login
   as from a desktop session; the microVM's whole host footprint, guest memory, vCPUs and
@@ -5371,11 +5371,46 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   that sub-hierarchy, the daemon's own cgroup in it, and the parent's spawner be moved
   into a leaf of its own there once (a move, PM M248's cost, once per parent), its
   children born there as slice 1's are. Built once a host needs it.
+- **Slice 3, built on macOS, designed on Windows: groups shards keeps, where its host has
+  none a user's tools cap.**
+  macOS has no group of processes a user may make and cap (its jetsam bands and
+  coalitions are the system's own), and Windows' job objects are made by programs, none
+  named by a tool of its user's. There `--cgroup-parent NAME` names a group shards keeps,
+  a directory of the home, `groups/NAME`, made with the first run under it: its name a
+  file's of letters, digits, `.`, `-` and `_` alone (daemon/groups.rs); its budgets
+  files in cgroup v2's own formats, as a Linux user writes a cgroup's (cgroup-v2.rst):
+  `memory.high` and `memory.max`, bytes with the kernel's binary suffixes or `max`
+  (mm/page_counter.c `page_counter_memparse`), and on Windows `cpu.max`, a quota and its
+  period in microseconds, each at least 1 ms, the period at most 1 s
+  (kernel/sched/core.c `tg_set_cfs_bandwidth`). Each starts `max`. The daemon watches the
+  files and holds the group's microVMs to them as they change:
+  - **macOS** (built): what the group holds is its microVMs' VM processes' footprints
+    (proc_pid_rusage's `ri_phys_footprint`), summed every pressure window while it has
+    microVMs, its files read again then, so that a budget written is heard within one.
+    Each microVM is told the room under the least of its budgets as D188 tells a slice's
+    (init's `ROOM`), and where the group is short each gives back what it holds cold,
+    then unplugs. Past `memory.max` with a pass that gave nothing back, the microVM of
+    the group that holds the most is stopped, its container marked OOM-killed, as a
+    cgroup's OOM killer takes its largest. Tested on real microVMs
+    (`a_microvm_under_a_group_is_held_to_its_budget`, M355): 1,254 MiB held under a
+    `memory.high` of 998 MiB, given back to 281; past a `memory.max` of 793 MiB, the
+    microVM that held 679 MiB of 960 stopped, 137 and OOM-killed, the other running on.
+    Mutation-checked: no give-back; no stop. CPU is not held here yet: `cpu.max` is the
+    Windows half's, its job's CPU rate.
+  - **Windows** (designed): every process of a microVM under NAME is made in a job
+    object of NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST,
+    the group's first; Job Objects, "Nested Jobs", Windows 8 on), whose
+    limits are the files': `memory.max` its job memory limit (JOB_OBJECT_LIMIT_JOB_MEMORY,
+    which refuses its processes' commits past it), `cpu.max` its CPU rate
+    (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE and HARD_CAP, in ten-thousandths of the host's
+    CPUs); `memory.high` a budget its microVMs are told their room of and give back to,
+    as on macOS (step 7's give-backs).
+  - Shown as given (inspect's `HostConfig.CgroupParent`); the group's `memory.current`
+    file the daemon writes as it sums it, as a cgroup's says what it holds.
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
-  where no user's manager is (designed, above). 3: Windows, a job object the VM process
-  is made in, once the daemon runs there (README: not yet). 4: the microVM's own
-  engine's members (D181), a cgroup within the microVM, refused (501) until a need for it
-  inside a microVM is shown.
+  where no user's manager is (designed, above). 3: macOS and Windows, groups shards keeps
+  (designed, above). 4: the microVM's own engine's members (D181), a cgroup within the
+  microVM, refused (501) until a need for it inside a microVM is shown.
 
 ### D184. A credential helper is asked at once and waited for only where its registry asks (built)
 
