@@ -7374,7 +7374,6 @@ fn a_run_on_network_none_reaches_nothing() {
 
 /// A run serving on the host's network: its client, and the port its server says it is
 /// ready on (`ready PORT`).
-#[cfg(unix)]
 fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
     let options = ["--rm", "-u", "root", "--network", "host"];
     ready_on(home, &run_args(image, &options, command))
@@ -7427,14 +7426,41 @@ fn talk(at: std::net::SocketAddr, sent: &str) -> String {
     got
 }
 
+/// This host's name, as the daemon names its host's network by: gethostname(2); on Windows
+/// its DNS host name (GetComputerNameExW, ComputerNamePhysicalDnsHostname).
+fn host_name() -> String {
+    #[cfg(unix)]
+    {
+        let mut name = [0u8; 256];
+        // SAFETY: gethostname(2) into a buffer of ours, of its length.
+        let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
+        assert_eq!(got, 0);
+        std::ffi::CStr::from_bytes_until_nul(&name)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{
+            ComputerNamePhysicalDnsHostname, GetComputerNameExW,
+        };
+        let mut name = [0u16; 256];
+        let mut len = u32::try_from(name.len()).unwrap();
+        // SAFETY: a buffer of ours, its length in units, which the call writes back.
+        let got =
+            unsafe { GetComputerNameExW(ComputerNamePhysicalDnsHostname, name.as_mut_ptr(), &raw mut len) };
+        assert_ne!(got, 0);
+        String::from_utf16_lossy(&name[..usize::try_from(len).unwrap()])
+    }
+}
+
 /// `--network host` (D124, PM M177): asked for, and said each time; the microVM on the
 /// host's network as dockerd's container is on its host's. The host's name; its servers
 /// the host's ports, at every address and at the loopback's, TCP's and UDP's, the host
 /// choosing port 0's; a port the host holds refused as Linux refuses it, and one closed
 /// and bound again at once its own; the host's own services reached at its loopback, by
 /// clients that bind first too; and what dockerd refuses there refused in its words.
-// The host's network on Windows comes with the platform parity plan's step 5.
-#[cfg(unix)]
 #[test]
 fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     let Some((home, image)) = home("containers-host") else {
@@ -7455,13 +7481,7 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
         )),
         "{names}"
     );
-    let mut name = [0u8; 256];
-    // SAFETY: gethostname(2) into a buffer of ours, of its length.
-    let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
-    assert_eq!(got, 0);
-    let name = std::ffi::CStr::from_bytes_until_nul(&name)
-        .unwrap()
-        .to_string_lossy();
+    let name = host_name();
     let mut cut = name.len().min(64);
     while !name.is_char_boundary(cut) {
         cut -= 1;

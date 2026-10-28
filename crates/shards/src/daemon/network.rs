@@ -203,12 +203,6 @@ pub fn check(
                 "--sysctl {key}: a run on its host's network has no network of its own to set it in"
             ));
         }
-        // On Windows its network process takes a host's sockets as WSADuplicateSocket gives
-        // them there, which the plan's step 5 brings (hostnet.rs): none of its guest's binds
-        // can be made the host's yet.
-        if cfg!(windows) {
-            return Err("--network host: a microVM is not put on its host's network on Windows yet".into());
-        }
         return Ok(Start::Attach(Net::Host));
     }
     let net = match mode {

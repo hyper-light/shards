@@ -542,6 +542,12 @@ struct UdpFlow {
 /// The guest's ends of a UDP flow: its port, and the remote address and port.
 type UdpKey = (u16, IpAddr, u16);
 
+/// The most of a UDP flow's datagrams that wait for its socket from the spawner's dialer
+/// (Windows): what the guest sends past them goes, as datagrams past a full socket buffer
+/// go. Its answer comes once the spawner has bound and connected one, in microseconds.
+#[cfg(windows)]
+const UDP_WAITING: usize = 16;
+
 /// What a poller's token or a timer names (review 2.14): its kind in the top byte, then
 /// the generation of the slot it names, then the slot, so that what an earlier holder of
 /// a slot left is never taken for its next's.
@@ -666,6 +672,10 @@ struct Stack<'r> {
     /// UDP flows by their numbers, and the next number.
     udp_ids: HashMap<u32, UdpKey>,
     next_udp: u32,
+    /// The guest's datagrams of UDP flows whose sockets the spawner's dialer is asked for
+    /// (Windows, `DIAL_UDP`), [`UDP_WAITING`] of each at most.
+    #[cfg(windows)]
+    udp_waiting: HashMap<UdpKey, Vec<Vec<u8>>>,
     /// What waits for the host's sockets, the timers due, earliest first, and the
     /// connections a full ring kept from the guest, in turn (review 2.14).
     poller: poll::Poller,
@@ -889,6 +899,8 @@ pub fn serve(
         udp: HashMap::new(),
         udp_ids: HashMap::new(),
         next_udp: 0,
+        #[cfg(windows)]
+        udp_waiting: HashMap::new(),
         poller: poll::Poller::new()?,
         timers: BinaryHeap::new(),
         blocked: VecDeque::new(),
@@ -1886,38 +1898,94 @@ impl<'r> Stack<'r> {
     /// Sends `payload` on UDP flow `key`, its host socket connected to `to`, made where
     /// there is none; its answers go to the guest from `key`'s remote end.
     fn flow(&mut self, key: UdpKey, to: (IpAddr, u16), payload: &[u8]) {
-        let f = match self.udp.entry(key) {
-            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let any = match to.0 {
-                    IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                    IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-                };
-                let Ok(sock) = UdpSocket::bind((any, 0)) else {
-                    return;
-                };
-                if sock.connect(to).is_err() || sock.set_nonblocking(true).is_err() {
-                    return;
+        if !self.udp.contains_key(&key) {
+            // What its AppContainer keeps it from, the host's loopback and own addresses
+            // (Windows, PM M204), its spawner's dialer binds and connects for it, as its TCP
+            // connections there are: the datagrams wait for it meanwhile, as a socket's
+            // buffer holds them.
+            #[cfg(windows)]
+            if let Some(dialer) = self.dialer.as_mut()
+                && dialer.reaches(to.0)
+            {
+                let waiting = self.udp_waiting.entry(key).or_default();
+                if waiting.len() < UDP_WAITING {
+                    waiting.push(payload.to_vec());
                 }
-                // Its answers waited for from now on, and its end timed.
-                let id = self.next_udp;
-                let named = token::of(token::UDP, 0, id);
-                if self
-                    .poller
-                    .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)
-                    .is_err()
-                {
-                    return;
+                if !dialer.asking_udp(&key) && dialer.ask_udp(std::net::SocketAddr::from(to), key).is_err() {
+                    self.udp_waiting.remove(&key);
                 }
-                self.next_udp = id.wrapping_add(1);
-                self.udp_ids.insert(id, key);
-                let life = Lifetime::new(Instant::now());
-                self.timers.push(Reverse((life.until, named)));
-                v.insert(UdpFlow { sock, life })
+                self.wait_on_dialer();
+                return;
+            }
+            let any = match to.0 {
+                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            };
+            let Ok(sock) = UdpSocket::bind((any, 0)) else {
+                return;
+            };
+            if sock.connect(to).is_err() || sock.set_nonblocking(true).is_err() {
+                return;
+            }
+            if !self.add_udp_flow(key, sock) {
+                return;
+            }
+        }
+        if let Some(f) = self.udp.get_mut(&key) {
+            let _ = f.sock.send(payload);
+            f.life.datagram(Instant::now(), false);
+        }
+    }
+
+    /// UDP flow `key`'s host socket, connected and nonblocking: its answers waited for from
+    /// now on, and its end timed. False where the poller would not take it.
+    fn add_udp_flow(&mut self, key: UdpKey, sock: UdpSocket) -> bool {
+        let id = self.next_udp;
+        let named = token::of(token::UDP, 0, id);
+        if self
+            .poller
+            .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)
+            .is_err()
+        {
+            return false;
+        }
+        self.next_udp = id.wrapping_add(1);
+        self.udp_ids.insert(id, key);
+        let life = Lifetime::new(Instant::now());
+        self.timers.push(Reverse((life.until, named)));
+        self.udp.insert(key, UdpFlow { sock, life });
+        true
+    }
+
+    /// A UDP flow's socket the dialer answered: its waiting datagrams sent on it; or, where
+    /// there is none, those datagrams gone, as a far end's refusal loses them.
+    #[cfg(windows)]
+    fn udp_dialed(&mut self, key: UdpKey, got: io::Result<UdpSocket>) {
+        let waiting = self.udp_waiting.remove(&key).unwrap_or_default();
+        let sock = match got {
+            Ok(sock) => sock,
+            Err(e) => {
+                if e.kind() != io::ErrorKind::ConnectionRefused {
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        io::stderr(),
+                        "shards-net: guest port {}'s datagrams to {:?} dropped: its dialer: {e}",
+                        key.0,
+                        (key.1, key.2)
+                    );
+                }
+                return;
             }
         };
-        let _ = f.sock.send(payload);
-        f.life.datagram(Instant::now(), false);
+        if self.udp.contains_key(&key) || !self.add_udp_flow(key, sock) {
+            return;
+        }
+        if let Some(f) = self.udp.get_mut(&key) {
+            for datagram in waiting {
+                let _ = f.sock.send(&datagram);
+                f.life.datagram(Instant::now(), false);
+            }
+        }
     }
 
     /// What UDP flow `id`'s host socket holds, to the guest.
@@ -2132,13 +2200,18 @@ impl<'r> Stack<'r> {
         if writable {
             let _ = dialer.flush();
         }
-        let (answers, there) = dialer.answers();
-        if !there && let Some(gone) = self.dialer.take() {
+        let answers = dialer.answers();
+        if !answers.there
+            && let Some(gone) = self.dialer.take()
+        {
             let had = std::mem::replace(&mut self.dialer_waits, poll::Interest::NONE);
             self.forget(gone.sock(), token::of(token::DIALER, 0, 0), had);
         }
-        for (d, got) in answers {
+        for (d, got) in answers.tcp {
             self.dialed(d, got);
+        }
+        for (key, got) in answers.udp {
+            self.udp_dialed(key, got);
         }
         self.wait_on_dialer();
     }
@@ -2486,6 +2559,8 @@ mod tests {
             udp: HashMap::new(),
             udp_ids: HashMap::new(),
             next_udp: 0,
+            #[cfg(windows)]
+            udp_waiting: HashMap::new(),
             poller: poll::Poller::new().unwrap(),
             timers: BinaryHeap::new(),
             blocked: VecDeque::new(),

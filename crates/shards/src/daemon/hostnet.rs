@@ -12,7 +12,6 @@
 //! ports go as it ends while the rest stay.
 
 use std::collections::HashMap;
-#[cfg(unix)]
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
@@ -28,19 +27,12 @@ use shards_vmm::devices::virtio::fs::host::linux_errno;
 
 /// IP protocol numbers (IANA).
 const TCP: u8 = 6;
-#[cfg(unix)]
 const UDP: u8 = 17;
 /// Linux's errnos for what is the daemon's to say: a socket it does not have, and a
 /// network process that is gone.
 const EBADF: i32 = 9;
 const ENETDOWN: i32 = 100;
 const EADDRINUSE: i32 = 98;
-/// Linux's errno for an operation a socket does not support: a bind on the host's network
-/// on Windows, whose network process takes a host's sockets as WSADuplicateSocket gives
-/// them there, which the plan's step 5 brings; a run asking for that network is refused
-/// before its container is made (network.rs `check`).
-#[cfg(windows)]
-const EOPNOTSUPP: i32 = 95;
 
 /// A run's sockets on the host's network: its VM's network process, what has come of its
 /// answers, and how many of them are owed; each socket by its number.
@@ -179,10 +171,17 @@ impl HostNet {
                 return answer(linux_errno(errno()));
             }
         }
-        // No socket of the host's is made for a guest on Windows yet (`socket`).
         #[cfg(windows)]
         if h.proto == TCP {
-            return answer(EOPNOTSUPP);
+            use std::os::windows::io::AsRawSocket as _;
+            let backlog = i32::try_from(l.backlog).unwrap_or(i32::MAX);
+            // SAFETY: listen of a socket of ours.
+            if unsafe {
+                windows_sys::Win32::Networking::WinSock::listen(h.fd.as_raw_socket() as usize, backlog)
+            } != 0
+            {
+                return answer(winsock_errno());
+            }
         }
         if h.published {
             return answer(0);
@@ -273,11 +272,98 @@ fn errno() -> i32 {
         .unwrap_or(libc::EIO)
 }
 
-/// A socket of the host's for a guest's bind, on Windows, which makes none yet
-/// ([`EOPNOTSUPP`]).
+/// The calling thread's last Winsock error, as Linux's errno for it: what a guest's bind or
+/// listen on its host's network is told (Linux's include/uapi/asm-generic/errno.h; Winsock's
+/// WSAE* are BSD's numbers less 10000, which Linux's are not).
 #[cfg(windows)]
-fn socket(_b: &HostBind) -> Result<(Sock, u16), i32> {
-    Err(EOPNOTSUPP)
+fn winsock_errno() -> i32 {
+    use windows_sys::Win32::Networking::WinSock::{
+        WSAEACCES, WSAEADDRINUSE, WSAEADDRNOTAVAIL, WSAEAFNOSUPPORT, WSAEINVAL, WSAEMFILE, WSAENOBUFS,
+        WSAEOPNOTSUPP, WSAEPROTONOSUPPORT, WSAGetLastError,
+    };
+    // SAFETY: no arguments.
+    match unsafe { WSAGetLastError() } {
+        // A port another socket holds alone (SO_EXCLUSIVEADDRUSE) refuses a bind with
+        // WSAEACCES, where Linux says it is in use.
+        WSAEADDRINUSE | WSAEACCES => EADDRINUSE,
+        WSAEADDRNOTAVAIL => 99,
+        WSAEAFNOSUPPORT => 97,
+        WSAEPROTONOSUPPORT => 93,
+        WSAEOPNOTSUPP => 95,
+        WSAEINVAL => 22,
+        WSAEMFILE => 24,
+        WSAENOBUFS => 105,
+        _ => 5,
+    }
+}
+
+/// A socket of the host's for `b`, bound, and its port, as Unix's is ([`socket`]): of its
+/// protocol, at its address, kept from children (WSA_FLAG_NO_HANDLE_INHERIT), IPv6 alone or
+/// not as the guest's socket says, a UDP socket's datagrams' destinations said
+/// (`IP_PKTINFO`), as the network process reads them; Linux's errno where it cannot be. Its
+/// address its own alone (SO_EXCLUSIVEADDRUSE), as a published port's is (publish.rs
+/// `listen`): Windows lets a socket bind over a port another holds at every address, at an
+/// address of its own, where Linux refuses it. The guest's SO_REUSEADDR and SO_REUSEPORT
+/// are not Windows': its SO_REUSEADDR lets a socket bind over a listener in use, and a
+/// listener binds over its port's connections in TIME_WAIT with no option there.
+#[cfg(windows)]
+fn socket(b: &HostBind) -> Result<(Sock, u16), i32> {
+    use std::os::windows::io::FromRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{
+        AF_INET, AF_INET6, INVALID_SOCKET, IPPROTO_IPV6, IPPROTO_TCP, IPPROTO_UDP, IPV6_V6ONLY,
+        SO_EXCLUSIVEADDRUSE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET, WSA_FLAG_NO_HANDLE_INHERIT,
+        WSA_FLAG_OVERLAPPED, WSASocketW, bind, setsockopt,
+    };
+    let (kind, protocol) = match b.proto {
+        TCP => (SOCK_STREAM, IPPROTO_TCP),
+        UDP => (SOCK_DGRAM, IPPROTO_UDP),
+        _ => return Err(93),
+    };
+    let family = if b.addr.is_ipv6() { AF_INET6 } else { AF_INET };
+    shards_vmm::platform::winsock().map_err(|_| 5)?;
+    // SAFETY: plain arguments.
+    let raw = unsafe {
+        WSASocketW(
+            i32::from(family),
+            kind,
+            protocol,
+            std::ptr::null(),
+            0,
+            WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT,
+        )
+    };
+    if raw == INVALID_SOCKET {
+        return Err(winsock_errno());
+    }
+    // SAFETY: a socket just made, ours alone.
+    let sock = unsafe { Sock::from_raw_socket(raw as u64) };
+    let set = |level, name, on: bool| {
+        let v = i32::from(on);
+        // SAFETY: setsockopt on our socket, with a BOOL of its length.
+        unsafe { setsockopt(raw, level, name, (&raw const v).cast(), 4) }
+    };
+    if set(SOL_SOCKET, SO_EXCLUSIVEADDRUSE, true) != 0 {
+        return Err(winsock_errno());
+    }
+    if b.addr.is_ipv6() && set(IPPROTO_IPV6, IPV6_V6ONLY, b.v6only) != 0 {
+        return Err(winsock_errno());
+    }
+    if b.proto == UDP {
+        shards_net::pktinfo::enable(raw, b.addr.is_ipv6()).map_err(|_| winsock_errno())?;
+    }
+    let (addr, len) = shards_net::sys::winsock_addr(SocketAddr::new(b.addr, b.port));
+    // SAFETY: an address of its own length.
+    if unsafe { bind(raw, (&raw const addr).cast(), len) } != 0 {
+        return Err(winsock_errno());
+    }
+    if b.proto == UDP {
+        let udp = std::net::UdpSocket::from(sock);
+        let port = udp.local_addr().map_err(|_| 5)?.port();
+        return Ok((Sock::from(udp), port));
+    }
+    let tcp = std::net::TcpListener::from(sock);
+    let port = tcp.local_addr().map_err(|_| 5)?.port();
+    Ok((Sock::from(tcp), port))
 }
 
 /// A socket of the host's for `b`, bound, and its port: of its protocol, at its address,

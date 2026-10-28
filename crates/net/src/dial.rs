@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 
 use shards_ipc::kind;
 
@@ -27,6 +27,18 @@ pub struct Dialing {
     proxy: bool,
 }
 
+/// A UDP flow, as the guest's datagrams name it: their port, and where they go.
+pub type UdpFlowKey = (u16, IpAddr, u16);
+
+/// What its answers bring: the guest's connections, made or not, and the UDP flows'
+/// sockets; and whether the dialer is still there.
+#[derive(Debug, Default)]
+pub struct Answers {
+    pub tcp: Vec<(Dialing, io::Result<HostSock>)>,
+    pub udp: Vec<(UdpFlowKey, io::Result<UdpSocket>)>,
+    pub there: bool,
+}
+
 /// The spawner's dialer, as this process holds it.
 #[derive(Debug)]
 pub struct Dialer {
@@ -39,6 +51,9 @@ pub struct Dialer {
     next: u32,
     asked: HashMap<u32, Dialing>,
     keys: HashMap<Key, u32>,
+    /// The UDP flows whose sockets are asked for (`DIAL_UDP`), by number and by flow.
+    udp_asked: HashMap<u32, UdpFlowKey>,
+    udp_keys: HashMap<UdpFlowKey, u32>,
 }
 
 impl Dialer {
@@ -53,6 +68,8 @@ impl Dialer {
             next: 0,
             asked: HashMap::new(),
             keys: HashMap::new(),
+            udp_asked: HashMap::new(),
+            udp_keys: HashMap::new(),
         })
     }
 
@@ -104,6 +121,28 @@ impl Dialer {
         Ok(())
     }
 
+    /// Whether a socket for UDP flow `key` is asked for already.
+    pub fn asking_udp(&self, key: &UdpFlowKey) -> bool {
+        self.udp_keys.contains_key(key)
+    }
+
+    /// Asks for a UDP socket for flow `key`, to `to` (`DIAL_UDP`): bound at that address and
+    /// connected there by the spawner, which the AppContainer keeps this process from.
+    pub fn ask_udp(&mut self, to: SocketAddr, key: UdpFlowKey) -> io::Result<()> {
+        let id = self.next;
+        self.next = self.next.wrapping_add(1);
+        let mut payload = id.to_be_bytes().to_vec();
+        match to.ip() {
+            IpAddr::V4(v4) => payload.extend(v4.octets()),
+            IpAddr::V6(v6) => payload.extend(v6.octets()),
+        }
+        payload.extend(to.port().to_be_bytes());
+        self.send(kind::DIAL_UDP, &payload)?;
+        self.udp_keys.insert(key, id);
+        self.udp_asked.insert(id, key);
+        Ok(())
+    }
+
     fn send(&mut self, kind: u8, payload: &[u8]) -> io::Result<()> {
         shards_ipc::write_message(&mut self.unsent, kind, payload)?;
         self.flush()
@@ -126,20 +165,45 @@ impl Dialer {
     }
 
     /// The answers come whole, each with what it asked for: its connection, connected, or
-    /// why there is none; and whether the dialer is still there. Once it is gone, every
-    /// connection still asked for is answered with that.
-    pub fn answers(&mut self) -> (Vec<(Dialing, io::Result<HostSock>)>, bool) {
-        let mut out = Vec::new();
+    /// a UDP flow's socket, or why there is none; and whether the dialer is still there.
+    /// Once it is gone, everything still asked for is answered with that.
+    pub fn answers(&mut self) -> Answers {
+        let mut out = Answers::default();
         loop {
             let m = match self.incoming.take(&self.link) {
                 Ok(shards_ipc::Took::Message(m)) => m,
-                Ok(shards_ipc::Took::Partial) => return (out, true),
+                Ok(shards_ipc::Took::Partial) => {
+                    out.there = true;
+                    return out;
+                }
                 Ok(shards_ipc::Took::Ended) | Err(_) => break,
             };
             let Some((id, rest)) = m.payload.split_first_chunk::<4>() else {
                 break;
             };
             let id = u32::from_be_bytes(*id);
+            if let Some(key) = self.udp_asked.remove(&id) {
+                self.udp_keys.remove(&key);
+                let got = match m.kind {
+                    kind::GRANTED => {
+                        let adopted = shards_ipc::adopt_socket(rest)
+                            .map(UdpSocket::from)
+                            .and_then(|sock| {
+                                sock.set_nonblocking(true)?;
+                                Ok(sock)
+                            });
+                        let _ = self.send(kind::TAKEN, &id.to_be_bytes());
+                        adopted
+                    }
+                    kind::ERR => Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        String::from_utf8_lossy(rest).into_owned(),
+                    )),
+                    _ => Err(io::Error::other("the dialer answered with something else")),
+                };
+                out.udp.push((key, got));
+                continue;
+            }
             let Some(d) = self.asked.remove(&id) else {
                 break;
             };
@@ -157,23 +221,23 @@ impl Dialer {
                     String::from_utf8_lossy(rest).into_owned(),
                 )),
                 _ => {
-                    out.push((
+                    out.tcp.push((
                         d,
                         Err(io::Error::other("the dialer answered with something else")),
                     ));
                     break;
                 }
             };
-            out.push((d, got));
+            out.tcp.push((d, got));
         }
         self.keys.clear();
-        out.extend(self.asked.drain().map(|(_, d)| {
-            (
-                d,
-                Err(io::Error::new(io::ErrorKind::BrokenPipe, "the dialer went")),
-            )
-        }));
-        (out, false)
+        self.udp_keys.clear();
+        let gone = || io::Error::new(io::ErrorKind::BrokenPipe, "the dialer went");
+        out.tcp.extend(self.asked.drain().map(|(_, d)| (d, Err(gone()))));
+        out.udp
+            .extend(self.udp_asked.drain().map(|(_, key)| (key, Err(gone()))));
+        out.there = false;
+        out
     }
 
     fn adopt(&self, d: &Dialing, info: &[u8]) -> io::Result<HostSock> {

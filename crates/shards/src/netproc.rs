@@ -718,6 +718,21 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
                     }
                 }
             },
+            // A UDP socket connects at once: answered as it is made.
+            kind::DIAL_UDP => {
+                let made = host_udp(rest).and_then(|sock| {
+                    shards_ipc::share_socket(sock.as_raw_socket(), pid).map(|info| (sock, info))
+                });
+                let sent = match made {
+                    Ok((sock, info)) => {
+                        answer(id, kind::GRANTED, &info).map(|()| held.push((id, Box::new(sock))))
+                    }
+                    Err(e) => answer(id, kind::ERR, e.to_string().as_bytes()),
+                };
+                if sent.is_err() {
+                    return;
+                }
+            }
             _ => return,
         }
     }
@@ -729,6 +744,24 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
 /// capabilities reach the rest.
 #[cfg(windows)]
 fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
+    shards_net::sys::connect_tcp_to_itself(dialed(asked)?).map_err(not_the_hosts)
+}
+
+/// A UDP socket bound at the address (4 or 16 bytes) `asked` names and connected there, to
+/// its port (big-endian), as [`host_tcp`] connects: only an address the host holds as it
+/// binds, its own or its loopback, which a network process's AppContainer keeps it from
+/// (D142).
+#[cfg(windows)]
+fn host_udp(asked: &[u8]) -> std::io::Result<std::net::UdpSocket> {
+    let to = dialed(asked)?;
+    let sock = std::net::UdpSocket::bind(std::net::SocketAddr::new(to.ip(), 0)).map_err(not_the_hosts)?;
+    sock.connect(to)?;
+    Ok(sock)
+}
+
+/// Where a dial `asked` goes: its address (4 or 16 bytes), then its port (big-endian).
+#[cfg(windows)]
+fn dialed(asked: &[u8]) -> std::io::Result<std::net::SocketAddr> {
     let refused = |why: &str| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_string());
     let (address, port) = asked
         .split_at_checked(asked.len().saturating_sub(2))
@@ -743,13 +776,20 @@ fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
             .into(),
         _ => return Err(refused("a dial of no address")),
     };
-    shards_net::sys::connect_tcp_to_itself(std::net::SocketAddr::new(ip, port)).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AddrNotAvailable {
-            refused("not one of this host's addresses")
-        } else {
-            e
-        }
-    })
+    Ok(std::net::SocketAddr::new(ip, port))
+}
+
+/// A bind's refusal of an address the host does not hold, said so.
+#[cfg(windows)]
+fn not_the_hosts(e: std::io::Error) -> std::io::Error {
+    if e.kind() == std::io::ErrorKind::AddrNotAvailable {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "not one of this host's addresses",
+        )
+    } else {
+        e
+    }
 }
 
 /// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it (Windows):

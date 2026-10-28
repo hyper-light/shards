@@ -388,6 +388,12 @@ pub mod kind {
     /// little-endian u64. Answered with a `GRANTED` of the ranges, each its offset and its
     /// length, little-endian u64s; or an `ERR` (D196).
     pub const RANGES: u8 = 76;
+    /// A network process → its spawner's dialer (Windows, D142), numbered as a `DIAL` is:
+    /// a UDP socket to the address (4 or 16 bytes) and port (big-endian) after its number,
+    /// one of those its AppContainer keeps it from (the host's loopback and own addresses,
+    /// PM M204), bound at that address and connected there. Answered as a `DIAL` is: a
+    /// `GRANTED` of the socket shared with it, kept until it says `TAKEN`; or an `ERR`.
+    pub const DIAL_UDP: u8 = 77;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
