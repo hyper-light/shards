@@ -2588,21 +2588,42 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     };
     // Half of them read with no budget, held in its guest's page cache.
     read(files.get(..512).unwrap());
+    // What the daemon says from the budget on: its host's own pressure, which a busy CI
+    // runner meets, has microVMs give back what they hold cold too, a few KiB of files
+    // just read, said as 0 MiB.
+    let before = said().len();
+    let since = || said().get(before..).unwrap_or_default().to_string();
     let set = Command::new("systemctl")
         .args(["--user", "set-property", "--runtime", &slice])
         .args(["MemoryHigh=384M", "MemorySwapMax=0"])
         .output()
         .unwrap();
     assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    let mib_after = |line: &str, words: &str| -> u64 {
+        line.split_once(words)
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {words:?} in {line}"))
+    };
+    // The first word of a give-back of a MiB or more.
+    let given = || {
+        since()
+            .lines()
+            .find(|l| l.contains("its microVMs gave back") && mib_after(l, "gave back ") > 0)
+            .map(str::to_string)
+    };
     let deadline = std::time::Instant::now() + TIMEOUT;
-    while !said().contains("its microVMs gave back") {
+    let gave = loop {
+        if let Some(gave) = given() {
+            break gave;
+        }
         assert!(
             std::time::Instant::now() < deadline,
             "nothing given back said:\n{}",
             said()
         );
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
     read(&files);
     // Held within the room its budget leaves, or, short of it, within the least room a run
     // goes on in: its host's taking back its template's pages as the budget was set counts
@@ -2612,21 +2633,9 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         "not said to be held within its budget:\n{}",
         said()
     );
-    // What it gave back of its files, and what it asked to unplug of the memory it had
-    // plugged to hold them.
-    let log = said();
-    let gave = log
-        .lines()
-        .find(|l| l.contains("its microVMs gave back"))
-        .unwrap_or_else(|| panic!("nothing given back said:\n{log}"));
-    let mib_after = |words: &str| -> u64 {
-        gave.split_once(words)
-            .and_then(|(_, rest)| rest.split_whitespace().next())
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no {words:?} in {gave}"))
-    };
-    assert!(mib_after("gave back ") > 0, "{gave}");
-    let _said = mib_after("asked to unplug ");
+    // What it asked to unplug of the memory it had plugged to hold them, said with what it
+    // gave back of its files.
+    let _said = mib_after(&gave, "asked to unplug ");
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 

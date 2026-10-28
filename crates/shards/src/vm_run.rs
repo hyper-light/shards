@@ -1667,18 +1667,12 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         .iter()
         .map(|(m, t)| format!("[{m},{t}]"))
         .collect();
-    #[cfg(unix)]
     let (request, answered) = workload.map_or((0, 0), |t| {
         (
             t.request_us.get().copied().unwrap_or(0),
             t.answered_us.get().copied().unwrap_or(0),
         )
     });
-    #[cfg(not(unix))]
-    let (request, answered) = {
-        let _ = workload;
-        (0, 0)
-    };
     format!(
         "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"hotplug_held_kib\":{},\"reported_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
@@ -1695,12 +1689,7 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
 
 /// This process's own memory now, in KiB, as memory per VM is counted; 0 where unknown.
 fn footprint_kib() -> u64 {
-    #[cfg(unix)]
-    {
-        shards_ipc::footprint_kib()
-    }
-    #[cfg(not(unix))]
-    0
+    shards_ipc::footprint_kib()
 }
 
 /// This process's peak resident set (its peak working set on Windows) so far, in KiB; 0
