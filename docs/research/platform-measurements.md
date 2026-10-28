@@ -15528,3 +15528,46 @@ revision before comparing a changed API/implementation.
   host's null device (`os::NULL`), as the Engine API's three openers of one do too. The
   Windows runners' limits are their own, far out (120 minutes for the tests' step, 150 for
   the job), until their runs say how long the slowest take, as M245's said the others'.
+
+### M358. What a peer reads of an AF_UNIX socket closed while the peer may still write, on Windows (D140)
+
+- **Question.** An exec of a command that ends at once failed on CI's Windows runners as
+  its output was read, `An existing connection was forcibly closed by the remote host. (os
+  error 10054)`, within 25 ms to 4 s of its start (CI run 40601221843, `tests/containers.rs`,
+  eight tests). The vsock device's host end of a guest's connection shuts its writing down,
+  then closes, as M199 found keeps what the peer had not read. Does that hold where the
+  closer holds some of what the peer sent it unread, or where the peer writes after the
+  close, as an exec's end of its stdin can come after a command that has ended?
+- **Method.** `docs/research/measurements/windows-afunix` (`m358`), by `windows-afunix.yml`,
+  run 40608708193 on branch `afunix-m358`, 2026-10-28, on a windows-2022 (build 20348) and a
+  windows-2025 (build 26100) runner. A connected pair, the closer its connecting end, as the
+  vsock device's host end is for a guest's connection; the closer sends 63 bytes; then
+  each case, and the peer reads 50 ms after its last step, until end-of-stream or an error.
+  AF_UNIX and loopback TCP.
+- **Found** (both runners alike):
+
+  | case | AF_UNIX: the peer read | loopback TCP |
+  |---|---|---|
+  | shut down, closed, nothing unread | 63, end-of-stream | 63, end |
+  | holding 5 bytes of the peer's unread, shut down, closed | **0, WSAECONNRESET** | 63, end |
+  | the same, not shut down | 0, WSAECONNRESET | 0, reset |
+  | the same, shut down both ways | 0, WSAECONNRESET | 0, reset |
+  | the same, with SO_LINGER {1, 5} | 0, WSAECONNRESET | 63, end |
+  | the same, the peer having read 10 bytes first | 10, WSAECONNRESET | 63, end |
+  | the same, read by the closer first, then shut down and closed | 63, end-of-stream | 63, end |
+  | the peer's 5 bytes sent after the shutdown, then closed | 0, WSAECONNRESET | 63, end |
+  | shut down and closed with nothing unread; the peer sends after | **0, WSAECONNRESET** (its send: success) | 0, WSAECONNABORTED |
+
+  Where a closed AF_UNIX socket held anything of its peer's unread, or its peer writes to it
+  after its close, the peer loses all it had not read, and reads a reset: a send to a
+  socket already closed succeeds, and discards what its sender was still to read.
+- **Consequence (D140).** On Windows the vsock device holds an ended connection's host
+  socket, its writing shut down, reading and dropping what it reads, until the socket's
+  peer ends its side (end-of-stream, or an error); a peer that has ended its side already
+  sent all it will, all of it read, and its socket closes at once (muxer.rs,
+  `Conn::linger`). Draining before the close would not do: the peer's send after the close
+  loses its reads all the same. An exec ends its connection as it reads the command's exit
+  status, every copy of it, its stdin's too, so that the hold ends then. The test
+  `what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes` holds a
+  host's reads to the guest's bytes, whole, then end-of-stream, though it sent data the
+  guest took none of and wrote again after the guest's end.

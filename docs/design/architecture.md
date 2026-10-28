@@ -10235,7 +10235,10 @@ network process (D142) and its builder (D143) follow.
   connection (M207); its worker sleeps on WSAEventSelect's events and reads each socket's
   state with a WSAPoll that does not wait, as WSAPoll alone reports a peer's half-close as
   a hangup whatever is asked, which would wake a writer without end (M199). Its waker is an
-  event, not a socket pair.
+  event, not a socket pair. An ended connection's host socket is held, its writing shut
+  down, reading and dropping what comes, until its peer ends its side: an AF_UNIX socket
+  closed holding any of its peer's data unread, or written to by its peer after its close,
+  loses the peer all it had not read, as a reset (M358).
 - **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
   every other host.
 - **Snapshots** came after (D196); templates and warm pools wait for the daemon on Windows

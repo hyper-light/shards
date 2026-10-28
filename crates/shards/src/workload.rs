@@ -1429,6 +1429,9 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
             kind::EXIT => {
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
                 let status = u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX);
+                // Ended, every copy, its stdin's too: the VMM's end on Windows is held until
+                // this one ends (PM M358).
+                end_guest(conn.get_ref().0);
                 return Ok(match not_started {
                     None => status,
                     Some((run::exec_failed::DAEMON, why)) => {
