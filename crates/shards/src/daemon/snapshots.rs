@@ -645,6 +645,13 @@ impl<D: Disk> Daemon<D> {
         if !self.running(&id) {
             return Err(Unsaved::NotRunning(id));
         }
+        // A host whose hypervisor takes snapshots but sets no vCPU's state back saves none,
+        // as nothing here could go on from it: its daemon boots every run cold (PM M345).
+        if shards_vmm::vm::SNAPSHOTS && !shards_vmm::vm::restores_here() {
+            return Err(Unsaved::Failed(
+                "this host's microVMs take no snapshots yet: its hypervisor sets no vCPU's state back, so none would restore here (Windows Server 2022's WHP sets no APIC page back, PM M345)".into(),
+            ));
+        }
         // A joiner's processes are its provider's microVM's, which a save of that one
         // keeps (D119).
         if self.joined_run(&id) {
