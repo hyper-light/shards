@@ -290,10 +290,18 @@ fn run() -> Result<(), String> {
         ),
         None => None,
     };
+    // Each control's messages are taken as they come and none waited for (`Incoming::take`),
+    // which Unix's receive does by its flag (MSG_DONTWAIT) and Windows' only of a socket that
+    // does not wait: a control left blocking held the loop in a read once its last message was
+    // taken, its guest's frames unserved.
     let controls = a
         .controls
         .iter()
-        .map(|(role, name)| Ok((*role, socket(name)?)))
+        .map(|(role, name)| {
+            let sock = socket(name)?;
+            sock.set_nonblocking(true).map_err(|e| format!("{name}: {e}"))?;
+            Ok((*role, sock))
+        })
         .collect::<Result<_, String>>()?;
     shards_net::serve(
         region,
