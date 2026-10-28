@@ -7663,11 +7663,37 @@ fn with_its_process(child: &shards_ipc::Child, why: String) -> String {
 /// The cold boots under way, by their VMs' vCPUs: a boot waits its turn while those under
 /// way and its own would pass `most`, the vCPUs this host boots the most VMs a second with
 /// (PM M357), but one with none under way boots whatever its size. A restore takes no turn:
-/// it boots nothing.
+/// it boots nothing. Turns are taken in the order they are asked for: a boot that came while
+/// another waited waits behind it. Taken by whichever waiter woke first, a run's boot on a
+/// Windows runner booting four at a time waited out its client's minute as others came
+/// after it and went (CI's windows-2022 and windows-2025, 1 to 5 runs of 10).
 struct Boots {
-    vcpus: Mutex<usize>,
+    state: Mutex<Booting>,
     done: Condvar,
     most: usize,
+}
+
+/// The boots under way and those waiting, in order.
+#[derive(Default)]
+struct Booting {
+    /// The vCPUs of the boots under way.
+    vcpus: usize,
+    /// The next ticket a boot asking for its turn is given.
+    next: u64,
+    /// The ticket whose turn is next.
+    serving: u64,
+    /// Tickets given up, as the daemon stopped, before their turn: passed over.
+    given_up: std::collections::BTreeSet<u64>,
+}
+
+impl Booting {
+    /// The next ticket's turn, past those given up.
+    fn advance(&mut self) {
+        self.serving = self.serving.saturating_add(1);
+        while self.given_up.remove(&self.serving) {
+            self.serving = self.serving.saturating_add(1);
+        }
+    }
 }
 
 /// A cold boot's turn ([`Boots::turn`]): its vCPUs given back as it drops.
@@ -7679,42 +7705,58 @@ struct BootTurn<'a> {
 impl Boots {
     fn new(most: usize) -> Boots {
         Boots {
-            vcpus: Mutex::new(0),
+            state: Mutex::new(Booting::default()),
             done: Condvar::new(),
             most,
         }
     }
 
-    /// The turn of a boot of `vcpus` vCPUs, waited for; none once `stopping` is set and
-    /// [`wake`](Boots::wake) has been called.
+    /// The turn of a boot of `vcpus` vCPUs, waited for behind those asked for before it;
+    /// none once `stopping` is set and [`wake`](Boots::wake) has been called.
     fn turn(&self, vcpus: usize, stopping: &AtomicBool) -> Result<BootTurn<'_>, String> {
-        let mut under_way = lock(&self.vcpus);
+        let mut booting = lock(&self.state);
+        let ticket = booting.next;
+        booting.next = booting.next.saturating_add(1);
         loop {
             if stopping.load(Ordering::SeqCst) {
+                // Passed over, so that none behind it waits for it.
+                if booting.serving == ticket {
+                    booting.advance();
+                } else {
+                    booting.given_up.insert(ticket);
+                }
+                drop(booting);
+                self.done.notify_all();
                 return Err("the daemon is shutting down".into());
             }
-            if *under_way == 0 || under_way.saturating_add(vcpus) <= self.most {
+            if booting.serving == ticket
+                && (booting.vcpus == 0 || booting.vcpus.saturating_add(vcpus) <= self.most)
+            {
                 break;
             }
-            under_way = self.done.wait(under_way).unwrap_or_else(PoisonError::into_inner);
+            booting = self.done.wait(booting).unwrap_or_else(PoisonError::into_inner);
         }
-        *under_way = under_way.saturating_add(vcpus);
+        booting.vcpus = booting.vcpus.saturating_add(vcpus);
+        booting.advance();
+        drop(booting);
+        // The next in line may have room beside it.
+        self.done.notify_all();
         Ok(BootTurn { boots: self, vcpus })
     }
 
     /// Wakes the boots waiting their turn, to look at `stopping` again: the lock orders the
     /// wakeup after their last look.
     fn wake(&self) {
-        drop(lock(&self.vcpus));
+        drop(lock(&self.state));
         self.done.notify_all();
     }
 }
 
 impl Drop for BootTurn<'_> {
     fn drop(&mut self) {
-        let mut under_way = lock(&self.boots.vcpus);
-        *under_way = under_way.saturating_sub(self.vcpus);
-        drop(under_way);
+        let mut booting = lock(&self.boots.state);
+        booting.vcpus = booting.vcpus.saturating_sub(self.vcpus);
+        drop(booting);
         self.boots.done.notify_all();
     }
 }
@@ -8164,6 +8206,78 @@ mod tests {
             let said = told.join().unwrap();
             assert!(!early && heard, "a waiter was not told of the stop");
             assert_eq!(said, Err("the daemon is shutting down".to_string()));
+        });
+    }
+
+    /// Turns go in the order they were asked for: of two boots waiting for room, the one
+    /// that asked first has the next room that frees, and the other waits for the next,
+    /// round after round. Woken in no order, the second went first in some round.
+    #[test]
+    fn cold_boots_take_their_turns_in_order() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let long = Duration::from_secs(10);
+        let (boots, stopping) = (super::Boots::new(8), AtomicBool::new(false));
+        let (b, st) = (&boots, &stopping);
+        // Until `n` tickets have been given: those asked for are in line.
+        let asked = |n: u64| {
+            while super::lock(&b.state).next < n {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        std::thread::scope(|s| {
+            // A boot of 4 vCPUs on a thread of its own: it says once it has its turn, and
+            // holds it until its end is dropped.
+            let hold = || {
+                let (went, gone) = mpsc::channel();
+                let (end, ended) = mpsc::channel::<()>();
+                let thread = s.spawn(move || {
+                    let turn = b.turn(4, st);
+                    let _ = went.send(turn.is_ok());
+                    let _ = ended.recv();
+                    drop(turn);
+                });
+                (thread, gone, end)
+            };
+            let mut held = vec![hold(), hold()];
+            for (_, gone, _) in &held {
+                assert_eq!(gone.recv_timeout(long), Ok(true));
+            }
+            let give_back = |held: &mut Vec<_>| {
+                let (thread, _, end): (
+                    std::thread::ScopedJoinHandle<'_, ()>,
+                    mpsc::Receiver<bool>,
+                    mpsc::Sender<()>,
+                ) = held.remove(0);
+                drop(end);
+                thread.join().unwrap();
+            };
+            for round in 0..50 {
+                let ticket = super::lock(&b.state).next;
+                let first = hold();
+                asked(ticket + 1);
+                let second = hold();
+                asked(ticket + 2);
+                give_back(&mut held);
+                assert_eq!(
+                    first.1.recv_timeout(long),
+                    Ok(true),
+                    "round {round}: the first asked never went"
+                );
+                assert!(second.1.try_recv().is_err(), "round {round}: the second went too");
+                held.push(first);
+                give_back(&mut held);
+                assert_eq!(
+                    second.1.recv_timeout(long),
+                    Ok(true),
+                    "round {round}: the second never went"
+                );
+                held.push(second);
+            }
+            while !held.is_empty() {
+                give_back(&mut held);
+            }
         });
     }
 

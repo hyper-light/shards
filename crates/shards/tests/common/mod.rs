@@ -1613,10 +1613,27 @@ fn stuck(pid: u32, home: Option<&Path>) -> String {
             let daemon = home
                 .and_then(|h| std::fs::read_to_string(h.join("daemon.pid")).ok())
                 .and_then(|p| p.trim().parse::<u32>().ok());
+            // shards' symbols: its PDB beside the build's own binary, which the copy these
+            // tests run names (the test binary's deps directory and the one above it).
+            let deps = std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(Path::to_path_buf));
+            let symbols = deps
+                .iter()
+                .flat_map(|d| [d.clone()].into_iter().chain(d.parent().map(Path::to_path_buf)))
+                .fold("srv*".to_string(), |path, d| format!("{path};{}", d.display()));
             for (who, pid) in std::iter::once(("its client", pid)).chain(daemon.map(|d| ("its daemon", d))) {
                 let mut stacks = Command::new(cdb);
                 stacks
-                    .args(["-pv", "-p", &pid.to_string(), "-c", "~*kn 40; qd"])
+                    .args([
+                        "-pv",
+                        "-p",
+                        &pid.to_string(),
+                        "-y",
+                        &symbols,
+                        "-c",
+                        ".reload /f; ~*kn 40; qd",
+                    ])
                     .stdin(Stdio::null());
                 said.push_str(&format!(
                     "\n--- {who} ({pid}): its threads' stacks (cdb)\n{}",
