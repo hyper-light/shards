@@ -67,6 +67,8 @@ pub enum Token {
     Listener,
     Handshake(usize),
     Conn(Key),
+    #[cfg(windows)]
+    Lingering(usize),
 }
 
 struct Handshake {
@@ -112,6 +114,10 @@ pub struct Muxer {
     every: HashMap<u32, Sender<UnixStream>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
+    /// Ended connections whose host sockets are held until their peers end their sides
+    /// ([`Conn::linger`]).
+    #[cfg(windows)]
+    lingering: Vec<Conn>,
     /// Connections with packets for the guest, served in turn.
     rxq: VecDeque<Key>,
     /// RSTs for packets that matched no connection: (host port, guest port).
@@ -150,6 +156,8 @@ impl Muxer {
             every: host.every.into_iter().collect(),
             handshakes: Vec::new(),
             conns: HashMap::new(),
+            #[cfg(windows)]
+            lingering: Vec::new(),
             rxq: VecDeque::new(),
             stray_rsts: VecDeque::new(),
             local_ports: HashSet::new(),
@@ -161,6 +169,8 @@ impl Muxer {
     pub fn reset(&mut self) {
         self.handshakes.clear();
         self.conns.clear();
+        #[cfg(windows)]
+        self.lingering.clear();
         self.rxq.clear();
         self.stray_rsts.clear();
         self.local_ports.clear();
@@ -216,10 +226,15 @@ impl Muxer {
     }
 
     fn remove(&mut self, key: Key) {
-        if let Some(c) = self.conns.remove(&key)
-            && c.allocated_port
-        {
+        let Some(c) = self.conns.remove(&key) else {
+            return;
+        };
+        if c.allocated_port {
             self.local_ports.remove(&key.local_port);
+        }
+        #[cfg(windows)]
+        if let Some(c) = c.linger() {
+            self.lingering.push(c);
         }
     }
 
@@ -365,16 +380,24 @@ impl Muxer {
                 add(c.fd(), read, write, Token::Conn(*key));
             }
         }
+        #[cfg(windows)]
+        for (i, c) in self.lingering.iter().enumerate() {
+            add(c.fd(), true, false, Token::Lingering(i));
+        }
     }
 
     /// Acts on what became ready.
     pub fn on_events(&mut self, events: &[Ready<Option<Token>>]) {
         let mut ready_handshakes = Vec::new();
+        #[cfg(windows)]
+        let mut ready_lingering = Vec::new();
         for e in events {
             match e.token {
                 None => {}
                 Some(Token::Listener) => self.accept(),
                 Some(Token::Handshake(i)) => ready_handshakes.push(i),
+                #[cfg(windows)]
+                Some(Token::Lingering(i)) => ready_lingering.push(i),
                 Some(Token::Conn(key)) => {
                     let Some(c) = self.conns.get_mut(&key) else {
                         continue;
@@ -393,6 +416,15 @@ impl Muxer {
         ready_handshakes.sort_unstable_by(|a, b| b.cmp(a));
         for i in ready_handshakes {
             self.handshake(i);
+        }
+        #[cfg(windows)]
+        {
+            ready_lingering.sort_unstable_by(|a, b| b.cmp(a));
+            for i in ready_lingering {
+                if self.lingering.get_mut(i).is_some_and(Conn::drained) {
+                    self.lingering.swap_remove(i);
+                }
+            }
         }
     }
 
@@ -778,6 +810,86 @@ mod tests {
             ]
         );
         assert_eq!(arrived.try_iter().count(), 3);
+    }
+
+    /// What the guest sent before it ended a connection is the host's to read whole, then
+    /// end-of-stream, though the host had sent data the guest took none of and writes again
+    /// after the guest's end, as an exec's stdin's end can come after a command that ended
+    /// at once: on Windows a socket closed while its peer may still read loses the peer what
+    /// it had not read (PM M358), so the muxer holds its end until the host ends its own.
+    #[test]
+    fn what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes() {
+        use super::super::packet::shutdown;
+        let (sender, arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: None,
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RESPONSE));
+        let mut theirs = arrived.try_recv().unwrap();
+        theirs.write_all(b"stdin").unwrap();
+        let said = b"the command's output, then its exit status";
+        mem.access().unwrap().write(0x8000_0000, said).unwrap();
+        let output = Span {
+            gpa: 0x8000_0000,
+            ptr: mem.host_ptr(0x8000_0000, said.len()).unwrap(),
+            len: said.len(),
+        };
+        let rw = Header {
+            op: op::RW,
+            len: said.len() as u32,
+            ..request(54, 49_152)
+        };
+        m.on_guest_packet(&rw, &[output], &mem);
+        let ended = Header {
+            op: op::SHUTDOWN,
+            flags: shutdown::RCV | shutdown::SEND,
+            ..request(54, 49_152)
+        };
+        m.on_guest_packet(&ended, &[], &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        let _ = theirs.write_all(b" and more");
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        let end = loop {
+            match theirs.read(&mut buf) {
+                Ok(0) => break None,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) => break Some(e.kind()),
+            }
+        };
+        assert_eq!(got, said, "what the guest sent, whole");
+        // End-of-stream; on Linux, whose muxer closed its end holding what the host sent
+        // unread, a reset after it (unix_release_sock).
+        assert!(
+            end.is_none() || cfg!(target_os = "linux") && end == Some(io::ErrorKind::ConnectionReset),
+            "{end:?}"
+        );
+        #[cfg(windows)]
+        {
+            assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+            drop(theirs);
+            // The host's end reads as its socket's end (poll.rs): the muxer's goes then.
+            let mut interests = Vec::new();
+            m.interests(&mut interests);
+            let ready: Vec<Ready<Option<Token>>> = interests
+                .iter()
+                .filter(|i| matches!(i.token, Some(Token::Lingering(_))))
+                .map(|i| Ready {
+                    token: i.token,
+                    read: true,
+                    write: false,
+                })
+                .collect();
+            assert_eq!(ready.len(), 1);
+            m.on_events(&ready);
+            assert!(m.lingering.is_empty(), "let go once the host's end is gone");
+        }
     }
 
     /// A restored muxer saved again before it has sent the resets it owes saves them
