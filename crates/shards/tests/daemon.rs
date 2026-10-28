@@ -449,6 +449,141 @@ fn parallel_runs_keep_their_own_stdio() {
     }
 }
 
+/// What runs cost this host as its daemon serves them (PM M357): runs one after another,
+/// each client to its end; a detached run's start, and its microVM's CPU to it; 1, 2, 4
+/// and 8 at once (`parallel_runs_keep_their_own_stdio` starts 8), round after round, with
+/// the runs that failed counted; and an idle run's microVM's own CPU and its daemon's, over
+/// ten seconds. Where the daemon boots every run cold (Windows until the parity plan's step
+/// 4), what cold boots cost. Each result a `COSTS` line: n, p50, p90, p99 and max.
+#[test]
+#[ignore = "a measurement: SHARDS_COSTS_N=20 cargo test --profile test-release -p shards --test daemon -- --ignored --exact runs_cost_this_host --nocapture"]
+fn runs_cost_this_host() {
+    if cannot_run_vms() {
+        return;
+    }
+    let n: usize = std::env::var("SHARDS_COSTS_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let (image, _) = served();
+    let home = home("daemon-costs", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let patience = Duration::from_secs(600);
+    let say = |what: &str, mut times: Vec<Duration>| {
+        times.sort_unstable();
+        // The nearest rank: the least time that many of the times are within.
+        let at = |p: usize| times[(times.len() * p).div_ceil(100).max(1) - 1];
+        println!(
+            "COSTS {what} n={} p50={:?} p90={:?} p99={:?} max={:?}",
+            times.len(),
+            at(50),
+            at(90),
+            at(99),
+            times[times.len() - 1]
+        );
+    };
+    let alone: Vec<Duration> = (0..n)
+        .map(|_| {
+            let began = Instant::now();
+            let run = run_shards_env(
+                &["run"],
+                &["--rm", "--pull", "never", &image, "exit", "0"],
+                &env,
+                patience,
+            );
+            assert_eq!(run.status, Some(0), "{}", run.stderr);
+            began.elapsed()
+        })
+        .collect();
+    say("alone", alone);
+    let (mut started, mut cpu) = (Vec::new(), Vec::new());
+    for i in 0..n {
+        let name = format!("boot{i}");
+        let began = Instant::now();
+        let run = run_shards_env(
+            &["run"],
+            &["-d", "--name", &name, "--pull", "never", &image, "sleep"],
+            &env,
+            patience,
+        );
+        assert_eq!(run.status, Some(0), "{}", run.stderr);
+        started.push(began.elapsed());
+        let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", &name], &env, TIMEOUT);
+        let vm: i32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+        cpu.push(cpu_time(vm));
+        let gone = run_shards_env(&["rm"], &["-f", &name], &env, TIMEOUT);
+        assert_eq!(gone.status, Some(0), "{}", gone.stderr);
+    }
+    say("a detached run started", started);
+    say("its microVM's CPU to its start", cpu);
+    for at_once in [1, 2, 4, 8] {
+        let (mut each, mut rounds, mut failed) = (Vec::new(), Vec::new(), 0);
+        for _ in 0..(n / at_once).max(1) {
+            let began = Instant::now();
+            let mut runs: Vec<Option<Child>> = (0..at_once)
+                .map(|_| {
+                    Some(
+                        common::command()
+                            .args(["run", "--rm", "--pull", "never", &image, "exit", "0"])
+                            .env("SHARDS_HOME", &*home)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn()
+                            .unwrap(),
+                    )
+                })
+                .collect();
+            while runs.iter().any(Option::is_some) {
+                assert!(
+                    began.elapsed() < patience,
+                    "{at_once} runs at once took past {patience:?}"
+                );
+                for slot in &mut runs {
+                    if let Some(run) = slot
+                        && let Some(status) = run.try_wait().unwrap()
+                    {
+                        if status.success() {
+                            each.push(began.elapsed());
+                        } else {
+                            failed += 1;
+                        }
+                        *slot = None;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            rounds.push(began.elapsed());
+        }
+        println!("COSTS {at_once} at once: {failed} failed");
+        if !each.is_empty() {
+            say(&format!("{at_once} at once, each"), each);
+        }
+        say(&format!("{at_once} at once, the round"), rounds);
+    }
+    let idle = run_shards_env(
+        &["run"],
+        &["-d", "--name", "idle", "--pull", "never", &image, "sleep"],
+        &env,
+        patience,
+    );
+    assert_eq!(idle.status, Some(0), "{}", idle.stderr);
+    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "idle"], &env, TIMEOUT);
+    let vm: i32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    // Settled first: its boot's own CPU is the cold boots' above.
+    std::thread::sleep(Duration::from_secs(5));
+    let (vm_before, daemon_before) = (cpu_time(vm), cpu_time(daemon));
+    std::thread::sleep(Duration::from_secs(10));
+    let (vm_spent, daemon_spent) = (
+        cpu_time(vm).saturating_sub(vm_before),
+        cpu_time(daemon).saturating_sub(daemon_before),
+    );
+    println!("COSTS idle over 10 s: its microVM {vm_spent:?} of CPU, its daemon {daemon_spent:?}");
+    let killed = run_shards_env(&["rm"], &["-f", "idle"], &env, TIMEOUT);
+    assert_eq!(killed.status, Some(0), "{}", killed.stderr);
+}
+
 /// Signals reach the command, even when the client was started ignoring them, as a
 /// script's `shards run ... &` is: `docker run`'s signal proxy takes them all the same.
 #[test]
@@ -3351,12 +3486,29 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
             "100 followers never let their daemon rest: {second:?} of CPU in the last second"
         );
     }
+    // Which of its threads ran meanwhile, where they can be read, said if it cost too much.
+    #[cfg(any(target_os = "linux", windows))]
+    let threads = threads_run(daemon);
     let before = cpu_time(daemon);
     std::thread::sleep(Duration::from_secs(3));
     let spent = cpu_time(daemon).saturating_sub(before);
+    #[cfg(any(target_os = "linux", windows))]
+    let ran = {
+        let unit = if cfg!(windows) { "cycles" } else { "switches" };
+        let ran: Vec<String> = threads_run(daemon)
+            .into_iter()
+            .filter_map(|(tid, (name, n))| {
+                let was = threads.get(&tid).map_or(0, |(_, was)| *was);
+                (n > was).then(|| format!("{name} ({tid}) {} {unit}", n - was))
+            })
+            .collect();
+        ran.join(", ")
+    };
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let ran = "unread here";
     assert!(
         spent < Duration::from_millis(100),
-        "100 idle followers cost {spent:?} of CPU in 3 s"
+        "100 idle followers cost {spent:?} of CPU in 3 s; its threads that ran: {ran}"
     );
     let killed = run_shards_env(&["kill"], &["up"], &env, TIMEOUT);
     assert_eq!(killed.status, Some(0), "{}", killed.stderr);

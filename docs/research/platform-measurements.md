@@ -15584,6 +15584,54 @@ revision before comparing a changed API/implementation.
   Windows Server host with a function to give, which neither CI's runners, nested, nor
   jupiter, Windows 11, is.
 
+### M357. Cold boots on CI's Windows runners: one alone, and 2, 4 and 8 at once (D195)
+
+- **Question.** tests/daemon.rs's `parallel_runs_keep_their_own_stdio` and
+  `a_daemon_ending_its_runs_is_waited_for` waited past the daemon's 60 s for a VM to be
+  ready on windows-2022 (CI 40601221843), where its daemon boots every run cold: Windows'
+  until the parity plan's step 4, and Server 2022's always, as it restores no snapshot
+  (M345). What does a cold boot cost there, alone and beside others?
+- **Method.** tests/daemon.rs `runs_cost_this_host` (ignored, a measurement) by
+  `costs-probe.yml` on the scratch branch `ci-costs-probe` (not for dev), runs 40609035654
+  and 40612518330, 2026-10-28, on a windows-2022 runner (Windows Server 2022, 10.0.20348)
+  and a windows-2025 runner (Windows Server 2025, 10.0.26100), each 4 logical CPUs and 16
+  GiB (17,174,360,064 bytes), nested in an Azure VM. Each VM had 4 vCPUs (the host's CPUs,
+  the default). Three passes a run, n = 16 a measure a pass:
+  - runs `--rm IMAGE exit 0` one after another, each from its client's start to its end;
+  - a detached run (`-d IMAGE sleep`) from its client's start, and its microVM process's CPU
+    (GetProcessTimes) once it has started;
+  - rounds of 1, 2, 4 and 8 runs at once, each run's time from its round's start, and each
+    round's;
+  - an idle run's microVM's CPU and its daemon's over 10 s.
+- **Found** (the second run's three passes' p50s; runs a second as the runs of a round
+  over its p50):
+
+  | | windows-2022 | windows-2025 |
+  |---|---|---|
+  | one alone | 1.51–1.64 s | 2.19–2.24 s |
+  | its microVM's CPU to its start | 1.58–1.64 s | 2.50–2.55 s |
+  | 2 at once, each | 2.28–2.36 s | 2.74–2.80 s |
+  | 4 at once, each | 9.5–14.0 s | 5.73–5.82 s |
+  | 8 at once, each | 52.1–54.4 s (max 56.8) | 17.0–17.6 s (max 18.9) |
+  | runs a second, 1 / 2 / 4 / 8 at once | 0.64–0.66 / 0.82–0.85 / 0.29–0.42 / 0.15 | 0.45–0.46 / 0.71–0.73 / 0.68–0.69 / 0.45–0.46 |
+  | an idle microVM's CPU over 10 s | 0–31 ms | 0–63 ms |
+
+  - A cold boot alone keeps about one CPU busy (its microVM's CPU to its start is its
+    time: 1.6 of 1.6 s, 2.5 of 2.2). Four at once ask the 4 CPUs for no more than they
+    have, yet each took 6 to 9 times one alone on windows-2022 and 2.6 on windows-2025;
+    eight, 33 and 8 times. Their 16 and 32 vCPUs on 4 CPUs cost more than their work. Where
+    the guests spend it was not measured.
+  - In the first run's passes, eight at once on windows-2022 failed outright in two of
+    three, a run's VM not ready within the daemon's 60 s; where all ended, they took 55.9 s
+    at p50. windows-2025's took 16.9 to 17.5 s.
+- **Consequence (D195).** On WHP the daemon holds the cold boots under way to their VMs'
+  vCPUs of twice the host's CPUs, two of these at once, the most runs a second on both
+  runners; a VM of more boots alone; a restore takes no turn, booting nothing.
+  `vm::booting_vcpus_at_most`, and the daemon's `Boots`, held by
+  `cold_boots_wait_their_turn`. Eight runs at once on windows-2022 then boot two at a
+  time; what the last of them waits is the next measurement's. KVM's and HVF's are
+  unmeasured, and so not held.
+
 ### M358. What a peer reads of an AF_UNIX socket closed while the peer may still write, on Windows (D140)
 
 - **Question.** An exec of a command that ends at once failed on CI's Windows runners as

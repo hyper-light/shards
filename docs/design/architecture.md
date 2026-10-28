@@ -6615,6 +6615,13 @@ forked.
   VM has written it, so the daemon gives a VM whose link closed a second to end of itself
   before it kills it, and says the status it ended with: its word of why reaches the
   daemon's log whole.
+- **Cold boots held to the host's CPUs** (M357). Windows' daemon boots every run cold
+  until the parity plan's step 4, and Server 2022's always, as it restores nothing (M345).
+  Cold boots at once whose vCPUs pass the host's CPUs cost more than their work: eight of
+  4 vCPUs at once on a 4-CPU runner took 52 to 55 s each on windows-2022, where one took
+  1.6. On WHP the daemon holds the cold boots under way to their VMs' vCPUs of twice the
+  host's CPUs, the most runs a second on both CI runners; a VM of more boots alone, and a
+  restore takes no turn.
 - **Lines and streams.** A slot's line holds 64 KiB, what a Linux FIFO holds (pipe(7)), so
   that what a client leaves untaken is what it leaves on Linux (D185, "What it said last");
   a stream's pipe holds 1 MiB, which moved more than 64 KiB in M340.
