@@ -1,0 +1,54 @@
+# Scratch (not for dev): what runs cost CI's Windows runners as the daemon serves them
+# (PM M357): cold boots one after another and eight at once, and an idle microVM's own
+# CPU and its daemon's (tests/daemon.rs, runs_cost_this_host). tests/daemon.rs's
+# parallel_runs_keep_their_own_stdio and a_daemon_ending_its_runs_is_waited_for waited past
+# their 60 s on windows-2022 (CI 40601221843), beside runs that boot cold there.
+name: costs probe
+on:
+  push:
+    branches: [ci-costs-probe]
+env:
+  CARGO_TERM_COLOR: never
+  TOOLCHAIN: 1.98.1
+jobs:
+  probe:
+    name: ${{ matrix.runner }} run costs
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Build
+        shell: bash
+        run: cargo test --locked -p shards --profile test-release --test daemon --no-run
+      - name: The runner
+        shell: bash
+        run: |
+          echo "NUMBER_OF_PROCESSORS=$NUMBER_OF_PROCESSORS"
+          powershell -NoProfile -Command "Get-CimInstance Win32_ComputerSystem | Select-Object NumberOfProcessors,NumberOfLogicalProcessors,TotalPhysicalMemory | Format-List; Get-CimInstance Win32_OperatingSystem | Select-Object Caption,BuildNumber | Format-List; Get-CimInstance Win32_Processor | Select-Object Name | Format-List" || true
+      - name: Run costs, three passes
+        shell: bash
+        run: |
+          export SHARDS_REQUIRE_VMS=1 SHARDS_COSTS_N=16
+          for pass in 1 2 3; do
+            echo "PASS $pass"
+            cargo test --locked -p shards --profile test-release --test daemon -- --ignored --exact runs_cost_this_host --nocapture 2>&1 | grep -a -E "COSTS|^test |test result|panicked|left|right|shards:" | cut -c1-400 || true
+          done
