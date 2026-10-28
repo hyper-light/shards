@@ -5444,8 +5444,9 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     groups' `cpu_budgets_read_as_the_kernel_reads_them`; and on real microVMs
     `a_groups_microvms_are_held_to_its_cpu_max_together` (two microVMs of a group of one
     CPU, four threads burning in each: on macOS 3.21 s of CPU in 3.02 s, with `max`
-    23.9 s; mutation-checked, the VM ignoring its group's budget, 23.85 s in 3.02 s,
-    which fails it). Each second's hold, M370.
+    23.9 s; on jupiter's WHP 3.08 s in 3.08 s, with `max` 23.97 s in 3.04; mutation-checked,
+    the VM ignoring its group's budget, 23.85 s in 3.02 s, which fails it). Each second's
+    hold, M370: under one CPU, p99 1.07 CPUs a second on macOS and 1.12 on Windows.
   - Shown as given (inspect's `HostConfig.CgroupParent`); the group's `memory.current`
     file the daemon writes as it sums it, as a cgroup's says what it holds.
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup

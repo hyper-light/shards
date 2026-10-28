@@ -15790,25 +15790,31 @@ revision before comparing a changed API/implementation.
   `cpu.max`, each VM process charging one count of the group's (D183, slice 3). Does the
   group stay at its budget each second, as a cgroup's quota holds it each period?
 - **Method.** The ignored test `a_groups_cpu_held_each_second` (crates/shards/tests/containers.rs),
-  run by `docs/research/measurements/cgroup-parent/cpu.sh 30` as a launchd job of the
-  user's session (`macos-sched/launchd-run.sh`, no QoS clamp), 2026-10-28, on an Apple M5
+  2026-10-28: on macOS by `docs/research/measurements/cgroup-parent/cpu.sh 30` as a launchd
+  job of the user's session (`macos-sched/launchd-run.sh`, no QoS clamp), on an Apple M5
   Max of 18 CPUs, macOS 26.4.1, load 11 to 13 from other work, at cc85e011 with D183's CPU
-  budget as committed after it. Two microVMs under a group, four threads burning in each
-  for 32 s (testguest `burn`), their two VM processes' CPU time read from the host each
-  second (proc_pid_rusage) for 30 s, one second in; under a `cpu.max` of `100000 100000`
-  (one CPU), `200000 100000` (two) and `max 100000`; each second's CPUs as n, p50, p90,
-  p99 and max (nearest rank), and the mean.
+  budget as committed after it (03943f0a); on Windows with `M370_SECS=30` on jupiter, an
+  AMD Ryzen AI Max+ 395 of 32 CPUs, Windows 10.0.26200, idle but for it, at 0d4debab's
+  tree. Two microVMs under a group, four threads burning in each for 32 s (testguest
+  `burn`), their two VM processes' CPU time read from the host each second
+  (proc_pid_rusage; GetProcessTimes, whose times move by the clock's ticks) for 30 s, one
+  second in; under a `cpu.max` of `100000 100000` (one CPU), `200000 100000` (two) and
+  `max 100000`; each second's CPUs as n, p50, p90, p99 and max (nearest rank), and the
+  mean.
 - **Found** (n 30 each):
 
-  | budget | p50 | p90 | p99 | max | mean |
-  |---|---|---|---|---|---|
-  | one CPU | 1.06 | 1.07 | 1.07 | 1.07 | 1.06 |
-  | two CPUs | 2.09 | 2.10 | 2.12 | 2.12 | 2.09 |
-  | none | 7.96 | 7.97 | 7.97 | 7.97 | 7.96 |
+  | budget | host | p50 | p90 | p99 | max | mean |
+  |---|---|---|---|---|---|---|
+  | one CPU | macOS | 1.06 | 1.07 | 1.07 | 1.07 | 1.06 |
+  | one CPU | Windows | 1.00 | 1.06 | 1.12 | 1.12 | 1.01 |
+  | two CPUs | macOS | 2.09 | 2.10 | 2.12 | 2.12 | 2.09 |
+  | two CPUs | Windows | 2.00 | 2.06 | 2.16 | 2.16 | 2.00 |
+  | none | macOS | 7.96 | 7.97 | 7.97 | 7.97 | 7.96 |
+  | none | Windows | 7.98 | 8.01 | 8.02 | 8.02 | 7.98 |
 
-  Under one CPU every second ran 1.05 to 1.07 CPUs of the two VM processes' every thread,
-  where a Windows job's hard cap of one CPU let single seconds run 1.88 and 2.19 (M361).
-  The budget counts their vCPU threads' time, as D191's hold does: their devices'
-  threads and governors are the rest.
+  Under one CPU every second ran 1.05 to 1.07 CPUs of the two VM processes' every thread
+  on macOS and 0.89 to 1.12 on Windows, where a Windows job's hard cap of one CPU let
+  single seconds run 1.88 and 2.19 (M361). The budget counts their vCPU threads' time, as
+  D191's hold does: their devices' threads and governors are the rest.
 - **Consequence (D183, slice 3).** A group's `cpu.max` is held by its microVMs on macOS
   and on Windows alike, not by Windows' job CPU rate.
