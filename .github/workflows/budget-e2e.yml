@@ -24,6 +24,9 @@ on:
       times:
         description: runs on each runner, one after another
         default: "1"
+      log:
+        description: SHARDS_LOG for a Windows E2E run's shards, its VM and network processes too (debug for their every line, on the stderr a test that fails shows); none, warnings alone
+        default: ""
 
 permissions:
   contents: read
@@ -180,6 +183,7 @@ jobs:
         shell: bash
         env:
           SHARDS_REQUIRE_VMS: "1"
+          SHARDS_LOG: ${{ github.event.inputs.log }}
           TEST: ${{ github.event.inputs.test }}
           NAME: ${{ github.event.inputs.name }}
           TIMES: ${{ github.event.inputs.times }}
