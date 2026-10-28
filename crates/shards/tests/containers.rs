@@ -6476,19 +6476,22 @@ fn usage_mistakes_are_answered_without_a_daemon() {
     );
 }
 
-/// This build's `shards` in a directory of its own, with a VM process binary
-/// (`SHARDS_VM_BINARY`) that waits for a gate to open before it becomes this build's.
-/// Every VM its daemon starts waits there, so a run stays pending, its container created,
-/// for as long as the test keeps the gate shut (audit A06). Unix's: Windows has no exec,
-/// and a process gives the one it starts only the handles it lists, so a VM process held
-/// there waits for a way of its own (the platform parity plan's step 2).
-#[cfg(unix)]
+/// This build's `shards`, whose runs' VMs wait before they are ready for as long as the
+/// test keeps a gate shut, so that a run stays pending, its container created (audit A06).
+/// On Unix it is in a directory of its own, with a VM process binary (`SHARDS_VM_BINARY`)
+/// that waits for the gate to open before it becomes this build's. Windows has no exec,
+/// and a VM process opens nothing but what its daemon opens for it (D30): there the gate
+/// is a copy of the kernel its runs boot, held open sharing nothing under an oplock
+/// ([`Oplocked`]), so that the daemon's open of it for a VM waits until the gate opens.
 struct Gated {
+    // Before the directory: the gate opens before its kernel is removed.
+    #[cfg(windows)]
+    held: std::cell::RefCell<Option<Oplocked>>,
     dir: TempDir,
 }
 
-#[cfg(unix)]
 impl Gated {
+    #[cfg(unix)]
     fn new(name: &str) -> Gated {
         let dir = TempDir::new(name);
         for (from, to) in [(shards(), "shards")] {
@@ -6510,8 +6513,47 @@ impl Gated {
         Gated { dir }
     }
 
+    #[cfg(windows)]
+    fn new(name: &str) -> Gated {
+        let dir = TempDir::new(name);
+        std::fs::copy(kernel(), dir.join("kernel")).unwrap();
+        let held = Oplocked::new(&dir.join("kernel"));
+        Gated {
+            held: std::cell::RefCell::new(Some(held)),
+            dir,
+        }
+    }
+
+    #[cfg(unix)]
     fn open(&self) {
         std::fs::write(self.dir.join("open"), b"").unwrap();
+    }
+
+    #[cfg(windows)]
+    fn open(&self) {
+        drop(self.held.borrow_mut().take());
+    }
+
+    /// The command that runs this build's `shards`: its copy, beside its VM process
+    /// binary, on Unix.
+    fn command(&self) -> Command {
+        #[cfg(unix)]
+        {
+            let mut command = Command::new(self.dir.join("shards"));
+            command.env("SHARDS_VM_BINARY", self.dir.join("shards-vm"));
+            command
+        }
+        #[cfg(windows)]
+        Command::new(common::shards())
+    }
+
+    /// The kernel its runs boot: the gated copy, on Windows.
+    fn kernel(&self) -> std::path::PathBuf {
+        if cfg!(windows) {
+            self.dir.join("kernel")
+        } else {
+            kernel().to_path_buf()
+        }
     }
 
     /// `shards ARGS` from this directory in `home`, whose runs boot the test kernel and
@@ -6519,12 +6561,11 @@ impl Gated {
     fn start(&self, home: &Path, args: &[&str]) -> Going {
         // Its copy of shards was written a moment ago.
         let mut child = common::spawn(
-            common::as_tests_run(&mut Command::new(self.dir.join("shards")))
+            common::as_tests_run(&mut self.command())
                 .args(args)
                 .env("SHARDS_HOME", home)
-                .env("SHARDS_KERNEL", kernel())
+                .env("SHARDS_KERNEL", self.kernel())
                 .env("SHARDS_INIT", guest_init())
-                .env("SHARDS_VM_BINARY", self.dir.join("shards-vm"))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -6548,15 +6589,140 @@ impl Gated {
     }
 }
 
+/// A file held open sharing nothing under a Read-Handle oplock (FSCTL_REQUEST_OPLOCK): an
+/// open of it by another handle that reads, writes or deletes it, which its sharing
+/// refuses, breaks the oplock and waits for the break to be acknowledged, which closing
+/// the oplock's handle does as this drops. The wait has no end: "the system would wait
+/// forever to receive the acknowledgment as there's no timeout" ("Breaking Oplocks"); "the
+/// open operation is blocked and the Read-Handle oplock breaks. The application that owns
+/// the oplock may acknowledge the break by closing the handle" ("Types of Opportunistic
+/// Locks"). An open that reads its attributes alone shares nothing and waits for nothing.
+#[cfg(windows)]
+struct Oplocked {
+    file: Option<std::fs::File>,
+    // Written as the request completes, which may be after it is made: boxed, not to move,
+    // and kept until it has.
+    overlapped: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
+    _answer: Box<windows_sys::Win32::System::Ioctl::REQUEST_OPLOCK_OUTPUT_BUFFER>,
+    _event: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl Oplocked {
+    fn new(path: &Path) -> Oplocked {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_SHARING_VIOLATION};
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+        use windows_sys::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
+        use windows_sys::Win32::System::Ioctl::{
+            FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ,
+            REQUEST_OPLOCK_CURRENT_VERSION, REQUEST_OPLOCK_INPUT_BUFFER, REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+            REQUEST_OPLOCK_OUTPUT_BUFFER,
+        };
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        // A handle that shares nothing is refused while another reads the file: Defender's,
+        // scanning the copy just written, is waited out.
+        let deadline = Instant::now() + TIMEOUT;
+        let file = loop {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .custom_flags(FILE_FLAG_OVERLAPPED)
+                .open(path)
+            {
+                Ok(file) => break file,
+                Err(e)
+                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.cast_signed())
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("{}: {e}", path.display()),
+            }
+        };
+        // SAFETY: an unnamed manual-reset event, owned from here.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert!(!event.is_null(), "an event: {}", std::io::Error::last_os_error());
+        // SAFETY: the event just made, this alone holds.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        // SAFETY: OVERLAPPED and REQUEST_OPLOCK_OUTPUT_BUFFER are plain data, zeroes valid
+        // values of them.
+        let (mut overlapped, mut answer): (Box<OVERLAPPED>, Box<REQUEST_OPLOCK_OUTPUT_BUFFER>) =
+            unsafe { (Box::new(std::mem::zeroed()), Box::new(std::mem::zeroed())) };
+        overlapped.hEvent = event.as_raw_handle();
+        let version = u16::try_from(REQUEST_OPLOCK_CURRENT_VERSION).unwrap();
+        answer.StructureVersion = version;
+        answer.StructureLength = u16::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap();
+        let asked = REQUEST_OPLOCK_INPUT_BUFFER {
+            StructureVersion: version,
+            StructureLength: u16::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
+            RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE,
+            Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+        };
+        // SAFETY: the request is copied in as it is made (METHOD_BUFFERED), and its answer
+        // and OVERLAPPED live until it has completed, which dropping this waits for.
+        let done = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_REQUEST_OPLOCK,
+                (&raw const asked).cast(),
+                u32::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
+                (&raw mut *answer).cast(),
+                u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap(),
+                std::ptr::null_mut(),
+                &raw mut *overlapped,
+            )
+        };
+        // Granted, the request pends until the oplock breaks.
+        let e = std::io::Error::last_os_error();
+        assert!(
+            done == 0 && e.raw_os_error() == Some(ERROR_IO_PENDING.cast_signed()),
+            "an oplock on {}: {e}",
+            path.display()
+        );
+        Oplocked {
+            file: Some(file),
+            overlapped,
+            _answer: answer,
+            _event: event,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Oplocked {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult};
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        // The request, still pending or completed by a break, ended and waited for before
+        // its buffers go; then the handle is closed, which acknowledges a break, and an open
+        // that waits on it goes on.
+        // SAFETY: the request made on this handle with this OVERLAPPED.
+        unsafe {
+            CancelIoEx(file.as_raw_handle(), &raw const *self.overlapped);
+            let mut moved = 0;
+            GetOverlappedResult(
+                file.as_raw_handle(),
+                &raw const *self.overlapped,
+                &raw mut moved,
+                1,
+            );
+        }
+        drop(file);
+    }
+}
+
 /// A command left going, its output collected as it comes.
-#[cfg(unix)]
 struct Going {
     child: Child,
     out: std::thread::JoinHandle<String>,
     err: std::thread::JoinHandle<String>,
 }
 
-#[cfg(unix)]
 impl Going {
     fn finish(mut self) -> Run {
         let start = Instant::now();
@@ -6572,7 +6738,6 @@ impl Going {
 }
 
 /// The ID of the one container in `home`, once it is there: created, its run pending.
-#[cfg(unix)]
 fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
     let id = std::cell::RefCell::new(String::new());
     let last = std::cell::RefCell::new(String::new());
@@ -6585,20 +6750,10 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
         }
         *last.borrow_mut() = listed.to_string();
         if Instant::now() >= deadline {
-            // Where the run stands: what the daemon said, and every shards process.
+            // Where the run stands: what the daemon said, and its processes.
             let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
             let tail: Vec<&str> = log.lines().rev().take(40).collect();
-            let procs = Command::new("ps")
-                .args(["-eo", "pid,ppid,stat,etime,args"])
-                .output()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .lines()
-                        .filter(|l| l.contains("shards"))
-                        .map(|l| format!("{l}\n"))
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
+            let procs = common::processes_under(&log);
             // The run's client, if it has ended: what it said.
             let client = match run.child.try_wait() {
                 Ok(Some(status)) => {
@@ -6631,8 +6786,6 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
 /// client hears that the container is gone, as `docker run` hears it of a container
 /// removed before it was started, and nothing is left (audit A06, whose reproduction
 /// this is: before, the command ran after its container was removed).
-// A run held pending by its VM process's gate is Unix's until Windows has a way of its own ([`Gated`]).
-#[cfg(unix)]
 #[test]
 fn rm_cancels_a_run_whose_vm_is_not_ready() {
     let Some((home, image)) = home("containers-cancel") else {
@@ -6675,8 +6828,6 @@ fn rm_cancels_a_run_whose_vm_is_not_ready() {
 /// whose run did not start, with 255 for the status nobody saw, and `rm` removes it
 /// (audit A15, whose finding this is: before, a container existed only in its daemon's
 /// memory until its run started, and went with the daemon).
-// A run held pending by its VM process's gate is Unix's until Windows has a way of its own ([`Gated`]).
-#[cfg(unix)]
 #[test]
 fn a_container_outlives_a_daemon_that_dies() {
     let Some((home, image)) = home("containers-crash") else {
@@ -6692,8 +6843,7 @@ fn a_container_outlives_a_daemon_that_dies() {
         .trim()
         .parse()
         .unwrap();
-    // SAFETY: kill(2) of the daemon this test's run started.
-    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+    common::kill_now(pid);
     let run = run.finish();
     assert_ne!(run.status, Some(0), "{run}");
     // The next command finds the daemon gone, as one a person types later does.
@@ -6725,8 +6875,6 @@ fn a_container_outlives_a_daemon_that_dies() {
 /// A daemon told to stop starts no run still pending, and waits for no VM to boot for
 /// one (audit A07): the run is refused at once, the daemon ends, and the run's container
 /// stays, created, with the code of a start that failed.
-// A run held pending by its VM process's gate is Unix's until Windows has a way of its own ([`Gated`]).
-#[cfg(unix)]
 #[test]
 fn a_stopping_daemon_starts_no_pending_run() {
     let Some((home, image)) = home("containers-stop-pending") else {
@@ -10712,7 +10860,6 @@ fn volume_commands_keep_volumes() {
 /// command N times; `always` until stopped, a stop ending it for good; as the daemon
 /// starts again, `unless-stopped` and `always` start again what its stop ended, and not
 /// what was stopped by hand.
-#[cfg(unix)]
 #[test]
 fn restart_policies_start_microvms_again() {
     let Some((home, image)) = home("containers-restart") else {
@@ -10802,9 +10949,6 @@ fn restart_policies_start_microvms_again() {
     );
 }
 
-/// `update`, as `docker update` takes it: a running microVM's limits written to its
-/// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
-#[cfg(unix)]
 /// A run refused a process or thread past its `--pids-limit` says so (D193): a
 /// `pids-limit` event of its container's, with the limit and how many it refused, which no
 /// state of Docker's has, and the daemon's log of what its cgroup was allowed and held; a
@@ -10951,6 +11095,8 @@ fn update_moves_a_microvms_memory_both_ways() {
     let _ = exit(&mut held);
 }
 
+/// `update`, as `docker update` takes it: a running microVM's limits written to its
+/// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
 #[test]
 fn update_changes_limits_of_running_microvms() {
     let Some((home, image)) = home("containers-update") else {
@@ -11091,7 +11237,6 @@ fn update_changes_limits_of_running_microvms() {
 
 /// `ps --size` and `inspect --size`: the disk a microVM's writable layer uses, from its
 /// guest while it runs and as its last run left it after, and with its image's root.
-#[cfg(unix)]
 #[test]
 fn microvm_sizes_are_listed() {
     let Some((home, image)) = home("containers-sizes") else {
@@ -11129,7 +11274,6 @@ fn microvm_sizes_are_listed() {
 /// `import`, as `docker import`: a microVM's files exported, then imported as an image
 /// of one layer, plain or compressed, from a file or stdin, its config from `--change`,
 /// and run; dockerd's refusals.
-#[cfg(unix)]
 #[test]
 fn import_makes_images_of_tarballs() {
     let Some((home, image)) = home("containers-import") else {
@@ -11171,8 +11315,12 @@ fn import_makes_images_of_tarballs() {
     assert!(ran.stdout.contains("IMPORTED=yes"), "{ran}");
     // gzip'd, from stdin: the layer as it came; its diff ID the tar's.
     let gz = home.join("fs.tar.gz");
-    let zipped = Command::new("gzip").arg("-k").arg(&tar).status().unwrap();
-    assert!(zipped.success());
+    let mut zipping = flate2::write::GzEncoder::new(
+        std::fs::File::create(&gz).unwrap(),
+        flate2::Compression::default(),
+    );
+    std::io::copy(&mut std::fs::File::open(&tar).unwrap(), &mut zipping).unwrap();
+    zipping.finish().unwrap();
     let piped = common::command()
         .args(["import", "-", "imported:2"])
         .env("SHARDS_HOME", &*home)
@@ -11199,9 +11347,14 @@ fn import_makes_images_of_tarballs() {
             let _ = std::fs::remove_file(&self.0);
         }
     }
-    let socket = Socket(format!("/tmp/shards-engine-{}.sock", std::process::id()).into());
+    // Short on Unix, where a socket's path fits sun_path: the home's is long on macOS.
+    let socket = Socket(if cfg!(windows) {
+        home.join("engine.sock")
+    } else {
+        format!("/tmp/shards-engine-{}.sock", std::process::id()).into()
+    });
     let _ = std::fs::remove_file(&socket.0);
-    let engine = std::os::unix::net::UnixListener::bind(&socket.0).unwrap();
+    let engine = shards_vmm::platform::UnixListener::bind(&socket.0).unwrap();
     let (sent, served) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::{BufRead as _, Read as _, Write as _};
@@ -11294,7 +11447,12 @@ fn import_makes_images_of_tarballs() {
     for (args, said) in [
         (
             &["import", "nope.tar"][..],
-            "open nope.tar: no such file or directory\n",
+            // Go's words for the error each OS gives (syscall's Errno), as docker/cli's are.
+            if cfg!(windows) {
+                "open nope.tar: The system cannot find the file specified.\n"
+            } else {
+                "open nope.tar: no such file or directory\n"
+            },
         ),
         (
             &["import", "-c", "RUN x", tar.to_str().unwrap()][..],
