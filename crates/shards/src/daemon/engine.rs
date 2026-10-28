@@ -43,7 +43,12 @@ pub(super) use scope::Scope;
 
 /// The socket, relative to the home, the daemon's working directory: a socket address fits
 /// it whatever the home's path (`sun_path`).
+#[cfg(unix)]
 pub(super) const SOCKET: &str = "engine.sock";
+/// On Windows the file of the home that names the Engine API's named pipe, which Docker's
+/// clients reach their engine by there (npipe): a fresh name for each daemon.
+#[cfg(windows)]
+pub(super) const SOCKET: &str = "engine.pipe";
 /// The API served, and the oldest answered (cli/version.rs).
 pub(super) const VERSION: &str = crate::cli::version::ENGINE_API.0;
 pub(super) const MIN_VERSION: &str = crate::cli::version::ENGINE_API.1;
@@ -473,15 +478,10 @@ impl<D: Disk> Daemon<D> {
         conn: UnixStream,
         scope: Option<Scope>,
     ) {
-        // On Windows the Engine API takes no host client yet: its named pipe, whose DACL
-        // admits this user's processes alone, comes with the plan's step 8. Nor does a
-        // microVM's own engine come, whose run is refused as it is made (network.rs
-        // `check`).
-        #[cfg(windows)]
-        if scope.is_none() {
-            log("refused an API client: the Engine API is not served on Windows yet");
-            return;
-        }
+        // On Windows a host client comes through the Engine API's named pipe, whose DACL
+        // admits this user's processes alone (shards_ipc::Listener), as Unix's comes
+        // through its socket, its peer's user checked below. No microVM's own engine comes
+        // there yet, whose run is refused as it is made (network.rs `check`).
         // SAFETY: geteuid(2) cannot fail.
         #[cfg(unix)]
         let ours = unsafe { libc::geteuid() };

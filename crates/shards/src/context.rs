@@ -2333,27 +2333,28 @@ fn own_named<'a>(refs: &[&'a str]) -> Option<&'a str> {
 
 /// Whether this home's daemon serves now: its request slots (D185).
 fn daemon_serves(home: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        shards_ipc::slots::served(home)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = home;
-        false
-    }
+    shards_ipc::slots::served(home)
 }
 
 /// Where this home's daemon is reached from outside shards' own CLI: its Engine API's
-/// socket (D170), which Docker's clients and SDKs take as their endpoint.
+/// socket (D170), which Docker's clients and SDKs take as their endpoint; on Windows its
+/// named pipe, which the home's file names, as Docker's clients write one
+/// (`npipe:////./pipe/NAME`), or the home where its daemon has named none.
 fn own_endpoint(home: &Path) -> String {
     #[cfg(unix)]
     {
         format!("unix://{}", home.join(crate::daemon::ENGINE_SOCKET).display())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        home.display().to_string()
+        std::fs::read_to_string(home.join(crate::daemon::ENGINE_SOCKET))
+            .ok()
+            .and_then(|name| {
+                name.trim()
+                    .strip_prefix(r"\\.\pipe\")
+                    .map(|pipe| format!("npipe:////./pipe/{pipe}"))
+            })
+            .unwrap_or_else(|| home.display().to_string())
     }
 }
 

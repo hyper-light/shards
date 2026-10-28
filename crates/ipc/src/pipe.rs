@@ -626,6 +626,9 @@ enum Way {
     /// Given to this process by its spawner, as its peer's end: what comes carries handles
     /// as values its spawner put in this process; none goes back.
     Given,
+    /// A client a [`Listener`] took: its bytes alone, no handle either way, as a client of
+    /// any program's may write anything.
+    Plain,
 }
 
 /// A [`Stream`]'s end, shared by its clones.
@@ -984,6 +987,137 @@ impl std::os::windows::io::AsRawHandle for Stream {
     }
 }
 
+/// A named pipe this process's clients of any program's reach it at, by its name: each
+/// an instance of its own, this user's alone (its DACL, [`attributes`]), remote clients
+/// refused; the name made by its first instance, so that no other process holds it. One
+/// instance always waits for its client, its connect overlapped on [`Listener::event`],
+/// which a loop waits on beside its others: no accept waits. The Engine API's on Windows
+/// (D170), as Docker's clients reach their engine there, a named pipe (npipe).
+#[derive(Debug)]
+pub struct Listener {
+    name: Vec<u16>,
+    waiting: Mutex<Waiting>,
+    /// Set as the waiting instance's client comes (its connect's OVERLAPPED's event).
+    event: Event,
+}
+
+/// A listener's instance waiting for its client: its connect under way on `overlapped`,
+/// boxed where the call holds it, until it is done or cancelled; or done as it began.
+struct Waiting {
+    instance: OwnedHandle,
+    overlapped: Box<OVERLAPPED>,
+    connected: bool,
+}
+
+impl std::fmt::Debug for Waiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Waiting")
+            .field("instance", &self.instance)
+            .field("connected", &self.connected)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Waiting {
+    fn begin(name: &[u16], first: bool, event: &Event) -> io::Result<Waiting> {
+        let instance = instance(name, first, false, BUFFER)?;
+        event.reset();
+        let mut overlapped = Box::new(OVERLAPPED {
+            hEvent: event.raw(),
+            ..OVERLAPPED::default()
+        });
+        // SAFETY: an instance of ours, and an OVERLAPPED boxed where it stays until the
+        // connect is done or cancelled (`Listener`'s drop).
+        let connected = if unsafe { ConnectNamedPipe(instance.as_raw_handle(), &raw mut *overlapped) } != 0 {
+            true
+        } else {
+            // SAFETY: no arguments.
+            match unsafe { GetLastError() } {
+                // Its client came between the instance and its connect.
+                ERROR_PIPE_CONNECTED => {
+                    event.set();
+                    true
+                }
+                ERROR_IO_PENDING => false,
+                e => return Err(io::Error::from_raw_os_error(e as i32)),
+            }
+        };
+        Ok(Waiting {
+            instance,
+            overlapped,
+            connected,
+        })
+    }
+}
+
+impl Listener {
+    /// Listening at `name` (`\\.\pipe\...`), which no other instance may hold yet.
+    pub fn new(name: &str) -> io::Result<Listener> {
+        let name = wide(name);
+        let event = Event::new()?;
+        let waiting = Waiting::begin(&name, true, &event)?;
+        Ok(Listener {
+            name,
+            waiting: Mutex::new(waiting),
+            event,
+        })
+    }
+
+    /// What a loop waits on to learn a client has come: set until [`accept`](Self::accept)
+    /// takes it.
+    pub fn event(&self) -> HANDLE {
+        self.event.raw()
+    }
+
+    /// The client that came, its instance a [`Stream`] of bytes alone, another instance
+    /// waiting in its place; WouldBlock while none has.
+    pub fn accept(&self) -> io::Result<Stream> {
+        let mut waiting = lock(&self.waiting);
+        if !waiting.connected {
+            let mut moved = 0u32;
+            // SAFETY: the waiting connect's own instance and OVERLAPPED; not waited for.
+            if unsafe {
+                GetOverlappedResult(
+                    waiting.instance.as_raw_handle(),
+                    &raw const *waiting.overlapped,
+                    &raw mut moved,
+                    0,
+                )
+            } == 0
+            {
+                // SAFETY: no arguments.
+                let e = unsafe { GetLastError() };
+                if e == windows_sys::Win32::Foundation::ERROR_IO_INCOMPLETE {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                // That instance's connect failed (a client that went as it came): another
+                // waits in its place.
+                *waiting = Waiting::begin(&self.name, false, &self.event)?;
+                return Err(io::Error::from_raw_os_error(e as i32));
+            }
+        }
+        let next = Waiting::begin(&self.name, false, &self.event)?;
+        let came = std::mem::replace(&mut *waiting, next);
+        Stream::of(came.instance, Way::Plain)
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        let waiting = self.waiting.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if !waiting.connected {
+            let handle = waiting.instance.as_raw_handle();
+            let mut moved = 0u32;
+            // SAFETY: the connect under way on our instance, cancelled and waited out before
+            // its OVERLAPPED goes.
+            unsafe {
+                CancelIoEx(handle, &raw const *waiting.overlapped);
+                GetOverlappedResult(handle, &raw const *waiting.overlapped, &raw mut moved, 1);
+            }
+        }
+    }
+}
+
 /// Whether the pipe end `handle` has something to read now, or has ended: a read would not
 /// wait. One that is no pipe's end now reads as ended.
 pub fn readable_raw(handle: std::os::windows::io::RawHandle) -> bool {
@@ -1205,11 +1339,11 @@ pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>])
             }
             sent
         }
-        Way::Given if fds.is_empty() => {
+        Way::Given | Way::Plain if fds.is_empty() => {
             drop(way);
             sock.write_all_now(&bytes)
         }
-        Way::Given => Err(io::Error::new(
+        Way::Given | Way::Plain => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "no handle goes to this stream's peer",
         )),
@@ -1340,8 +1474,8 @@ fn message(sock: &Stream, header: &[u8; HEADER], mut rest: Vec<u8>) -> io::Resul
                 unsafe { OwnedHandle::from_raw_handle(raw as HANDLE) }
             })
             .collect(),
-        Way::Gives(_) if count == 0 => Vec::new(),
-        Way::Gives(_) => {
+        Way::Gives(_) | Way::Plain if count == 0 => Vec::new(),
+        Way::Gives(_) | Way::Plain => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "a message named handles its sender may not give",
@@ -1772,6 +1906,52 @@ mod tests {
         let (a, b) = Stream::pair().unwrap();
         (&a).write_all(&[3, 0, 0, 0, 0, 1]).unwrap();
         assert_eq!(recv(&b).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// A listener takes each client on an instance of its own, saying none has come until
+    /// one has, its event set as one comes; its name is its alone; bytes go both ways on
+    /// each client's stream, and no handle either way, whatever a client writes.
+    #[test]
+    fn a_listener_takes_each_client_on_an_instance_of_its_own() {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        let name = format!(
+            r"\\.\pipe\shards-test-listener-{}-{}",
+            std::process::id(),
+            random_hex(4).unwrap()
+        );
+        let listener = Listener::new(&name).unwrap();
+        assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert!(Listener::new(&name).is_err(), "a second listener took {name}");
+        let came = || {
+            // SAFETY: the listener's event, waited on.
+            let waited = unsafe { WaitForSingleObject(listener.event(), 5000) };
+            assert_eq!(waited, WAIT_OBJECT_0);
+            listener.accept().unwrap()
+        };
+        let first = Stream::of(open(&wide(&name), true).unwrap(), Way::Plain).unwrap();
+        let served_first = came();
+        let second = Stream::of(open(&wide(&name), true).unwrap(), Way::Plain).unwrap();
+        let served_second = came();
+        assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        for (client, served, said) in [(&first, &served_first, b"one"), (&second, &served_second, b"two")] {
+            let mut got = [0u8; 3];
+            (&*client).write_all(said).unwrap();
+            (&*served).read_exact(&mut got).unwrap();
+            assert_eq!(&got, said);
+            (&*served).write_all(b"back").unwrap();
+            let mut back = [0u8; 4];
+            (&*client).read_exact(&mut back).unwrap();
+            assert_eq!(&back, b"back");
+        }
+        let event = Event::new().unwrap();
+        assert!(send(&served_first, 1, b"x", &[event.as_handle()]).is_err());
+        (&first)
+            .write_all(&[2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap();
+        assert_eq!(
+            recv(&served_first).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     /// What slots rely on (PM M348): an instance no client has opened peeks as a bad pipe

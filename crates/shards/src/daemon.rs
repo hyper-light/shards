@@ -45,9 +45,8 @@ mod commit;
 mod cuts;
 mod demand;
 mod engine;
-/// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach.
-/// Unix's: Windows' named pipe comes with the plan's step 8.
-#[cfg(unix)]
+/// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach;
+/// on Windows the file that names its named pipe.
 pub(crate) const ENGINE_SOCKET: &str = engine::SOCKET;
 mod events;
 mod files;
@@ -443,28 +442,40 @@ impl Wake {
 #[cfg(unix)]
 type ApiListener = UnixListener;
 
-/// The Engine API's listener on Windows, which has none yet: its own path for it, a named
-/// pipe as Docker's clients on Windows reach their engine, comes after the daemon's own
-/// clients (D195). A daemon that has none says so as it starts, as one that could not bind
-/// its socket does, and serves its CLI.
+/// The Engine API's listener on Windows: a named pipe, as Docker's clients reach their
+/// engine there (npipe), each client an instance of its own and this user's alone
+/// (shards_ipc::Listener).
 #[cfg(windows)]
-#[derive(Debug)]
-enum ApiListener {}
+type ApiListener = shards_ipc::Listener;
 
+/// The Engine API's listener on Windows, at a fresh name, which the file at `path` names:
+/// written whole beside it and renamed there once the pipe listens, so that a client finds
+/// the name only once it is served, as Unix's socket is renamed into place.
 #[cfg(windows)]
-impl ApiListener {
-    fn accept(&self) -> io::Result<(UnixStream, ())> {
-        match *self {}
+fn listening_at(path: &Path) -> std::io::Result<ApiListener> {
+    let mut random = [0u8; 8];
+    shards_vmm::platform::fill_random(&mut random)?;
+    let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let name = format!(r"\\.\pipe\shards-engine-{}-{hex}", std::process::id());
+    let listener = shards_ipc::Listener::new(&name)?;
+    let file = path.file_name().unwrap_or_default().to_string_lossy();
+    let unnamed = path.with_file_name(format!("~{file}"));
+    if let Err(e) =
+        std::fs::write(&unnamed, format!("{name}\n")).and_then(|()| std::fs::rename(&unnamed, path))
+    {
+        let _ = std::fs::remove_file(&unnamed);
+        return Err(e);
     }
+    Ok(listener)
 }
 
-/// The Engine API's listener at `path` on Windows: none yet ([`ApiListener`]).
-#[cfg(windows)]
-fn listening_at(_path: &Path) -> std::io::Result<ApiListener> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the Engine API is not served on Windows yet",
-    ))
+/// A client of the Engine API's listener, or a context's (relay.rs), where one has come:
+/// WouldBlock while none has.
+fn accept_api(api: &ApiListener) -> io::Result<UnixStream> {
+    #[cfg(unix)]
+    return api.accept().map(|(conn, _)| conn);
+    #[cfg(windows)]
+    return api.accept();
 }
 
 /// A listener at `path` that a client finds listening once it finds the name, not blocking:
@@ -2047,8 +2058,8 @@ impl<D: Disk> Daemon<D> {
             let mut api_ready = true;
             if let Some(api) = &api {
                 loop {
-                    match api.accept() {
-                        Ok((conn, _)) => self.take_engine(threads, conn, None),
+                    match accept_api(api) {
+                        Ok(conn) => self.take_engine(threads, conn, None),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(e) => {
@@ -2211,10 +2222,10 @@ impl<D: Disk> Daemon<D> {
         self.clear_watches(watches, |i| ready(i + 1))
     }
 
-    /// [`wait_for_work`](Self::wait_for_work) on Windows: its wake and its watches are
-    /// events, waited on together (WaitForMultipleObjects), each looked at as the wait ends,
-    /// as a wait names the first alone. Windows has no Engine API nor contexts' engines yet
-    /// (`ApiListener`, relay.rs), so `api` and `relays` are none.
+    /// [`wait_for_work`](Self::wait_for_work) on Windows: its wake, its watches and the
+    /// Engine API's listener are events, waited on together (WaitForMultipleObjects), each
+    /// looked at as the wait ends, as a wait names the first alone. Windows has no
+    /// contexts' engines yet (relay.rs), so `relays` is none.
     #[cfg(windows)]
     fn wait_for_work(
         &self,
@@ -2226,9 +2237,10 @@ impl<D: Disk> Daemon<D> {
         use std::os::windows::io::AsRawHandle as _;
         use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
         use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects, WaitForSingleObject};
-        let _ = (api, relays);
+        let _ = relays;
         let waited: Vec<_> = std::iter::once(self.listener_wake.event().raw())
             .chain(watches.iter().flatten().map(|w| w.fd().as_raw_handle()))
+            .chain(api.map(ApiListener::event))
             .collect();
         // Rounded up: a wait of 0 ms would return at once, and spin.
         let ms = timeout.map_or(INFINITE, |t| {

@@ -18,12 +18,9 @@ const VERSION_TEXT: &str = env!("CARGO_PKG_VERSION");
 const NO_API: &str = "none";
 
 /// The Engine API the daemon serves (D170): docker/cli v29.8.1's (its moby/moby/api
-/// v1.56.0, moby's MaxAPIVersion), from moby's oldest by default; none where the daemon is
-/// not yet.
-#[cfg(unix)]
+/// v1.56.0, moby's MaxAPIVersion), from moby's oldest by default; at its socket on Unix,
+/// its named pipe on Windows.
 pub(crate) const ENGINE_API: (&str, &str) = ("1.56", "1.40");
-#[cfg(not(unix))]
-pub(crate) const ENGINE_API: (&str, &str) = (NO_API, NO_API);
 
 /// The compiler that built this binary (build.rs), where Docker names Go's.
 fn compiler() -> String {

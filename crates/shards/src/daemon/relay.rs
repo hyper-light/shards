@@ -192,8 +192,8 @@ impl<D: Disk> Daemon<D> {
         let mut ready = true;
         for relay in relays.served.values() {
             loop {
-                match relay.listener.accept() {
-                    Ok((conn, _)) => self.relay(threads, conn, relay.context.clone()),
+                match super::accept_api(&relay.listener) {
+                    Ok(conn) => self.relay(threads, conn, relay.context.clone()),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) => {
