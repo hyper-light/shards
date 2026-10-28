@@ -236,7 +236,7 @@ mod tests {
                 Ok(()) => {}
                 Err(why) => assert!(why.contains("no systemd manager of your user's"), "{why}"),
             }
-        } else if cfg!(target_os = "macos") {
+        } else if cfg!(any(target_os = "macos", windows)) {
             // A group shards keeps, named as a file of the home is (D183, slice 3).
             assert!(refused.contains("groups/"), "{refused}");
             assert_eq!(check(&run("agents.slice")), Ok(()));
