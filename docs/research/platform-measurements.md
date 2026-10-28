@@ -15984,3 +15984,72 @@ revision before comparing a changed API/implementation.
   Windows build does where its documentation says nothing of a source remapped, and
   private memory behaves otherwise: B is the one to build on, A measured again where the
   restores are (windows-2025) before any use of it.
+
+### M376. Cold boots at once on WHP: what they cost, and where (D140, D195)
+
+- **Question.** With M357's turns taken in order, CI's Windows p99 run hang remained: under
+  containers.rs whole on windows-2022, a run's `run --rm` waited out its minute, its daemon's
+  log saying some 40 VMs not ready in 10 s and most not in 20, each VM process at 0.6 of a
+  host CPU throughout (6 to 13 s of CPU time by 20 s) and its guest's first line 33 s on
+  (CI 40715919365). Server 2022 restores nothing (M345): every run boots cold. What does a
+  cold boot cost there as others boot beside it, and where does its time go?
+- **Method.**
+  - tests/boot.rs `cold_boots_at_once_cost` and `cold_boots_at_once_cost_quiet` (ignored, a
+    measurement) by budget-e2e.yml (`windows:boot`), CI runs 40738074179 and 40740403168,
+    2026-10-28, on a windows-2022 runner (Windows Server 2022, 10.0.20348) and a windows-2025
+    runner (10.0.26100), 4 CPUs each, nested in Azure; and on jupiter (AMD Ryzen AI Max+
+    395, 32 CPUs, Windows 11 Pro 10.0.26200, bare metal). Each case boots its VMs at once,
+    the pinned kernel given no root, to its panic: guests of the host's CPUs 1, 2, 4 and 8
+    at once, guests of one vCPU 8 and 16 at once; the console as the daemon's guests have
+    it (`console=ttyS0 earlycon panic=-1`), and told `quiet`. Each VM's time from the
+    case's start to its panic line and its VM process's CPU time (GetProcessTimes), p50
+    and max of each case.
+  - tests/boot.rs `cold_boot_threads_cost` on jupiter: one VM at a time left at its panic
+    (`panic=0`) and each of its VM process's threads' CPU time by name (GetThreadTimes,
+    GetThreadDescription).
+  - `docs/research/measurements/boot-console/boots.py` on the M5 Max (macOS 26.4.1, HVF), as
+    a launchd job (launchd-run.sh): 20 boots of 18 vCPUs each way, interleaved, the guest's
+    own time at its panic and the console's bytes.
+- **Found** (p50, max in brackets, of each VM's panic and its VM process's CPU time):
+
+  | case | windows-2022 | windows-2025 | jupiter |
+  |---|---|---|---|
+  | host vCPUs, 1 alone | 2.23 s, CPU 2.50 s | 1.34 s, CPU 1.33 s | 1.01 s, CPU 7.66 s |
+  | 2 at once | 2.74 s, CPU 3.95 s | 1.40 s, CPU 1.72 s | |
+  | 4 at once | 10.81 s (10.90), CPU 10.81 s (11.17) | 2.83 s (2.86), CPU 2.72 s (2.77) | 1.35 s, CPU 6.42 s (7.31) |
+  | 8 at once | 45.05 s (45.35), CPU 23.42 s (24.19) | 11.18 s (11.38), CPU 5.36 s (5.55) | |
+  | 1 vCPU, 8 at once | 4.01 s (5.83), CPU 2.50 s (2.69) | 3.49 s (3.89), CPU 1.64 s (1.75) | |
+  | 1 vCPU, 16 at once | 7.47 s (11.35), CPU 2.53 s (2.62) | 6.50 s (7.97), CPU 1.69 s (1.92) | |
+  | quiet, host vCPUs, 1 alone | 0.50 s, CPU 0.86 s | 0.50 s, CPU 0.91 s | 0.58 s, CPU 7.14 s |
+  | quiet, 2 at once | 0.62 s, CPU 0.94 s | 0.76 s, CPU 1.12 s | 0.68 s, CPU 7.08 s |
+  | quiet, 4 at once | 4.85 s, CPU 4.81 s (4.95) | 1.90 s, CPU 1.88 s (1.89) | 1.19 s (1.23), CPU 6.88 s (7.19) |
+  | quiet, 8 at once | 41.00 s (41.22), CPU 21.39 s (22.77) | 9.10 s (9.33), CPU 4.59 s (4.78) | 1.65 s (1.74), CPU 4.47 s (7.16) |
+  | quiet, 1 vCPU, 8 at once | 1.37 s (1.49), CPU 0.70 s (0.73) | 1.66 s (2.06), CPU 0.84 s (0.88) | 0.40 s (0.54), CPU 0.20 s |
+  | quiet, 1 vCPU, 16 at once | 1.97 s (3.05), CPU 0.67 s (0.73) | 2.85 s (4.07), CPU 0.83 s (0.94) | 0.61 s (0.95), CPU 0.20 s (0.23) |
+
+  (The second CI run's plain cases, beside its quiet ones: 2.14 s alone and 9.55 s four at
+  once on windows-2022, 1.49 s and 4.01 s on windows-2025.)
+  - The console. A boot writes 18 KB to its serial port, each byte a THR write and an LSR
+    read, two exits: told `quiet` it writes 1 KB, and a boot alone took 0.50 s of 2.14
+    on windows-2022 and of 1.49 on windows-2025. On the M5 Max's HVF, 20 each way, twice:
+    plain, the guest at its panic p50 65.2 and 66.8 ms (max 67.7, 69.0), and 102.0 and
+    103.1 ms from start to its VM's end; quiet, 27.9 and 28.2 ms (max 29.4, 29.3), and
+    52.4 and 52.8 ms. The first series' plain max of its VM's end, 5,933 ms once, did not
+    come again; the second's slowest were its first two boots of each way (214 and 187 ms
+    plain, 124 quiet), the rest 100 to 105 and 50 to 57.
+  - Boots beside one another. Guests of one vCPU cost the same CPU time however many boot
+    at once, and their time grows as the host's share of them does. Guests of the host's 4
+    vCPUs cost more CPU time the more boot at once, quiet or not: alone 0.86 s on
+    windows-2022, four at once 4.81 s each, eight 21.39 s each, and the time each took grew
+    past linearly, 0.50 s to 4.85 to 41.00. Not the console's: quiet, eight at once took as
+    long as plain.
+  - Where a guest of 32 vCPUs spends it, alone on jupiter (`cold_boot_threads_cost`): of
+    6.34 s of CPU time to a panic at 0.88 s, vcpu0 0.41 s and its 31 application
+    processors 5.91 s, 0.19 to 0.27 s each; quiet, 7.91 s, the APs 7.58. A guest of 4
+    vCPUs 0.48 s (APs 0.19), one of one vCPU 0.38 s. Unexplained: what an AP does for a
+    quarter of a second of CPU in a boot of under one is not yet measured.
+- **Consequence.** A VM whose console nobody reads boots `quiet` (D140, `kernel_cmdline`),
+  on every host. A cold boot on WHP takes, beside its daemon's turn, a slot of the host's
+  that every daemon on it shares, two on these runners, as its own count's most boots at
+  once (D195, `daemon/host_boots.rs`). What an AP costs a boot of many vCPUs is the next
+  measurement's.

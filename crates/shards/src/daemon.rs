@@ -58,6 +58,9 @@ mod follow;
 #[cfg(any(target_os = "macos", windows, test))]
 mod groups;
 mod health;
+// Cold boots held across the host's daemons (PM M376): WHP's alone measured.
+#[cfg(windows)]
+mod host_boots;
 mod hostnet;
 pub(crate) mod images;
 mod import;
@@ -1935,9 +1938,13 @@ impl<D: Disk> Daemon<D> {
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
-            boots: Boots::new(shards_vmm::vm::booting_vcpus_at_most(
-                crate::resources::host_cpus(),
-            )),
+            boots: {
+                let cpus = crate::resources::host_cpus();
+                let boots = Boots::new(shards_vmm::vm::booting_vcpus_at_most(cpus));
+                #[cfg(windows)]
+                let boots = boots.across_the_host(HOST_BOOTS, cpus);
+                boots
+            },
             home_lock,
             home_id,
         })
@@ -7666,12 +7673,21 @@ fn with_its_process(child: &shards_ipc::Child, why: String) -> String {
 /// it boots nothing. Turns are taken in the order they are asked for: a boot that came while
 /// another waited waits behind it. Taken by whichever waiter woke first, a run's boot on a
 /// Windows runner booting four at a time waited out its client's minute as others came
-/// after it and went (CI's windows-2022 and windows-2025, 1 to 5 runs of 10).
+/// after it and went (CI's windows-2022 and windows-2025, 1 to 5 runs of 10). On Windows a
+/// boot with its turn takes a slot of the host's too, which every daemon on it boots in
+/// ([`across_the_host`](Boots::across_the_host), PM M376).
 struct Boots {
     state: Mutex<Booting>,
     done: Condvar,
     most: usize,
+    /// The host's slots, and its CPUs: a boot of more than them takes every slot.
+    #[cfg(windows)]
+    host: Option<(host_boots::HostBoots, usize)>,
 }
+
+/// The name of the host's boot slots, which every daemon on it shares (PM M376).
+#[cfg(windows)]
+const HOST_BOOTS: &str = "shards-boot";
 
 /// The boots under way and those waiting, in order.
 #[derive(Default)]
@@ -7696,10 +7712,13 @@ impl Booting {
     }
 }
 
-/// A cold boot's turn ([`Boots::turn`]): its vCPUs given back as it drops.
+/// A cold boot's turn ([`Boots::turn`]): its vCPUs given back as it drops, and on Windows
+/// the host's slot it holds, on the thread that took it.
 struct BootTurn<'a> {
     boots: &'a Boots,
     vcpus: usize,
+    #[cfg(windows)]
+    _host: Option<host_boots::HostSlot<'a>>,
 }
 
 impl Boots {
@@ -7708,7 +7727,24 @@ impl Boots {
             state: Mutex::new(Booting::default()),
             done: Condvar::new(),
             most,
+            #[cfg(windows)]
+            host: None,
         }
+    }
+
+    /// Its boots held across the host too: every daemon on it takes its boots' turns in the
+    /// same slots, `name`'s, as many as boots of the host's `cpus` CPUs fit in `most` (PM
+    /// M376). Its own count alone, said, where the slots cannot be made.
+    #[cfg(windows)]
+    fn across_the_host(mut self, name: &str, cpus: usize) -> Boots {
+        let cpus = cpus.max(1);
+        match host_boots::HostBoots::new(name, (self.most / cpus).clamp(1, 64)) {
+            Ok(host) => self.host = Some((host, cpus)),
+            Err(e) => log(format!(
+                "cold boots held by this daemon's count alone: the host's slots: {e}"
+            )),
+        }
+        self
     }
 
     /// The turn of a boot of `vcpus` vCPUs, waited for behind those asked for before it;
@@ -7741,7 +7777,23 @@ impl Boots {
         drop(booting);
         // The next in line may have room beside it.
         self.done.notify_all();
-        Ok(BootTurn { boots: self, vcpus })
+        #[cfg(windows)]
+        let turn = {
+            let mut turn = BootTurn {
+                boots: self,
+                vcpus,
+                _host: None,
+            };
+            // The host's slot after the daemon's own turn: its vCPUs given back as the
+            // turn drops, where it gets none.
+            if let Some((host, cpus)) = &self.host {
+                turn._host = Some(host.take(vcpus > *cpus, stopping)?);
+            }
+            turn
+        };
+        #[cfg(not(windows))]
+        let turn = BootTurn { boots: self, vcpus };
+        Ok(turn)
     }
 
     /// Wakes the boots waiting their turn, to look at `stopping` again: the lock orders the
@@ -8278,6 +8330,76 @@ mod tests {
             while !held.is_empty() {
                 give_back(&mut held);
             }
+        });
+    }
+
+    /// On Windows two daemons' boots take their turns in the host's slots (PM M376): with
+    /// two slots, a boot of each holding one, a daemon's second boot, for which its own
+    /// count has room, waits until the other daemon's boot ends, and then goes; one waiting
+    /// as its daemon stops is told so, its vCPUs given back to its daemon's count. Slots of
+    /// this test's own, apart from any daemon's on the host.
+    #[cfg(windows)]
+    #[test]
+    fn cold_boots_take_the_hosts_slots_across_its_daemons() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (soon, long) = (Duration::from_millis(500), Duration::from_secs(10));
+        let name = format!("shards-boot-test-{}", std::process::id());
+        let ours = super::Boots::new(8).across_the_host(&name, 4);
+        let theirs = super::Boots::new(8).across_the_host(&name, 4);
+        assert!(ours.host.is_some() && theirs.host.is_some());
+        let (stopping, stopped) = (AtomicBool::new(false), AtomicBool::new(false));
+        let (o, t, st, sd) = (&ours, &theirs, &stopping, &stopped);
+        std::thread::scope(|s| {
+            let first = o.turn(4, st).unwrap();
+            // Their boot on a thread of its own, which holds the other slot until told.
+            let (held, holding) = mpsc::channel();
+            let (end, ended) = mpsc::channel::<()>();
+            let their = s.spawn(move || {
+                let turn = t.turn(4, st);
+                let _ = held.send(turn.is_ok());
+                let _ = ended.recv();
+                drop(turn);
+            });
+            assert_eq!(holding.recv_timeout(long), Ok(true));
+            let (went, gone) = mpsc::channel();
+            let second = s.spawn(move || {
+                let turn = o.turn(4, st);
+                let _ = went.send(turn.is_ok());
+                drop(turn);
+            });
+            assert!(
+                gone.recv_timeout(soon).is_err(),
+                "a third boot went beside two on a host of two slots"
+            );
+            drop(end);
+            their.join().unwrap();
+            assert_eq!(gone.recv_timeout(long), Ok(true), "the second never went");
+            second.join().unwrap();
+            // A boot waiting for a slot as its daemon stops is told so.
+            let (end, ended) = mpsc::channel::<()>();
+            let their = s.spawn(move || {
+                let turn = t.turn(4, st);
+                let _ = ended.recv();
+                drop(turn);
+            });
+            while super::lock(&t.state).vcpus == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let (told, telling) = mpsc::channel();
+            let waiting = s.spawn(move || {
+                let turn = o.turn(4, sd);
+                let _ = told.send(turn.is_err());
+            });
+            assert!(telling.recv_timeout(soon).is_err(), "it went with no slot free");
+            sd.store(true, Ordering::SeqCst);
+            assert_eq!(telling.recv_timeout(long), Ok(true), "it was not told");
+            waiting.join().unwrap();
+            assert_eq!(super::lock(&o.state).vcpus, 4, "its vCPUs were kept");
+            drop(end);
+            their.join().unwrap();
+            drop(first);
         });
     }
 

@@ -6788,7 +6788,20 @@ forked.
   4 vCPUs at once on a 4-CPU runner took 52 to 55 s each on windows-2022, where one took
   1.6. On WHP the daemon holds the cold boots under way to their VMs' vCPUs of twice the
   host's CPUs, the most runs a second on both CI runners; a VM of more boots alone, and a
-  restore takes no turn.
+  restore takes no turn. Turns are taken in the order asked for (tickets, M357's hang: a
+  boot asked for first waited out its client's minute as later ones went).
+- **Cold boots held across the host's daemons** (M376). A daemon's count held only its own
+  boots, and CI's tests, a daemon each, booted eight at once on 4 CPUs, two a daemon: eight
+  guests of 4 vCPUs at once took 41.0 s each on windows-2022 where two took 0.62, quiet,
+  while eight of one vCPU took 1.37. So a boot with its daemon's turn also takes a slot of
+  the host's, which every daemon on it shares (`daemon/host_boots.rs`): as many slots as
+  boots of the host's CPUs fit in the daemon's most, two, each a named mutex in the logon
+  session's namespace (`Local\shards-boot-i`), held by the boot's thread until its VM is
+  ready or failed; a boot past one slot's vCPUs takes them all. A mutex whose daemon ended
+  holding it is the next waiter's (WAIT_ABANDONED), so a slot outlives no daemon. Held by
+  `cold_boots_take_the_hosts_slots_across_its_daemons` (mutation-checked: slots taken
+  without waiting let a third boot go beside two). Daemons of other logon sessions are
+  held apart, as Windows names their objects apart.
 - **Lines and streams.** A slot's line holds 64 KiB, what a Linux FIFO holds (pipe(7)), so
   that what a client leaves untaken is what it leaves on Linux (D185, "What it said last");
   a stream's pipe holds 1 MiB, which moved more than 64 KiB in M340.
@@ -10509,6 +10522,13 @@ network process (D142) and its builder (D143) follow.
 - **No doorbells.** A notification port's round trip was no shorter than an MMIO exit's
   (M198): virtio's notifications are exits.
 - **A kick is a cancel**, which a run about to start takes too (M198).
+- **A console nobody reads is told `quiet`** (vm `kernel_cmdline`, M376), on every host: a
+  VM whose console is discarded, every daemon's, boots its kernel writing it errors and
+  worse alone, unless its command line names a level. Each byte a kernel writes there is
+  an exit or two, and a boot writes some 18 KB: of a cold boot's kernel to its panic with no
+  root, quiet took 0.50 s of 2.14 on windows-2022, 0.50 of 1.49 on windows-2025, and on an
+  M5 Max's HVF 27.9 ms of 65.2 (n=20 each, interleaved). What it says stays in its ring
+  buffer, which `dmesg` reads; a VM whose console is shown (`run --kernel`) boots as told.
 - **Its CPUs brought up one at a time.** Its kernel is told `cpuhp.parallel=0`: brought up
   in parallel past the host's CPUs, each AP started spins in its turn while the next waits
   for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s
