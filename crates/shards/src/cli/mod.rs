@@ -249,7 +249,7 @@ fn names_a_microvm(target: &str) -> bool {
         && name
             .iter()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
-    named && !shards_vmm::snapshot::pointer(std::path::Path::new(target)).exists()
+    named && !shards_vmm::snapshot::pointed(std::path::Path::new(target)).unwrap_or(false)
 }
 
 /// A container command, `named` words of `words` naming it: read here, and run by the

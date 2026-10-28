@@ -212,9 +212,8 @@ impl Engine {
     }
 
     /// Keeps `conn`, a connection run `provider`'s command made to its own microVM's engine
-    /// (D181), for the listener to take ([`Engine::take_arrived`]). Unix's: a VM gives its
-    /// daemon no handle on Windows.
-    #[cfg(unix)]
+    /// (D181), for the listener to take ([`Engine::take_arrived`]): the one its VM gave, or
+    /// on Windows the end of the pipe its VM was given for it.
     pub(super) fn arrive(&self, provider: &str, conn: UnixStream) {
         lock(&self.arrived).push((provider.to_string(), conn));
     }
@@ -480,8 +479,8 @@ impl<D: Disk> Daemon<D> {
     ) {
         // On Windows a host client comes through the Engine API's named pipe, whose DACL
         // admits this user's processes alone (shards_ipc::Listener), as Unix's comes
-        // through its socket, its peer's user checked below. No microVM's own engine comes
-        // there yet, whose run is refused as it is made (network.rs `check`).
+        // through its socket, its peer's user checked below; a microVM's own engine's
+        // through the pipe its daemon gave its VM for it (`ENGINE_CONN`), scoped.
         // SAFETY: geteuid(2) cannot fail.
         #[cfg(unix)]
         let ours = unsafe { libc::geteuid() };

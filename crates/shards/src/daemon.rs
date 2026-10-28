@@ -5166,14 +5166,12 @@ impl<D: Disk> Daemon<D> {
                 // A connection its command made to its own microVM's engine (D181): its VM's
                 // copy goes once the daemon has it (M24), and the listener serves it, scoped
                 // to this microVM. One from a run with no engine of its own is closed.
+                #[cfg(unix)]
                 kind::ENGINE_CONN => {
                     if let Err(e) = inbox.socket.send(kind::ENGINE_CONN, &m.payload, &[]) {
                         log(format!("container {id}: answering its engine connection: {e}"));
                     }
                     match (inbox.engine.is_some(), m.fds.into_iter().next()) {
-                        // A VM gives its daemon no handle on Windows (`shards_ipc::Stream`):
-                        // a run there has no engine of its own (network.rs `check`).
-                        #[cfg(unix)]
                         (true, Some(fd)) => {
                             self.engine.arrive(id, UnixStream::from(fd));
                             self.wake_listener();
@@ -5181,6 +5179,38 @@ impl<D: Disk> Daemon<D> {
                         _ => log(format!(
                             "container {id}: an engine connection from a run with no engine of its own"
                         )),
+                    }
+                }
+                // On Windows a VM gives its daemon no handle (`shards_ipc::Stream`): it asks
+                // for a connection's pipe instead, a pair written in messages, whose end
+                // the listener serves as the connection, scoped to this microVM, and whose
+                // other the VM is given to relay its guest's connection onto
+                // (warm.rs `relay_engine`), the ends of its writes said each way. Answered
+                // with none, a run with no engine of its own has its connection closed.
+                #[cfg(windows)]
+                kind::ENGINE_CONN => {
+                    let pair = match inbox.engine {
+                        Some(_) => UnixStream::plain_pair().map_err(|e| e.to_string()),
+                        None => Err("a run with no engine of its own".to_string()),
+                    };
+                    match pair.and_then(|(ours, theirs)| {
+                        let given = theirs.share().map_err(|e| e.to_string())?;
+                        inbox
+                            .socket
+                            .send(kind::ENGINE_CONN, &m.payload, &[given.as_fd()])
+                            .map_err(|e| format!("giving it its pipe: {e}"))?;
+                        Ok(ours)
+                    }) {
+                        Ok(ours) => {
+                            self.engine.arrive(id, ours);
+                            self.wake_listener();
+                        }
+                        Err(why) => {
+                            log(format!("container {id}: an engine connection: {why}"));
+                            if let Err(e) = inbox.socket.send(kind::ENGINE_CONN, &m.payload, &[]) {
+                                log(format!("container {id}: answering its engine connection: {e}"));
+                            }
+                        }
                     }
                 }
                 // Its VM's answer to a save (D176), before anything after it: a microVM the

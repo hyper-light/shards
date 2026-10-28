@@ -1,11 +1,11 @@
 //! The Engine API (D170), end to end on real microVMs: what programs that make sandboxes
-//! ask of a container engine, asked of `engine.sock` in a home as they ask it, raw, and by
-//! the docker CLI where this host has one (its `DOCKER_HOST` the socket, its config an
-//! empty directory, so that it reaches nothing else). Real VMs, booted from SHARDS_KERNEL
-//! and SHARDS_INIT, which the daemon has from the client that started it; the image comes
-//! from a loopback registry (tests/common, `served`), and its entrypoint is the test guest.
+//! ask of a container engine, asked of `engine.sock` in a home as they ask it (on Windows
+//! the named pipe its `engine.pipe` names), raw, and by the docker CLI where this host has
+//! one (its `DOCKER_HOST` the socket or pipe, its config an empty directory, so that it
+//! reaches nothing else). Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT, which the
+//! daemon has from the client that started it; the image comes from a loopback registry
+//! (tests/common, `served`), and its entrypoint is the test guest.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -17,15 +17,19 @@ mod common;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
 use base64::Engine as _;
 use common::{
-    Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, served_counting, tar,
+    Run, TempDir, cannot_run_vms, guest_init, kernel, later_on_windows, run_shards_env, served,
+    served_counting, tar,
 };
 use serde_json::{Value, json};
+#[cfg(windows)]
+use shards_ipc::Stream as UnixStream;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// A client's call past this is taken for hung, and fails its test with what it said
@@ -112,9 +116,33 @@ struct Api {
     reader: BufReader<UnixStream>,
 }
 
+/// A connection to the engine of `home`'s daemon: its socket, or on Windows the named pipe
+/// its `engine.pipe` names, as Docker's clients reach their engine there.
+fn connect(home: &Path) -> UnixStream {
+    #[cfg(unix)]
+    return UnixStream::connect(home.join("engine.sock")).unwrap();
+    #[cfg(windows)]
+    {
+        let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+        UnixStream::connect(name.trim()).unwrap()
+    }
+}
+
+/// `DOCKER_HOST` for the engine of `home`'s daemon.
+fn docker_host(home: &Path) -> String {
+    #[cfg(unix)]
+    return format!("unix://{}", home.join("engine.sock").display());
+    #[cfg(windows)]
+    {
+        let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+        let pipe = name.trim().strip_prefix(r"\\.\pipe\").unwrap();
+        format!("npipe:////./pipe/{pipe}")
+    }
+}
+
 impl Api {
     fn new(home: &Path) -> Api {
-        let conn = UnixStream::connect(home.join("engine.sock")).unwrap();
+        let conn = connect(home);
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
         let reader = BufReader::new(conn.try_clone().unwrap());
         Api { conn, reader }
@@ -559,6 +587,9 @@ fn microvms_are_watched_and_managed() {
 /// and an unused one pruned, its bytes counted.
 #[test]
 fn a_volumes_data_outlives_the_microvm_that_wrote_it() {
+    if later_on_windows(6, "a host's directories (volumes and binds)") {
+        return;
+    }
     let Some((home, image)) = home("eng-volume") else {
         return;
     };
@@ -2079,7 +2110,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
     // No credential helper on PATH: what the CLI keeps stays in the test's config.
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let docker = |args: &[&str]| {
         let out = common::output_within(
             std::process::Command::new(&docker)
@@ -2158,7 +2189,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     // login keeps goes in the test's config, never in this host's keychain.
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let docker_with = |args: &[&str], set: &[(&str, &str)]| {
         let out = common::output_within(
             std::process::Command::new(&docker)
@@ -2607,6 +2638,9 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
 /// image is its own, where none of the host's store it did not pull is.
 #[test]
 fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
+    if later_on_windows(6, "a host's directories (volumes and binds)") {
+        return;
+    }
     let Some((home, image)) = home("eng-own2") else {
         return;
     };
@@ -3401,6 +3435,9 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
 /// container mounts stays; and they go with their microVM.
 #[test]
 fn a_microvms_own_engine_makes_volumes_of_its_own() {
+    if later_on_windows(6, "a host's directories (volumes and binds)") {
+        return;
+    }
     let Some((home, image)) = home("eng-vols") else {
         return;
     };
@@ -3737,6 +3774,9 @@ fn a_container_in_anothers_namespace_shares_that_ones_as_it_is() {
 /// volume kept, the microVM's own; and all of it gone with `down -v`.
 #[test]
 fn a_compose_project_runs_in_its_microvms_own_engine() {
+    if later_on_windows(6, "a host's directories (volumes and binds)") {
+        return;
+    }
     let Some(compose) = common::compose_linux() else {
         eprintln!("SKIP: no pinned docker compose for {}", common::ARCH);
         return;
@@ -3750,6 +3790,7 @@ fn a_compose_project_runs_in_its_microvms_own_engine() {
     std::fs::create_dir_all(&project).unwrap();
     let client = project.join("docker-compose");
     std::fs::copy(compose, &client).unwrap();
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -4021,7 +4062,7 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     .unwrap();
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let docker = |args: &[&str]| {
         let out = common::output_within(
             std::process::Command::new(&docker)
@@ -4076,12 +4117,12 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     );
 }
 
-/// `name` on PATH.
+/// `name` on PATH, the host's executable's suffix after it.
 fn which(name: &str) -> Result<std::path::PathBuf, ()> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join(name))
+        .map(|d| d.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
         .find(|p| p.is_file())
         .ok_or(())
 }

@@ -1099,6 +1099,24 @@ fn tidy(dir: &Path) {
     }
 }
 
+/// Whether `dir` has a pointer, whatever it points at: `current`, or on Windows its
+/// versions (platform `write_in`, PM M345). A directory with none holds no snapshot: a save
+/// cut short before its pointer, or a removal ([`remove`]) after it.
+pub fn pointed(dir: &Path) -> io::Result<bool> {
+    match platform::open_newest_beneath(dir, &[CURRENT]) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Removes the snapshot `dir`, its pointer first, every version of it, so that a removal
+/// cut short leaves no snapshot a restore takes ([`pointed`]); then all the rest.
+pub fn remove(dir: &Path) -> io::Result<()> {
+    platform::remove_in(&platform::open_dir(dir)?, CURRENT)?;
+    fs::remove_dir_all(dir)
+}
+
 /// Whether `dir` holds a snapshot: a pointer to a generation with its state.
 pub fn exists(dir: &Path) -> bool {
     current(dir).is_ok_and(|name| dir.join(name).join(STATE).is_file())

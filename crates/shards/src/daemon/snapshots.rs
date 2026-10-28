@@ -170,8 +170,7 @@ impl Unsaved {
 /// Snapshot `at` removed, its pointer first: one cut short is then no snapshot a restore
 /// takes, but a directory the next daemon's start removes ([`remove_unsaved`]).
 fn remove(at: &std::path::Path) -> std::io::Result<()> {
-    std::fs::remove_file(shards_vmm::snapshot::pointer(at))?;
-    std::fs::remove_dir_all(at)
+    shards_vmm::snapshot::remove(at)
 }
 
 /// Removes the snapshots in container directory `dir` with no generation in place (D176),
@@ -196,9 +195,9 @@ pub(super) fn remove_unsaved(dir: &std::path::Path, note: &mut dyn FnMut(String)
                 continue;
             }
         };
-        match std::fs::symlink_metadata(shards_vmm::snapshot::pointer(&at)) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        match shards_vmm::snapshot::pointed(&at) {
+            Ok(true) => {}
+            Ok(false) => {
                 if let Err(e) = std::fs::remove_dir_all(&at) {
                     note(format!("{}: {e}", at.display()));
                 }
@@ -849,7 +848,9 @@ mod tests {
     }
 
     /// A daemon's start removes what its end cut short of a snapshot's save or removal: a
-    /// snapshot with no generation in place, never one with its pointer.
+    /// snapshot with no generation in place, never one with its pointer, a pointer as the
+    /// platform writes it (versions of it on Windows, PM M345) among them; and a removal
+    /// takes the pointer, every version of it, with the rest.
     #[test]
     fn a_start_removes_snapshots_cut_short() {
         let dir = shards_testdir::TempDir::new("cut").unwrap();
@@ -857,6 +858,7 @@ mod tests {
         for (name, file) in [
             ("kept", "g-1/memory"),
             ("kept", shards_vmm::snapshot::CURRENT),
+            ("written", "g-1/memory"),
             ("cut", ".g-2.tmp/memory"),
             ("half", "g-3/memory"),
         ] {
@@ -864,11 +866,19 @@ mod tests {
             std::fs::create_dir_all(at.parent().unwrap()).unwrap();
             std::fs::write(at, b"g-1\n").unwrap();
         }
+        let written = snapshots.join("written");
+        for _ in 0..2 {
+            let held = shards_vmm::platform::open_dir(&written).unwrap();
+            shards_vmm::platform::write_in(&held, shards_vmm::snapshot::CURRENT, b"g-1\n").unwrap();
+        }
         let mut notes = Vec::new();
         remove_unsaved(dir.path(), &mut |n| notes.push(n));
         assert!(notes.is_empty(), "{notes:?}");
         assert!(snapshots.join("kept/g-1/memory").exists());
+        assert!(written.join("g-1/memory").exists());
         assert!(!snapshots.join("cut").exists() && !snapshots.join("half").exists());
+        remove(&written).unwrap();
+        assert!(!written.exists());
         // A container with none has nothing to remove, and nothing to say.
         let none = shards_testdir::TempDir::new("none").unwrap();
         remove_unsaved(none.path(), &mut |n| notes.push(n));

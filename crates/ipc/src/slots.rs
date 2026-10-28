@@ -45,7 +45,7 @@ pub fn joined() -> io::Result<(Line, Line)> {
     }
     #[cfg(windows)]
     {
-        let (one, other) = crate::pipe::pair(crate::pipe::LINE_BUFFER)?;
+        let (one, other) = crate::pipe::pair(crate::pipe::LINE_BUFFER, false)?;
         Ok((crate::Pipe::from_handle(one), crate::Pipe::from_handle(other)))
     }
 }

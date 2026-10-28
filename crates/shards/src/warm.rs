@@ -678,11 +678,18 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = segments.send((u64::from_be_bytes(seq), message.fds));
                 }
             }
-            // An engine connection the daemon has (D181): this VM's copy goes (M24).
-            #[cfg(unix)]
+            // An engine connection the daemon has (D181): this VM's copy goes (M24). On
+            // Windows the daemon gives the pipe the connection is relayed onto, or none for
+            // a connection it closes.
             kind::ENGINE_CONN if matches!(from, From::Daemon(_)) => {
                 if let Ok(n) = <[u8; 8]>::try_from(message.payload.as_slice()) {
-                    engine_held().remove(&u64::from_be_bytes(n));
+                    let held = engine_held().remove(&u64::from_be_bytes(n));
+                    #[cfg(windows)]
+                    if let (Some(guest), Some(pipe)) = (held, message.fds.into_iter().next()) {
+                        relay_engine(guest, pipe);
+                    }
+                    #[cfg(unix)]
+                    drop(held);
                 }
             }
             // Its run's limit updated (D148): its guest's most to plug, before the exec that
@@ -1343,13 +1350,15 @@ fn attach_request(
 }
 
 /// The engine connections handed to the daemon and not yet taken, by number: held
-/// meanwhile, as XNU collects a socket in flight that no process holds (M24).
-#[cfg(unix)]
-static ENGINE_HELD: std::sync::Mutex<std::collections::BTreeMap<u64, UnixStream>> =
+/// meanwhile, as XNU collects a socket in flight that no process holds (M24); on Windows
+/// until the daemon gives the pipe each is relayed onto.
+static ENGINE_HELD: std::sync::Mutex<std::collections::BTreeMap<u64, GuestConn>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-#[cfg(unix)]
-fn engine_held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, UnixStream>> {
+/// A guest's connection to a port this VM serves, as its vsock device makes it.
+type GuestConn = shards_vmm::platform::UnixStream;
+
+fn engine_held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, GuestConn>> {
     ENGINE_HELD
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1374,8 +1383,9 @@ pub fn engine_token(spec: &Spec) -> Option<[u8; shards_abi::run::TOKEN]> {
 /// Serves the run's own engine port (D181) on a thread of its own: each guest connection
 /// whose hello says `token`, which only the guest's init was given, is the daemon's, on
 /// this VM's link (`ENGINE_CONN`), held here until the daemon says it has it; any other is
-/// closed. The daemon serves it with its Engine API, scoped to this microVM.
-#[cfg(unix)]
+/// closed. The daemon serves it with its Engine API, scoped to this microVM. On Windows,
+/// where a VM gives its daemon no handle, the daemon gives a pipe for it instead, which
+/// the connection is relayed onto ([`relay_engine`]).
 pub fn serve_engine(
     link: &Link,
     token: [u8; shards_abi::run::TOKEN],
@@ -1386,23 +1396,20 @@ pub fn serve_engine(
         .try_clone()
         .map_err(|e| format!("the daemon's connection: {e}"))?;
     let next = std::sync::atomic::AtomicU64::new(0);
-    let heard = move |conn: UnixStream, said: &[u8; shards_abi::run::TOKEN]| {
+    let heard = move |conn: GuestConn, said: &[u8; shards_abi::run::TOKEN]| {
         if !workload::same_token(&token, said) || conn.set_nonblocking(false).is_err() {
             return;
         }
         let number = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Held before it goes, as the daemon's answer may come before the send returns.
-        let Ok(held) = conn.try_clone() else {
+        #[cfg(unix)]
+        let (Ok(held), handed) = (conn.try_clone(), [std::os::fd::AsFd::as_fd(&conn)]) else {
             return;
         };
+        #[cfg(windows)]
+        let (held, handed) = (conn, []);
         engine_held().insert(number, held);
-        let sent = to_daemon(
-            &daemon,
-            kind::ENGINE_CONN,
-            &number.to_be_bytes(),
-            &[std::os::fd::AsFd::as_fd(&conn)],
-        );
-        if sent.is_err() {
+        if to_daemon(&daemon, kind::ENGINE_CONN, &number.to_be_bytes(), &handed).is_err() {
             engine_held().remove(&number);
         }
     };
@@ -1413,16 +1420,81 @@ pub fn serve_engine(
         .map_err(|e| format!("its engine's thread: {e}"))
 }
 
-/// [`serve_engine`] on Windows: a VM gives its daemon no handle there, and a run with an
-/// engine of its own is refused as it is made (the daemon's network.rs `check`) until the
-/// plan's step 8 serves the Engine API on Windows.
+/// Relays a guest's connection to its run's engine onto the pipe its daemon gave for it
+/// (Windows, where a VM gives its daemon no handle): each way on a thread of its own, the
+/// end of each side's writes said to the other (the pipe's message of no bytes, the
+/// socket's half-close), as the daemon serves a connection passed whole elsewhere; a side
+/// that can take no more ends the other's, and each is closed once both ways have ended.
 #[cfg(windows)]
-pub fn serve_engine(
-    _link: &Link,
-    _token: [u8; shards_abi::run::TOKEN],
-    _port: workload::Port,
-) -> Result<(), String> {
-    Err("a run's own engine is not served on Windows yet".into())
+fn relay_engine(guest: GuestConn, pipe: OwnedFd) {
+    let Ok(pipe) = UnixStream::given(pipe) else {
+        return;
+    };
+    let (Ok(guest_down), Ok(pipe_down)) = (guest.try_clone(), pipe.try_clone()) else {
+        return;
+    };
+    let down = std::thread::Builder::new()
+        .name("engine-down".into())
+        .spawn(move || {
+            pass(
+                &pipe_down,
+                &guest_down,
+                |guest| guest.shutdown(std::net::Shutdown::Write),
+                shards_ipc::end,
+            )
+        });
+    if down.is_err() {
+        return;
+    }
+    let up = std::thread::Builder::new().name("engine-up".into()).spawn({
+        let (guest, pipe) = (guest.try_clone(), pipe.try_clone());
+        move || {
+            if let (Ok(guest), Ok(pipe)) = (guest, pipe) {
+                pass(
+                    &guest,
+                    &pipe,
+                    |pipe| pipe.shutdown(std::net::Shutdown::Write),
+                    |guest| {
+                        let _ = guest.shutdown(std::net::Shutdown::Both);
+                    },
+                );
+            }
+        }
+    });
+    if up.is_err() {
+        shards_ipc::end(&pipe);
+        let _ = guest.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Copies what `from` reads to `to` until `from` ends, then ends `to`'s writes
+/// (`ended`); where `to` takes no more, ends `from` (`refused`), so that its writer stops.
+#[cfg(windows)]
+fn pass<F: ?Sized, T: ?Sized>(
+    from: &F,
+    to: &T,
+    ended: impl FnOnce(&T) -> io::Result<()>,
+    refused: impl FnOnce(&F),
+) where
+    for<'a> &'a F: io::Read,
+    for<'a> &'a T: Write,
+{
+    let mut buf = vec![0u8; 64 << 10];
+    loop {
+        match shards_ipc::read(from, &mut buf) {
+            Ok(0) | Err(_) => {
+                let _ = ended(to);
+                return;
+            }
+            Ok(n) => {
+                let mut to = to;
+                if to.write_all(buf.get(..n).unwrap_or_default()).is_err() {
+                    refused(from);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Tells the daemon the command runs, before the client has anything the command wrote.

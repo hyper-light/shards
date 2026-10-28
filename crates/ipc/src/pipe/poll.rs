@@ -381,6 +381,8 @@ impl Poller {
                             }
                             if tells == FINISHED && watched.armed {
                                 watched.armed = false;
+                                // SAFETY: its read's OVERLAPPED, the read finished.
+                                unsafe { watched.stream.watched(watched.read.ov.get()) };
                                 finished.push(token);
                             }
                             true

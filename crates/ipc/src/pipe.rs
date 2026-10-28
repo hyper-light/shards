@@ -31,9 +31,9 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
-    ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ,
-    GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, STATUS_PENDING, WAIT_FAILED,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+    ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+    LocalFree, STATUS_PENDING, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -48,8 +48,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_WAIT, PeekNamedPipe,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeInfo, NMPWAIT_WAIT_FOREVER, PIPE_READMODE_BYTE,
+    PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    PeekNamedPipe, SetNamedPipeHandleState, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, OpenProcessToken, ResetEvent, SetEvent,
@@ -441,18 +442,36 @@ pub(crate) fn wide(name: &str) -> Vec<u16> {
     name.encode_utf16().chain([0]).collect()
 }
 
-/// A new instance of the pipe `name`, duplex and overlapped, in bytes, refusing remote
-/// clients, of this user's alone ([`attributes`]); its name's first instance where `first`,
-/// its only where `only`; `buffer` bytes each way.
-pub(crate) fn instance(name: &[u16], first: bool, only: bool, buffer: u32) -> io::Result<OwnedHandle> {
+/// A new instance of the pipe `name`, duplex and overlapped, refusing remote clients, of
+/// this user's alone ([`attributes`]); its name's first instance where `first`, its only
+/// where `only`; `buffer` bytes each way. In bytes; or with `messages` written in messages,
+/// where a message of no bytes reaches its reader, which a writer says the end of its
+/// writes with: Docker's engine makes its pipe so, "so that CloseWrite() is supported"
+/// (moby `daemon/listeners/listeners_windows.go`), and go-winio, its clients', says a
+/// pipe's end of writes only so (`PipeConfig.MessageMode`). Its server end then reads in
+/// messages too, a message at most each read, so that no read takes that end with what came
+/// before it, as one in bytes may: go-winio flushes before it writes the end, which waits
+/// for its reader to have read all before it.
+pub(crate) fn instance(
+    name: &[u16],
+    first: bool,
+    only: bool,
+    buffer: u32,
+    messages: bool,
+) -> io::Result<OwnedHandle> {
     let attributes = attributes()?;
     let first = if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 };
+    let mode = if messages {
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE
+    } else {
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE
+    };
     // SAFETY: a NUL-terminated name, attributes that live through the call.
     let raw = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | first,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            mode | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             if only {
                 1
             } else {
@@ -495,9 +514,57 @@ pub(crate) fn open(name: &[u16], overlapped: bool) -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
 }
 
+/// Whether the pipe whose end is `handle` is written in messages (GetNamedPipeInfo's
+/// PIPE_TYPE_MESSAGE), as go-winio's DialPipe asks of a pipe it opens.
+fn written_in_messages(handle: &OwnedHandle) -> io::Result<bool> {
+    let mut flags = 0u32;
+    // SAFETY: a pipe's end this process holds, and flags for the call to fill; the sizes
+    // and instances it may say are not asked for.
+    if unsafe {
+        GetNamedPipeInfo(
+            handle.as_raw_handle(),
+            &raw mut flags,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(flags & PIPE_TYPE_MESSAGE != 0)
+}
+
+/// Has the client end `handle` of a pipe written in messages read in messages too, as its
+/// server end does ([`instance`]).
+fn read_in_messages(handle: &OwnedHandle) -> io::Result<()> {
+    let mode = PIPE_READMODE_MESSAGE;
+    // SAFETY: a pipe's end this process holds, and its new read mode; its other states
+    // are left as they are.
+    if unsafe {
+        SetNamedPipeHandleState(
+            handle.as_raw_handle(),
+            &raw const mode,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Whether `e` says a read in messages filled its buffer before its message's end, which
+/// the next read goes on with (ERROR_MORE_DATA): a read of that much, not a failure.
+fn more_data(e: &io::Error) -> bool {
+    e.raw_os_error() == i32::try_from(ERROR_MORE_DATA).ok()
+}
+
 /// A connected pair of ends, each overlapped: a fresh name's only instance, and the client
-/// end opened at once, which no other process can then open (M340).
-pub(crate) fn pair(buffer: u32) -> io::Result<(OwnedHandle, OwnedHandle)> {
+/// end opened at once, which no other process can then open (M340); written in `messages`
+/// where each end says the end of its writes ([`instance`]).
+pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, OwnedHandle)> {
     static MADE: AtomicU64 = AtomicU64::new(0);
     let name = wide(&format!(
         r"\\.\pipe\shards-{}-{}-{}",
@@ -505,8 +572,11 @@ pub(crate) fn pair(buffer: u32) -> io::Result<(OwnedHandle, OwnedHandle)> {
         MADE.fetch_add(1, Ordering::Relaxed),
         random_hex(8)?
     ));
-    let server = instance(&name, true, true, buffer)?;
+    let server = instance(&name, true, true, buffer, messages)?;
     let client = open(&name, true)?;
+    if messages {
+        read_in_messages(&client)?;
+    }
     if !connected(server.as_raw_handle(), &[])? {
         return Err(io::Error::other("a pipe pair did not connect"));
     }
@@ -626,8 +696,9 @@ enum Way {
     /// Given to this process by its spawner, as its peer's end: what comes carries handles
     /// as values its spawner put in this process; none goes back.
     Given,
-    /// A client a [`Listener`] took: its bytes alone, no handle either way, as a client of
-    /// any program's may write anything.
+    /// A client a [`Listener`] took, a client of one ([`Stream::connect`]), or an end of a
+    /// [`Stream::plain_pair`]: its bytes alone, no handle either way, as a client of any
+    /// program's may write anything.
     Plain,
 }
 
@@ -642,12 +713,26 @@ struct End {
     read_timeout: Mutex<Option<Duration>>,
     write_timeout: Mutex<Option<Duration>>,
     nonblocking: AtomicBool,
+    /// Its pipe is written in messages, the end of its writes said by one of no bytes
+    /// ([`Stream::end_writes`]).
+    messages: bool,
     way: Mutex<Way>,
     /// One message at a time: its handles' turn in the queue is its bytes' in the pipe.
     sending: Mutex<()>,
     /// The OVERLAPPEDs of pollers' reads of no bytes on it ([`Stream::watch`]), by address:
     /// each cancelled as its reads are shut, before its handle is closed.
     watching: Mutex<Vec<usize>>,
+}
+
+impl End {
+    /// A read of no bytes that finished, where it is read in messages, took a message of
+    /// none: its peer's end of writes ([`Stream::end_writes`]), kept as the end of its reads,
+    /// which no read finds again. Read in bytes, it took nothing: something has come.
+    fn took_none(&self) {
+        if self.messages {
+            self.reads_shut.set();
+        }
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -661,7 +746,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct Stream(Arc<End>);
 
 impl Stream {
-    fn of(handle: OwnedHandle, way: Way) -> io::Result<Stream> {
+    fn of(handle: OwnedHandle, way: Way, messages: bool) -> io::Result<Stream> {
         Ok(Stream(Arc::new(End {
             pipe: RwLock::new(Some(handle)),
             reads_shut: Event::new()?,
@@ -669,6 +754,7 @@ impl Stream {
             read_timeout: Mutex::new(None),
             write_timeout: Mutex::new(None),
             nonblocking: AtomicBool::new(false),
+            messages,
             way: Mutex::new(way),
             sending: Mutex::new(()),
             watching: Mutex::new(Vec::new()),
@@ -677,7 +763,7 @@ impl Stream {
 
     /// A connected pair, both ends this process's ([`pair`]).
     pub fn pair() -> io::Result<(Stream, Stream)> {
-        let (server, client) = pair(BUFFER)?;
+        let (server, client) = pair(BUFFER, false)?;
         let queues = Arc::new(Queues::default());
         Ok((
             Stream::of(
@@ -686,6 +772,7 @@ impl Stream {
                     pair: queues.clone(),
                     side: 0,
                 },
+                false,
             )?,
             Stream::of(
                 client,
@@ -693,6 +780,7 @@ impl Stream {
                     pair: queues,
                     side: 1,
                 },
+                false,
             )?,
         ))
     }
@@ -700,7 +788,44 @@ impl Stream {
     /// The end `handle` this process's spawner gave it, its peer's: handles come on it as
     /// values in this process, and none goes back.
     pub fn given(handle: OwnedHandle) -> io::Result<Stream> {
-        Stream::of(handle, Way::Given)
+        let messages = written_in_messages(&handle)?;
+        Stream::of(handle, Way::Given, messages)
+    }
+
+    /// A connected pair of streams of bytes alone, no handle either way, written in
+    /// messages, so that each end says the end of its writes while it reads on, as a
+    /// socket's half-close does: one end for this process, the other's handle
+    /// ([`Stream::share`]) to give a child, which takes it as [`Stream::given`].
+    pub fn plain_pair() -> io::Result<(Stream, Stream)> {
+        let (server, client) = pair(BUFFER, true)?;
+        Ok((
+            Stream::of(server, Way::Plain, true)?,
+            Stream::of(client, Way::Plain, true)?,
+        ))
+    }
+
+    /// A client of the pipe `name` (`\\.\pipe\...`), as Docker's clients reach their engine's
+    /// ([`Listener`]): its bytes alone, no handle either way. Where each of its instances is
+    /// taken, it waits for one to be free, as a Unix socket's connect waits out a listener's
+    /// full backlog: WaitNamedPipe ends as one is, and as the last goes (PM M348).
+    pub fn connect(name: &str) -> io::Result<Stream> {
+        let name = wide(name);
+        loop {
+            match open(&name, true) {
+                Ok(handle) => {
+                    let messages = written_in_messages(&handle)?;
+                    if messages {
+                        read_in_messages(&handle)?;
+                    }
+                    return Stream::of(handle, Way::Plain, messages);
+                }
+                Err(e) if e.raw_os_error() == i32::try_from(ERROR_PIPE_BUSY).ok() => {
+                    // SAFETY: a NUL-terminated name. Its answer is the next open's to find.
+                    unsafe { WaitNamedPipeW(name.as_ptr(), NMPWAIT_WAIT_FOREVER) };
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Its peer's end is `process`'s now, a child's this process gave it to, which `process`
@@ -756,6 +881,9 @@ impl Stream {
                 }
             }
         }
+        if how == Shutdown::Write && self.0.messages {
+            self.end_writes()?;
+        }
         if matches!(how, Shutdown::Write | Shutdown::Both) {
             self.0.writes_shut.set();
         }
@@ -766,6 +894,27 @@ impl Stream {
             drop(end.take());
         }
         Ok(())
+    }
+
+    /// Says the end of its writes to its peer, its pipe written in messages, while it reads
+    /// on: a message of no bytes, which its peer reads as its end (go-winio's `CloseWrite`,
+    /// Docker's clients'). A peer gone has heard its end already.
+    fn end_writes(&self) -> io::Result<()> {
+        let end = &*self.0;
+        if end.writes_shut.is_set() {
+            return Ok(());
+        }
+        let guard = end.pipe.read().unwrap_or_else(PoisonError::into_inner);
+        let Some(handle) = &*guard else {
+            return Ok(());
+        };
+        let deadline = lock(&end.write_timeout).and_then(|t| Instant::now().checked_add(t));
+        match write_from(handle.as_raw_handle(), &[], &[&end.writes_shut], deadline) {
+            Called::Done(Ok(_)) | Called::Cancelled => Ok(()),
+            Called::Done(Err(e)) if ended(&e) => Ok(()),
+            Called::Done(Err(e)) => Err(e),
+            Called::Late => Err(io::ErrorKind::WouldBlock.into()),
+        }
     }
 
     /// Whether it has something to read now, or has ended: a read would not wait.
@@ -807,8 +956,11 @@ impl Stream {
         };
         let cancels: Vec<&Event> = std::iter::once(&end.reads_shut).chain(cancel).collect();
         match read_into(handle.as_raw_handle(), &mut [], &cancels, deadline) {
-            Called::Done(Ok(_)) => Ok(true),
-            Called::Done(Err(e)) if ended(&e) => Ok(true),
+            Called::Done(Ok(_)) => {
+                end.took_none();
+                Ok(true)
+            }
+            Called::Done(Err(e)) if ended(&e) || more_data(&e) => Ok(true),
             Called::Done(Err(e)) => Err(e),
             Called::Cancelled => Ok(end.reads_shut.is_set()),
             Called::Late => Ok(false),
@@ -835,8 +987,12 @@ impl Stream {
         }
         // SAFETY: a read of no bytes, its OVERLAPPED and buffer the caller's to keep.
         let started = unsafe { ReadFile(handle.as_raw_handle(), into, 0, std::ptr::null_mut(), ov) };
+        if started != 0 {
+            end.took_none();
+            return false;
+        }
         // SAFETY: no arguments.
-        if started != 0 || unsafe { GetLastError() } != ERROR_IO_PENDING {
+        if unsafe { GetLastError() } != ERROR_IO_PENDING {
             return false;
         }
         let at = ov as usize;
@@ -874,6 +1030,22 @@ impl Stream {
             // SAFETY: an event this process holds, set as the read finishes.
             unsafe { WaitForSingleObject(event.raw(), INFINITE) };
         }
+        // SAFETY: as above, finished.
+        unsafe { self.watched(ov) };
+    }
+
+    /// Of a read [`Stream::watch`] started with `ov`, finished: one that took a message of
+    /// none took its peer's end ([`End::took_none`]).
+    ///
+    /// # Safety
+    /// `ov` is the OVERLAPPED of a read `watch` started on it, which has finished.
+    pub(crate) unsafe fn watched(&self, ov: *const OVERLAPPED) {
+        // SAFETY: the caller's finished read's OVERLAPPED, its status written: success
+        // (STATUS_SUCCESS, 0) for a read of no bytes that took a message of none, or that
+        // found something in bytes; a message's more (STATUS_BUFFER_OVERFLOW) otherwise.
+        if unsafe { std::ptr::read_volatile(&raw const (*ov).Internal) } == 0 {
+            self.0.took_none();
+        }
     }
 
     /// A key its clones share, while one lives.
@@ -907,6 +1079,7 @@ impl Stream {
             None,
         ) {
             Called::Done(Ok(n)) => Ok(n),
+            Called::Done(Err(e)) if more_data(&e) => Ok(len.min(u32::MAX as usize)),
             Called::Done(Err(e)) if ended(&e) => Ok(0),
             Called::Done(Err(e)) => Err(e),
             Called::Cancelled => Ok(0),
@@ -918,7 +1091,9 @@ impl Stream {
     /// its read timeout (`WouldBlock` past that).
     fn read_by(&self, buf: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
         let end = &*self.0;
-        if end.reads_shut.is_set() {
+        // Room for nothing reads nothing, as a socket's read does: a read of no bytes would
+        // take a message of none, its peer's end.
+        if end.reads_shut.is_set() || buf.is_empty() {
             return Ok(0);
         }
         let guard = end.pipe.read().unwrap_or_else(PoisonError::into_inner);
@@ -940,7 +1115,15 @@ impl Stream {
             (None, t) => (t, io::ErrorKind::WouldBlock),
         };
         match read_into(handle, buf, &[&end.reads_shut], until) {
+            // Nothing read into room for something is its peer's end of writes (a message
+            // of none, [`Stream::end_writes`]): each read after it reads the end too, as a
+            // socket's do past its peer's half-close.
+            Called::Done(Ok(0)) => {
+                end.reads_shut.set();
+                Ok(0)
+            }
             Called::Done(Ok(n)) => Ok(n),
+            Called::Done(Err(e)) if more_data(&e) => Ok(buf.len().min(u32::MAX as usize)),
             Called::Done(Err(e)) if ended(&e) => Ok(0),
             Called::Done(Err(e)) => Err(e),
             Called::Cancelled => Ok(0),
@@ -1020,7 +1203,7 @@ impl std::fmt::Debug for Waiting {
 
 impl Waiting {
     fn begin(name: &[u16], first: bool, event: &Event) -> io::Result<Waiting> {
-        let instance = instance(name, first, false, BUFFER)?;
+        let instance = instance(name, first, false, BUFFER, true)?;
         event.reset();
         let mut overlapped = Box::new(OVERLAPPED {
             hEvent: event.raw(),
@@ -1098,7 +1281,7 @@ impl Listener {
         }
         let next = Waiting::begin(&self.name, false, &self.event)?;
         let came = std::mem::replace(&mut *waiting, next);
-        Stream::of(came.instance, Way::Plain)
+        Stream::of(came.instance, Way::Plain, true)
     }
 }
 
@@ -1210,9 +1393,11 @@ pub fn await_any(
         // SAFETY: events this function and the streams hold, `n` of them.
         unsafe { WaitForMultipleObjects(n, waited.as_ptr(), 0, ms) };
     }
-    for (raw, ov) in started.iter().zip(overlapped.iter()) {
-        if let Some(raw) = raw {
-            let _ = cancelled(*raw, ov, Called::Cancelled);
+    for ((raw, ov), stream) in started.iter().zip(overlapped.iter()).zip(streams) {
+        if let Some(raw) = raw
+            && let Called::Done(Ok(_)) = cancelled(*raw, ov, Called::Cancelled)
+        {
+            stream.0.took_none();
         }
     }
     drop(guards);
@@ -1561,7 +1746,6 @@ mod tests {
     use super::*;
 
     use windows_sys::Win32::Foundation::{ERROR_BAD_PIPE, ERROR_FILE_NOT_FOUND, ERROR_SEM_TIMEOUT};
-    use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_DUP_HANDLE};
 
     /// The Win32 error `e` carries.
@@ -1755,11 +1939,11 @@ mod tests {
     /// learned it might, to be opened in its place (M340).
     #[test]
     fn a_pairs_name_takes_no_second_instance() {
-        let (server, _client) = pair(BUFFER).unwrap();
+        let (server, _client) = pair(BUFFER, false).unwrap();
         let name = pipe_name(&server);
         assert!(name.contains(r"\shards-"), "{name}");
         assert!(
-            instance(&wide(&name), false, false, BUFFER).is_err(),
+            instance(&wide(&name), false, false, BUFFER, false).is_err(),
             "a second instance made of {name}"
         );
     }
@@ -1777,7 +1961,7 @@ mod tests {
         use windows_sys::Win32::Security::{
             ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, EqualSid, GetAce, PSECURITY_DESCRIPTOR, PSID,
         };
-        let (server, _client) = pair(BUFFER).unwrap();
+        let (server, _client) = pair(BUFFER, false).unwrap();
         let mut dacl: *mut ACL = std::ptr::null_mut();
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: a handle `server` holds, which may read its DACL, and pointers for the call
@@ -1928,9 +2112,9 @@ mod tests {
             assert_eq!(waited, WAIT_OBJECT_0);
             listener.accept().unwrap()
         };
-        let first = Stream::of(open(&wide(&name), true).unwrap(), Way::Plain).unwrap();
+        let first = Stream::of(open(&wide(&name), true).unwrap(), Way::Plain, true).unwrap();
         let served_first = came();
-        let second = Stream::of(open(&wide(&name), true).unwrap(), Way::Plain).unwrap();
+        let second = Stream::of(open(&wide(&name), true).unwrap(), Way::Plain, true).unwrap();
         let served_second = came();
         assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
         for (client, served, said) in [(&first, &served_first, b"one"), (&second, &served_second, b"two")] {
@@ -1954,13 +2138,93 @@ mod tests {
         );
     }
 
+    /// Each side of a listener's client ends its writes as Docker's clients and engine do
+    /// on a pipe (go-winio's `CloseWrite`), and its peer reads that end, and only that,
+    /// past what came before it, every read after it the end too, while it still writes,
+    /// its answer read whole on the other side: a client's end of stdin, an attach's end of
+    /// output. A client connects while every instance is taken, once one is free.
+    #[test]
+    fn a_listeners_clients_end_their_writes_and_read_on() {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        let name = format!(
+            r"\\.\pipe\shards-test-ends-{}-{}",
+            std::process::id(),
+            random_hex(4).unwrap()
+        );
+        let listener = Listener::new(&name).unwrap();
+        let came = || {
+            // SAFETY: the listener's event, waited on.
+            let waited = unsafe { WaitForSingleObject(listener.event(), 5000) };
+            assert_eq!(waited, WAIT_OBJECT_0);
+            listener.accept().unwrap()
+        };
+        let client = Stream::connect(&name).unwrap();
+        let served = came();
+        client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        served.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        (&client).write_all(b"stdin").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut got = Vec::new();
+        (&served).read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"stdin");
+        let mut more = [0u8; 8];
+        assert_eq!((&served).read(&mut more).unwrap(), 0);
+        assert!(served.readable());
+        assert!((&client).write_all(b"late").is_err());
+        (&served).write_all(b"output").unwrap();
+        served.shutdown(Shutdown::Write).unwrap();
+        let mut back = Vec::new();
+        (&client).read_to_end(&mut back).unwrap();
+        assert_eq!(back, b"output");
+        assert_eq!((&client).read(&mut more).unwrap(), 0);
+        // A message bigger than a read is read on, a read at a time; an end that a wait
+        // for something to read takes is the end the next read reads (a read of no bytes
+        // takes a message of none); and a pair written in messages ends its writes alike.
+        let (one, other) = Stream::plain_pair().unwrap();
+        other.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        (&one).write_all(&[7u8; 100]).unwrap();
+        one.shutdown(Shutdown::Write).unwrap();
+        let mut ten = [0u8; 10];
+        let mut read = 0;
+        while read < 100 {
+            let n = (&other).read(&mut ten).unwrap();
+            assert!(n > 0 && ten[..n].iter().all(|&b| b == 7), "{n} bytes: {ten:?}");
+            read += n;
+        }
+        assert_eq!(read, 100);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        assert_eq!(await_streams(&[&other], Some(deadline)).unwrap(), [true]);
+        assert_eq!((&other).read(&mut more).unwrap(), 0);
+        let quiet = Stream::connect(&name).unwrap();
+        let served_quiet = came();
+        quiet.shutdown(Shutdown::Write).unwrap();
+        assert!(served_quiet.wait_readable(None, Some(deadline)).unwrap());
+        assert_eq!((&served_quiet).read(&mut more).unwrap(), 0);
+        // Each instance taken (the listener's waiting one by a client of the raw pipe): a
+        // client connects as the listener frees one.
+        let taker = open(&wide(&name), true).unwrap();
+        std::thread::scope(|s| {
+            let waiting = s.spawn(|| Stream::connect(&name));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!waiting.is_finished(), "a connect took a taken instance");
+            let _taken = came();
+            let third = waiting.join().unwrap().unwrap();
+            let served_third = came();
+            (&third).write_all(b"3").unwrap();
+            let mut one = [0u8; 1];
+            (&served_third).read_exact(&mut one).unwrap();
+            assert_eq!(&one, b"3");
+        });
+        drop(taker);
+    }
+
     /// What slots rely on (PM M348): an instance no client has opened peeks as a bad pipe
     /// (ERROR_BAD_PIPE, not ERROR_PIPE_LISTENING); one opened, as connected with nothing to
     /// read; one its client closed, as ended.
     #[test]
     fn an_instance_peeks_as_listening_until_opened() {
         let name = fresh("peek");
-        let server = instance(&name, true, false, BUFFER).unwrap();
+        let server = instance(&name, true, false, BUFFER, false).unwrap();
         let e = available(server.as_raw_handle(), None).unwrap_err();
         assert_eq!(code(&e), ERROR_BAD_PIPE);
         let client = open(&name, true).unwrap();
@@ -1979,7 +2243,7 @@ mod tests {
         let waited = |ms| unsafe { WaitNamedPipeW(name.as_ptr(), ms) };
         assert_eq!(waited(1000), 0);
         assert_eq!(code(&io::Error::last_os_error()), ERROR_FILE_NOT_FOUND);
-        let first = instance(&name, true, false, BUFFER).unwrap();
+        let first = instance(&name, true, false, BUFFER, false).unwrap();
         let _taken = open(&name, true).unwrap();
         let t0 = Instant::now();
         assert_eq!(waited(50), 0);
@@ -1991,7 +2255,7 @@ mod tests {
                 (waited(10_000), t0.elapsed())
             });
             std::thread::sleep(Duration::from_millis(100));
-            let _second = instance(&name, false, false, BUFFER).unwrap();
+            let _second = instance(&name, false, false, BUFFER, false).unwrap();
             let (got, took) = waiting.join().unwrap();
             assert_ne!(got, 0);
             assert!(
@@ -2007,7 +2271,7 @@ mod tests {
     #[test]
     fn a_wait_ends_as_the_last_instance_closes() {
         let name = fresh("gone");
-        let server = instance(&name, true, false, BUFFER).unwrap();
+        let server = instance(&name, true, false, BUFFER, false).unwrap();
         let _taken = open(&name, true).unwrap();
         std::thread::scope(|s| {
             let waiting = s.spawn(|| {

@@ -149,11 +149,6 @@ pub fn check(
                 .into(),
         );
     }
-    // On Windows a microVM's own engine (D181) is the Engine API's, which is not served
-    // there yet: the plan's step 8 brings it (engine.rs `take_engine`).
-    if cfg!(windows) && creating && run.use_api_socket {
-        return Err("--use-api-socket: a microVM's own engine is not served on Windows yet".into());
-    }
     let mut endpoints: Vec<Endpoint> = Vec::with_capacity(run.endpoints.len());
     for e in &run.endpoints {
         let mut e = e.clone();
@@ -604,23 +599,6 @@ mod tests {
 
     fn check_with(run: &Run) -> Result<Start, String> {
         check(run, "172.17.0.0/16".parse().ok(), |_| false)
-    }
-
-    /// A microVM's own engine (D181) is refused as its run is made on Windows, which serves
-    /// no Engine API yet, and only there.
-    #[test]
-    fn windows_serves_no_microvm_engine_yet() {
-        let mut r = run(&["bridge"]);
-        r.use_api_socket = true;
-        let made = check_with(&r);
-        if cfg!(windows) {
-            assert_eq!(
-                made,
-                Err("--use-api-socket: a microVM's own engine is not served on Windows yet".into())
-            );
-        } else {
-            assert_eq!(made, Ok(Start::Attach(Net::Bridge)));
-        }
     }
 
     /// The host's network (D124, PM M177): taken alone; a `net.*` sysctl, which has no

@@ -4873,6 +4873,16 @@ there where the container is not removed.
   tmpfs over `/run` holds it) and before its root is made read-only (`--read-only` keeps
   it), mode 0666: whoever the command runs as or becomes reaches it, and no process but
   the run's own sees the path.
+- **On Windows**, where a VM's process gives its daemon no handle (D195: a child's end
+  takes handles only from its spawner), the VM asks for each connection whose token
+  holds (`ENGINE_CONN`, no handle), and the daemon makes a pair of pipes written in
+  messages (`Stream::plain_pair`): it serves one end as the connection, scoped to the
+  microVM as Unix's, and gives the VM the other, onto which the VM relays its guest's
+  connection each way on a thread of its own (warm.rs `relay_engine`), each side's end of
+  writes passed on: the pipe's message of no bytes one way, the socket's half-close the
+  other. A run with no engine of its own is answered with no pipe, and its connection
+  closed. Tested on jupiter: tests/engine.rs's own-engine tests and the docker CLI's
+  `--use-api-socket`.
 - **What it makes: joiners of its own microVM.** A container it creates there is a joiner
   of its microVM (D119): its own image, its own mount, PID, IPC and UTS namespaces and
   cgroup, its record, log and end; its network a namespace of its own on the microVM's
@@ -8102,6 +8112,26 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   socket, whose group Docker's own post-install guide calls root-level, and no TCP
   listener. Remote use is shards' own, over QUIC (hyper-raft's `hyper-quic` and
   `hyper-tls`).
+- **On Windows, a named pipe** (`npipe`), as Docker's clients reach their engine there
+  (`DOCKER_HOST=npipe:////./pipe/NAME`): its name a fresh one each daemon makes, which the
+  home's `engine.pipe` names once it listens, as Unix's socket is renamed into place.
+  - Its DACL admits this user alone, and it refuses remote clients. Each client takes an
+    instance of its own, one always waiting, whose connect the daemon's loop waits on with
+    its others (`shards_ipc::Listener`). Its clients' streams carry bytes alone, no handle
+    either way.
+  - **Written in messages, as dockerd's is**: moby makes its pipe with `MessageMode:
+    true`, "so that CloseWrite() is supported" (daemon/listeners/listeners_windows.go).
+    go-winio, which Docker's clients dial with, ends a side's writes with a message of no
+    bytes, which reaches a reader only on a pipe written in messages
+    (`PipeConfig.MessageMode`): on a pipe in bytes `docker run -i`'s end of stdin would
+    never come.
+  - **Read in messages on shards' side**, a message at most each read. Read in bytes,
+    one read took a client's last bytes and its end together, and the end was lost (jupiter,
+    `a_listeners_clients_end_their_writes_and_read_on`): go-winio flushes before it writes
+    the end, waiting for its reader to have read all before it, and a flush that waits
+    cannot be cut short by a close from another thread. A wait for something to read (a
+    read of no bytes) that takes the end keeps it as the stream's end, which every read
+    after it reads.
 - **Isolation as shards' runs have it.** Each call is put to the daemon as shards' CLI
   puts the same thing (a run, an attach, an exec, a command), on a socket pair of the
   engine's, taken as any client's request is: each sandbox a microVM of its own, its
