@@ -2721,6 +2721,7 @@ fn unplug_cost() -> Result<(), String> {
 /// (/proc/kallsyms), the most first: `SHARDS-TEST PROFILE <ticks> <symbol>`, then
 /// `SHARDS-TEST PROFILE-TOTAL <ticks> <uptime>`.
 fn profile_report() -> Result<(), String> {
+    online_cpus()?;
     let raw = std::fs::read("/proc/profile").map_err(|e| format!("/proc/profile: {e}"))?;
     let words: Vec<u32> = raw
         .as_chunks::<4>()
@@ -2771,6 +2772,46 @@ fn profile_report() -> Result<(), String> {
     let up = uptime.split_whitespace().next().unwrap_or("?");
     let _ = writeln!(out, "SHARDS-TEST PROFILE-TOTAL {total} {up}");
     boot_log_report(&mut out)
+}
+
+/// Brings each CPU the kernel has and has not brought up online, one after another, as a
+/// guest booted with `maxcpus=1` is to be: `SHARDS-TEST ONLINE <cpus> <us>`, the CPUs
+/// brought up and the time it took them, said where any were.
+fn online_cpus() -> Result<(), String> {
+    let list = |name: &str| -> Result<Vec<u32>, String> {
+        let path = format!("/sys/devices/system/cpu/{name}");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+        let mut cpus = Vec::new();
+        for part in text.trim().split(',').filter(|p| !p.is_empty()) {
+            let (from, to) = part.split_once('-').unwrap_or((part, part));
+            let (from, to) = (
+                from.parse::<u32>().map_err(|e| format!("{path}: {part}: {e}"))?,
+                to.parse::<u32>().map_err(|e| format!("{path}: {part}: {e}"))?,
+            );
+            cpus.extend(from..=to);
+        }
+        Ok(cpus)
+    };
+    let online = list("online")?;
+    let offline: Vec<u32> = list("present")?
+        .into_iter()
+        .filter(|c| !online.contains(c))
+        .collect();
+    if offline.is_empty() {
+        return Ok(());
+    }
+    let started = Instant::now();
+    for cpu in &offline {
+        let path = format!("/sys/devices/system/cpu/cpu{cpu}/online");
+        std::fs::write(&path, b"1").map_err(|e| format!("{path}: {e}"))?;
+    }
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST ONLINE {} {}",
+        offline.len(),
+        started.elapsed().as_micros()
+    );
+    Ok(())
 }
 
 /// What the kernel's log says of where its boot's time went, read from /dev/kmsg's start:

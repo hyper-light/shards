@@ -1606,7 +1606,15 @@ fn cold_boots_profiled() {
     }
     let (k, guest) = (kernel(), test_guest());
     let host = std::thread::available_parallelism().unwrap().get();
-    for (vcpus, at_once) in [(host, 1), (host, 8), (1, 8)] {
+    // Each beside its kernel told to bring up its boot CPU alone (`maxcpus=1`), its test
+    // guest bringing the rest online before it reports.
+    for (vcpus, at_once, told) in [
+        (host, 1, ""),
+        (host, 8, ""),
+        (host, 1, " maxcpus=1"),
+        (host, 8, " maxcpus=1"),
+        (1, 8, ""),
+    ] {
         let started = std::time::Instant::now();
         let runs: Vec<_> = (0..at_once)
             .map(|_| {
@@ -1623,7 +1631,9 @@ fn cold_boots_profiled() {
                             "--memory",
                             "512",
                             "--cmdline",
-                            "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M shards_test=profile",
+                            &format!(
+                                "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
+                            ),
                         ],
                         Duration::from_secs(240),
                     )
@@ -1634,6 +1644,7 @@ fn cold_boots_profiled() {
         let mut calls: HashMap<String, (u64, u64)> = HashMap::new();
         let (mut total, mut uptimes, mut gaps) = (0u64, Vec::new(), Vec::new());
         let (mut offered, mut steps) = (std::collections::BTreeSet::new(), Vec::new());
+        let mut onlined = Vec::new();
         for (i, run) in runs.into_iter().enumerate() {
             let r = run.join().unwrap();
             for line in r.stdout.lines() {
@@ -1643,6 +1654,8 @@ fn cold_boots_profiled() {
                         let c = calls.entry(name.to_string()).or_default();
                         *c = (c.0 + us, c.1.max(us));
                     }
+                } else if let Some(rest) = line.split_once("SHARDS-TEST ONLINE ").map(|(_, r)| r) {
+                    onlined.push(rest.to_string());
                 } else if let Some(rest) = line.split_once("SHARDS-TEST HV ").map(|(_, r)| r) {
                     offered.insert(rest.to_string());
                 } else if let Some(rest) = line.split_once("SHARDS-TEST AT ").map(|(_, r)| r) {
@@ -1688,7 +1701,7 @@ fn cold_boots_profiled() {
             })
             .collect();
         eprintln!(
-            "M376 PROFILE vcpus={vcpus} at_once={at_once}: {:.2} s, {total} ticks, guests up {uptimes:?} s at their start: {top:#?}\nM376 INITCALLS vcpus={vcpus} at_once={at_once}: {slowest:#?}\nM376 GAPS vcpus={vcpus} at_once={at_once} (us, each guest's longest three): {gaps:#?}\nM376 STEPS vcpus={vcpus} at_once={at_once} (us): {steps:#?}\nM376 HYPER-V vcpus={vcpus} at_once={at_once}: {offered:#?}",
+            "M376 PROFILE vcpus={vcpus} at_once={at_once}{told}: {:.2} s, CPUs brought online (count, us) {onlined:?}, {total} ticks, guests up {uptimes:?} s at their start: {top:#?}\nM376 INITCALLS vcpus={vcpus} at_once={at_once}{told}: {slowest:#?}\nM376 GAPS vcpus={vcpus} at_once={at_once}{told} (us, each guest's longest three): {gaps:#?}\nM376 STEPS vcpus={vcpus} at_once={at_once}{told} (us): {steps:#?}\nM376 HYPER-V vcpus={vcpus} at_once={at_once}{told}: {offered:#?}",
             started.elapsed().as_secs_f64()
         );
     }
