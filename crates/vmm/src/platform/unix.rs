@@ -476,6 +476,41 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
     }
 }
 
+/// Guest RAM mapped privately from a file ([`map_file_views`]): nothing kept here, as a
+/// private mapping's written pages go back to its file's at [`discard`] (Linux's
+/// MADV_DONTNEED frees a private mapping's copies; macOS maps fresh memory over them).
+#[derive(Debug)]
+pub struct FileViews;
+
+impl FileViews {
+    /// Gives back the pages of `ptr..ptr + len` ([`discard`]): the bytes given back.
+    ///
+    /// # Safety
+    /// As for [`discard`].
+    pub unsafe fn give_back(&self, ptr: NonNull<u8>, len: usize) -> io::Result<usize> {
+        // SAFETY: forwarded caller contract.
+        unsafe { discard(ptr, len) }.map(|()| len)
+    }
+}
+
+/// Maps `len` bytes of `file` from `offset` copy-on-write at `at` ([`map_file_private`]), as
+/// a restore maps its RAM, whose pages its guest gives back through the [`FileViews`]:
+/// whole, whatever runs of it hold data (windows.rs maps those alone from the file), as a
+/// private mapping gives a page back to its file's however much of the file it maps.
+///
+/// # Safety
+/// As for [`map_file_private`].
+pub unsafe fn map_file_views(
+    file: &File,
+    offset: u64,
+    len: usize,
+    at: NonNull<u8>,
+    _data: &[std::ops::Range<usize>],
+) -> io::Result<FileViews> {
+    // SAFETY: forwarded caller contract.
+    unsafe { map_file_private(file, offset, len, at) }.map(|()| FileViews)
+}
+
 /// Replaces `len` bytes at `at` with a private, copy-on-write mapping of `file` from
 /// `offset`. Pages come from the page cache on first touch; a write copies only the page
 /// written.

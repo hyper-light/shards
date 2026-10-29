@@ -1047,7 +1047,7 @@ pub fn restore(
     let memory = Arc::new(super::restored_memory(
         &ram_ranges(ram)?,
         memory_file,
-        &snap.config,
+        snap,
         plug_at(ram),
     )?);
     // A machine with a PCI bus saves no snapshot, so a restored one has none.

@@ -96,11 +96,16 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     generation keeps beside it (D189).
 /// 26: and a record of which of its pages its host holds after it, which nothing keeps
 ///     (D189).
-const VERSION: u32 = 26;
+/// 27: and the runs of its memory file's RAM that hold data, which a restore maps from the
+///     file, the rest zeros (D151).
+const VERSION: u32 = 27;
 /// The oldest format this build reads too where the machine has no DAX windows: for such
-/// a machine each since says what this one says, so that a microVM saved by shards 0.6.0
-/// (24) restores (D176).
+/// a machine each since says what this one says, but for 27's runs of data, which a state
+/// before it holds none of (its restore maps its RAM from the file whole), so that a
+/// microVM saved by shards 0.6.0 (24) restores (D176).
 const VERSION_WITHOUT_WINDOWS: u32 = 24;
+/// The first format whose state says which runs of its RAM hold data.
+const VERSION_WITH_DATA: u32 = 27;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -110,6 +115,9 @@ const MAX_DISKS: usize = 64;
 /// The most runs of plugged memory a state holds: one for every other 2 MiB block of 1
 /// TiB to plug.
 const MAX_PLUGGED_RUNS: usize = 1 << 18;
+/// The most runs of data a state's RAM holds: one for every other block of 1 TiB of it
+/// ([`DATA_BLOCK`](crate::memory::DATA_BLOCK)).
+const MAX_DATA_RUNS: usize = 1 << 18;
 const MAX_PATH: usize = 4096;
 const MAX_NAME: usize = 64;
 /// How often a reader looks again at `current` for a generation a newer write removed
@@ -175,6 +183,12 @@ pub struct Snapshot {
     /// The memory a virtio-mem device had plugged, `(gpa, len)` run by run in the order of
     /// their addresses, whose bytes follow the RAM's in the memory file (D176).
     pub plugged: Vec<(u64, u64)>,
+    /// The runs of the memory file's RAM that hold data, `(offset, len)` in order, each of
+    /// whole [`DATA_BLOCK`](crate::memory::DATA_BLOCK)s but at a region's end
+    /// ([`GuestMemory::save`]): what a restore maps from the file, the rest zeros (D151).
+    /// None until its memory is saved, and in a state of a format before 27, whose RAM a
+    /// restore maps from the file whole.
+    pub data: Option<Vec<(u64, u64)>>,
     /// The architecture's machine state, as its machine module encodes it.
     pub arch: Vec<u8>,
     /// The device bus's state.
@@ -416,6 +430,16 @@ fn path_from(bytes: &[u8]) -> codec::Result<PathBuf> {
 }
 
 fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec<u8>, String> {
+    encode_as(s, generation, identities, VERSION)
+}
+
+/// [`encode`] in format `version`, this one's or one before it that this build reads.
+fn encode_as(
+    s: &Snapshot,
+    generation: &str,
+    identities: &[Identity],
+    version: u32,
+) -> Result<Vec<u8>, String> {
     if s.config.nested {
         return Err(
             "a snapshot of a VM with virtualization of its own is refused: its EL2 state is not saved".into(),
@@ -435,7 +459,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
         .collect::<Result<Vec<_>, String>>()?;
     let mut w = Writer::default();
     MAGIC.iter().for_each(|&b| w.u8(b));
-    w.u32(VERSION);
+    w.u32(version);
     w.bytes(std::env::consts::ARCH.as_bytes());
     w.bytes(generation.as_bytes());
     w.u32(s.config.vcpus);
@@ -463,6 +487,13 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
         w.u64(*gpa);
         w.u64(*len);
     });
+    if version >= VERSION_WITH_DATA {
+        w.bool(s.data.is_some());
+        w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
+            w.u64(*at);
+            w.u64(*len);
+        });
+    }
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -551,6 +582,13 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let layer_mib = r.u64()?;
     // At most a run for every other block of the most a guest may plug.
     let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+    let data = if version >= VERSION_WITH_DATA {
+        let said = r.bool()?;
+        let runs = r.seq(MAX_DATA_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+        said.then_some(runs)
+    } else {
+        None
+    };
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -575,6 +613,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 layer_mib,
             },
             plugged,
+            data,
             arch: arch_state,
             devices,
         },
@@ -799,11 +838,18 @@ fn stage_with(
     // The state first: a configuration a restore could not use fails before anything is
     // written.
     let name = fresh_name();
-    let state = state_of(snap, &name).map_err(|e| at(&e))?;
+    state_of(snap, &name).map_err(|e| at(&e))?;
     let mut staged = staging(dir, name)?;
     let files = (|| -> io::Result<(Vec<File>, Option<usize>, Option<usize>)> {
-        let memory_file = create_unsynced(&staged.staging.join(MEMORY), |f| memory.save(f))?;
+        let mut data = None;
+        let memory_file = create_unsynced(&staged.staging.join(MEMORY), |f| {
+            data = Some(memory.save(f)?);
+            Ok(())
+        })?;
         after(Step::Memory)?;
+        // Its state with the runs of its RAM that hold data, as its memory's save found them.
+        let saved = Snapshot { data, ..snap.clone() };
+        let state = state_of(&saved, &staged.name).map_err(io::Error::other)?;
         let state_file = create_unsynced(&staged.staging.join(STATE), |mut f| f.write_all(&state))?;
         after(Step::State)?;
         let mut files = vec![memory_file, state_file];
@@ -906,8 +952,16 @@ pub fn fill(
     if !is_generation(name) {
         return Err(format!("{name:?} names no generation"));
     }
-    let state = state_of(snap, name)?;
-    memory.save(memory_file).map_err(|e| format!("its memory: {e}"))?;
+    state_of(snap, name)?;
+    let data = memory.save(memory_file).map_err(|e| format!("its memory: {e}"))?;
+    // Its state with the runs of its RAM that hold data, as its memory's save found them.
+    let state = state_of(
+        &Snapshot {
+            data: Some(data),
+            ..snap.clone()
+        },
+        name,
+    )?;
     write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
 }
 
@@ -1421,6 +1475,7 @@ mod tests {
                 layer_mib: 0,
             },
             plugged: Vec::new(),
+            data: None,
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],
         }
@@ -1458,9 +1513,11 @@ mod tests {
 
     #[test]
     fn rejects_foreign_or_damaged_state() {
-        // With runs of memory plugged, which the state keeps (D176).
+        // With runs of memory plugged, which the state keeps (D176), and its RAM's runs of
+        // data (D151).
         let mut snap = sample(&nowhere(), 1);
         snap.plugged = vec![(1 << 32, 2 << 20), (0x1_0040_0000, 4 << 20)];
+        snap.data = Some(vec![(0, 2 << 20), (6 << 20, 4 << 20)]);
         let ids = vec![Identity::default(); 3];
         let good = encode(&snap, "g-1", &ids).unwrap();
         let decoded = decode(&good).unwrap();
@@ -1488,11 +1545,7 @@ mod tests {
     #[test]
     fn a_state_of_the_formats_before_reads_where_its_machine_has_no_dax_windows() {
         let ids = vec![Identity::default(); 3];
-        let as_of = |snap: &Snapshot, version: u32| {
-            let mut bytes = encode(snap, "g-1", &ids).unwrap();
-            bytes[8..12].copy_from_slice(&version.to_le_bytes());
-            bytes
-        };
+        let as_of = |snap: &Snapshot, version: u32| encode_as(snap, "g-1", &ids, version).unwrap();
         for version in VERSION_WITHOUT_WINDOWS..VERSION {
             let snap = sample(&nowhere(), 1);
             assert_eq!(
@@ -1850,8 +1903,14 @@ mod tests {
             write(&dir, &sample(&s.0, 1), &mem).unwrap();
             assert!(exists(&dir));
             let p = read(&dir).unwrap();
-            assert_eq!(p.snapshot, sample(&s.0, 1));
-            let restored = GuestMemory::from_file(&RAM, &p.memory).unwrap();
+            // Its state says the runs of its RAM that hold data: its one block, cut at its end
+            // (D151).
+            let saved = Snapshot {
+                data: Some(vec![(0, 1 << 20)]),
+                ..sample(&s.0, 1)
+            };
+            assert_eq!(p.snapshot, saved);
+            let restored = GuestMemory::from_file(&RAM, &p.memory, p.snapshot.data.as_deref()).unwrap();
             let mut buf = [0u8; 5];
             restored.access().unwrap().read(0x8000_0010, &mut buf).unwrap();
             assert_eq!(&buf, b"guest");

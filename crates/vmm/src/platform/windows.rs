@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io;
+use std::ops::Range;
 use std::os::windows::io::AsRawHandle;
 use std::ptr::NonNull;
 
@@ -185,36 +186,46 @@ pub unsafe fn discard(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     unsafe { grant(ptr, len) }
 }
 
-/// Gives back what [`reserve`] or [`reserve_ram`] made at `ptr`: its memory, or the view of
-/// a file [`map_file_private`] placed there since, which is unmapped rather than freed.
+/// Gives back what [`reserve`] or [`reserve_ram`] made at `ptr`, `len` bytes: its memory, or
+/// the views of a file [`map_file_private`] or [`map_file_views`] placed there since, which
+/// are unmapped rather than freed.
 ///
 /// # Safety
 /// `ptr` must come from `reserve` or `reserve_ram` and not be used afterwards.
-pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
-    use windows_sys::Win32::System::Memory::{MEM_MAPPED, MEMORY_BASIC_INFORMATION, VirtualQuery};
-    let mut info = MEMORY_BASIC_INFORMATION::default();
-    // SAFETY: a query of this process's own address, into a value of its own size.
-    let queried = unsafe {
-        VirtualQuery(
-            ptr.as_ptr().cast(),
-            &raw mut info,
-            size_of::<MEMORY_BASIC_INFORMATION>(),
-        )
-    };
-    // SAFETY: forwarded caller contract; a view is unmapped whole, and MEM_RELEASE frees an
-    // allocation or a placeholder whole, given size 0.
-    unsafe {
-        if queried != 0 && info.Type == MEM_MAPPED {
-            UnmapViewOfFile2(
-                GetCurrentProcess(),
-                MEMORY_MAPPED_VIEW_ADDRESS {
-                    Value: ptr.as_ptr().cast(),
-                },
-                0,
-            );
-        } else {
-            VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE);
+pub unsafe fn release(ptr: NonNull<u8>, len: usize) {
+    use windows_sys::Win32::System::Memory::{MEM_FREE, MEM_MAPPED, MEMORY_BASIC_INFORMATION, VirtualQuery};
+    // Each allocation of the range in turn: a reservation's memory or placeholder, or a
+    // view of a file, of which a restore's RAM is many ([`map_file_views`]).
+    let (mut at, end) = (ptr.as_ptr() as usize, ptr.as_ptr() as usize + len.max(1));
+    while at < end {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: a query of this process's own address, into a value of its own size.
+        let queried = unsafe {
+            VirtualQuery(
+                at as *const _,
+                &raw mut info,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        if queried == 0 || info.RegionSize == 0 {
+            return;
         }
+        // SAFETY: forwarded caller contract; a view is unmapped whole, and MEM_RELEASE
+        // frees an allocation or a placeholder whole, given its base and size 0.
+        unsafe {
+            if info.State != MEM_FREE && info.Type == MEM_MAPPED {
+                UnmapViewOfFile2(
+                    GetCurrentProcess(),
+                    MEMORY_MAPPED_VIEW_ADDRESS {
+                        Value: info.AllocationBase,
+                    },
+                    0,
+                );
+            } else if info.State != MEM_FREE {
+                VirtualFree(info.AllocationBase, 0, MEM_RELEASE);
+            }
+        }
+        at += info.RegionSize;
     }
 }
 
@@ -678,6 +689,295 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
         return Err(e);
     }
     Ok(())
+}
+
+/// Guest RAM mapped from a file in parts ([`map_file_views`]): each run of the file that
+/// holds data a copy-on-write view of it, and each stretch between them memory of its own,
+/// zeros, as the file holds there; and the file's section, held so that a view is mapped
+/// from it again as its pages are given back ([`give_back`](Self::give_back)).
+#[derive(Debug)]
+pub struct FileViews {
+    section: Option<std::os::windows::io::OwnedHandle>,
+    parts: Vec<Part>,
+}
+
+/// A part of [`FileViews`]: where it is and how long, and the offset in the file of what it
+/// views, none for memory of its own.
+#[derive(Debug, Clone, Copy)]
+struct Part {
+    at: usize,
+    len: usize,
+    file: Option<u64>,
+}
+
+/// The parts of `len` bytes at `base` that `data`'s runs, from its start, make: each run a
+/// view of the file from `offset` on, and each stretch between them memory of its own.
+fn parts_of(base: usize, offset: u64, len: usize, data: &[Range<usize>]) -> io::Result<Vec<Part>> {
+    let mut parts = Vec::new();
+    let mut next = 0;
+    for run in data {
+        if run.start < next || run.start >= run.end || run.end > len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("data at {run:?} of {len} bytes, after {next}"),
+            ));
+        }
+        if run.start > next {
+            parts.push(Part {
+                at: base + next,
+                len: run.start - next,
+                file: None,
+            });
+        }
+        parts.push(Part {
+            at: base + run.start,
+            len: run.len(),
+            file: Some(offset + run.start as u64),
+        });
+        next = run.end;
+    }
+    if next < len {
+        parts.push(Part {
+            at: base + next,
+            len: len - next,
+            file: None,
+        });
+    }
+    Ok(parts)
+}
+
+/// Committed memory in the placeholder at `at`, `len` long, as [`reserve_ram`] commits its
+/// own: whether it took.
+///
+/// # Safety
+/// `at..at + len` is a placeholder of this process, whole.
+unsafe fn commit_placeholder(at: usize, len: usize) -> bool {
+    // SAFETY: forwarded caller contract; the pseudo-handle of this process.
+    let placed = unsafe {
+        VirtualAlloc2(
+            GetCurrentProcess(),
+            at as *const _,
+            len,
+            MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+            PAGE_READWRITE,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    placed as usize == at
+}
+
+/// Maps `len` bytes of `file` from `offset` at `at`, where [`reserve_ram`] reserved them, as
+/// `data`'s runs of them, from their start, say the file holds: each run a copy-on-write
+/// view of the file, as [`map_file_private`] maps one, and each stretch between them memory
+/// of its own, zeros, as the file holds there. A restore's RAM: its template's guest's data
+/// viewed, shared with every restore of it until written, and the rest its guest's alone,
+/// which gives its pages back at their own grain (decommitted and committed again, M371),
+/// where Windows gives a view's written pages back only as the whole view is unmapped (M371,
+/// M375). Its committed memory freed back to its placeholder, split into one a part, and
+/// each replaced by its view or by committed memory: as many parts as runs of data and
+/// stretches between them, three of a template's 280 MiB on the M5 Max, where views of every
+/// 2 MiB took 307.7 µs for 256 MiB at p50 (M372). Unsupported as `map_file_private` is, the
+/// range kept committed memory, for the caller to read the file into.
+///
+/// # Safety
+/// As for [`map_file_private`].
+pub unsafe fn map_file_views(
+    file: &File,
+    offset: u64,
+    len: usize,
+    at: NonNull<u8>,
+    data: &[Range<usize>],
+) -> io::Result<FileViews> {
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    let mut info = SYSTEM_INFO::default();
+    // SAFETY: GetSystemInfo fills the provided struct.
+    unsafe { GetSystemInfo(&mut info) };
+    let granularity = u64::from(info.dwAllocationGranularity.max(1));
+    let base = at.as_ptr() as usize;
+    let parts = parts_of(base, offset, len, data)?;
+    // MapViewOfFile3 takes a view's offset and address on the allocation granularity.
+    if parts.iter().any(|p| {
+        p.file
+            .is_some_and(|f| !f.is_multiple_of(granularity) || !(p.at as u64).is_multiple_of(granularity))
+    }) {
+        return Err(io::ErrorKind::Unsupported.into());
+    }
+    // Nothing of the file's: its committed memory, zeros, as it is.
+    if parts.iter().all(|p| p.file.is_none()) {
+        return Ok(FileViews { section: None, parts });
+    }
+    // SAFETY: the pseudo-handle of this process, which needs no closing.
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: a copy-on-write section of the whole file, held for the views mapped again.
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            PAGE_WRITECOPY,
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if section.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a handle this function owns, closed once as it drops.
+    let section = unsafe { OwnedHandle::from_raw_handle(section) };
+    // SAFETY: forwarded caller contract: the whole of an allocation that replaced a
+    // placeholder, freed back to it; else the call frees nothing.
+    if unsafe { VirtualFree(at.as_ptr().cast(), len, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) } == 0 {
+        return Err(io::ErrorKind::Unsupported.into());
+    }
+    // Split into one placeholder a part; where one cannot be, committed memory again in
+    // each split off and in the rest, whole.
+    for (k, p) in parts.iter().enumerate() {
+        if p.at + p.len < base + len {
+            // SAFETY: the placeholder's first `p.len` bytes split off as one of their own.
+            if unsafe { VirtualFree(p.at as *mut _, p.len, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) } == 0 {
+                let e = io::Error::last_os_error();
+                for q in parts.iter().take(k) {
+                    // SAFETY: a placeholder split off above.
+                    unsafe { commit_placeholder(q.at, q.len) };
+                }
+                // SAFETY: the placeholder left, from this part on.
+                unsafe { commit_placeholder(p.at, base + len - p.at) };
+                return Err(e);
+            }
+        }
+    }
+    for (i, p) in parts.iter().enumerate() {
+        let placed = match p.file {
+            // SAFETY: the view replaces its placeholder, at its base and of its size, within
+            // the section, which the caller's file holds.
+            Some(from) => unsafe {
+                MapViewOfFile3(
+                    section.as_raw_handle(),
+                    process,
+                    p.at as *const _,
+                    from,
+                    p.len,
+                    MEM_REPLACE_PLACEHOLDER,
+                    PAGE_WRITECOPY,
+                    std::ptr::null_mut(),
+                    0,
+                )
+                .Value as usize
+                    == p.at
+            },
+            // SAFETY: the part's placeholder, split off above.
+            None => unsafe { commit_placeholder(p.at, p.len) },
+        };
+        if !placed {
+            let e = io::Error::last_os_error();
+            // Committed memory again where the parts could not all be placed: each view
+            // placed unmapped to its placeholder first, and the memory placed kept.
+            for (j, q) in parts.iter().enumerate() {
+                if j < i && q.file.is_none() {
+                    continue;
+                }
+                // SAFETY: a view placed above, unmapped to its placeholder; then each
+                // placeholder committed.
+                unsafe {
+                    if j < i {
+                        UnmapViewOfFile2(
+                            process,
+                            MEMORY_MAPPED_VIEW_ADDRESS {
+                                Value: q.at as *mut _,
+                            },
+                            MEM_PRESERVE_PLACEHOLDER,
+                        );
+                    }
+                    commit_placeholder(q.at, q.len);
+                }
+            }
+            return Err(e);
+        }
+    }
+    Ok(FileViews {
+        section: Some(section),
+        parts,
+    })
+}
+
+impl FileViews {
+    /// Gives back what each part holds within `ptr..ptr + len`: memory of its own
+    /// decommitted and committed again ([`discard`]), zeros, at its pages' grain; and a view
+    /// lying wholly within it mapped again from the file (UnmapViewOfFile2,
+    /// MEM_PRESERVE_PLACEHOLDER; MapViewOfFile3, MEM_REPLACE_PLACEHOLDER), its written pages
+    /// gone and the file's bytes back (M375: a written 2 MiB view so at p50 405 µs on
+    /// jupiter, under a partition that maps it). A view only part of which lies within it
+    /// keeps its pages. Guest RAM its guest reports free, whose stage 2 its caller has taken
+    /// away first and gives back after. A view whose mapping again fails holds committed
+    /// memory, zeros: its pages were free. The bytes given back.
+    ///
+    /// # Safety
+    /// `ptr..ptr + len` lies within the parts, whole pages, which no hypervisor maps and no
+    /// thread accesses meanwhile.
+    pub unsafe fn give_back(&self, ptr: NonNull<u8>, len: usize) -> io::Result<usize> {
+        // SAFETY: the pseudo-handle of this process, which needs no closing.
+        let process = unsafe { GetCurrentProcess() };
+        let from = ptr.as_ptr() as usize;
+        let to = from.saturating_add(len);
+        let mut given = 0;
+        for p in &self.parts {
+            let (start, end) = (p.at.max(from), (p.at + p.len).min(to));
+            if start >= end {
+                continue;
+            }
+            let Some(offset) = p.file else {
+                let at = NonNull::new(start as *mut u8).ok_or(io::ErrorKind::InvalidInput)?;
+                // SAFETY: whole pages of the part's memory, forwarded caller contract.
+                unsafe { discard(at, end - start) }?;
+                given += end - start;
+                continue;
+            };
+            if start != p.at || end != p.at + p.len {
+                continue;
+            }
+            let section = self
+                .section
+                .as_ref()
+                .ok_or_else(|| io::Error::other("a view without its file's section"))?;
+            // SAFETY: a view `map_file_views` placed, unmapped to its placeholder.
+            let unmapped = unsafe {
+                UnmapViewOfFile2(
+                    process,
+                    MEMORY_MAPPED_VIEW_ADDRESS {
+                        Value: p.at as *mut _,
+                    },
+                    MEM_PRESERVE_PLACEHOLDER,
+                )
+            };
+            if unmapped == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the view mapped again into its placeholder, from the section.
+            let mapped = unsafe {
+                MapViewOfFile3(
+                    section.as_raw_handle(),
+                    process,
+                    p.at as *const _,
+                    offset,
+                    p.len,
+                    MEM_REPLACE_PLACEHOLDER,
+                    PAGE_WRITECOPY,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if mapped.Value as usize != p.at {
+                let e = io::Error::last_os_error();
+                // SAFETY: the view's placeholder, left by the unmap above.
+                if !unsafe { commit_placeholder(p.at, p.len) } {
+                    return Err(e);
+                }
+            }
+            given += p.len;
+        }
+        Ok(given)
+    }
 }
 
 /// File views need placeholders on Windows too (see `map_file_private`).

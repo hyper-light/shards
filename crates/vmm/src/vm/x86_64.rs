@@ -733,12 +733,7 @@ pub fn restore(
         ));
     }
     let (ram, ranges) = ram_ranges(snap.config.memory_mib)?;
-    let memory = Arc::new(super::restored_memory(
-        &ranges,
-        memory_file,
-        &snap.config,
-        plug_at(ram),
-    )?);
+    let memory = Arc::new(super::restored_memory(&ranges, memory_file, snap, plug_at(ram))?);
     // A machine with a PCI bus saves no snapshot, so a restored one has none.
     let a = assemble(
         &memory,

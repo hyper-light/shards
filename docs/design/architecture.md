@@ -6620,10 +6620,12 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
 - **Memory.** A snapshot's memory file is sparse (FSCTL_SET_SPARSE): NTFS keeps no hole it is
   not told to, and writes the zeros of every page up to the last written (M345: a 2 MiB guest's
   four pages took 192 KiB, NTFS allocating sparse files 64 KiB at a time). A restore's RAM is the
-  file mapped copy-on-write (PAGE_WRITECOPY), placed at the address its RAM was reserved at:
+  file's runs of data mapped copy-on-write (PAGE_WRITECOPY), a view each, and memory of its
+  own between them, zeros (D151), placed at the address its RAM was reserved at:
   guest RAM is reserved as a placeholder that committed memory replaces at once
-  (`platform::reserve_ram`), which the restore frees back to its placeholder and replaces with
-  the view, leaving no moment in which another thread could take the range. WHP maps any view
+  (`platform::reserve_ram`), which the restore frees back to its placeholder, splits into one
+  a part and replaces with each part's view or memory, leaving no moment in which another
+  thread could take the range. WHP maps any view
   at stage 2 (copy-on-write, read-only, shared or of the pagefile, M345); the guest's stores
   land in the view and never in the file, and every restore shares the file's pages in the
   cache until it writes one. The file is made sparse as it is made, by whoever makes it: for a
@@ -9979,11 +9981,19 @@ container's memory freed is its host's at once.
   moves; its templates with it (snapshot format 14). Builders on every host: a build's
   peak is not held to its end. On Windows a cold-booted microVM's RAM, private memory, is
   given back as decommitted and committed again (PM M371: its private working set 64 MiB
-  less of 64). Not yet a restored one's: its RAM is its template's file mapped
-  copy-on-write as one view (D196), and Windows gives back a view's written pages only as
-  the whole view is unmapped (M371: decommit refused, ERROR_INVALID_PARAMETER;
-  DiscardVirtualMemory and MEM_RESET refused, ERROR_USER_MAPPED_FILE), which takes a
-  restore's RAM mapped in views of what reporting gives back.
+  less of 64), and a restored one's too. Windows gives back a copy-on-write view's written
+  pages only as the whole view is unmapped (M371: decommit refused,
+  ERROR_INVALID_PARAMETER; DiscardVirtualMemory and MEM_RESET refused,
+  ERROR_USER_MAPPED_FILE), so a restore maps from its template's file only the runs of
+  2 MiB blocks its state says hold data (snapshot format 27, `memory::DATA_BLOCK`, the
+  least a guest reports), a view each, and the stretches between them, zeros in the file,
+  as memory of the guest's own (`platform::map_file_views`). What its workload allocates
+  and frees comes from those, and goes back at its pages' grain; a run of data goes back
+  only whole, its view unmapped and mapped again from the file (M375: the guest then reads
+  the file's bytes), and a part of one is kept. A template of 280 MiB on the M5 Max held
+  data in 36 of its 140 blocks, in 2 runs: three parts to map (M378), where a view of every
+  block took 307.7 µs for 256 MiB at p50 (M372). A state of a format before 27 says no runs, and
+  its RAM is mapped from the file whole, one view.
 - **What the host holds none of is left alone.** A range none of whose pages the host
   holds (`platform::untouched`: never touched, or a restored guest's that is still its
   template's file's) is answered as it is, no stage 2 touched.

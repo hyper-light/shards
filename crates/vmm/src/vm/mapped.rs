@@ -212,7 +212,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         // Two regions with a gap between them, which holds no RAM.
         let ranges = [(0, 16 * PAGE as usize), (0x10_0000, 16 * PAGE as usize)];
-        let memory = GuestMemory::from_file(&ranges, &file).unwrap();
+        let memory = GuestMemory::from_file(&ranges, &file, None).unwrap();
         let touch = |gpa: u64| hv::Touch { gpa, written: true };
         let ws = [
             touch(0),
@@ -248,7 +248,7 @@ mod tests {
             .unwrap();
         file.set_len(32 * PAGE).unwrap();
         let ranges = [(0, 16 * PAGE as usize), (0x10_0000, 16 * PAGE as usize)];
-        let memory = Arc::new(GuestMemory::from_file(&ranges, &file).unwrap());
+        let memory = Arc::new(GuestMemory::from_file(&ranges, &file, None).unwrap());
         // Each read fault maps the page it faulted on alone, as a recording restore's
         // memory, whose host holds fault-around off (PM M312): no read ahead of the file's
         // holes for fault-around to map beside it.

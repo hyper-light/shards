@@ -328,18 +328,20 @@ fn guest_memory(
     memory.map_err(|e| format!("guest RAM: {e}"))
 }
 
-/// Guest RAM of `ranges` from a snapshot's memory `file`, and, as boot made it, the memory
-/// `config` may have plugged at `at`, none of it plugged yet: what the snapshot's machine
-/// had plugged is plugged again once the VM exists ([`replug`]).
+/// Guest RAM of `ranges` from snapshot `snap`'s memory `file`, as much of it from the file
+/// as its state says holds data ([`Snapshot::data`](crate::snapshot::Snapshot::data)), and,
+/// as boot made it, the memory its machine may have plugged at `at`, none of it plugged yet:
+/// what the snapshot's machine had plugged is plugged again once the VM exists ([`replug`]).
 #[cfg(hv)]
 fn restored_memory(
     ranges: &[(u64, usize)],
     file: &std::fs::File,
-    config: &crate::snapshot::MachineConfig,
+    snap: &crate::snapshot::Snapshot,
     at: u64,
 ) -> Result<crate::memory::GuestMemory, String> {
-    let memory =
-        crate::memory::GuestMemory::from_file(ranges, file).map_err(|e| format!("snapshot memory: {e}"))?;
+    let config = &snap.config;
+    let memory = crate::memory::GuestMemory::from_file(ranges, file, snap.data.as_deref())
+        .map_err(|e| format!("snapshot memory: {e}"))?;
     match hotplug(config)? {
         None => Ok(memory),
         Some((_, region)) => {
@@ -2147,6 +2149,7 @@ mod tests {
         let snap = |vsock, net| Snapshot {
             config: machine(vsock, net),
             plugged: Vec::new(),
+            data: None,
             arch: Vec::new(),
             devices: Vec::new(),
         };

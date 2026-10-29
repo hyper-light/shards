@@ -1312,6 +1312,8 @@ impl Cut<'_> {
         Ok(Some(Snapshot {
             config: self.config.clone(),
             plugged: self.memory.plugged_runs(),
+            // Its memory's save says them.
+            data: None,
             arch,
             devices: w.into_bytes(),
         }))
@@ -1375,6 +1377,7 @@ mod tests {
                 layer_mib: 0,
             },
             plugged: Vec::new(),
+            data: None,
             arch: Vec::new(),
             devices: Vec::new(),
         };

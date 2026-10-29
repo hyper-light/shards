@@ -16098,3 +16098,21 @@ revision before comparing a changed API/implementation.
   and seals it against more grants as it starts: no save reads a hole of a mapped layer
   or swap. What its guest writes still takes the 64 KiB around each page it first writes
   (NTFS's sparse allocation), up to 16 times what scattered writes hold.
+
+### M378. Where a template's memory file holds data (D151)
+
+- **Question.** Windows gives a copy-on-write view's written pages back only as the whole
+  view is unmapped (M371), and a restore's RAM mapped as a view of every 2 MiB block, the
+  least a guest reports free, took 307.7 µs for 256 MiB at p50 where one view took 2.7
+  (M372). How many runs of data does a template's memory file hold: how many parts would a
+  restore map if each run of data were a view and each run between memory of its own?
+- **Method.** `docs/research/measurements/template-layout/layout.py` over a template's
+  memory file: its extents of data (lseek SEEK_DATA and SEEK_HOLE), the 2 MiB blocks they
+  touch, and the runs those make. On the M5 Max (macOS 26.4.1), 2026-10-28: the template
+  of `shards run --rm alpine true`, an arm64 guest of 18 vCPUs and 280 MiB, saved in a home
+  of its own, a second run restoring it.
+- **Found.** 280 MiB, 132 extents holding 62 MiB of data; of its 140 blocks, 36 hold data,
+  in 2 runs, with 1 run between them: 3 parts.
+- **Consequence (D151).** A restore maps the runs of data its state says (snapshot format
+  27), a view each, and memory of its own between them: three parts of this template, where
+  a view of every block would be 140.
