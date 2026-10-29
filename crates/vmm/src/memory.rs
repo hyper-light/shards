@@ -1043,11 +1043,10 @@ impl<'a> Access<'a> {
         let size = usize::try_from(end - start).map_err(|e| e.to_string())?;
         let host = self.mem.host_ptr(start, size).map_err(|e| e.to_string())?;
         let at = NonNull::new(host).ok_or("a null host address")?;
+        // Asked without taking memory, as this access holds every device's queues: taken
+        // here past a cgroup's `memory.high`, its kernel held them all (PM M391).
         // SAFETY: guest RAM of this memory, whole host pages of it.
-        let held = unsafe { platform::untouched(host, size, page as usize) };
-        if let Ok(Some(untouched)) = held
-            && untouched.iter().all(|u| *u)
-        {
+        if let Ok(Some(true)) = unsafe { platform::all_untouched(host, size, page as usize) } {
             return Ok(0);
         }
         // A working set being recorded keeps what the host held of it.
@@ -2291,6 +2290,56 @@ mod tests {
                 want[7] = i as u8 + 1;
             }
             assert!(page == want, "page {i} restored");
+        }
+    }
+
+    /// Whether a range is untouched, asked without taking memory (`all_untouched`), is what
+    /// `untouched` says of each of its pages, past the first read of entries too: a fresh
+    /// range's are all untouched, and one page written leaves those before it untouched and
+    /// none of a range that holds it, however long.
+    #[test]
+    fn a_range_is_untouched_as_each_of_its_pages_is() {
+        let p = page_size().unwrap();
+        // Past one read's 512 entries twice, on base pages: a huge page would make one
+        // write's whole 2 MiB resident.
+        let pages = 1100usize;
+        let m = GuestMemory::anonymous(&[(0, pages * p)]).unwrap();
+        let host = m.regions().next().unwrap().1;
+        crate::platform::small_pages(NonNull::new(host).unwrap(), pages * p);
+        let all = |from: usize, n: usize| {
+            // SAFETY: pages of the region this test's memory owns.
+            unsafe { crate::platform::all_untouched(host.add(from * p), n * p, p) }.unwrap()
+        };
+        let each = |from: usize, n: usize| {
+            // SAFETY: as above.
+            unsafe { crate::platform::untouched(host.add(from * p), n * p, p) }.unwrap()
+        };
+        let agree = |from: usize, n: usize| {
+            assert_eq!(
+                all(from, n),
+                each(from, n).map(|u| u.iter().all(|u| *u)),
+                "pages {from}..{}",
+                from + n
+            );
+        };
+        agree(0, pages);
+        m.access().unwrap().write((1050 * p) as u64, &[1]).unwrap();
+        for (from, n) in [
+            (0, pages),
+            (0, 1050),
+            (0, 1051),
+            (1049, 2),
+            (1050, 1),
+            (1051, 49),
+            (600, 500),
+        ] {
+            agree(from, n);
+        }
+        if cfg!(target_os = "linux") {
+            assert_eq!(all(0, 1050), Some(true));
+            assert_eq!(all(0, pages), Some(false));
+            assert_eq!(all(1050, 1), Some(false));
+            assert_eq!(all(1051, 49), Some(true));
         }
     }
 

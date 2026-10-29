@@ -476,6 +476,57 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
     }
 }
 
+/// Whether every one of the `len / page` pages at `ptr` is [`untouched`], asked without
+/// taking memory: a device asks it of what its guest reports free while it holds guest
+/// memory's lock, and memory taken there, charged to a cgroup past its `memory.high`, had
+/// its kernel stop the device 2 s at each return to user mode (mm/memcontrol.c,
+/// `mem_cgroup_handle_over_high`), every other device's queue waiting on the lock meanwhile
+/// and its guest's give-back with them (PM M391). Linux reads /proc/self/pagemap, opened
+/// once, a page of entries at a time into the stack, and stops at the first page the host
+/// holds; macOS asks [`untouched`]. Where the OS cannot say, `None`.
+///
+/// # Safety
+/// As for [`untouched`].
+pub unsafe fn all_untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<Option<bool>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::FileExt;
+        const PRESENT: u64 = 1 << 63;
+        const SWAPPED: u64 = 1 << 62;
+        static PAGEMAP: std::sync::OnceLock<File> = std::sync::OnceLock::new();
+        let pagemap = match PAGEMAP.get() {
+            Some(pagemap) => pagemap,
+            None => {
+                let opened = File::open("/proc/self/pagemap")?;
+                PAGEMAP.get_or_init(|| opened)
+            }
+        };
+        let (first, pages) = (ptr as usize / page, len / page);
+        let mut entries = [0u8; 4096];
+        let mut done = 0;
+        while done < pages {
+            let n = (pages - done).min(entries.len() / 8);
+            let read = entries.get_mut(..n * 8).unwrap_or_default();
+            pagemap.read_exact_at(read, ((first + done) * 8) as u64)?;
+            if read
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .any(|e| u64::from_ne_bytes(*e) & (PRESENT | SWAPPED) != 0)
+            {
+                return Ok(Some(false));
+            }
+            done += n;
+        }
+        Ok(Some(true))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: forwarded caller contract.
+        Ok(unsafe { untouched(ptr, len, page) }?.map(|pages| pages.iter().all(|u| *u)))
+    }
+}
+
 /// Guest RAM mapped privately from a file ([`map_file_views`]): nothing kept here, as a
 /// private mapping's written pages go back to its file's at [`discard`] (Linux's
 /// MADV_DONTNEED frees a private mapping's copies; macOS maps fresh memory over them).

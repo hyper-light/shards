@@ -16215,3 +16215,55 @@ revision before comparing a changed API/implementation.
   4.3 ms on Fedora; the test now holds the daemon's log of the port to no wait at all, not
   to a time. `a_run_whose_ports_are_closed_holds_them_no_longer` (daemon.rs) holds the
   daemon to it, a missing arm caught.
+
+### M391. What a microVM past its budget gives back, on Linux, Windows and macOS (D151, D188)
+
+- **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`
+  failed on CI's x86_64 Linux (CI 40862958912) and on Fedora, 4 runs of 4 at d1deefd9:
+  its slice's `MemoryHigh` set a quarter GiB below what its microVM held, the give-back had
+  no answer, and the daemon said nothing of the budget for the rest of the run. Where does
+  the give-back stop? And on Windows, where a group shards keeps holds a run to its budget
+  (D183's slice 3) and no host directory is shared into a microVM yet (the platform parity
+  plan's step 6), does a run give back what it holds cold, and its VM process hold that much
+  less?
+- **Method.** Fedora (Intel Core i9-14900HX, 32 CPUs, Linux 6.19), 2026-10-29: the test
+  four times beside a sampler, each second, of the slice's `memory.current`, `memory.high`,
+  `memory.events` and `memory.stat`, and of each thread of its VM process, its wait channel,
+  state and fault counts (/proc). jupiter (AMD Ryzen AI Max+ 395, Windows 11 26200) and the
+  M5 Max (macOS 26.4.1): containers.rs
+  `what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, a joiner reading
+  512 MiB of its image's files, which a joiner reads through its guest's page cache
+  (D119), then its group's `memory.high` written a quarter GiB short of its VM process's
+  footprint; the guest's /proc/meminfo, and the joiner's cgroup's `memory.stat`, read after
+  the read.
+- **Found, Linux.** Once the budget was set, the slice held 704 MB against its 424 MiB for
+  the rest of the run, its `memory.events` `high` from 68 to 612, its anon and the VM
+  process's RssAnon unmoved. The virtio-balloon thread was in `__mem_cgroup_handle_over_high`
+  at every sample for 57 s, a minor fault every 2 s and no CPU tick; every vCPU halted, the
+  exec and vsock threads waiting on a futex. The device answers a report under guest
+  memory's lock (`memory::Access`), which every device's queue takes (queue.rs), and it
+  asked of each range whether the host held any of its pages by opening /proc/self/pagemap
+  and reading 8 bytes a page into a buffer made for it: memory taken while its slice was
+  past `memory.high`, so the kernel slept the thread 2 s at each return to user mode
+  (mm/memcontrol.c, `mem_cgroup_handle_over_high`, `MEMCG_MAX_HIGH_DELAY_JIFFIES`) with
+  the lock held. Every device waited on it, the give-back's exec never reached the guest,
+  and nothing came back: 4 runs of 4 failed.
+- **With the fix** (`platform::all_untouched`: pagemap opened once, a page of entries read
+  at a time into the stack, ending at the first page the host holds; the device joins its
+  ranges before it takes the lock): 4 runs of 4 passed. The slice was within its budget
+  10.0, 13.3 and 37.6 s after it was set in three; in the fourth the daemon said what it gave
+  back and the test ended 19 s after the budget, before the sampler saw it within. Its vCPUs
+  were still slept, one to four at a time, while the guest touched fresh memory for the
+  give-back's exec: the cost of a slice past its budget with no swap.
+- **Found, Windows and macOS.** A guest kept 130 to 132 MiB of the 512 MiB read in 4 of 10
+  first reads on jupiter and 368 to 375 MiB in 6: its own kernel reclaimed the rest as it
+  read (`pgsteal_direct` 99,185 to 99,218 pages, or 37,240 to 38,280, in the joiner's
+  cgroup, whose `memory.high` and `memory.max` were `max`, no global reclaim): the run's
+  hold, the memory plugged so far, which the read outran (D148). The test reads the file
+  again into what it has plugged by then: held after 1 or 2 reads in 4 runs of 4. Then, on
+  jupiter, its VM process held 642 to 651 MiB, 255 to 256 idle, and 261 to 266 MiB once the
+  group's word came (333 once, within its budget of 390); on the M5 Max 1,028 to 1,038 MiB,
+  253 idle, then 265 to 275, its guest keeping 384 to 386 MiB of the read after one (n = 2).
+  A joiner's read is given back at a group's budget on both, no host directory needed;
+  `RECLAIM` counted 107 to 130 MiB of it, the rest taken back as init held the run within
+  the room it was told (D188), once all of it.

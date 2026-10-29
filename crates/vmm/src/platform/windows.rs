@@ -1074,6 +1074,15 @@ pub unsafe fn untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::Resul
     Ok(None)
 }
 
+/// Whether every page of a range was never touched (unix.rs `all_untouched`): Windows is not
+/// asked, as [`untouched`] is not.
+///
+/// # Safety
+/// As unix.rs `untouched`.
+pub unsafe fn all_untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::Result<Option<bool>> {
+    Ok(None)
+}
+
 /// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): asked
 /// only for a working set's written pages, which a restore on Windows does not record yet
 /// (vm::WORKING_SETS, D196).

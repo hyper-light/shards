@@ -10026,6 +10026,16 @@ container's memory freed is its host's at once.
   the report is answered, after which the guest may use the pages, zero-filled as first
   touched. Only the host's whole pages of guest RAM in a range are given back; one the
   host could not give back is kept, and said once.
+- **Nothing taken under the lock.** Every device's queue takes the same lock, so the
+  device takes no memory while it holds it: its ranges are joined before, and whether
+  the host holds any page of one is read from /proc/self/pagemap, opened once, a page of
+  entries at a time into the stack (`platform::all_untouched`). Asked by opening pagemap
+  and reading into a buffer made for each range, a microVM past its slice's `memory.high`
+  with no swap had its kernel stop the device 2 s at each return to user mode
+  (`mem_cgroup_handle_over_high`), the lock held: every other device waited on it, the
+  give-back's exec never reached the guest, and nothing came back for as long as the run
+  went on, 4 runs of 4 on Fedora; with it, 4 of 4 were back within their budget 10 to 38 s
+  after it was set (PM M391).
 - **Where.** Every run's microVM, last of its devices, so that no other device's window
   moves; its templates with it (snapshot format 14). Builders on every host: a build's
   peak is not held to its end. On Windows a cold-booted microVM's RAM, private memory, is
@@ -10093,7 +10103,10 @@ has 0006, and nothing reported where it has not; and
 kernel whose allocations did not wait. Mutation-checked: runs without the device hold 562
 MiB; a template saved without the flush has its restores report 212,992 KiB. What a pass
 does to readings and to growing runs is shown by `reporting-dip` and
-`run-plug/report-race.py` (PM M224).
+`run-plug/report-race.py` (PM M224). In crates/vmm,
+`a_range_is_untouched_as_each_of_its_pages_is`: the device's question of what the host
+holds of a range, asked without taking memory, answered as `untouched` answers it page by
+page, past one read of entries too (PM M391).
 
 ### D150. A GPU's runs restore templates of their own
 
