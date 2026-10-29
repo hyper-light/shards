@@ -16435,8 +16435,12 @@ revision before comparing a changed API/implementation.
     100 by 96 (and 40 by 32 for q4_0); an earlier run failed 17 of the same 18. With
     llama.cpp's integer dot product off (GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1), RADV's
     match the CPU's in every case, 1,684 of 1,684: the NaNs are that path's alone, on AMD's
-    GPU, which Windows' AMD driver gives too, case for case (M386). Whether RADV gives them
-    without Venus is unmeasured: the same llama.cpp built over Arch Linux (its Mesa the
+    GPU, which Windows' AMD driver gives too, case for case (M386). llama.cpp's own tracker
+    has that path giving NaN on AMD's GPU in other cases: on a Radeon 8060S under RADV
+    (Mesa 26.0.8, Linux 7.0), Q4_K and Q5_K at large magnitudes, "The cause is MMVQ (src1
+    quantized to q8_1)" and "With GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1 all of these cases
+    pass" (ggml-org/llama.cpp#30544, closed for #30861 and #30656). Whether RADV gives this
+    run's 18 without Venus is unmeasured: the same llama.cpp built over Arch Linux (its Mesa the
     desktop's release) and run in a container given RADV's render node was refused on the
     desktop by this session's permission classifier, as it builds code from GitHub there.
   - llama-bench, n=5 each, milliseconds a run (p50, p90 = p99 = max) and tokens/s:
