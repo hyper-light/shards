@@ -1590,3 +1590,106 @@ fn cold_boot_threads_cost() {
         );
     }
 }
+
+/// Where a cold boot's CPUs spend their ticks as more boot at once (PM M376): guests of as
+/// many vCPUs as the host has CPUs, one alone and then eight at once, each booting the test
+/// guest with its kernel's profiler on (`profile=4`) and quiet, the test guest reporting
+/// where its kernel's ticks went from boot to its start (`profile`), summed over the case's
+/// guests by symbol, the most first. Guests of the host's vCPUs boot past linearly slower as
+/// more boot at once, where guests of one vCPU do not: what their CPUs do meanwhile.
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boots_profiled"]
+fn cold_boots_profiled() {
+    use std::collections::HashMap;
+    if cannot_run_vms() {
+        return;
+    }
+    let (k, guest) = (kernel(), test_guest());
+    let host = std::thread::available_parallelism().unwrap().get();
+    for (vcpus, at_once) in [(host, 1), (host, 8), (1, 8)] {
+        let started = std::time::Instant::now();
+        let runs: Vec<_> = (0..at_once)
+            .map(|_| {
+                let (k, guest) = (k.to_path_buf(), guest.to_path_buf());
+                std::thread::spawn(move || {
+                    vm_run(
+                        &[
+                            "--kernel",
+                            k.to_str().unwrap(),
+                            "--init",
+                            guest.to_str().unwrap(),
+                            "--cpus",
+                            &vcpus.to_string(),
+                            "--memory",
+                            "512",
+                            "--cmdline",
+                            "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M shards_test=profile",
+                        ],
+                        Duration::from_secs(240),
+                    )
+                })
+            })
+            .collect();
+        let mut by: HashMap<String, u64> = HashMap::new();
+        let mut calls: HashMap<String, (u64, u64)> = HashMap::new();
+        let (mut total, mut uptimes, mut gaps) = (0u64, Vec::new(), Vec::new());
+        let (mut offered, mut steps) = (std::collections::BTreeSet::new(), Vec::new());
+        for (i, run) in runs.into_iter().enumerate() {
+            let r = run.join().unwrap();
+            for line in r.stdout.lines() {
+                if let Some(rest) = line.split_once("SHARDS-TEST INITCALL ").map(|(_, r)| r) {
+                    if let Some((us, name)) = rest.split_once(' ') {
+                        let us = us.parse::<u64>().unwrap_or(0);
+                        let c = calls.entry(name.to_string()).or_default();
+                        *c = (c.0 + us, c.1.max(us));
+                    }
+                } else if let Some(rest) = line.split_once("SHARDS-TEST HV ").map(|(_, r)| r) {
+                    offered.insert(rest.to_string());
+                } else if let Some(rest) = line.split_once("SHARDS-TEST AT ").map(|(_, r)| r) {
+                    steps.push((i, rest.to_string()));
+                } else if let Some(rest) = line.split_once("SHARDS-TEST GAP ").map(|(_, r)| r) {
+                    if gaps.iter().filter(|(vm, _)| *vm == i).count() < 3 {
+                        gaps.push((i, rest.to_string()));
+                    }
+                } else if let Some(rest) = line.split_once("SHARDS-TEST PROFILE ").map(|(_, r)| r) {
+                    if let Some((ticks, name)) = rest.split_once(' ') {
+                        *by.entry(name.to_string()).or_default() += ticks.parse::<u64>().unwrap_or(0);
+                    }
+                } else if let Some(rest) = line.split_once("SHARDS-TEST PROFILE-TOTAL ").map(|(_, r)| r) {
+                    let mut parts = rest.split_whitespace();
+                    total += parts.next().and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+                    uptimes.push(parts.next().unwrap_or("?").to_string());
+                }
+            }
+        }
+        let mut ranked: Vec<(String, u64)> = by.into_iter().collect();
+        ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
+        let top: Vec<String> = ranked
+            .iter()
+            .take(25)
+            .map(|(name, ticks)| {
+                format!(
+                    "{ticks} ({:.1}%) {name}",
+                    100.0 * *ticks as f64 / total.max(1) as f64
+                )
+            })
+            .collect();
+        let mut slowest: Vec<(String, (u64, u64))> = calls.into_iter().collect();
+        slowest.sort_by_key(|c| std::cmp::Reverse(c.1.0));
+        let slowest: Vec<String> = slowest
+            .iter()
+            .take(15)
+            .map(|(name, (sum, max))| {
+                format!(
+                    "{:.1} ms a guest, at most {:.1}: {name}",
+                    *sum as f64 / 1e3 / at_once as f64,
+                    *max as f64 / 1e3
+                )
+            })
+            .collect();
+        eprintln!(
+            "M376 PROFILE vcpus={vcpus} at_once={at_once}: {:.2} s, {total} ticks, guests up {uptimes:?} s at their start: {top:#?}\nM376 INITCALLS vcpus={vcpus} at_once={at_once}: {slowest:#?}\nM376 GAPS vcpus={vcpus} at_once={at_once} (us, each guest's longest three): {gaps:#?}\nM376 STEPS vcpus={vcpus} at_once={at_once} (us): {steps:#?}\nM376 HYPER-V vcpus={vcpus} at_once={at_once}: {offered:#?}",
+            started.elapsed().as_secs_f64()
+        );
+    }
+}

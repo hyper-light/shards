@@ -35,6 +35,7 @@ pub fn main() {
             "plug-snapshot" => plug_snapshot(),
             "unplug-cost" => unplug_cost(),
             "memory" => memory_report(),
+            "profile" => profile_report(),
             "limits" => limits(),
             "pci" => pci(),
             "pci-irq" => pci_irq(),
@@ -2714,6 +2715,151 @@ fn unplug_cost() -> Result<(), String> {
 /// free pages its CPUs' lists hold (/proc/zoneinfo, each pageset's `count`), which MemFree
 /// leaves out and which held 2 to 16 MiB at a boot's start (PM M300):
 /// `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed free>`.
+/// Where the kernel's CPUs spent their ticks from its boot to now (`profile=N` on its
+/// command line, kernel/profile.c; PM M376): /proc/profile's counts, a bucket of 2^N bytes
+/// of kernel text each from `_stext`, summed by the text symbol holding each
+/// (/proc/kallsyms), the most first: `SHARDS-TEST PROFILE <ticks> <symbol>`, then
+/// `SHARDS-TEST PROFILE-TOTAL <ticks> <uptime>`.
+fn profile_report() -> Result<(), String> {
+    let raw = std::fs::read("/proc/profile").map_err(|e| format!("/proc/profile: {e}"))?;
+    let words: Vec<u32> = raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_ne_bytes(*c))
+        .collect();
+    let (step, counts) = words.split_first().ok_or("/proc/profile: empty")?;
+    let syms = std::fs::read_to_string("/proc/kallsyms").map_err(|e| format!("/proc/kallsyms: {e}"))?;
+    let mut text: Vec<(u64, &str)> = syms
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let at = u64::from_str_radix(parts.next()?, 16).ok()?;
+            let kind = parts.next()?;
+            let name = parts.next()?;
+            matches!(kind, "t" | "T").then_some((at, name))
+        })
+        .collect();
+    text.sort_unstable();
+    let stext = text
+        .iter()
+        .find(|(_, name)| *name == "_stext")
+        .map(|(at, _)| *at)
+        .ok_or("/proc/kallsyms: no _stext")?;
+    let mut by: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut total = 0u64;
+    for (i, &ticks) in counts.iter().enumerate() {
+        if ticks == 0 {
+            continue;
+        }
+        total += u64::from(ticks);
+        let at = stext + i as u64 * u64::from(*step);
+        let name = text
+            .partition_point(|(a, _)| *a <= at)
+            .checked_sub(1)
+            .and_then(|n| text.get(n))
+            .map_or("?", |(_, name)| *name);
+        *by.entry(name).or_default() += u64::from(ticks);
+    }
+    let mut ranked: Vec<(&str, u64)> = by.into_iter().collect();
+    ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
+    let mut out = io::stdout();
+    for (name, ticks) in ranked.iter().take(30) {
+        let _ = writeln!(out, "SHARDS-TEST PROFILE {ticks} {name}");
+    }
+    let uptime = std::fs::read_to_string("/proc/uptime").map_err(|e| format!("/proc/uptime: {e}"))?;
+    let up = uptime.split_whitespace().next().unwrap_or("?");
+    let _ = writeln!(out, "SHARDS-TEST PROFILE-TOTAL {total} {up}");
+    boot_log_report(&mut out)
+}
+
+/// What the kernel's log says of where its boot's time went, read from /dev/kmsg's start:
+/// the initcalls that took longest (`initcall_debug`'s `initcall FN returned N after US
+/// usecs`), and the longest gaps between one record and the next, with both, the time each
+/// record's own.
+fn boot_log_report(out: &mut io::Stdout) -> Result<(), String> {
+    let fd = open("/dev/kmsg", libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let mut record = vec![0u8; 8192];
+    let mut log: Vec<(u64, String)> = Vec::new();
+    loop {
+        // SAFETY: `record` is valid for writes of its length; each read is one record.
+        let n = unsafe { libc::read(fd, record.as_mut_ptr().cast(), record.len()) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EAGAIN) => break,
+                // A record overwritten before it was read.
+                Some(libc::EPIPE) => continue,
+                _ => {
+                    // SAFETY: closing our own descriptor.
+                    unsafe { libc::close(fd) };
+                    return Err(format!("reading /dev/kmsg: {e}"));
+                }
+            }
+        }
+        // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE" (Documentation/ABI/testing/dev-kmsg).
+        let text = String::from_utf8_lossy(record.get(..n as usize).unwrap_or_default()).into_owned();
+        let Some((head, message)) = text.split_once(';') else {
+            continue;
+        };
+        if let Some(at) = head.split(',').nth(2).and_then(|us| us.parse::<u64>().ok()) {
+            log.push((at, message.lines().next().unwrap_or_default().to_string()));
+        }
+    }
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    // Each initcall's time from its records' own times, `calling  FN @ PID` to `initcall FN
+    // returned`: what it says itself (`after US usecs`) is of the timekeeper's clock, jiffies
+    // until the clocksource's switch (clocksource_done_booting), where a record's time is
+    // the scheduler's clock.
+    let mut began: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut calls: Vec<(u64, &str)> = Vec::new();
+    for (at, m) in &log {
+        if let Some((name, _)) = m.strip_prefix("calling  ").and_then(|r| r.split_once(" @ ")) {
+            began.insert(name, *at);
+        } else if let Some((name, start)) = m
+            .strip_prefix("initcall ")
+            .and_then(|r| r.split_once(" returned "))
+            .and_then(|(name, _)| Some((name, began.get(name)?)))
+        {
+            calls.push((at.saturating_sub(*start), name));
+        }
+    }
+    calls.sort_by_key(|c| std::cmp::Reverse(c.0));
+    for (us, name) in calls.iter().take(15) {
+        let _ = writeln!(out, "SHARDS-TEST INITCALL {us} {name}");
+    }
+    // What its hypervisor offers it, and when its boot's steps came.
+    const STEPS: [&str; 5] = [
+        "smp: Bringing up secondary CPUs",
+        "smp: Brought up",
+        "clocksource: Switched to clocksource",
+        "Freeing unused kernel image",
+        "Run /init as init process",
+    ];
+    for (at, m) in &log {
+        if m.starts_with("Hyper-V:") {
+            let _ = writeln!(out, "SHARDS-TEST HV {m}");
+        } else if STEPS.iter().any(|s| m.starts_with(s)) {
+            let _ = writeln!(out, "SHARDS-TEST AT {at} {m}");
+        }
+    }
+    let mut gaps: Vec<(u64, &str, &str)> = log
+        .windows(2)
+        .filter_map(|w| match w {
+            [(a, before), (b, after)] => Some((b.saturating_sub(*a), before.as_str(), after.as_str())),
+            _ => None,
+        })
+        .collect();
+    gaps.sort_by_key(|g| std::cmp::Reverse(g.0));
+    let short = |m: &str| m.chars().take(90).collect::<String>();
+    for (us, before, after) in gaps.iter().take(8) {
+        let _ = writeln!(out, "SHARDS-TEST GAP {us} {} => {}", short(before), short(after));
+    }
+    let _ = writeln!(out, "SHARDS-TEST LOG {} records", log.len());
+    Ok(())
+}
+
 fn memory_report() -> Result<(), String> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
     let field = |name: &str| -> Result<u64, String> {
