@@ -2281,15 +2281,13 @@ fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
 /// are charged there from their first page; a second run under the slice is made in that
 /// scope, and a run without one, its template's pool warm, in none of the slice; `inspect`
 /// says it; a joiner names its provider's or none; and the scope goes with the daemon. A
-/// path, which names no slice, is refused; and elsewhere than Linux, any.
-// --cgroup-parent on Windows, a job object, comes with the platform parity plan's step 12.
-#[cfg(unix)]
+/// path, which names no slice, is refused, as it is elsewhere than Linux, where a group
+/// shards keeps is named (D183's slice 3, which its groups' tests hold).
 #[test]
 fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
     let Some((home, image)) = home("containers-parent") else {
         return;
     };
-    let shards = |args: &[&str]| shards_in(&home, args);
     // The image's template, and a pool of it warm in the daemon's own place: a run under a
     // slice takes none of its VMs.
     let plain = run_in(&home, &image, &["--rm"], &["exit", "0"]);
@@ -2301,20 +2299,18 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         &["exit", "0"],
     );
     assert_ne!(path.status, Some(0), "{path}");
+    #[cfg(not(target_os = "linux"))]
+    assert!(path.stderr.contains("letters, digits"), "{path}");
+    #[cfg(target_os = "linux")]
+    placed_under_slices(&home, &image, &path);
+}
+
+/// [`a_microvm_is_made_under_the_slice_its_cgroup_parent_names`] on Linux, whose groups are
+/// its user's systemd manager's slices: a path refused as one.
+#[cfg(target_os = "linux")]
+fn placed_under_slices(home: &Path, image: &str, path: &Run) {
+    let shards = |args: &[&str]| shards_in(home, args);
     let slice = format!("shardstest{}.slice", std::process::id());
-    if !cfg!(target_os = "linux") {
-        let refused = run_in(
-            &home,
-            &image,
-            &["--rm", "--cgroup-parent", &slice],
-            &["exit", "0"],
-        );
-        assert!(
-            refused.status != Some(0) && refused.stderr.contains("--memory"),
-            "{refused}"
-        );
-        return;
-    }
     assert!(path.stderr.contains("NAME.slice"), "{path}");
     // The user's systemd manager, on its bus: CI's Linux runners have one, and must find it
     // (SHARDS_REQUIRE_USER_MANAGER).
