@@ -3383,9 +3383,11 @@ fn builtin(
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
+            // Its answer a line, whose end says it is whole: one its host took past its
+            // deadline is still what was given back (reclaim.rs `given`).
             run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
                 let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
-                write!(out, "{freed} {unplugging}")
+                writeln!(out, "{freed} {unplugging}")
             }),
             run::builtin::ROOM => args
                 .first()

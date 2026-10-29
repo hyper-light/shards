@@ -2647,14 +2647,19 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     let mut tries = 0;
     let gave = loop {
         read(files.get(..512).unwrap());
+        // Its host's own pressure has it give back what it read as it reads it on a busy
+        // host (Fedora beside a CI job: 231 MiB given back of 512 read, and its slice never
+        // held them): read again until it holds them.
         let deadline = std::time::Instant::now() + TIMEOUT;
         while current() <= 512 << 20 {
             assert!(
                 std::time::Instant::now() < deadline,
-                "its slice never held what it read: {} bytes",
-                current()
+                "its slice never held what it read: {} bytes\n{}",
+                current(),
+                said()
             );
             std::thread::sleep(Duration::from_millis(50));
+            read(files.get(..512).unwrap());
         }
         let before = said().len();
         set(&(current() + (1 << 30)).to_string());

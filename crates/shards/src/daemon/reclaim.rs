@@ -261,11 +261,17 @@ impl<D: Disk> Daemon<D> {
 
 /// What a microVM's give-back said it gave: the bytes of files its run's cgroup holds less,
 /// then the bytes plugged it asked to unplug (init's `RECLAIM`); else why it gave nothing.
+/// Its answer whole, its line ended, is what it gave however late its exec's own end came:
+/// a microVM held hard at its budget is slowed by its host as it gives back (memory.high),
+/// and an exec ended past its deadline after its answer had given what it said (CI
+/// 40862958912: 401 MiB of its files freed and said, the exec ended at 10 s, and nothing
+/// counted, so that the run was taken to have given nothing back).
 fn given(q: &Quiet) -> Result<Gave, String> {
-    if q.timed_out || q.status != Some(0) {
+    let said = String::from_utf8_lossy(&q.output);
+    let whole = said.ends_with('\n') && said.split_whitespace().count() == 2;
+    if !(whole && q.timed_out) && (q.timed_out || q.status != Some(0)) {
         return Err(said_of(q));
     }
-    let said = String::from_utf8_lossy(&q.output);
     let mut amounts = said.split_whitespace().map(|n| n.parse::<u64>().unwrap_or(0));
     Ok(Gave {
         freed: amounts.next().unwrap_or(0),
@@ -349,6 +355,13 @@ mod tests {
         assert_eq!(
             given(&quiet("", Some(137), true)).unwrap_err(),
             "no answer within 10s, and so it was ended"
+        );
+        // Its answer whole before its exec was ended: what it gave; cut short, nothing.
+        let late = given(&quiet("420397056 536870912\n", None, true)).unwrap();
+        assert_eq!((late.freed, late.unplugging), (420_397_056, 536_870_912));
+        assert_eq!(
+            given(&quiet("420397056 5368", None, true)).unwrap_err(),
+            "no answer within 10s, and so it was ended: 420397056 5368"
         );
         assert_eq!(
             given(&quiet(
