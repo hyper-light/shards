@@ -16443,6 +16443,11 @@ revision before comparing a changed API/implementation.
   - Committing a 64 KiB block: n=16 p50=0.70 p90=1.90 p99=4.90 max=4.90 µs; p50=1.20
     p90=3.30 p99=5.90 max=5.90; p50=0.80 p90=1.50 p99=5.70 max=5.70. A load's round trip
     through its exit: 23.4 to 49.9 µs, where a committed load's took 17.0 to 24.2.
+  - CI's runners answered alike, every step, the reservation readable and writable or
+    inaccessible (whp run 40961442817 at 4b6e135f): windows-2022, a block's commit n=16
+    p50=0.80 p90=1.10 p99=5.30 max=5.30 and p50=0.90 p90=1.20 p99=4.20 max=4.20 µs, a load
+    through its exit 54.1 to 68.2 µs; windows-2025, p50=1.20 p90=1.60 p99=7.40 max=7.40 and
+    p50=1.20 p90=1.40 p99=6.90 max=6.90, a load through its exit 95.1 to 147.2 µs.
 - **Decided.** Where the host charges memory as it is reserved
   (`platform::CHARGED_AS_RESERVED`, Windows), a head is reserved alone and each of its 2
   MiB blocks committed as its guest first touches one (`Head::commit_at`, through the
