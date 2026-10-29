@@ -242,13 +242,14 @@ fn descriptor_on(
     }
 }
 
-/// The section of node `node`'s file that the server at the other end of `conn` duplicated
-/// into this process, for a DAX window's mapping of `len` bytes of it from `foffset` (D189,
-/// PM M343), writable only if `writable`: an errno where the server refuses it. A stream
+/// What node `node`'s file is mapped from that the server at the other end of `conn`
+/// duplicated into this process, for a DAX window's mapping of `len` bytes of it from
+/// `foffset` (D189, PM M343), writable only if `writable`: a section (slates' server's) or
+/// the file itself (shards' own, D197), an errno where the server refuses it. A stream
 /// carries no handle on Windows (M340), so the ask names this process and its end of the
 /// stream, which the server checks is the share's own before it duplicates anything here,
-/// and the answer gives the section's value in this process. A value that names no section
-/// is refused and left alone: it is no handle the server gave this process for the mapping.
+/// and the answer gives the handle's value in this process. A value that names neither is
+/// refused and left alone: it is no handle the server gave this process for the mapping.
 #[cfg(windows)]
 fn descriptor_on(
     conn: &mut Stream,
@@ -270,11 +271,11 @@ fn descriptor_on(
                 .ok()
                 .filter(|&v| v != 0)
                 .ok_or(proto::EIO)? as std::os::windows::io::RawHandle;
-            if !names_a_section(raw) {
+            if made_of(raw).is_none() {
                 return Err(proto::EIO);
             }
-            // SAFETY: a section the server duplicated into this process for this mapping
-            // alone, its value told in the answer and checked to name a section: this is
+            // SAFETY: a section or a file the server duplicated into this process for this
+            // mapping alone, its value told in the answer and checked to name one: this is
             // its one owner.
             Ok(unsafe { MapObject::from_raw_handle(raw) })
         }
@@ -287,18 +288,115 @@ fn descriptor_on(
     }
 }
 
+/// A DAX window's ask on Windows ([`descriptor_ask_from`]), from the VM at the other end of
+/// `conn`, answered: the process it names shown to hold that end (the stream's value there,
+/// duplicated here, a client's end of the very pipe whose server end `conn` is), then node
+/// `node`'s file, opened as [`server::Server::descriptor`] opens one, duplicated into it,
+/// its value there. Shards' own window makes its sections of the file itself, where a
+/// section reaches no further than its file, which grows under the guest (PM M412).
+#[cfg(windows)]
+fn descriptor_for(server: &server::Server, conn: &Stream, asked: &[u8]) -> Result<u64, proto::Errno> {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
+    let le = |at: usize, n: usize| asked.get(at..at.saturating_add(n)).ok_or(proto::EINVAL);
+    let node = le(1, 8)?
+        .try_into()
+        .map(u64::from_le_bytes)
+        .map_err(|_| proto::EINVAL)?;
+    let writable = le(9, 1)?.first().is_some_and(|&w| w != 0);
+    let pid = le(26, 4)?
+        .try_into()
+        .map(u32::from_le_bytes)
+        .map_err(|_| proto::EINVAL)?;
+    let stream = le(30, 8)?
+        .try_into()
+        .map(u64::from_le_bytes)
+        .map_err(|_| proto::EINVAL)?;
+    // SAFETY: OpenProcess of a process's id, the handle it gives owned below.
+    let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, pid) };
+    if raw.is_null() {
+        return Err(proto::EPERM);
+    }
+    // SAFETY: the handle OpenProcess just gave, owned by nothing else.
+    let asker = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut theirs: HANDLE = std::ptr::null_mut();
+    // SAFETY: the asker's handle `stream` duplicated into this process, if it has one.
+    let copied = unsafe {
+        DuplicateHandle(
+            asker.as_raw_handle(),
+            usize::try_from(stream).map_err(|_| proto::EPERM)? as HANDLE,
+            GetCurrentProcess(),
+            &mut theirs,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if copied == 0 {
+        return Err(proto::EPERM);
+    }
+    // SAFETY: the duplicate just made, owned by nothing else.
+    let theirs = unsafe { OwnedHandle::from_raw_handle(theirs) };
+    if !ntfs::pipe_peers(conn.as_raw_handle(), theirs.as_raw_handle()) {
+        return Err(proto::EPERM);
+    }
+    let file = server.descriptor(node, writable)?;
+    let mut given: HANDLE = std::ptr::null_mut();
+    // SAFETY: the file's handle this holds, duplicated into the asker, whose own it is.
+    let gave = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            file.as_raw_handle(),
+            asker.as_raw_handle(),
+            &mut given,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if gave == 0 {
+        return Err(proto::EIO);
+    }
+    Ok(given as usize as u64)
+}
+
 /// Room for a handle's type record as ntdll writes it and its name after it, in words, so
 /// that the record's pointer to its name is aligned: 1 KiB, where the record is 104 bytes
 /// in winternl.h's public form and the longest name an object's type has is under 64.
 #[cfg(windows)]
 const TYPE_RECORD_WORDS: usize = 128;
 
-/// Whether `handle` names a section in this process: its object's type
+/// What a DAX window's mapping is made of on Windows: a section its server made, which
+/// reaches past every range asked of it (slates' shares, PM M343), or a file a share's own
+/// server gave, whose sections the window makes, each as long as the file then (D197's
+/// slice 4, PM M412).
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Made {
+    Section,
+    File,
+}
+
+/// What `handle` names in this process, a section or a file, by its object's type
 /// (NtQueryObject, ObjectTypeInformation), which waits on nothing the object does, where a
 /// query of a name or a mode waits behind a read pending on a synchronous pipe (slates'
-/// measurement, 2026-10-26).
+/// measurement, 2026-10-26): none where it is neither.
 #[cfg(windows)]
-fn names_a_section(handle: std::os::windows::io::RawHandle) -> bool {
+pub fn made_of(handle: std::os::windows::io::RawHandle) -> Option<Made> {
+    let name = type_name(handle)?;
+    if name.iter().copied().eq("Section".encode_utf16()) {
+        Some(Made::Section)
+    } else if name.iter().copied().eq("File".encode_utf16()) {
+        Some(Made::File)
+    } else {
+        None
+    }
+}
+
+/// The name of `handle`'s object's type, its UTF-16 units.
+#[cfg(windows)]
+fn type_name(handle: std::os::windows::io::RawHandle) -> Option<Vec<u16>> {
     use windows_sys::Wdk::Foundation::{NtQueryObject, ObjectTypeInformation};
     use windows_sys::Win32::System::WindowsProgramming::PUBLIC_OBJECT_TYPE_INFORMATION;
     let mut record = [0u64; TYPE_RECORD_WORDS];
@@ -316,7 +414,7 @@ fn names_a_section(handle: std::os::windows::io::RawHandle) -> bool {
         )
     };
     if status != 0 {
-        return false;
+        return None;
     }
     // SAFETY: the record the call wrote at the buffer's start, aligned as its words are.
     let name = unsafe { (*record.as_ptr().cast::<PUBLIC_OBJECT_TYPE_INFORMATION>()).TypeName };
@@ -327,11 +425,10 @@ fn names_a_section(handle: std::os::windows::io::RawHandle) -> bool {
     let at = name.Buffer as usize;
     let bytes = usize::from(name.Length);
     if name.Buffer.is_null() || at < start || at.checked_add(bytes).is_none_or(|stop| stop > end) {
-        return false;
+        return None;
     }
     // SAFETY: the name's UTF-16 units, which the call wrote within the buffer (checked).
-    let name = unsafe { std::slice::from_raw_parts(name.Buffer.cast_const(), bytes / 2) };
-    name.iter().copied().eq("Section".encode_utf16())
+    Some(unsafe { std::slice::from_raw_parts(name.Buffer.cast_const(), bytes / 2) }.to_vec())
 }
 
 /// The ask on Windows: [`descriptor_ask`]'s, then the asking process's id (le32) and its end
@@ -503,8 +600,8 @@ fn read_any_into(from: &mut Stream, bytes: &mut Vec<u8>) -> io::Result<Option<bo
 /// control frame, the VM process's own, asks for the server's tables, or gives them
 /// (D176), and is answered with one: 0 then what it asked for, or 1 then why not; or asks
 /// for a file's descriptor (D189), answered as a shards_ipc message: 0 and the
-/// descriptor, or 1 and the errno that refused it. On Windows (D197) none is asked: shards'
-/// own shares have no DAX window there yet (window_whp.rs), and one asked is refused.
+/// descriptor, or 1 and the errno that refused it. On Windows (D197) the descriptor is a
+/// handle the asker is given, and the answer its value there ([`descriptor_for`]).
 pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
     // Each request read into, and each reply built in, a buffer kept from one to the next
     // (`Server::handle_into`).
@@ -521,9 +618,10 @@ pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
             // The node and whether writable; the range past them is a server's of its own
             // objects to read ([`descriptor_ask`]).
             #[cfg(windows)]
-            true if asked.first() == Some(&DESCRIPTOR) => {
-                shards_ipc::write_message(&mut conn, 1, &proto::EOPNOTSUPP.to_le_bytes())?;
-            }
+            true if asked.first() == Some(&DESCRIPTOR) => match descriptor_for(server, &conn, asked) {
+                Ok(value) => shards_ipc::write_message(&mut conn, 0, &value.to_le_bytes())?,
+                Err(errno) => shards_ipc::write_message(&mut conn, 1, &errno.to_le_bytes())?,
+            },
             #[cfg(unix)]
             true if asked.first() == Some(&DESCRIPTOR) => {
                 let node = asked
@@ -798,6 +896,12 @@ fn serve_with(
                 put(reply, mapped)
             }
             None => {
+                // A file its window maps, which the request cuts short: let go of first,
+                // where its host cuts no file a view of which is mapped (NTFS, PM M412).
+                let cutting = window.zip(cuts(req)).filter(|(w, node)| w.maps(*node));
+                if let Some((w, node)) = cutting {
+                    w.evict(node);
+                }
                 let asked = match slot.ask_into(req, reply) {
                     Ok(asked) => asked,
                     Err(_) => proto::unattached(req).is_some_and(|r| put(reply, r)),
@@ -808,6 +912,10 @@ fn serve_with(
                     w.reconcile(&told(req, reply));
                     keep_mapped(req, reply, w);
                     rerecord_written(req, reply, w);
+                }
+                // The file let go of is made what it is, the cut made or not.
+                if let Some((w, node)) = cutting {
+                    w.reconcile(&[node]);
                 }
                 asked
             }
@@ -822,6 +930,29 @@ fn serve_with(
     scatter(chain, mem, reply)
         .or_else(|_| proto::unreachable(req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
         .unwrap_or(0)
+}
+
+/// The node whose file `req` cuts short, if it may: a SETATTR of its size, or an OPEN that
+/// truncates it (include/uapi/linux/fuse.h, FATTR_SIZE; O_TRUNC, which FUSE_ATOMIC_O_TRUNC
+/// sends with the OPEN).
+fn cuts(req: &[u8]) -> Option<u64> {
+    const FATTR_SIZE: u32 = 1 << 3;
+    let word = |at: usize| {
+        req.get(at..at.checked_add(4)?)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+    };
+    let node = req
+        .get(16..24)
+        .and_then(|b| <[u8; 8]>::try_from(b).ok())
+        .map(u64::from_le_bytes)?;
+    // fuse_setattr_in's `valid` and fuse_open_in's `flags`, each first after the header.
+    let first = word(proto::IN_HEADER_BYTES)?;
+    match word(4)? {
+        proto::op::SETATTR if first & FATTR_SIZE != 0 => Some(node),
+        proto::op::OPEN if first & host::linux::O_TRUNC != 0 => Some(node),
+        _ => None,
+    }
 }
 
 /// Writes `reply` into the chain's writable descriptors, in order: how many bytes, or
@@ -1992,6 +2123,65 @@ mod descriptor_on_windows {
         handle as usize as u64
     }
 
+    /// A share's server answers a mapping's ask from the process holding its stream's other
+    /// end with the node's file, given to that process (D197's slice 4): here a handle of
+    /// this test's, which reads the file. An ask naming a handle of no client's end of that
+    /// stream, another pipe's end or the server's own, is refused EPERM; a directory's,
+    /// EISDIR.
+    #[test]
+    fn a_share_gives_its_streams_other_end_the_file_and_none_else() {
+        let dir = shards_testdir::TempDir::new("fs-give").unwrap();
+        std::fs::write(dir.join("f"), b"mapped bytes").unwrap();
+        let root = crate::platform::open_dir(&dir).unwrap();
+        let server = server::Server::new(root.into(), false, None).unwrap();
+        let (served, mut device) = crate::platform::pipe_stream::pair(true);
+        let (other, other_client) = crate::platform::pipe_stream::pair(true);
+        let value = |h: &dyn std::os::windows::io::AsRawHandle| h.as_raw_handle() as usize as u64;
+        let (own, ours, others) = (
+            value(&device),
+            value(&served),
+            [value(&other), value(&other_client)],
+        );
+        std::thread::scope(|scope| {
+            let answering = scope.spawn(|| answer(&server, served));
+            // LOOKUP of `f` beneath the root, node 1: its entry's node.
+            let mut lookup = Vec::new();
+            lookup.extend_from_slice(&42u32.to_le_bytes());
+            lookup.extend_from_slice(&proto::op::LOOKUP.to_le_bytes());
+            lookup.extend_from_slice(&7u64.to_le_bytes());
+            lookup.extend_from_slice(&1u64.to_le_bytes());
+            lookup.extend_from_slice(&[0u8; 16]);
+            lookup.extend_from_slice(b"f\0");
+            write_frame(&mut device, &lookup).unwrap();
+            let entry = read_frame(&mut device).unwrap().unwrap();
+            assert_eq!(i32::from_le_bytes(entry[4..8].try_into().unwrap()), 0);
+            let node = u64::from_le_bytes(entry[16..24].try_into().unwrap());
+            let mut ask = |node: u64, stream: u64| {
+                let asked = descriptor_ask_from(node, false, 0, 2 << 20, std::process::id(), stream);
+                write_control(&mut device, &asked).unwrap();
+                let m = shards_ipc::read_message(&mut device).unwrap().unwrap();
+                (m.kind, m.payload)
+            };
+            let errno = |p: &[u8]| i32::from_le_bytes(p[..4].try_into().unwrap());
+            let (kind, given) = ask(node, own);
+            assert_eq!(kind, 0);
+            let given = u64::from_le_bytes(given[..8].try_into().unwrap());
+            // SAFETY: the file's handle the server gave this process, its one owner.
+            let file = unsafe { OwnedHandle::from_raw_handle(given as usize as _) };
+            let mut read = String::new();
+            std::io::Read::read_to_string(&mut std::fs::File::from(file), &mut read).unwrap();
+            assert_eq!(read, "mapped bytes");
+            for forged in [ours, others[0], others[1]] {
+                let (kind, said) = ask(node, forged);
+                assert_eq!((kind, errno(&said)), (1, proto::EPERM));
+            }
+            let (kind, said) = ask(1, own);
+            assert_eq!((kind, errno(&said)), (1, 21));
+            drop(device);
+            answering.join().unwrap().unwrap();
+        });
+    }
+
     /// Do: ask for node 7's 4 MiB from 2 MiB, writable, and answer with a section's value.
     /// Expect the ask's 38 bytes (DESCRIPTOR, the node, the flag, the range, this process's
     /// id, and the device's end of the stream), and the section adopted.
@@ -2010,7 +2200,7 @@ mod descriptor_on_windows {
         assert_eq!(ask, want);
         let section = got.unwrap();
         assert_eq!(section.as_raw_handle() as usize as u64, value);
-        assert!(names_a_section(section.as_raw_handle()));
+        assert_eq!(made_of(section.as_raw_handle()), Some(Made::Section));
     }
 
     /// Do: answer with an errno; with a value naming an event, which is no section; with a

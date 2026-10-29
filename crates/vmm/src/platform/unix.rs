@@ -317,6 +317,10 @@ pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether memory reserved for a guest is charged the host's memory as it is reserved: not
+/// here, where Linux and macOS give an anonymous mapping's pages as they are touched.
+pub const CHARGED_AS_RESERVED: bool = false;
+
 /// Reserves `len` bytes of guest RAM of which the host gives nothing yet: [`reserve_ram`]'s,
 /// [`withhold`]n at once, each part [`grant`]ed as it is given out (memory to plug, D133).
 pub fn reserve_withheld(len: usize) -> io::Result<NonNull<u8>> {

@@ -831,6 +831,10 @@ impl Window {
         }
     }
 
+    /// Lets go of node `node`'s ranges before its guest cuts its file short: nothing here,
+    /// where a host cuts a file under its mappings, and [`Window::reconcile`] follows it.
+    pub fn evict(&self, _node: u64) {}
+
     /// Node `node`'s file was cut short by another process, its watch says: its ranges are
     /// what it is now, zeros where it has no pages, and a vCPU that spun on one of those
     /// pages runs on (PM M273).

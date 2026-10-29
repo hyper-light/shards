@@ -16311,3 +16311,83 @@ revision before comparing a changed API/implementation.
 - **Decided.** `nt_open` answers an open (FILE_OPEN) of a name being removed as not found
   (ERROR_FILE_NOT_FOUND), as unlink(2) leaves none: the log reader then takes the segment as
   gone, as it does one removed between its listing and its open.
+
+### M412. A DAX window's range of a host file's own section on Windows (D197's slice 4, D189)
+
+- **Question.** A share another server serves maps sections that reach past every range it
+  answers for (M343); a section of a file itself reaches no further than the file, where a
+  window's range is 2 MiB (FUSE_DAX_SZ). Before shards' own server answers a mapping with
+  one: can a range's placeholder take a view of a file that ends within it, what do the view
+  and the file then say of each other, and what does a mapped section keep the server from
+  doing for its guest?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m412.rs` (`cargo run --release
+  --bin m412`), on jupiter (Windows 11 26200), 2026-10-29: a file of 1 MiB and 100 bytes, a
+  section of it as long as it (CreateFileMappingW, sizes 0), a 2 MiB placeholder
+  (VirtualAlloc2, MEM_RESERVE_PLACEHOLDER) split and filled (MapViewOfFile3,
+  MEM_REPLACE_PLACEHOLDER), another handle of the file to write and read through, and each
+  operation's answer; 2 runs, alike.
+- **Found.**
+  - A placeholder splits at a page that is no multiple of the allocation granularity
+    (1,052,672 bytes, 1028 KiB): ok.
+  - A view asked as long as that split, a page past the section's bytes, is refused,
+    "Access is denied"; asked as long as the file, 1,048,676 bytes, it fills the
+    page-rounded placeholder. Committed memory takes the placeholder's rest.
+  - The view reads the file, and zeros past its end in its last page. A store there reaches
+    the file only if the file then grows over it (0xAB read back after a growth).
+  - A view and the file's cached reads and writes through another handle see each other: a
+    WriteFile's byte read through the view, a store through the view read by ReadFile.
+  - Cut short while a view is mapped: refused, ERROR_USER_MAPPED_FILE (1224, "The requested
+    operation cannot be performed on a file with a user-mapped section open"); likewise with
+    the section's handle held and no view; with neither, cut. Grown while a view is mapped:
+    grown.
+  - With a view mapped and its section's handle closed: a hole punched
+    (FSCTL_SET_ZERO_DATA), the file renamed, and removed with POSIX semantics, its name gone
+    at once and the view reading on.
+  - A section to write of a handle opened to read alone: refused, access denied; to read
+    alone: made.
+- **So, for slice 4**: a range's view is as long as the file's bytes in it, the rest of the
+  range left to the guest's next access; the VMM keeps views alone, no section's handle; and
+  a guest's cut of a file it maps needs its microVM's views of that file let go first.
+
+### M413. A DAX window's head on WHP, committed as its guest touches it (D189, D197's slice 4)
+
+- **Question.** containers.rs `a_groups_job_holds_its_microvms_to_its_memory_max` failed 2
+  runs of 2 on jupiter once shards' own shares had DAX windows on Windows, as long as the
+  host's memory by default (D189), and passed 2 of 2 with `SHARDS_SHARE_WINDOW_MIB=0`: its
+  run within a 1 GiB group's budget ended before its VM was ready, status 125. A window's
+  head, the guest's page structures for it, is a 64th of its length and more
+  (`head::window_head_len`), memory of the VM's own (`Head::new`), which Windows committed
+  whole as it reserved it (`platform::reserve_ram`): about 2 GiB for jupiter's window,
+  charged at once, past the group's job, where Unix gives its pages as the guest touches
+  them, 32 KiB of a 2 MiB block as it first maps a range (kernel patch 0011). Can a head be
+  committed as its guest touches it, under WHP?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m341.rs`, its question 7
+  (`commit_as_touched`), `cargo run --release --bin m341`, on jupiter (Windows 11 26200),
+  2026-10-29, 3 runs: a 2 MiB reservation (VirtualAlloc, MEM_RESERVE alone) mapped at stage
+  2 (WHvMapGpaRange) at once, and the guest's loads and stores there before and after its
+  64 KiB blocks are committed (VirtualAlloc, MEM_COMMIT), decommitted (MEM_DECOMMIT) and
+  committed again.
+- **Found**, alike in every run:
+  - The stage-2 map over memory only reserved is taken.
+  - The guest's load there exits to the VMM, a memory access at its address, until the
+    host commits its block; then it reads the host's store, with no further call.
+  - The block after those committed still exits. The guest's store lands in the host's
+    memory.
+  - Decommitted, a block's load exits again; committed again, it reads zeros.
+  - Committing a 64 KiB block: n=16 p50=0.70 p90=1.90 p99=4.90 max=4.90 µs; p50=1.20
+    p90=3.30 p99=5.90 max=5.90; p50=0.80 p90=1.50 p99=5.70 max=5.70. A load's round trip
+    through its exit: 23.4 to 49.9 µs, where a committed load's took 17.0 to 24.2.
+- **Decided.** Where the host charges memory as it is reserved
+  (`platform::CHARGED_AS_RESERVED`, Windows), a head is reserved alone and each of its 2
+  MiB blocks committed as its guest first touches one (`Head::commit_at`, through the
+  control device's memory fault, `WindowHeads::memory_fault`): the block a save keeps or
+  skips whole, and the page structures of 64 of the window's ranges, so that a head costs
+  what its guest maps, as on Unix. A save reads its committed blocks alone, a restore
+  commits only the blocks it reads back, and a map-back gives a zero block back
+  uncommitted (`a_heads_blocks_are_committed_as_its_guest_touches_them`). A writable
+  layer's head (D190) stays committed whole: its VM writes it before its guest does
+  (`Layer::boot`), and none of its faults would be answered. With window heads so,
+  `a_groups_job_holds_its_microvms_to_its_memory_max` passed 3 runs of 3 on jupiter, the
+  windows on by default. A reservation inaccessible (PAGE_NOACCESS, as
+  `platform::reserve_withheld` makes one) answered as one readable and writable did, in
+  every step above.

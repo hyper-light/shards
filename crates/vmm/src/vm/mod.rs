@@ -653,8 +653,8 @@ fn window_heads(
         .checked_mul(windows.len())
         .ok_or_else(|| at(format!("{} heads of {each} bytes", windows.len())))?;
     let head = match kept {
-        Some(kept) => head::Head::restore(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
-        None => head::Head::new(len).inspect(|head| {
+        Some(kept) => head::Head::restore_as_touched(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
+        None => head::Head::as_touched(len).inspect(|head| {
             // On the host's base pages, as a restored head is: its guest writes a range's
             // page structures as it first maps the range (shards' kernel patch 0011), 32 KiB
             // of a 2 MiB block, which a huge page would hold whole (2 MiB for the one page

@@ -149,6 +149,13 @@ pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether memory reserved for a guest is charged the host's commit as it is reserved, not as
+/// it is touched: on Windows memory committed is charged its whole length at once, where a
+/// host or its job may have too little (ERROR_COMMITMENT_LIMIT), so memory a guest touches
+/// little of is reserved alone ([`reserve_withheld`]) and committed as it is touched
+/// ([`grant`]), a stage-2 map over it exiting until then (PM M413).
+pub const CHARGED_AS_RESERVED: bool = true;
+
 /// Reserves `len` bytes of guest RAM of which the host gives nothing yet, each part
 /// [`grant`]ed as it is given out (memory to plug, D133): reserved alone (MEM_RESERVE), as
 /// [`withhold`] leaves a region. Reserved and committed first, as [`reserve`] does, it took

@@ -3,8 +3,7 @@
 //! `docker` has them. Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT, so no snapshots
 //! are needed; the image comes from a loopback registry (tests/common, `served`), and its
 //! entrypoint is the test guest. Tests of what Windows serves with a later step of the
-//! platform parity plan say so (`later_on_windows`), or are Unix's until then where they
-//! reach Unix's own interfaces, each naming its step.
+//! platform parity plan are Unix's until then, each naming its step.
 
 #![allow(
     clippy::panic,
@@ -1694,10 +1693,10 @@ fn a_microvms_io_is_paced_at_its_limits() {
 /// reads, and what the host writes it reads, in ranges it maps to read and to write; a
 /// file grown past its end, by either, it reads whole; and one the host cuts short under
 /// its mapping leaves it zeros where the host has no page, never an end to its microVM,
-/// and the file once the host writes there again; whole pages it writes where its host
-/// holds none of them, the host and the guest read (as FUSE_WRITEs, patch 0009).
-// Host directories and their DAX windows on Windows come with the platform parity plan's step 6.
-#[cfg(unix)]
+/// and the file once the host writes there again, where Windows refuses the host its cut
+/// as it refuses any program's of a file a view of which is mapped (PM M412); whole pages
+/// it writes where its host holds none of them, the host and the guest read (as
+/// FUSE_WRITEs, patch 0009).
 #[test]
 fn a_volumes_large_files_go_through_its_dax_window() {
     if cannot_run_vms() {
@@ -1769,9 +1768,8 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .open(dir.join("big"))
         .unwrap();
     for at in [3 << 20, (5 << 20) + 1] {
-        use std::os::unix::fs::FileExt as _;
         let byte = big[at].wrapping_add(2);
-        file.write_all_at(&[byte], at as u64).unwrap();
+        common::write_at(&file, &[byte], at as u64);
         assert_eq!(
             exec(&["fs", &format!("peek:/v/big:{at}")]),
             format!("peek /v/big {at} {byte}\n")
@@ -1799,12 +1797,11 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // The host's, which the guest reads once it asks the file's size again (VALID_S).
     let at = end + 40_000;
     {
-        use std::os::unix::fs::FileExt as _;
         let odd_file = std::fs::OpenOptions::new()
             .write(true)
             .open(dir.join("odd"))
             .unwrap();
-        odd_file.write_all_at(&[9], at as u64).unwrap();
+        common::write_at(&odd_file, &[9], at as u64);
     }
     let deadline = Instant::now() + TIMEOUT;
     loop {
@@ -1830,30 +1827,36 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .write(true)
         .open(dir.join("odd"))
         .unwrap();
-    odd_file.set_len(1 << 20).unwrap();
-    let cut = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
-    assert!(
-        cut.stdout == "peek /v/odd 3145728 0\n"
-            || (cut.status == Some(1) && cut.stderr.contains("failed to fill whole buffer")),
-        "{cut}"
-    );
-    {
-        use std::os::unix::fs::FileExt as _;
-        odd_file.write_all_at(&[5], 3 << 20).unwrap();
-    }
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
-        if r.stdout == "peek /v/odd 3145728 5\n" {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline
-                && (r.stdout == "peek /v/odd 3145728 0\n"
-                    || r.stderr.contains("failed to fill whole buffer")),
-            "{r}"
+    if cfg!(windows) {
+        let refused = odd_file.set_len(1 << 20).unwrap_err();
+        assert_eq!(
+            refused.raw_os_error(),
+            Some(1224),
+            "ERROR_USER_MAPPED_FILE: {refused}"
         );
-        std::thread::sleep(Duration::from_millis(100));
+    } else {
+        odd_file.set_len(1 << 20).unwrap();
+        let cut = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
+        assert!(
+            cut.stdout == "peek /v/odd 3145728 0\n"
+                || (cut.status == Some(1) && cut.stderr.contains("failed to fill whole buffer")),
+            "{cut}"
+        );
+        common::write_at(&odd_file, &[5], 3 << 20);
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
+            if r.stdout == "peek /v/odd 3145728 5\n" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline
+                    && (r.stdout == "peek /v/odd 3145728 0\n"
+                        || r.stderr.contains("failed to fill whole buffer")),
+                "{r}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     // Cut short by the host while a process holds it open, read whole: with nothing asked
     // about the file between, the holder's read past the new end goes through the mapping
@@ -1884,15 +1887,22 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         assert!(Instant::now() < deadline, "the holder never read the file");
         std::thread::sleep(Duration::from_millis(10));
     }
-    std::fs::OpenOptions::new()
+    let cut = std::fs::OpenOptions::new()
         .write(true)
         .open(dir.join("held"))
         .unwrap()
-        .set_len(1 << 20)
-        .unwrap();
+        .set_len(1 << 20);
+    // Refused on Windows, its window mapping it, which the holder reads on (PM M412).
+    let past = if cfg!(windows) {
+        assert_eq!(cut.unwrap_err().raw_os_error(), Some(1224));
+        odd[3 << 20]
+    } else {
+        cut.unwrap();
+        0
+    };
     std::fs::write(dir.join("held-go"), b"").unwrap();
     let held = holder.join().unwrap();
-    assert_eq!(held.stdout, "hold /v/held 3145728 0\n", "{held}");
+    assert_eq!(held.stdout, format!("hold /v/held 3145728 {past}\n"), "{held}");
     // Whole pages written by the guest where its host holds none of the file (D189, patch
     // 0009): on Linux the host lets go of the file's pages first, and the guest's kernel
     // writes them as a FUSE_WRITE, by its window's record; elsewhere through the window.
@@ -1974,12 +1984,11 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         std::thread::sleep(Duration::from_millis(10));
     }
     {
-        use std::os::unix::fs::FileExt as _;
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(dir.join("mapped"))
             .unwrap();
-        file.write_all_at(b"x", 9 << 20).unwrap();
+        common::write_at(&file, b"x", 9 << 20);
     }
     std::fs::write(dir.join("mapped-go"), b"").unwrap();
     let mapped = mapper.join().unwrap();
@@ -1998,8 +2007,6 @@ fn a_volumes_large_files_go_through_its_dax_window() {
 /// (D189): a file of that size its guest maps, as statx says, and one a byte short it reads
 /// through FUSE; each it reads whole as the host wrote it, what it writes in place the host
 /// reads, and what the host writes in place it reads.
-// Host directories and their DAX windows on Windows come with the platform parity plan's step 6.
-#[cfg(unix)]
 #[test]
 fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
     if cannot_run_vms() {
@@ -2056,12 +2063,11 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
         // Its first written in place by the host: the guest reads it.
         let byte = file[0].wrapping_add(2);
         {
-            use std::os::unix::fs::FileExt as _;
             let host = std::fs::OpenOptions::new()
                 .write(true)
                 .open(dir.join(name))
                 .unwrap();
-            host.write_all_at(&[byte], 0).unwrap();
+            common::write_at(&host, &[byte], 0);
         }
         assert_eq!(
             exec(&["fs", &format!("peek:{path}:0")]),
@@ -2077,9 +2083,6 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
 /// `SHARDS_SHARE_WINDOW_MIB` is 0; and through one where it gives one, on any host.
 #[test]
 fn a_volumes_large_files_go_through_a_dax_window_by_default() {
-    if common::later_on_windows(6, "volumes' DAX windows") {
-        return;
-    }
     if cannot_run_vms() {
         return;
     }
@@ -2151,9 +2154,6 @@ fn host_is_a_virtual_machine_on_amd() -> bool {
 /// volume has none.
 #[test]
 fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
-    if common::later_on_windows(6, "volumes' DAX windows") {
-        return;
-    }
     if cannot_run_vms() {
         return;
     }
@@ -2210,9 +2210,6 @@ fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
 /// bytes missing.
 #[test]
 fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
-    if common::later_on_windows(6, "volumes' DAX windows") {
-        return;
-    }
     if cannot_run_vms() {
         return;
     }

@@ -6815,9 +6815,8 @@ impl<D: Disk> Daemon<D> {
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
             // And each share's DAX window, where the daemon gives one (D189), as its join
             // share's, every range of all of them within the host's mappings where it limits
-            // them. None on Windows yet (D197): a section of a host file reaches none of it
-            // past its end, where a window's ranges are 2 MiB each (window_whp.rs).
-            cfg.share_window_mib = if cfg!(windows) { 0 } else { self.share_window_mib };
+            // them: on Windows of the files its share process gives (D197's slice 4).
+            cfg.share_window_mib = self.share_window_mib;
             if let Some(limit) = self.max_map_count {
                 let windows = u64::try_from(cfg.shares.len())
                     .unwrap_or(u64::MAX)

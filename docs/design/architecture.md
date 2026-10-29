@@ -2811,7 +2811,8 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       held (patch 0009). The ask is the Unix one plus the VM's pid (le32) and its stream
       handle's value (le64), 38 bytes. The server duplicates the section only into a process
       holding the share's own stream, and answers with its value. The device adopts a value
-      only if NtQueryObject's type is "Section", and leaves any other alone.
+      only if NtQueryObject's type is "Section", or "File", which shards' own share process
+      gives (D197's slice 4), and leaves any other alone.
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
@@ -6604,7 +6605,7 @@ stream, word for word, and `logs` reads the run's own copy; an ETW session is an
 administrator's or Performance Log Users', and a host whose user is neither says SKIP.
 Elsewhere it tests the refusal. A unit test holds each event's words to moby's.
 
-### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (slices 1 to 3 built)
+### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (built)
 
 **Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,
 docs/audit/2026-10-27_platform-parity.md's host directories on Windows): a microVM's volumes
@@ -6723,15 +6724,53 @@ shards' own shares' DAX windows (slice 4). What it took, decided:
   fsutil sends a Windows file to a build as 0755 (shards-build's `host.rs`). shards takes
   the build's: a Linux program or script in a project runs from its bind, and its files
   stay their owner's to write, root's in the guest, as a Unix host's are.
-- **No DAX window for shards' own shares on Windows until slice 4**: a section of a file
-  reaches nothing past its end, where a window's ranges are 2 MiB each; DESCRIPTOR is
-  refused (EOPNOTSUPP), and FUSE's reads and writes serve each file.
 - **A host's bind sources are its drives' paths** (D207).
+
+**Built (slice 4): shards' own shares' DAX windows on Windows**, a volume's large files
+mapped from the host's page cache as on Unix (D189), held to every host's DAX tests
+(containers.rs's five and saved.rs's restore) on jupiter and CI's Windows runners. What it
+took, decided (PM M412):
+
+- **The share process gives the VM the file, not a section** (`fs/mod.rs`
+  `descriptor_for`). The ask names the VM process and its end of the stream there. The share
+  process duplicates that handle and holds it to be a client's end of its own pipe (one
+  name, FileNameInfo; its own end the server's, GetNamedPipeInfo), refusing the ask
+  otherwise (EPERM), then duplicates into the VM the node's file, opened as Unix's server
+  opens a mapping's. A section of a file reaches no further than the file, which grows
+  under the guest; with the file, the window makes its sections itself, each as long as the
+  file then, and reads its size, as the Unix window keeps a mapping's descriptor.
+- **A range the file ends within** is its placeholder split at the page after the file's
+  bytes there: a view as long as those bytes (a view asked a page past its section's bytes
+  is refused, M412), committed zeros after it, the two coalesced again as it is freed. The
+  guest reads the file's bytes, and zeros past its end, as on Unix.
+- **Followed as the Unix window follows a file**: before the guest hears a size,
+  `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
+  held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
+  each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
+  the file's size, an OPEN that truncates it) finds the file's views let go of first
+  (`evict`), each range its placeholder until the reply; then `reconcile` makes them what
+  the file is, cut or not. A vCPU that reaches one meanwhile waits, and runs its access
+  again once it is made. A host program's cut of a file a microVM maps is refused, as NTFS
+  refuses any program's cut of a mapped file; a hole punched, a rename and a removal are
+  not (M412), and containers.rs holds the host's cuts to that refusal on Windows.
+- **A window's head committed as its guest touches it.** A window's head, its guest's page
+  structures for it, is a 64th of its length and more (D189), memory of the VM's own,
+  which Windows committed whole as it reserved it: a window as long as the host's memory
+  took that at its VM's start, past a group's 1 GiB budget (PM M413). Where the host
+  charges memory as it is reserved (`platform::CHARGED_AS_RESERVED`), a window's head is
+  reserved alone and each of its 2 MiB blocks committed as its guest first touches one:
+  WHP takes a stage-2 map over memory only reserved, its guest's access exiting until the
+  block is committed (M413), and the control device answers that exit
+  (`WindowHeads::memory_fault`). So a head costs the page structures of the ranges its
+  guest maps, as on Unix. A save reads its committed blocks alone, a restore commits the
+  blocks it reads back, and a map-back gives a zero block back uncommitted. A writable
+  layer's head (D190) stays committed whole, its VM writing it first.
 
 **Slices.** 1 (built): the server's host calls behind functions of their own, `mod calls`,
 Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own tests on
 Windows. 3 (built): the share process and the daemon's shares on Windows, and the volume
-and bind tests on its CI runners. 4: shards' own shares' DAX windows on Windows.
+and bind tests on its CI runners. 4 (built): shards' own shares' DAX windows on Windows.
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 

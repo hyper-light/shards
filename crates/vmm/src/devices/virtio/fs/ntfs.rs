@@ -690,6 +690,48 @@ pub fn make_special(h: BorrowedHandle<'_>, kind: u32, dev: (u32, u32)) -> Result
     Ok(())
 }
 
+/// Whether `theirs` is a client's end of the very pipe whose server end `ours` is: one name
+/// (FileNameInfo; a share's pipe has a name of its own, `shards_ipc::byte_pair`), `ours` a
+/// server's end and `theirs` none (GetNamedPipeInfo).
+pub fn pipe_peers(ours: std::os::windows::io::RawHandle, theirs: std::os::windows::io::RawHandle) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{FileNameInfo, GetFileInformationByHandleEx};
+    use windows_sys::Win32::System::Pipes::{GetNamedPipeInfo, PIPE_SERVER_END};
+    let server_end = |h| {
+        let mut flags = 0u32;
+        // SAFETY: a pipe's handle its caller holds; the flags alone asked for.
+        let got = unsafe {
+            GetNamedPipeInfo(
+                h,
+                &mut flags,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        (got != 0).then_some(flags & PIPE_SERVER_END != 0)
+    };
+    let name = |h| {
+        // A FILE_NAME_INFO's length, then its name's UTF-16 units, in 4 KiB.
+        let mut buf = [0u32; 1024];
+        let room = u32::try_from(std::mem::size_of_val(&buf)).unwrap_or(0);
+        // SAFETY: a buffer of `room` bytes, aligned for FILE_NAME_INFO, for a handle its
+        // caller holds.
+        if unsafe { GetFileInformationByHandleEx(h, FileNameInfo, buf.as_mut_ptr().cast(), room) } == 0 {
+            return None;
+        }
+        let bytes = usize::try_from(*buf.first()?).ok()?;
+        let units: Vec<u16> = buf
+            .get(1..)?
+            .iter()
+            .flat_map(|w| [(*w & 0xFFFF) as u16, (*w >> 16) as u16])
+            .collect();
+        units.get(..bytes / 2).map(<[u16]>::to_vec)
+    };
+    server_end(ours) == Some(true)
+        && server_end(theirs) == Some(false)
+        && name(ours).is_some_and(|n| name(theirs) == Some(n))
+}
+
 /// The access `h` was opened with (NtQueryObject's ObjectBasicInformation), which NT checks
 /// each call on it against, where Unix checks its file's.
 pub fn granted(h: BorrowedHandle<'_>) -> Result<u32, Errno> {

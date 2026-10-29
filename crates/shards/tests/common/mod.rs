@@ -853,18 +853,15 @@ pub fn host_name() -> String {
     }
 }
 
-/// Whether this host serves `what` only once the platform parity plan's step `step` has
-/// landed (docs/audit/2026-10-27_platform-parity.md): Windows, until then, which says so
-/// with a SKIP line, as a host without a backend does.
-pub fn later_on_windows(step: u32, what: &str) -> bool {
-    if cfg!(windows) {
-        let _ = writeln!(
-            io::stderr(),
-            "SKIP: Windows serves {what} with the platform parity plan's step {step}"
-        );
-        return true;
-    }
-    false
+/// Writes `bytes` into `file` at `at`, in place, as a host's program writes one.
+pub fn write_at(file: &std::fs::File, bytes: &[u8], at: u64) {
+    #[cfg(unix)]
+    std::os::unix::fs::FileExt::write_all_at(file, bytes, at).unwrap();
+    #[cfg(windows)]
+    assert_eq!(
+        std::os::windows::fs::FileExt::seek_write(file, bytes, at).unwrap(),
+        bytes.len()
+    );
 }
 
 /// `cmd` started so that [`interrupt`] reaches it: on Windows in a process group of its own,
