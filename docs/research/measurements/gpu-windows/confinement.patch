@@ -1,0 +1,164 @@
+diff --git a/crates/ipc/src/windows.rs b/crates/ipc/src/windows.rs
+index ecde3c7b..08fd79be 100644
+--- a/crates/ipc/src/windows.rs
++++ b/crates/ipc/src/windows.rs
+@@ -1639,7 +1639,9 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
+         Holds::Network => network_capabilities(),
+         Holds::Nothing => &[],
+     };
+-    let station = match (s.graphics, s.container) {
++    // M385: a GPU's child without its window station and desktop (SHARDS_M385_NO_STATION),
++    // or with no AppContainer to grant them.
++    let station = match (s.graphics && std::env::var_os("SHARDS_M385_NO_STATION").is_none() && s.container.is_some(), s.container) {
+         (false, _) => None,
+         (true, Some(container)) => Some(Station::new(container)?),
+         (true, None) => {
+@@ -1876,7 +1878,8 @@ fn create(
+         .collect();
+     let child_policy = CHILD_PROCESS_RESTRICTED;
+     let mut words = MITIGATIONS;
+-    if s.graphics {
++    // M385: a GPU's child with Win32k's calls disabled too (SHARDS_M385_WIN32K_DISABLED).
++    if s.graphics && std::env::var_os("SHARDS_M385_WIN32K_DISABLED").is_none() {
+         words[0] &= !WIN32K_DISABLED;
+     }
+     let mut held: Vec<SID_AND_ATTRIBUTES> = caps
+@@ -2442,6 +2445,17 @@ unsafe impl Sync for Station {}
+ /// Makes each window station's name its own within this process.
+ static STATIONS: AtomicU64 = AtomicU64::new(0);
+ 
++/// M385: `n` window stations and desktops made for `container` and closed, each one's time.
++pub fn m385_stations(container: &AppContainer, n: usize) -> io::Result<Vec<std::time::Duration>> {
++    (0..n)
++        .map(|_| {
++            let at = std::time::Instant::now();
++            drop(Station::new(container)?);
++            Ok(at.elapsed())
++        })
++        .collect()
++}
++
+ impl Station {
+     fn new(container: &AppContainer) -> io::Result<Station> {
+         let user32 = user32()?;
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index b89ebafd..ccb33731 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -7677,10 +7677,21 @@ impl<D: Disk> Daemon<D> {
+             )
+             .collect();
+         let err = io::stderr();
+-        let env = crate::netproc::child_env();
++        let mut env = crate::netproc::child_env();
+         // A GPU's VM process is the GPU's build, which runs its host's GPU driver (D144,
+         // D202).
+         let gpu = args.iter().any(|a| *a == "--gpu");
++        // M385: the Vulkan loader's every word, in the daemon's log.
++        if gpu {
++            env.push(("VK_LOADER_DEBUG", "all".into()));
++        }
++        // M385: a station's making timed, n times (SHARDS_M385_STATIONS).
++        if let Some(n) = std::env::var("SHARDS_M385_STATIONS").ok().and_then(|n| n.parse::<usize>().ok()) {
++            let mut times = shards_ipc::m385_stations(&container, n).map_err(|e| format!("M385: {e}"))?;
++            times.sort();
++            let at = |q: f64| times.get(((q * times.len() as f64).ceil() as usize).saturating_sub(1)).copied().unwrap_or_default();
++            let _ = writeln!(io::stderr(), "M385: stations n={n} p50 {:?} p90 {:?} p99 {:?} max {:?}", at(0.5), at(0.9), at(0.99), at(1.0));
++        }
+         let binary = if gpu {
+             crate::helpers::vm_gpu()?
+         } else {
+@@ -7696,7 +7707,12 @@ impl<D: Disk> Daemon<D> {
+             stderr: err.as_handle(),
+             sockets: &sockets,
+             env: &crate::netproc::env_pairs(&env),
+-            container: Some(&container),
++            // M385: a GPU's VM process outside its AppContainer (SHARDS_M385_NO_APP_CONTAINER).
++            container: if gpu && std::env::var_os("SHARDS_M385_NO_APP_CONTAINER").is_some() {
++                None
++            } else {
++                Some(&container)
++            },
+             holds: shards_ipc::Holds::Hypervisor,
+             group: group.as_ref(),
+             graphics: gpu,
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index a7bae159..8e6e7a65 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -2338,7 +2338,8 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+ /// anything but `shards`, starts no VM.
+ #[cfg(windows)]
+ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+-    if !shards_ipc::in_app_container() {
++    // M385: a GPU's VM process goes on outside its AppContainer.
++    if !shards_ipc::in_app_container() && !shards_vmm::devices::virtio::gpu::RENDERS {
+         return Err(
+             "shards-vm is not in an AppContainer, which confines every VM on Windows: start it with \
+              `shards run vm --kernel`, which confines it"
+diff --git a/crates/vmm/src/devices/virtio/gpu/virgl.rs b/crates/vmm/src/devices/virtio/gpu/virgl.rs
+index 25273641..20d2b797 100644
+--- a/crates/vmm/src/devices/virtio/gpu/virgl.rs
++++ b/crates/vmm/src/devices/virtio/gpu/virgl.rs
+@@ -680,9 +680,61 @@ impl std::fmt::Debug for Venus {
+ 
+ static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ 
++/// M385: what of Windows' graphics this process reaches, said on stderr.
++#[cfg(windows)]
++fn m385_probe() {
++    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
++    let say = |s: String| {
++        use std::io::Write as _;
++        let _ = writeln!(std::io::stderr(), "M385: {s}");
++    };
++    let load = |name: &str| {
++        let w: Vec<u16> = name.encode_utf16().chain([0]).collect();
++        // SAFETY: a system DLL by name.
++        let h = unsafe { LoadLibraryExW(w.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
++        let e = std::io::Error::last_os_error();
++        say(format!("LoadLibrary {name}: {}", if h.is_null() { e.to_string() } else { "loaded".into() }));
++        h
++    };
++    let gdi = load("gdi32.dll");
++    if !gdi.is_null() {
++        #[repr(C)]
++        struct Enum2 {
++            count: u32,
++            adapters: *mut c_void,
++        }
++        // SAFETY: gdi32's export by name.
++        if let Some(f) = unsafe { GetProcAddress(gdi, c"D3DKMTEnumAdapters2".as_ptr().cast()) } {
++            // SAFETY: D3DKMTEnumAdapters2's signature (d3dkmthk.h).
++            let f: unsafe extern "system" fn(*mut Enum2) -> i32 = unsafe { std::mem::transmute(f) };
++            let mut e = Enum2 { count: 0, adapters: std::ptr::null_mut() };
++            // SAFETY: the count alone asked.
++            let st = unsafe { f(&raw mut e) };
++            say(format!("D3DKMTEnumAdapters2: status {st:#x}, {} adapters", e.count));
++        }
++    }
++    let _user = load("user32.dll");
++    let dxgi = load("dxgi.dll");
++    if !dxgi.is_null() {
++        // SAFETY: dxgi's export by name.
++        if let Some(f) = unsafe { GetProcAddress(dxgi, c"CreateDXGIFactory1".as_ptr().cast()) } {
++            // SAFETY: CreateDXGIFactory1's signature (dxgi.h).
++            let f: unsafe extern "system" fn(*const [u8; 16], *mut *mut c_void) -> i32 = unsafe { std::mem::transmute(f) };
++            // IID_IDXGIFactory1, 770aae78-f26f-4dba-a829-253c83d1b387.
++            let iid: [u8; 16] = [0x78, 0xae, 0x0a, 0x77, 0x6f, 0xf2, 0xba, 0x4d, 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87];
++            let mut out = std::ptr::null_mut();
++            // SAFETY: an IID and an out pointer.
++            let hr = unsafe { f(&raw const iid, &raw mut out) };
++            say(format!("CreateDXGIFactory1: hr {hr:#x}"));
++        }
++    }
++}
++
+ impl Venus {
+     /// Starts the renderer, Venus alone: once a process.
+     pub fn new() -> Result<Venus, String> {
++        #[cfg(windows)]
++        m385_probe();
+         if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+             return Err("the GPU renderer runs once a process".into());
+         }

@@ -7678,8 +7678,16 @@ impl<D: Disk> Daemon<D> {
             .collect();
         let err = io::stderr();
         let env = crate::netproc::child_env();
+        // A GPU's VM process is the GPU's build, which runs its host's GPU driver (D144,
+        // D202).
+        let gpu = args.iter().any(|a| *a == "--gpu");
+        let binary = if gpu {
+            crate::helpers::vm_gpu()?
+        } else {
+            self.vm.clone()
+        };
         let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
-            program: &self.vm,
+            program: &binary,
             args: &args,
             grants_at: 1,
             given: &given,
@@ -7691,8 +7699,9 @@ impl<D: Disk> Daemon<D> {
             container: Some(&container),
             holds: shards_ipc::Holds::Hypervisor,
             group: group.as_ref(),
+            graphics: gpu,
         })
-        .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+        .map_err(|e| format!("starting {}: {e}", binary.display()))?;
         // Shared with it already, and its handles duplicated into it.
         drop((given, sockets));
         // Its network process, given the VM's process to watch, before the VM runs: ended
@@ -7716,7 +7725,7 @@ impl<D: Disk> Daemon<D> {
             .into_handle();
         let mut child = suspended
             .resume()
-            .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+            .map_err(|e| format!("starting {}: {e}", binary.display()))?;
         // Its AppContainer's profile goes once it has, as its follower lets it go.
         child.hold(container);
         // What the daemon sends on its link goes to the VM: handles duplicated into it.

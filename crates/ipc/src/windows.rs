@@ -25,6 +25,11 @@
 //!   the Windows takes it (windows-2022 does not, M201). Not dynamic code: windows-2022's
 //!   WHP sets no partition up without it; a VM process forbids itself dynamic code once its
 //!   partition is set up (M202).
+//! - **A GPU's VM process** (D202) runs its host's GPU driver, which reaches its kernel's
+//!   through Win32k (gdi32's D3DKMT calls): Win32k's calls are allowed it, and it is given a
+//!   window station and desktop of its own, which its AppContainer alone is granted, where
+//!   gdi32 and user32 initialize as they do on no desktop it cannot reach, and from which it
+//!   reaches neither its user's desktop nor its clipboard (PM M385).
 
 use std::ffi::OsStr;
 use std::fs::File;
@@ -33,8 +38,8 @@ use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle, RawHandle};
 use std::path::Path;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{OnceLock, PoisonError, RwLock};
 
 use crate::pipe::Message;
 use crate::signal::SIGKILL;
@@ -46,12 +51,14 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
-    SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    SE_FILE_OBJECT, SE_WINDOW_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, SetSecurityInfo,
+    TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile};
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, FreeSid, GetAce, GetLengthSid, PSECURITY_DESCRIPTOR,
-    PSID, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, FreeSid, GetAce, GetLengthSid, NO_INHERITANCE,
+    PSECURITY_DESCRIPTOR, PSID, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
+    SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 };
 use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppContainer};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -85,6 +92,14 @@ const CHILD_PROCESS_RESTRICTED: u32 = 0x01;
 /// devices (1 << 52) or of a low label (1 << 56); and in the second word, no FSCTL system
 /// calls (1 << 56). Not dynamic code (1 << 36): see the module's documentation.
 const MITIGATIONS: [u64; 2] = [(1 << 24) | (1 << 28) | (1 << 32) | (1 << 52) | (1 << 56), 1 << 56];
+
+/// The first word's no-Win32k bit, which a GPU's child goes without ([`Spawn::graphics`]).
+const WIN32K_DISABLED: u64 = 1 << 28;
+
+/// Held to read by each process made, and to write while this process's window station is
+/// another's, as a GPU child's desktop is made in its own ([`Station`]): a child made
+/// meanwhile would have been made on that one.
+static STATION_SWITCH: RwLock<()> = RwLock::new(());
 
 /// Whether this Windows refuses the second mitigation word (windows-2022, M201): found by
 /// the first child made, which then goes without it.
@@ -233,6 +248,9 @@ pub struct Child {
     pid: u32,
     /// A confined child's Job; none for one of [`spawn`]'s.
     job: Option<Job>,
+    /// Its window station and desktop, a GPU's child's ([`Spawn::graphics`]): closed after
+    /// its Job has ended it.
+    _station: Option<Station>,
     /// Its AppContainer, where it holds one ([`Child::hold`]): its profile goes as this
     /// drops, after its Job has ended it (fields drop in order).
     container: Option<AppContainer>,
@@ -961,6 +979,9 @@ pub struct Spawn<'a> {
     pub holds: Holds,
     /// The job of the group it is made in, if any, its own Job nested under it (D183).
     pub group: Option<&'a GroupJob>,
+    /// Whether it runs a GPU's driver (D202): Win32k's calls allowed it, and a window
+    /// station and desktop of its own ([`Station`]). A child in an AppContainer alone.
+    pub graphics: bool,
 }
 
 /// A child [`spawn_suspended`] made, handed all it is given, which runs once resumed.
@@ -1432,6 +1453,7 @@ fn spawn_env(
         process,
         pid: made.dwProcessId,
         job: None,
+        _station: None,
         container: None,
     };
     // In its group's job before it runs, as a VM process is made in one.
@@ -1533,6 +1555,7 @@ fn create_plain(
         si.StartupInfo.hStdError = stderr;
         si.lpAttributeList = attrs;
         let mut pi = PROCESS_INFORMATION::default();
+        let _made_on_ours = STATION_SWITCH.read().unwrap_or_else(PoisonError::into_inner);
         // SAFETY: a command line we own and may be written; startup info and its
         // attributes, and the environment block, alive through the call.
         if unsafe {
@@ -1616,6 +1639,17 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         Holds::Network => network_capabilities(),
         Holds::Nothing => &[],
     };
+    let station = match (s.graphics, s.container) {
+        (false, _) => None,
+        (true, Some(container)) => Some(Station::new(container)?),
+        (true, None) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a GPU's child is made in an AppContainer",
+            ));
+        }
+    };
+    let desktop = station.as_ref().map(|st| st.desktop_name.as_slice());
     let made = match create(
         s,
         &mut line,
@@ -1623,11 +1657,12 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         &job,
         caps,
         !NO_SECOND_WORD.load(Ordering::Relaxed),
+        desktop,
     ) {
         Err(e) if e.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) => {
             // A Windows that knows no second mitigation word (windows-2022, M201).
             NO_SECOND_WORD.store(true, Ordering::Relaxed);
-            create(s, &mut line, &pipe_read, &job, caps, false)
+            create(s, &mut line, &pipe_read, &job, caps, false, desktop)
         }
         made => made,
     }?;
@@ -1642,6 +1677,7 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         process,
         pid: made.dwProcessId,
         job: Some(job),
+        _station: station,
         container: None,
     };
     drop(pipe_read);
@@ -1812,6 +1848,7 @@ fn create(
     job: &Job,
     caps: &[Vec<u8>],
     second: bool,
+    desktop: Option<&[u16]>,
 ) -> io::Result<PROCESS_INFORMATION> {
     // Standard input, output and error are inherited, made inheritable as std makes them;
     // one this process lacks (a null or invalid handle) the child lacks too.
@@ -1838,7 +1875,10 @@ fn create(
         .chain(std::iter::once(job.raw()))
         .collect();
     let child_policy = CHILD_PROCESS_RESTRICTED;
-    let words = MITIGATIONS;
+    let mut words = MITIGATIONS;
+    if s.graphics {
+        words[0] &= !WIN32K_DISABLED;
+    }
     let mut held: Vec<SID_AND_ATTRIBUTES> = caps
         .iter()
         .map(|b| SID_AND_ATTRIBUTES {
@@ -1922,6 +1962,9 @@ fn create(
         si.StartupInfo.hStdInput = stdin.unwrap_or(std::ptr::null_mut());
         si.StartupInfo.hStdOutput = stdout.unwrap_or(std::ptr::null_mut());
         si.StartupInfo.hStdError = stderr.unwrap_or(std::ptr::null_mut());
+        if let Some(desktop) = desktop {
+            si.StartupInfo.lpDesktop = desktop.as_ptr().cast_mut();
+        }
         si.lpAttributeList = attrs;
         let mut pi = PROCESS_INFORMATION::default();
         let env = environment(s.env);
@@ -1934,6 +1977,7 @@ fn create(
         } else {
             windows_sys::Win32::System::Threading::DETACHED_PROCESS
         };
+        let _made_on_ours = STATION_SWITCH.read().unwrap_or_else(PoisonError::into_inner);
         // SAFETY: a command line we own and may be written; startup info and its
         // attributes, and the environment block, alive through the call.
         if unsafe {
@@ -2304,4 +2348,226 @@ mod tests {
         assert!(child.has_ended());
         child.kill(SIGKILL).unwrap();
     }
+}
+
+/// winuser.h's CreateWindowStationW, GetProcessWindowStation, SetProcessWindowStation,
+/// CreateDesktopW, and CloseDesktop and CloseWindowStation (of one type).
+type CreateWindowStation =
+    unsafe extern "system" fn(*const u16, u32, u32, *const std::ffi::c_void) -> RawHandle;
+type GetProcessWindowStation = unsafe extern "system" fn() -> RawHandle;
+type SetProcessWindowStation = unsafe extern "system" fn(RawHandle) -> i32;
+type CreateDesktop = unsafe extern "system" fn(
+    *const u16,
+    *const u16,
+    *const std::ffi::c_void,
+    u32,
+    u32,
+    *const std::ffi::c_void,
+) -> RawHandle;
+type Close = unsafe extern "system" fn(RawHandle) -> i32;
+/// GetProcAddress's answer, as windows-sys types it.
+type Proc = unsafe extern "system" fn() -> isize;
+
+/// user32's functions a GPU's child's window station and desktop are made with, found as
+/// the first is: only a process that makes one loads user32 (D202).
+struct User32 {
+    create_window_station: CreateWindowStation,
+    get_process_window_station: GetProcessWindowStation,
+    set_process_window_station: SetProcessWindowStation,
+    create_desktop: CreateDesktop,
+    close_desktop: Close,
+    close_window_station: Close,
+}
+
+/// [`User32`], loaded once from System32: or the error that said why not.
+fn user32() -> io::Result<&'static User32> {
+    use windows_sys::Win32::System::LibraryLoader::{
+        GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    };
+    static LOADED: OnceLock<Result<User32, i32>> = OnceLock::new();
+    let loaded = LOADED.get_or_init(|| {
+        let name = wide(OsStr::new("user32.dll"));
+        // SAFETY: a system DLL by its NUL-terminated name, from System32 alone; never freed.
+        let module =
+            unsafe { LoadLibraryExW(name.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+        if module.is_null() {
+            return Err(last().raw_os_error().unwrap_or(0));
+        }
+        let find = |name: &std::ffi::CStr| {
+            // SAFETY: an export of the module just loaded, by its NUL-terminated name.
+            unsafe { GetProcAddress(module, name.as_ptr().cast()) }
+                .ok_or_else(|| last().raw_os_error().unwrap_or(0))
+        };
+        // SAFETY: each user32's export of that name, whose type is as winuser.h declares it.
+        unsafe {
+            Ok(User32 {
+                create_window_station: std::mem::transmute::<Proc, CreateWindowStation>(find(
+                    c"CreateWindowStationW",
+                )?),
+                get_process_window_station: std::mem::transmute::<Proc, GetProcessWindowStation>(find(
+                    c"GetProcessWindowStation",
+                )?),
+                set_process_window_station: std::mem::transmute::<Proc, SetProcessWindowStation>(find(
+                    c"SetProcessWindowStation",
+                )?),
+                create_desktop: std::mem::transmute::<Proc, CreateDesktop>(find(c"CreateDesktopW")?),
+                close_desktop: std::mem::transmute::<Proc, Close>(find(c"CloseDesktop")?),
+                close_window_station: std::mem::transmute::<Proc, Close>(find(c"CloseWindowStation")?),
+            })
+        }
+    });
+    loaded
+        .as_ref()
+        .map_err(|&code| io::Error::from_raw_os_error(code))
+}
+
+/// A window station and a desktop in it, of a GPU's child's own ([`Spawn::graphics`]):
+/// made with their maker's default security (its user, and SYSTEM), and granted to the
+/// child's AppContainer besides, so that gdi32 and user32 initialize in it, which they do
+/// on no desktop its AppContainer is not granted (PM M385). Closed as this drops.
+#[derive(Debug)]
+struct Station {
+    station: RawHandle,
+    desktop: RawHandle,
+    /// `STATION\DESKTOP`, NUL-terminated: STARTUPINFO's lpDesktop.
+    desktop_name: Vec<u16>,
+}
+
+// SAFETY: two handles this value alone owns and closes; user32's functions on them are
+// any thread's.
+unsafe impl Send for Station {}
+// SAFETY: as for Send; nothing is done through a shared reference.
+unsafe impl Sync for Station {}
+
+/// Makes each window station's name its own within this process.
+static STATIONS: AtomicU64 = AtomicU64::new(0);
+
+impl Station {
+    fn new(container: &AppContainer) -> io::Result<Station> {
+        let user32 = user32()?;
+        let name = format!(
+            "shards-gpu-{}-{}",
+            std::process::id(),
+            STATIONS.fetch_add(1, Ordering::Relaxed)
+        );
+        let wide_name = wide(OsStr::new(&name));
+        // A desktop is made in its maker's window station: this process's is the new one's
+        // while it is made, and no process is made meanwhile.
+        let _switched = STATION_SWITCH.write().unwrap_or_else(PoisonError::into_inner);
+        // SAFETY: a NUL-terminated name; default security.
+        let station =
+            unsafe { (user32.create_window_station)(wide_name.as_ptr(), 0, GENERIC_ALL, std::ptr::null()) };
+        if station.is_null() {
+            return Err(last());
+        }
+        let mut made = Station {
+            station,
+            desktop: std::ptr::null_mut(),
+            desktop_name: wide(OsStr::new(&format!("{name}\\gpu"))),
+        };
+        // SAFETY: this process's window station, which it goes back to below.
+        let ours = unsafe { (user32.get_process_window_station)() };
+        // SAFETY: the window station just made.
+        if ours.is_null() || unsafe { (user32.set_process_window_station)(station) } == 0 {
+            return Err(last());
+        }
+        let desktop_name = wide(OsStr::new("gpu"));
+        // SAFETY: a NUL-terminated name, no device or mode; default security.
+        let desktop = unsafe {
+            (user32.create_desktop)(
+                desktop_name.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                GENERIC_ALL,
+                std::ptr::null(),
+            )
+        };
+        let failed = last();
+        // SAFETY: back to this process's own.
+        unsafe { (user32.set_process_window_station)(ours) };
+        if desktop.is_null() {
+            return Err(failed);
+        }
+        made.desktop = desktop;
+        grant_window_object(made.station, &container.sid)?;
+        grant_window_object(made.desktop, &container.sid)?;
+        Ok(made)
+    }
+}
+
+impl Drop for Station {
+    fn drop(&mut self) {
+        let Ok(user32) = user32() else { return };
+        // SAFETY: the handles this value made, closed once.
+        unsafe {
+            if !self.desktop.is_null() {
+                (user32.close_desktop)(self.desktop);
+            }
+            (user32.close_window_station)(self.station);
+        }
+    }
+}
+
+/// Grants `sid` all access to a window station or desktop, `object`, besides what its DACL
+/// grants.
+fn grant_window_object(object: RawHandle, sid: &Sid) -> io::Result<()> {
+    let mut old: *mut ACL = std::ptr::null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: a window object's handle of ours; the descriptor freed below, the DACL in it.
+    let r = unsafe {
+        GetSecurityInfo(
+            object,
+            SE_WINDOW_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut old,
+            std::ptr::null_mut(),
+            &raw mut sd,
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::from_raw_os_error(r as i32));
+    }
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: GENERIC_ALL,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: NO_INHERITANCE,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.0.cast(),
+        },
+    };
+    let mut new: *mut ACL = std::ptr::null_mut();
+    // SAFETY: one entry and the old DACL; the new one freed below.
+    let r = unsafe { SetEntriesInAclW(1, &raw const entry, old, &raw mut new) };
+    let set = if r == 0 {
+        // SAFETY: the new DACL, set on the object.
+        unsafe {
+            SetSecurityInfo(
+                object,
+                SE_WINDOW_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                new,
+                std::ptr::null(),
+            )
+        }
+    } else {
+        r
+    };
+    // SAFETY: what the calls allocated.
+    unsafe {
+        LocalFree(new.cast());
+        LocalFree(sd.cast());
+    }
+    if set != 0 {
+        return Err(io::Error::from_raw_os_error(set as i32));
+    }
+    Ok(())
 }

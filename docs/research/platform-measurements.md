@@ -16458,3 +16458,45 @@ revision before comparing a changed API/implementation.
   of shapes, run after run, which its native run would tell apart from Venus's doing; the
   native run waits for the user's leave to build llama.cpp on the desktop. Speed against
   the host's own is unmeasured on Linux; on macOS it matched (M218).
+
+### M385. What a GPU's VM process needs of Windows to reach its driver, in its AppContainer (D202)
+
+- **Question.** A Windows VM process runs in an AppContainer of its own with Win32k's
+  calls disabled among its mitigations (D141). The GPU's VM process runs its host's Vulkan
+  driver. Does the driver come up there; if not, what least change lets it; and what does
+  that cost each GPU VM's start?
+- **Method.** `docs/research/measurements/gpu-windows/`: `confinement.patch` over the build
+  that adds D202's confinement: switches the daemon reads to start a GPU's VM process with
+  Win32k's calls disabled (SHARDS_M385_WIN32K_DISABLED), without its window station and
+  desktop (SHARDS_M385_NO_STATION), or outside an AppContainer
+  (SHARDS_M385_NO_APP_CONTAINER); the Vulkan loader's log (VK_LOADER_DEBUG=all) and, as the
+  renderer starts, a probe of gdi32's, user32's and dxgi's loads, D3DKMTEnumAdapters2's
+  count and CreateDXGIFactory1's result; and n window stations and desktops made and
+  closed, timed (SHARDS_M385_STATIONS). `variants.sh`: each variant a daemon of its own and
+  one GPU run of vulkaninfo (the image tests/gpu.rs builds). jupiter: AMD Ryzen AI Max+ 395
+  and its Radeon 8060S (AMD's driver 25.20.32.06), Windows 11 10.0.26200, its kiln runner a
+  service in session 0, elevated; 2026-10-29.
+- **Results.**
+
+  | The GPU's VM process | gdi32, user32 | D3DKMT's adapters | DXGI factory | The guest's GPU |
+  |---|---|---|---|---|
+  | its AppContainer, a window station and desktop of its own, Win32k allowed (D202) | loaded | 34 | S_OK | Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics) |
+  | the same, Win32k disabled | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none: "Found no drivers!" |
+  | its AppContainer on its spawner's desktop, Win32k allowed | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | the same, Win32k disabled (D141's VM process) | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | no AppContainer, Win32k disabled | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | no AppContainer, Win32k allowed | loaded | 34 | S_OK | as the first |
+
+  - The loader's log where it found none: "Failed to create dxgi factory for ICD registry
+    verification", then "vkCreateInstance: Found no drivers!"; it reads no driver's
+    manifest from the adapters, whose D3DKMT calls are gdi32's.
+  - A window station and desktop made, granted to an AppContainer and closed: n=200, p50
+    405 µs, p90 588 µs, p99 1.12 ms, max 29.8 ms; again, p50 439 µs, p90 615 µs, p99
+    979 µs, max 28.3 ms.
+- **Reading.** Both of D141's VM process's walls stop a GPU's driver, each alone: with
+  Win32k's calls disabled, gdi32 and user32 fail as they load; in an AppContainer on its
+  spawner's window station and desktop, which do not grant it, they fail as they connect
+  to them, Win32k allowed or not. A window station and desktop of its own, granted to it,
+  and Win32k's calls are enough: the driver comes up in the AppContainer, as it does
+  outside one. Making them costs a GPU VM's start about 0.4 ms. Measured in session 0, a
+  service's, as the runner is; a user's interactive session is unmeasured.

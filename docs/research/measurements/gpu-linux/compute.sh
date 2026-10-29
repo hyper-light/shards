@@ -6,10 +6,15 @@
 # jobs (Dockerfile here), built in a microVM of the build's own; or IMAGE, one built
 # elsewhere and loaded (`shards load`).
 #   [IMAGE=NAME] compute.sh SHARDS OUT_DIR
+# On Windows, from Git Bash or MSYS2, whose shells would make the guest's paths (/llama.cpp)
+# Windows paths of their own before shards sees them (PM M386).
 set -eu
+export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 shards=$1 out=$2
 mkdir -p "$out"
 here=$(cd "$(dirname "$0")" && pwd)
+# The build's context as Windows names it there, where shards takes no path of the shell's.
+if command -v cygpath >/dev/null; then here=$(cygpath -m "$here"); fi
 { uname -a; nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || true; } >"$out/host.txt"
 image=${IMAGE:-shards-e6:1}
 [ -n "${IMAGE:-}" ] || "$shards" build -q -t "$image" "$here" >/dev/null
