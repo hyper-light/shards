@@ -14,6 +14,7 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FileFsFullSizeInformation, FileLinkInformation, FileRenameInformationEx, FileStatLxInformation,
     LX_FILE_METADATA_HAS_DEVICE_ID, LX_FILE_METADATA_HAS_MODE, LX_FILE_METADATA_HAS_UID, NtCreateFile,
     NtQueryEaFile, NtQueryInformationFile, NtQueryVolumeInformationFile, NtSetEaFile, NtSetInformationFile,
+    SYMLINK_FLAG_RELATIVE,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DIR_NOT_EMPTY, ERROR_DIRECTORY, ERROR_DISK_FULL,
@@ -36,11 +37,13 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_EA, FILE_RENAME_INFO, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA, FileBasicInfo,
     FileDispositionInfoEx, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
-    GetFileInformationByHandleEx, SYNCHRONIZE, SetFileInformationByHandle,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
-use windows_sys::Win32::System::SystemServices::FILE_CS_FLAG_CASE_SENSITIVE_DIR;
+use windows_sys::Win32::System::SystemServices::{
+    FILE_CS_FLAG_CASE_SENSITIVE_DIR, IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK,
+};
 use windows_sys::Win32::System::WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION;
 
 use super::host::Stat;
@@ -257,7 +260,7 @@ pub fn stat(h: BorrowedHandle<'_>) -> Result<Stat, Errno> {
         return Err(EIO);
     }
     let kind = match lx.ReparseTag {
-        LX_SYMLINK => 0o120000,
+        LX_SYMLINK | IO_REPARSE_TAG_SYMLINK | IO_REPARSE_TAG_MOUNT_POINT => 0o120000,
         LX_FIFO => 0o010000,
         LX_CHR => 0o020000,
         LX_BLK => 0o060000,
@@ -520,15 +523,131 @@ pub fn symlink_at(dir: BorrowedHandle<'_>, name: &[u16], target: &[u8]) -> Resul
     Ok(made)
 }
 
-/// What the LX symlink `h` is to, its target's bytes; EINVAL for anything else, as
-/// readlink(2) answers of what is no symlink.
+/// What the symlink `h` is to, its target's bytes: an LX symlink's as it holds them; an
+/// NTFS symlink's or a junction's, which the host made, as [`host_target`] turns it; EINVAL
+/// for anything else, as readlink(2) answers of what is no symlink.
 pub fn readlink(h: BorrowedHandle<'_>) -> Result<Vec<u8>, Errno> {
     match reparse(h)? {
         Some((LX_SYMLINK, data)) if data.get(..4) == Some(&LX_SYMLINK_VERSION.to_le_bytes()[..]) => {
             Ok(data.get(4..).unwrap_or_default().to_vec())
         }
+        Some((IO_REPARSE_TAG_SYMLINK, data)) => host_target(h, &data, true),
+        Some((IO_REPARSE_TAG_MOUNT_POINT, data)) => host_target(h, &data, false),
         _ => Err(EINVAL),
     }
+}
+
+/// The target of the host's NTFS symlink (`symlink`) or junction `h`, of reparse data
+/// `data` (MS-FSCC 2.1.2.4, 2.1.2.5: its substitute name's offset and length, its print
+/// name's, a symlink's flags, then the names), as a Linux symlink holds one, as Linux's
+/// symlinks show to a guest on Unix: a relative symlink's target as it is; an absolute
+/// one's, or a junction's (pnpm's node_modules on Windows), on the link's own volume, the
+/// path to it from the link's directory, so that one within a shared tree leads there in
+/// the guest as on the host; any other as NTFS holds it. Each with Linux's separators, its
+/// names' characters the guest's ([`guest_name`]).
+fn host_target(h: BorrowedHandle<'_>, data: &[u8], symlink: bool) -> Result<Vec<u8>, Errno> {
+    let word = |at: usize| -> Result<usize, Errno> {
+        let b: [u8; 2] = data
+            .get(at..at + 2)
+            .and_then(|b| b.try_into().ok())
+            .ok_or(EINVAL)?;
+        Ok(usize::from(u16::from_le_bytes(b)))
+    };
+    let (offset, length) = (word(0)?, word(2)?);
+    let (relative, names): (bool, usize) = if symlink {
+        let flags: [u8; 4] = data.get(8..12).and_then(|b| b.try_into().ok()).ok_or(EINVAL)?;
+        (u32::from_le_bytes(flags) & SYMLINK_FLAG_RELATIVE != 0, 12)
+    } else {
+        (false, 8)
+    };
+    let at = names.checked_add(offset).ok_or(EINVAL)?;
+    let name: Vec<u16> = data
+        .get(at..at.checked_add(length).ok_or(EINVAL)?)
+        .ok_or(EINVAL)?
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .collect();
+    let backslash = u16::from(b'\\');
+    let parts = |path: &[u16]| -> Vec<Vec<u16>> {
+        path.split(|&c| c == backslash)
+            .filter(|p| !p.is_empty())
+            .map(<[u16]>::to_vec)
+            .collect()
+    };
+    let joined = |parts: &[Vec<u16>]| -> Vec<u8> {
+        let mut out = Vec::new();
+        for (i, p) in parts.iter().enumerate() {
+            if i > 0 {
+                out.push(b'/');
+            }
+            out.extend(guest_name(p));
+        }
+        out
+    };
+    if relative {
+        return Ok(joined(&parts(&name)));
+    }
+    let prefix: Vec<u16> = r"\??\".encode_utf16().collect();
+    let target = name.strip_prefix(prefix.as_slice()).unwrap_or(&name);
+    let link = final_path(h)?;
+    let (to, from) = (parts(target), parts(&link));
+    // A name as NTFS compares it where its directory does: its case aside.
+    let same = |a: &[u16], b: &[u16]| {
+        String::from_utf16_lossy(a).to_lowercase() == String::from_utf16_lossy(b).to_lowercase()
+    };
+    // Both on one drive (`X:`), the link's directory its components but its own last.
+    let drive = |p: &[Vec<u16>]| {
+        p.first()
+            .filter(|d| d.len() == 2 && d.get(1) == Some(&u16::from(b':')))
+            .cloned()
+    };
+    let (Some(a), Some(b)) = (drive(&to), drive(&from)) else {
+        return Ok(joined(&to));
+    };
+    let Some((_, dir)) = from.split_last().filter(|_| same(&a, &b)) else {
+        return Ok(joined(&to));
+    };
+    let common = dir.iter().zip(&to).take_while(|(x, y)| same(x, y)).count();
+    let up = dir.len().saturating_sub(common);
+    let mut out: Vec<Vec<u16>> = vec![vec![u16::from(b'.'), u16::from(b'.')]; up];
+    out.extend(to.iter().skip(common).cloned());
+    if out.is_empty() {
+        return Ok(b".".to_vec());
+    }
+    Ok(joined(&out))
+}
+
+/// The path of `h`'s file, as the host names it (GetFinalPathNameByHandleW, its DOS name),
+/// without `\\?\`.
+fn final_path(h: BorrowedHandle<'_>) -> Result<Vec<u16>, Errno> {
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: a buffer of the length given, of a handle the caller holds.
+        let n = unsafe {
+            GetFinalPathNameByHandleW(
+                h.as_raw_handle(),
+                buf.as_mut_ptr(),
+                u32::try_from(buf.len()).unwrap_or(u32::MAX),
+                0,
+            )
+        };
+        let n = usize::try_from(n).map_err(|_| EIO)?;
+        if n == 0 {
+            return Err(last_error());
+        }
+        if n < buf.len() {
+            buf.truncate(n);
+            break;
+        }
+        // Too short: n is the length it needs, its NUL counted.
+        buf = vec![0u16; n];
+    }
+    let prefix: Vec<u16> = r"\\?\".encode_utf16().collect();
+    Ok(buf
+        .strip_prefix(prefix.as_slice())
+        .map_or(buf.clone(), <[u16]>::to_vec))
 }
 
 /// A FIFO, character or block device or Unix socket `name` in `dir`, by its mode's kind
@@ -930,7 +1049,7 @@ pub fn list(h: BorrowedHandle<'_>, restart: bool) -> Result<Vec<Listed>, Errno> 
             .map(|c| u16::from_le_bytes(*c))
             .collect();
         let kind = match tag {
-            LX_SYMLINK => 0o120000,
+            LX_SYMLINK | IO_REPARSE_TAG_SYMLINK | IO_REPARSE_TAG_MOUNT_POINT => 0o120000,
             LX_FIFO => 0o010000,
             LX_CHR => 0o020000,
             LX_BLK => 0o060000,

@@ -4086,6 +4086,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
     }
 
+    /// A file the guest made read-only and opens again to write by a CREATE that finds it is
+    /// no pin of the server's where its host's own mode lets it be opened again (its owner's
+    /// on Unix, D174; any on Windows, whose opens no mode of WSL's refuses): its directory
+    /// renames, and the handle writes on, its descriptor opened again along its new path.
+    #[test]
+    fn a_read_only_file_found_by_create_is_opened_again_as_needed() {
+        let (path, _) = dir();
+        std::fs::create_dir(path.join("d")).unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let d = found(&s, ROOT, "d");
+        let (node, fh) = create(&s, d, "ro", 1 | linux::O_EXCL, 0o444);
+        release(&s, node, fh);
+        let (again, fa) = create(&s, d, "ro", 2, 0o444);
+        assert_eq!(again, node);
+        assert!(s.state.lock().unwrap().pins.is_empty(), "pinned");
+        let mut rename = ROOT.to_le_bytes().to_vec();
+        rename.extend(name("d"));
+        rename.extend(name("e"));
+        assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
+        crowd(&s, 20);
+        assert_eq!(write(&s, again, fa, 0, b"written"), 0);
+        assert_eq!(std::fs::read(path.join("e").join("ro")).unwrap(), b"written");
+        release(&s, again, fa);
+    }
+
     /// The guest's names for the host's attributes: its own `trusted.` and `security.` ones
     /// as the host keeps them (`user.shards.`), its `user.` ones as they are; and on Linux,
     /// none for the host's own `trusted.` and `security.` ones (an SELinux label), which the
@@ -4572,33 +4598,100 @@ mod tests {
         assert_eq!(half(44), 255);
     }
 
-    /// SETATTR's times are the file's, to the 100 ns every host keeps: read back by the
-    /// guest and by the host.
+    /// SETATTR's times are a file's or a directory's, to the 100 ns every host keeps: read
+    /// back by the guest and by the host.
     #[test]
     fn times_set_are_the_files() {
         let (path, s) = dir();
         std::fs::write(path.join("t"), "t").unwrap();
-        let t = found(&s, ROOT, "t");
-        let mut b = (fattr::ATIME | fattr::MTIME).to_le_bytes().to_vec();
-        b.extend([0u8; 4 + 3 * 8]);
-        b.extend(1_000_000_000u64.to_le_bytes());
-        b.extend(1_234_567_890u64.to_le_bytes());
-        b.extend(0u64.to_le_bytes());
-        b.extend(500u32.to_le_bytes());
-        b.extend(700u32.to_le_bytes());
-        b.extend([0u8; 6 * 4]);
-        let (e, out) = answer(&s, &req(op::SETATTR, t, 0, &b));
+        std::fs::create_dir(path.join("d")).unwrap();
+        for n in ["t", "d"] {
+            let node = found(&s, ROOT, n);
+            let mut b = (fattr::ATIME | fattr::MTIME).to_le_bytes().to_vec();
+            b.extend([0u8; 4 + 3 * 8]);
+            b.extend(1_000_000_000u64.to_le_bytes());
+            b.extend(1_234_567_890u64.to_le_bytes());
+            b.extend(0u64.to_le_bytes());
+            b.extend(500u32.to_le_bytes());
+            b.extend(700u32.to_le_bytes());
+            b.extend([0u8; 6 * 4]);
+            let (e, out) = answer(&s, &req(op::SETATTR, node, 0, &b));
+            assert_eq!(e, 0, "{n}");
+            // fuse_attr_out: its attribute after 16 bytes; atime, mtime, their nanoseconds.
+            let word = |at: usize| u64::from_le_bytes(out[16 + at..16 + at + 8].try_into().unwrap());
+            let half = |at: usize| u32::from_le_bytes(out[16 + at..16 + at + 4].try_into().unwrap());
+            assert_eq!((word(24), half(48)), (1_000_000_000, 500), "{n}");
+            assert_eq!((word(32), half(52)), (1_234_567_890, 700), "{n}");
+            let modified = std::fs::metadata(path.join(n)).unwrap().modified().unwrap();
+            assert_eq!(
+                modified,
+                std::time::UNIX_EPOCH + std::time::Duration::new(1_234_567_890, 700),
+                "{n}"
+            );
+        }
+    }
+
+    /// A device node the guest makes is its maker's, of the mode it was made with and the
+    /// kind and number it was given, as the host keeps it: an empty file beside its record
+    /// on an unprivileged Unix host, WSL's device file on Windows.
+    #[test]
+    fn a_device_node_is_its_makers() {
+        let (_path, s) = dir();
+        let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let mut mknod = fields(&[S_IFCHR | 0o600, 0x103, 0, 0]);
+        mknod.extend(name("tty"));
+        let (e, made) = answer(&s, &req(op::MKNOD, ROOT, 1000, &mknod));
         assert_eq!(e, 0);
-        // fuse_attr_out: its attribute after 16 bytes; atime, mtime, then their nanoseconds.
-        let word = |at: usize| u64::from_le_bytes(out[16 + at..16 + at + 8].try_into().unwrap());
-        let half = |at: usize| u32::from_le_bytes(out[16 + at..16 + at + 4].try_into().unwrap());
-        assert_eq!((word(24), half(48)), (1_000_000_000, 500));
-        assert_eq!((word(32), half(52)), (1_234_567_890, 700));
-        let modified = std::fs::metadata(path.join("t")).unwrap().modified().unwrap();
+        let (e, looked) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("tty")));
+        assert_eq!(e, 0);
+        for entry in [&made, &looked] {
+            // fuse_attr: the mode at 60, uid 68, gid 72, rdev 76.
+            let word = |at: usize| u32::from_le_bytes(entry[40 + at..40 + at + 4].try_into().unwrap());
+            assert_eq!(
+                (word(60), word(68), word(72), word(76)),
+                (S_IFCHR | 0o600, 1000, 1000, 0x103)
+            );
+        }
+    }
+
+    /// A directory the guest renames while it holds files and directories beneath it open,
+    /// a file's mode taken away, goes on serving each handle by its new path, as on a
+    /// kernel's own filesystem; and a directory's own mode changes as a file's.
+    #[test]
+    fn a_directory_is_renamed_whatever_is_open_beneath_it() {
+        let (path, s) = dir();
+        std::fs::create_dir_all(path.join("d").join("e")).unwrap();
+        std::fs::write(path.join("d").join("e").join("f"), "f").unwrap();
+        let d = found(&s, ROOT, "d");
+        let e = found(&s, d, "e");
+        let f = found(&s, e, "f");
+        let fh = open(&s, f, 2);
         assert_eq!(
-            modified,
-            std::time::UNIX_EPOCH + std::time::Duration::new(1_234_567_890, 700)
+            answer(&s, &req(op::SETATTR, f, 0, &setattr(fattr::MODE, 0o444))).0,
+            0
         );
+        let (err, opened) = answer(&s, &req(op::OPENDIR, e, 0, &[0u8; 8]));
+        assert_eq!(err, 0);
+        let eh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        let mut rename = ROOT.to_le_bytes().to_vec();
+        rename.extend(name("d"));
+        rename.extend(name("moved"));
+        assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
+        assert!(path.join("moved").join("e").join("f").is_file());
+        assert_eq!(write(&s, f, fh, 1, b"g"), 0);
+        assert_eq!(read(&s, f, fh, 0, 8), (0, b"fg".to_vec()));
+        let (err, listed) = answer(&s, &req(op::READDIR, e, 0, &readdir(eh, 0, 4096)));
+        assert_eq!(err, 0);
+        assert!(page(&listed, false).iter().any(|(n, _)| n == "f"));
+        assert_eq!(
+            answer(&s, &req(op::SETATTR, e, 0, &setattr(fattr::MODE, 0o710))).0,
+            0
+        );
+        let (err, attr) = answer(&s, &req(op::GETATTR, e, 0, &[0u8; 16]));
+        assert_eq!(err, 0);
+        let mode = u32::from_le_bytes(attr[16 + 60..16 + 64].try_into().unwrap());
+        assert_eq!(mode, S_IFDIR | 0o710);
+        release(&s, f, fh);
     }
 
     /// FALLOCATE grows a file to what it is given, KEEP_SIZE leaves its size, and any other
@@ -4688,6 +4781,53 @@ mod tests {
         let rh = open(&s, upper, 0);
         assert_eq!(read(&s, upper, rh, 0, 16), (0, b"upper".to_vec()));
         assert_eq!(answer(&s, &req(op::LOOKUP, d, 0, &name("MAKEFILE"))).0, -ENOENT);
+    }
+
+    /// A junction or an NTFS symlink the host made is a symlink to the guest, as a Linux
+    /// symlink is on Unix, and never followed by the server: a junction to a directory of
+    /// the share (pnpm's node_modules on Windows) read as the path to it from the link's
+    /// directory, and listed as a link; an NTFS symlink's relative target as it is, its
+    /// separators Linux's, where this host lets its user make one (an administrator's, or
+    /// Developer Mode).
+    #[cfg(windows)]
+    #[test]
+    fn a_hosts_junctions_and_symlinks_are_symlinks() {
+        let (path, s) = dir();
+        let pkg = path.join("store").join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("index.js"), "x").unwrap();
+        std::fs::create_dir(path.join("modules")).unwrap();
+        link_dir(&pkg, &path.join("modules").join("pkg"));
+        let modules = found(&s, ROOT, "modules");
+        let target = |n: &str| {
+            let (e, entry) = answer(&s, &req(op::LOOKUP, modules, 0, &name(n)));
+            assert_eq!(e, 0, "{n}");
+            let mode = u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap());
+            assert_eq!(mode & S_IFMT, S_IFLNK, "{n}");
+            let node = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+            answer(&s, &req(op::READLINK, node, 0, &[]))
+        };
+        assert_eq!(target("pkg"), (0, b"../store/pkg".to_vec()));
+        let (_, opened) = answer(&s, &req(op::OPENDIR, modules, 0, &[0u8; 8]));
+        let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        let (e, listed) = answer(&s, &req(op::READDIR, modules, 0, &readdir(fh, 0, 4096)));
+        assert_eq!(e, 0);
+        // fuse_dirent: its inode, offset, name's length and type, then its name.
+        let mut kinds = Vec::new();
+        let mut rest = &listed[..];
+        while !rest.is_empty() {
+            let len = u32::from_le_bytes(rest[16..20].try_into().unwrap()) as usize;
+            let kind = u32::from_le_bytes(rest[20..24].try_into().unwrap());
+            kinds.push((String::from_utf8(rest[24..24 + len].to_vec()).unwrap(), kind));
+            rest = &rest[(24 + len + 7) & !7..];
+        }
+        assert!(kinds.contains(&("pkg".into(), 10)), "{kinds:?}");
+        match std::os::windows::fs::symlink_dir(r"..\store\pkg", path.join("modules").join("rel")) {
+            Ok(()) => assert_eq!(target("rel"), (0, b"../store/pkg".to_vec())),
+            // ERROR_PRIVILEGE_NOT_HELD: this host's user makes no NTFS symlink.
+            Err(e) if e.raw_os_error() == Some(1314) => eprintln!("no NTFS symlink made: {e}"),
+            Err(e) => panic!("{e}"),
+        }
     }
 
     /// A guest's O_SYNC or O_DSYNC write is on its disk before it is answered: its handle
