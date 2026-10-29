@@ -30,25 +30,25 @@ const ROOT: u64 = 1;
 const VALID_S: u64 = 1;
 // `mode_t` is u16 on macOS and u32 on Linux: its values as the guest's u32.
 #[allow(clippy::unnecessary_cast)]
-const S_IFMT: u32 = libc::S_IFMT as u32;
+const S_IFMT: u32 = host::S_IFMT as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFDIR: u32 = libc::S_IFDIR as u32;
+const S_IFDIR: u32 = host::S_IFDIR as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFREG: u32 = libc::S_IFREG as u32;
+const S_IFREG: u32 = host::S_IFREG as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFLNK: u32 = libc::S_IFLNK as u32;
+const S_IFLNK: u32 = host::S_IFLNK as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFCHR: u32 = libc::S_IFCHR as u32;
+const S_IFCHR: u32 = host::S_IFCHR as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFBLK: u32 = libc::S_IFBLK as u32;
+const S_IFBLK: u32 = host::S_IFBLK as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFIFO: u32 = libc::S_IFIFO as u32;
+const S_IFIFO: u32 = host::S_IFIFO as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFSOCK: u32 = libc::S_IFSOCK as u32;
+const S_IFSOCK: u32 = host::S_IFSOCK as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_ISUID: u32 = libc::S_ISUID as u32;
+const S_ISUID: u32 = host::S_ISUID as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_ISGID: u32 = libc::S_ISGID as u32;
+const S_ISGID: u32 = host::S_ISGID as u32;
 
 /// A stat's mode as the guest's u32.
 fn mode_of(st: &Stat) -> u32 {
@@ -138,7 +138,7 @@ fn ghost(dir: RawFd, bytes: &[u8]) -> Result<OwnedFd, String> {
     let fd = open_at(
         dir,
         &name,
-        libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+        host::O_RDWR | host::O_CREAT | host::O_EXCL | host::O_CLOEXEC,
         0o600,
     )
     .map_err(|e| format!("a removed file, made again: errno {e}"))?;
@@ -177,7 +177,7 @@ struct Volume {
 #[derive(Debug)]
 struct Handle {
     node: u64,
-    flags: Option<libc::c_int>,
+    flags: Option<host::c_int>,
 }
 
 /// A node's open handles, and how many may read and write: what a descriptor pinned for
@@ -232,7 +232,7 @@ struct State {
     /// or made them or changed them to a mode that refuses their handles. Let go with their
     /// node's last handle, never before, and the only descriptors counted against the
     /// budget.
-    pins: HashMap<u64, (OwnedFd, libc::c_int)>,
+    pins: HashMap<u64, (OwnedFd, host::c_int)>,
     /// Nodes whose last name the guest removed with no room to pin them, and the first handle
     /// opened after: those before it are stale once their descriptors are let go, as the
     /// number the node's path might lead to is free to be another file's.
@@ -543,7 +543,7 @@ fn stat_at(dir: RawFd, name: &CStr) -> Result<Stat, Errno> {
     // SAFETY: as stat_fd.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     // SAFETY: fstatat(2) of a NUL-terminated name in a directory we hold, not following it.
-    if unsafe { libc::fstatat(dir, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+    if unsafe { libc::fstatat(dir, name.as_ptr(), &mut st, host::AT_SYMLINK_NOFOLLOW) } != 0 {
         return Err(last());
     }
     Ok(Stat::from(&st))
@@ -575,7 +575,7 @@ fn symlink_at(target: &CStr, dir: RawFd, name: &CStr) -> Result<(), Errno> {
 fn mknod_at(dir: RawFd, name: &CStr, mode: u32, rdev: u32) -> Result<(), Errno> {
     #[allow(clippy::cast_possible_truncation)]
     // SAFETY: mknodat(2) of a NUL-terminated name in a directory we hold.
-    if unsafe { libc::mknodat(dir, name.as_ptr(), mode as libc::mode_t, host::decode_dev(rdev)) } != 0 {
+    if unsafe { libc::mknodat(dir, name.as_ptr(), mode as host::mode_t, host::decode_dev(rdev)) } != 0 {
         return Err(last());
     }
     Ok(())
@@ -585,7 +585,7 @@ fn mknod_at(dir: RawFd, name: &CStr, mode: u32, rdev: u32) -> Result<(), Errno> 
 fn mkdir_at(dir: RawFd, name: &CStr, perm: u32) -> Result<(), Errno> {
     #[allow(clippy::cast_possible_truncation)]
     // SAFETY: mkdirat(2) of a NUL-terminated name in a directory we hold.
-    if unsafe { libc::mkdirat(dir, name.as_ptr(), perm as libc::mode_t) } != 0 {
+    if unsafe { libc::mkdirat(dir, name.as_ptr(), perm as host::mode_t) } != 0 {
         return Err(last());
     }
     Ok(())
@@ -593,7 +593,7 @@ fn mkdir_at(dir: RawFd, name: &CStr, perm: u32) -> Result<(), Errno> {
 
 /// Removes `name` from `dir`, a directory if `rmdir` (unlinkat(2)).
 fn unlink_at(dir: RawFd, name: &CStr, rmdir: bool) -> Result<(), Errno> {
-    let flags = if rmdir { libc::AT_REMOVEDIR } else { 0 };
+    let flags = if rmdir { host::AT_REMOVEDIR } else { 0 };
     // SAFETY: unlinkat(2) of a NUL-terminated name in a directory we hold.
     if unsafe { libc::unlinkat(dir, name.as_ptr(), flags) } != 0 {
         return Err(last());
@@ -616,11 +616,11 @@ thread_local! {
     static OPENED: std::cell::RefCell<Vec<CString>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn open_at(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> Result<OwnedFd, Errno> {
+fn open_at(dir: RawFd, name: &CStr, flags: host::c_int, mode: host::c_uint) -> Result<OwnedFd, Errno> {
     #[cfg(test)]
     OPENED.with(|o| o.borrow_mut().push(name.to_owned()));
     // SAFETY: openat(2) of a NUL-terminated name in a directory we hold.
-    let fd = unsafe { libc::openat(dir, name.as_ptr(), flags | libc::O_CLOEXEC, mode) };
+    let fd = unsafe { libc::openat(dir, name.as_ptr(), flags | host::O_CLOEXEC, mode) };
     if fd < 0 {
         return Err(last());
     }
@@ -638,18 +638,18 @@ fn open_at(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> R
 fn open_regular(
     dir: RawFd,
     name: &CStr,
-    flags: libc::c_int,
-    mode: libc::c_uint,
+    flags: host::c_int,
+    mode: host::c_uint,
 ) -> Result<(OwnedFd, Stat), Errno> {
-    let exclusive = flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL;
+    let exclusive = flags & (host::O_CREAT | host::O_EXCL) == host::O_CREAT | host::O_EXCL;
     match stat_at(dir, name) {
         // An exclusive create of a name that exists fails at the open, opening nothing.
         Ok(st) if !exclusive && mode_of(&st) & S_IFMT != S_IFREG => return Err(EBADF),
         Ok(_) => {}
-        Err(ENOENT) if flags & libc::O_CREAT != 0 => {}
+        Err(ENOENT) if flags & host::O_CREAT != 0 => {}
         Err(e) => return Err(e),
     }
-    let fd = open_at(dir, name, flags | libc::O_NONBLOCK | libc::O_NOCTTY, mode)?;
+    let fd = open_at(dir, name, flags | host::O_NONBLOCK | host::O_NOCTTY, mode)?;
     let st = stat_fd(fd.as_raw_fd())?;
     if mode_of(&st) & S_IFMT != S_IFREG {
         return Err(EBADF);
@@ -657,7 +657,7 @@ fn open_regular(
     // The status flags the guest asked for, without O_NONBLOCK: F_SETFL takes those of
     // `flags` and ignores its access mode and creation flags (POSIX fcntl(2)).
     // SAFETY: fcntl(2) of a descriptor we hold.
-    if flags & libc::O_NONBLOCK == 0 && unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } != 0 {
+    if flags & host::O_NONBLOCK == 0 && unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } != 0 {
         return Err(last());
     }
     Ok((fd, st))
@@ -675,13 +675,13 @@ fn chmod_at(dir: RawFd, name: &CStr, mode: u32) -> Result<(), Errno> {
         // name is opened as a path, never followed, and the file changed through its
         // /proc/self/fd link, which reaches that file whatever is at the name by then
         // (musl's src/stat/fchmodat.c, virtiofsd's setattr).
-        let fd = open_at(dir, name, libc::O_PATH | libc::O_NOFOLLOW, 0)?;
+        let fd = open_at(dir, name, libc::O_PATH | host::O_NOFOLLOW, 0)?;
         if mode_of(&stat_fd(fd.as_raw_fd())?) & S_IFMT == S_IFLNK {
             return Err(EOPNOTSUPP);
         }
         let link = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|_| EINVAL)?;
         // SAFETY: fchmodat(2) of a NUL-terminated path.
-        if unsafe { libc::fchmodat(libc::AT_FDCWD, link.as_ptr(), mode as libc::mode_t, 0) } != 0 {
+        if unsafe { libc::fchmodat(host::AT_FDCWD, link.as_ptr(), mode as host::mode_t, 0) } != 0 {
             return Err(last());
         }
         Ok(())
@@ -697,8 +697,8 @@ fn chmod_at(dir: RawFd, name: &CStr, mode: u32) -> Result<(), Errno> {
             libc::fchmodat(
                 dir,
                 name.as_ptr(),
-                mode as libc::mode_t,
-                libc::AT_SYMLINK_NOFOLLOW,
+                mode as host::mode_t,
+                host::AT_SYMLINK_NOFOLLOW,
             )
         } != 0
         {
@@ -777,10 +777,10 @@ fn fremove_xattr(fd: RawFd, name: &CStr) -> Result<(), Errno> {
 
 /// `fd`'s offset moved to `offset` from `whence` (this host's, `host::whence`): where it is
 /// (lseek(2)).
-fn seek(fd: RawFd, offset: u64, whence: libc::c_int) -> Result<u64, Errno> {
+fn seek(fd: RawFd, offset: u64, whence: host::c_int) -> Result<u64, Errno> {
     #[allow(clippy::cast_possible_wrap)]
     // SAFETY: lseek(2) of a descriptor we hold.
-    let at = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
+    let at = unsafe { libc::lseek(fd, offset as host::off_t, whence) };
     u64::try_from(at).map_err(|_| last())
 }
 
@@ -788,7 +788,7 @@ fn seek(fd: RawFd, offset: u64, whence: libc::c_int) -> Result<u64, Errno> {
 fn truncate_fd(fd: RawFd, size: u64) -> Result<(), Errno> {
     #[allow(clippy::cast_possible_wrap)]
     // SAFETY: ftruncate(2) of a descriptor we hold.
-    if unsafe { libc::ftruncate(fd, size as libc::off_t) } != 0 {
+    if unsafe { libc::ftruncate(fd, size as host::off_t) } != 0 {
         return Err(last());
     }
     Ok(())
@@ -798,7 +798,7 @@ fn truncate_fd(fd: RawFd, size: u64) -> Result<(), Errno> {
 fn chmod_fd(fd: RawFd, perm: u32) -> Result<(), Errno> {
     #[allow(clippy::cast_possible_truncation)]
     // SAFETY: fchmod(2) of a descriptor we hold.
-    if unsafe { libc::fchmod(fd, perm as libc::mode_t) } != 0 {
+    if unsafe { libc::fchmod(fd, perm as host::mode_t) } != 0 {
         return Err(last());
     }
     Ok(())
@@ -1190,7 +1190,7 @@ impl Server {
         let next_node = r.u64().map_err(bad)?;
         let next_handle = r.u64().map_err(bad)?;
         let name = |r: &mut Reader<'_>| -> crate::snapshot::codec::Result<CString> {
-            let bytes = r.bytes(libc::PATH_MAX as usize)?;
+            let bytes = r.bytes(host::PATH_MAX as usize)?;
             CString::new(bytes).map_err(|_| crate::snapshot::codec::DecodeError("a name with a NUL".into()))
         };
         let nodes = r
@@ -1220,7 +1220,7 @@ impl Server {
                 let node = r.u64()?;
                 let has = r.bool()?;
                 #[allow(clippy::cast_possible_wrap)]
-                let flags = r.u32()? as libc::c_int;
+                let flags = r.u32()? as host::c_int;
                 Ok((
                     id,
                     Handle {
@@ -1246,7 +1246,7 @@ impl Server {
             .seq(u32::MAX as usize, 8 + 4 + 4, |r| {
                 let node = r.u64()?;
                 #[allow(clippy::cast_possible_wrap)]
-                let access = r.u32()? as libc::c_int;
+                let access = r.u32()? as host::c_int;
                 Ok((node, access, r.bytes(MAX_TABLES)?))
             })
             .map_err(bad)?;
@@ -1321,9 +1321,9 @@ impl Server {
         // not looked up, and a file only a group gives is read through FUSE.
         #[allow(clippy::unnecessary_cast)]
         let (read, write) = if st.uid == euid as u32 {
-            (libc::S_IRUSR as u32, libc::S_IWUSR as u32)
+            (host::S_IRUSR as u32, host::S_IWUSR as u32)
         } else {
-            (libc::S_IROTH as u32, libc::S_IWOTH as u32)
+            (host::S_IROTH as u32, host::S_IWOTH as u32)
         };
         let large = mode & S_IFMT == S_IFREG && size >= DAX_SMALLEST;
         let reachable = mode & read != 0
@@ -1351,8 +1351,8 @@ impl Server {
         if rdwr {
             self.writable(s, node)?;
         }
-        let access = if rdwr { libc::O_RDWR } else { libc::O_RDONLY };
-        let flags = access | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let access = if rdwr { host::O_RDWR } else { host::O_RDONLY };
+        let flags = access | host::O_NOFOLLOW | host::O_CLOEXEC;
         let why = match at(s, node).and_then(|(dir, name)| open_regular(dir, &name, flags, 0)) {
             Ok((fd, st)) if key(&st) == want => return Ok(fd),
             Ok(_) => ESTALE,
@@ -1609,7 +1609,7 @@ impl Server {
                     open_at(
                         dir,
                         &name,
-                        libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY,
+                        host::O_CREAT | host::O_EXCL | host::O_WRONLY,
                         host_perm(perm, false),
                     )
                     .map(drop)
@@ -1745,13 +1745,13 @@ impl Server {
                 let name = a.name()?;
                 room_for_handle(s)?;
                 let dir = dir_fd(s, nodeid)?;
-                let flags = host::open_flags(flags) | libc::O_CREAT;
+                let flags = host::open_flags(flags) | host::O_CREAT;
                 // Made here, or found there: a file O_CREAT finds keeps its owner and mode.
                 let (fd, st, created) =
-                    match open_regular(dir, &name, flags | libc::O_EXCL, host_perm(mode, false)) {
+                    match open_regular(dir, &name, flags | host::O_EXCL, host_perm(mode, false)) {
                         Ok((fd, st)) => (fd, st, true),
-                        Err(EEXIST) if flags & libc::O_EXCL == 0 => {
-                            let (fd, st) = open_regular(dir, &name, flags & !libc::O_CREAT, 0)?;
+                        Err(EEXIST) if flags & host::O_EXCL == 0 => {
+                            let (fd, st) = open_regular(dir, &name, flags & !host::O_CREAT, 0)?;
                             (fd, st, false)
                         }
                         Err(e) => return Err(e),
@@ -1772,7 +1772,7 @@ impl Server {
                     && !s.pins.contains_key(&made)
                     && room_for_pin(s)
                 {
-                    s.pins.insert(made, (fd, flags & libc::O_ACCMODE));
+                    s.pins.insert(made, (fd, flags & host::O_ACCMODE));
                     None
                 } else {
                     Some(Held::Fd(fd))
@@ -1915,7 +1915,7 @@ impl Server {
                                 }
                             }
                         }
-                    } else if kind == u32::from(libc::DT_REG)
+                    } else if kind == u32::from(host::DT_REG)
                         && let Some(k) = emulated_at(dir_fd(s, nodeid)?, &entry.name)
                     {
                         // Its kind, as overlayfs reads a whiteout's from a listing.
@@ -2126,7 +2126,7 @@ impl Server {
                     let fd = open_at(
                         dir,
                         &name,
-                        libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                        host::O_WRONLY | host::O_NOFOLLOW | host::O_NONBLOCK,
                         0,
                     )?;
                     truncate_fd(fd.as_raw_fd(), size)?;
@@ -2139,7 +2139,7 @@ impl Server {
                 tv_nsec: if now {
                     libc::UTIME_NOW
                 } else if set {
-                    libc::c_long::from(ns as i32)
+                    host::c_long::from(ns as i32)
                 } else {
                     libc::UTIME_OMIT
                 },
@@ -2163,7 +2163,7 @@ impl Server {
                 Some(fd) => unsafe { libc::futimens(fd, times.as_ptr()) },
                 // SAFETY: utimensat(2) of a NUL-terminated name in a directory we hold.
                 None => unsafe {
-                    libc::utimensat(dir, name.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW)
+                    libc::utimensat(dir, name.as_ptr(), times.as_ptr(), host::AT_SYMLINK_NOFOLLOW)
                 },
             };
             if rc != 0 {
@@ -2202,7 +2202,7 @@ impl Server {
             kind: Some(S_IFCHR),
             rdev: Some(0),
         };
-        let made = open_at(dir, old, libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY, 0o600)
+        let made = open_at(dir, old, host::O_CREAT | host::O_EXCL | host::O_WRONLY, 0o600)
             .map(drop)
             .and_then(|()| self.record(s, olddir, old, caller, whiteout));
         if let Err(e) = made {
@@ -2272,9 +2272,9 @@ fn open_meta(dir: RawFd, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errn
         return Err(ENODATA);
     }
     #[cfg(target_os = "macos")]
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_SYMLINK;
+    let flags = host::O_RDONLY | host::O_NOFOLLOW | host::O_NONBLOCK | host::O_NOCTTY | libc::O_SYMLINK;
     #[cfg(target_os = "linux")]
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
+    let flags = host::O_RDONLY | host::O_NOFOLLOW | host::O_NONBLOCK | host::O_NOCTTY;
     open_at(dir, name, flags, 0).map(NodeFd::Owned)
 }
 
@@ -2382,7 +2382,7 @@ fn open_beneath(dir: RawFd, names: &[CString]) -> Result<OwnedFd, Errno> {
     let mut held: Option<OwnedFd> = None;
     for name in names {
         let at = held.as_ref().map_or(dir, std::os::fd::AsRawFd::as_raw_fd);
-        let next = open_at(at, name, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW, 0);
+        let next = open_at(at, name, host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW, 0);
         held = Some(next.map_err(stale)?);
     }
     held.ok_or(EINVAL)
@@ -2408,7 +2408,7 @@ fn openat2_beneath(dir: RawFd, names: &[CString]) -> Option<Result<OwnedFd, Errn
     }
     let path = CString::new(path).ok()?;
     let how = OpenHow {
-        flags: u64::try_from(libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC).ok()?,
+        flags: u64::try_from(host::O_RDONLY | host::O_DIRECTORY | host::O_CLOEXEC).ok()?,
         mode: 0,
         resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS,
     };
@@ -2684,32 +2684,32 @@ fn room_for_handle(s: &State) -> Result<(), Errno> {
 }
 
 /// Host open `flags` without those that act once, for a handle's opens after its first.
-fn once(flags: libc::c_int) -> libc::c_int {
-    flags & !(libc::O_CREAT | libc::O_EXCL | libc::O_TRUNC)
+fn once(flags: host::c_int) -> host::c_int {
+    flags & !(host::O_CREAT | host::O_EXCL | host::O_TRUNC)
 }
 
 /// Whether a descriptor opened with access mode `access` serves `flags`' access.
-fn allows(access: libc::c_int, flags: libc::c_int) -> bool {
-    match flags & libc::O_ACCMODE {
-        libc::O_RDONLY => access != libc::O_WRONLY,
-        libc::O_WRONLY => access != libc::O_RDONLY,
-        _ => access == libc::O_RDWR,
+fn allows(access: host::c_int, flags: host::c_int) -> bool {
+    match flags & host::O_ACCMODE {
+        host::O_RDONLY => access != host::O_WRONLY,
+        host::O_WRONLY => access != host::O_RDONLY,
+        _ => access == host::O_RDWR,
     }
 }
 
 /// A handle of the guest's on `node`, opened with host `flags` (a file's) or none (a
 /// directory's), its descriptor `held` where the open took one.
-fn add_handle(s: &mut State, node: u64, flags: Option<libc::c_int>, held: Option<Held>) -> u64 {
+fn add_handle(s: &mut State, node: u64, flags: Option<host::c_int>, held: Option<Held>) -> u64 {
     let fh = s.next_handle;
     s.next_handle += 1;
     let opened = s.opened.entry(node).or_default();
     opened.handles += 1;
     if let Some(flags) = flags {
-        let access = flags & libc::O_ACCMODE;
-        if access != libc::O_WRONLY {
+        let access = flags & host::O_ACCMODE;
+        if access != host::O_WRONLY {
             opened.reading += 1;
         }
-        if access != libc::O_RDONLY {
+        if access != host::O_RDONLY {
             opened.writing += 1;
         }
     }
@@ -2731,11 +2731,11 @@ fn release(s: &mut State, fh: u64) {
     };
     opened.handles = opened.handles.saturating_sub(1);
     if let Some(flags) = h.flags {
-        let access = flags & libc::O_ACCMODE;
-        if access != libc::O_WRONLY {
+        let access = flags & host::O_ACCMODE;
+        if access != host::O_WRONLY {
             opened.reading = opened.reading.saturating_sub(1);
         }
-        if access != libc::O_RDONLY {
+        if access != host::O_RDONLY {
             opened.writing = opened.writing.saturating_sub(1);
         }
     }
@@ -2828,9 +2828,9 @@ fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Re
         return Removal::Nothing;
     }
     let access = match (opened.reading > 0, opened.writing > 0) {
-        (_, false) => libc::O_RDONLY,
-        (false, true) => libc::O_WRONLY,
-        (true, true) => libc::O_RDWR,
+        (_, false) => host::O_RDONLY,
+        (false, true) => host::O_WRONLY,
+        (true, true) => host::O_RDWR,
     };
     // A file the removal leaves another name of needs no pin where there is no room: that
     // name reaches it, and the guest's lookup of it makes it the node's path.
@@ -2843,12 +2843,12 @@ fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Re
         open_at(
             dir,
             name,
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
             0,
         )
         .ok()
     } else {
-        open_regular(dir, name, access | libc::O_NOFOLLOW, 0)
+        open_regular(dir, name, access | host::O_NOFOLLOW, 0)
             .ok()
             .map(|(fd, _)| fd)
     };
@@ -2878,9 +2878,9 @@ fn pin_before_chmod(s: &mut State, node: u64, dir: RawFd, name: &CStr, mode: u32
         return;
     };
     let access = match (opened.reading > 0, opened.writing > 0) {
-        (_, false) => libc::O_RDONLY,
-        (false, true) => libc::O_WRONLY,
-        (true, true) => libc::O_RDWR,
+        (_, false) => host::O_RDONLY,
+        (false, true) => host::O_WRONLY,
+        (true, true) => host::O_RDWR,
     };
     if !refuses(mode, access) {
         return;
@@ -2892,11 +2892,11 @@ fn pin_before_chmod(s: &mut State, node: u64, dir: RawFd, name: &CStr, mode: u32
         Ok(st) if is_dir(&st) => open_at(
             dir,
             name,
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
             0,
         )
         .ok(),
-        Ok(_) => open_regular(dir, name, access | libc::O_NOFOLLOW, 0)
+        Ok(_) => open_regular(dir, name, access | host::O_NOFOLLOW, 0)
             .ok()
             .map(|(fd, _)| fd),
         Err(_) => None,
@@ -2940,10 +2940,10 @@ fn room_for_pin(s: &State) -> bool {
 /// Whether a file of `mode`, its owner's, refuses an open with `flags`' access to its owner,
 /// the share process: once its handle's descriptor were let go, none could be opened for it
 /// again by its path.
-fn refuses(mode: u32, flags: libc::c_int) -> bool {
-    let access = flags & libc::O_ACCMODE;
-    let reads = access != libc::O_WRONLY;
-    let writes = access != libc::O_RDONLY;
+fn refuses(mode: u32, flags: host::c_int) -> bool {
+    let access = flags & host::O_ACCMODE;
+    let reads = access != host::O_WRONLY;
+    let writes = access != host::O_RDONLY;
     (reads && mode & 0o400 == 0) || (writes && mode & 0o200 == 0)
 }
 
@@ -2970,7 +2970,7 @@ struct DirStream(OwnedFd);
 #[cfg(target_os = "linux")]
 impl DirStream {
     fn open(dir: RawFd) -> Result<DirStream, Errno> {
-        open_at(dir, c".", libc::O_RDONLY | libc::O_DIRECTORY, 0).map(DirStream)
+        open_at(dir, c".", host::O_RDONLY | host::O_DIRECTORY, 0).map(DirStream)
     }
 
     /// Gives `each` the entries from `offset` on, with the offset that follows each, until
@@ -2983,7 +2983,7 @@ impl DirStream {
     ) -> Result<(), Errno> {
         let fd = self.0.as_raw_fd();
         // SAFETY: lseek(2) of a descriptor we hold.
-        if unsafe { libc::lseek(fd, offset as libc::off_t, libc::SEEK_SET) } < 0 {
+        if unsafe { libc::lseek(fd, offset as host::off_t, host::SEEK_SET) } < 0 {
             return Err(last());
         }
         // Room for a record of the longest name, 280 bytes, whatever the guest wants.
@@ -3059,7 +3059,7 @@ impl Drop for DirStream {
 impl DirStream {
     fn open(dir: RawFd) -> Result<DirStream, Errno> {
         use std::os::fd::IntoRawFd as _;
-        let fd = open_at(dir, c".", libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+        let fd = open_at(dir, c".", host::O_RDONLY | host::O_DIRECTORY, 0)?;
         // SAFETY: fdopendir(3) of a descriptor we own; the stream owns it once it exists.
         let stream = std::ptr::NonNull::new(unsafe { libc::fdopendir(fd.as_raw_fd()) }).ok_or_else(last)?;
         let _ = fd.into_raw_fd();
@@ -3175,7 +3175,7 @@ fn renamed(od: RawFd, old: &CStr, nd: RawFd, new: &CStr, flags: u32) -> Result<(
             // renameat2 wrapper, and glibc's is the same call.
             // SAFETY: renameat2(2) of NUL-terminated names in directories we hold.
             unsafe {
-                libc::syscall(libc::SYS_renameat2, od, old.as_ptr(), nd, new.as_ptr(), flags) as libc::c_int
+                libc::syscall(libc::SYS_renameat2, od, old.as_ptr(), nd, new.as_ptr(), flags) as host::c_int
             }
         }
     };
@@ -3193,11 +3193,11 @@ fn hidden(name: &CStr) -> bool {
 /// A listing's `d_type` of a node of kind `kind` (`S_IFCHR` and the rest).
 fn dirent_kind(kind: u32) -> u32 {
     u32::from(match kind {
-        S_IFCHR => libc::DT_CHR,
-        S_IFBLK => libc::DT_BLK,
-        S_IFIFO => libc::DT_FIFO,
-        S_IFSOCK => libc::DT_SOCK,
-        _ => libc::DT_REG,
+        S_IFCHR => host::DT_CHR,
+        S_IFBLK => host::DT_BLK,
+        S_IFIFO => host::DT_FIFO,
+        S_IFSOCK => host::DT_SOCK,
+        _ => host::DT_REG,
     })
 }
 
@@ -3306,7 +3306,7 @@ fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
                 fd,
                 rest.as_mut_ptr().cast(),
                 rest.len(),
-                (offset + done as u64) as libc::off_t,
+                (offset + done as u64) as host::off_t,
             )
         };
         match n {
@@ -3325,7 +3325,7 @@ fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
 fn drop_cached(fd: RawFd, offset: u64, len: usize) {
     #[cfg(target_os = "linux")]
     {
-        let (Ok(offset), Ok(len)) = (libc::off_t::try_from(offset), libc::off_t::try_from(len)) else {
+        let (Ok(offset), Ok(len)) = (host::off_t::try_from(offset), host::off_t::try_from(len)) else {
             return;
         };
         // SAFETY: advice on a range of a descriptor the server holds.
@@ -3345,7 +3345,7 @@ fn pwrite(fd: RawFd, buf: &[u8], offset: u64) -> Result<usize, Errno> {
                 fd,
                 rest.as_ptr().cast(),
                 rest.len(),
-                (offset + done as u64) as libc::off_t,
+                (offset + done as u64) as host::off_t,
             )
         };
         match n {
@@ -3385,9 +3385,9 @@ fn fallocate(fd: RawFd, mode: u32, offset: u64, length: u64) -> Result<(), Errno
         if unsafe {
             libc::fallocate(
                 fd,
-                mode as libc::c_int,
-                offset as libc::off_t,
-                length as libc::off_t,
+                mode as host::c_int,
+                offset as host::off_t,
+                length as host::off_t,
             )
         } != 0
         {
@@ -3403,7 +3403,7 @@ fn fallocate(fd: RawFd, mode: u32, offset: u64, length: u64) -> Result<(), Errno
                 fst_flags: libc::F_ALLOCATEALL,
                 fst_posmode: libc::F_PEOFPOSMODE,
                 fst_offset: 0,
-                fst_length: (end - size) as libc::off_t,
+                fst_length: (end - size) as host::off_t,
                 fst_bytesalloc: 0,
             };
             // SAFETY: fcntl(2) F_PREALLOCATE with a store of ours.
@@ -3412,7 +3412,7 @@ fn fallocate(fd: RawFd, mode: u32, offset: u64, length: u64) -> Result<(), Errno
             }
             if mode & linux::FALLOC_FL_KEEP_SIZE == 0 {
                 // SAFETY: ftruncate(2) of a descriptor we hold.
-                if unsafe { libc::ftruncate(fd, end as libc::off_t) } != 0 {
+                if unsafe { libc::ftruncate(fd, end as host::off_t) } != 0 {
                     return Err(last());
                 }
             }

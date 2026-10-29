@@ -182,6 +182,17 @@ pub fn decode_dev(rdev: u32) -> libc::dev_t {
     }
 }
 
+/// This host's names for what the server asks of its file system, its flags, modes and
+/// kinds: on Unix libc's own; on Windows Linux's, which its layer of NT calls answers in
+/// (D197).
+#[cfg(unix)]
+pub use libc::{
+    AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_NOFOLLOW, DT_BLK, DT_CHR, DT_FIFO, DT_REG, DT_SOCK, O_ACCMODE,
+    O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR, O_TRUNC,
+    O_WRONLY, PATH_MAX, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK, S_IROTH,
+    S_IRUSR, S_ISGID, S_ISUID, S_IWOTH, S_IWUSR, SEEK_SET, c_int, c_long, c_uint, mode_t, off_t,
+};
+
 /// A file's attributes as the server answers its guest about them: its host's own, in
 /// Linux's terms, and the key it is known by (`dev`, `ino`). On Unix its stat(2), the mode's
 /// type bits POSIX's own on every host; on Windows its file system's (D197).
