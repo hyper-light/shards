@@ -16049,10 +16049,11 @@ revision before comparing a changed API/implementation.
     vCPUs 0.48 s (APs 0.19), one of one vCPU 0.38 s. Unexplained: what an AP does for a
     quarter of a second of CPU in a boot of under one is not yet measured.
 - **Consequence.** A VM whose console nobody reads boots `quiet` (D140, `kernel_cmdline`),
-  on every host. A cold boot on WHP takes, beside its daemon's turn, a slot of the host's
-  that every daemon on it shares, two on these runners, as its own count's most boots at
-  once (D195, `daemon/host_boots.rs`). What an AP costs a boot of many vCPUs is the next
-  measurement's.
+  on every host. Cold boots held across the host's daemons, a slot of the host's beside
+  each daemon's turn, were tried and dropped: they tied each daemon to the slowest on its
+  host, and on windows-2025 7 of containers.rs's 132 tests failed with them, none without
+  (D195). Where a boot of many vCPUs spends its time as others boot beside it, and what an
+  AP costs one, is the next measurement's.
 
 ### M377. What a mapped sparse file takes of an NTFS disk, and what a run's save took (D176, D196)
 

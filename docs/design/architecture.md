@@ -6800,18 +6800,17 @@ forked.
   host's CPUs, the most runs a second on both CI runners; a VM of more boots alone, and a
   restore takes no turn. Turns are taken in the order asked for (tickets, M357's hang: a
   boot asked for first waited out its client's minute as later ones went).
-- **Cold boots held across the host's daemons** (M376). A daemon's count held only its own
-  boots, and CI's tests, a daemon each, booted eight at once on 4 CPUs, two a daemon: eight
-  guests of 4 vCPUs at once took 41.0 s each on windows-2022 where two took 0.62, quiet,
-  while eight of one vCPU took 1.37. So a boot with its daemon's turn also takes a slot of
-  the host's, which every daemon on it shares (`daemon/host_boots.rs`): as many slots as
-  boots of the host's CPUs fit in the daemon's most, two, each a named mutex in the logon
-  session's namespace (`Local\shards-boot-i`), held by the boot's thread until its VM is
-  ready or failed; a boot past one slot's vCPUs takes them all. A mutex whose daemon ended
-  holding it is the next waiter's (WAIT_ABANDONED), so a slot outlives no daemon. Held by
-  `cold_boots_take_the_hosts_slots_across_its_daemons` (mutation-checked: slots taken
-  without waiting let a third boot go beside two). Daemons of other logon sessions are
-  held apart, as Windows names their objects apart.
+- **Not held across the host's daemons** (M376). Tried: a slot of the host's taken
+  beside a daemon's turn, named mutexes every daemon on the host shared, two on CI's
+  4-CPU runners. It tied each daemon to the slowest on its host: on windows-2025, where
+  a boot alone takes 0.5 s quiet, 7 of containers.rs's 132 tests failed with it, their
+  runs left Created as their boots waited on other tests' daemons' slots past their
+  clients' minute, and all 132 passed without it (CI 40782667644 with it, 40796215375
+  without it and with D196's sealed link besides, both quiet); on windows-2022 the one
+  test that failed without it failed with it too, its daemon's one boot behind the
+  others'. Each daemon
+  counts its own boots alone: what a boot costs while others boot beside it is to be cut
+  where it is spent (M376).
 - **Lines and streams.** A slot's line holds 64 KiB, what a Linux FIFO holds (pipe(7)), so
   that what a client leaves untaken is what it leaves on Linux (D185, "What it said last");
   a stream's pipe holds 1 MiB, which moved more than 64 KiB in M340.
