@@ -6534,7 +6534,7 @@ stream, word for word, and `logs` reads the run's own copy; an ETW session is an
 administrator's or Performance Log Users', and a host whose user is neither says SKIP.
 Elsewhere it tests the refusal. A unit test holds each event's words to moby's.
 
-### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (designed; slice 1 begun)
+### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (slices 1 and 2 built)
 
 **Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,
 docs/audit/2026-10-27_platform-parity.md's host directories on Windows): a microVM's volumes
@@ -6573,11 +6573,56 @@ did as asked.**
 - **Its stream to the VM** a duplex named pipe, as a served share's on Windows (D38,
   `--slates-fs-handle`, PM M340).
 
-**Slices.** 1: the server's host calls behind functions of their own, Unix unchanged
-(begun: `host::Stat`, a8117424's `readlink_at`, `symlink_at`, `mknod_at`, `mkdir_at`,
-`unlink_at`, `link_at`). 2: Windows' calls, the server's own tests on Windows. 3: the share
-process and the daemon's shares on Windows, and the volume, bind and DAX tests on CI's
-Windows runners.
+**Built (slice 2): the server on Windows, `fs/server_windows.rs` over `fs/ntfs.rs`, held to
+Unix's by the server's own tests, which run on every host** (66 on jupiter and Fedora, 65
+on macOS, each Unix step given a Windows twin of its property: a junction where a symlink is
+planted, the read-only attribute where a mode is taken away, WSL's device files where
+/dev's are), and mutation-checked on jupiter (25 mutants of the Windows layer, each one
+line, all caught but one equivalent). What the tests found, decided:
+
+- **NT checks a handle's access, Unix its file's**: a Unix descriptor opened to read changes
+  its file's attributes; an NT handle changes nothing it was not opened to. Each change
+  goes through a handle that may make it (`able`: the one given, else another of its
+  file's, a relative open of no name, as ReOpenFile makes one).
+- **A guest's other attributes** are EAs named `SH.` and their name's bytes in hexadecimal
+  (an EA's name is upper-case ASCII of 255 bytes at most, a guest's any bytes of either
+  case), each value after a byte of 0: NTFS keeps no EA of no value, where Linux keeps an
+  attribute of one (overlayfs's `metacopy`; `an_attribute_of_no_value_is_kept`).
+- **A node Unix's server keeps as an empty file beside its kind** (a device an
+  unprivileged host cannot make, RENAME_WHITEOUT's whiteout) is on NTFS the device it is,
+  WSL's; a device's metadata is read and written as any file's, its reparse point reaching
+  no driver (`DEVICE_OPENS_DRIVER`), and no descriptor is kept against a mode
+  (`MODES_REFUSE_OPENS`), which refuses no NT open.
+- **NTFS renames no directory a handle beneath is open in**, POSIX semantics or not, nor does
+  MoveFileEx (EACCES; ntfs.rs `a_directory_a_handle_beneath_is_open_in_is_renamed_by_none`):
+  before a guest's rename of a directory the server lets go of the descriptors it holds
+  beneath it, a cache each opened again along its path (audit V09), so that the guest's
+  rename is Linux's. The host's own rename of such a directory is refused as NTFS refuses
+  it beside any program holding a file there; once the server has let go, it is made, and
+  the guest's nodes there are stale, as Unix's.
+- **Nothing is resolved beneath a reparse point opened as itself**: NT answers
+  STATUS_REPARSE_POINT_NOT_RESOLVED (0xC0000280, measured on jupiter), which the server
+  hears as ELOOP, a path through a planted junction stale (ESTALE), as Unix's through a
+  symlink.
+- **A host's junctions and NTFS symlinks are symlinks to the guest**, as a host's symlinks
+  are on Unix, where they were empty directories: a relative symlink's target as it is, an
+  absolute one's or a junction's on the link's own volume the path to it from the link's
+  directory (MS-FSCC 2.1.2.4, 2.1.2.5), so that pnpm's node_modules, junctions within a
+  project, lead in the guest where they lead on the host.
+- **A handle opened to append writes at its file's end as the host has it**, whatever offset
+  the guest's kernel names, on every host: WriteFile's end-of-file offset on Windows, and
+  write(2) through the O_APPEND descriptor on Unix, where macOS's pwrite(2) writes at the
+  offset named and clobbered what the host appended (`Zbc` for Linux's `abcZ`, measured
+  2026-10-29; Linux's pwrite(2) appends, its BUGS section);
+  `an_appending_handle_writes_at_its_files_end_as_the_host_has_it`.
+- O_SYNC and O_DSYNC open to write through (FILE_WRITE_THROUGH); O_RDONLY with O_TRUNC
+  truncates, as Linux's open(2); SEEK_DATA and SEEK_HOLE take a file to be all data, as
+  POSIX lets an implementation.
+
+**Slices.** 1 (built): the server's host calls behind functions of their own, `mod calls`,
+Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own tests on
+Windows. 3: the share process and the daemon's shares on Windows, and the volume, bind and
+DAX tests on CI's Windows runners.
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
