@@ -47,19 +47,23 @@ const JEQ_K: u16 = (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16;
 const JGT_K: u16 = (libc::BPF_JMP | libc::BPF_JGT | libc::BPF_K) as u16;
 const JA: u16 = (libc::BPF_JMP | libc::BPF_JA) as u16;
 const RET_K: u16 = (libc::BPF_RET | libc::BPF_K) as u16;
+const AND_K: u16 = (libc::BPF_ALU | libc::BPF_AND | libc::BPF_K) as u16;
 
 /// The exit status of a process a filter refused: 128 plus SIGSYS, as a shell reports a
 /// process SIGSYS ended.
 pub const REFUSED: i32 = 128 + libc::SIGSYS;
 
-/// A syscall a filter allows: always, or when its argument `arg` is one of `values`; or,
-/// with `errno`, one it answers with that error instead of trapping, as Firecracker
-/// answers `clone3` with ENOSYS so that the C library falls back to `clone`, whose flags a
-/// filter can read.
+/// A syscall a filter allows: always, or when its argument `arg` is one of `values`, or
+/// its bits under `mask` are; or, with `errno`, one it answers with that error instead of
+/// trapping, as Firecracker answers `clone3` with ENOSYS so that the C library falls back
+/// to `clone`, whose flags a filter can read.
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub syscall: libc::c_long,
     pub arg: Allowed,
+    /// The bits of the argument its values are compared in: all of them, but for a rule
+    /// [`Rule::masked`] makes.
+    pub mask: u32,
     pub errno: Option<u16>,
 }
 
@@ -68,6 +72,7 @@ impl Rule {
         Rule {
             syscall,
             arg: None,
+            mask: u32::MAX,
             errno: None,
         }
     }
@@ -76,6 +81,19 @@ impl Rule {
         Rule {
             syscall,
             arg: Some((arg, values.to_vec())),
+            mask: u32::MAX,
+            errno: None,
+        }
+    }
+
+    /// A syscall allowed when its argument `arg`'s bits under `mask` are one of `values`:
+    /// an ioctl request by its type, its bits 8 to 15 (include/uapi/asm-generic/ioctl.h),
+    /// which a driver's requests share whatever their numbers and their arguments' sizes.
+    pub fn masked(syscall: libc::c_long, arg: u32, mask: u32, values: &[u32]) -> Rule {
+        Rule {
+            syscall,
+            arg: Some((arg, values.iter().map(|v| v & mask).collect())),
+            mask,
             errno: None,
         }
     }
@@ -84,6 +102,7 @@ impl Rule {
         Rule {
             syscall,
             arg: None,
+            mask: u32::MAX,
             errno: Some(errno),
         }
     }
@@ -126,17 +145,32 @@ pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
         None => Target::Ret(libc::SECCOMP_RET_TRAP),
     };
     // A syscall's check: its argument loaded over the number in A, which nothing after it
-    // needs, and found among its values by a search of their own, each value allowed.
+    // needs, its bits under each mask compared with the values of that mask in turn, then
+    // the argument found among its values by a search of their own, each value allowed.
     let check = |i: usize| -> Result<Vec<libc::sock_filter>, String> {
-        let Some((_, Verdict::Check(index, values))) = syscalls.get(i) else {
+        let Some((_, Verdict::Check(index, values, masked))) = syscalls.get(i) else {
             return Err("a check of no syscall's argument".to_string());
         };
-        search(
+        let mut block = Vec::new();
+        for (mask, keys) in masked {
+            block.push(op(LD_W_ABS, 0, 0, arg_low(*index)));
+            block.push(op(AND_K, 0, 0, *mask));
+            // Each one found jumps over the rest to the allowing return after them; the
+            // last one not found, past it.
+            let n = keys.len();
+            for (j, &key) in keys.iter().enumerate() {
+                let over = u8::try_from(n - 1 - j).map_err(|_| format!("{n} values under one mask"))?;
+                block.push(op(JEQ_K, over, u8::from(j + 1 == n), key));
+            }
+            block.push(op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW));
+        }
+        block.extend(search(
             vec![op(LD_W_ABS, 0, 0, arg_low(*index))],
             values,
             &|_| Target::Ret(libc::SECCOMP_RET_ALLOW),
             &|_| Err("a value's check".to_string()),
-        )
+        )?);
+        Ok(block)
     };
     let prog = search(prog, &keys, &target, &check)?;
     // The kernel refuses a longer one (kernel/seccomp.c, seccomp_prepare_filter).
@@ -151,10 +185,11 @@ pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
 }
 
 /// What a syscall's search ends in: a return, or a check of its argument `.0` against the
-/// values `.1`, sorted, which allows them and traps anything else.
+/// values `.1`, sorted, and its bits under each mask of `.2` against that mask's values,
+/// which allows them and traps anything else.
 enum Verdict {
     Return(u32),
-    Check(u32, Vec<u32>),
+    Check(u32, Vec<u32>, Vec<(u32, Vec<u32>)>),
 }
 
 /// The arguments `struct seccomp_data` holds.
@@ -180,20 +215,32 @@ fn verdict(syscall: libc::c_long, rules: &[&Rule]) -> Result<Verdict, String> {
     if rules.iter().any(|r| r.arg.is_none()) {
         return Ok(Verdict::Return(libc::SECCOMP_RET_ALLOW));
     }
-    let mut checked = rules.iter().filter_map(|r| r.arg.as_ref());
-    let Some((index, first)) = checked.next() else {
+    let mut checked = rules.iter().filter_map(|r| r.arg.as_ref().map(|a| (a, r.mask)));
+    let Some(((index, _), _)) = checked.clone().next() else {
         return Ok(Verdict::Return(libc::SECCOMP_RET_TRAP));
     };
-    let mut values = first.clone();
-    for (other, more) in checked {
+    let mut values = Vec::new();
+    let mut masked: Vec<(u32, Vec<u32>)> = Vec::new();
+    for ((other, more), mask) in checked.by_ref() {
         if other != index {
             return Err(format!("syscall {syscall}: rules on two arguments"));
         }
-        values.extend_from_slice(more);
+        if mask == u32::MAX {
+            values.extend_from_slice(more);
+        } else if let Some((_, keys)) = masked.iter_mut().find(|(m, _)| *m == mask) {
+            keys.extend_from_slice(more);
+        } else {
+            masked.push((mask, more.clone()));
+        }
     }
     values.sort_unstable();
     values.dedup();
-    Ok(Verdict::Check(*index, values))
+    masked.sort_unstable_by_key(|(m, _)| *m);
+    for (_, keys) in &mut masked {
+        keys.sort_unstable();
+        keys.dedup();
+    }
+    Ok(Verdict::Check(*index, values, masked))
 }
 
 /// Entries a search compares one by one, at most. A halving costs one comparison and
@@ -786,7 +833,7 @@ mod tests {
                     "a jump past the end at {pc}"
                 ),
                 JA => assert!(pc + 1 + (i.k as usize) < len, "a jump past the end at {pc}"),
-                RET_K => {}
+                RET_K | AND_K => {}
                 code => panic!("instruction {code:#x} at {pc}"),
             }
         }
@@ -809,6 +856,7 @@ mod tests {
                 JEQ_K => pc += usize::from(if a == i.k { i.jt } else { i.jf }),
                 JGT_K => pc += usize::from(if a > i.k { i.jt } else { i.jf }),
                 JA => pc += i.k as usize,
+                AND_K => a &= i.k,
                 RET_K => return (i.k, ran),
                 code => panic!("instruction {code:#x}"),
             }
@@ -826,7 +874,7 @@ mod tests {
         } else if mine.iter().any(|r| r.arg.is_none())
             || mine.iter().any(|r| {
                 let (index, values) = r.arg.as_ref().unwrap();
-                values.contains(&(args[*index as usize] as u32))
+                values.contains(&(args[*index as usize] as u32 & r.mask))
             })
         {
             libc::SECCOMP_RET_ALLOW
@@ -856,6 +904,9 @@ mod tests {
                             u64::from(v.wrapping_add(1)),
                             u64::from(v) | 1 << 32,
                             u64::from(v) | 0xffff_ffff << 32,
+                            // Bits outside a mask, which it does not look at.
+                            u64::from(v | !r.mask),
+                            u64::from(v | (!r.mask & 0x5a5a_5a5a)),
                         ] {
                             let mut args = [0u64; 6];
                             args[*index as usize] = x;
@@ -1018,6 +1069,46 @@ mod tests {
         assert!(most <= 19, "{most} instructions");
         let len = compile(&shaped()).unwrap().0.len();
         assert!(len <= 222, "{len} instructions, where 7a0d8a0's search laid 406");
+    }
+
+    /// An argument allowed by its bits under a mask, an ioctl request by its type: any
+    /// number and size of that type passes, as do the exact values listed beside them, and
+    /// nothing else; masks add up, each with its values.
+    #[test]
+    fn a_masked_rule_allows_an_argument_by_its_bits_under_the_mask() {
+        let ioctl = libc::SYS_ioctl;
+        let rules = [
+            Rule::with(ioctl, 1, &[0xae80, 0x5401]),
+            Rule::masked(ioctl, 1, 0xff00, &[0x4600, 0x6400]),
+            Rule::masked(ioctl, 1, 0xff00, &[0x6200]),
+            Rule::masked(ioctl, 1, 0xff00_0000, &[0x3000_0000]),
+            Rule::any(libc::SYS_read),
+        ];
+        answers_as_its_rules_say(&rules);
+        let prog = compile(&rules).unwrap().0;
+        for (request, verdict) in [
+            // KVM_RUN and TCGETS, listed.
+            (0xae80, libc::SECCOMP_RET_ALLOW),
+            (0x5401, libc::SECCOMP_RET_ALLOW),
+            // NVIDIA's _IOWR('F', 0x2a, 32 bytes), DRM's _IOWR('d', 0x00, 64 bytes) and a
+            // dma-buf's _IOW('b', 0, 8 bytes): their types'.
+            (0xc020_462a, libc::SECCOMP_RET_ALLOW),
+            (0xc040_6400, libc::SECCOMP_RET_ALLOW),
+            (0x4008_6200, libc::SECCOMP_RET_ALLOW),
+            (0x3000_0001, libc::SECCOMP_RET_ALLOW),
+            // Another type, a listed value's neighbour, and a type's bits elsewhere.
+            (0xc010_4700, libc::SECCOMP_RET_TRAP),
+            (0xae81, libc::SECCOMP_RET_TRAP),
+            (0x0046, libc::SECCOMP_RET_TRAP),
+        ] {
+            assert_eq!(
+                run(&prog, &data(ioctl as u32, AUDIT_ARCH, [0, request, 0, 0, 0, 0])).0,
+                verdict,
+                "{request:#x}"
+            );
+        }
+        // Masked alone, with no value listed beside.
+        answers_as_its_rules_say(&[Rule::masked(ioctl, 1, 0xff00, &[0x4600])]);
     }
 
     #[test]

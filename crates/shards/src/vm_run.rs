@@ -43,7 +43,7 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --memory-max: the most memory the guest may have: --memory at boot, and up to this
             much in all as it asks for more through shards' control page, plugged by a
             virtio-mem device. Whole 2 MiB blocks. A snapshot keeps none plugged.
-  --gpu: this Mac's GPU, Vulkan through Venus, on the guest's render node
+  --gpu: a GPU, Vulkan through Venus on the host's, on the guest's render node
          /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
          --snapshot-dir, a snapshot is refused once the guest has made a context or a
          resource of the GPU's: those are its host driver's, which no snapshot holds.
@@ -1767,6 +1767,11 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     if cfg.snapshot.is_some() {
         snapshots()?;
     }
+    // The GPU's VM process reaches its host's GPU driver (D201).
+    #[cfg(target_os = "linux")]
+    if shards_vmm::devices::virtio::gpu::RENDERS {
+        crate::confine::gpu_paths(&mut paths);
+    }
     confine(&paths)?;
     vm::start(cfg)
 }
@@ -1809,6 +1814,11 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     sealing(&paths, cfg.snapshot.as_ref().map(|p| p.dir.as_path()));
     // Its writable layer, which its guest writes (D190).
     paths.write.extend(cfg.layer.iter().cloned());
+    // The GPU's VM process reaches its host's GPU driver (D201).
+    #[cfg(target_os = "linux")]
+    if shards_vmm::devices::virtio::gpu::RENDERS {
+        crate::confine::gpu_paths(&mut paths);
+    }
     let add = |paths: &mut crate::confine::Paths, files: &[(PathBuf, bool)]| {
         for (path, read_only) in files {
             let list = if *read_only {

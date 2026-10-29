@@ -346,6 +346,8 @@ struct Assembled {
     pci: Option<acpi::PciBridge>,
     /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
     share_window_mib: u64,
+    /// The GPU's window's length, where it has a GPU (D201).
+    gpu_window: Option<u64>,
 }
 
 /// Where the memory to plug starts (D133): above 4 GiB, at the first GiB boundary after
@@ -372,6 +374,9 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
     Ok((ram, ranges))
 }
 
+/// `gpu`, whether it has a GPU, and its window's length: as its renderer offers, where
+/// `Some(0)`, a boot's; that long, a restore's, where its renderer offers at least as much
+/// (D150, D201).
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
@@ -380,9 +385,6 @@ fn assemble(
     gpu: Option<u64>,
     pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
-    if gpu.is_some() {
-        return Err("a GPU is given on macOS hosts alone so far (D144)".into());
-    }
     let ram = config
         .memory_mib
         .checked_mul(MIB)
@@ -399,6 +401,15 @@ fn assemble(
     let (regions, end) = super::pmem_regions(config, first)?;
     // Its writable layer after them (D190).
     let (layer, end) = super::layer_layout(hosts.layer, end)?;
+    // A GPU's window after it, at a GiB boundary, as long as the renderer says (D201).
+    let gpu = gpu.map(|saw| super::gpu_layout(saw, end)).transpose()?;
+    let end = match &gpu {
+        Some((_, r)) => r
+            .base
+            .checked_add(r.len)
+            .ok_or("the GPU's window overflows the address space")?,
+        None => end,
+    };
     // The PCI bus's 64-bit window past all of that, as long as its 64-bit BARs need (D154).
     let mem64 = match pci.mem64()? {
         Some((len, align)) => Some((
@@ -466,6 +477,10 @@ fn assemble(
         Some((translation, device, endpoints)) => (Some(translation), Some(device), endpoints),
         None => (None, None, Vec::new()),
     };
+    let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
+    let gpu = gpu
+        .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
+        .transpose()?;
     let devices = super::virtio_devices(
         config,
         &regions,
@@ -473,8 +488,8 @@ fn assemble(
         &windows,
         Some(&vm),
         hosts,
-        hotplug
-            .into_iter()
+        gpu.into_iter()
+            .chain(hotplug)
             .chain(reporting)
             .chain(
                 swap.clone()
@@ -600,6 +615,7 @@ fn assemble(
         virtio,
         pci,
         share_window_mib,
+        gpu_window,
     })
 }
 
@@ -676,8 +692,10 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     })?;
     super::huge_pages_when_init_runs(&a.control, &memory);
     debug!("kernel and initrd copied");
-    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
+    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps,
+    // and its GPU's window's (D150).
     config.share_window_mib = a.share_window_mib;
+    config.gpu = a.gpu_window;
     let mut cmdline = match &a.pci {
         Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
         None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),

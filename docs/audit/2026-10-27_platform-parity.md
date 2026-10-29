@@ -30,7 +30,7 @@ items are not gaps.
 | 3 | Host directories shared into a microVM (volumes and binds, D38: the share process and its FUSE server) and their DAX windows (D189) | Windows | virtio/fs/mod.rs: `server`, `host`, `headroom`, `window` are `cfg(unix)`; window_none.rs and vm/mod.rs:764 "a DAX window is not built on Windows yet (D189)" (slates-d7 holds the WHP window, its step 6) |
 | 4 | Memory a microVM gives back: free page reporting (D151), budgets (D148), the host's pressure watched and given back to (D188) for runs and builders | Windows | platform/pressure.rs Linux's and macOS's alone; build/mod.rs:48 `give` `cfg(unix)`; D188 "The daemon has no other platform yet" |
 | 5 | A hypervisor backend | Windows arm64 | hv/mod.rs: `whp` is "Windows on x86_64"; D13 "planned" |
-| 6 | A GPU given a microVM (D144, Venus) | Linux, Windows | vm/x86_64.rs:378 and vm/aarch64.rs:425 "a GPU is given on macOS hosts alone so far (D144)"; user decision 2026-10-13 "--gpus Linux YES" |
+| 6 | A GPU given a microVM (D144, Venus) | Windows arm64, which has no backend (row 5); closed: Linux (D201), Windows x86_64 (D202) | vm/x86_64.rs and vm/aarch64.rs "a GPU is given on macOS and Linux hosts alone so far (D144, D201)"; user decision 2026-10-13 "--gpus Linux YES" |
 | 7 | `--cgroup-parent` (D183) | macOS (refused: "no host resource group a process can be placed in"), Windows (refused until D183's slice 3, a job object) | D183 "Refused before anything starts" |
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | journald on macOS and Windows; etwlogs nowhere yet | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
@@ -62,6 +62,14 @@ Each lone item is confirmed or closed as its row is worked.
 10. Row 9, a function passed through where a host allows one.
 
 ## Closed
+
+- Row 6, Linux: a microVM given its host's GPUs through Venus, rendered by the host's own
+  Vulkan driver in the GPU's VM process (D201), tested by tests/gpu.rs on the GPU desktop's
+  NVIDIA GeForce RTX 5060 Ti and Radeon 610M (PM M381, M382, M384).
+- Row 6, Windows: the same on an x86_64 Windows host, the krunkit fork's Venus in the GPU's
+  VM process, its blobs of the renderer's own pages mapped by WHP, the process in its
+  AppContainer on a window station and desktop of its own (D202), tested by tests/gpu.rs on
+  jupiter's Radeon 8060S (PM M383, M385). arm64 Windows waits for row 5.
 
 - Row 2b, arm64 Linux: snapshots and restores, cold and warm, templates and warm pools on
   KVM (D154), tested by the snapshot tests themselves on arm64 Linux in a guest with EL2

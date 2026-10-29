@@ -239,8 +239,16 @@ pub fn cdi_edits(run: &Run) -> Result<Option<crate::build::cdi::Edits>, String> 
 }
 
 /// The render node of a guest's GPU, as Linux's virtio-gpu driver makes it for the first
-/// (D144): a run or a step given it is given this Mac's GPU.
+/// (D144): a run or a step given it is given the microVM's GPU.
 pub const RENDER_NODE: &str = "/dev/dri/renderD128";
+
+/// Whether this host gives a microVM a GPU, Vulkan through Venus on the host's GPUs: macOS
+/// on Apple silicon (D144), Linux (D201) and Windows on x86_64 (D202).
+pub const GIVES_GPU: bool = cfg!(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    target_os = "linux",
+    all(windows, target_arch = "x86_64")
+));
 
 /// A run's GPU requests, each with how it was asked for: `--gpus`'s values as the CLI
 /// reads them, then those an Engine API create gave (D170).
@@ -267,10 +275,10 @@ pub fn gpu_requests(run: &Run) -> Result<Vec<(String, shards_cmdline::gpus::GpuR
     Ok(out)
 }
 
-/// Whether a run's GPU requests ask for this Mac's GPU (D144): a count other than none,
-/// or the device `0`. It has one, which renders through Venus: more, another device, or
-/// a driver of its own a request may not ask for, in dockerd's words where it finds no
-/// driver for a request (daemon/devices.go, handleDevice).
+/// Whether a run's GPU requests ask for the microVM's GPU (D144, D201): a count other than
+/// none, or the device `0`. It has one, which renders through Venus on the host's GPUs:
+/// more, another device, or a driver of its own a request may not ask for, in dockerd's
+/// words where it finds no driver for a request (daemon/devices.go, handleDevice).
 pub fn wants_gpu(run: &Run) -> Result<bool, String> {
     let mut wants = false;
     for (asked, r) in gpu_requests(run)? {
@@ -280,7 +288,7 @@ pub fn wants_gpu(run: &Run) -> Result<bool, String> {
             .map(|set| format!("[{}]", set.join(" ")))
             .collect::<Vec<_>>()
             .join(" ");
-        if !r.driver.is_empty() || !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        if !r.driver.is_empty() || !GIVES_GPU {
             return Err(format!(
                 "could not select device driver {:?} with capabilities: [{caps}]",
                 r.driver
@@ -289,7 +297,7 @@ pub fn wants_gpu(run: &Run) -> Result<bool, String> {
         let devices = r.device_ids.as_deref().unwrap_or_default();
         if r.count > 1 || devices.iter().any(|d| d != "0") {
             return Err(format!(
-                "this Mac has one GPU, device 0: {asked} asks for {}",
+                "a microVM has one GPU, device 0, which renders through Venus: {asked} asks for {}",
                 if devices.is_empty() {
                     format!("{}", r.count)
                 } else {
@@ -305,8 +313,8 @@ pub fn wants_gpu(run: &Run) -> Result<bool, String> {
 /// A request made ready to run.
 pub struct Prepared {
     pub boot: Boot,
-    /// The kernel its guest boots with this Mac's GPU, where `--gpus` asks for it and
-    /// `boot` is the stored guest's (D144).
+    /// The kernel its guest boots with its GPU, where `--gpus` asks for it and `boot` is
+    /// the stored guest's (D144).
     pub gpu: Option<PathBuf>,
     /// The host's VFIO groups its `--device`s name (D154), or why they cannot be given it:
     /// its start fails then, and not its making, as dockerd finds a device as a container
@@ -714,10 +722,7 @@ pub fn prepare(
         let render = |p: &str| p == RENDER_NODE;
         e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
     });
-    let gpu = match (
-        wants_gpu(request)? || (cfg!(target_os = "macos") && renders),
-        &boot,
-    ) {
+    let gpu = match (wants_gpu(request)? || (GIVES_GPU && renders), &boot) {
         (false, _) => None,
         // The kernel given is the one it boots.
         (true, Boot::Given(cfg)) => Some(cfg.kernel.clone()),
@@ -1246,17 +1251,18 @@ mod tests {
         );
     }
 
-    /// `--gpus` asks for this Mac's one GPU with any count but none, or its device 0; more,
-    /// another device, or a driver of its own are refused, a driver in dockerd's words.
+    /// `--gpus` asks for a microVM's one GPU with any count but none, or its device 0;
+    /// more, another device, or a driver of its own are refused, a driver in dockerd's
+    /// words; on a host that gives none, every request is.
     #[test]
-    fn gpus_ask_for_this_macs_one_gpu() {
+    fn gpus_ask_for_the_microvms_one_gpu() {
         let wants = |v: &[&str]| {
             wants_gpu(&Run {
                 gpus: v.iter().map(|s| s.to_string()).collect(),
                 ..Run::default()
             })
         };
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        if !GIVES_GPU {
             assert_eq!(
                 wants(&["all"]).unwrap_err(),
                 "could not select device driver \"\" with capabilities: [[gpu]]"
@@ -1270,11 +1276,11 @@ mod tests {
         }
         assert_eq!(
             wants(&["2"]).unwrap_err(),
-            "this Mac has one GPU, device 0: --gpus 2 asks for 2"
+            "a microVM has one GPU, device 0, which renders through Venus: --gpus 2 asks for 2"
         );
         assert_eq!(
             wants(&["\"device=0,1\""]).unwrap_err(),
-            "this Mac has one GPU, device 0: --gpus \"device=0,1\" asks for device 0,1"
+            "a microVM has one GPU, device 0, which renders through Venus: --gpus \"device=0,1\" asks for device 0,1"
         );
         assert_eq!(
             wants(&["driver=nvidia"]).unwrap_err(),
@@ -1298,7 +1304,7 @@ mod tests {
         assert_eq!(requests(vec![gpu(0, None)]), Ok(false));
         assert_eq!(
             requests(vec![gpu(2, None)]).unwrap_err(),
-            "this Mac has one GPU, device 0: HostConfig.DeviceRequests asks for 2"
+            "a microVM has one GPU, device 0, which renders through Venus: HostConfig.DeviceRequests asks for 2"
         );
     }
 
