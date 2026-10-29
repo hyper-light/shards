@@ -400,6 +400,12 @@ pub mod kind {
     /// system nothing of a file's ranges (D141), where with no answer it read its writable
     /// layer whole and NTFS took that much of its disk (PM M377).
     pub const SEALED: u8 = 78;
+    /// Warm VM → daemon, empty, before `DONE`: its network process has closed the run's
+    /// published ports, as it answered `UNPUBLISH` (warm.rs `release_ports`), so that the
+    /// daemon closes its own copies of their sockets and frees them at once, rather than as
+    /// that process goes, which on Windows came 95 ms after a run's end on jupiter and past
+    /// 2 s on CI's runners (PM M380): the next program to bind one has it.
+    pub const PORTS_FREE: u8 = 79;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

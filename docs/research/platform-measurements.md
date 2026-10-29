@@ -16186,3 +16186,32 @@ revision before comparing a changed API/implementation.
   alone where brought up late they took 2.28, and in 0.68 to 1.16 s eight at once where
   late 3.89 to 4.24. HVF boots every CPU
   at boot, faster so alone and as fast eight at once; KVM boots as it did, unmeasured so.
+
+### M380. A run's published ports, held past its end until its network process went
+
+- **Question.** containers.rs `published_ports_reach_the_guest` failed once on CI's
+  windows-2022 runner (CI 40844212880, 2026-10-29): a run refused a port another program
+  held took 2.012 s, where it is refused "at once, not after the wait for a run's ports to
+  come free" (its bound, 2 s, that wait's own: `netproc::GRACE` twice). Is a run's port
+  held after its client has seen it end, and for how long?
+- **Method.** The daemon logs each wait for an ended run's network process
+  (`Daemon::in_use`: "waiting for its network process", "freed after"), and the test prints
+  its refusal's time and the daemon's lines of its port: budget-e2e.yml
+  `windows:containers` (all, twice) on windows-2022 and windows-2025 (CI 40857947018), then
+  the test alone three times on jupiter (Windows 11 26200, 32 CPUs), the M5 Max (macOS
+  26.4.1) and Fedora (x86_64), at 1d2f0c55; then the same with the fix below.
+- **Numbers.** CI: refusals of 1.164 s and 0.570 s on windows-2022, 1.055 s and 0.825 s on
+  windows-2025, all four suites 132/132. jupiter: each of the test's 20 runs of one port
+  after another waited for the run before's network process, freed after 93.7 to 102.2 ms,
+  and the refusal took 128.6 to 143.2 ms; macOS logged no wait, its refusals 14.8 to
+  26.1 ms. The daemon kept its own copies of a run's published sockets until its network
+  process went (`Held::listeners`, closed in `free_ports` as the followers reaped it),
+  though that process closed its own as the VM's UNPUBLISH asked, before the VM said DONE:
+  on Windows the process went 95 ms after the run's end on jupiter and past 2 s on a busy
+  4-CPU runner, the port the daemon's meanwhile; on macOS it had gone before the next bind.
+- **With the fix** (`kind::PORTS_FREE`, D31: the VM says its network process answered
+  UNPUBLISH, before DONE, and the daemon closes its copies and frees the ports then): no wait
+  logged on any host, the refusal 31.2 to 32.5 ms on jupiter, 15.2 to 18.7 ms on macOS and
+  4.3 ms on Fedora; the test now holds the daemon's log of the port to no wait at all, not
+  to a time. `a_run_whose_ports_are_closed_holds_them_no_longer` (daemon.rs) holds the
+  daemon to it, a missing arm caught.

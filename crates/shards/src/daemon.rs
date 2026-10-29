@@ -3925,11 +3925,12 @@ impl<D: Disk> Daemon<D> {
     /// Whose host address `at`, found in use, is: the host's; a running container's of
     /// this daemon, as dockerd's allocator knows its own; or a run's that ended, waited
     /// for until its network process has gone (its grace, `netproc::GRACE`, and as long
-    /// again). A run's VM says DONE before it tells its client (warm.rs `finish`), whose
-    /// next program may bind the port at once: what the holder's run has sent is taken
-    /// first, as a name's holder's is (`create`), so that a run its client has seen end
-    /// holds the port no longer, as dockerd's has let go of it by the time `docker run`
-    /// returns.
+    /// again), where that process never said it closed the run's ports. A run's VM says
+    /// PORTS_FREE, as that process has, and DONE, before it tells its client (warm.rs
+    /// `finish`), whose next program may bind the port at once: what the holder's run has
+    /// sent is taken first, as a name's holder's is (`create`), so that a run its client
+    /// has seen end holds the port no longer, as dockerd's has let go of it by the time
+    /// `docker run` returns.
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let began = Instant::now();
         let deadline = began + crate::netproc::GRACE.saturating_mul(2);
@@ -4932,8 +4933,8 @@ impl<D: Disk> Daemon<D> {
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
         }
-        // Its ports are held until its VM's network process has gone, which frees them:
-        // with the daemon's copies, if that process did not say it had them.
+        // Its ports are held, with the daemon's copies of their sockets, until its VM says
+        // its network process has closed them (`PORTS_FREE`), or that process has gone.
         if let Some(h) = lock(&self.ports_held).iter_mut().find(|h| h.container == id) {
             h.vm = Some(ready.vm.id());
             h.listeners = published.into_iter().map(|l| l.fd).collect();
@@ -5102,6 +5103,9 @@ impl<D: Disk> Daemon<D> {
                     self.run_started(id, inbox);
                 }
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
+                // Its network process has closed its published ports: the daemon's copies
+                // close, and the ports are free (PM M380).
+                kind::PORTS_FREE => self.free_ports(Some(id), None),
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id, &m.payload),
                 kind::PIDS => self.pids_refused(id, &m.payload),
@@ -11457,6 +11461,45 @@ mod tests {
                 });
                 t.daemon.free_ports(Some(&id), None);
                 assert_eq!(asked.join().unwrap(), publish::InUse::Freed);
+            });
+            joined(starting.run).unwrap();
+        });
+    }
+
+    /// A run whose VM says its network process closed its published ports (`PORTS_FREE`)
+    /// holds them no longer, its run going on, and long before that process goes: a port of
+    /// its asked of then is the host's at once, waited for not at all (PM M380).
+    #[test]
+    fn a_run_whose_ports_are_closed_holds_them_no_longer() {
+        let t = Test::new("ports-free");
+        t.run(|t| {
+            let id = t.create("freed");
+            let at = std::net::SocketAddr::from(([0, 0, 0, 0], 1));
+            lock(&t.daemon.ports_held).push(publish::Held {
+                container: id.clone(),
+                vm: None,
+                at: vec![(at, publish::TCP)],
+                listeners: Vec::new(),
+            });
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say_together(
+                &vm,
+                &[(kind::TAKEN, &[]), (kind::STARTED, &[]), (kind::PORTS_FREE, &[])],
+            );
+            t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
+            assert!(
+                matches!(lock(&t.daemon.runs).get(&id), Some(RunState::Tracked(_))),
+                "freed as its run ended, not before"
+            );
+            let asked = Instant::now();
+            assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Host);
+            assert!(asked.elapsed() < crate::netproc::GRACE, "{:?}", asked.elapsed());
+            say(&vm, kind::DONE, &[0]);
+            t.until("the run did not end", |d| {
+                !matches!(lock(&d.runs).get(&id), Some(RunState::Tracked(_)))
             });
             joined(starting.run).unwrap();
         });

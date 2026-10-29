@@ -2166,12 +2166,16 @@ stack inside the VMM, is superseded by it.
     time. SCTP is refused: the stack does not carry it. A taken port fails the start in
     the words scripts read from Docker: its allocator's for a container's port,
     bindTCPOrUDP's for another program's.
-  - *A run's ports are free when its end is told.* The network process says it has the
-    sockets, and the daemon's copies close (M24 holds them until then); as the run ends,
-    the VM has the network process close them, and waits for it to say so, before it tells
-    the daemon and the client (`kind::UNPUBLISH`), so that `run --rm -p N …` followed by
-    any bind of N succeeds, as scripts that bind the port next expect. Only runs that
-    publish pay that round trip.
+  - *A run's ports are free when its end is told.* As the run ends, the VM has the network
+    process close them, and waits for it to say so (`kind::UNPUBLISH`); then it tells the
+    daemon (`kind::PORTS_FREE`), which closes its own copies of the sockets (M24 holds them
+    while they are in flight) and frees the ports, before the VM tells it and the client the
+    run is done, so that `run --rm -p N …` followed by any bind of N succeeds, as scripts
+    that bind the port next expect. Only runs that publish pay that round trip. The daemon
+    had freed them only as the network process went, which on Windows came 95 ms after the
+    run's end on jupiter and past 2 s on a busy CI runner, each next run of the port waiting
+    for it and a refusal for another program's hold of it as long (PM M380); a network
+    process that never says it closed them is still waited for, its grace and as long again.
   - *What a command sends before it exits goes out (2026-10-10).* A datagram a command
     sends just before it exits is in the device's TX queue when its exit reaches the VM,
     and the network process took a doorbell and a control message of one wake in order,

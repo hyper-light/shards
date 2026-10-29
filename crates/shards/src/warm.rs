@@ -161,35 +161,38 @@ pub fn adopt_release(socket: shards_vmm::platform::UnixStream) -> Result<(), Str
 /// ring, which it takes before UNPUBLISH: a datagram a command sends just before it exits
 /// reaches its peer, as a container's does, rather than going with the run's ports or its
 /// VM (the published UDP flake of 2026-10-06 and 2026-10-10: the guest answered its last
-/// datagram and exited, and the answer never came).
-fn release_ports() {
+/// datagram and exited, and the answer never came). Whether it published ports and its
+/// network process has closed them, as it answered.
+fn release_ports() -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     if let Some(flush) = FLUSH.get() {
         flush.flush(deadline);
     }
     if !PUBLISHED.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
+        return false;
     }
-    let Some(release) = RELEASE.get() else { return };
+    let Some(release) = RELEASE.get() else {
+        return false;
+    };
     #[cfg(unix)]
     {
         if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
-            return;
+            return false;
         }
         // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
         // setsockopt(2) (confine.rs).
-        let _ = shards_ipc::recv_by(release, deadline);
+        matches!(shards_ipc::recv_by(release, deadline), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
     }
     #[cfg(windows)]
     {
         if shards_ipc::write_message(release, kind::UNPUBLISH, &[]).is_err() {
-            return;
+            return false;
         }
         // Bounded by a poll before the read (shards_afunix's read timeout).
         let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if !left.is_zero() && release.set_read_timeout(Some(left)).is_ok() {
-            let _ = shards_ipc::read_message(release);
-        }
+        !left.is_zero()
+            && release.set_read_timeout(Some(left)).is_ok()
+            && matches!(shards_ipc::read_message(release), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
     }
 }
 
@@ -1574,7 +1577,11 @@ pub fn finish(
             to_daemon(&link.daemon, kind::WORKING_SET, part, &[])
         });
     }
-    release_ports();
+    // Its ports closed, the daemon frees them before it hears the run is done, as dockerd's
+    // are by the time `docker run` returns.
+    if release_ports() {
+        let _ = to_daemon(&link.daemon, kind::PORTS_FREE, &[], &[]);
+    }
     release_host(0);
     let _ = to_daemon(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {

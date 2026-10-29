@@ -9018,14 +9018,13 @@ fn published_ports_reach_the_guest() {
         )),
         "{refused}"
     );
-    // The daemon's word on any wait for a run's ports, which its log keeps.
+    // The daemon's word on any wait for a run's ports, which its log keeps: none, each run's
+    // ports freed as it said its network process had closed them (PM M380), where the wait
+    // for that process to go took past 2 s on CI's Windows runners.
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
     let waits: Vec<&str> = log.lines().filter(|l| l.contains(&format!(":{p}: "))).collect();
     eprintln!("refused in {took:?}");
-    assert!(
-        took < Duration::from_secs(2),
-        "refused in {took:?}; the daemon's log of {p}: {waits:#?}"
-    );
+    assert!(waits.is_empty(), "the daemon's log of {p}: {waits:#?}");
     drop(held);
 }
 
