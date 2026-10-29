@@ -1465,7 +1465,7 @@ fn boots_at_once(cases: &[(usize, usize, &str)]) {
 /// and its system's manufacturer and product), and its hypervisor's CPUID leaves as its own
 /// processes see them: what tells CI's runners, nested in Azure, from jupiter, bare metal,
 /// for the boots that bring their CPUs up late.
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 #[test]
 #[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:host_machine_facts"]
 #[allow(clippy::print_stderr, clippy::unwrap_used, clippy::indexing_slicing)]
