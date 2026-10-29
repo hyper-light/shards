@@ -3170,6 +3170,19 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
     };
     // What its VM process holds idle, as the daemon writes it each pressure window.
     until("its group's memory.current never written", &|| current() > 0);
+    // Its microVM grown first, as a run's is as its workload touches memory (D148): its
+    // grower plugs for what its runs touch, not for what they read, whose page cache its
+    // kernel takes back at its hold first, so that a microVM booted small kept its joiner's
+    // read within what it booted with, 131 to 378 MiB of the 512 on WHP and 141 after four
+    // reads on CI's windows-2025 (PM M391). Touched and freed, its memory stays plugged and
+    // its hold raised, and what was freed is given back as its guest reports it (D151)
+    // before it is measured idle, so that no give-back below counts it.
+    let booted = current();
+    let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
+    assert_eq!(grown.status, Some(0), "{grown}");
+    until("what its provider touched and freed was not given back", &|| {
+        current() < booted + (128 << 20)
+    });
     let idle = current();
     // What its guest has and holds of files, as its kernel counts them.
     let guest = || {
@@ -3186,11 +3199,8 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
         .trim()
         .replace('\n', ", ")
     };
-    // Its guest holds what its joiner read: past 512 MiB in its VM process's footprint. A
-    // run is held at the memory it has plugged, its grower plugging more as it reaches it
-    // (D148), and a read faster than the plugging is reclaimed in part by its guest's own
-    // kernel: on WHP 131 to 378 MiB of the 512 stayed after one read (PM M391). The file is
-    // read again into what it has plugged by then, a few times at most.
+    // Its guest holds what its joiner read: past 512 MiB in its VM process's footprint,
+    // read again a few times at most where its guest's kernel took some of it back.
     let mut reads = 0;
     let after_read = loop {
         let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
@@ -3374,9 +3384,24 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     let held = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let log = home.join("daemon.log");
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
+    // Its microVM grown first, as the group's test grows its own: a run's grower plugs for
+    // what its runs touch, not for what they read (D148), and jupiter's guest kept 107 MiB of
+    // four reads (PM M391). What it touched and freed given back (D151) before it is idle.
+    let booted = held();
+    let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
+    assert_eq!(grown.status, Some(0), "{grown}");
+    let deadline = Instant::now() + TIMEOUT;
+    while held() >= booted + (128 << 20) {
+        assert!(
+            Instant::now() < deadline,
+            "{booted} bytes held booted, {} after touching and freeing a GiB",
+            held()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let idle = held();
-    // Its guest holds what its joiner read, a quarter of it or more, read again into what it
-    // has plugged where a read outran its plugging (D148, PM M391), a few times at most.
+    // Its guest holds what its joiner read, a quarter of it or more, read again where its
+    // guest's kernel took some of it back, a few times at most.
     let mut reads = 0;
     while held() <= idle + (128 << 20) {
         assert!(
@@ -8965,8 +8990,20 @@ fn exec_runs_commands_in_a_running_microvm() {
         1,
         "invalid detach keys (ctrl-P): Unknown character: 'ctrl-P'\n",
     );
+    // Its VM process, whose stacks a stop that hears no end shows with its daemon's.
+    let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", "ex"]);
+    let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
     let stopped = shards_in(&home, &["stop", "ex"]);
-    assert_eq!(stopped.status, Some(0), "{stopped}");
+    assert_eq!(
+        stopped.status,
+        Some(0),
+        "{stopped}{}",
+        if stopped.status == Some(0) {
+            String::new()
+        } else {
+            common::stacks_of(&[("its VM process", vm)], Some(&home))
+        }
+    );
     let _ = exit(&mut run);
     refused(
         &["ex", "/bin/testguest", "report"],

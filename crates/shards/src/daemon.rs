@@ -6038,6 +6038,29 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// Where run `id`'s end went unheard, for a stop that gave up on it: whether its VM
+    /// process has ended, and whether its end was taken from its messages, or they are
+    /// being taken (its inbox held), so that its log tells a VM that outlived its kill from
+    /// an end the daemon did not take.
+    pub(super) fn unheard(&self, id: &str) -> String {
+        let runs = lock(&self.runs);
+        let Some(RunState::Tracked(t)) = runs.get(id) else {
+            return "its run is followed no more".into();
+        };
+        let vm = if t.vm.has_ended() {
+            "its VM process has ended"
+        } else {
+            "its VM process runs on"
+        };
+        let taken = match t.inbox.try_lock() {
+            Ok(inbox) if inbox.ended => "its end taken",
+            Ok(_) => "nothing of its end taken",
+            Err(std::sync::TryLockError::WouldBlock) => "its messages being taken",
+            Err(std::sync::TryLockError::Poisoned(_)) => "its messages' lock poisoned",
+        };
+        format!("{vm}, {taken}")
+    }
+
     /// Stops serving: ends its offers, ends the runs in progress, and exits once they
     /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
     /// build, whose own daemon then takes the home).
