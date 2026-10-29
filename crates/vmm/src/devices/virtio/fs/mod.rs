@@ -13,7 +13,6 @@
 
 #[cfg(unix)]
 pub mod headroom;
-#[cfg(unix)]
 pub mod host;
 pub mod proto;
 #[cfg(unix)]
