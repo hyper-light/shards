@@ -2631,13 +2631,18 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             .and_then(|t| t.trim().parse().ok())
             .unwrap_or(0)
     };
-    // Half of them read with no budget, held in its guest's page cache; then the budget set
-    // short of what it holds, whose first word says what it gave back. Its host's own
-    // pressure, which a busy CI runner meets, has microVMs give back what they hold cold
-    // too, and where it took them first the microVM was within its budget as it was set,
-    // with nothing to give back (CI 40715919365: 220 MiB given back at its host's pressure,
-    // then 190 MiB of room): the budget is let go of and the files read again, a few times
-    // at most. Short of it with nothing given back is no such race.
+    // Half of them read with no budget, held in its guest's page cache; then a budget past
+    // what the slice holds, whose first word says what the daemon counts it holding (what
+    // its host may take back from its processes alone: not the page cache no process maps,
+    // which memory.current counts, its share's own reads of the files among it, which held
+    // a budget set a quarter GiB short of memory.current 242 MiB clear of it, CI
+    // 40844212880); then the budget set a quarter GiB short of that, whose first word says
+    // what it gave back. Its host's own pressure, which a busy CI runner meets, has
+    // microVMs give back what they hold cold too, and where it took them first the microVM
+    // was within its budget as it was set, with nothing to give back (CI 40715919365: 220
+    // MiB given back at its host's pressure, then 190 MiB of room): the budget is let go of
+    // and the files read again, a few times at most. Short of it with nothing given back
+    // is no such race.
     let mut tries = 0;
     let gave = loop {
         read(files.get(..512).unwrap());
@@ -2651,7 +2656,11 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             std::thread::sleep(Duration::from_millis(50));
         }
         let before = said().len();
-        set(&(current() - (256 << 20)).to_string());
+        set(&(current() + (1 << 30)).to_string());
+        let counted = first(before, &["held within its budget", "budget is short by"]);
+        let held = mib_after(&counted, "MiB, holds ");
+        let before = said().len();
+        set(&(held.saturating_sub(256) << 20).to_string());
         let word = first(before, &["held within its budget", "budget is short by"]);
         if word.contains("it gave back") && mib_after(&word, "warm VMs ended and ") > 0 {
             break word;
