@@ -293,7 +293,8 @@ impl Conn {
         }
     }
 
-    /// Ends the connection once its receiver has all written on it.
+    /// Ends the connection once its receiver has all written on it, and has ended its own
+    /// side, as it does once it has read all of this one's.
     fn finish(self, wait: &Wait<'_>) -> io::Result<()> {
         let mut tcp = match self {
             Conn::Unix(_) => return Ok(()),
@@ -319,11 +320,19 @@ impl Conn {
                 }
             }
             let (unacknowledged, rto) = tcp.unacknowledged()?;
-            if unacknowledged == 0 {
+            // Closed once its receiver has ended its side too, as Winsock's graceful shutdown
+            // closes ("Graceful Shutdown, Linger Options, and Socket Closure"): its TCP's
+            // acknowledgement says its kernel has the bytes, not that it has read them, and a
+            // close before more of its bytes come, or with any unread, resets the connection,
+            // which on Windows takes from it what it had not read (CI 40900902805: a TLS
+            // receiver's session tickets came after the last read here, and it read nothing
+            // of the line its TCP had acknowledged).
+            if ended && unacknowledged == 0 {
                 return Ok(());
             }
             // Its acknowledgement comes within the kernel's own wait for it, or the kernel
-            // sends again; a reset or a timeout ends the connection.
+            // sends again; a reset or a timeout ends the connection. Its receiver's end is
+            // waited for as what it sends is read and let go.
             let rto = if rto.is_zero() { LEAST_RTO } else { rto };
             if ended {
                 if wait.pause(rto) {
@@ -461,6 +470,37 @@ mod tests {
             );
             assert_eq!(stream.undelivered(), 0);
         }
+    }
+
+    /// A stream ends once its receiver has ended its side, not once its receiver's TCP has
+    /// its bytes: a receiver that sends after this end has shut its writing, before it
+    /// reads, is answered with no reset, and reads all written, then its end.
+    #[test]
+    fn a_stream_ends_once_its_receiver_has_ended_its_side() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (closing, told) = std::sync::mpsc::channel::<()>();
+        let reading = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            told.recv().unwrap();
+            // Past the acknowledgement of all it was sent, which a close once acknowledged
+            // took for its end.
+            std::thread::sleep(Duration::from_millis(200));
+            let late = socket.write_all(b"late").map_err(|e| e.kind());
+            let mut got = Vec::new();
+            let ended = socket.read_to_end(&mut got).map(|_| ()).map_err(|e| e.kind());
+            (late, got, ended)
+        });
+        let mut stream = Stream::new(To::Tcp(address), [None; 2]);
+        stream.send(b"line\n").unwrap();
+        closing.send(()).unwrap();
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+        stream.close(&Wait(&stopped)).unwrap();
+        let (late, got, ended) = reading.join().unwrap();
+        assert_eq!(
+            (late, String::from_utf8(got).unwrap(), ended),
+            (Ok(()), "line\n".into(), Ok(()))
+        );
     }
 
     /// A stream over TLS whose server's certificate a CA given beside the platform's roots

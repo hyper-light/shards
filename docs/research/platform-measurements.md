@@ -16284,3 +16284,30 @@ revision before comparing a changed API/implementation.
   process was back to within 4.0 MiB of what it held idle 1.11 to 1.21 s after the word on
   jupiter (n = 3), within 5.4 MiB 1.61 to 1.66 s after it on Fedora (n = 4), and within
   14.5 MiB 1.90 to 2.03 s after it on the M5 Max (n = 3).
+
+### M411. An open of a name being removed on NTFS, refused as access denied
+
+- **Question.** containers.rs `a_logs_history_is_what_its_user_set` failed once on jupiter
+  in a full run of the suite (2026-10-29, at 265f5cde), its `logs` right after its run
+  refused: "its log: Access is denied. (os error 5)", where alone it passed 8 runs of 8. A
+  log's oldest segment goes as the daemon makes a new one (segments.rs `new_segment`),
+  removed with POSIX semantics (`platform::unlink_in`, FileDispositionInfoEx), and a reader
+  lists a segment and opens it. Does such an open see the name as gone, as on Unix?
+- **What Windows says.** "When FILE_DISPOSITION_POSIX_SEMANTICS is set, the link is removed
+  from the visible namespace as soon as the POSIX delete handle has been closed"
+  (FILE_DISPOSITION_INFORMATION_EX, Microsoft Learn): not as the delete is asked.
+- **Method.** windows_files.rs `a_name_being_removed_is_not_found`: one thread makes and
+  removes a file 20,000 times (`append_new_in`, `unlink_in`) while another opens it
+  (`open_in`) until it is done, counting opens that opened, found nothing, or were refused.
+  jupiter (Windows 11 26200, 32 CPUs), at 652aae3b and with each fix below, 3 to 5 runs
+  each; the refusals' NTSTATUS read through a probe of `nt_error` on jupiter alone.
+- **Numbers.** At 652aae3b: 10,718, 12,293 and 20,569 opens refused "Access is denied" of
+  about 230,000 a run, beside 37,109 to 39,187 opened. With STATUS_DELETE_PENDING (an open
+  between the delete asked and its handle closed) read as not found: 5, 7 and 8 refused, and
+  the probe found each of those left (3, 9 and 6 in three more runs) STATUS_FILE_DELETED
+  (0xC0000123, an open as the file goes); RtlNtStatusToDosError makes both
+  ERROR_ACCESS_DENIED. With both read as not found, as the share server's errno already
+  reads them (ENOENT): none refused in 5 runs of 5, and the platform's tests 29/29.
+- **Decided.** `nt_open` answers an open (FILE_OPEN) of a name being removed as not found
+  (ERROR_FILE_NOT_FOUND), as unlink(2) leaves none: the log reader then takes the segment as
+  gone, as it does one removed between its listing and its open.

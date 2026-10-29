@@ -33,8 +33,9 @@ use windows_sys::Wdk::Storage::FileSystem::{
     NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, NTSTATUS, OBJ_CASE_INSENSITIVE,
-    RtlNtStatusToDosError, STATUS_OBJECT_NAME_COLLISION, UNICODE_STRING,
+    ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, NTSTATUS,
+    OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_DELETE_PENDING, STATUS_FILE_DELETED,
+    STATUS_OBJECT_NAME_COLLISION, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -243,6 +244,16 @@ fn nt_open(dir: &File, name: &str, access: u32, disposition: u32, options: u32) 
             0,
         )
     };
+    // A name being removed stays listed until its deleter's handle closes, "the link
+    // ... removed from the visible namespace as soon as the POSIX delete handle has been
+    // closed" (FILE_DISPOSITION_INFORMATION_EX): an open of it then is refused
+    // STATUS_DELETE_PENDING, and one as its file goes STATUS_FILE_DELETED, each of which
+    // Win32 calls access denied. To an open it is gone, as unlink(2) leaves none (PM M411).
+    if matches!(status, STATUS_DELETE_PENDING | STATUS_FILE_DELETED) && disposition == FILE_OPEN {
+        return Err(io::Error::from_raw_os_error(
+            i32::try_from(ERROR_FILE_NOT_FOUND).unwrap_or(i32::MAX),
+        ));
+    }
     if status < 0 {
         return Err(nt_error(status));
     }
@@ -933,6 +944,41 @@ mod tests {
         assert_eq!(
             read(open_newest_beneath(&base, &["d", "current"]).unwrap()),
             "three"
+        );
+    }
+
+    /// A name being removed is gone to an open, as unlink(2) leaves none: NTFS's POSIX
+    /// delete takes it from the namespace only as the deleting handle closes, and an open
+    /// between is refused STATUS_DELETE_PENDING, which Win32 calls access denied.
+    #[test]
+    fn a_name_being_removed_is_not_found() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = shards_testdir::TempDir::new("going").unwrap();
+        std::fs::create_dir(base.join("d")).unwrap();
+        let dir = super::super::open_dir(&base.join("d")).unwrap();
+        let done = AtomicBool::new(false);
+        let (mut opened, mut gone, mut refused) = (0u64, 0u64, Vec::new());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..20_000 {
+                    drop(append_new_in(&dir, "x").unwrap());
+                    unlink_in(&dir, "x").unwrap();
+                }
+                done.store(true, Ordering::SeqCst);
+            });
+            while !done.load(Ordering::SeqCst) {
+                match open_in(&dir, "x") {
+                    Ok(_) => opened += 1,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => gone += 1,
+                    Err(e) => refused.push(e.to_string()),
+                }
+            }
+        });
+        assert!(
+            refused.is_empty(),
+            "{} opens refused, {opened} opened, {gone} gone: {:?}",
+            refused.len(),
+            refused.first()
         );
     }
 

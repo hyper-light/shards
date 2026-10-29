@@ -9047,14 +9047,22 @@ and the way every later one sends.
     - TLS's close_notify is sent;
     - its write side is shut;
     - what the receiver still sends is read and let go;
-    - the socket closes once all is acknowledged.
+    - the socket closes once all is acknowledged and the receiver has ended its side, as
+      Winsock's graceful shutdown closes ("Graceful Shutdown, Linger Options, and Socket
+      Closure", Microsoft Learn: the peer's FD_CLOSE before closesocket).
 
     A socket closed with bytes unread resets its connection, and what is not yet sent
     goes with it. TLS 1.3's session tickets are such bytes: no sender that only writes
     reads them. D163's first CI lost a run's last line this way, held back by Nagle's
     algorithm behind the line before it, on every x86_64 Linux run; the probe loses it in
     200 of 200 rounds on Linux and 90 of 200 on macOS. Docker's drivers close their
-    sockets this way.
+    sockets this way. Acknowledged is not read: a receiver's TCP acknowledges what its
+    program has yet to read, and a reset, which a close also sends where the receiver's
+    bytes come after it, takes on Windows all its receiver had not read. CI 40900902805's
+    windows-2025 lost a TLS stream's one line so, its receiver's session tickets come after
+    the sender's last read; `a_stream_ends_once_its_receiver_has_ended_its_side`, whose
+    receiver sends after the sender's end, read nothing 3 times of 3 on jupiter with the
+    close once acknowledged, and all of it 3 of 3 with the close at its end.
   - A receiver's TCP having a message is as far as TCP can say. fluentd's acks (D165)
     say its receiver has it.
 - **Messages as Docker's driver sends them** (logging/testdata/syslog.json). Its formats (srslog's Unix format, rfc3164, rfc5424,
