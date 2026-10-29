@@ -1459,6 +1459,87 @@ fn boots_at_once(cases: &[(usize, usize, &str)]) {
     }
 }
 
+/// What a Windows host says of itself as a machine (PM M379): whether it is a virtual
+/// machine by its SMBIOS tables (GetSystemFirmwareTable's raw SMBIOS: its BIOS
+/// characteristics extension byte 2's bit 4, "SMBIOS table describes a virtual machine",
+/// and its system's manufacturer and product), and its hypervisor's CPUID leaves as its own
+/// processes see them: what tells CI's runners, nested in Azure, from jupiter, bare metal,
+/// for the boots that bring their CPUs up late.
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:host_machine_facts"]
+#[allow(clippy::print_stderr, clippy::unwrap_used, clippy::indexing_slicing)]
+fn host_machine_facts() {
+    use windows_sys::Win32::System::SystemInformation::{GetSystemFirmwareTable, RSMB};
+    // SAFETY: a size query, with no buffer.
+    let size = unsafe { GetSystemFirmwareTable(RSMB, 0, std::ptr::null_mut(), 0) };
+    let mut buf = vec![0u8; size as usize];
+    // SAFETY: a buffer of the size asked for.
+    let got = unsafe { GetSystemFirmwareTable(RSMB, 0, buf.as_mut_ptr(), size) };
+    assert_eq!(got, size);
+    // RawSMBIOSData: its calling method and versions, a u32 length, then the tables.
+    let (major, minor) = (buf[1], buf[2]);
+    let len = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
+    let tables = &buf[8..(8 + len).min(buf.len())];
+    let mut at = 0;
+    while at + 4 <= tables.len() {
+        let (kind, length) = (tables[at], tables[at + 1] as usize);
+        let formatted = &tables[at..(at + length).min(tables.len())];
+        // Its strings, each ended by a NUL, the set by a second.
+        let mut end = at + length;
+        while end + 1 < tables.len() && !(tables[end] == 0 && tables[end + 1] == 0) {
+            end += 1;
+        }
+        let strings: Vec<String> = tables[(at + length).min(end)..end]
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect();
+        let s = |i: Option<&u8>| {
+            i.and_then(|i| strings.get(usize::from(*i).wrapping_sub(1)))
+                .cloned()
+                .unwrap_or_default()
+        };
+        match kind {
+            0 => eprintln!(
+                "M379 HOST SMBIOS {major}.{minor} BIOS vendor {:?} version {:?}, its characteristics' extension bytes {:?}: a virtual machine {}",
+                s(formatted.get(4)),
+                s(formatted.get(5)),
+                formatted.get(0x12..0x14),
+                formatted.get(0x13).is_some_and(|b| b & (1 << 4) != 0)
+            ),
+            1 => eprintln!(
+                "M379 HOST system manufacturer {:?} product {:?} version {:?}",
+                s(formatted.get(4)),
+                s(formatted.get(5)),
+                s(formatted.get(6))
+            ),
+            127 => break,
+            _ => {}
+        }
+        at = end + 2;
+    }
+    // Its hypervisor's leaves as this process sees them.
+    for leaf in [
+        0x4000_0000u32,
+        0x4000_0001,
+        0x4000_0003,
+        0x4000_0004,
+        0x4000_0006,
+        0x4000_000A,
+    ] {
+        let r = std::arch::x86_64::__cpuid(leaf);
+        eprintln!(
+            "M379 HOST CPUID {leaf:#x}: eax {:#x} ebx {:#x} ecx {:#x} edx {:#x}",
+            r.eax, r.ebx, r.ecx, r.edx
+        );
+    }
+    eprintln!(
+        "M379 HOST CPUID 1 ecx's bit 31, a hypervisor present: {}",
+        (std::arch::x86_64::__cpuid(1).ecx >> 31) & 1
+    );
+}
+
 /// Where a cold boot's CPU time goes in its VM process (PM M376): one guest of as many
 /// vCPUs as the host has CPUs booted to its kernel's panic, left there (`panic=0`), and as
 /// its panic is said each of the VM process's threads' CPU time, user and kernel, by its
