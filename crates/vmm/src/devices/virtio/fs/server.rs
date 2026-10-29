@@ -809,6 +809,52 @@ fn chmod_fd(fd: host::Raw, perm: u32) -> Result<(), Errno> {
     Ok(())
 }
 
+/// A time a SETATTR sets: now, one given in seconds and nanoseconds since the epoch, or
+/// the one it has kept.
+#[derive(Debug, Clone, Copy)]
+enum Time {
+    Now,
+    At(u64, u32),
+    Kept,
+}
+
+/// The access and modification times of `own`'s file, or else of `name` in `dir` without
+/// following it (futimens(2), utimensat(2)).
+fn set_times(
+    own: Option<host::Raw>,
+    dir: host::Raw,
+    name: &CStr,
+    atime: Time,
+    mtime: Time,
+) -> Result<(), Errno> {
+    let spec = |t: Time| match t {
+        Time::Now => libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_NOW,
+        },
+        #[allow(clippy::cast_possible_wrap)]
+        Time::At(at, ns) => libc::timespec {
+            tv_sec: at as libc::time_t,
+            tv_nsec: libc::c_long::from(ns as i32),
+        },
+        Time::Kept => libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+    };
+    let times = [spec(atime), spec(mtime)];
+    let rc = match own {
+        // SAFETY: futimens(2) of a descriptor we hold.
+        Some(fd) => unsafe { libc::futimens(fd, times.as_ptr()) },
+        // SAFETY: utimensat(2) of a NUL-terminated name in a directory we hold.
+        None => unsafe { libc::utimensat(dir, name.as_ptr(), times.as_ptr(), host::AT_SYMLINK_NOFOLLOW) },
+    };
+    if rc != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
 fn key(st: &Stat) -> (u64, u64) {
     (st.dev, st.ino)
 }
@@ -2139,41 +2185,24 @@ impl Server {
             }
         }
         if valid & (fattr::ATIME | fattr::MTIME) != 0 {
-            let time = |set: bool, now: bool, s_: u64, ns: u32| libc::timespec {
-                tv_sec: s_ as _,
-                tv_nsec: if now {
-                    libc::UTIME_NOW
-                } else if set {
-                    host::c_long::from(ns as i32)
-                } else {
-                    libc::UTIME_OMIT
-                },
+            let time = |set: bool, now: bool, at: u64, ns: u32| match (now, set) {
+                (true, _) => Time::Now,
+                (false, true) => Time::At(at, ns),
+                (false, false) => Time::Kept,
             };
-            let times = [
-                time(
-                    valid & fattr::ATIME != 0,
-                    valid & fattr::ATIME_NOW != 0,
-                    atime,
-                    atimensec,
-                ),
-                time(
-                    valid & fattr::MTIME != 0,
-                    valid & fattr::MTIME_NOW != 0,
-                    mtime,
-                    mtimensec,
-                ),
-            ];
-            let rc = match own {
-                // SAFETY: futimens(2) of a descriptor we hold.
-                Some(fd) => unsafe { libc::futimens(fd, times.as_ptr()) },
-                // SAFETY: utimensat(2) of a NUL-terminated name in a directory we hold.
-                None => unsafe {
-                    libc::utimensat(dir, name.as_ptr(), times.as_ptr(), host::AT_SYMLINK_NOFOLLOW)
-                },
-            };
-            if rc != 0 {
-                return Err(last());
-            }
+            let atime = time(
+                valid & fattr::ATIME != 0,
+                valid & fattr::ATIME_NOW != 0,
+                atime,
+                atimensec,
+            );
+            let mtime = time(
+                valid & fattr::MTIME != 0,
+                valid & fattr::MTIME_NOW != 0,
+                mtime,
+                mtimensec,
+            );
+            set_times(own, dir, &name, atime, mtime)?;
         }
         Ok(())
     }
