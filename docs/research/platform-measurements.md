@@ -16290,7 +16290,14 @@ revision before comparing a changed API/implementation.
   reclaim of the cache keeps it from (D148); jupiter's kept 107 MiB of four reads once, under a
   whole suite's load. Grown first, as the group's test is, the guest held all of one read and
   gave back 514 MiB, its VM process half of that lighter 108 to 117 ms after the word on
-  jupiter (3 of 3) and 167 to 190 ms after it on the M5 Max (2 of 2). Before, the microVM
+  jupiter (3 of 3) and 167 to 190 ms after it on the M5 Max (2 of 2). Once in 6 on Fedora it
+  gave back none of its files, asking only to unplug 896 MiB: a give-back takes the run's
+  inactive file pages alone (`reclaim_cold`), and the test, whose idle was measured as its
+  guest still gave back what it had touched, read the file a second time, which makes its
+  pages active. Measured idle once it gives back no more, and read once, its guest's pages
+  were inactive (527 MiB of 529 cached) and all 514 MiB given back: Fedora 4 of 4 with the
+  meminfo shown and 4 of 4 after (50 ms), jupiter 2 of 2 (110 to 165 ms), the M5 Max 2 of 2
+  (122 to 158 ms). Before, the microVM
   gave back all it held, and its VM process was back to within 4.0 MiB of what it held idle
   1.11 to 1.21 s after the word on jupiter (n = 3), within 5.4 MiB 1.61 to 1.66 s after it on
   Fedora (n = 4), and within
@@ -16350,6 +16357,45 @@ revision before comparing a changed API/implementation.
   lists of free pages, an eighth of what the guest has, so that the build reaches its hold,
   and wakes its grower, with that much still free. A run's hold (D148) is D133's and keeps
   it too.
+
+### M393. A microVM's budget short of what it holds idle, under systemd-oomd (D188)
+
+- **Question.** containers.rs `a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end`
+  failed on Fedora 9 runs of 9, with M392's reserve and without it, where CI's ubuntu-24.04
+  passed it in all 11 runs at hand: twice "the command's microVM stopped before the command
+  ended", the daemon's ROOM and RECLAIM execs unanswered in 10 s, and otherwise its read past
+  300 s. Why?
+- **Method.** Fedora (Intel Core i9-14900HX, 32 CPUs, Linux 6.19, its systemd-oomd as
+  installed), 2026-10-29: the test once beside a sampler, every 250 ms, of its slice's
+  `memory.current`, `memory.high`, `memory.events`, `memory.pressure` and `memory.stat` and of
+  its user manager's `memory.pressure`; `journalctl --user`, `oomctl`, `findmnt /tmp`.
+- **Found.** From its start the microVM's slice held 391 MiB against its budget of 384: 258
+  MiB anonymous and 118 to 126 MiB of shared memory, all of it mapped (`anon`, `shmem`,
+  `file_mapped`), which nothing reclaims with no swap: the files its VM process maps from
+  its home, which the tests keep in /tmp, a tmpfs on Fedora, and a microVM of 32 vCPUs, sized
+  by them (M183). Its file pages stayed at 0 to 2 MiB: the window's file never came, and the
+  read made no headway. `memory.events` `high` rose about 700 a second for 156 s, the slice's
+  memory pressure (`some` avg10) to 82% and its user manager's to 28%, until systemd-oomd,
+  which watches the user's manager (`oomctl`: Memory Pressure Limit 80%, 20 s), ended its
+  scope: "shards-1906140-0.scope: systemd-oomd killed 4 process(es) in this unit". On CI's
+  4-CPU runners, whose /tmp is a disk's, the same budget was past what the microVM held.
+  The FUSE budget test met the same before and takes its budget from what its microVM holds;
+  this one took 384 MiB.
+- **Then, its budget from what it holds idle** (its slice's `memory.current` once it answers,
+  128 MiB past it, short of the 512 MiB file): 3 runs of 3 failed still, oomd ending each 77
+  to 81 s in. The read took its slice 127 MiB past its budget, "holds 276 MiB its host may
+  take back": its volume's file is the test's, in /tmp too, a tmpfs's, whose pages are the
+  file itself, shared memory no reclaim takes without swap, and charged to the slice as its
+  guest's reads faulted them in. A budget short of such a file is never met.
+- **On a disk's directory** (TMPDIR a directory on Fedora's btrfs): 3 runs of 3 passed, in 47
+  to 76 s, no scope ended. The test now says SKIP where its volume's directory is a tmpfs
+  (statfs(2), TMPFS_MAGIC), as its budget's give-back is of files a disk keeps, and takes its
+  budget from what its microVM holds idle.
+- **Consequence.** A microVM whose budget is short of what nothing may reclaim, its anonymous
+  memory, a tmpfs's files it maps, is held throttled for as long as it runs, and where
+  systemd-oomd watches the user's manager, as Fedora's does, it is ended 20 s on. The daemon
+  says the budget short ("its microVM's budget is short by"), then "VM ... ended before its
+  command did", and not who ended it.
 
 ### M411. An open of a name being removed on NTFS, refused as access denied
 
