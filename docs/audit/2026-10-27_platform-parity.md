@@ -81,5 +81,6 @@ Each lone item is confirmed or closed as its row is worked.
   (`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, on every host), and a
   builder's 253 MiB of a 256 MiB file at its build's word, its VM process from 352,088 KiB
   to 96,220 (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`), with
-  `a_runs_memory_freed_goes_back_to_the_host` passing there too. What a volume's reads hold
-  is given back the same way once row 3 shares host directories on Windows.
+  `a_runs_memory_freed_goes_back_to_the_host` passing there too; and what a volume's reads
+  hold, through D197's FUSE server over NTFS, at its group's budget, its microVMs from 764
+  to 768 MiB to 272 (`a_microvm_under_a_group_is_held_to_its_budget`).

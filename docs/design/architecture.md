@@ -6091,10 +6091,11 @@ they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVM
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
 alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). On macOS and Windows,
 which have no group of processes a user's tools cap, a group shards keeps (D183's slice 3):
-`a_microvm_under_a_group_is_held_to_its_budget` on macOS, a share's files given back;
-and on both, `what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, 512
-MiB of a joiner's image read through its guest's page cache (D119; no host directory, which
-Windows shares with the platform parity plan's step 6), its group's `memory.high` written a
+`a_microvm_under_a_group_is_held_to_its_budget`, a share's files given back, on Windows
+through D197's FUSE server over NTFS (its microVMs from 764 to 768 MiB to 272 on jupiter,
+within a budget 451 to 492 MiB short); and
+`what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, 512 MiB of a
+joiner's image read through its guest's page cache (D119), its group's `memory.high` written a
 quarter GiB short of its VM process: told its room and asked to give back, the microVM
 gives back what its joiner read, its VM process from 642 to 651 MiB to 261 to 266 on
 jupiter's WHP and from 1,028 to 1,038 to 265 to 275 on the M5 Max, idle 253 to 256 (PM
