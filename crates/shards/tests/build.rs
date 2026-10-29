@@ -448,6 +448,56 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     );
 }
 
+/// A build whose jobs take its builder's memory all at once, as compilers do, over a
+/// gigabyte of its layers, has it plugged in time (D133): what its CPUs keep on their own
+/// lists of the pages their ended jobs freed is kept out of the hold that wakes its grower.
+/// Without, its guest ran out of memory short of that hold, as a build of 8 compilers on 32
+/// vCPUs over its 1 GiB of packages did, and its grower never plugged more (PM M392).
+#[test]
+fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-fast-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "8192".as_ref()),
+    ];
+    // A builder has a vCPU for each of its host's CPUs (build::builder_cpus): a job on a
+    // quarter of them, as 8 compilers on 32, the rest idle, where what ended jobs freed stays
+    // on their CPUs' own lists. A gigabyte its step writes to a tmpfs first stays in its
+    // memory, which nothing reclaims, as a build's packages do as its layers.
+    let jobs = (std::thread::available_parallelism().map_or(1, std::num::NonZero::get) / 4).max(1);
+    let ctx = context(
+        "build-fast-ctx",
+        &format!(
+            "FROM {image}\n\
+             USER root\n\
+             RUN --mount=type=tmpfs,target=/held,size=2g [\"/bin/testguest\", \"alloc-par\", \"{jobs}\", \"3072\", \"/held/big\", \"1024\"]\n"
+        ),
+    );
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    eprintln!(
+        "{jobs} jobs: {}",
+        built
+            .stderr
+            .lines()
+            .find(|l| l.contains("allocated"))
+            .unwrap_or_default()
+    );
+    assert_eq!(built.status, Some(0), "{shown}");
+    assert!(built.stderr.contains("allocated 3072"), "{shown}");
+}
+
 /// A builder gives back what it holds cold at its build's word (D188 for D133's builders):
 /// a step reads a 256 MiB file of a cache mount, which an earlier build wrote, into its
 /// builder's page cache, then waits; the build is told once that its host is short of

@@ -152,6 +152,52 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     assert!(built.stderr.contains("allocated 1536"), "{shown}");
 }
 
+/// A build whose jobs take its builder's memory all at once, as compilers do, over a
+/// gigabyte of its layers, has it plugged in time: tests/build.rs's on Unix (PM M392).
+#[test]
+fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("bw-fast-home");
+    let [home_env, kernel_env, init_env, _] = build_env(&home);
+    let env = [
+        home_env,
+        kernel_env,
+        init_env,
+        ("SHARDS_BUILD_MEMORY", "8192".as_ref()),
+    ];
+    // A job on a quarter of its builder's vCPUs, one for each of its host's CPUs, as 8
+    // compilers on 32 (build::builder_cpus), over a gigabyte written to a tmpfs first.
+    let jobs = (std::thread::available_parallelism().map_or(1, std::num::NonZero::get) / 4).max(1);
+    let ctx = context(
+        "bw-fast-ctx",
+        &format!(
+            "FROM {image}\n\
+             USER root\n\
+             RUN --mount=type=tmpfs,target=/held,size=2g [\"/bin/testguest\", \"alloc-par\", \"{jobs}\", \"3072\", \"/held/big\", \"1024\"]\n"
+        ),
+    );
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    eprintln!(
+        "{jobs} jobs: {}",
+        built
+            .stderr
+            .lines()
+            .find(|l| l.contains("allocated"))
+            .unwrap_or_default()
+    );
+    assert_eq!(built.status, Some(0), "{shown}");
+    assert!(built.stderr.contains("allocated 3072"), "{shown}");
+}
+
 /// A `RUN` step reaches this host's own address on its default route through its
 /// network process, and one with `--network=none` reaches nothing, failing the build.
 #[test]

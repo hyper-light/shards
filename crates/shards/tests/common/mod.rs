@@ -1580,6 +1580,12 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
 /// stacks and its daemon's, where this host has Microsoft's console debugger (cdb, the
 /// Windows SDK's Debugging Tools), attached without stopping them (`-pv`).
 fn stuck(pid: u32, home: Option<&Path>) -> String {
+    stacks_of(&[("its client", pid)], home)
+}
+
+/// [`stuck`]'s view of processes `pids`, each named, as a test that found one of them stuck
+/// shows them: its home's runs, and on Windows their stacks and its daemon's.
+pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     // What `cmd` said by `timeout`; a word that it said nothing where it never ended, so
     // that the failure this adds to is never lost to one of its own.
     let said_by = |cmd: &mut Command, timeout: Duration| match std::panic::catch_unwind(
@@ -1619,7 +1625,7 @@ fn stuck(pid: u32, home: Option<&Path>) -> String {
                 .iter()
                 .flat_map(|d| [d.clone()].into_iter().chain(d.parent().map(Path::to_path_buf)))
                 .fold("srv*".to_string(), |path, d| format!("{path};{}", d.display()));
-            for (who, pid) in std::iter::once(("its client", pid)).chain(daemon.map(|d| ("its daemon", d))) {
+            for &(who, pid) in pids.iter().chain(daemon.map(|d| ("its daemon", d)).as_ref()) {
                 let mut stacks = Command::new(cdb);
                 stacks
                     .args([
@@ -1643,7 +1649,7 @@ fn stuck(pid: u32, home: Option<&Path>) -> String {
     }
     // Its stacks are Windows' alone here: Linux CI's hang watcher takes them there.
     #[cfg(not(windows))]
-    let _ = pid;
+    let _ = pids;
     said
 }
 

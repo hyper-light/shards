@@ -11239,8 +11239,13 @@ given the rest as its build needs it, up to what it may have.
   with all of it had, and a step past it is ended as one was then.
 - **The builder's init** holds the build, itself and every step (each in a cgroup of its
   own, so that each step's memory is counted and held apart), in one cgroup whose `memory.high` is what the
-  build holds and what is free, less the kernel's reserve: 64 MiB and the page structures
-  of the next memory plugged, a 64th of it. Past it the kernel slows the build's allocations
+  build holds and what is free, less the kernel's reserve: 64 MiB, the page structures of
+  the next memory plugged, a 64th of it, and the free pages its CPUs may keep on their own
+  lists, an eighth of what it has (the kernel's ceiling for them,
+  `MIN_PERCPU_PAGELIST_HIGH_FRACTION`), which are neither free to its readers nor charged
+  to the build: without them a build of 8 compilers on 32 vCPUs ran its guest out of memory
+  25 MiB short of its `memory.high`, so that its grower was never woken (2026-10-29, PM
+  M392). Past it the kernel slows the build's allocations
   and ends none, and says so in `memory.events`; a process of init's in the root cgroup,
   which nothing slows, wakes on it, asks for twice the memory the builder has, in whole
   memory blocks (so what is plugged ahead of the build is at most what it holds, and a build

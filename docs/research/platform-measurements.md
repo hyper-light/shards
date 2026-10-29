@@ -16267,8 +16267,15 @@ revision before comparing a changed API/implementation.
   first reads on jupiter and 368 to 375 MiB in 6: its own kernel reclaimed the rest as it
   read (`pgsteal_direct` 99,185 to 99,218 pages, or 37,240 to 38,280, in the joiner's
   cgroup, whose `memory.high` and `memory.max` were `max`, no global reclaim): the run's
-  hold, the memory plugged so far, which the read outran (D148). The test reads the file
-  again into what it has plugged by then: held after 1 or 2 reads in 4 runs of 4. Then, on
+  hold, the memory plugged so far, which the read outran (D148). Read again into what it has
+  plugged by then, it was held after 1 or 2 reads in 4 runs of 4 on jupiter, but CI's
+  windows-2025 kept 141 MiB after four (budget-e2e 40933671162): its grower plugs for what
+  its runs touch, never for what they read. The test now has its provider touch and free a
+  gigabyte first (testguest `alloc-free`), which leaves its microVM plugged and its hold
+  raised, and waits for what was freed to be given back (D151) before it measures idle: on
+  the M5 Max its guest then kept all 516 MiB of one read, its VM process 1,471 MiB against
+  253 idle and 287 once it gave back (2 of 2), and on jupiter it passed in a whole suite's
+  run. Before that, on
   jupiter, its VM process held 642 to 651 MiB, 255 to 256 idle, and 261 to 266 MiB once the
   group's word came (333 once, within its budget of 390); on the M5 Max 1,028 to 1,038 MiB,
   253 idle, then 265 to 275, its guest keeping 384 to 386 MiB of the read after one (n = 2).
@@ -16280,10 +16287,69 @@ revision before comparing a changed API/implementation.
   188 MiB of it on jupiter and 128 to 130 on Fedora, 142 to 382 on the M5 Max: a reader's
   page cache outgrows the run's hold only as its grower plugs more, and the grower plugs
   only where it finds the run at or past its hold (`plug.rs`, `grow`), which the kernel's
-  reclaim of the cache keeps it from (D148). The microVM gave back all of it, and its VM
-  process was back to within 4.0 MiB of what it held idle 1.11 to 1.21 s after the word on
-  jupiter (n = 3), within 5.4 MiB 1.61 to 1.66 s after it on Fedora (n = 4), and within
+  reclaim of the cache keeps it from (D148); jupiter's kept 107 MiB of four reads once, under a
+  whole suite's load. Grown first, as the group's test is, the guest held all of one read and
+  gave back 514 MiB, its VM process half of that lighter 108 to 117 ms after the word on
+  jupiter (3 of 3) and 167 to 190 ms after it on the M5 Max (2 of 2). Before, the microVM
+  gave back all it held, and its VM process was back to within 4.0 MiB of what it held idle
+  1.11 to 1.21 s after the word on jupiter (n = 3), within 5.4 MiB 1.61 to 1.66 s after it on
+  Fedora (n = 4), and within
   14.5 MiB 1.90 to 2.03 s after it on the M5 Max (n = 3).
+
+### M392. A builder's guest out of memory short of the hold that wakes its grower (D133)
+
+- **Question.** g121-5e's build of docs/research/measurements/gpu-linux's Dockerfile (llama.cpp,
+  `cmake --build -j 8`, M384) was ended for its memory in its builder on jupiter, twice, with
+  about 2 GiB plugged of the 64 GiB it may have; `SHARDS_BUILD_MEMORY=16384` changed nothing,
+  and the GPU desktop's 32 jobs were ended too. Why did its builder plug no more?
+- **Method.** jupiter (AMD Ryzen AI Max+ 395, 32 CPUs, Windows 11 26200), 2026-10-29, win-pools
+  cf9484c8: the Dockerfile without its model's download, in a home of its own, its builder of
+  32 vCPUs. The grower made to say (for this alone) each ask and how its memory came, and
+  every 500 ms the build cgroup's `memory.current`, `memory.high` and `memory.events` and
+  the guest's free memory (sysinfo, less what it may still plug, D149); the kernel's report
+  of each process it ended, which the step's runner relays. Then the same with the fix;
+  Fedora (Intel Core i9-14900HX, 32 CPUs, KVM) with 32 jobs.
+- **Found.** Plugging kept up: 512 MiB came in 48 to 60 ms, its first block in 25 to 32,
+  and 1 GiB in 79 to 99 ms. After its second ask the builder had 2,010 MiB, the build held
+  at 1,829.5 MiB; it then grew at up to 458 MiB/s, and at 14.20 s held 1,804 MiB with 31 MiB
+  free; at 14.27 s the kernel ended a cc1plus, out of memory across the guest
+  (`constraint=CONSTRAINT_NONE`), and two more in 7 s, and the step failed. Its
+  `memory.events` `high` stayed at 34: the build never reached its hold, the one thing that
+  wakes its grower (`plug.rs`, `grow`), and no third ask came. What the build was not charged
+  for had grown from 85 MiB as the hold was set to 175 MiB: 98 MiB of free pages on its
+  CPUs' own lists (`free_pcp` 24,973 pages), which are not in MemFree and which no cgroup is
+  charged for, beside 72 MiB of slab; its 1,062 MiB of shmem, the build's packages as a
+  layer, nothing reclaims. With 4 GiB plugged the lists held 213 MiB as it ran out (54,571
+  pages). 4 runs of 4 failed this way, g121-5e's 2 and these 2.
+- **Why.** The kernel lets each CPU's list grow as that CPU frees, up to its share of an
+  eighth of its zone (mm/page_alloc.c, `zone_set_pageset_high_and_batch`,
+  `MIN_PERCPU_PAGELIST_HIGH_FRACTION`, `nr_pcp_high`, Linux 6.7 on, the pinned 6.18.48's
+  the same), and a compiler's process that ends leaves what it freed on the list of the CPU
+  it ended on, which with 8 jobs on 32 vCPUs then idles. The hold kept back 64 MiB and the
+  next plug's page structures, 95 MiB here, and nothing for the lists.
+- **With the fix** (the reserve keeps an eighth of what the guest has for its CPUs' lists):
+  2 runs of 2 passed, the step in 276 and 323 s, its grower asking at 1,540 to 1,572 MiB
+  with 243 to 305 MiB free and at 3,179 to 3,206 MiB with 548 to 595 free, to 8 GiB; 2 GiB
+  came in 183 to 207 ms, 4 GiB in 520 to 559 ms. On Fedora with 32 jobs: passed (1 of 1),
+  where without it 1 of 2 was ended (glslc, out of memory at 54 s).
+- **The test** (build.rs and build_windows.rs `a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`,
+  testguest's `alloc-par`: a quarter as many jobs as vCPUs holding 3 GiB in all, each 8 MiB
+  held a job of its own touching 16 MiB, freeing them and ending). Jobs alone did not find
+  it: the M5 Max's (18 vCPUs) and jupiter's lists held 310 to 354 MiB at most, and the
+  builder without the fix passed 9 runs of 9 on the M5 Max and 3 of 3 on jupiter, its build
+  reaching its hold as fast as it grew. Over a gigabyte nothing reclaims, as the llama.cpp
+  build's packages are, written first to a tmpfs of the step's own (as a layer of the
+  step before, it found the same, and wrote a gigabyte to the image store): without the
+  fix 3 runs of 3 failed on the M5 Max and 3 of 3 on jupiter, each out of memory; with it
+  3 of 3 passed on each, the lists holding 328 to 343 MiB at most on the M5 Max and 481 to
+  546 on jupiter (8 jobs), and 416 to 502 MiB on Fedora over the layer (3 of 3). init's
+  `a_build_reaches_its_hold_with_memory_free_whatever_its_cpus_keep` holds the reserve to
+  the llama.cpp run's numbers; it and `a_hold_counts_out_what_goes_as_it_is_unplugged`
+  fail without the fix.
+- **Consequence.** D133: the reserve beside a build's hold keeps the ceiling of its CPUs'
+  lists of free pages, an eighth of what the guest has, so that the build reaches its hold,
+  and wakes its grower, with that much still free. A run's hold (D148) is D133's and keeps
+  it too.
 
 ### M411. An open of a name being removed on NTFS, refused as access denied
 

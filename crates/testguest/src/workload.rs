@@ -210,6 +210,84 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "allocated {}", held.len());
             0
         }
+        // Holds N MiB in all from THREADS threads at once, as a build's parallel jobs take
+        // memory: each thread its share a MiB at a time, as fast as it can; and for each 8
+        // MiB it holds, a job of its own that touches 16 MiB, frees them and ends, as a
+        // compiler's process does, on whichever CPU it ran, which keeps what it freed on its
+        // own list of free pages (PM M392). Then says so, and the most its CPUs' lists held
+        // as it went (/proc/zoneinfo's `count` of each CPU's pages, of each zone). With PATH
+        // and its MiB, a file of that many MiB written there first, as `big` writes one, and
+        // kept as it goes: memory nothing reclaims where PATH is a tmpfs's, as a builder's
+        // layers are.
+        "alloc-par" => 'par: {
+            fn touched(mib: usize) -> Vec<u8> {
+                let mut chunk = vec![0u8; mib << 20];
+                for page in chunk.chunks_mut(4096) {
+                    if let Some(b) = page.first_mut() {
+                        *b = 1;
+                    }
+                }
+                chunk
+            }
+            fn on_lists() -> u64 {
+                std::fs::read_to_string("/proc/zoneinfo")
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| l.trim().strip_prefix("count:")?.trim().parse::<u64>().ok())
+                    .sum()
+            }
+            let threads: usize = arg(1).parse().unwrap_or(1);
+            let threads = threads.max(1);
+            let mib: usize = arg(2).parse().unwrap_or(0);
+            if !arg(3).is_empty()
+                && let Err(e) = big(arg(3), arg(4).parse().unwrap_or(0))
+            {
+                let _ = writeln!(io::stderr(), "{}: {e}", arg(3));
+                break 'par 1;
+            }
+            let done = std::sync::atomic::AtomicBool::new(false);
+            let (held, most) = std::thread::scope(|s| {
+                let done = &done;
+                let sampler = s.spawn(move || {
+                    let mut most = 0;
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        most = most.max(on_lists());
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    most
+                });
+                let workers: Vec<_> = (0..threads)
+                    .map(|t| {
+                        let share = mib / threads + usize::from(t < mib % threads);
+                        s.spawn(move || {
+                            std::thread::scope(|jobs| {
+                                let mut held: Vec<Vec<u8>> = Vec::with_capacity(share);
+                                for i in 1..=share {
+                                    held.push(touched(1));
+                                    if i % 8 == 0 {
+                                        jobs.spawn(|| drop(touched(16)));
+                                    }
+                                }
+                                held
+                            })
+                        })
+                    })
+                    .collect();
+                let held: Vec<Vec<Vec<u8>>> = workers
+                    .into_iter()
+                    .map(|w| w.join().unwrap_or_default())
+                    .collect();
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                (held, sampler.join().unwrap_or(0))
+            });
+            let _ = writeln!(
+                io::stdout(),
+                "allocated {}, its CPUs' lists holding {} pages at most",
+                held.iter().map(Vec::len).sum::<usize>(),
+                most
+            );
+            0
+        }
         // Walks MIB MiB, one word a page, STEPS times in an order of its own, each step
         // the address the step before read, and says the nanoseconds a step took: a load
         // whose translation every step misses, as a host's address space shapes it (D159,
