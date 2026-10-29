@@ -1941,8 +1941,9 @@ impl<D: Disk> Daemon<D> {
             boots: {
                 let cpus = crate::resources::host_cpus();
                 let boots = Boots::new(shards_vmm::vm::booting_vcpus_at_most(cpus));
+                // Scratch: held by each daemon's count alone, to measure against.
                 #[cfg(windows)]
-                let boots = boots.across_the_host(HOST_BOOTS, cpus);
+                let _ = (HOST_BOOTS, cpus);
                 boots
             },
             home_lock,
