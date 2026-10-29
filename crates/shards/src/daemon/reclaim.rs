@@ -1,5 +1,5 @@
 //! What a host short of memory gets back from its microVMs (docs/design/architecture.md
-//! D188): each time its kernel says it is short ([`MemoryPressure`]), every running microVM
+//! D188): each time its kernel says it is short ([`Pressure`]), every running microVM
 //! reclaims what it holds cold of its files and reports it free at once, which gives it back
 //! to the host (D151), as a container's page cache is its host's to drop.
 
@@ -8,11 +8,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use shards_vmm::platform::{MemoryPressure, PressureWatches};
+use shards_vmm::platform::PressureWatches;
 
 use super::health::Quiet;
 use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
 use crate::containers::Disk;
+use crate::pressure::Pressure;
 
 /// What the daemon's memory pressure watcher watches besides the host and its own cgroup:
 /// each scope its microVMs are made in under a user's slice (D183), which may hold them to
@@ -47,14 +48,19 @@ struct Unsaid {
 /// How often what microVMs gave back is said, at most: a pressure that goes on says it
 /// once in this long, with all it gave back since.
 const SAY_EVERY: Duration = Duration::from_secs(60);
+/// Where it names a FIFO (on Windows, a named pipe), the daemon's memory pressure is what
+/// is written to it, each line its host's word that it is short of memory, in place of its
+/// kernel's: so that a test tells it where no unprivileged process may raise the system's
+/// pressure (macOS, Windows), as a build's is told (`SHARDS_BUILD_PRESSURE`).
+const TOLD: &str = "SHARDS_PRESSURE";
 
 impl<D: Disk> Daemon<D> {
     /// Watches the host's memory pressure on a thread of its own, where its kernel lets
     /// this process watch it; says what it watches, or why it watches nothing.
     pub(super) fn start_pressure<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
-        let pressure = match MemoryPressure::new() {
+        let pressure = match Pressure::new(TOLD) {
             Ok((pressure, watches)) => {
-                *lock(&self.watching.watches) = Some(watches);
+                *lock(&self.watching.watches) = watches;
                 pressure
             }
             Err(e) => {
@@ -105,7 +111,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Has the microVMs give back what they hold cold each time the host is short of
     /// memory, until the daemon closes.
-    fn watch_pressure<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut pressure: MemoryPressure) {
+    fn watch_pressure<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut pressure: Pressure) {
         loop {
             // With no microVM running, none is asked to give back anything: the host's
             // pressure, which its kernel says again each window while it lasts, is not

@@ -5845,7 +5845,10 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   its available memory is low (by default 32 MB of each 4 GB, 64 MB at most: its
   documentation), said again every 2 s while it stays so, as macOS's is. On macOS and
   Windows a group shards keeps holds microVMs to a budget (D183's slice 3), whose files
-  the daemon reads each pressure window.
+  the daemon reads each pressure window. Where `SHARDS_PRESSURE` names a FIFO (on Windows,
+  a named pipe), each line written to it is the host's word in place of its kernel's, as
+  `SHARDS_BUILD_PRESSURE` tells a build: a test's, as no unprivileged process may raise
+  macOS's or Windows' pressure.
 - **Each time, every running microVM gives back what it holds cold of its files.** Its
   init (builtin `RECLAIM`) reclaims as much of its run's file pages as its memory.stat
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
@@ -6095,10 +6098,14 @@ Windows shares with the platform parity plan's step 6), its group's `memory.high
 quarter GiB short of its VM process: told its room and asked to give back, the microVM
 gives back what its joiner read, its VM process from 642 to 651 MiB to 261 to 266 on
 jupiter's WHP and from 1,028 to 1,038 to 265 to 275 on the M5 Max, idle 253 to 256 (PM
-M391). Unit (platform), Windows: each low memory signal a word, one that lasts said again
-every 2 s and none while memory is not low (an event standing in for the system's
-notification), and the system's own unsignalled while a gigabyte is available; each of 8
-mutants caught on jupiter. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the
+M391). At its host's word, on every host
+(`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, its daemon told through
+`SHARDS_PRESSURE`): what a joiner read, 128 to 382 MiB of it, given back, its VM process
+back to within 6 MiB of what it held idle 1.1 to 1.2 s after the word on jupiter and 1.6
+to 1.7 s on Fedora, and within 15 MiB 1.9 to 2.0 s after it on the M5 Max (PM M391). Unit (platform), Windows: each low memory
+signal a word, one that lasts said again every 2 s and none while memory is not low (an
+event standing in for the system's notification), and the system's own unsignalled while
+a gigabyte is available; each of 8 mutants caught on jupiter. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the
 idle daemon's threads still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages

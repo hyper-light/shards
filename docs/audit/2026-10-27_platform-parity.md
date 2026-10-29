@@ -75,7 +75,10 @@ Each lone item is confirmed or closed as its row is worked.
   budgets, a group shards keeps holding its microVMs (D183's slice 3); and give-backs for
   runs and builders, on jupiter: a joiner's 512 MiB read given back at its group's budget,
   its VM process from 642 to 651 MiB to 261 to 266
-  (`what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, PM M391), and a
+  (`what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, PM M391), and at
+  its host's word, the daemon told through `SHARDS_PRESSURE`, its VM process back to within
+  4 MiB of idle 1.1 to 1.2 s after the word
+  (`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, on every host), and a
   builder's 253 MiB of a 256 MiB file at its build's word, its VM process from 352,088 KiB
   to 96,220 (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`), with
   `a_runs_memory_freed_goes_back_to_the_host` passing there too. What a volume's reads hold
