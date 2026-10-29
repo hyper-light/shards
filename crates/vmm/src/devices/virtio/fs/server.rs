@@ -24,6 +24,12 @@ pub use super::proto::{HEADER_BYTES, IN_HEADER_BYTES, MAX_PAGES, MAX_TABLES, MAX
 use super::proto::{OUT_HEADER_BYTES, op};
 use crate::snapshot::codec::{Reader, Writer};
 
+/// Its host's calls (D197): Unix's here.
+#[cfg(unix)]
+#[path = "server_unix.rs"]
+mod calls;
+use calls::*;
+
 const ROOT: u64 = 1;
 /// How long the guest may trust what it was told of a name or its attributes: virtiofsd's
 /// `cache=auto` second, as the host may change the directory meanwhile.
@@ -127,32 +133,6 @@ struct Node {
 /// The prefix of a file [`ghost`] makes, which a daemon's start removes where a crash left
 /// one before its removal.
 pub const GHOST_PREFIX: &str = "ghost-";
-
-/// A file holding `bytes`, made in directory `dir` and removed from it at once: the
-/// descriptor of a file no path reaches, as its guest held one before its save (D176).
-fn ghost(dir: host::Raw, bytes: &[u8]) -> Result<host::Owned, String> {
-    let mut random = [0u8; 16];
-    crate::platform::fill_random(&mut random).map_err(|e| format!("a removed file's name: {e}"))?;
-    let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let name = CString::new(format!("{GHOST_PREFIX}{name}")).map_err(|_| "a removed file's name")?;
-    let fd = open_at(
-        dir,
-        &name,
-        host::O_RDWR | host::O_CREAT | host::O_EXCL | host::O_CLOEXEC,
-        0o600,
-    )
-    .map_err(|e| format!("a removed file, made again: errno {e}"))?;
-    // SAFETY: unlinkat(2) of the name just made in a directory we hold.
-    if unsafe { libc::unlinkat(dir, name.as_ptr(), 0) } != 0 {
-        return Err(format!(
-            "a removed file, made again: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let file = std::fs::File::from(fd);
-    crate::platform::write_all_at(&file, bytes, 0).map_err(|e| format!("a removed file's bytes: {e}"))?;
-    Ok(file.into())
-}
 
 /// No volume's: a node of a share of one directory, or a join share's root. Node IDs start
 /// at [`ROOT`], so none is 0.
@@ -314,14 +294,6 @@ pub struct Server {
 /// A failed operation's Linux errno.
 type Errno = i32;
 
-fn last() -> Errno {
-    host::linux_errno(
-        std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or(libc::EIO),
-    )
-}
-
 const EPERM: Errno = 1;
 const EIO: Errno = 5;
 const EEXIST: Errno = 17;
@@ -465,270 +437,10 @@ fn cstring(s: &str) -> Result<CString, Errno> {
     CString::new(s).map_err(|_| EINVAL)
 }
 
-/// `fd`'s attribute `name`, or none.
-fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, Errno> {
-    let mut buf = vec![0u8; 256];
-    loop {
-        // SAFETY: fgetxattr(2) into a buffer of its length.
-        #[cfg(target_os = "macos")]
-        let n = unsafe { libc::fgetxattr(fd, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
-        // SAFETY: as above.
-        #[cfg(target_os = "linux")]
-        let n = unsafe { libc::fgetxattr(fd, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
-        if n >= 0 {
-            buf.truncate(usize::try_from(n).unwrap_or(0));
-            return Ok(Some(buf));
-        }
-        match last() {
-            ENODATA => return Ok(None),
-            ERANGE if buf.len() < 1 << 16 => buf.resize(buf.len() * 4, 0),
-            e => return Err(e),
-        }
-    }
-}
-
-fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -> Result<(), Errno> {
-    let mut host_flags = 0;
-    if flags & linux::XATTR_CREATE != 0 {
-        host_flags |= libc::XATTR_CREATE;
-    }
-    if flags & linux::XATTR_REPLACE != 0 {
-        host_flags |= libc::XATTR_REPLACE;
-    }
-    // SAFETY: fsetxattr(2) of a buffer of its length.
-    #[cfg(target_os = "macos")]
-    let r = unsafe {
-        libc::fsetxattr(
-            fd,
-            name.as_ptr(),
-            value.as_ptr().cast(),
-            value.len(),
-            0,
-            host_flags,
-        )
-    };
-    // SAFETY: as above.
-    #[cfg(target_os = "linux")]
-    let r = unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), host_flags) };
-    if r != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// The name the host keeps a guest's ownership under: Docker Desktop's on macOS, which
-/// keeps no namespaces; in Linux's `user.` namespace on Linux.
-fn owner_xattr() -> Result<CString, Errno> {
-    #[cfg(target_os = "macos")]
-    {
-        cstring(OWNER_XATTR)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        cstring(&format!("user.{OWNER_XATTR}"))
-    }
-}
-
-fn stat_fd(fd: host::Raw) -> Result<Stat, Errno> {
-    // SAFETY: an all-zero stat is a valid out-parameter for fstat(2).
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstat(2) of a descriptor we hold.
-    if unsafe { libc::fstat(fd, &mut st) } != 0 {
-        return Err(last());
-    }
-    Ok(Stat::from(&st))
-}
-
-fn stat_at(dir: host::Raw, name: &CStr) -> Result<Stat, Errno> {
-    // SAFETY: as stat_fd.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstatat(2) of a NUL-terminated name in a directory we hold, not following it.
-    if unsafe { libc::fstatat(dir, name.as_ptr(), &mut st, host::AT_SYMLINK_NOFOLLOW) } != 0 {
-        return Err(last());
-    }
-    Ok(Stat::from(&st))
-}
-
-/// What the symlink `name` in `dir` holds (readlinkat(2)).
-fn readlink_at(dir: host::Raw, name: &CStr) -> Result<Vec<u8>, Errno> {
-    let mut buf = vec![0u8; 4096];
-    // SAFETY: readlinkat(2) into a buffer of its length.
-    let n = unsafe { libc::readlinkat(dir, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
-    if n < 0 {
-        return Err(last());
-    }
-    buf.truncate(usize::try_from(n).unwrap_or(0));
-    Ok(buf)
-}
-
-/// A symlink `name` in `dir` holding `target` (symlinkat(2)).
-fn symlink_at(target: &CStr, dir: host::Raw, name: &CStr) -> Result<(), Errno> {
-    // SAFETY: symlinkat(2) of NUL-terminated strings in a directory we hold.
-    if unsafe { libc::symlinkat(target.as_ptr(), dir, name.as_ptr()) } != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// A node `name` in `dir` of `mode` (its kind and permissions) and the guest's device
-/// number `rdev` (mknodat(2)).
-fn mknod_at(dir: host::Raw, name: &CStr, mode: u32, rdev: u32) -> Result<(), Errno> {
-    #[allow(clippy::cast_possible_truncation)]
-    // SAFETY: mknodat(2) of a NUL-terminated name in a directory we hold.
-    if unsafe { libc::mknodat(dir, name.as_ptr(), mode as host::mode_t, host::decode_dev(rdev)) } != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// A directory `name` in `dir` of the host's permissions `perm` (mkdirat(2)).
-fn mkdir_at(dir: host::Raw, name: &CStr, perm: u32) -> Result<(), Errno> {
-    #[allow(clippy::cast_possible_truncation)]
-    // SAFETY: mkdirat(2) of a NUL-terminated name in a directory we hold.
-    if unsafe { libc::mkdirat(dir, name.as_ptr(), perm as host::mode_t) } != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// Removes `name` from `dir`, a directory if `rmdir` (unlinkat(2)).
-fn unlink_at(dir: host::Raw, name: &CStr, rmdir: bool) -> Result<(), Errno> {
-    let flags = if rmdir { host::AT_REMOVEDIR } else { 0 };
-    // SAFETY: unlinkat(2) of a NUL-terminated name in a directory we hold.
-    if unsafe { libc::unlinkat(dir, name.as_ptr(), flags) } != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// Another name, `name` in `dir`, of `oname` in `odir` (linkat(2)).
-fn link_at(odir: host::Raw, oname: &CStr, dir: host::Raw, name: &CStr) -> Result<(), Errno> {
-    // SAFETY: linkat(2) of NUL-terminated names in directories we hold.
-    if unsafe { libc::linkat(odir, oname.as_ptr(), dir, name.as_ptr(), 0) } != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 thread_local! {
     /// The names this thread's server has opened, for a test of what it never opens.
     static OPENED: std::cell::RefCell<Vec<CString>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn open_at(
-    dir: host::Raw,
-    name: &CStr,
-    flags: host::c_int,
-    mode: host::c_uint,
-) -> Result<host::Owned, Errno> {
-    #[cfg(test)]
-    OPENED.with(|o| o.borrow_mut().push(name.to_owned()));
-    // SAFETY: openat(2) of a NUL-terminated name in a directory we hold.
-    let fd = unsafe { libc::openat(dir, name.as_ptr(), flags | host::O_CLOEXEC, mode) };
-    if fd < 0 {
-        return Err(last());
-    }
-    // SAFETY: a fresh descriptor nothing else owns.
-    Ok(unsafe { host::Owned::from_raw_fd(fd) })
-}
-
-/// `name` in `dir` opened for a guest's OPEN or CREATE, with `flags` (`host::open_flags`'),
-/// if it is a regular file. A guest kernel opens FIFOs, sockets and device nodes itself and
-/// sends no FUSE request to; one that asks would have this process wait on a FIFO's other
-/// end for good, or open a host device, so they are refused (EBADF), as QEMU's virtiofsd
-/// refuses them (`lo_inode_open`, CVE-2020-35517; audit V02). The name is looked at first,
-/// so no special file is opened, then opened without waiting and looked at again, for one
-/// put there meanwhile.
-fn open_regular(
-    dir: host::Raw,
-    name: &CStr,
-    flags: host::c_int,
-    mode: host::c_uint,
-) -> Result<(host::Owned, Stat), Errno> {
-    let exclusive = flags & (host::O_CREAT | host::O_EXCL) == host::O_CREAT | host::O_EXCL;
-    match stat_at(dir, name) {
-        // An exclusive create of a name that exists fails at the open, opening nothing.
-        Ok(st) if !exclusive && mode_of(&st) & S_IFMT != S_IFREG => return Err(EBADF),
-        Ok(_) => {}
-        Err(ENOENT) if flags & host::O_CREAT != 0 => {}
-        Err(e) => return Err(e),
-    }
-    let fd = open_at(dir, name, flags | host::O_NONBLOCK | host::O_NOCTTY, mode)?;
-    let st = stat_fd(fd.raw())?;
-    if mode_of(&st) & S_IFMT != S_IFREG {
-        return Err(EBADF);
-    }
-    // The status flags the guest asked for, without O_NONBLOCK: F_SETFL takes those of
-    // `flags` and ignores its access mode and creation flags (POSIX fcntl(2)).
-    // SAFETY: fcntl(2) of a descriptor we hold.
-    if flags & host::O_NONBLOCK == 0 && unsafe { libc::fcntl(fd.raw(), libc::F_SETFL, flags) } != 0 {
-        return Err(last());
-    }
-    Ok((fd, st))
-}
-
-/// Changes the mode of `name` in `dir` without following it. fchmodat(2) without
-/// AT_SYMLINK_NOFOLLOW follows a final symlink: a guest's link to a host file outside the
-/// share would have that file's mode changed (audit V01). A symlink's own mode is not
-/// changed, as Linux changes none (EOPNOTSUPP: fs/attr.c `notify_change` since 6.6, and
-/// glibc's and musl's fchmodat with AT_SYMLINK_NOFOLLOW before it).
-fn chmod_at(dir: host::Raw, name: &CStr, mode: u32) -> Result<(), Errno> {
-    #[cfg(target_os = "linux")]
-    {
-        // Linux's fchmodat(2) takes no AT_SYMLINK_NOFOLLOW before fchmodat2 (6.6). The
-        // name is opened as a path, never followed, and the file changed through its
-        // /proc/self/fd link, which reaches that file whatever is at the name by then
-        // (musl's src/stat/fchmodat.c, virtiofsd's setattr).
-        let fd = open_at(dir, name, libc::O_PATH | host::O_NOFOLLOW, 0)?;
-        if mode_of(&stat_fd(fd.raw())?) & S_IFMT == S_IFLNK {
-            return Err(EOPNOTSUPP);
-        }
-        let link = CString::new(format!("/proc/self/fd/{}", fd.raw())).map_err(|_| EINVAL)?;
-        // SAFETY: fchmodat(2) of a NUL-terminated path.
-        if unsafe { libc::fchmodat(host::AT_FDCWD, link.as_ptr(), mode as host::mode_t, 0) } != 0 {
-            return Err(last());
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if mode_of(&stat_at(dir, name)?) & S_IFMT == S_IFLNK {
-            return Err(EOPNOTSUPP);
-        }
-        // A symlink put at the name since has its own mode changed, not its target's.
-        // SAFETY: fchmodat(2) of a NUL-terminated name in a directory we hold.
-        if unsafe {
-            libc::fchmodat(
-                dir,
-                name.as_ptr(),
-                mode as host::mode_t,
-                host::AT_SYMLINK_NOFOLLOW,
-            )
-        } != 0
-        {
-            return Err(last());
-        }
-        Ok(())
-    }
-}
-
-/// The user this process serves as, which owns what it makes (geteuid(2)), read once.
-fn served_by() -> u32 {
-    static EUID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    // SAFETY: geteuid(2) takes nothing and cannot fail.
-    *EUID.get_or_init(|| unsafe { libc::geteuid() })
-}
-
-/// Another descriptor of what `fd` is open to (fcntl(2) F_DUPFD_CLOEXEC).
-fn dup_fd(fd: host::Raw) -> Result<host::Owned, Errno> {
-    // SAFETY: fcntl(2) F_DUPFD_CLOEXEC of a descriptor the server holds open.
-    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if copy < 0 {
-        return Err(last());
-    }
-    // SAFETY: a descriptor fcntl(2) just made, owned here alone.
-    Ok(unsafe { host::Owned::from_raw_fd(copy) })
 }
 
 /// What a file system holds and has room for, as a guest's STATFS asks it.
@@ -742,73 +454,6 @@ struct FsStats {
     fragment_size: u32,
 }
 
-/// The file system `fd` is on's [`FsStats`] (fstatvfs(2)).
-fn fs_stats(fd: host::Raw) -> Result<FsStats, Errno> {
-    // SAFETY: an all-zero statvfs is a valid out-parameter.
-    let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: fstatvfs(2) of a descriptor we hold.
-    if unsafe { libc::fstatvfs(fd, &mut v) } != 0 {
-        return Err(last());
-    }
-    #[allow(
-        clippy::useless_conversion,
-        clippy::unnecessary_cast,
-        clippy::cast_possible_truncation
-    )]
-    Ok(FsStats {
-        blocks: v.f_blocks as u64,
-        free: v.f_bfree as u64,
-        available: v.f_bavail as u64,
-        files: v.f_files as u64,
-        files_free: v.f_ffree as u64,
-        block_size: v.f_bsize as u32,
-        fragment_size: v.f_frsize as u32,
-    })
-}
-
-/// Removes `fd`'s attribute `name` (fremovexattr(2)).
-fn fremove_xattr(fd: host::Raw, name: &CStr) -> Result<(), Errno> {
-    // SAFETY: fremovexattr(2) of a NUL-terminated name.
-    #[cfg(target_os = "macos")]
-    let rc = unsafe { libc::fremovexattr(fd, name.as_ptr(), 0) };
-    // SAFETY: as above.
-    #[cfg(target_os = "linux")]
-    let rc = unsafe { libc::fremovexattr(fd, name.as_ptr()) };
-    if rc != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// `fd`'s offset moved to `offset` from `whence` (this host's, `host::whence`): where it is
-/// (lseek(2)).
-fn seek(fd: host::Raw, offset: u64, whence: host::c_int) -> Result<u64, Errno> {
-    #[allow(clippy::cast_possible_wrap)]
-    // SAFETY: lseek(2) of a descriptor we hold.
-    let at = unsafe { libc::lseek(fd, offset as host::off_t, whence) };
-    u64::try_from(at).map_err(|_| last())
-}
-
-/// `fd`'s file cut or grown to `size` bytes (ftruncate(2)).
-fn truncate_fd(fd: host::Raw, size: u64) -> Result<(), Errno> {
-    #[allow(clippy::cast_possible_wrap)]
-    // SAFETY: ftruncate(2) of a descriptor we hold.
-    if unsafe { libc::ftruncate(fd, size as host::off_t) } != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// `fd`'s file given the host's permissions `perm` (fchmod(2)).
-fn chmod_fd(fd: host::Raw, perm: u32) -> Result<(), Errno> {
-    #[allow(clippy::cast_possible_truncation)]
-    // SAFETY: fchmod(2) of a descriptor we hold.
-    if unsafe { libc::fchmod(fd, perm as host::mode_t) } != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
 /// A time a SETATTR sets: now, one given in seconds and nanoseconds since the epoch, or
 /// the one it has kept.
 #[derive(Debug, Clone, Copy)]
@@ -816,43 +461,6 @@ enum Time {
     Now,
     At(u64, u32),
     Kept,
-}
-
-/// The access and modification times of `own`'s file, or else of `name` in `dir` without
-/// following it (futimens(2), utimensat(2)).
-fn set_times(
-    own: Option<host::Raw>,
-    dir: host::Raw,
-    name: &CStr,
-    atime: Time,
-    mtime: Time,
-) -> Result<(), Errno> {
-    let spec = |t: Time| match t {
-        Time::Now => libc::timespec {
-            tv_sec: 0,
-            tv_nsec: libc::UTIME_NOW,
-        },
-        #[allow(clippy::cast_possible_wrap)]
-        Time::At(at, ns) => libc::timespec {
-            tv_sec: at as libc::time_t,
-            tv_nsec: libc::c_long::from(ns as i32),
-        },
-        Time::Kept => libc::timespec {
-            tv_sec: 0,
-            tv_nsec: libc::UTIME_OMIT,
-        },
-    };
-    let times = [spec(atime), spec(mtime)];
-    let rc = match own {
-        // SAFETY: futimens(2) of a descriptor we hold.
-        Some(fd) => unsafe { libc::futimens(fd, times.as_ptr()) },
-        // SAFETY: utimensat(2) of a NUL-terminated name in a directory we hold.
-        None => unsafe { libc::utimensat(dir, name.as_ptr(), times.as_ptr(), host::AT_SYMLINK_NOFOLLOW) },
-    };
-    if rc != 0 {
-        return Err(last());
-    }
-    Ok(())
 }
 
 fn key(st: &Stat) -> (u64, u64) {
@@ -2305,11 +1913,7 @@ fn open_meta(dir: host::Raw, name: &CStr, known: Option<u32>) -> Result<NodeFd, 
     if matches!(kind, S_IFCHR | S_IFBLK) {
         return Err(ENODATA);
     }
-    #[cfg(target_os = "macos")]
-    let flags = host::O_RDONLY | host::O_NOFOLLOW | host::O_NONBLOCK | host::O_NOCTTY | libc::O_SYMLINK;
-    #[cfg(target_os = "linux")]
-    let flags = host::O_RDONLY | host::O_NOFOLLOW | host::O_NONBLOCK | host::O_NOCTTY;
-    open_at(dir, name, flags, 0).map(NodeFd::Owned)
+    open_at(dir, name, META_FLAGS, 0).map(NodeFd::Owned)
 }
 
 fn node_fd(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
@@ -2401,71 +2005,6 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
     let raw = fd.raw();
     s.fds.insert(Slot::Node(nodeid), Held::Fd(fd));
     Ok(raw)
-}
-
-/// The directory `names` lead to under `dir`, a component after another, none followed
-/// if a symlink: on Linux in one openat2(2) refusing symlinks and any way out of `dir`
-/// (RESOLVE_NO_SYMLINKS, RESOLVE_BENEATH; Linux 5.6), and a component at a time with
-/// O_NOFOLLOW where the kernel has no openat2, or the path is too long for one call, and on
-/// macOS. A path that no longer leads to a directory is stale.
-fn open_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Owned, Errno> {
-    #[cfg(target_os = "linux")]
-    if let Some(opened) = openat2_beneath(dir, names) {
-        return opened.map_err(stale);
-    }
-    let mut held: Option<host::Owned> = None;
-    for name in names {
-        let at = held.as_ref().map_or(dir, std::os::fd::AsRawFd::as_raw_fd);
-        let next = open_at(at, name, host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW, 0);
-        held = Some(next.map_err(stale)?);
-    }
-    held.ok_or(EINVAL)
-}
-
-/// [`open_beneath`] in one openat2(2); none where this kernel has no openat2 (ENOSYS, or a
-/// seccomp filter's EPERM) or the path is longer than one call takes.
-#[cfg(target_os = "linux")]
-fn openat2_beneath(dir: host::Raw, names: &[CString]) -> Option<Result<host::Owned, Errno>> {
-    /// struct open_how (include/uapi/linux/openat2.h), which libc's leaves unbuilt.
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-    let mut path = Vec::new();
-    for name in names {
-        if !path.is_empty() {
-            path.push(b'/');
-        }
-        path.extend_from_slice(name.to_bytes());
-    }
-    let path = CString::new(path).ok()?;
-    let how = OpenHow {
-        flags: u64::try_from(host::O_RDONLY | host::O_DIRECTORY | host::O_CLOEXEC).ok()?,
-        mode: 0,
-        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS,
-    };
-    // SAFETY: openat2(2) of a NUL-terminated path, with an open_how of the size given.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            dir,
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if let Ok(fd) = host::Raw::try_from(fd)
-        && fd >= 0
-    {
-        // SAFETY: a fresh descriptor nothing else owns.
-        return Some(Ok(unsafe { host::Owned::from_raw_fd(fd) }));
-    }
-    match last() {
-        ENOSYS | EPERM | ENAMETOOLONG => None,
-        e => Some(Err(e)),
-    }
 }
 
 /// An error opening a node's path, as the guest hears it: a path that no longer leads to a
@@ -2989,164 +2528,10 @@ struct Entry {
     kind: u32,
 }
 
-/// A directory the guest opened, read as it asks from a descriptor of its own. A handle
-/// holds none of the listing: a copy of it each, taken at OPENDIR, made a guest that opened
-/// a large directory again and again, never releasing it, cost the host memory without
-/// bound (audit V05). Handles are as many as the descriptors the process may have.
-///
-/// Linux: read by getdents64(2) at the offset each request carries, the kernel's cookie
-/// for what follows an entry (`d_off`), as virtiofsd reads one; nothing but the
-/// descriptor is kept between requests (glibc's own stream keeps 32 KiB, PM M130).
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-struct DirStream(host::Owned);
-
-#[cfg(target_os = "linux")]
-impl DirStream {
-    fn open(dir: host::Raw) -> Result<DirStream, Errno> {
-        open_at(dir, c".", host::O_RDONLY | host::O_DIRECTORY, 0).map(DirStream)
-    }
-
-    /// Gives `each` the entries from `offset` on, with the offset that follows each, until
-    /// it says to stop or the directory ends; `want` bytes of them are read at a time.
-    fn read(
-        &mut self,
-        offset: u64,
-        want: usize,
-        mut each: impl FnMut(&Entry, u64) -> bool,
-    ) -> Result<(), Errno> {
-        let fd = self.0.raw();
-        // SAFETY: lseek(2) of a descriptor we hold.
-        if unsafe { libc::lseek(fd, offset as host::off_t, host::SEEK_SET) } < 0 {
-            return Err(last());
-        }
-        // Room for a record of the longest name, 280 bytes, whatever the guest wants.
-        let mut buf = vec![0u8; want.clamp(1024, MAX_WRITE as usize)];
-        loop {
-            // SAFETY: getdents64(2) into a buffer of its length.
-            let n = unsafe { libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len()) };
-            let got = usize::try_from(n).map_err(|_| last())?;
-            if got == 0 {
-                return Ok(());
-            }
-            let mut records = buf.get(..got).unwrap_or_default();
-            // struct linux_dirent64: d_ino, d_off, d_reclen, d_type, then the name.
-            while !records.is_empty() {
-                let u64_at = |at: usize| {
-                    let bytes = records.get(at..at + 8)?;
-                    Some(u64::from_ne_bytes(bytes.try_into().ok()?))
-                };
-                let (Some(ino), Some(next)) = (u64_at(0), u64_at(8)) else {
-                    return Err(EIO);
-                };
-                let reclen = records
-                    .get(16..18)
-                    .and_then(|b| b.try_into().ok())
-                    .map(u16::from_ne_bytes)
-                    .ok_or(EIO)?;
-                let record = records
-                    .get(..usize::from(reclen))
-                    .filter(|r| r.len() > 19)
-                    .ok_or(EIO)?;
-                let name = record.get(19..).unwrap_or_default();
-                let entry = Entry {
-                    name: CStr::from_bytes_until_nul(name).map_err(|_| EIO)?.to_owned(),
-                    ino,
-                    kind: u32::from(record.get(18).copied().unwrap_or(0)),
-                };
-                if !each(&entry, next) {
-                    return Ok(());
-                }
-                records = records.get(usize::from(reclen)..).unwrap_or_default();
-            }
-        }
-    }
-}
-
-/// macOS: a directory stream of the handle's own (2.2 KiB, PM M130), its position counted
-/// in entries, the offsets requests carry, with the entry the last reply had no room for;
-/// a request at any other offset reads again from the start.
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-struct DirStream {
-    stream: std::ptr::NonNull<libc::DIR>,
-    /// Entries read since the stream's start.
-    at: u64,
-    /// The entry at `at`, read already, which the last reply had no room for.
-    held: Option<Entry>,
-}
-
 // SAFETY: the stream is this value's alone, used by one thread at a time (under the
 // server's state lock); a DIR holds nothing tied to the thread that opened it.
 #[cfg(target_os = "macos")]
 unsafe impl Send for DirStream {}
-
-#[cfg(target_os = "macos")]
-impl Drop for DirStream {
-    fn drop(&mut self) {
-        // SAFETY: closedir(3) of the stream this value owns, which closes its descriptor.
-        unsafe { libc::closedir(self.stream.as_ptr()) };
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl DirStream {
-    fn open(dir: host::Raw) -> Result<DirStream, Errno> {
-        use std::os::fd::IntoRawFd as _;
-        let fd = open_at(dir, c".", host::O_RDONLY | host::O_DIRECTORY, 0)?;
-        // SAFETY: fdopendir(3) of a descriptor we own; the stream owns it once it exists.
-        let stream = std::ptr::NonNull::new(unsafe { libc::fdopendir(fd.raw()) }).ok_or_else(last)?;
-        let _ = fd.into_raw_fd();
-        Ok(DirStream {
-            stream,
-            at: 0,
-            held: None,
-        })
-    }
-
-    fn next(&mut self) -> Option<Entry> {
-        // SAFETY: readdir(3) of our open stream; the entry is copied before the next call.
-        let entry = unsafe { libc::readdir(self.stream.as_ptr()).as_ref() }?;
-        Some(Entry {
-            // SAFETY: readdir's entry, its name NUL-terminated.
-            name: unsafe { CStr::from_ptr(entry.d_name.as_ptr()) }.to_owned(),
-            ino: entry.d_ino,
-            kind: u32::from(entry.d_type),
-        })
-    }
-
-    /// Gives `each` the entries from `offset` on, with the offset that follows each, until
-    /// it says to stop or the directory ends.
-    fn read(
-        &mut self,
-        offset: u64,
-        _want: usize,
-        mut each: impl FnMut(&Entry, u64) -> bool,
-    ) -> Result<(), Errno> {
-        if offset != self.at {
-            // SAFETY: rewinddir(3) of our open stream.
-            unsafe { libc::rewinddir(self.stream.as_ptr()) };
-            self.at = 0;
-            self.held = None;
-            while self.at < offset {
-                if self.next().is_none() {
-                    return Ok(());
-                }
-                self.at += 1;
-            }
-        }
-        loop {
-            let Some(entry) = self.held.take().or_else(|| self.next()) else {
-                return Ok(());
-            };
-            if !each(&entry, self.at.saturating_add(1)) {
-                self.held = Some(entry);
-                return Ok(());
-            }
-            self.at += 1;
-        }
-    }
-}
 
 fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags: u32) -> Result<(), Errno> {
     let (od, nd) = (dir_fd(s, olddir)?, dir_fd(s, newdir)?);
@@ -3177,44 +2562,6 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
                 *link = (olddir, old.to_owned());
             }
         }
-    }
-    Ok(())
-}
-
-/// `renameat2(2)` of `old` in `od` to `new` in `nd` with Linux's `flags`, as the host makes
-/// it: `renameat`, macOS's `renameatx_np`, or Linux's own system call.
-fn renamed(od: host::Raw, old: &CStr, nd: host::Raw, new: &CStr, flags: u32) -> Result<(), Errno> {
-    let rc = if flags == 0 {
-        // SAFETY: renameat(2) of NUL-terminated names in directories we hold.
-        unsafe { libc::renameat(od, old.as_ptr(), nd, new.as_ptr()) }
-    } else {
-        #[cfg(target_os = "macos")]
-        {
-            let mut host = 0;
-            if flags & linux::RENAME_NOREPLACE != 0 {
-                host |= libc::RENAME_EXCL;
-            }
-            if flags & linux::RENAME_EXCHANGE != 0 {
-                host |= libc::RENAME_SWAP;
-            }
-            if flags & !(linux::RENAME_NOREPLACE | linux::RENAME_EXCHANGE) != 0 {
-                return Err(EINVAL);
-            }
-            // SAFETY: renameatx_np(2) of NUL-terminated names in directories we hold.
-            unsafe { libc::renameatx_np(od, old.as_ptr(), nd, new.as_ptr(), host) }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            // The system call itself: musl 1.2.5, which Rust's musl targets link, has no
-            // renameat2 wrapper, and glibc's is the same call.
-            // SAFETY: renameat2(2) of NUL-terminated names in directories we hold.
-            unsafe {
-                libc::syscall(libc::SYS_renameat2, od, old.as_ptr(), nd, new.as_ptr(), flags) as host::c_int
-            }
-        }
-    };
-    if rc != 0 {
-        return Err(last());
     }
     Ok(())
 }
@@ -3285,173 +2632,6 @@ fn guest_xattr(host: &[u8]) -> Option<&[u8]> {
         #[cfg(target_os = "linux")]
         None if host.starts_with(b"trusted.") || host.starts_with(b"security.") => None,
         None => Some(host),
-    }
-}
-
-/// The names of `fd`'s attributes the guest may see: those in a Linux namespace, but for
-/// the server's own.
-fn list_xattr(fd: host::Raw) -> Result<Vec<u8>, Errno> {
-    let mut buf = vec![0u8; 4096];
-    let n = loop {
-        // SAFETY: flistxattr(2) into a buffer of its length.
-        #[cfg(target_os = "macos")]
-        let n = unsafe { libc::flistxattr(fd, buf.as_mut_ptr().cast(), buf.len(), 0) };
-        // SAFETY: as above.
-        #[cfg(target_os = "linux")]
-        let n = unsafe { libc::flistxattr(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n >= 0 {
-            break usize::try_from(n).unwrap_or(0);
-        }
-        match last() {
-            ERANGE if buf.len() < 1 << 20 => buf.resize(buf.len() * 4, 0),
-            e => return Err(e),
-        }
-    };
-    let mut out = Vec::new();
-    for name in buf
-        .get(..n)
-        .unwrap_or_default()
-        .split(|&b| b == 0)
-        .filter(|n| !n.is_empty())
-    {
-        let ours =
-            name == OWNER_XATTR.as_bytes() || name.strip_prefix(b"user.") == Some(OWNER_XATTR.as_bytes());
-        let Some(name) = guest_xattr(name).filter(|_| !ours) else {
-            continue;
-        };
-        let linux = [&b"user."[..], b"trusted.", b"security.", b"system."]
-            .iter()
-            .any(|p| name.starts_with(p));
-        if linux {
-            out.extend_from_slice(name);
-            out.push(0);
-        }
-    }
-    Ok(out)
-}
-
-fn pread(fd: host::Raw, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
-    let mut done = 0;
-    while done < buf.len() {
-        let rest = buf.get_mut(done..).ok_or(EIO)?;
-        // SAFETY: pread(2) into the rest of our buffer.
-        let n = unsafe {
-            libc::pread(
-                fd,
-                rest.as_mut_ptr().cast(),
-                rest.len(),
-                (offset + done as u64) as host::off_t,
-            )
-        };
-        match n {
-            0 => break,
-            n if n > 0 => done += n as usize,
-            _ if last() == 4 => {}
-            _ => return Err(last()),
-        }
-    }
-    Ok(done)
-}
-
-/// Drops the host's cached pages of `len` bytes of `fd` at `offset`, clean ones that no
-/// process maps (posix_fadvise POSIX_FADV_DONTNEED), as the guest took them: a hint, which
-/// a host without it ignores.
-fn drop_cached(fd: host::Raw, offset: u64, len: usize) {
-    #[cfg(target_os = "linux")]
-    {
-        let (Ok(offset), Ok(len)) = (host::off_t::try_from(offset), host::off_t::try_from(len)) else {
-            return;
-        };
-        // SAFETY: advice on a range of a descriptor the server holds.
-        unsafe { libc::posix_fadvise(fd, offset, len, libc::POSIX_FADV_DONTNEED) };
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = (fd, offset, len);
-}
-
-fn pwrite(fd: host::Raw, buf: &[u8], offset: u64) -> Result<usize, Errno> {
-    let mut done = 0;
-    while done < buf.len() {
-        let rest = buf.get(done..).ok_or(EIO)?;
-        // SAFETY: pwrite(2) of the rest of the guest's data.
-        let n = unsafe {
-            libc::pwrite(
-                fd,
-                rest.as_ptr().cast(),
-                rest.len(),
-                (offset + done as u64) as host::off_t,
-            )
-        };
-        match n {
-            n if n > 0 => done += n as usize,
-            0 => break,
-            _ if last() == 4 => {}
-            _ => return Err(last()),
-        }
-    }
-    Ok(done)
-}
-
-/// Durable on stable storage: F_FULLFSYNC on macOS, whose fsync leaves the drive's cache.
-fn durable(fd: host::Raw) -> Result<(), Errno> {
-    #[cfg(target_os = "macos")]
-    // SAFETY: fcntl(2) of a descriptor we hold.
-    let rc = unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) };
-    #[cfg(target_os = "linux")]
-    // SAFETY: fsync(2) of a descriptor we hold.
-    let rc = unsafe { libc::fsync(fd) };
-    if rc != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// fallocate(2)'s allocation, with or without KEEP_SIZE; nothing else Linux's takes.
-fn fallocate(fd: host::Raw, mode: u32, offset: u64, length: u64) -> Result<(), Errno> {
-    if mode & !linux::FALLOC_FL_KEEP_SIZE != 0 {
-        return Err(EOPNOTSUPP);
-    }
-    let end = offset.checked_add(length).ok_or(EINVAL)?;
-    #[cfg(target_os = "linux")]
-    {
-        let _ = end;
-        // SAFETY: fallocate(2) of a descriptor we hold.
-        if unsafe {
-            libc::fallocate(
-                fd,
-                mode as host::c_int,
-                offset as host::off_t,
-                length as host::off_t,
-            )
-        } != 0
-        {
-            return Err(last());
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let size = stat_fd(fd)?.size;
-        if end > size {
-            let mut store = libc::fstore_t {
-                fst_flags: libc::F_ALLOCATEALL,
-                fst_posmode: libc::F_PEOFPOSMODE,
-                fst_offset: 0,
-                fst_length: (end - size) as host::off_t,
-                fst_bytesalloc: 0,
-            };
-            // SAFETY: fcntl(2) F_PREALLOCATE with a store of ours.
-            if unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &mut store) } != 0 {
-                return Err(last());
-            }
-            if mode & linux::FALLOC_FL_KEEP_SIZE == 0 {
-                // SAFETY: ftruncate(2) of a descriptor we hold.
-                if unsafe { libc::ftruncate(fd, end as host::off_t) } != 0 {
-                    return Err(last());
-                }
-            }
-        }
-        Ok(())
     }
 }
 
