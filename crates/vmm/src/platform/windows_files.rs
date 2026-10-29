@@ -22,9 +22,9 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
-use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
@@ -40,11 +40,11 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-    FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
-    FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx, FileFullDirectoryInfo,
-    FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE, SetFileInformationByHandle,
+    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
+    FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE,
+    SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{
@@ -98,20 +98,31 @@ fn reserved(name: &str) -> bool {
     })
 }
 
-/// `root` joined with `rel`'s directories, each checked to be one and no reparse point, and
-/// its names plain (unix.rs `dirs_beneath`, which says why a check of each name holds for
-/// the open that follows). `root`, its reader's own, is followed as given.
-fn dirs_beneath(root: &Path, rel: &[&str]) -> io::Result<PathBuf> {
-    let mut path = root.to_path_buf();
+/// The directory `rel` names beneath the directory at `root`, each of `rel`'s names opened
+/// relative to the handle of the directory before it (NtCreateFile's RootDirectory, as
+/// unix.rs's `openat` walk), none followed (FILE_OPEN_REPARSE_POINT) and each checked by its
+/// handle to be a directory and no reparse point, its names plain: a name being removed is
+/// found as none ([`nt_open`], PM M411). `root`, its reader's own, is followed as given.
+fn walk_beneath(root: &Path, rel: &[&str]) -> io::Result<File> {
+    let mut dir = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(root)?;
     for name in rel {
-        plain_name(name)?;
-        path.push(name);
-        let found = std::fs::symlink_metadata(&path)?;
-        if !found.is_dir() || found.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        let next = open_relative(
+            &dir,
+            name,
+            FILE_GENERIC_READ,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        )?;
+        let found = attributes(&next)?;
+        if found & FILE_ATTRIBUTE_DIRECTORY == 0 || found & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "not a directory"));
         }
+        dir = next;
     }
-    Ok(path)
+    Ok(dir)
 }
 
 /// What `file`'s handle says it is: its attributes (FileAttributeTagInfo).
@@ -134,33 +145,26 @@ fn attributes(file: &File) -> io::Result<u32> {
 }
 
 /// The directory `rel` names beneath the directory at `root`, opened: no component below
-/// `root` a reparse point, the last one's handle checked too.
+/// `root` a reparse point, the last one's handle checked too ([`walk_beneath`]).
 pub fn open_dir_beneath(root: &Path, rel: &[&str]) -> io::Result<File> {
-    let dir = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(dirs_beneath(root, rel)?)?;
-    let found = attributes(&dir)?;
-    if found & FILE_ATTRIBUTE_DIRECTORY == 0 || found & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "not a directory"));
-    }
-    Ok(dir)
+    walk_beneath(root, rel)
 }
 
 /// The regular file `rel` names beneath the directory at `root`, opened for reading: no
 /// component below `root` a reparse point, and the file neither a directory nor a reparse
-/// point, checked before it is opened and again by its handle (unix.rs `open_beneath`).
+/// point, checked by its handle (unix.rs `open_beneath`).
 pub fn open_beneath(root: &Path, rel: &[&str]) -> io::Result<File> {
     let (name, dirs) = rel
         .split_last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file named"))?;
-    plain_name(name)?;
-    let path = dirs_beneath(root, dirs)?.join(name);
-    regular(std::fs::symlink_metadata(&path)?.file_attributes())?;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(&path)?;
+    let dir = walk_beneath(root, dirs)?;
+    let file = open_relative(
+        &dir,
+        name,
+        FILE_GENERIC_READ,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+    )?;
     regular(attributes(&file)?)?;
     Ok(file)
 }
