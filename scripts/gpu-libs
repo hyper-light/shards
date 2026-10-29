@@ -140,15 +140,17 @@ prefix=$(native "$work/prefix")
 # Vulkan loader of its own is linked.
 export PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig
 # On Windows, clang-cl with Visual Studio's environment (meson's --vsenv): LLVM's, where its
-# installer puts it if it is not on PATH. libepoxy's and the renderer's own names declared
-# as a static library's (EPOXY_PUBLIC), not a DLL's.
+# installer puts it if it is not on PATH, and LLVM's llvm-lib for the libraries, which ninja
+# runs where Visual Studio's lib is not on PATH (--vsenv sets meson's own commands' up, CI
+# 40921415341). libepoxy's and the renderer's own names declared as a static library's
+# (EPOXY_PUBLIC), not a DLL's.
 win=()
 epoxy_args=()
 if [ "$host" = Windows-x86_64 ]; then
     if ! command -v clang-cl >/dev/null && [ -x "/c/Program Files/LLVM/bin/clang-cl.exe" ]; then
         export PATH="/c/Program Files/LLVM/bin:$PATH"
     fi
-    export CC=clang-cl
+    export CC=clang-cl AR=llvm-lib
     win=(--vsenv)
     epoxy_args=(-Dc_args=-DEPOXY_PUBLIC=extern)
 fi
