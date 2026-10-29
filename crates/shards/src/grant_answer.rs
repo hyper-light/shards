@@ -535,6 +535,12 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
         if asked.kind == kind::TAKEN {
             continue;
         }
+        // Nothing more granted it, as after a vsock path's listen: what it asks after is
+        // its files' ranges and its snapshots alone.
+        if asked.kind == kind::SEALED {
+            started = true;
+            continue;
+        }
         if asked.kind == kind::DIAL {
             let port = <[u8; 4]>::try_from(asked.payload.as_slice())
                 .map(u32::from_be_bytes)
@@ -974,6 +980,44 @@ mod windows_tests {
             assert_eq!(refused.kind, shards_ipc::kind::ERR);
             drop(vm);
             assert!(serving.join().unwrap().is_ok());
+        });
+    }
+
+    /// A VM with no vsock path that seals its grants (`SEALED`, PM M377) is granted nothing
+    /// more, as one that has listened at its vsock path is, while its files' ranges are still
+    /// read for it: what any save of it asks.
+    #[test]
+    fn a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read() {
+        let dir = shards_testdir::TempDir::new("sealed").unwrap();
+        let (kernel, later) = (dir.join("kernel"), dir.join("later"));
+        std::fs::write(&kernel, b"k").unwrap();
+        std::fs::write(&later, b"l").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dir.join("layer"))
+            .unwrap();
+        shards_vmm::platform::sparse(&file).unwrap();
+        let len = 64u64 << 20;
+        file.set_len(len).unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            obtain(&vm, &[(Access::Read, kernel.clone())]).unwrap();
+            shards_ipc::write_message(&vm.to, shards_ipc::kind::SEALED, &[]).unwrap();
+            let found = crate::grant_ask::ranges(&vm, &file, len).unwrap();
+            assert!(found.iter().map(|&(_, n)| n).sum::<u64>() < len, "{found:?}");
+            assert!(
+                obtain(&vm, &[(Access::Read, later.clone())]).is_err(),
+                "a sealed VM was granted more"
+            );
+            drop(vm);
+            assert!(
+                serving.join().unwrap().is_err(),
+                "its asking after was not refused"
+            );
         });
     }
 

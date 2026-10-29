@@ -394,6 +394,12 @@ pub mod kind {
     /// PM M204), bound at that address and connected there. Answered as a `DIAL` is: a
     /// `GRANTED` of the socket shared with it, kept until it says `TAKEN`; or an `ERR`.
     pub const DIAL_UDP: u8 = 77;
+    /// VM → its spawner, on its grants link (Windows), empty: it asks for no more access,
+    /// as a vsock path's listen says, and the spawner refuses every `GRANT` after; the link
+    /// stays for its `RANGES`, which every save of the VM asks (D176), as it may ask its file
+    /// system nothing of a file's ranges (D141), where with no answer it read its writable
+    /// layer whole and NTFS took that much of its disk (PM M377).
+    pub const SEALED: u8 = 78;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

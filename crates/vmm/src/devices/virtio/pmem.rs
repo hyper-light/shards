@@ -278,6 +278,12 @@ impl SwapWindow {
         };
         // SAFETY: a save's machine is paused, its devices quiet.
         let ranges = unsafe { mapped.data_ranges(&unmap, &map) }.map_err(|e| format!("its swap: {e}"))?;
+        crate::debug!(
+            "its swap: {} ranges of data, {} bytes of {}",
+            ranges.len(),
+            ranges.iter().map(|r| r.1).sum::<u64>(),
+            mapped.len
+        );
         mapped.copy_ranges_to(to, &ranges).map_err(at)?;
         Ok(mapped.len as u64)
     }
@@ -757,6 +763,12 @@ impl Layer {
         };
         // SAFETY: a save's machine is paused and its devices quiet (`Cut::take`).
         let ranges = unsafe { self.data.data_ranges(&unmap, &map) }.map_err(|e| format!("its layer: {e}"))?;
+        crate::debug!(
+            "its layer: {} ranges of data, {} bytes of {}",
+            ranges.len(),
+            ranges.iter().map(|r| r.1).sum::<u64>(),
+            self.data.len
+        );
         self.data.copy_ranges_to(data, &ranges).map_err(at)
     }
 

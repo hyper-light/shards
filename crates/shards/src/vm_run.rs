@@ -2517,21 +2517,23 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
         let stages = !paths.write_under.is_empty();
         // Its spawner stages its snapshots and reads its files' ranges for it, as long as
         // the link stays: it may make no FSCTL (D141), and a restore copies a template's
-        // writable layer by its ranges (D196).
-        if stages || paths.vsock.is_some() {
-            shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
-        }
+        // writable layer by its ranges (D196), as any save of it copies its layer and swap
+        // by theirs (D176). Every VM's: a run's VM, with neither a snapshot to save nor a
+        // vsock path, saved later had none to ask, read its 10 GiB layer whole, and NTFS
+        // took that much of the disk for the holes read (PM M377).
+        shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
         match &paths.vsock {
             Some(vsock) => dial_through_spawner(vsock),
             None if stages => Ok(()),
+            // Nothing more asked of the spawner but ranges, which it answers on the link it
+            // keeps: no grant after (`SEALED`).
             None => {
-                drop(
-                    GRANTS
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take(),
-                );
-                Ok(())
+                let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                match grants.as_ref() {
+                    Some(link) => shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
+                        .map_err(|e| format!("sealing its grants: {e}")),
+                    None => Ok(()),
+                }
             }
         }
     }
