@@ -243,10 +243,11 @@ pub fn cdi_edits(run: &Run) -> Result<Option<crate::build::cdi::Edits>, String> 
 pub const RENDER_NODE: &str = "/dev/dri/renderD128";
 
 /// Whether this host gives a microVM a GPU, Vulkan through Venus on the host's GPUs: macOS
-/// on Apple silicon (D144) and Linux (D201).
+/// on Apple silicon (D144), Linux (D201) and Windows on x86_64 (D202).
 pub const GIVES_GPU: bool = cfg!(any(
     all(target_os = "macos", target_arch = "aarch64"),
-    target_os = "linux"
+    target_os = "linux",
+    all(windows, target_arch = "x86_64")
 ));
 
 /// A run's GPU requests, each with how it was asked for: `--gpus`'s values as the CLI

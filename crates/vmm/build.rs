@@ -26,6 +26,7 @@ fn main() {
         match os.as_str() {
             "macos" => link_gpu(),
             "linux" => link_gpu_linux(),
+            "windows" => link_gpu_windows(),
             _ => {}
         }
     }
@@ -81,6 +82,30 @@ fn link_gpu_linux() {
     }
     println!("cargo::rustc-link-lib=static=shardsrenderlog");
     println!("cargo::rustc-link-lib=dylib=dl");
+}
+
+/// Links the GPU's renderer on Windows (D202): the krunkit fork's Venus, built for Windows
+/// with shards' patch, and libepoxy, static, from the directory SHARDS_GPU_LIBS names
+/// (scripts/gpu-libs builds it). Vulkan's loader is opened as the renderer starts, not
+/// linked, and nothing linked of libepoxy's needs OpenGL or GDI.
+fn link_gpu_windows() {
+    println!("cargo::rerun-if-env-changed=SHARDS_GPU_LIBS");
+    let Some(dir) = std::env::var_os("SHARDS_GPU_LIBS") else {
+        println!("cargo::warning=the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let libs = ["virglrenderer", "epoxy"];
+    for lib in libs {
+        println!(
+            "cargo::rerun-if-changed={}",
+            dir.join(format!("{lib}.lib")).display()
+        );
+    }
+    println!("cargo::rustc-link-search=native={}", dir.display());
+    for lib in libs {
+        println!("cargo::rustc-link-lib=static={lib}");
+    }
 }
 
 /// Links the GPU's renderer (D144): virglrenderer's Venus, libepoxy and MoltenVK, static,

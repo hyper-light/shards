@@ -385,10 +385,6 @@ fn assemble(
     gpu: Option<u64>,
     pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
-    #[cfg(not(hv = "kvm"))]
-    if gpu.is_some() {
-        return Err("a GPU is given on macOS and Linux hosts alone so far (D144, D201)".into());
-    }
     let ram = config
         .memory_mib
         .checked_mul(MIB)
@@ -406,10 +402,7 @@ fn assemble(
     // Its writable layer after them (D190).
     let (layer, end) = super::layer_layout(hosts.layer, end)?;
     // A GPU's window after it, at a GiB boundary, as long as the renderer says (D201).
-    #[cfg(hv = "kvm")]
     let gpu = gpu.map(|saw| super::gpu_layout(saw, end)).transpose()?;
-    #[cfg(not(hv = "kvm"))]
-    let gpu: Option<((), crate::devices::virtio::ShmRegion)> = None;
     let end = match &gpu {
         Some((_, r)) => r
             .base
@@ -485,12 +478,9 @@ fn assemble(
         None => (None, None, Vec::new()),
     };
     let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
-    #[cfg(hv = "kvm")]
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
-    #[cfg(not(hv = "kvm"))]
-    let gpu: Option<Box<dyn crate::devices::virtio::VirtioDevice>> = None;
     let devices = super::virtio_devices(
         config,
         &regions,

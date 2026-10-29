@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(hv)]
 use crate::memory::{FileSpan, GuestMemory};
 
-#[cfg(any(hv = "hvf", hv = "kvm"))]
+#[cfg(hv)]
 use crate::devices::virtio::gpu;
 #[cfg(hv)]
 use crate::devices::virtio::{head, mem, pmem, vsock};
@@ -791,22 +791,22 @@ fn virtio_devices(
 /// A GPU's renderer, and the length of the window its blobs are mapped into: what the
 /// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
 /// most a guest can have mapped at once (D144, D201).
-#[cfg(all(any(hv = "hvf", hv = "kvm"), feature = "gpu"))]
+#[cfg(all(hv, feature = "gpu"))]
 fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
     let venus = gpu::virgl::Venus::new()?;
     let len = venus.host_visible();
     Ok((Box::new(venus), len))
 }
 
-#[cfg(all(any(hv = "hvf", hv = "kvm"), not(feature = "gpu")))]
+#[cfg(all(hv, not(feature = "gpu")))]
 fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
-    Err("this VM process renders no GPU: shards' GPU VM process does, on macOS and Linux (D144, D201)".into())
+    Err("this VM process renders no GPU: shards' GPU VM process does, on macOS, Linux and Windows (D144, D201, D202)".into())
 }
 
 /// A GPU's renderer and its window (D144, D201), at the first GiB boundary at or past
 /// `top`: as long as the renderer offers, whole host pages, where `saw` is 0 (a boot's);
 /// `saw` long, a restore's, where the renderer offers at least that much (D150).
-#[cfg(any(hv = "hvf", hv = "kvm"))]
+#[cfg(hv)]
 fn gpu_layout(
     saw: u64,
     top: u64,
@@ -839,7 +839,7 @@ fn gpu_layout(
 /// The virtio-gpu device of `renderer`, its window `region` (D144, D201): no request it
 /// reads is larger than the guest's `ram`, from which no legitimate command outsizes, and
 /// a blob's place and length are whole pages of the host's.
-#[cfg(any(hv = "hvf", hv = "kvm"))]
+#[cfg(hv)]
 fn gpu_device(
     vm: &crate::hv::Vm,
     renderer: Box<dyn gpu::Renderer>,
@@ -879,6 +879,31 @@ fn gpu_window(
             .map_err(|e| e.to_string())
     })?;
     Ok(Box::new(window))
+}
+
+/// The window a GPU's blobs are mapped into, `region` of the guest's addresses: the
+/// partition's mappings, each blob mapped at its place by its address, as
+/// Hypervisor.framework's stage 2 maps them; readable and writable, never executable
+/// (D202).
+#[cfg(hv = "whp")]
+fn gpu_window(
+    vm: &crate::hv::Vm,
+    _region: &crate::devices::virtio::ShmRegion,
+) -> Result<Box<dyn gpu::Window>, String> {
+    Ok(Box::new(vm.device_slots(0)))
+}
+
+#[cfg(hv = "whp")]
+impl gpu::Window for crate::hv::DeviceSlots {
+    unsafe fn map(&self, pages: gpu::Pages, gpa: u64, len: usize) -> Result<(), String> {
+        let gpu::Pages::At(host) = pages;
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map(self, 0, host, gpa, len, true) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::DeviceSlots::unmap(self, 0, gpa, len).map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(hv = "hvf")]

@@ -172,6 +172,11 @@ pub fn confine() -> Result<(), String> {
             &[libc::F_ADD_SEALS as u32, libc::F_GET_SEALS as u32],
         ));
         rules.push(Rule::with(libc::SYS_fallocate, 1, &[0]));
+        // RADV, Mesa's AMD driver, sets a thread's CPUs as it renders (sched_setaffinity,
+        // from the renderer's ring thread) and renders on where it may not: refused, as a
+        // VM process sets no thread's CPUs, which could be another of its user's
+        // processes' (PM M384).
+        rules.push(Rule::fails(libc::SYS_sched_setaffinity, libc::EPERM as u16));
     }
     let commands = [
         libc::F_DUPFD,

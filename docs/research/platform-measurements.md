@@ -15433,3 +15433,56 @@ revision before comparing a changed API/implementation.
   Windows, as the stage 2 follows the host's view there (M341): memory of the renderer's own
   imported into the driver holds its pages whatever the driver frees, for the types it
   imports into; the device-local ones it does not.
+
+### M384. Vulkan programs in a guest given a Linux host's GPUs, against its CPU (D201)
+
+- **Question.** With a Linux host's GPUs given a microVM through Venus (D201), do a guest's
+  Vulkan compute programs get the results its CPU gets, on each GPU, and how fast do they
+  run?
+- **Method.** `docs/research/measurements/gpu-linux/compute.sh`: E6's image (M218:
+  llama.cpp v0.6.0's Vulkan backend and TinyLlama 1.1B Q4_0; `Dockerfile` here, 8 compiler
+  jobs where E6's has one a CPU), built by Docker on the desktop and loaded (`shards load`)
+  after shards' builder was killed for memory compiling it there with 32 (the builder is
+  held small on that host, D133, D188); in a guest given both GPUs (`--gpus all`, 8 GiB):
+  `vulkaninfo --summary`; test-backend-ops `test -o MUL_MAT` on each device, each of its
+  1,684 cases against its CPU backend, then `perf -o MUL_MAT` (218 cases); llama-bench of
+  TinyLlama on each device alone (GGML_VK_VISIBLE_DEVICES), pp512 and tg128, 5 runs each.
+  The GPU desktop: CachyOS, Linux 7.2.9, AMD Ryzen 9 9950X3D2 and its Radeon 610M (RADV,
+  Mesa 26.2.4), NVIDIA GeForce RTX 5060 Ti (615.78.08); the guest's Mesa 25.0.7 (Debian
+  trixie); shards as of the commit that adds this entry, its GPU's VM process refusing
+  sched_setaffinity (below); 2026-10-29, the host busy with other work throughout (load
+  average 11.7 to 330).
+- **Results.**
+  - The guest finds both: `Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti)` and `Virtio-GPU
+    Venus (AMD Ryzen 9 9950X3D2 16-Core Processor (RADV RAPHAEL_MENDOCINO))`, driver venus.
+  - NVIDIA's: 1,683 of 1,684 cases match the CPU's; the one that does not is the CPU's NaN
+    (q4_1, 3000 by 512 by 3: the GPU's -5.347, the CPU's NaN, of random q4_1 data), every
+    GPU result a number. An earlier run passed 1,684 of 1,684.
+  - RADV's: 1,666 of 1,684. The 18 others are NaN where the CPU's are numbers, all of one
+    family: quantized A (q4_0, q4_1, q5_0, q5_1, q8_0) by f32 B of 9, 13 and 16 columns,
+    100 by 96 (and 40 by 32 for q4_0); an earlier run failed 17 of the same 18. Whether RADV
+    gives them without Venus is unmeasured: the same llama.cpp built over Arch Linux (its
+    Mesa the desktop's release) and run in a container given RADV's render node was
+    refused on the desktop by this session's permission classifier, as it builds code from
+    GitHub there.
+  - llama-bench, n=5 each, milliseconds a run (p50, p90 = p99 = max) and tokens/s:
+
+    | Device | Test | p50 ms | max ms | p50 t/s | min t/s |
+    |---|---|---|---|---|---|
+    | NVIDIA | pp512 | 133.52 | 141.74 | 3,834.7 | 3,612.3 |
+    | NVIDIA | tg128 | 392.52 | 447.59 | 326.1 | 286.0 |
+    | RADV | pp512 | 1,421.88 | 1,448.02 | 360.1 | 353.6 |
+    | RADV | tg128 | 2,879.33 | 2,992.32 | 44.5 | 42.8 |
+
+  - Matrix multiplication, 4096 by 14336 by 512: NVIDIA's f16 18.08 TFLOPS and q4_0 18.70;
+    RADV's 420 and 960 GFLOPS. By one column, NVIDIA's q4_0 3.07 TFLOPS (38.3 µs a run).
+  - The first run, before the GPU's VM process's filter answered it, met RADV's
+    sched_setaffinity (x86_64's 203) from the renderer's ring thread (`vkr-ring-1`), 32
+    times a run, said on the run's stderr by M382's measurement handler, which goes on
+    where the filter's own ends the process. RADV renders on where it is refused: the
+    filter now refuses it with EPERM, unsaid (confine.rs), and this run met no refusal.
+- **Reading.** A guest's Vulkan compute runs on either of a Linux host's GPUs through
+  Venus, and on NVIDIA's gets the CPU's results in every case. RADV's NaNs are one family
+  of shapes, run after run, which its native run would tell apart from Venus's doing; the
+  native run waits for the user's leave to build llama.cpp on the desktop. Speed against
+  the host's own is unmeasured on Linux; on macOS it matched (M218).

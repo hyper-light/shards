@@ -38,6 +38,10 @@ for target in ${*:-$all}; do
 		;;
 	*-windows-msvc)
 		PATH="$llvm:$PATH" cargo xwin clippy --workspace --all-targets --target "$target" -- -D warnings
+		# The GPU's renderer on x86_64 Windows (D202), as on macOS below.
+		if [ "$target" = x86_64-pc-windows-msvc ]; then
+			PATH="$llvm:$PATH" cargo xwin clippy -p shards-vmm --features gpu --all-targets --target "$target" -- -D warnings
+		fi
 		;;
 	*)
 		cargo clippy --workspace --all-targets --target "$target" -- -D warnings

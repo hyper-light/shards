@@ -1,5 +1,6 @@
-//! A run given its host's GPU (D144, D201): Vulkan through Venus, in a real microVM, on a
-//! Mac's GPU through MoltenVK and on a Linux host's through its own Vulkan driver.
+//! A run given its host's GPU (D144, D201, D202): Vulkan through Venus, in a real microVM,
+//! on a Mac's GPU through MoltenVK and on a Linux or Windows host's through its own Vulkan
+//! driver.
 //!
 //! It boots the pinned gpu kernel (SHARDS_TEST_GPU_KERNEL names another to try) in the
 //! GPU's VM process that `shards` carries where it was built with the renderer
@@ -14,11 +15,31 @@ use std::path::PathBuf;
 use common::{TempDir, cannot_run_vms, guest_init, run_shards_env};
 
 /// Whether this host has a GPU to give a microVM: a Mac's, which Metal has wherever its
-/// VMs run; on Linux a GPU's device node, a DRM render node or NVIDIA's (a CI runner's
-/// virtual machine has none).
+/// VMs run; on Linux a GPU's device node, a DRM render node or NVIDIA's; on Windows a
+/// display adapter with a Vulkan driver, as the Vulkan loader finds its drivers there (a
+/// CI runner's virtual machine has none).
 fn host_gpu() -> Result<(), &'static str> {
     if cfg!(target_os = "macos") {
         return Ok(());
+    }
+    if cfg!(windows) {
+        // The display adapters' VulkanDriverName values (the loader's "Driver Discovery on
+        // Windows"), under the display class's GUID.
+        let drivers = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}",
+                "/s",
+                "/v",
+                "VulkanDriverName",
+            ])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        return if drivers {
+            Ok(())
+        } else {
+            Err("this host has no GPU: no display adapter names a Vulkan driver")
+        };
     }
     let render = std::fs::read_dir("/dev/dri").is_ok_and(|d| {
         d.flatten()
@@ -232,11 +253,15 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     // usual kernel recorded, they restore the same template.
     record(common::kernel());
     gpu_run("restored with the usual kernel recorded", false);
+    // Each template's record (D117), each version of it where Windows keeps them
+    // (`.origin.~N`, platform `write_in`).
     let origins: Vec<String> = std::fs::read_dir(home.join("templates"))
         .unwrap()
         .filter_map(|e| {
             let path = e.unwrap().path();
-            (path.extension()? == "origin").then(|| std::fs::read_to_string(path).unwrap())
+            let name = path.file_name()?.to_str()?;
+            (!name.starts_with('.') && name.contains(".origin"))
+                .then(|| std::fs::read_to_string(&path).unwrap())
         })
         .collect();
     for gpu in ["\"gpu\":true", "\"gpu\":false"] {

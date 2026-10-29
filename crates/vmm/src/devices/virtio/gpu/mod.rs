@@ -10,7 +10,7 @@
 //! still running.
 
 pub mod protocol;
-#[cfg(all(feature = "gpu", any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(feature = "gpu", any(target_os = "macos", target_os = "linux", windows)))]
 pub mod virgl;
 #[cfg(target_os = "linux")]
 pub mod window;
