@@ -3390,29 +3390,35 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     let booted = held();
     let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
+    // Idle once it holds what it booted with, near enough, and has stopped giving back: a
+    // second read of a file its guest's kernel finds the first's still holding makes its
+    // pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`), and
+    // an idle measured as it went on giving back had the file read twice and gave back
+    // nothing of it on Fedora, once in 6.
     let deadline = Instant::now() + TIMEOUT;
-    while held() >= booted + (128 << 20) {
+    let mut last = held();
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let now = held();
+        if now < booted + (128 << 20) && now.abs_diff(last) < 4 << 20 {
+            break;
+        }
         assert!(
             Instant::now() < deadline,
-            "{booted} bytes held booted, {} after touching and freeing a GiB",
-            held()
+            "{booted} bytes held booted, {now} after touching and freeing a GiB"
         );
-        std::thread::sleep(Duration::from_millis(50));
+        last = now;
     }
     let idle = held();
-    // Its guest holds what its joiner read, a quarter of it or more, read again where its
-    // guest's kernel took some of it back, a few times at most.
-    let mut reads = 0;
-    while held() <= idle + (128 << 20) {
-        assert!(
-            reads < 4,
-            "{idle} bytes held idle, {} after {reads} reads",
-            held()
-        );
-        let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
-        assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
-        reads += 1;
-    }
+    // Its guest holds what its joiner read, read once.
+    let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
+    assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
+    let reads = 1;
+    assert!(
+        held() > idle + (128 << 20),
+        "{idle} bytes held idle, {} after its read",
+        held()
+    );
     let before = held();
     let word = Instant::now();
     told.say();
@@ -3495,6 +3501,25 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
     ];
     let shards = |args: &[&str], within: Duration| run_shards_env(&[], args, &env, within);
     let vol = TempDir::new("budget-dax-vol");
+    // A tmpfs's file is memory nothing reclaims without swap, its pages the file itself:
+    // read through the window under a budget short of it, its microVM is never within it,
+    // throttled until it ends (Fedora's /tmp, PM M393). Its budget gives back files a disk
+    // keeps, as its volume's are where its temporary directory is a disk's (CI's).
+    let c = std::ffi::CString::new(vol.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: a zeroed statfs is a valid out-parameter, which statfs(2) fills, of a
+    // NUL-terminated path.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::statfs(c.as_ptr(), &mut fs) }, 0);
+    // Its type a word of the platform's own signedness and size.
+    const TMPFS_MAGIC: i128 = 0x0102_1994;
+    if i128::from(fs.f_type) == TMPFS_MAGIC {
+        eprintln!(
+            "SKIP: {} is a tmpfs, whose files are memory no reclaim takes without swap: a budget short of one is never met (PM M393)",
+            vol.display()
+        );
+        return;
+    }
     std::fs::File::create(vol.join("big"))
         .unwrap()
         .set_len(512 << 20)
@@ -3519,29 +3544,38 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let started = shards(&args, TIMEOUT);
     assert_eq!(started.status, Some(0), "{started}");
-    let set = Command::new("systemctl")
-        .args(["--user", "set-property", "--runtime", &slice])
-        .args(["MemoryHigh=384M", "MemorySwapMax=0"])
-        .output()
-        .unwrap();
-    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
     let dax = shards(
         &["exec", "budget", "/bin/testguest", "fs", "dax:/vol/big"],
         TIMEOUT,
     );
     assert_eq!(dax.stdout, "dax /vol/big yes\n", "{dax}");
+    // SAFETY: getuid(2) takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let cgroup = format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}");
+    // Its budget from what its microVM holds idle, not a size: past it by a quarter of the
+    // file, short of the file. One of 384 MiB was short of what a microVM of Fedora's 32
+    // CPUs held from its start, 258 MiB anonymous and 124 of shared memory, which nothing
+    // reclaims: it stayed past its budget throughout, read nothing, and systemd-oomd ended
+    // it, its user's manager past 80% memory pressure for 20 s (PM M393).
+    let idle: u64 = std::fs::read_to_string(format!("{cgroup}/memory.current"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let set = Command::new("systemctl")
+        .args(["--user", "set-property", "--runtime", &slice])
+        .arg(format!("MemoryHigh={}", idle + (128 << 20)))
+        .arg("MemorySwapMax=0")
+        .output()
+        .unwrap();
+    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
     let read = shards(
         &["exec", "budget", "/bin/testguest", "read", "/vol/big"],
         Duration::from_secs(300),
     );
     assert_eq!(read.status, Some(0), "{read}");
     assert!(read.stdout.starts_with("read /vol/big 536870912 "), "{read}");
-    // SAFETY: getuid(2) takes nothing and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let events = std::fs::read_to_string(format!(
-        "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}/memory.events"
-    ))
-    .unwrap();
+    let events = std::fs::read_to_string(format!("{cgroup}/memory.events")).unwrap();
     let high: u64 = events
         .lines()
         .find_map(|l| l.strip_prefix("high "))
