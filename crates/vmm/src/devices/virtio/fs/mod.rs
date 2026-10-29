@@ -14,6 +14,8 @@
 #[cfg(unix)]
 pub mod headroom;
 pub mod host;
+#[cfg(windows)]
+pub mod ntfs;
 pub mod proto;
 #[cfg(unix)]
 pub mod server;
