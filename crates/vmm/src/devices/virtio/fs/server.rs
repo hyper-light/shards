@@ -708,6 +708,102 @@ fn chmod_at(dir: RawFd, name: &CStr, mode: u32) -> Result<(), Errno> {
     }
 }
 
+/// The user this process serves as, which owns what it makes (geteuid(2)), read once.
+fn served_by() -> u32 {
+    static EUID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    // SAFETY: geteuid(2) takes nothing and cannot fail.
+    *EUID.get_or_init(|| unsafe { libc::geteuid() })
+}
+
+/// Another descriptor of what `fd` is open to (fcntl(2) F_DUPFD_CLOEXEC).
+fn dup_fd(fd: RawFd) -> Result<OwnedFd, Errno> {
+    // SAFETY: fcntl(2) F_DUPFD_CLOEXEC of a descriptor the server holds open.
+    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(last());
+    }
+    // SAFETY: a descriptor fcntl(2) just made, owned here alone.
+    Ok(unsafe { OwnedFd::from_raw_fd(copy) })
+}
+
+/// What a file system holds and has room for, as a guest's STATFS asks it.
+struct FsStats {
+    blocks: u64,
+    free: u64,
+    available: u64,
+    files: u64,
+    files_free: u64,
+    block_size: u32,
+    fragment_size: u32,
+}
+
+/// The file system `fd` is on's [`FsStats`] (fstatvfs(2)).
+fn fs_stats(fd: RawFd) -> Result<FsStats, Errno> {
+    // SAFETY: an all-zero statvfs is a valid out-parameter.
+    let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: fstatvfs(2) of a descriptor we hold.
+    if unsafe { libc::fstatvfs(fd, &mut v) } != 0 {
+        return Err(last());
+    }
+    #[allow(
+        clippy::useless_conversion,
+        clippy::unnecessary_cast,
+        clippy::cast_possible_truncation
+    )]
+    Ok(FsStats {
+        blocks: v.f_blocks as u64,
+        free: v.f_bfree as u64,
+        available: v.f_bavail as u64,
+        files: v.f_files as u64,
+        files_free: v.f_ffree as u64,
+        block_size: v.f_bsize as u32,
+        fragment_size: v.f_frsize as u32,
+    })
+}
+
+/// Removes `fd`'s attribute `name` (fremovexattr(2)).
+fn fremove_xattr(fd: RawFd, name: &CStr) -> Result<(), Errno> {
+    // SAFETY: fremovexattr(2) of a NUL-terminated name.
+    #[cfg(target_os = "macos")]
+    let rc = unsafe { libc::fremovexattr(fd, name.as_ptr(), 0) };
+    // SAFETY: as above.
+    #[cfg(target_os = "linux")]
+    let rc = unsafe { libc::fremovexattr(fd, name.as_ptr()) };
+    if rc != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
+/// `fd`'s offset moved to `offset` from `whence` (this host's, `host::whence`): where it is
+/// (lseek(2)).
+fn seek(fd: RawFd, offset: u64, whence: libc::c_int) -> Result<u64, Errno> {
+    #[allow(clippy::cast_possible_wrap)]
+    // SAFETY: lseek(2) of a descriptor we hold.
+    let at = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
+    u64::try_from(at).map_err(|_| last())
+}
+
+/// `fd`'s file cut or grown to `size` bytes (ftruncate(2)).
+fn truncate_fd(fd: RawFd, size: u64) -> Result<(), Errno> {
+    #[allow(clippy::cast_possible_wrap)]
+    // SAFETY: ftruncate(2) of a descriptor we hold.
+    if unsafe { libc::ftruncate(fd, size as libc::off_t) } != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
+/// `fd`'s file given the host's permissions `perm` (fchmod(2)).
+fn chmod_fd(fd: RawFd, perm: u32) -> Result<(), Errno> {
+    #[allow(clippy::cast_possible_truncation)]
+    // SAFETY: fchmod(2) of a descriptor we hold.
+    if unsafe { libc::fchmod(fd, perm as libc::mode_t) } != 0 {
+        return Err(last());
+    }
+    Ok(())
+}
+
 fn key(st: &Stat) -> (u64, u64) {
     (st.dev, st.ino)
 }
@@ -1218,9 +1314,7 @@ impl Server {
     /// mapping does; and write, in a volume the guest may write, wherever a mapping's
     /// descriptor is opened to write too (window::SHARED_NEEDS_WRITE).
     fn dax_of(&self, s: &State, node: u64, st: &Stat) -> bool {
-        static EUID: std::sync::OnceLock<libc::uid_t> = std::sync::OnceLock::new();
-        // SAFETY: geteuid(2) takes nothing and cannot fail.
-        let euid = *EUID.get_or_init(|| unsafe { libc::geteuid() });
+        let euid = served_by();
         let mode = mode_of(st);
         let size = st.size;
         // The owner's bits where the server owns it, else others': a group's members are
@@ -1268,13 +1362,7 @@ impl Server {
             Some((pin, held)) if why == ESTALE && allows(*held, access) => pin,
             _ => return Err(why),
         };
-        // SAFETY: fcntl(2) F_DUPFD_CLOEXEC of a descriptor the server holds open.
-        let copy = unsafe { libc::fcntl(pin.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
-        if copy < 0 {
-            return Err(last());
-        }
-        // SAFETY: a descriptor fcntl(2) just made, owned here alone.
-        Ok(unsafe { OwnedFd::from_raw_fd(copy) })
+        dup_fd(pin.as_raw_fd())
     }
 
     /// Answers request `req`, the bytes of its readable descriptors: the reply's bytes,
@@ -1437,8 +1525,7 @@ impl Server {
                     | init::MAP_ALIGNMENT
                     | init::INIT_EXT;
                 // A DAX window's ranges are whole pages of this host's (D189).
-                // SAFETY: sysconf(3) of a constant.
-                let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+                let page = crate::platform::page_size().unwrap_or(4096);
                 let alignment = if flags & init::MAP_ALIGNMENT != 0 {
                     u16::try_from(u64::try_from(page).unwrap_or(4096).trailing_zeros()).unwrap_or(12)
                 } else {
@@ -1731,22 +1818,15 @@ impl Server {
                 } else {
                     ROOT
                 };
-                let dir = dir_fd(s, top)?;
-                // SAFETY: an all-zero statvfs is a valid out-parameter.
-                let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
-                // SAFETY: fstatvfs(2) of a descriptor we hold.
-                if unsafe { libc::fstatvfs(dir, &mut v) } != 0 {
-                    return Err(last());
-                }
-                #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
-                r.u64(v.f_blocks as u64)
-                    .u64(v.f_bfree as u64)
-                    .u64(v.f_bavail as u64)
-                    .u64(v.f_files as u64)
-                    .u64(v.f_ffree as u64)
-                    .u32(v.f_bsize as u32)
+                let v = fs_stats(dir_fd(s, top)?)?;
+                r.u64(v.blocks)
+                    .u64(v.free)
+                    .u64(v.available)
+                    .u64(v.files)
+                    .u64(v.files_free)
+                    .u32(v.block_size)
                     .u32(255)
-                    .u32(v.f_frsize as u32)
+                    .u32(v.fragment_size)
                     .u32(0)
                     .bytes(&[0u8; 24]);
             }
@@ -1907,27 +1987,14 @@ impl Server {
                 }
                 let host_name = host_xattr(&name).map_err(|_| ENODATA)?;
                 let fd = node_fd_to_change(s, nodeid)?;
-                // SAFETY: fremovexattr(2) of a NUL-terminated name.
-                #[cfg(target_os = "macos")]
-                let rc = unsafe { libc::fremovexattr(fd.raw(), host_name.as_ptr(), 0) };
-                // SAFETY: as above.
-                #[cfg(target_os = "linux")]
-                let rc = unsafe { libc::fremovexattr(fd.raw(), host_name.as_ptr()) };
-                if rc != 0 {
-                    return Err(last());
-                }
+                fremove_xattr(fd.raw(), &host_name)?;
             }
             op::LSEEK => {
                 let fh = a.u64()?;
                 let offset = a.u64()?;
                 let whence = host::whence(a.u32()?).ok_or(EINVAL)?;
-                let fd = file_fd(s, fh)?;
-                // SAFETY: lseek(2) of a descriptor we hold.
-                let at = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
-                if at < 0 {
-                    return Err(last());
-                }
-                r.u64(at as u64);
+                let at = seek(file_fd(s, fh)?, offset, whence)?;
+                r.u64(at);
             }
             op::FALLOCATE => {
                 self.writable(s, nodeid)?;
@@ -2004,8 +2071,7 @@ impl Server {
         // A node made in another's place is the guest's kind only as recorded: unrecorded,
         // it is no node of the guest's.
         if let (Err(e), Some(_)) = (recorded, kept.kind) {
-            // SAFETY: unlinkat(2) of the NUL-terminated name just made in a directory we hold.
-            let _ = unsafe { libc::unlinkat(dir, name.as_ptr(), 0) };
+            let _ = unlink_at(dir, name, false);
             return Err(e);
         }
         Ok(())
@@ -2054,12 +2120,8 @@ impl Server {
             fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0)?;
         }
         if valid & fattr::SIZE != 0 {
-            let truncated = match valid & fattr::FH != 0 && is_file(s, fh) {
-                true => {
-                    let fd = file_fd(s, fh)?;
-                    // SAFETY: ftruncate(2) of a descriptor we hold.
-                    unsafe { libc::ftruncate(fd, size as libc::off_t) }
-                }
+            match valid & fattr::FH != 0 && is_file(s, fh) {
+                true => truncate_fd(file_fd(s, fh)?, size)?,
                 false => {
                     let fd = open_at(
                         dir,
@@ -2067,12 +2129,8 @@ impl Server {
                         libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
                         0,
                     )?;
-                    // SAFETY: as above.
-                    unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) }
+                    truncate_fd(fd.as_raw_fd(), size)?;
                 }
-            };
-            if truncated != 0 {
-                return Err(last());
             }
         }
         if valid & (fattr::ATIME | fattr::MTIME) != 0 {
@@ -2170,12 +2228,7 @@ impl Server {
         // Its open handles a mode refuses keep a descriptor taken before it does (audit V09).
         pin_before_chmod(s, nodeid, dir, name, host);
         match own {
-            Some(fd) => {
-                // SAFETY: fchmod(2) of a descriptor we hold.
-                if unsafe { libc::fchmod(fd, host as libc::mode_t) } != 0 {
-                    return Err(last());
-                }
-            }
+            Some(fd) => chmod_fd(fd, host)?,
             None => chmod_at(dir, name, host)?,
         }
         // The guest's mode is kept where the host's differs, or the attribute is kept.
