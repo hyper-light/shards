@@ -6416,6 +6416,75 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D201. A GPU on Linux: Venus over its host's own Vulkan driver, in the GPU's VM process (built)
+
+The parity plan's step 11 (docs/audit/2026-10-27_platform-parity.md, row 6), after D144: a
+run on a Linux host is given its host's GPUs as a Mac's is given its own (`--gpus`, a CDI
+device of the render node, a build step's `RUN --device`), Vulkan in its guest through
+Venus, rendered by the host's own driver, NVIDIA's or Mesa's. What D144 built stands: the
+device (`devices::virtio::gpu`), the window after RAM, `--gpus`'s reading, the render
+node's mode, templates of their own (D150). What a Linux host makes otherwise:
+
+- **The renderer is virglrenderer 1.3.0** (scripts/gpu-libs, pinned by digest), not the
+  krunkit fork macOS renders with: its Venus is the upstream one guests' Mesa is written
+  against. Its Venus contexts are served by its render server alone (meson.build,
+  `with_render_server = with_venus`); the GPU's VM process runs the server as a thread of
+  its own, given one end of a socket pair as its client's connection, the renderer the
+  other (`get_server_fd`), and each context the server makes is a thread of it
+  (`render-server-worker=thread`): nothing is forked or exec'd, and what the server logs is
+  the VM process's (gpu/render_log.c, in syslog's place). Each context's fences are waited
+  for on a thread of its own and said from there (VIRGL_RENDERER_THREAD_SYNC and
+  ASYNC_FENCE_CB), as macOS's are.
+- **Vulkan is the host's**, its loader opened by its soname (libvulkan.so.1) as the
+  renderer starts: nothing of it is linked, a host without one is told so as a run asks for
+  a GPU, and the window's length is every GPU's host-visible heaps as Vulkan says them (on
+  the GPU desktop, NVIDIA's 100 GiB and RADV's besides).
+- **The GPU's VM process links glibc, dynamically**, where every other helper is static
+  musl (PM M281): a host's GPU driver is a library of its C library, which a static program
+  cannot load. build.rs builds it for the `-linux-gnu` targets where SHARDS_GPU_LIBS names
+  the renderer's libraries (`gpu_target`), and CI and releases build them there, as on
+  Apple silicon. A musl build carries none yet.
+- **A blob is held by its descriptor** (PM M381). Venus exports host-visible memory as a
+  dma-buf where the driver can, as both NVIDIA's and Mesa's can, and the renderer exports
+  each mappable blob as it is made and keeps the descriptor: a dma-buf maps at any address
+  the process chooses, is the driver's memory, and keeps its pages once the driver frees it
+  while the descriptor or a mapping lives, what D144 held on macOS by remapping. A blob
+  exported as an opaque descriptor, which no mmap takes, is refused, as is one said to be
+  larger than its memory's pages.
+- **The window on KVM is one memslot**, over a range the VM process reserves for it
+  (gpu/window.rs), as a share's DAX window is (D189): a blob is mapped into it at the place
+  its guest chose by mmap(MAP_FIXED) of its descriptor, and unmapped by reserving its range
+  again; KVM's stage 2 follows the host's mapping through its MMU notifiers, a dma-buf's
+  PFN-mapped pages (NVIDIA's, M381) among it. No memslot is made or removed for a blob, and
+  a blob's place and length are whole host pages (`blob_alignment`).
+- **Confined to what its driver needs** (PM M382), as NVIDIA's and Mesa's were measured to
+  reach: Landlock lets the GPU's VM process read the loader's manifests and the libraries
+  they name, the system's libraries and the drivers' data, sysfs, /proc/driver and four of
+  /proc's files, and read, write and control the GPUs' device nodes (render nodes,
+  NVIDIA's control, GPU, modesetting and unified memory nodes, udmabuf); its seccomp filter
+  allows the GPU drivers' ioctls by their types (NVIDIA's 'F' and 'm', DRM's 'd'), which a
+  rule matches by the request's bits 8 to 15 (`Rule::masked`), seven syscalls more, two
+  fcntl commands, fallocate's mode 0 and getsockopt's SO_TYPE, and fails symlink as its
+  host does (NVIDIA's /dev/char links). Its drivers' shader caches stay off: it writes
+  nothing of its host's.
+- **The kernels:** the `gpu` variant for x86_64 guests as for arm64's, and `hyperv+gpu`,
+  a Windows host's guest given a GPU, of kernel-6.18.48-64a9427a8997, whose release built
+  every kernel before it byte for byte again and the x86_64 `gpu` kernel byte for byte as
+  the GPU desktop's pinned builder did; scripts/build-kernel.sh takes variants joined by
+  `+`.
+- **Tested** (tests/gpu.rs, on the GPU desktop's NVIDIA GeForce RTX 5060 Ti and Radeon
+  610M, NVIDIA 615.78.08, CachyOS on Linux 7.2.9): passes, 4 runs of 4, 20 to 37 s each.
+  A run given `--gpus all` finds `Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti)` and
+  `Virtio-GPU Venus (AMD Ryzen 9 9950X3D2 16-Core Processor (RADV RAPHAEL_MENDOCINO))`
+  through Debian trixie's Mesa 25.0.7, a build's steps given the render node by a CDI
+  device find it as root and as user 1000, so do a run given it by CDI name and a run of
+  user 1000, and the GPU's runs restore templates of their own (D150). It skips where a
+  host has no GPU's device node, as CI's Linux runners, which build, lint and test the
+  renderer.
+- **Not yet:** an arm64 Linux host with a GPU is built and linted for and untested, none
+  being here; and arm64 KVM maps a PFN-mapped page as device memory unless its mapping
+  allows it otherwise (VM_ALLOW_ANY_UNCACHED), which a discrete GPU's dma-buf does not say.
+
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
@@ -9979,7 +10048,8 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
   a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
 - **To build:** Linux's VFIO (R2). A build's `RUN` steps: D145; a run's `--device` by
-  CDI name: D146; a GPU's templates: D150.
+  CDI name: D146; a GPU's templates: D150; Linux's hosts, through Venus on their own
+  drivers: D201.
 
 ### D143. `RUN` on Windows hosts: the builder
 

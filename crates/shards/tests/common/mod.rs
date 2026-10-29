@@ -271,13 +271,13 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-e39058b2b627",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-e39058b2b627/Image-6.18.48-aarch64-kvm",
+                name: "Image-6.18.48-aarch64-kvm-64a9427a8997",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/Image-6.18.48-aarch64-kvm",
                 sha256: "b3834451dd3504010f9ac398d8602f37030cda3225ecb2ef2d8f60eebc5d14a6",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-e39058b2b627",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-e39058b2b627/vmlinux-6.18.48-x86_64-kvm",
+                name: "vmlinux-6.18.48-x86_64-kvm-64a9427a8997",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/vmlinux-6.18.48-x86_64-kvm",
                 sha256: "fb1a14009a675a39d61a5d2c19bd62129266bd4bbbb04038bdbefa419c0b6c2d",
             },
             _ => return None,

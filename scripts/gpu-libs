@@ -1,23 +1,44 @@
 #!/usr/bin/env bash
 # Builds the GPU's renderer for `shards-vm-gpu` (D144) from pinned sources, static:
 #   scripts/gpu-libs [OUT_DIR]
-# OUT_DIR (target/gpu-libs by default) receives libvirglrenderer.a (virglrenderer's Venus,
-# in the 0.10.4e-krunkit fork, which renders in this process on macOS), libepoxy.a and
-# libMoltenVK.a (MoltenVK's release, over Metal), and include/ for the VMM's tests; cargo
-# links them where SHARDS_GPU_LIBS names that directory (crates/vmm/build.rs). macOS on
-# Apple silicon alone. Needs python3, for meson and ninja, pinned by hash in a virtual
-# environment of the build's own, and Xcode's command-line tools.
+# OUT_DIR (target/gpu-libs by default) receives the renderer's libraries, which cargo links
+# where SHARDS_GPU_LIBS names that directory (crates/vmm/build.rs), and include/ for the
+# VMM's tests:
+# - macOS on Apple silicon: libvirglrenderer.a (virglrenderer's Venus, in the
+#   0.10.4e-krunkit fork, which renders in this process on macOS), libepoxy.a and
+#   libMoltenVK.a (MoltenVK's release, over Metal).
+# - Linux on x86_64 and arm64 (D201): libvirglrenderer.a (virglrenderer 1.3.0's Venus,
+#   whose contexts its render server serves), librender_server.a (that server, which the
+#   GPU's VM process runs as a thread of its own, each context a thread of it) and
+#   libepoxy.a. Vulkan is the host's, its loader (libvulkan.so.1) opened as the renderer
+#   starts.
+# Needs python3, for meson and ninja, pinned by hash in a virtual environment of the
+# build's own, and a C compiler: Xcode's command-line tools on macOS, the host's `cc` on
+# Linux.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:-$repo/target/gpu-libs}
-if [ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]; then
-    echo "the GPU's renderer is built on Apple silicon (D144)" >&2
+host=$(uname -s)-$(uname -m)
+case $host in
+Darwin-arm64 | Linux-x86_64 | Linux-aarch64) ;;
+*)
+    echo "the GPU's renderer is built on Apple silicon and on Linux (D144, D201), not $host" >&2
     exit 2
-fi
+    ;;
+esac
 
-virgl_url=https://gitlab.freedesktop.org/slp/virglrenderer/-/archive/0.10.4e-krunkit/virglrenderer-0.10.4e-krunkit.tar.gz
-virgl_sha256=09d000623fbdb966cb604eb48c962a0815e8142383e6066d6494809335b76dbb
+if [ "$host" = Darwin-arm64 ]; then
+    virgl_name=virglrenderer-0.10.4e-krunkit
+    virgl_url=https://gitlab.freedesktop.org/slp/virglrenderer/-/archive/0.10.4e-krunkit/$virgl_name.tar.gz
+    virgl_sha256=09d000623fbdb966cb604eb48c962a0815e8142383e6066d6494809335b76dbb
+    sha256() { shasum -a 256 "$@"; }
+else
+    virgl_name=virglrenderer-1.3.0
+    virgl_url=https://gitlab.freedesktop.org/virgl/virglrenderer/-/archive/1.3.0/$virgl_name.tar.gz
+    virgl_sha256=065bc56e89e6f631f96101cd62eba0748e48eb888b434edc86e89d05395e76f3
+    sha256() { sha256sum "$@"; }
+fi
 epoxy_url=https://github.com/anholt/libepoxy/archive/refs/tags/1.5.10.tar.gz
 epoxy_sha256=a7ced37f4102b745ac86d6a70a9da399cc139ff168ba6b8002b4d8d43c900c15
 moltenvk_url=https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-macos.tar
@@ -28,37 +49,50 @@ trap 'rm -rf "$work"' EXIT
 
 fetch() {
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$work/$2" "$1"
-    echo "$3  $work/$2" | shasum -a 256 -c --quiet -
+    echo "$3  $work/$2" | sha256 -c --quiet -
 }
 fetch "$virgl_url" virgl.tar.gz "$virgl_sha256"
 fetch "$epoxy_url" epoxy.tar.gz "$epoxy_sha256"
-fetch "$moltenvk_url" moltenvk.tar "$moltenvk_sha256"
 mkdir "$work/src"
 tar -xzf "$work/virgl.tar.gz" -C "$work/src"
 tar -xzf "$work/epoxy.tar.gz" -C "$work/src"
-tar -xf "$work/moltenvk.tar" -C "$work/src"
-mvk=$work/src/MoltenVK/MoltenVK
 
-# meson and ninja, as PyPI published them.
+# meson and ninja, as PyPI published them: ninja's wheels for macOS, and for Linux on
+# x86_64 and arm64.
 cat >"$work/tools.txt" <<'EOF'
 meson==1.11.2 --hash=sha256:7e4f6e83fec83e3eaac928e058b073c7557b282c35b6a2024cea143a39926a39
-ninja==1.13.2 --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b
+ninja==1.13.2 --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b --hash=sha256:65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c --hash=sha256:d775a5e43e9088f507a6250d57fcf5678eb31268c545feb5064ffeee33735622
 EOF
+# virglrenderer 1.3.0 makes its format tables from YAML: PyYAML's wheels for CPython 3.11
+# to 3.14 on Linux, x86_64 and arm64.
+if [ "$host" != Darwin-arm64 ]; then
+    cat >>"$work/tools.txt" <<'EOF'
+PyYAML==6.0.3 --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d --hash=sha256:10892704fc220243f5305762e276552a0395f7beb4dbf9b14ec8fd43b57f126c --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc --hash=sha256:9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 --hash=sha256:ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5 --hash=sha256:501a031947e3a9025ed4405a168e6ef5ae3126c59f90ce0cd6f2bfc477be31b7
+EOF
+fi
 python3 -m venv "$work/tools"
 "$work/tools/bin/pip" install --quiet --require-hashes --only-binary :all: -r "$work/tools.txt"
 export PATH=$work/tools/bin:$PATH
 
-# Vulkan as MoltenVK's release gives it, for the renderer's build to find.
 prefix=$work/prefix
 mkdir -p "$prefix/lib/pkgconfig"
-cat >"$prefix/lib/pkgconfig/vulkan.pc" <<EOF
+# The builds find what this script puts there and nothing of the host's: no libdrm, gbm or
+# Vulkan loader of its own is linked.
+export PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig
+mvk=
+if [ "$host" = Darwin-arm64 ]; then
+    fetch "$moltenvk_url" moltenvk.tar "$moltenvk_sha256"
+    tar -xf "$work/moltenvk.tar" -C "$work/src"
+    mvk=$work/src/MoltenVK/MoltenVK
+    # Vulkan as MoltenVK's release gives it, for the renderer's build to find.
+    cat >"$prefix/lib/pkgconfig/vulkan.pc" <<EOF
 Name: vulkan
 Description: MoltenVK 1.4.2
 Version: 1.4.335
 Cflags: -I$mvk/include
 Libs: $mvk/static/MoltenVK.xcframework/macos-arm64_x86_64/libMoltenVK.a -framework Metal -framework IOSurface -framework IOKit -framework QuartzCore -framework Foundation -framework CoreGraphics -framework AppKit -lc++
 EOF
-export PKG_CONFIG_PATH=$prefix/lib/pkgconfig
+fi
 
 # libepoxy: no GL of its own to find (no EGL, GLX or X11); the renderer runs Venus alone.
 # Each setup's output kept, and shown if it fails; each build's warnings and errors shown.
@@ -74,14 +108,35 @@ setup epoxy "$work/epoxy" "$work/src/libepoxy-1.5.10" --prefix="$prefix" --defau
     -Dtests=false -Ddocs=false -Dx11=false -Degl=no -Dglx=no
 ninja --quiet -C "$work/epoxy" install
 
-setup virgl "$work/virgl" "$work/src/virglrenderer-0.10.4e-krunkit" --prefix="$prefix" \
-    --default-library=static -Dvenus=true -Drender-server=false -Dtests=false \
-    "-Dc_args=-I$mvk/include"
-# The library alone: its test server links MoltenVK by a name the release does not give.
-ninja --quiet -C "$work/virgl" src/libvirglrenderer.a
-
 mkdir -p "$out/include"
-cp "$work/virgl/src/libvirglrenderer.a" "$prefix/lib/libepoxy.a" \
-    "$mvk/static/MoltenVK.xcframework/macos-arm64_x86_64/libMoltenVK.a" "$out/"
-cp "$work/src/virglrenderer-0.10.4e-krunkit/src/virglrenderer.h" "$out/include/"
-(cd "$out" && shasum -a 256 libvirglrenderer.a libepoxy.a libMoltenVK.a)
+if [ "$host" = Darwin-arm64 ]; then
+    setup virgl "$work/virgl" "$work/src/$virgl_name" --prefix="$prefix" \
+        --default-library=static -Dvenus=true -Drender-server=false -Dtests=false \
+        "-Dc_args=-I$mvk/include"
+    # The library alone: its test server links MoltenVK by a name the release does not give.
+    ninja --quiet -C "$work/virgl" src/libvirglrenderer.a
+    cp "$work/virgl/src/libvirglrenderer.a" "$prefix/lib/libepoxy.a" \
+        "$mvk/static/MoltenVK.xcframework/macos-arm64_x86_64/libMoltenVK.a" "$out/"
+    libs=(libvirglrenderer.a libepoxy.a libMoltenVK.a)
+else
+    # Venus served by the render server, each context a thread of it (not a process forked
+    # from it), and Vulkan's loader opened as it starts, not linked.
+    setup virgl "$work/virgl" "$work/src/$virgl_name" --prefix="$prefix" \
+        --default-library=static -Dvenus=true -Drender-server-worker=thread -Dvulkan-dload=true \
+        -Dvideo=false -Dtests=false
+    ninja --quiet -C "$work/virgl" src/libvirglrenderer.a server/virgl_render_server
+    # The server's objects, but its `main` and its log (to syslog): the GPU's VM process
+    # runs the server, and says what it logs (crates/vmm, gpu/render_log.c).
+    objects=()
+    for o in "$work/virgl/server/virgl_render_server.p/"*.o; do
+        case $(basename "$o") in
+        main.c.o | render_common.c.o) ;;
+        *) objects+=("$o") ;;
+        esac
+    done
+    ar rcsD "$out/librender_server.a" "${objects[@]}"
+    cp "$work/virgl/src/libvirglrenderer.a" "$prefix/lib/libepoxy.a" "$out/"
+    libs=(libvirglrenderer.a librender_server.a libepoxy.a)
+fi
+cp "$work/src/$virgl_name/src/virglrenderer.h" "$out/include/"
+(cd "$out" && sha256 "${libs[@]}")

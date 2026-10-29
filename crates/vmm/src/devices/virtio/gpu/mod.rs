@@ -10,8 +10,10 @@
 //! still running.
 
 pub mod protocol;
-#[cfg(all(feature = "gpu", target_os = "macos"))]
+#[cfg(all(feature = "gpu", any(target_os = "macos", target_os = "linux")))]
 pub mod virgl;
+#[cfg(target_os = "linux")]
+pub mod window;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -26,6 +28,10 @@ use crate::{debug, warn};
 use protocol::{Command, Header, Refused, resp};
 
 pub const DEVICE_ID: u32 = 16;
+
+/// Whether this build renders a GPU: the GPU's VM process (D144), whose process loads its
+/// host's GPU driver, and is confined to what that needs besides (D201).
+pub const RENDERS: bool = cfg!(feature = "gpu");
 
 /// Its feature bits (include/uapi/linux/virtio_gpu.h).
 pub mod feature {
@@ -63,12 +69,24 @@ pub struct Blob {
     pub size: u64,
 }
 
-/// Host memory of a blob that may be mapped into the window: `len` bytes at `host`, whole
+/// Where a mappable blob's host memory is, for the window to map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pages {
+    /// At this address of this process, which the hypervisor's stage 2 maps
+    /// (Hypervisor.framework's).
+    At(*mut u8),
+    /// Held by this descriptor, a dma-buf or shared memory, which the window maps into its
+    /// own range of this process, KVM's stage 2 following it (D201).
+    #[cfg(unix)]
+    Fd(std::os::fd::RawFd),
+}
+
+/// Host memory of a blob that may be mapped into the window: `len` bytes of `pages`, whole
 /// host pages that hold nothing but the blob's, and how the guest is to cache it
 /// (VIRTIO_GPU_MAP_CACHE_*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostMemory {
-    pub host: *mut u8,
+    pub pages: Pages,
     pub len: usize,
     pub cache: u32,
 }
@@ -113,12 +131,14 @@ pub trait Renderer: Send {
 }
 
 /// Maps host memory into the guest's physical address space and unmaps it: the
-/// hypervisor's stage 2, or a test's.
+/// hypervisor's stage 2, a range of this process that KVM's follows, or a test's.
 pub trait Window: Send + Sync {
+    /// Maps `len` bytes of `pages` at `gpa`.
+    ///
     /// # Safety
-    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
-    /// destroyed.
-    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String>;
+    /// Pages at an address must stay mapped in this process until unmapped here or the VM
+    /// is destroyed; a descriptor must be open for the call.
+    unsafe fn map(&self, pages: Pages, gpa: u64, len: usize) -> Result<(), String>;
     fn unmap(&self, gpa: u64, len: usize) -> Result<(), String>;
 }
 
@@ -448,9 +468,9 @@ impl Served {
                     return Err(invalid);
                 }
                 let gpa = self.region.base + offset;
-                // SAFETY: the renderer's memory of the resource, which stays mapped in this
-                // process until the window lets it go (`unmap`) or the VM goes.
-                if let Err(e) = unsafe { self.window.map(host.host, gpa, host.len) } {
+                // SAFETY: the renderer's memory of the resource, which it holds until the
+                // window lets it go (`unmap`) or the VM goes.
+                if let Err(e) = unsafe { self.window.map(host.pages, gpa, host.len) } {
                     debug!("virtio-gpu: mapping resource {resource} at {gpa:#x}: {e}");
                     self.renderer.unmap(resource);
                     return Err(Refused(resp::ERR_UNSPEC));
@@ -951,7 +971,7 @@ mod tests {
                 .get(&resource)
                 .ok_or(Refused(resp::ERR_INVALID_RESOURCE_ID))?;
             Ok(HostMemory {
-                host: self.memory.as_mut_ptr(),
+                pages: Pages::At(self.memory.as_mut_ptr()),
                 len: usize::try_from(size.next_multiple_of(GRANULE)).unwrap(),
                 cache: 1,
             })
@@ -969,7 +989,7 @@ mod tests {
     }
 
     impl Window for Pane {
-        unsafe fn map(&self, _host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+        unsafe fn map(&self, _pages: Pages, gpa: u64, len: usize) -> Result<(), String> {
             self.log
                 .lock()
                 .unwrap()

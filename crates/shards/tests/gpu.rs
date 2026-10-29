@@ -1,4 +1,5 @@
-//! A run given this Mac's GPU (D144): Vulkan through Venus, in a real microVM.
+//! A run given its host's GPU (D144, D201): Vulkan through Venus, in a real microVM, on a
+//! Mac's GPU through MoltenVK and on a Linux host's through its own Vulkan driver.
 //!
 //! It boots the pinned gpu kernel (SHARDS_TEST_GPU_KERNEL names another to try) in the
 //! GPU's VM process that `shards` carries where it was built with the renderer
@@ -12,9 +13,28 @@ use std::path::PathBuf;
 
 use common::{TempDir, cannot_run_vms, guest_init, run_shards_env};
 
+/// Whether this host has a GPU to give a microVM: a Mac's, which Metal has wherever its
+/// VMs run; on Linux a GPU's device node, a DRM render node or NVIDIA's (a CI runner's
+/// virtual machine has none).
+fn host_gpu() -> Result<(), &'static str> {
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let render = std::fs::read_dir("/dev/dri").is_ok_and(|d| {
+        d.flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
+    });
+    if render || std::path::Path::new("/dev/nvidia0").exists() {
+        Ok(())
+    } else {
+        Err("this host has no GPU: no render node (/dev/dri/renderD*), and no /dev/nvidia0")
+    }
+}
+
 /// The GPU's kernel, and the VM process the test names, if it names one; or why there is
 /// no GPU to test.
 fn gpu() -> Result<(PathBuf, Option<PathBuf>), &'static str> {
+    host_gpu()?;
     let vm = std::env::var_os("SHARDS_TEST_GPU_VM").map(PathBuf::from);
     if vm.is_none() && !common::carries_gpu_vm() {
         return Err("this shards carries no GPU VM process (SHARDS_GPU_LIBS)");
@@ -28,7 +48,7 @@ fn gpu() -> Result<(PathBuf, Option<PathBuf>), &'static str> {
     Ok((kernel, vm))
 }
 
-/// `shards run --gpus all` of an image with Mesa's Venus: `vulkaninfo` finds the Mac's GPU
+/// `shards run --gpus all` of an image with Mesa's Venus: `vulkaninfo` finds the host's GPU
 /// through Venus, its render node given the run as `--device` gives one; a build step
 /// given the render node by a CDI device (`RUN --device`) finds it too (D145); and the
 /// GPU's runs restore a template of their own, apart from the same image's without it

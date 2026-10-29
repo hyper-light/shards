@@ -15311,3 +15311,125 @@ revision before comparing a changed API/implementation.
   naming Windows Server's as the one that allows it, which is not built: it waits for a
   Windows Server host with a function to give, which neither CI's runners, nested, nor
   jupiter, Windows 11, is.
+
+### M381. Whether a Linux host maps a GPU's host-visible memory where it chooses, by the descriptor Venus exports (D201)
+
+- **Question.** Venus's renderer on Linux exports each blob of host-visible memory as a
+  descriptor, a dma-buf where the driver exports one and an opaque one where it does not
+  (virglrenderer 1.3.0, vkr_device_memory.c). A KVM window that is one memslot (D189's
+  shape) maps each blob by its descriptor at the place its guest chose. Does each driver's
+  descriptor map at an address of the process's choosing, is that mapping the driver's
+  memory, and does it hold the memory once the driver frees it, as D144's remap held a
+  blob's pages on macOS?
+- **Method.** `docs/research/measurements/gpu-linux/dmabuf-map.c`: for each GPU and each
+  memory type the host can map, 1 MiB allocated with each export (VkExportMemoryAllocateInfo,
+  dma-buf, then opaque), the descriptor taken (vkGetMemoryFdKHR), mapped MAP_SHARED |
+  MAP_FIXED into a reserved PROT_NONE range, written there, read through vkMapMemory, the
+  memory freed (vkFreeMemory) and the mapping read again. One pass, each mmap timed once.
+  The GPU desktop: AMD Ryzen 9 9950X3D2, an NVIDIA GeForce RTX 5060 Ti (NVIDIA 615.78.08,
+  open kernel modules) and the CPU's Radeon 610M (RADV, Mesa 26.2.4), CachyOS, Linux
+  7.2.9-2-cachyos, Vulkan loader 1.4.363; 2026-10-29.
+- **Results.**
+  - NVIDIA: each of its three host-visible types (heap 1's HOST_VISIBLE|HOST_COHERENT and
+    +CACHED, heap 0's DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT) exports a dma-buf of the
+    allocation's size, 1 MiB, which maps at the address given in 8.1, 7.8 and 67.1 µs,
+    shows the bytes written through it to vkMapMemory, and keeps them after vkFreeMemory.
+    Its opaque descriptors map nowhere: mmap refuses them (EINVAL), and lseek finds no size.
+  - RADV: each of its ten host-visible types maps both ways, in 0.7 to 3.9 µs, coherent,
+    kept after free.
+  - NVIDIA's open modules map a dma-buf with remap_pfn_range (kernel-open/nvidia/
+    nv-dmabuf.c, nv_dma_buf_mmap at 615.78.08), so the mapping is VM_PFNMAP, which KVM's
+    stage 2 maps through hva_to_pfn_remapped.
+- **Reading.** A dma-buf is what a GPU window on Linux maps a blob by: placed where the
+  guest put it, the driver's memory, held by the descriptor and every mapping of it after
+  the driver lets it go. An opaque descriptor cannot be mapped, so a blob exported as one is
+  refused; both drivers here export dma-bufs, which Venus prefers.
+
+### M382. What a GPU's VM process reaches of its Linux host, its driver running in it (D201)
+
+- **Question.** The GPU's VM process runs Venus's renderer, and so the host's Vulkan loader
+  and GPU drivers, in itself (D144's design, D201). A VM process reaches nothing of its host
+  but what its Landlock rules and seccomp filter allow (D30, PM M52). What do the loader and
+  the drivers open, and which syscalls and ioctls do they and the renderer make, that a
+  VM process's rules refuse?
+- **Method.** The GPU desktop of M381, 2026-10-29. (1) `docs/research/measurements/
+  gpu-linux/accesses.sh`: vulkaninfo and dmabuf-map under an empty environment, as a VM
+  process has one (it is given SHARDS_LOG and SHARDS_TIMING alone): the libraries loaded
+  (LD_DEBUG=files), the manifests read (VK_LOADER_DEBUG), and every other path opened, stat'd,
+  listed or linked (openlog.c, preloaded). (2) tests/gpu.rs, rounds of it, the GPU's VM
+  process confined, each round's refusals allowed in the next: from the second on with
+  `refusals.patch`, under which the filter's SIGSYS handler says each refused syscall and
+  returns ENOSYS rather than ending the process, so that one round names them all
+  (`refusals.sh`); last, a round allowing of the drivers' ioctls only those of the type
+  found refused, to see the others' (NVIDIA's and DRM's) used.
+- **Results.**
+  - Opened: about 70 libraries, every one from /usr/lib; the manifests of
+    /usr/share/vulkan/icd.d (nvidia_icd.json, radeon_icd.json) and implicit_layer.d
+    (nvidia_layers.json, Mesa's device select and anti-lag layers), /usr/local/share/vulkan,
+    /etc/xdg/vulkan and /etc/vulkan searched; NVIDIA's application profiles
+    (/usr/share/nvidia, /etc/nvidia), libdrm's names (/usr/share/libdrm/amdgpu.ids),
+    Mesa's options (/usr/share/drirc.d, /etc/drirc), EGL's and GLVND's vendor files; sysfs,
+    each GPU's PCI device (220 reads), /sys/dev/char, /sys/module/nvidia*/initstate, every
+    CPU's capacity, topology and caches, /sys/devices/system/memory/block_size_bytes;
+    procfs, /proc/self's stat, maps, cmdline, comm and exe, /proc/stat, meminfo, cpuinfo,
+    filesystems, /proc/driver/nvidia/params; read, written and controlled, /dev/nvidiactl,
+    /dev/nvidia0, /dev/nvidia-modeset and the render nodes /dev/dri/renderD128 and 129, and
+    RADV's /dev/dri/card0. Written: Mesa's shader caches in ~/.cache, found through the
+    password file in want of HOME. Linked: NVIDIA's /dev/char/195:0, 254 and 255 to
+    ../nvidia0, nvidia-modeset and nvidiactl, which failed on the host too, not being root.
+  - Refused, by round: (1) Landlock refused libvulkan.so.1 before the filter was reached.
+    (2) With the loader's, libraries', drivers' data, sysfs, procfs and devices' paths
+    allowed: sched_get_priority_max (SCHED_RR), the first, ending the process. (3) With
+    refusals.patch: sched_get_priority_max and _min, 4 each; ioctl of type 'm'
+    (nvidia-modeset's NVKMS_IOCTL_CMD, 0xc0106d00), 4; getsockopt(SOL_SOCKET, SO_TYPE), 4,
+    the render server's and its client's check of their socket; getsockname, 2
+    (libGLX_nvidia); symlink, 20 (the /dev/char links above); getresuid, 2; statfs, 4;
+    memfd_create, 2 (flags 0x13); the render server, refused getsockopt, quit ("no valid
+    client fd specified"). (4) fcntl F_ADD_SEALS, getresgid, fallocate (mode 0), 1 to 2
+    each. (5) fcntl F_GET_SEALS, 1, whose answer the renderer's check of a shared memory
+    blob's seals failed on. (6) None: every GPU run of tests/gpu.rs passed. (7) Of the
+    drivers' ioctls only 'm' allowed: NVIDIA's of type 'F' (0xc04846d2) and DRM's
+    DRM_IOCTL_VERSION (type 'd'), the first each driver makes, refused, and neither driver
+    found its GPU.
+- **Reading.** A GPU's VM process needs, beyond a VM process's: reading the system's
+  libraries and the drivers' data and manifests, sysfs, /proc/driver and four of /proc's
+  files; the GPUs' device nodes; ioctls of types 'F', 'm' and 'd'; seven syscalls whatever
+  their arguments, getsockopt's SO_TYPE, fallocate's mode 0 and fcntl's F_ADD_SEALS and
+  F_GET_SEALS; and symlink failed as its host fails it. It needs to write nothing of the
+  host's: the drivers' caches, refused, are done without.
+
+### M383. Whether WHP maps a GPU's host-visible memory into a partition, as the driver maps it (D201)
+
+- **Question.** On macOS the renderer hands the VMM the address its driver mapped a blob
+  at, which Hypervisor.framework maps into the guest (D144). Does WHP take a Windows GPU
+  driver's mapping of its host-visible memory (vkMapMemory) the same way, and does the
+  guest see the host's and the GPU's writes through it, and the host the guest's? Or must
+  Venus on Windows give the driver memory of its own (VK_EXT_external_memory_host)?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m383.rs`: m341's guest, one vCPU
+  in long mode loading and storing at the host's word. For each memory type of the GPU's
+  the host can map: 2 MiB allocated and mapped (vkMapMemory), WHvMapGpaRange of the
+  mapping at 1 GiB in the guest (read and write), the host's store loaded by the guest, the
+  guest's store read by the host, a vkCmdFillBuffer of a buffer bound to it loaded by the
+  guest; then 100 maps and unmaps of it timed. Then 2 MiB of the probe's own (VirtualAlloc)
+  imported as Vulkan memory (VkImportMemoryHostPointerInfoEXT), the same. jupiter: AMD
+  Ryzen AI Max+ 395 and its Radeon 8060S (AMD's driver 25.20.32.06, LLPC, Vulkan 1.4.329;
+  display driver 32.0.22032.6002), Windows 11 10.0.26200; 2026-10-29.
+- **Results.**
+  - WHP takes the driver's mapping of each of the twelve host-visible types (types 1 to 3,
+    5 to 7, 9 to 11 and 13 to 15: host-visible over system memory and over the
+    device-local heap, cached, coherent and AMD's device-coherent among them), the first
+    map 47.4 to 196.3 µs.
+  - Each way, through each: the guest loads the host's store, the host reads the guest's,
+    and the guest loads the GPU's fill (0xa5c35a3ca5c35a3c), with no memory exit.
+  - Maps, n=100 each type: p50 34.0 to 37.6 µs, p90 39.0 to 71.0, p99 102.7 to 277.9,
+    max 131.4 to 301.3. Unmaps: p50 21.4 to 22.1 µs, p90 21.7 to 36.6, p99 22.2 to 41.2,
+    max 24.5 to 99.1.
+  - The probe's own memory imports into the eight host-visible types that are not
+    device-local (type bits 0xaaaa), and behaves alike: the GPU's fill reaches its pages,
+    which WHP maps (map p50 36.2 µs).
+- **Reading.** Venus on Windows can be macOS's design: the renderer maps a blob in its
+  process and the VMM maps that address into the guest's window. What macOS's remap held,
+  a freed blob's pages kept from the driver's next allocation, needs its own answer on
+  Windows, as the stage 2 follows the host's view there (M341): memory of the renderer's own
+  imported into the driver holds its pages whatever the driver frees, for the types it
+  imports into; the device-local ones it does not.

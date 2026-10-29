@@ -27,6 +27,14 @@ for target in ${*:-$all}; do
 		env "CC_$var=$root/scripts/zig-cc" "AR_$var=$root/scripts/zig-ar" \
 			ZIG_TARGET="${target%%-*}-linux-${target##*-}" \
 			cargo clippy --workspace --all-targets --target "$target" -- -D warnings
+		# The GPU's renderer on Linux with glibc (D201), as on macOS below.
+		case $target in
+		*-linux-gnu)
+			env "CC_$var=$root/scripts/zig-cc" "AR_$var=$root/scripts/zig-ar" \
+				ZIG_TARGET="${target%%-*}-linux-gnu" \
+				cargo clippy -p shards-vmm --features gpu --all-targets --target "$target" -- -D warnings
+			;;
+		esac
 		;;
 	*-windows-msvc)
 		PATH="$llvm:$PATH" cargo xwin clippy --workspace --all-targets --target "$target" -- -D warnings

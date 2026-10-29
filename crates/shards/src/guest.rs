@@ -251,7 +251,7 @@ pub fn kvm_kernel(
     Ok(kernel)
 }
 
-const NO_GPU_KERNEL: &str = "shards pins no GPU guest kernel yet: SHARDS_KERNEL and SHARDS_INIT name one, built with resources/kernel/gpu.config (scripts/build-kernel.sh aarch64 OUT gpu)";
+const NO_GPU_KERNEL: &str = "shards pins no GPU guest kernel for this architecture: SHARDS_KERNEL and SHARDS_INIT name one, built with resources/kernel/gpu.config (scripts/build-kernel.sh ARCH OUT gpu)";
 
 /// The kernel a GPU's guest boots in `home`'s store (D144): the pinned kernel's `gpu`
 /// variant, downloaded as the pinned kernel is, said through `say`.

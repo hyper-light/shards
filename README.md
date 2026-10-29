@@ -211,7 +211,7 @@ reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
 file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
-curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-e39058b2b627/$file
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/$file
 shasum -a 256 vmlinux
 ```
 
@@ -292,7 +292,7 @@ it where it was, at the same address on its network.
 | Images, Dockerfiles and Agentfiles | Pulled, pushed and built, every `RUN` step in a microVM of the build's own, for other CPUs too under emulation |
 | Many agents in one microVM, each in its own domain | Works, from an Agentfile: each agent's own processes, files, networks and devices, and nothing it isn't granted |
 | Networks, volumes and devices | Work: a microVM reaches only what you give it, networks deny by default |
-| GPUs | macOS: Vulkan compute in the guest. Linux: a host's PCI device passed through to a microVM (VFIO), tested with a test device; a GPU itself not yet |
+| GPUs | macOS and Linux: your machine's GPU, for Vulkan in the microVM (`--gpus all`), tested on Apple's and NVIDIA's. Linux also passes a host's PCI device through to a microVM (VFIO), tested with a test device. Windows not yet |
 | `docker` command lines, Compose and the Docker Engine API | Work, through shards' Engine API file |
 | Running shards' commands on another machine | Works: `shards create context`, over QUIC |
 
