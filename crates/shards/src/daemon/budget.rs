@@ -701,7 +701,10 @@ impl<D: Disk> Daemon<D> {
     /// would at its host's pressure; and then it is told the room as the budget has it
     /// after: where it is short still, its run held within what it uses and the least room
     /// a run goes on in, which the next word to it raises once the budget has room again.
-    /// Nothing where it has no budget and was told of none.
+    /// What it is held within after a give-back its budget asked for is said, whatever the
+    /// give-back counted: one whose answer came too late, its guest having given back as
+    /// it was ended, left its microVM within a budget nothing said (PM M391). Nothing where
+    /// it has no budget and was told of none.
     fn tell_room_now(&self, pid: u32) {
         let Some(dir) = lock(&self.budgets.held).get(&pid).map(|h| h.dir.clone()) else {
             return;
@@ -714,7 +717,7 @@ impl<D: Disk> Daemon<D> {
             .map_or((None, false), |h| (h.told, h.short));
         let evicted = &mut |mapped: &Mapped| self.budgets.evicted(mapped);
         let mut room = room(&dir, Path::new(ROOT), evicted);
-        let (mut ended, mut gave) = (0, None);
+        let (mut ended, mut gave, mut asked) = (0, None, false);
         if let Some((r, level)) = room.clone()
             && r < 0
         {
@@ -723,6 +726,7 @@ impl<D: Disk> Daemon<D> {
                 room = self::room(&dir, Path::new(ROOT), evicted);
             }
             if room.as_ref().is_some_and(|(r, _)| *r < 0) && lock(self.watching_giving()).insert(vm.clone()) {
+                asked = true;
                 let before = resident_file(pid);
                 gave = self.give_back_of(&id);
                 lock(self.watching_giving()).remove(&vm);
@@ -813,8 +817,8 @@ impl<D: Disk> Daemon<D> {
         );
         let done_if = || if did { done.as_str() } else { "" };
         match (had, told) {
-            // As it is first held, and as it is held within it again by what it did.
-            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did) => log(format!(
+            // As it is first held, and as it is held within it again by what it did or asked.
+            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked) => log(format!(
                 "container {id}: its microVM held within its budget, {} MiB of room{}{}{}",
                 r >> 20,
                 done_if(),

@@ -16255,6 +16255,14 @@ revision before comparing a changed API/implementation.
   back and the test ended 19 s after the budget, before the sampler saw it within. Its vCPUs
   were still slept, one to four at a time, while the guest touched fresh memory for the
   give-back's exec: the cost of a slice past its budget with no swap.
+- **Then, 3 runs of 19 failed otherwise.** Each give-back's exec ran past the daemon's 10 s
+  (`TAKE_TIMEOUT`) and was ended as its guest finished giving back, the slice within its
+  budget by then, so its answer was lost; the daemon, finding the microVM within its
+  budget, said nothing of the budget it had just met, its log's first-held line asking
+  that the microVM never have been told one or have given something back: the test waited
+  60 s for a word. The budget's word is now said after any give-back it asked for,
+  whatever that counted (`budget.rs`, `tell_room_now`): 12 runs of 12 passed, the slice
+  within its budget 1.7 to 25.2 s after it was set.
 - **Found, Windows and macOS.** A guest kept 130 to 132 MiB of the 512 MiB read in 4 of 10
   first reads on jupiter and 368 to 375 MiB in 6: its own kernel reclaimed the rest as it
   read (`pgsteal_direct` 99,185 to 99,218 pages, or 37,240 to 38,280, in the joiner's

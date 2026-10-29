@@ -6074,7 +6074,9 @@ through FUSE into its guest's page cache (a file of a window's range or more is 
 page cache, mapped into it: D189) gives back what it holds cold once a `MemoryHigh` of 384
 MiB short of it is set, idle as it is, the daemon's log saying what it gave back and that
 it holds it within its budget, in which it reads a gigabyte, in files of a MiB, to the
-end. tests/daemon.rs
+end; a give-back whose answer is lost to the daemon's 10 s, its guest giving back as it
+was ended, followed by the budget's word all the same (12 runs of 12 on Fedora, where 3 of
+19 had the daemon say nothing of the budget, PM M391). tests/daemon.rs
 `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
 under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
