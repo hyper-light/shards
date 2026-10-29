@@ -8,10 +8,12 @@ use std::os::windows::io::{
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_STAT_LX_INFORMATION,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileStatLxInformation, LX_FILE_METADATA_HAS_DEVICE_ID,
+    FILE_CASE_SENSITIVE_INFORMATION, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+    FILE_OPEN_REPARSE_POINT, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+    FILE_STAT_LX_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileCaseSensitiveInformation,
+    FileLinkInformation, FileRenameInformationEx, FileStatLxInformation, LX_FILE_METADATA_HAS_DEVICE_ID,
     LX_FILE_METADATA_HAS_MODE, LX_FILE_METADATA_HAS_UID, NtCreateFile, NtQueryEaFile, NtQueryInformationFile,
-    NtSetEaFile,
+    NtSetEaFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DISK_FULL, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND,
@@ -25,12 +27,16 @@ use windows_sys::Win32::Foundation::{
     STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO,
-    FILE_READ_ATTRIBUTES, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
-    GetFileInformationByHandleEx, SYNCHRONIZE,
+    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_FLAG_DELETE,
+    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    FILE_DISPOSITION_INFO_EX, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES, FILE_READ_EA, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA, FileDispositionInfoEx, FileIdInfo,
+    GetFileInformationByHandleEx, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
+use windows_sys::Win32::System::SystemServices::FILE_CS_FLAG_CASE_SENSITIVE_DIR;
 
 use super::host::Stat;
 
@@ -544,6 +550,169 @@ pub fn special_at(
     Ok(made)
 }
 
+/// A FILE_RENAME_INFORMATION or FILE_LINK_INFORMATION, laid out as Win32's FILE_RENAME_INFO: `flags`, its root
+/// directory `root` and the name `name` in it, as one buffer, the name past the struct's
+/// own `FileName`.
+fn named(flags: u32, root: BorrowedHandle<'_>, name: &[u16]) -> Result<Vec<u8>, Errno> {
+    use std::mem::offset_of;
+    let bytes = name.len().checked_mul(2).ok_or(ENAMETOOLONG)?;
+    let at = offset_of!(FILE_RENAME_INFO, FileName);
+    let mut buf = vec![
+        0u8;
+        at.checked_add(bytes)
+            .ok_or(ENAMETOOLONG)?
+            .max(size_of::<FILE_RENAME_INFO>())
+    ];
+    let field = |buf: &mut [u8], at: usize, value: &[u8]| -> Result<(), Errno> {
+        buf.get_mut(at..at + value.len())
+            .ok_or(EINVAL)?
+            .copy_from_slice(value);
+        Ok(())
+    };
+    field(&mut buf, 0, &flags.to_le_bytes())?;
+    field(
+        &mut buf,
+        offset_of!(FILE_RENAME_INFO, RootDirectory),
+        &(root.as_raw_handle() as usize).to_le_bytes(),
+    )?;
+    field(
+        &mut buf,
+        offset_of!(FILE_RENAME_INFO, FileNameLength),
+        &u32::try_from(bytes).map_err(|_| ENAMETOOLONG)?.to_le_bytes(),
+    )?;
+    for (i, c) in name.iter().enumerate() {
+        field(&mut buf, at + i * 2, &c.to_le_bytes())?;
+    }
+    Ok(buf)
+}
+
+/// `name` in `dir` removed as Linux removes one (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS): its
+/// name gone at once though a handle holds the file open, its read-only attribute ignored;
+/// a directory where `rmdir`, else anything else.
+pub fn unlink_at(dir: BorrowedHandle<'_>, name: &[u16], rmdir: bool) -> Result<(), Errno> {
+    let kind = if rmdir {
+        FILE_DIRECTORY_FILE
+    } else {
+        FILE_NON_DIRECTORY_FILE
+    };
+    let gone = open_at(dir, name, DELETE, FILE_OPEN, kind)?;
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: an info of its own size on a handle this holds.
+    let done = unsafe {
+        SetFileInformationByHandle(
+            gone.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).unwrap_or(0),
+        )
+    };
+    if done == 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+/// `old` in `odir` renamed `new` in `ndir` as Linux renames (FILE_RENAME_FLAG_POSIX_SEMANTICS):
+/// over a file a handle holds open, its holder keeping what it held; over nothing where
+/// not `replace` (EEXIST).
+pub fn rename_at(
+    odir: BorrowedHandle<'_>,
+    old: &[u16],
+    ndir: BorrowedHandle<'_>,
+    new: &[u16],
+    replace: bool,
+) -> Result<(), Errno> {
+    let moving = open_at(odir, old, DELETE, FILE_OPEN, 0)?;
+    // POSIX semantics where it replaces, a held file then replaced (M362).
+    let flags = if replace {
+        FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
+    } else {
+        0
+    };
+    let info = named(flags, ndir, new)?;
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: a FILE_RENAME_INFORMATION laid out above, its length, on a handle this holds.
+    let status = unsafe {
+        NtSetInformationFile(
+            moving.as_raw_handle(),
+            &mut io,
+            info.as_ptr().cast(),
+            u32::try_from(info.len()).map_err(|_| ENAMETOOLONG)?,
+            FileRenameInformationEx,
+        )
+    };
+    if status < 0 {
+        return Err(errno(status));
+    }
+    Ok(())
+}
+
+/// Another name, `new` in `ndir`, of `old` in `odir` (FileLinkInformation), never over one.
+pub fn link_at(
+    odir: BorrowedHandle<'_>,
+    old: &[u16],
+    ndir: BorrowedHandle<'_>,
+    new: &[u16],
+) -> Result<(), Errno> {
+    let linked = open_at(
+        odir,
+        old,
+        FILE_WRITE_ATTRIBUTES,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )?;
+    let info = named(0, ndir, new)?;
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: a FILE_LINK_INFORMATION laid out above, its length, on a handle this holds.
+    let status = unsafe {
+        NtSetInformationFile(
+            linked.as_raw_handle(),
+            &mut io,
+            info.as_ptr().cast(),
+            u32::try_from(info.len()).map_err(|_| ENAMETOOLONG)?,
+            FileLinkInformation,
+        )
+    };
+    if status < 0 {
+        return Err(errno(status));
+    }
+    Ok(())
+}
+
+/// A directory `name` in `dir`, case-sensitive as WSL makes its own
+/// (FileCaseSensitiveInformation), its handle.
+pub fn mkdir_at(dir: BorrowedHandle<'_>, name: &[u16]) -> Result<OwnedHandle, Errno> {
+    let made = open_at(
+        dir,
+        name,
+        FILE_LIST_DIRECTORY | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA,
+        FILE_CREATE,
+        FILE_DIRECTORY_FILE,
+    )?;
+    let info = FILE_CASE_SENSITIVE_INFORMATION {
+        Flags: FILE_CS_FLAG_CASE_SENSITIVE_DIR,
+    };
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: an info of its own size on a handle this holds.
+    let status = unsafe {
+        NtSetInformationFile(
+            made.as_raw_handle(),
+            &mut io,
+            (&raw const info).cast(),
+            u32::try_from(size_of::<FILE_CASE_SENSITIVE_INFORMATION>()).unwrap_or(0),
+            FileCaseSensitiveInformation,
+        )
+    };
+    if status < 0 {
+        return Err(errno(status));
+    }
+    Ok(made)
+}
+
 /// Linux's errno for a Win32 error a call answered with, by its NTSTATUS's.
 fn win32_errno(e: &std::io::Error) -> Errno {
     match e.raw_os_error().and_then(|c| u32::try_from(c).ok()) {
@@ -715,5 +884,68 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reparse(plain.as_handle()), Ok(None));
+    }
+
+    /// A name removed while held is gone at once and made again; a rename goes over a held
+    /// file, and over nothing where told not to replace; a link is a second name of one
+    /// file; and a directory made holds two names differing in case.
+    #[test]
+    fn removal_rename_links_and_case_are_linuxs() {
+        let (_dir, root) = tree("ntfs-names");
+        let made_in = |dir: BorrowedHandle<'_>, name: &[u8]| {
+            open_at(
+                dir,
+                &nt_name(name).unwrap(),
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                FILE_CREATE,
+                FILE_NON_DIRECTORY_FILE,
+            )
+            .unwrap()
+        };
+        let named = |name: &[u8]| nt_name(name).unwrap();
+        let held = made_in(root.as_handle(), b"held");
+        unlink_at(root.as_handle(), &named(b"held"), false).unwrap();
+        assert_eq!(
+            open_at(root.as_handle(), &named(b"held"), FILE_GENERIC_READ, FILE_OPEN, 0).unwrap_err(),
+            ENOENT
+        );
+        drop(made_in(root.as_handle(), b"held"));
+        drop(held);
+        let (a, b) = (made_in(root.as_handle(), b"a"), made_in(root.as_handle(), b"b"));
+        let b_ino = stat(b.as_handle()).unwrap().ino;
+        assert_ne!(stat(a.as_handle()).unwrap().ino, b_ino);
+        assert_eq!(
+            rename_at(
+                root.as_handle(),
+                &named(b"b"),
+                root.as_handle(),
+                &named(b"a"),
+                false
+            ),
+            Err(EEXIST)
+        );
+        rename_at(
+            root.as_handle(),
+            &named(b"b"),
+            root.as_handle(),
+            &named(b"a"),
+            true,
+        )
+        .unwrap();
+        let now = open_at(root.as_handle(), &named(b"a"), FILE_GENERIC_READ, FILE_OPEN, 0).unwrap();
+        assert_eq!(stat(now.as_handle()).unwrap().ino, b_ino);
+        link_at(root.as_handle(), &named(b"a"), root.as_handle(), &named(b"c")).unwrap();
+        assert_eq!(stat(now.as_handle()).unwrap().nlink, 2);
+        let d = mkdir_at(root.as_handle(), &named(b"d")).unwrap();
+        let (upper, lower) = (made_in(d.as_handle(), b"A"), made_in(d.as_handle(), b"a"));
+        assert_ne!(
+            stat(upper.as_handle()).unwrap().ino,
+            stat(lower.as_handle()).unwrap().ino
+        );
+        drop((upper, lower, a, b, now));
+        unlink_at(d.as_handle(), &named(b"A"), false).unwrap();
+        unlink_at(d.as_handle(), &named(b"a"), false).unwrap();
+        drop(d);
+        unlink_at(root.as_handle(), &named(b"d"), true).unwrap();
     }
 }
