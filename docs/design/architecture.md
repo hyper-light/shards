@@ -6603,7 +6603,7 @@ stream, word for word, and `logs` reads the run's own copy; an ETW session is an
 administrator's or Performance Log Users', and a host whose user is neither says SKIP.
 Elsewhere it tests the refusal. A unit test holds each event's words to moby's.
 
-### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (slices 1 and 2 built)
+### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (slices 1 to 3 built)
 
 **Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,
 docs/audit/2026-10-27_platform-parity.md's host directories on Windows): a microVM's volumes
@@ -6688,10 +6688,49 @@ line, all caught but one equivalent). What the tests found, decided:
   truncates, as Linux's open(2); SEEK_DATA and SEEK_HOLE take a file to be all data, as
   POSIX lets an implementation.
 
+**Built (slice 3): the share process and the daemon's shares on Windows**, a run's `-v` and
+`--mount` reading and writing host directories there: containers.rs, compose.rs, engine.rs
+and saved.rs on jupiter and CI's Windows runners, none skipped for this step but those of
+shards' own shares' DAX windows (slice 4). What it took, decided:
+
+- **The share process starts in its microVM's group's job with none of a confined child's
+  mitigations** (`shards_ipc::spawn_in_job`): under `Spawn`'s no-Win32k and no-FSCTL
+  policies the shards binary failed its DLL initialisation (STATUS_DLL_INIT_FAILED,
+  0xC0000142, on jupiter), and its server sets reparse points, which are FSCTLs.
+- **Each share's stream is a byte-mode duplex pipe the daemon makes**
+  (`shards_ipc::byte_pair`): its server end given to the share process by number, its
+  client end sent to the VM after the run's request, `MAX_FDS` a message (`SHARE_ENDS`),
+  as Unix's share process hands its own: a stream given to a process on Windows hands no
+  handle on, its holder having no handle of the process it would send one to. A run of
+  five shares sent in its request alone had been refused, past `MAX_FDS`.
+- **A container's share processes end with its removal**, each ended and waited for as
+  the removal completes, its runs over (`end_shares`): NTFS renames no directory a handle
+  beneath is open in, and a volume removed just after the last container that mounted it
+  had been refused (HTTP 500), a `run --rm`'s anonymous volume left behind.
+- **RENAME_EXCHANGE**, which overlayfs asks of a volume to remove a directory
+  (ovl_cleanup_and_whiteout exchanges it with a whiteout), and of which NTFS has none:
+  three renames, each over nothing, the first to a name of the server's own beside the
+  first file, undone where one fails, the directories beneath both let go first
+  (`an_exchange_swaps_two_names`). The server answers its guest one request at a time, so
+  its guest sees none of it half done; another program of the host's may, as it may any
+  rename on Windows not made at once.
+- **A file with no mode of WSL's is 0755 to the guest, 0555 read-only**: Windows has no
+  bit to say a file is not executable. WSL shows such a file with its Windows user's
+  effective rights, "the same value for user, group, and other" ("File Permissions for
+  WSL", Microsoft Learn); Docker Desktop "sets permissions on shared volumes to a default
+  value of 0777 ... not configurable" (Docker Desktop's troubleshooting topics); BuildKit's
+  fsutil sends a Windows file to a build as 0755 (shards-build's `host.rs`). shards takes
+  the build's: a Linux program or script in a project runs from its bind, and its files
+  stay their owner's to write, root's in the guest, as a Unix host's are.
+- **No DAX window for shards' own shares on Windows until slice 4**: a section of a file
+  reaches nothing past its end, where a window's ranges are 2 MiB each; DESCRIPTOR is
+  refused (EOPNOTSUPP), and FUSE's reads and writes serve each file.
+- **A host's bind sources are its drives' paths** (D207).
+
 **Slices.** 1 (built): the server's host calls behind functions of their own, `mod calls`,
 Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own tests on
-Windows. 3: the share process and the daemon's shares on Windows, and the volume, bind and
-DAX tests on CI's Windows runners.
+Windows. 3 (built): the share process and the daemon's shares on Windows, and the volume
+and bind tests on its CI runners. 4: shards' own shares' DAX windows on Windows.
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
