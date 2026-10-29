@@ -9014,6 +9014,7 @@ fn published_ports_reach_the_guest() {
         &["--rm", "-p", &format!("{p}:7000")],
         &["exit", "0"],
     );
+    let took = began.elapsed();
     assert!(
         refused.stderr.contains(&format!(
             "0.0.0.0:{p}/tcp: the host's port is taken: {}",
@@ -9021,7 +9022,14 @@ fn published_ports_reach_the_guest() {
         )),
         "{refused}"
     );
-    assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
+    // The daemon's word on any wait for a run's ports, which its log keeps.
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let waits: Vec<&str> = log.lines().filter(|l| l.contains(&format!(":{p}: "))).collect();
+    eprintln!("refused in {took:?}");
+    assert!(
+        took < Duration::from_secs(2),
+        "refused in {took:?}; the daemon's log of {p}: {waits:#?}"
+    );
     drop(held);
 }
 
@@ -11735,7 +11743,14 @@ fn import_makes_images_of_tarballs() {
     );
     let (request, microvm) = served
         .recv_timeout(std::time::Duration::from_secs(60))
-        .expect("the import published nothing");
+        .unwrap_or_else(|e| {
+            // Its publisher's errors go to the daemon's log alone (local_store.rs).
+            let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+            let tail: Vec<&str> = log.lines().rev().take(60).collect();
+            panic!(
+                "the import published nothing: {e:?}; the daemon's log's last lines, last first: {tail:#?}"
+            )
+        });
     drop(socket);
     assert!(request.starts_with("POST /images/load?quiet=1 "), "{request}");
     let artifact = String::from_utf8_lossy(&microvm);

@@ -3931,18 +3931,24 @@ impl<D: Disk> Daemon<D> {
     /// holds the port no longer, as dockerd's has let go of it by the time `docker run`
     /// returns.
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
-        let deadline = Instant::now() + crate::netproc::GRACE.saturating_mul(2);
+        let began = Instant::now();
+        let deadline = began + crate::netproc::GRACE.saturating_mul(2);
         let mut held = lock(&self.ports_held);
         // A run of this daemon's held it: gone from every run, it was freed, while this
         // waited or while it took the holder's messages without the lock.
         let mut ours = false;
         let mut taken: Option<String> = None;
+        // Whether this waited for an ended run's network process, which the log says.
+        let mut waited = false;
         loop {
             let Some(holder) = held
                 .iter()
                 .find(|h| h.at.iter().any(|&(a, p)| p == proto && publish::overlaps(a, at)))
                 .map(|h| h.container.clone())
             else {
+                if waited {
+                    log(format!("{at}: freed after {:?}", began.elapsed()));
+                }
                 return if ours {
                     publish::InUse::Freed
                 } else {
@@ -3971,8 +3977,18 @@ impl<D: Disk> Daemon<D> {
                 return publish::InUse::Allocated;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                log(format!(
+                    "{at}: still {holder}'s after {:?}, its run ended: the host's",
+                    began.elapsed()
+                ));
                 return publish::InUse::Host;
             };
+            if !waited {
+                log(format!(
+                    "{at}: {holder}'s, its run ended: waiting for its network process"
+                ));
+                waited = true;
+            }
             held = self
                 .ports_freed
                 .wait_timeout(held, left)
