@@ -16538,6 +16538,8 @@ revision before comparing a changed API/implementation.
     column, q4_0 832 GFLOPS (141 µs a run).
 - **Reading.** A guest's Vulkan compute runs on a Windows host's GPU through Venus and
   gets its CPU's results in every case but the 18 of llama.cpp's integer dot product path,
-  which RADV's gives alike on Linux and which the path's absence clears. Whether AMD's
-  Windows driver gives them natively, and its speed natively, are unmeasured: llama.cpp's
-  Windows build needs the Vulkan SDK, which jupiter lacks.
+  which RADV's gives alike on Linux and which the path's absence clears, as llama.cpp's
+  tracker has that path give NaN on a Radeon 8060S under RADV in other cases (M384,
+  ggml-org/llama.cpp#30544). Whether AMD's Windows driver gives them natively, and its
+  speed natively, are unmeasured: llama.cpp's Windows build needs the Vulkan SDK, which
+  jupiter lacks.
