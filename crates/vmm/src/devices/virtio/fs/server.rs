@@ -23,9 +23,12 @@ pub use super::proto::{HEADER_BYTES, IN_HEADER_BYTES, MAX_PAGES, MAX_TABLES, MAX
 use super::proto::{OUT_HEADER_BYTES, op};
 use crate::snapshot::codec::{Reader, Writer};
 
-/// Its host's calls (D197): Unix's here.
+/// Its host's calls (D197): Unix's, or Windows' through `ntfs`.
 #[cfg(unix)]
 #[path = "server_unix.rs"]
+mod calls;
+#[cfg(windows)]
+#[path = "server_windows.rs"]
 mod calls;
 use calls::*;
 
@@ -2590,7 +2593,8 @@ fn emulated_at(dir: host::Raw, name: &CStr) -> Option<u32> {
     Owner::parse(&owner)?.kind
 }
 
-#[cfg(test)]
+// Unix's alone until the slice that runs them on Windows (D197).
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;

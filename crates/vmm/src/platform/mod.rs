@@ -35,7 +35,8 @@ pub use windows_files::{
 };
 #[cfg(windows)]
 pub use windows_process::{
-    Usage, descriptor_limit, launched, mapped_pages, process_usage, raise_descriptor_limit, thread_limit,
+    Usage, descriptor_limit, file_table, launched, mapped_pages, open_descriptors, process_usage,
+    raise_descriptor_limit, thread_limit, user_processes,
 };
 #[cfg(windows)]
 pub use windows_watch::FileWatch;

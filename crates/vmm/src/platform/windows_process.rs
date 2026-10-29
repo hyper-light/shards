@@ -121,6 +121,27 @@ pub fn raise_descriptor_limit() -> io::Result<u64> {
     Ok(HANDLES)
 }
 
+/// How many handles this process has open (unix.rs `open_descriptors`): GetProcessHandleCount.
+pub fn open_descriptors() -> Option<u64> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    let mut count = 0u32;
+    // SAFETY: this process's pseudo-handle, and a count to fill.
+    let ok = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+    (ok != 0).then_some(u64::from(count))
+}
+
+/// The system's table of open files (unix.rs `file_table`): Windows keeps none apart from
+/// its processes' handles, each process held to [`HANDLES`].
+pub fn file_table() -> Option<(u64, u64)> {
+    None
+}
+
+/// How many processes this process's user may have (unix.rs `user_processes`): Windows
+/// holds a user to no count of them.
+pub fn user_processes() -> Option<u64> {
+    None
+}
+
 /// PSAPI_WORKING_SET_EX_BLOCK's Valid bit, its first: the page is in the working set.
 const VALID: usize = 1;
 /// Its Shared bit, the sixteenth, after Valid, ShareCount's three and Win32Protection's

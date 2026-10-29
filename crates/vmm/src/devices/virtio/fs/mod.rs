@@ -11,13 +11,11 @@
 //! for now, and the FUSE wire the device needs is `proto`'s. Its DAX window there maps the
 //! sections its server duplicates into this process (`window_whp.rs`, PM M341, M343).
 
-#[cfg(unix)]
 pub mod headroom;
 pub mod host;
 #[cfg(windows)]
 pub mod ntfs;
 pub mod proto;
-#[cfg(unix)]
 pub mod server;
 #[cfg(unix)]
 pub mod window;

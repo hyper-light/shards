@@ -33,6 +33,11 @@
 //! read from a disk that the guest's write of whole pages would overwrite. A range mapped
 //! to be read alone, or zeros, has none held, as on the other hosts.
 
+/// Whether a file a guest maps shared through its window is opened to write too (window.rs's
+/// rule): not on WHP, where a view of a section its server makes read-only is mapped
+/// read-only.
+pub const SHARED_NEEDS_WRITE: bool = false;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::os::windows::io::{AsRawHandle as _, OwnedHandle};

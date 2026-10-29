@@ -118,17 +118,20 @@ impl Headroom {
 /// ([`shards_abi::SHARE_MAX_PAGES`]), and the two windows of 128 KiB its file is read ahead
 /// in (`VM_READAHEAD_PAGES`, mm/readahead.c); this host's, by its own CPUs and pages.
 fn reads_room() -> u64 {
+    #[cfg(unix)]
     // SAFETY: sysconf(3) reads values of the running kernel's.
     let (cpus, page) = unsafe {
         (
-            libc::sysconf(libc::_SC_NPROCESSORS_ONLN),
-            libc::sysconf(libc::_SC_PAGESIZE),
+            u64::try_from(libc::sysconf(libc::_SC_NPROCESSORS_ONLN)).map_or(1, |c| c.max(1)),
+            u64::try_from(libc::sysconf(libc::_SC_PAGESIZE)).unwrap_or(4096),
         )
     };
-    reads_room_of(
-        u64::try_from(cpus).map_or(1, |c| c.max(1)),
-        u64::try_from(page).unwrap_or(4096),
-    )
+    #[cfg(windows)]
+    let (cpus, page) = (
+        std::thread::available_parallelism().map_or(1, |n| u64::try_from(n.get()).unwrap_or(1)),
+        crate::platform::page_size().map_or(4096, |p| u64::try_from(p).unwrap_or(4096)),
+    );
+    reads_room_of(cpus, page)
 }
 
 /// [`reads_room`] of a host with `cpus` CPUs online and pages of `page` bytes.
@@ -144,9 +147,16 @@ fn reads_room_of(cpus: u64, page: u64) -> u64 {
 
 /// A cgroup file's one number: `max`, or one that cannot be read, as no bound.
 fn value(file: &File) -> u64 {
+    #[cfg(unix)]
     use std::os::unix::fs::FileExt as _;
+    #[cfg(windows)]
+    use std::os::windows::fs::FileExt as _;
     let mut buf = [0u8; 32];
-    let Ok(n) = file.read_at(&mut buf, 0) else {
+    #[cfg(unix)]
+    let read = file.read_at(&mut buf, 0);
+    #[cfg(windows)]
+    let read = file.seek_read(&mut buf, 0);
+    let Ok(n) = read else {
         return u64::MAX;
     };
     std::str::from_utf8(buf.get(..n).unwrap_or_default())
@@ -218,6 +228,12 @@ mod tests {
         assert_eq!(reads_room_of(4, 4096), 9 * MIB / 4);
         assert_eq!(reads_room_of(18, 4096), 23 * MIB / 4);
         assert!(reads_room_of(1, 4096) >= u64::from(shards_abi::SHARE_MAX_PAGES) * 4096);
+    }
+
+    /// The room is this host's, by its own CPUs and pages.
+    #[cfg(unix)]
+    #[test]
+    fn a_shares_room_is_its_hosts() {
         // SAFETY: sysconf(3) reads values of the running kernel's.
         let (cpus, page) = unsafe {
             (
