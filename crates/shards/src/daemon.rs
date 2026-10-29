@@ -4597,10 +4597,11 @@ impl<D: Disk> Daemon<D> {
             waiter.hear(code);
         }
         drop(registry);
-        if let Some(removal) = removal
-            && self.set_aside(&removal).is_ok()
-        {
-            let _ = self.complete(&removal);
+        if let Some(removal) = removal {
+            if self.set_aside(&removal).is_ok() {
+                let _ = self.complete(&removal);
+            }
+            self.removal_settled();
         }
         said
     }
@@ -4608,7 +4609,9 @@ impl<D: Disk> Daemon<D> {
     /// The end of container `id`'s run, as `end` records it, kept at once: in sight, or
     /// in its reservation, whose record then holds it. A `--rm` container is taken out of
     /// sight, for [`set_aside`](Self::set_aside) and [`complete`](Self::complete) to
-    /// remove; any other's record is written on the recorder's thread. Waits on no write:
+    /// remove, counted until its caller queues or completes it
+    /// ([`removal_taken`](Self::removal_taken)); any other's record is written on the
+    /// recorder's thread. Waits on no write:
     /// the followers' loop ends every run, and one waiting there holds up every other
     /// run's messages, by 81 ms at a loaded host's p90 (PM M96). Failures go to the log.
     fn end_container(
@@ -4632,6 +4635,9 @@ impl<D: Disk> Daemon<D> {
             .is_some_and(|c| c.auto_remove && c.saved.is_none())
         {
             let removal = registry.take_out(id);
+            if removal.is_some() {
+                self.removal_taken();
+            }
             // One still arriving is so no more.
             self.arrived.notify_all();
             return removal;
@@ -12602,6 +12608,45 @@ mod tests {
                 completing.join().unwrap().unwrap();
             });
             assert!(lock(&t.daemon.containers).name_taken("racer").is_none());
+            assert!(!t.home.join("containers").join(&id).exists());
+        });
+    }
+
+    /// A shutdown waits for the removal of a `--rm` container its run's end has taken out
+    /// and not yet queued, whose `destroy` is then kept: one that found nothing pending
+    /// between the two left the next daemon no `destroy` to read (windows-2025, CI
+    /// 40961442989, events_outlive_their_daemon).
+    #[test]
+    fn a_shutdown_waits_for_a_removal_taken_out_and_not_yet_queued() {
+        let t = Test::new("taken-out");
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let id = t.reserve_with("taken", None, true);
+            t.daemon.await_arrival(&id);
+            let removal = {
+                let mut registry = lock(&t.daemon.containers);
+                t.daemon
+                    .end_container(&mut registry, &id, |c| c.exit_code = Some(3))
+            };
+            let removal = removal.expect("a --rm container is taken out as its run ends");
+            std::thread::scope(|scope| {
+                let waiting = scope.spawn(|| t.daemon.await_removals());
+                std::thread::sleep(Duration::from_millis(50));
+                let early = waiting.is_finished();
+                t.daemon.complete_soon(removal);
+                waiting.join().unwrap();
+                assert!(!early, "the shutdown went on before the removal was queued");
+            });
+            let journal: String = std::fs::read_dir(t.home.join("events"))
+                .unwrap()
+                .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+                .collect();
+            assert!(
+                journal
+                    .lines()
+                    .any(|l| l.contains("\"Action\":\"destroy\"") && l.contains(&id)),
+                "{journal}"
+            );
             assert!(!t.home.join("containers").join(&id).exists());
         });
     }
