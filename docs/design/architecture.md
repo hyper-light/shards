@@ -6843,9 +6843,10 @@ node's mode, templates of their own (D150). What a Linux host makes otherwise:
   fcntl commands, fallocate's mode 0 and getsockopt's SO_TYPE, and fails symlink as its
   host does (NVIDIA's /dev/char links) and sched_setaffinity with EPERM (RADV's, which
   renders on, M384). Its drivers' shader caches stay off: it writes nothing of its host's.
-- **Vulkan programs** (PM M384): llama.cpp's matrix multiplications in a guest, on
-  NVIDIA's GPU, get its CPU's results case for case; on RADV, 18 of 1,684 shapes are NaN
-  run after run, which RADV's own run would tell apart from Venus's, unmeasured.
+- **Vulkan programs** (PM M384): llama.cpp's matrix multiplications in a guest get its
+  CPU's results case for case, on NVIDIA's GPU and on RADV's, but for 18 of 1,684 shapes on
+  RADV that are NaN in llama.cpp's integer dot product path alone (with it off, every case
+  matches), as on Windows' AMD driver (M386).
 - **The kernels:** the `gpu` variant for x86_64 guests as for arm64's, and `hyperv+gpu`,
   a Windows host's guest given a GPU, of kernel-6.18.48-64a9427a8997, whose release built
   every kernel before it byte for byte again and the x86_64 `gpu` kernel byte for byte as

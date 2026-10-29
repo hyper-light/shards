@@ -16432,11 +16432,13 @@ revision before comparing a changed API/implementation.
     GPU result a number. An earlier run passed 1,684 of 1,684.
   - RADV's: 1,666 of 1,684. The 18 others are NaN where the CPU's are numbers, all of one
     family: quantized A (q4_0, q4_1, q5_0, q5_1, q8_0) by f32 B of 9, 13 and 16 columns,
-    100 by 96 (and 40 by 32 for q4_0); an earlier run failed 17 of the same 18. Whether RADV
-    gives them without Venus is unmeasured: the same llama.cpp built over Arch Linux (its
-    Mesa the desktop's release) and run in a container given RADV's render node was
-    refused on the desktop by this session's permission classifier, as it builds code from
-    GitHub there.
+    100 by 96 (and 40 by 32 for q4_0); an earlier run failed 17 of the same 18. With
+    llama.cpp's integer dot product off (GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1), RADV's
+    match the CPU's in every case, 1,684 of 1,684: the NaNs are that path's alone, on AMD's
+    GPU, which Windows' AMD driver gives too, case for case (M386). Whether RADV gives them
+    without Venus is unmeasured: the same llama.cpp built over Arch Linux (its Mesa the
+    desktop's release) and run in a container given RADV's render node was refused on the
+    desktop by this session's permission classifier, as it builds code from GitHub there.
   - llama-bench, n=5 each, milliseconds a run (p50, p90 = p99 = max) and tokens/s:
 
     | Device | Test | p50 ms | max ms | p50 t/s | min t/s |
@@ -16454,10 +16456,11 @@ revision before comparing a changed API/implementation.
     where the filter's own ends the process. RADV renders on where it is refused: the
     filter now refuses it with EPERM, unsaid (confine.rs), and this run met no refusal.
 - **Reading.** A guest's Vulkan compute runs on either of a Linux host's GPUs through
-  Venus, and on NVIDIA's gets the CPU's results in every case. RADV's NaNs are one family
-  of shapes, run after run, which its native run would tell apart from Venus's doing; the
-  native run waits for the user's leave to build llama.cpp on the desktop. Speed against
-  the host's own is unmeasured on Linux; on macOS it matched (M218).
+  Venus and gets the CPU's results in every case but the 18 of llama.cpp's integer dot
+  product path on AMD's GPUs, which Mesa's RADV and AMD's own Windows driver give alike and
+  which the path's absence clears; that RADV gives them natively too is unmeasured, and
+  waits for the user's leave to build llama.cpp on the desktop. Speed against the host's
+  own is unmeasured on Linux; on macOS it matched (M218).
 
 ### M385. What a GPU's VM process needs of Windows to reach its driver, in its AppContainer (D202)
 
