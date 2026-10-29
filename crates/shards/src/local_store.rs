@@ -80,6 +80,20 @@ pub enum Job {
 }
 
 impl Job {
+    /// What it does, for the daemon's log.
+    fn what(&self) -> String {
+        match self {
+            Job::Publish {
+                socket, reference, ..
+            } => {
+                format!("publishing {reference} to {}", socket.display())
+            }
+            Job::Unpublish { socket, reference } => {
+                format!("unpublishing {reference} from {}", socket.display())
+            }
+        }
+    }
+
     fn reference(&self) -> &str {
         match self {
             Job::Publish { reference, .. } | Job::Unpublish { reference, .. } => reference,
@@ -129,8 +143,20 @@ pub fn queue(job: Job) {
         .spawn(move || {
             let mut next = Some(job);
             while let Some(job) = next {
-                if let Err(e) = job.run() {
-                    let _ = writeln!(std::io::stderr(), "shards daemon {}: {e}", std::process::id());
+                // Its start and its end said, so that one that never ends is seen to.
+                let (what, pid, t) = (job.what(), std::process::id(), std::time::Instant::now());
+                let _ = writeln!(std::io::stderr(), "shards daemon {pid}: {what}");
+                match job.run() {
+                    Ok(()) => {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "shards daemon {pid}: {what}: done in {:?}",
+                            t.elapsed()
+                        );
+                    }
+                    Err(e) => {
+                        let _ = writeln!(std::io::stderr(), "shards daemon {pid}: {e}");
+                    }
                 }
                 let mut lanes = lanes();
                 next = lanes.get_mut(&lane).and_then(Option::take);

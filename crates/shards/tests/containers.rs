@@ -11692,21 +11692,29 @@ fn a_run_past_its_pids_limit_says_so() {
         &["burn", "8", "100"],
     );
     assert!(joined.stdout.contains("of 8 threads"), "{joined}");
-    let until = (now() + 1).to_string();
-    let events = shards_in(
-        &home,
-        &[
-            "events",
-            "--since",
-            &since,
-            "--until",
-            &until,
-            "--filter",
-            "event=pids-limit",
-            "--format",
-            r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
-        ],
-    );
+    // Its microVM's word of the limit reached comes on its own, maybe after its command's
+    // end on a loaded host: the home's events read again until it is there (D187).
+    let deadline = Instant::now() + TIMEOUT;
+    let events = loop {
+        let until = (now() + 1).to_string();
+        let events = shards_in(
+            &home,
+            &[
+                "events",
+                "--since",
+                &since,
+                "--until",
+                &until,
+                "--filter",
+                "event=pids-limit",
+                "--format",
+                r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
+            ],
+        );
+        if !events.stdout.is_empty() || Instant::now() >= deadline {
+            break events;
+        }
+    };
     assert_eq!(events.stdout, "joined 4\n", "{events}");
     let removed = shards_in(&home, &["rm", "-f", "provider"]);
     assert_eq!(removed.status, Some(0), "{removed}");
