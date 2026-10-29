@@ -2309,6 +2309,7 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 /// its user's systemd manager's slices: a path refused as one.
 #[cfg(target_os = "linux")]
 fn placed_under_slices(home: &Path, image: &str, path: &Run) {
+    use std::io::Write as _;
     let shards = |args: &[&str]| shards_in(home, args);
     let slice = format!("shardstest{}.slice", std::process::id());
     assert!(path.stderr.contains("NAME.slice"), "{path}");
@@ -2325,12 +2326,16 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
             "no user's systemd manager's bus at {}",
             bus.display()
         );
-        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: no user's systemd manager here: {} is not",
+            bus.display()
+        );
         return;
     }
     let started = run_in(
-        &home,
-        &image,
+        home,
+        image,
         &["-d", "--name", "placed", "--cgroup-parent", &slice],
         &["sleep"],
     );
@@ -2437,15 +2442,15 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     );
     // A second run under it: made in the same scope, placed once.
     let second = run_in(
-        &home,
-        &image,
+        home,
+        image,
         &["-d", "--name", "second", "--cgroup-parent", &slice],
         &["sleep"],
     );
     assert_eq!(second.status, Some(0), "{second}");
     assert_eq!(cgroup_of(pid_of("second")), scope);
     // A run without one, its pool warm: none of the slice's.
-    let free = run_in(&home, &image, &["-d", "--name", "free"], &["sleep"]);
+    let free = run_in(home, image, &["-d", "--name", "free"], &["sleep"]);
     assert_eq!(free.status, Some(0), "{free}");
     let elsewhere = cgroup_of(pid_of("free"));
     assert!(!elsewhere.contains(&slice), "{elsewhere}");
@@ -2454,8 +2459,8 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     // A joiner runs in its provider's microVM, under its provider's parent alone.
     let other = format!("shardstest{}b.slice", std::process::id());
     let joined = run_in(
-        &home,
-        &image,
+        home,
+        image,
         &["--rm", "--network", "container:placed", "--cgroup-parent", &other],
         &["exit", "0"],
     );
@@ -2464,8 +2469,8 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
         "{joined}"
     );
     let joined = run_in(
-        &home,
-        &image,
+        home,
+        image,
         &["--rm", "--network", "container:placed", "--cgroup-parent", &slice],
         &["exit", "0"],
     );
