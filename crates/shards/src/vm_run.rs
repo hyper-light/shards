@@ -371,7 +371,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             "--disk" => cfg.disks.push(disk(value("--disk")?)),
             // Shared directories its run gives it (D38): slots, filled as the run arrives.
-            #[cfg(unix)]
             "--shares" => {
                 let n: u32 = text(value("--shares")?)?
                     .parse()
@@ -419,7 +418,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.join = Some(give_join_disk());
             }
             // A join share, served by none until a joiner brings volumes (D119).
-            #[cfg(unix)]
             "--join-share" => cfg.join_share = Some(give_join_share()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             // A writable layer (D190), its ext4 file system in this file.
@@ -620,7 +618,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         shares: Vec::new(),
         // As its join disk and join share are, where the snapshot has them.
         join: None,
-        #[cfg(unix)]
         join_share: None,
         io_limit: Some(&IO),
         // A working set its generation has is mapped ahead: off a held or warm VM's
@@ -655,7 +652,6 @@ pub fn layered() -> bool {
 }
 
 /// This VM's shared directories' slots, which its run fills (D38).
-#[cfg(unix)]
 pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Share>> =
     std::sync::OnceLock::new();
 
@@ -864,21 +860,17 @@ pub fn join_disk() -> Option<&'static shards_vmm::devices::virtio::block::Join> 
 
 /// This VM's join share (D119): served by none until a container joining its network brings
 /// volumes; one VM a process, so one share, a `static` its device and its joiners reach.
-#[cfg(unix)]
 static JOIN_SHARE: shards_vmm::devices::virtio::fs::Slot = shards_vmm::devices::virtio::fs::Slot::new();
 /// Whether this VM has [`JOIN_SHARE`]: its device given it.
-#[cfg(unix)]
 static HAS_JOIN_SHARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// This VM's join share, for its device.
-#[cfg(unix)]
 fn give_join_share() -> &'static shards_vmm::devices::virtio::fs::Slot {
     HAS_JOIN_SHARE.store(true, std::sync::atomic::Ordering::Release);
     &JOIN_SHARE
 }
 
 /// This VM's join share, where it has one (D119).
-#[cfg(unix)]
 pub fn join_share() -> Option<&'static shards_vmm::devices::virtio::fs::Slot> {
     HAS_JOIN_SHARE
         .load(std::sync::atomic::Ordering::Acquire)
@@ -1895,17 +1887,13 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     };
     // A slot for each of its shared directories, which its run fills (D38), and its own
     // join disk where the snapshot has one (D119).
-    #[cfg(unix)]
-    {
-        cfg.shares = (0..pinned.snapshot.config.shares)
-            .map(|_| std::sync::Arc::default())
-            .collect();
-        let _ = SHARES.set(cfg.shares.clone());
-    }
+    cfg.shares = (0..pinned.snapshot.config.shares)
+        .map(|_| std::sync::Arc::default())
+        .collect();
+    let _ = SHARES.set(cfg.shares.clone());
     if pinned.snapshot.config.join {
         cfg.join = Some(give_join_disk());
     }
-    #[cfg(unix)]
     if pinned.snapshot.config.join_share {
         cfg.join_share = Some(give_join_share());
     }

@@ -583,6 +583,14 @@ pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, Owne
     Ok((server, client))
 }
 
+/// A connected pair of a pipe's ends, of bytes alone and overlapped, made as a [`Stream`]'s
+/// are (this user's alone, no remote client's, its name random): a share's stream on
+/// Windows (D197), its server end its share process's and its other its VM's, each a
+/// `platform::PipeStream` there.
+pub fn byte_pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
+    pair(BUFFER, false)
+}
+
 /// One end of an overlapped pipe, read and written by several threads at once, each call
 /// its own ([`call`]), none of them waiting out another.
 #[derive(Debug)]

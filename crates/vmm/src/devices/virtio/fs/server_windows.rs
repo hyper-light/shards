@@ -547,14 +547,46 @@ fn listed(dir: BorrowedHandle<'_>) -> Result<Vec<Entry>, Errno> {
 }
 
 /// `old` in `od` renamed `new` in `nd` with Linux's `flags`: over nothing where
-/// RENAME_NOREPLACE; an exchange NTFS cannot make refused (EINVAL), as by a file system
-/// without it.
+/// RENAME_NOREPLACE, and the two exchanged where RENAME_EXCHANGE.
 pub(super) fn renamed(od: host::Raw, old: &CStr, nd: host::Raw, new: &CStr, flags: u32) -> Result<(), Errno> {
+    let (old, new) = (nt(old)?, nt(new)?);
     if flags & linux::RENAME_EXCHANGE != 0 {
-        return Err(EINVAL);
+        if flags & linux::RENAME_NOREPLACE != 0 {
+            return Err(EINVAL);
+        }
+        return exchanged(borrow(od), &old, borrow(nd), &new);
     }
     let replace = flags & linux::RENAME_NOREPLACE == 0;
-    ntfs::rename_at(borrow(od), &nt(old)?, borrow(nd), &nt(new)?, replace)
+    ntfs::rename_at(borrow(od), &old, borrow(nd), &new, replace)
+}
+
+/// `old` in `od` and `new` in `nd` exchanged, as renameat2(2)'s RENAME_EXCHANGE, which
+/// overlayfs asks of its upper layer to remove a directory (ovl_cleanup_and_whiteout
+/// exchanges it with a whiteout) and NTFS has none of: three renames, each over nothing,
+/// `old` first to a name of the server's own beside it, and one failing, those before it
+/// undone. Its guest sees none of it half done, a server answering one request at a time;
+/// another program of the host's may, as it may any rename on Windows not made at once.
+fn exchanged(od: BorrowedHandle<'_>, old: &[u16], nd: BorrowedHandle<'_>, new: &[u16]) -> Result<(), Errno> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let aside: Vec<u16> = format!(
+        ".shards-exchange-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
+    )
+    .encode_utf16()
+    .collect();
+    ntfs::rename_at(od, old, od, &aside, false)?;
+    if let Err(e) = ntfs::rename_at(nd, new, od, old, false) {
+        let _ = ntfs::rename_at(od, &aside, od, old, false);
+        return Err(e);
+    }
+    if let Err(e) = ntfs::rename_at(od, &aside, nd, new, false) {
+        let _ = ntfs::rename_at(od, old, nd, new, false);
+        let _ = ntfs::rename_at(od, &aside, od, old, false);
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub(super) fn pread(fd: host::Raw, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {

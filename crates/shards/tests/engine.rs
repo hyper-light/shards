@@ -24,8 +24,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use common::{
-    Run, TempDir, cannot_run_vms, guest_init, kernel, later_on_windows, run_shards_env, served,
-    served_counting, tar,
+    Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, served_counting, tar,
 };
 use serde_json::{Value, json};
 #[cfg(windows)]
@@ -587,9 +586,6 @@ fn microvms_are_watched_and_managed() {
 /// and an unused one pruned, its bytes counted.
 #[test]
 fn a_volumes_data_outlives_the_microvm_that_wrote_it() {
-    if later_on_windows(6, "a host's directories (volumes and binds)") {
-        return;
-    }
     let Some((home, image)) = home("eng-volume") else {
         return;
     };
@@ -2638,9 +2634,6 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
 /// image is its own, where none of the host's store it did not pull is.
 #[test]
 fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
-    if later_on_windows(6, "a host's directories (volumes and binds)") {
-        return;
-    }
     let Some((home, image)) = home("eng-own2") else {
         return;
     };
@@ -3435,9 +3428,6 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
 /// container mounts stays; and they go with their microVM.
 #[test]
 fn a_microvms_own_engine_makes_volumes_of_its_own() {
-    if later_on_windows(6, "a host's directories (volumes and binds)") {
-        return;
-    }
     let Some((home, image)) = home("eng-vols") else {
         return;
     };
@@ -3774,9 +3764,6 @@ fn a_container_in_anothers_namespace_shares_that_ones_as_it_is() {
 /// volume kept, the microVM's own; and all of it gone with `down -v`.
 #[test]
 fn a_compose_project_runs_in_its_microvms_own_engine() {
-    if later_on_windows(6, "a host's directories (volumes and binds)") {
-        return;
-    }
     let Some(compose) = common::compose_linux() else {
         eprintln!("SKIP: no pinned docker compose for {}", common::ARCH);
         return;

@@ -2550,13 +2550,20 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     } else {
         Removal::Nothing
     };
+    let exchange = flags & linux::RENAME_EXCHANGE != 0;
     if RENAME_NEEDS_NONE_BENEATH {
-        let moved = s
+        // The directory renamed, and in an exchange the one it is exchanged with.
+        let moved: Vec<u64> = s
             .nodes
             .iter()
-            .find(|(_, n)| n.dir && n.parent == olddir && n.name.as_c_str() == old)
-            .map(|(id, _)| *id);
-        if let Some(moved) = moved {
+            .filter(|(_, n)| {
+                n.dir
+                    && (n.parent == olddir && n.name.as_c_str() == old
+                        || exchange && n.parent == newdir && n.name.as_c_str() == new)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for moved in moved {
             let_go_beneath(s, moved, [olddir, newdir]);
         }
     }
@@ -2565,7 +2572,6 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     rc?;
     // The names nodes are known by follow, directories' as files': a directory let go is
     // found again by its path.
-    let exchange = flags & linux::RENAME_EXCHANGE != 0;
     for node in s.nodes.values_mut() {
         if node.parent == olddir && node.name.as_c_str() == old {
             (node.parent, node.name) = (newdir, new.to_owned());
@@ -4691,6 +4697,54 @@ mod tests {
         assert_eq!(err, 0);
         let mode = u32::from_le_bytes(attr[16 + 60..16 + 64].try_into().unwrap());
         assert_eq!(mode, S_IFDIR | 0o710);
+        release(&s, f, fh);
+    }
+
+    /// RENAME_EXCHANGE swaps two names, as overlayfs swaps a directory it removes with a
+    /// whiteout (ovl_cleanup_and_whiteout): a directory a handle beneath is open in and a
+    /// file, in one directory or two, the handle going on; one of them missing, it is
+    /// refused (ENOENT) and neither moved, and nothing of the server's own is left.
+    #[test]
+    fn an_exchange_swaps_two_names() {
+        let (path, s) = dir();
+        std::fs::create_dir_all(path.join("d").join("e")).unwrap();
+        std::fs::write(path.join("d").join("e").join("f"), "f").unwrap();
+        std::fs::write(path.join("w"), "w").unwrap();
+        std::fs::create_dir(path.join("other")).unwrap();
+        std::fs::write(path.join("other").join("x"), "x").unwrap();
+        let d = found(&s, ROOT, "d");
+        let e = found(&s, d, "e");
+        let f = found(&s, e, "f");
+        let fh = open(&s, f, 2);
+        let other = found(&s, ROOT, "other");
+        let mode_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap()) & S_IFMT;
+        let exchange = |dir: u64, old: &str, newdir: u64, new: &str| {
+            let mut b = newdir.to_le_bytes().to_vec();
+            b.extend(linux::RENAME_EXCHANGE.to_le_bytes());
+            b.extend([0u8; 4]);
+            b.extend(name(old));
+            b.extend(name(new));
+            answer(&s, &req(op::RENAME2, dir, 0, &b)).0
+        };
+        assert_eq!(exchange(ROOT, "d", ROOT, "w"), 0);
+        assert_eq!(std::fs::read(path.join("d")).unwrap(), b"w");
+        assert_eq!(std::fs::read(path.join("w").join("e").join("f")).unwrap(), b"f");
+        assert_eq!(write(&s, f, fh, 1, b"g"), 0);
+        assert_eq!(read(&s, f, fh, 0, 8), (0, b"fg".to_vec()));
+        let (err, looked) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("w")));
+        assert_eq!((err, mode_in(&looked)), (0, S_IFDIR));
+        assert_eq!(exchange(ROOT, "d", other, "x"), 0);
+        assert_eq!(std::fs::read(path.join("d")).unwrap(), b"x");
+        assert_eq!(std::fs::read(path.join("other").join("x")).unwrap(), b"w");
+        assert_eq!(exchange(ROOT, "d", ROOT, "none"), -ENOENT);
+        assert_eq!(exchange(ROOT, "none", ROOT, "d"), -ENOENT);
+        assert_eq!(std::fs::read(path.join("d")).unwrap(), b"x");
+        let mut names: Vec<String> = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["d", "other", "w"]);
         release(&s, f, fh);
     }
 

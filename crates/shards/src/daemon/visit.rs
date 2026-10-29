@@ -157,6 +157,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a visit's connection: {e}"))?;
         let handed = shards_ipc::handed(&theirs).map_err(|e| format!("a visit's connection: {e}"))?;
+        // Its shares' link as a message hands it on; on Windows each share's stream as it is
+        // (`ShareEnds`).
+        #[cfg(unix)]
         let link = link
             .as_ref()
             .map(shards_ipc::handed)
@@ -179,8 +182,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             flags |= shards_ipc::RUN_LAYER_OUT;
             fds.push(file.as_fd());
         }
+        #[cfg(unix)]
         if let Some(link) = &link {
             fds.push(link.as_fd());
+        }
+        #[cfg(windows)]
+        for end in link.iter().flatten() {
+            fds.push(end.as_fd());
         }
         let mut payload =
             Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));

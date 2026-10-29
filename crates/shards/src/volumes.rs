@@ -157,8 +157,53 @@ fn config_error(kind: &str, why: &str) -> String {
     )
 }
 
+/// Whose paths a bind's sources are (D207): this host's, checked to be there (`--mount`)
+/// or not (`-v`, which makes them), or a microVM's own (D181), Linux's on every host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sources {
+    Host { check: bool },
+    Microvm,
+}
+
+impl Sources {
+    /// Whether they are a Windows host's: each from its drive's root (`C:\src`), as moby
+    /// reads them for Linux containers on Windows (lcow_parser.go's rxHostDir).
+    fn drives(self) -> bool {
+        cfg!(windows) && matches!(self, Sources::Host { .. })
+    }
+}
+
+/// How long the absolute prefix of a Windows drive's path that `s` starts with is: `C:\`
+/// or `C:/`, verbatim (`\\?\C:\`) or not.
+fn drive_len(s: &str) -> Option<usize> {
+    let rest = s.strip_prefix(r"\\?\").unwrap_or(s);
+    match rest.as_bytes() {
+        [d, b':', b'\\' | b'/', ..] if d.is_ascii_alphabetic() => Some(s.len() - rest.len() + 3),
+        _ => None,
+    }
+}
+
+/// A Windows drive's path as Go's filepath.Clean leaves one there: `\` between names, `.`
+/// dropped and `..` taken back, to the drive's root at most. Its case kept: moby's
+/// parser lowercases a whole `-v` (windows_parser.go splitRawSpec), and an NTFS
+/// directory can tell case (FILE_CS_FLAG_CASE_SENSITIVE_DIR).
+fn clean_drive(p: &str) -> String {
+    let (root, rest) = p.split_at_checked(drive_len(p).unwrap_or(0)).unwrap_or(("", p));
+    let mut names: Vec<&str> = Vec::new();
+    for name in rest.split(['\\', '/']) {
+        match name {
+            "" | "." => {}
+            ".." => {
+                names.pop();
+            }
+            name => names.push(name),
+        }
+    }
+    format!("{}{}", root.replace('/', "\\"), names.join("\\"))
+}
+
 /// validateMountConfigImpl, for what a mount point needs whatever its kind.
-fn validate(m: &Mount, check_source: bool) -> Result<(), String> {
+fn validate(m: &Mount, sources: Sources) -> Result<(), String> {
     let fail = |why: &str| Err(config_error(&m.kind, why));
     if m.kind != "bind" && m.bind.is_some() {
         return fail("field BindOptions must not be specified");
@@ -195,14 +240,22 @@ fn validate(m: &Mount, check_source: bool) -> Result<(), String> {
             {
                 return fail(&format!("invalid propagation mode: {}", b.propagation));
             }
-            if !m.source.replace('\\', "/").starts_with('/') {
+            if sources.drives() {
+                if drive_len(&m.source).is_none() {
+                    return fail(&format!(
+                        "invalid mount path: '{}' mount path must be absolute: a path of this Windows host's is one from its drive's root (C:\\src)",
+                        m.source
+                    ));
+                }
+            } else if !m.source.replace('\\', "/").starts_with('/') {
                 return fail(&format!(
                     "invalid mount path: '{}' mount path must be absolute",
                     m.source.replace('\\', "/")
                 ));
             }
             let create = m.bind.as_ref().is_some_and(|b| b.create_mountpoint);
-            if check_source && !create && std::fs::metadata(&m.source).is_err() {
+            if sources == (Sources::Host { check: true }) && !create && std::fs::metadata(&m.source).is_err()
+            {
                 return fail(&format!("bind source path does not exist: {}", m.source));
             }
         }
@@ -267,8 +320,8 @@ fn tmpfs_options(m: &Mount) -> String {
 }
 
 /// parseMountSpec: a validated mount's mount point.
-fn mount_point(m: &Mount, check_source: bool) -> Result<MountPoint, String> {
-    validate(m, check_source)?;
+fn mount_point(m: &Mount, sources: Sources) -> Result<MountPoint, String> {
+    validate(m, sources)?;
     let mut mp = MountPoint {
         kind: m.kind.clone(),
         rw: !m.read_only,
@@ -284,7 +337,11 @@ fn mount_point(m: &Mount, check_source: bool) -> Result<MountPoint, String> {
             }
         }
         "bind" => {
-            mp.source = clean(&m.source.replace('\\', "/"));
+            mp.source = if sources.drives() {
+                clean_drive(&m.source)
+            } else {
+                clean(&m.source.replace('\\', "/"))
+            };
             mp.propagation = m
                 .bind
                 .as_ref()
@@ -298,9 +355,34 @@ fn mount_point(m: &Mount, check_source: bool) -> Result<MountPoint, String> {
     Ok(mp)
 }
 
-/// ParseMountRaw: a `-v` bind or volume, `[SOURCE:]DEST[:MODE]`.
+/// `-v`'s `[SOURCE:]DEST[:MODE]` split at each colon, one of a Windows drive's aside
+/// where `drives` (`C:\src:/dst:ro`, `\\?\C:\src:/dst`), as lcow_parser.go's rxSource
+/// takes a source.
+fn split_raw(raw: &str, drives: bool) -> Vec<&str> {
+    let drive = drives.then(|| drive_len(raw)).flatten();
+    if let Some(colon) = drive.and_then(|at| Some(at + raw.get(at..)?.find(':')?))
+        && let Some((source, rest)) = raw.split_at_checked(colon)
+    {
+        let mut parts = vec![source];
+        parts.extend(rest.get(1..).unwrap_or_default().splitn(3, ':'));
+        return parts;
+    }
+    raw.splitn(4, ':').collect()
+}
+
+/// ParseMountRaw: a `-v` bind or volume, `[SOURCE:]DEST[:MODE]`, its source a path of
+/// this host's.
 pub fn parse_raw(raw: &str, driver: &str) -> Result<MountPoint, String> {
-    let parts: Vec<&str> = raw.splitn(4, ':').collect();
+    parse_raw_of(raw, driver, Sources::Host { check: false })
+}
+
+/// [`parse_raw`] of a `-v` whose source is a path of a microVM's own files (D181).
+pub fn parse_raw_within(raw: &str) -> Result<MountPoint, String> {
+    parse_raw_of(raw, "", Sources::Microvm)
+}
+
+fn parse_raw_of(raw: &str, driver: &str, sources: Sources) -> Result<MountPoint, String> {
+    let parts = split_raw(raw, sources.drives());
     if parts.first().is_none_or(|p| p.is_empty()) {
         return Err(invalid_spec(raw));
     }
@@ -323,7 +405,12 @@ pub fn parse_raw(raw: &str, driver: &str) -> Result<MountPoint, String> {
     if !valid_mode(mode) {
         return Err(invalid_mode(mode));
     }
-    m.kind = if m.source.starts_with('/') {
+    // A path from a root is a bind's source, a Windows host's from a drive's (one from no
+    // drive's, `\src` or `/src`, refused by `validate`), and anything else a volume's name.
+    let drives = sources.drives();
+    m.kind = if m.source.starts_with('/')
+        || drives && (m.source.starts_with('\\') || drive_len(&m.source).is_some())
+    {
         "bind"
     } else {
         "volume"
@@ -339,7 +426,7 @@ pub fn parse_raw(raw: &str, driver: &str) -> Result<MountPoint, String> {
     if let Some(p) = propagation_of(mode) {
         m.bind.get_or_insert_with(Default::default).propagation = p;
     }
-    let mut mp = mount_point(&m, false).map_err(|e| format!("{}: {e}", invalid_spec(raw)))?;
+    let mut mp = mount_point(&m, sources).map_err(|e| format!("{}: {e}", invalid_spec(raw)))?;
     mp.mode = mode.to_string();
     mp.create_source = mp.kind == "bind";
     Ok(mp)
@@ -347,18 +434,18 @@ pub fn parse_raw(raw: &str, driver: &str) -> Result<MountPoint, String> {
 
 /// ParseMountSpec: a `--mount`, as the client sent it.
 pub fn parse_spec(sent: &str) -> Result<MountPoint, String> {
-    parse_spec_checked(sent, true)
+    parse_spec_checked(sent, Sources::Host { check: true })
 }
 
 /// [`parse_spec`] of a `--mount` whose source is none of this host's, but a path of a
 /// microVM's own files (D181): every check but this host's having it.
 pub fn parse_spec_within(sent: &str) -> Result<MountPoint, String> {
-    parse_spec_checked(sent, false)
+    parse_spec_checked(sent, Sources::Microvm)
 }
 
-fn parse_spec_checked(sent: &str, check_source: bool) -> Result<MountPoint, String> {
+fn parse_spec_checked(sent: &str, sources: Sources) -> Result<MountPoint, String> {
     let m = mounts::parse_mount(sent, None)?;
-    let mut mp = mount_point(&m, check_source)?;
+    let mut mp = mount_point(&m, sources)?;
     mp.spec = sent.to_string();
     mp.create_source = m.bind.as_ref().is_some_and(|b| b.create_mountpoint);
     Ok(mp)
@@ -1390,9 +1477,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// moby's linux_parser_test.go cases, and what dockerd says of them.
+    /// moby's linux_parser_test.go cases, and what dockerd says of them: of a microVM's
+    /// paths on every host, and of a Unix host's.
     #[test]
     fn binds_and_volumes_are_read() {
+        binds_and_volumes_are_read_by(|raw, _| parse_raw_within(raw));
+        if cfg!(unix) {
+            binds_and_volumes_are_read_by(parse_raw);
+        }
+    }
+
+    fn binds_and_volumes_are_read_by(parse_raw: impl Fn(&str, &str) -> Result<MountPoint, String>) {
         let ok = |raw: &str| parse_raw(raw, "").unwrap();
         let b = ok("/host:/ctr:ro");
         assert_eq!(
@@ -1435,5 +1530,72 @@ mod tests {
             Store::valid("a"),
             Err("volume name is too short, names should be at least two alphanumeric characters".into())
         );
+    }
+
+    /// A Windows host's `-v` sources from a drive's root, read on every host: a drive's
+    /// colon is no part's end, and a path is cleaned, its case kept.
+    #[test]
+    fn a_windows_drives_paths_are_read() {
+        for (raw, parts) in [
+            (r"C:\Host\Dir:/ctr:ro", &[r"C:\Host\Dir", "/ctr", "ro"][..]),
+            ("c:/a b/x:/ctr", &["c:/a b/x", "/ctr"]),
+            (r"\\?\D:\src:/dst:rw", &[r"\\?\D:\src", "/dst", "rw"]),
+            // A drive with nothing after it is none: `c` is a volume's name (too short).
+            ("c:/ctr", &["c", "/ctr"]),
+            ("name:/data", &["name", "/data"]),
+            (r"C:\a:/b:/c:/d", &[r"C:\a", "/b", "/c", "/d"]),
+            ("1:/x:/y", &["1", "/x", "/y"]),
+        ] {
+            assert_eq!(split_raw(raw, true), parts, "{raw}");
+        }
+        assert_eq!(split_raw(r"C:\Host:/ctr", false), ["C", r"\Host", "/ctr"]);
+        for (path, len) in [
+            (r"C:\", Some(3)),
+            ("z:/", Some(3)),
+            (r"\\?\C:\x", Some(7)),
+            ("C:x", None),
+            (r"\x", None),
+            (r"\\srv\share", None),
+            ("/x", None),
+        ] {
+            assert_eq!(drive_len(path), len, "{path}");
+        }
+        for (path, clean) in [
+            (r"C:\", r"C:\"),
+            ("C:/Users/x/../Y/./z/", r"C:\Users\Y\z"),
+            (r"C:\..\..\a", r"C:\a"),
+            (r"\\?\C:\a\\b", r"\\?\C:\a\b"),
+        ] {
+            assert_eq!(clean_drive(path), clean, "{path}");
+        }
+    }
+
+    /// On Windows a `-v`'s and a `--mount`'s source of this host's is a drive's path, and
+    /// one from no drive's root is refused, saying what one is.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_hosts_binds_are_its_drives() {
+        let b = parse_raw(r"C:\Host\..\Dir\:/ctr:ro,rshared", "").unwrap();
+        assert_eq!(
+            (
+                b.kind.as_str(),
+                b.source.as_str(),
+                b.destination.as_str(),
+                b.rw,
+                b.propagation.as_str()
+            ),
+            ("bind", r"C:\Dir", "/ctr", false, "rshared")
+        );
+        let v = parse_raw("name:/data", "").unwrap();
+        assert_eq!((v.kind.as_str(), v.name.as_str()), ("volume", "name"));
+        for raw in ["/host:/ctr", r"\host:/ctr"] {
+            let e = parse_raw(raw, "").unwrap_err();
+            assert!(e.ends_with("mount path must be absolute: a path of this Windows host's is one from its drive's root (C:\\src)"), "{e}");
+        }
+        let dir = shards_testdir::TempDir::new("drives").unwrap();
+        let m = parse_spec(&format!("type=bind,source={},target=/x", dir.path().display())).unwrap();
+        assert_eq!(m.source, clean_drive(&dir.path().to_string_lossy()));
+        // A microVM's own paths are Linux's here too.
+        assert_eq!(parse_raw_within("/host:/ctr").unwrap().source, "/host");
     }
 }

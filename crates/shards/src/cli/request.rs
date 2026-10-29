@@ -999,9 +999,10 @@ fn volumes(parsed: &Parsed) -> Result<Volumes, String> {
         if spec.kind == "bind"
             && let Some((host, target)) = v.split_once(':')
         {
+            // filepath.Abs: joined and cleaned as paths are on this host, `\` on Windows.
             let host = match &cwd {
                 Some(cwd) if !host.starts_with('/') && host.starts_with('.') => {
-                    shards_cmdline::mounts::clean(&cwd.join(host).to_string_lossy())
+                    shards_cmdline::mounts::host_clean(&cwd.join(host))
                 }
                 _ => host.to_string(),
             };

@@ -340,7 +340,6 @@ fn a_joiner_is_a_container_of_its_own() {
 /// directory shared both ways, read-only where asked, a file bound alone, a named volume
 /// filled from its image where it is empty, its image's VOLUME; each its own, neither its
 /// provider's nor another joiner's; given again as it starts again, as it left them.
-#[cfg(unix)]
 #[test]
 fn a_joiner_takes_volumes_as_a_container_does() {
     let Some((home, image)) = home("containers-joiner-volumes") else {
@@ -1576,9 +1575,6 @@ fn an_s6_overlay_image_runs_as_pid_1() {
 /// of its own.
 #[test]
 fn a_microvms_io_is_paced_at_its_limits() {
-    if common::later_on_windows(6, "host directories and volumes") {
-        return;
-    }
     let Some((home, image)) = home("containers-io") else {
         return;
     };
@@ -4782,12 +4778,9 @@ fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
     ] {
         refused(&admin, op, "Permission denied");
     }
-    // Its microVM's own share, whose tag it knows: a host's directory, which Windows shares
-    // with the platform parity plan's step 6.
-    if !cfg!(windows) {
-        let with_share: Vec<&str> = admin.iter().copied().chain(["-v", bind.as_str()]).collect();
-        refused(&with_share, "mount:virtiofs:shards0:/mnt", "Permission denied");
-    }
+    // Its microVM's own share, whose tag it knows: a host's directory.
+    let with_share: Vec<&str> = admin.iter().copied().chain(["-v", bind.as_str()]).collect();
+    refused(&with_share, "mount:virtiofs:shards0:/mnt", "Permission denied");
     // umount is left to it, as docker-default leaves it (D121): a tmpfs of its own.
     let with_tmpfs: Vec<&str> = admin.iter().copied().chain(["--tmpfs", "/t"]).collect();
     let unmounted = fs(&with_tmpfs, "umount:/t");
@@ -6480,9 +6473,6 @@ fn an_exec_joins_a_workload_that_nests_its_cgroups() {
 /// made again hides the lower's (an opaque directory, by its upper layer's attribute).
 #[test]
 fn an_overlay_on_a_volume_is_written_as_on_a_kernels_own_filesystem() {
-    if common::later_on_windows(6, "host directories and volumes") {
-        return;
-    }
     let Some((home, image)) = home("containers-overlay") else {
         return;
     };
@@ -10819,7 +10809,6 @@ fn push_uploads_images() {
 /// V09): the share's descriptors are a cache it lets go and opens again by path, never a
 /// limit the guest meets. 300 files of a `-v` directory, past what this host lets a share
 /// hold, are open at once and read round and round.
-#[cfg(unix)]
 #[test]
 fn a_shared_directorys_files_stay_open_past_the_shares_descriptors() {
     let Some((home, image)) = home("containers-many-open") else {
@@ -10845,7 +10834,6 @@ fn a_shared_directorys_files_stay_open_past_the_shares_descriptors() {
 /// and owned as Docker Desktop records it, read-only where asked, a file bound alone; a
 /// named volume filled from the image where it is empty, and kept; tmpfs; inspect's
 /// mounts; anonymous volumes removed with `--rm` and `rm -v`, and kept by `rm`.
-#[cfg(unix)]
 #[test]
 fn run_mounts_binds_volumes_and_tmpfs() {
     let Some((home, image)) = home("containers-volumes") else {
@@ -10859,7 +10847,10 @@ fn run_mounts_binds_volumes_and_tmpfs() {
     std::fs::write(&file, "alone").unwrap();
     // A link to it, bound as the file it leads to on the host, as Docker's bind takes it.
     let link = home.join("link");
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&file, &link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&file, &link).unwrap();
     let bind = format!("{}:/data", shared.display());
     let ro = format!("{}:/ro:ro", shared.display());
     let single = format!("{}:/etc/one:ro", file.display());
@@ -11021,7 +11012,6 @@ fn run_mounts_binds_volumes_and_tmpfs() {
 /// `volume create`, `ls`, `inspect`, `rm` and `prune`, as `docker volume` says them: a
 /// volume made, mounted, refused removal while a microVM mounts it, listed, pruned; a
 /// local volume with `o=bind` mounts its host directory; `system df` counts them.
-#[cfg(unix)]
 /// A fresh volume where its image has nothing at the mount point is its run's user's (D38,
 /// PM M249): its top owned by the run's user and group, so that a run as other than root
 /// writes the volume it was given, as root's top would not let it; a root run's is root's;
@@ -11029,9 +11019,6 @@ fn run_mounts_binds_volumes_and_tmpfs() {
 /// directory takes that directory's owner, as it did.
 #[test]
 fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
-    if common::later_on_windows(6, "host directories and volumes") {
-        return;
-    }
     let Some((home, image)) = home("containers-fresh") else {
         return;
     };
@@ -11073,9 +11060,6 @@ fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
 
 #[test]
 fn volume_commands_keep_volumes() {
-    if common::later_on_windows(6, "host directories and volumes") {
-        return;
-    }
     let Some((home, image)) = home("containers-volume-commands") else {
         return;
     };
@@ -13198,7 +13182,7 @@ fn cdi_devices_are_given_to_microvms() {
     let r = run(&given, &["stat", "/dev/cdi-fuse"]);
     assert_eq!(r.stdout, format!("/dev/cdi-fuse other 666 1000:{gid} 0\n"), "{r}");
     // Its host directory, a device of its own, as a mount's.
-    if !common::later_on_windows(6, "host directories and volumes") {
+    {
         let mut both = given.to_vec();
         both.extend(["--device", "test.example/dev=shared"]);
         let r = run(

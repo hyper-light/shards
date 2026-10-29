@@ -484,9 +484,9 @@ pub fn receive(
     };
     // Its group's CPU budget (D183), which every microVM of the group charges.
     let group = if group { Some(File::from(next()?)) } else { None };
-    // Its share process (D38), where this VM was made with shared directories: Unix's
-    // alone as yet.
-    #[cfg(unix)]
+    // Its share process's (D38), where this VM was made with shared directories: its
+    // connection to it on Unix, which hands it each share's stream; on Windows each share's
+    // stream itself, whose other end the share process holds (D197).
     let slots = crate::vm_run::SHARES.get().map(Vec::as_slice).unwrap_or_default();
     #[cfg(unix)]
     let share_link = if slots.is_empty() {
@@ -494,6 +494,8 @@ pub fn receive(
     } else {
         Some(stream(next()?)?)
     };
+    #[cfg(windows)]
+    let share_ends = slots.iter().map(|_| next()).collect::<Result<Vec<_>, _>>()?;
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
@@ -520,6 +522,12 @@ pub fn receive(
     #[cfg(unix)]
     if let Some(link) = share_link {
         shared(&link, slots)?;
+    }
+    #[cfg(windows)]
+    for (slot, end) in slots.iter().zip(share_ends) {
+        let conn = shards_vmm::platform::PipeStream::from_handle(end)
+            .map_err(|e| format!("a share's stream: {e}"))?;
+        slot.attach(conn)?;
     }
     // The VM's own log stays where it was, its daemon's: the client's stderr carries the
     // command's alone, as a container's does (review 8.10).
@@ -828,15 +836,22 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                 }
             }
             // The server of its join share (D119), from the first joiner to bring volumes:
-            // before that joiner's `JOIN`, and so before its guest mounts the share.
-            #[cfg(unix)]
+            // before that joiner's `JOIN`, and so before its guest mounts the share. On
+            // Windows its stream itself, a duplex pipe whose other end the server holds
+            // (D197).
             kind::JOIN_SHARE if !client && joiner.is_none() => {
                 if let Some(number) = message.payload.first_chunk::<8>() {
                     let _ = to_daemon(conn, kind::EXEC_TAKEN, number, &[]);
                 }
                 match (message.fds.into_iter().next(), crate::vm_run::join_share()) {
                     (Some(server), Some(slot)) => {
-                        if let Err(e) = slot.attach(UnixStream::from(server)) {
+                        #[cfg(unix)]
+                        let attached = slot.attach(UnixStream::from(server));
+                        #[cfg(windows)]
+                        let attached = shards_vmm::platform::PipeStream::from_handle(server)
+                            .map_err(|e| format!("its stream: {e}"))
+                            .and_then(|stream| slot.attach(stream));
+                        if let Err(e) = attached {
                             let _ = writeln!(io::stderr(), "shards: a join share: {e}");
                         }
                     }

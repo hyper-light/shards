@@ -1,7 +1,6 @@
 //! MicroVMs saved whole as they run (D176), end to end: `shards save vm` of real
 //! microVMs, from the test image a loopback registry serves (tests/common, `served`),
-//! booted from SHARDS_KERNEL and SHARDS_INIT. Those of a volume's share are Unix's until
-//! the parity plan's step 6 serves shares on Windows.
+//! booted from SHARDS_KERNEL and SHARDS_INIT.
 
 #![allow(
     clippy::panic,
@@ -381,7 +380,7 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     let Some((home, image)) = home("saved-refused") else {
         return;
     };
-    if cannot_pool() || common::later_on_windows(6, "a volume's files") {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -492,8 +491,6 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
 /// it holds open in the volume, in the volume's directory it works in, it writes on
 /// through, its share's server given the tables of the one that served it; the volume holds
 /// every count once, up to the save and on from it.
-// A volume's share: Unix's until the parity plan's step 6 serves shares on Windows.
-#[cfg(unix)]
 #[test]
 fn a_saved_microvm_writes_on_through_its_volume() {
     let Some((home, image)) = home("saved-volume") else {
@@ -581,7 +578,8 @@ fn a_saved_microvm_writes_on_through_its_volume() {
 /// with its mappings (D176): its restore maps each range again from its new share process
 /// before its guest runs, and the guest reads the file on through the window, a byte the
 /// host wrote while it was saved among it.
-// A volume's share: Unix's until the parity plan's step 6 serves shares on Windows.
+// A share's DAX window: Unix's until the parity plan's step 6 maps those of shards' own
+// shares on Windows (D197's slice 4).
 #[cfg(unix)]
 #[test]
 fn a_saved_microvm_reads_on_through_its_dax_window() {

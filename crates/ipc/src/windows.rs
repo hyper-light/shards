@@ -58,7 +58,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
 };
 use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
@@ -1287,7 +1287,7 @@ pub fn spawn_with(
     let given = set
         .iter()
         .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
-    spawn_env(program, args, fds, detach, inherited.chain(given).collect())
+    spawn_env(program, args, fds, detach, inherited.chain(given).collect(), None)
 }
 
 /// [`spawn`], with the variables `env` alone for the child's environment, and what Windows
@@ -1306,7 +1306,28 @@ pub fn spawn_in(
     let given = env
         .iter()
         .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
-    spawn_env(program, args, fds, detach, kept.chain(given).collect())
+    spawn_env(program, args, fds, detach, kept.chain(given).collect(), None)
+}
+
+/// [`spawn_in`], made in `group`'s job where there is one (D183's groups on Windows): held
+/// to the group's limits with the group's other processes, as a VM process of the group's
+/// is, with none of a confined child's mitigations (`spawn_confined`): a process of shards'
+/// own binary that serves the guest's files (a run's share process, D197).
+pub fn spawn_in_job(
+    group: Option<&GroupJob>,
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(program, args, fds, false, kept.chain(given).collect(), group)
 }
 
 /// Whether this process has a console: a child that would share it has none else, and is
@@ -1334,6 +1355,7 @@ fn spawn_env(
     fds: &[(BorrowedHandle<'_>, i32)],
     detach: bool,
     mut env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    group: Option<&GroupJob>,
 ) -> io::Result<Child> {
     use windows_sys::Win32::System::Threading::{
         CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
@@ -1412,6 +1434,15 @@ fn spawn_env(
         job: None,
         container: None,
     };
+    // In its group's job before it runs, as a VM process is made in one.
+    if let Some(group) = group {
+        // SAFETY: a job this process holds, and the child's process, suspended.
+        if unsafe { AssignProcessToJobObject(group.0.as_raw_handle(), child.process.as_raw_handle()) } == 0 {
+            let e = last();
+            let _ = child.kill(SIGKILL);
+            return Err(e);
+        }
+    }
     if let Some((read, write)) = grants {
         drop(read);
         let mut told = String::new();

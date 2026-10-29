@@ -648,7 +648,6 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             net: cfg.net.as_ref(),
             shares: &cfg.shares,
             join: cfg.join,
-            #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
             layer: layer.as_ref(),

@@ -47,7 +47,6 @@ mod run;
 mod search;
 mod segments;
 mod setup;
-#[cfg(unix)]
 mod share;
 mod spec;
 mod spiffe;
@@ -90,7 +89,6 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),
         // a run's share process (D38), which the daemon starts: not for people to run.
-        #[cfg(unix)]
         Some("share") => share::share(args),
         // the daemon's spawner (shards_ipc::start_spawner, PM M158): not for people to run.
         #[cfg(unix)]

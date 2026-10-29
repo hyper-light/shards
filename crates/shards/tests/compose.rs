@@ -12,7 +12,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, later_on_windows, run_shards_env, served};
+use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// A client's call past this is taken for hung, and fails its test with what it said
@@ -86,9 +86,6 @@ fn home(name: &str) -> Option<(TempDir, String)> {
 /// once it does; `app`, started once `db` is healthy, keeps a named volume.
 #[test]
 fn a_compose_project_runs_as_microvms() {
-    if later_on_windows(6, "a host's directories (volumes and binds)") {
-        return;
-    }
     let Some(compose) = compose() else {
         eprintln!("SKIP: no docker compose on this host");
         return;
@@ -229,9 +226,6 @@ volumes:
 #[test]
 fn a_compose_projects_services_get_what_it_says() {
     // Compose binds a secret's file (`secrets.file`).
-    if later_on_windows(6, "a host's directories (volumes and binds)") {
-        return;
-    }
     let Some(compose) = compose() else {
         eprintln!("SKIP: no docker compose on this host");
         return;

@@ -503,8 +503,8 @@ fn read_any_into(from: &mut Stream, bytes: &mut Vec<u8>) -> io::Result<Option<bo
 /// control frame, the VM process's own, asks for the server's tables, or gives them
 /// (D176), and is answered with one: 0 then what it asked for, or 1 then why not; or asks
 /// for a file's descriptor (D189), answered as a shards_ipc message: 0 and the
-/// descriptor, or 1 and the errno that refused it.
-#[cfg(unix)]
+/// descriptor, or 1 and the errno that refused it. On Windows (D197) none is asked: shards'
+/// own shares have no DAX window there yet (window_whp.rs), and one asked is refused.
 pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
     // Each request read into, and each reply built in, a buffer kept from one to the next
     // (`Server::handle_into`).
@@ -520,6 +520,11 @@ pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
             }
             // The node and whether writable; the range past them is a server's of its own
             // objects to read ([`descriptor_ask`]).
+            #[cfg(windows)]
+            true if asked.first() == Some(&DESCRIPTOR) => {
+                shards_ipc::write_message(&mut conn, 1, &proto::EOPNOTSUPP.to_le_bytes())?;
+            }
+            #[cfg(unix)]
             true if asked.first() == Some(&DESCRIPTOR) => {
                 let node = asked
                     .get(1..9)

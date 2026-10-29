@@ -6475,6 +6475,45 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D207. A Windows host's bind sources: its drives' paths (built)
+
+**Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
+it at every colon, and held a bind's source to start with `/`: on Windows `-v C:\src:/dst`
+was "invalid mode: /dst", `-v C:\src:/dst:ro` an invalid specification, and a `--mount` of
+`C:\src` (Compose's binds, its secrets and configs) not absolute. A Linux microVM on a
+Windows host is the case moby's parser for Linux containers on Windows reads (lcow_parser.go,
+beside windows_parser.go, moby docker-v29.8.1): its sources the host's, Windows', and its
+destinations the guest's, Linux's.
+
+**Decided** (`volumes.rs`, `Sources`):
+
+- **A source of the host's is a drive's absolute path**: `C:\src`, `C:/src` or `\\?\C:\src`
+  (lcow's rxHostDir), whose drive's colon ends no part of a `-v`. One from no drive's root
+  (`/src`, `\src`, `C:src`) is refused, saying what a host path is there; anything else is a
+  volume's name, as on Linux. A source of one letter before a destination (`c:/dst`) is a
+  volume's name, as lcow's expression matches it, and no volume's name is one letter
+  (`Store::valid`).
+- **A microVM's own paths are Linux's on every host**: the binds a microVM's own engine
+  makes (D181) name its files, not the host's.
+- **What lcow drops, kept**: case, of the source and the destination (lcow lowercases a whole
+  `-v`, windows_parser.go splitRawSpec, where a Linux destination tells case and so may an
+  NTFS directory, FILE_CS_FLAG_CASE_SENSITIVE_DIR); Linux's modes, `z`, `Z`, propagation,
+  `nocopy` and a consistency (lcow's rxMode takes `ro` and `rw` alone, and its validator
+  refuses any propagation); and a file bound alone (windows_parser.go: "source path must be
+  a directory"), shared through its directory as on Unix.
+- **A source cleaned as Go's filepath.Clean cleans one on Windows**, `\` between its names,
+  `.` dropped and `..` taken back to its drive's root at most, where lcow turns `/` into `\`
+  and drops one trailing `\`. The CLI makes a relative `-v` source absolute as docker/cli's
+  filepath.Abs does on its host (`.\data` from `C:\work` is `C:\work\data`), where it had
+  cleaned it as a path of slashes.
+- **Not served, as lcow serves neither**: a network share's path (`\\server\share`; lcow's
+  rxHostDir takes drives alone) and a named pipe ("Linux containers on Windows do not
+  support named pipe mounts").
+
+`volumes.rs`'s `a_windows_drives_paths_are_read` holds the reading on every host and
+`a_windows_hosts_binds_are_its_drives` the binds on Windows; containers.rs, compose.rs and
+engine.rs bind host directories on jupiter and CI's Windows runners (D197's slice 3).
+
 ### D199. A run's log sent to macOS's own log: `oslog`, and syslog's local default there (built)
 
 `--log-driver oslog` is served on macOS, the journal's counterpart there (D166, D198): a

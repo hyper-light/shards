@@ -137,7 +137,6 @@ pub(crate) struct Hosts<'a> {
     /// (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
-    #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// The microVM's I/O limits (D178), which its disks and shared directories charge.
     pub io: Option<&'static crate::devices::virtio::limit::Limiter>,
@@ -202,7 +201,6 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
         (false, Some(_)) => return Err("the snapshot has no join disk for the restore's".into()),
         _ => {}
     }
-    #[cfg(unix)]
     match (snap.config.join_share, hosts.join_share) {
         (true, None) => return Err("the snapshot has a join share: give the restored VM its own".into()),
         (false, Some(_)) => return Err("the snapshot has no join share for the restore's".into()),
@@ -834,7 +832,6 @@ fn virtio_devices(
     }
     // Its join share, after them, which init mounts by its tag once a joiner brings
     // volumes (D119).
-    #[cfg(unix)]
     if config.join_share {
         let slot = hosts
             .join_share
@@ -932,10 +929,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         net: cfg.net.as_ref().map(|n| n.mac),
         shares: u32::try_from(cfg.shares.len()).map_err(|_| "too many shared directories")?,
         join: cfg.join.is_some(),
-        #[cfg(unix)]
         join_share: cfg.join_share.is_some(),
-        #[cfg(not(unix))]
-        join_share: false,
         nested: cfg.nested,
         hotplug_mib: cfg.hotplug_mib,
         reporting: cfg.reporting,
@@ -1016,7 +1010,6 @@ pub struct Config {
     /// (D151), after the memory to plug: last of its devices.
     pub reporting: bool,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
-    #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// Its I/O limits (D178), which its disks and shared directories charge: its process's,
     /// given their rates with its run.
@@ -1766,7 +1759,6 @@ impl Config {
             net: None,
             shares: Vec::new(),
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io_limit: None,
             nested: false,
@@ -1805,7 +1797,6 @@ pub struct RestoreConfig {
     /// snapshot's was.
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
-    #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// Its I/O limits (D178), as [`Config::io_limit`].
     pub io_limit: Option<&'static crate::devices::virtio::limit::Limiter>,
@@ -2207,7 +2198,6 @@ mod tests {
             net: n.then_some(&net),
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,
@@ -2352,7 +2342,6 @@ mod tests {
             net: Some(&net),
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,
@@ -2392,7 +2381,6 @@ mod tests {
             net: Some(&net),
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,
@@ -2407,7 +2395,6 @@ mod tests {
             net: None,
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,

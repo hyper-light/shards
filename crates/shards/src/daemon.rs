@@ -149,11 +149,21 @@ const SWAP: &str = "swap";
 /// on Unix; on Windows the handle given it as `daemon` (`start`).
 const VM_LINK: &str = if cfg!(windows) { "daemon" } else { "3" };
 
-/// Why a run on Windows is refused its volumes and binds: the share process that serves a
-/// host's directories into a microVM (D38) is Unix's alone as yet.
+/// What a run's VM is handed of its shares (D38): its connection to their share process,
+/// which hands it each share's stream; on Windows each share's stream itself, whose other
+/// end the share process holds (D197).
+#[cfg(unix)]
+type ShareEnds = UnixStream;
 #[cfg(windows)]
-const NO_SHARES: &str =
-    "a host's directories (volumes and binds) are not shared into a microVM on Windows yet";
+type ShareEnds = Vec<OwnedFd>;
+
+/// A microVM's join share's door (D119): the daemon's connection to its process, on which
+/// each joiner's link goes; on Windows with that process's handle, which every link of the
+/// daemon's gives what it sends into (D197).
+#[cfg(unix)]
+type JoinDoor = UnixStream;
+#[cfg(windows)]
+type JoinDoor = (UnixStream, std::os::windows::io::OwnedHandle);
 
 /// A new, empty swap file of `bytes` at `at`, sparse (PM M349), in place of any before it:
 /// only this user's.
@@ -196,8 +206,7 @@ fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The home's empty directory, every join share's root (D119): its server makes nothing in
-/// it, and shows nothing of it. Unix's, as share processes are as yet (D38).
-#[cfg(unix)]
+/// it, and shows nothing of it.
 const JOIN_ROOT: &str = "join-root";
 /// The home's private directory, 0700: a build's ID file, and what a share process keeps of
 /// a restored guest's files that no path reaches (D176).
@@ -1123,7 +1132,7 @@ struct Daemon<D: Disk = Real> {
     /// Each running microVM's join share process (D119), by the ID of the container whose
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
     /// Made as the first container joining that microVM's network brings volumes.
-    join_shares: Mutex<HashMap<String, UnixStream>>,
+    join_shares: Mutex<HashMap<String, JoinDoor>>,
     /// Each joiner's link to its microVM's join share, by its ID, with the ID of the
     /// container whose microVM it is: its volumes are served until the link closes, as it
     /// ends.
@@ -3536,9 +3545,13 @@ impl<D: Disk> Daemon<D> {
             flags |= shards_ipc::RUN_PUBLISHED;
         }
         // The client's connection and the shares' link as a message hands them on: a stream
-        // lends no handle on Windows (`shards_ipc::handed`).
+        // lends no handle on Windows (`shards_ipc::handed`), where each share's stream goes
+        // as it is (`ShareEnds`).
+        #[cfg(unix)]
         let handed = shards_ipc::handed(conn)
             .and_then(|c| Ok((c, shares.as_ref().map(shards_ipc::handed).transpose()?)));
+        #[cfg(windows)]
+        let handed = shards_ipc::handed(conn).map(|c| (c, None::<OwnedFd>));
         let (conn_fd, link_fd) = match &handed {
             Ok((c, l)) => (Some(c.as_fd()), l.as_ref().map(|l| l.as_fd())),
             Err(e) => {
@@ -3660,6 +3673,10 @@ impl<D: Disk> Daemon<D> {
         }
         if let Some(link) = link_fd {
             fds.push(link);
+        }
+        #[cfg(windows)]
+        for end in shares.iter().flatten() {
+            fds.push(end.as_fd());
         }
         // An image whose Agentfile grants its agents anything past the microVM: init keeps
         // the run's own processes from those grants (eth0's own subnet alone, of both
@@ -4165,10 +4182,9 @@ impl<D: Disk> Daemon<D> {
         Ok(points)
     }
 
-    /// The home's private directory (`tmp`, 0700), made if it is not there: where a share
-    /// process keeps the files a restored guest holds that no path reaches (D176). Unix's,
-    /// as share processes are as yet (D38).
-    #[cfg(unix)]
+    /// The home's private directory (`tmp`, 0700 on Unix, the home's own ACL on Windows),
+    /// made if it is not there: where a share process keeps the files a restored guest holds
+    /// that no path reaches (D176).
     fn private_dir(&self) -> Result<File, String> {
         let at = self.home.join(PRIVATE);
         match crate::os::owner_only_dir(&mut std::fs::DirBuilder::new()).create(&at) {
@@ -4177,7 +4193,11 @@ impl<D: Disk> Daemon<D> {
             }
             _ => {}
         }
-        File::open(&at).map_err(|e| format!("{}: {e}", at.display()))
+        #[cfg(unix)]
+        return File::open(&at).map_err(|e| format!("{}: {e}", at.display()));
+        // A directory opens on Windows only with backup semantics.
+        #[cfg(windows)]
+        shards_vmm::platform::open_dir(&at).map_err(|e| format!("{}: {e}", at.display()))
     }
 
     /// Starts the share process (share.rs) serving `dirs`: the VM's connection to it, none
@@ -4188,17 +4208,66 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
-    ) -> Result<Option<UnixStream>, String> {
+    ) -> Result<Option<ShareEnds>, String> {
         if dirs.is_empty() {
             return Ok(None);
         }
-        #[cfg(windows)]
-        {
-            let _ = (threads, parent);
-            Err(NO_SHARES.into())
-        }
-        #[cfg(unix)]
         self.started_shares(threads, dirs, parent).map(Some)
+    }
+
+    /// [`start_shares`](Self::start_shares)'s process on Windows, for `dirs`, some (D197):
+    /// the daemon makes each share's stream, a duplex pipe, its server end the share
+    /// process's and its other the VM's, which the run's request hands it, as a stream the
+    /// share process were given would hand no handle on. The share process is made in its
+    /// microVM's group's job where it has one, as its VM process is, with none of a confined
+    /// child's mitigations: it is shards' own binary, which no Win32k-less process loads
+    /// (STATUS_DLL_INIT_FAILED, jupiter), and it sets reparse points, which are FSCTLs. Given
+    /// each share's directory at 4 + i, the home's private directory at 4 + n and each share's
+    /// end of its stream at 5 + n + i, as its Unix twin is numbered (share.rs).
+    #[cfg(windows)]
+    fn started_shares<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        dirs: &[(OwnedFd, bool, OsString)],
+        parent: &str,
+    ) -> Result<ShareEnds, String> {
+        let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        let group = if parent.is_empty() {
+            None
+        } else {
+            Some(self.group_job(parent)?)
+        };
+        let streams = dirs
+            .iter()
+            .map(|_| shards_ipc::byte_pair())
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|e| format!("a share's stream: {e}"))?;
+        let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        for (_, read_only, only) in dirs {
+            args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
+            args.push(only.as_os_str());
+        }
+        let n = dirs.len();
+        let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
+        // What it says of its failures, the daemon's log.
+        let err = io::stderr();
+        let ghosts = self.private_dir()?;
+        let mut fds = vec![(err.as_fd(), 2), (ghosts.as_fd(), number(4 + n)?)];
+        for (i, ((dir, _, _), (server, _))) in dirs.iter().zip(&streams).enumerate() {
+            fds.push((dir.as_fd(), number(4 + i)?));
+            fds.push((server.as_fd(), number(5 + n + i)?));
+        }
+        let env = crate::netproc::child_env();
+        let child = shards_ipc::spawn_in_job(
+            group.as_ref(),
+            &exe,
+            &args,
+            &fds,
+            &crate::netproc::env_pairs(&env),
+        )
+        .map_err(|e| format!("starting the share process: {e}"))?;
+        self.follow_share(threads, child);
+        Ok(streams.into_iter().map(|(_, vm)| vm).collect())
     }
 
     /// [`start_shares`](Self::start_shares)'s process, for `dirs`, some.
@@ -6359,13 +6428,8 @@ impl<D: Disk> Daemon<D> {
             .get(id)
             .is_some_and(|(to, _)| *to == provider);
         if !volumes.is_empty() && !given {
-            #[cfg(unix)]
             self.give_join_volumes(threads, id, &provider, &socket, &inbox, volumes)?;
-            #[cfg(windows)]
-            return Err(NO_SHARES.into());
         }
-        #[cfg(windows)]
-        let _ = threads;
         let image =
             File::open(&prepared.rootfs).map_err(|e| format!("{}: {e}", prepared.rootfs.display()))?;
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a joiner's connection: {e}"))?;
@@ -6469,6 +6533,136 @@ impl<D: Disk> Daemon<D> {
         drop(theirs);
         lock(&self.joiner_links).insert(id.to_string(), (provider.to_string(), link));
         Ok(())
+    }
+
+    /// [`give_join_volumes`](Self::give_join_volumes) on Windows (D197), as Unix's: each
+    /// joiner's link a stream the daemon gives the share process on its door, which gives it
+    /// each volume's directory.
+    #[cfg(windows)]
+    fn give_join_volumes<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        id: &str,
+        provider: &str,
+        socket: &RunSocket,
+        inbox: &Mutex<Inbox>,
+        volumes: &[((OwnedFd, bool, OsString), String)],
+    ) -> Result<(), String> {
+        let failed = |e: io::Error| format!("its microVM's join share: {e}");
+        let (link, theirs) = UnixStream::pair().map_err(failed)?;
+        {
+            let mut shares = lock(&self.join_shares);
+            if !shares.contains_key(provider) {
+                // Of the provider's microVM's processes: in its group's job (D183).
+                let parent = self.parent_of(provider).unwrap_or_default();
+                let door = self.start_join_share(threads, socket, inbox, &parent)?;
+                shares.insert(provider.to_string(), door);
+            }
+            // What comes on the link goes into the share process, as its door's does.
+            let sent = match shares.get(provider) {
+                Some((door, process)) => process.try_clone().and_then(|process| {
+                    link.gives_to(process);
+                    let end = theirs.share()?;
+                    shards_ipc::send(door, kind::JOIN_LINK, &[], &[end.as_fd()])
+                }),
+                None => Err(io::Error::other("it has none")),
+            };
+            if let Err(e) = sent {
+                // Its process gone: the next joiner's starts another.
+                shares.remove(provider);
+                return Err(failed(e));
+            }
+        }
+        link.set_read_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        link.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        for ((dir, read_only, only), name) in volumes {
+            let mut payload = name.as_bytes().to_vec();
+            payload.push(0);
+            payload.extend_from_slice(if *read_only { b"ro" } else { b"rw" });
+            payload.push(0);
+            payload.extend_from_slice(
+                only.to_str()
+                    .ok_or_else(|| format!("its microVM's join share: {only:?} is not UTF-8"))?
+                    .as_bytes(),
+            );
+            shards_ipc::send(&link, kind::JOIN_VOLUME, &payload, &[dir.as_fd()]).map_err(failed)?;
+            let answer = shards_ipc::recv(&link)
+                .map_err(failed)?
+                .ok_or("its microVM's join share ended")?;
+            match answer.kind {
+                kind::TAKEN => {}
+                kind::ERR => {
+                    return Err(format!(
+                        "its microVM's join share: {}",
+                        String::from_utf8_lossy(&answer.payload)
+                    ));
+                }
+                other => return Err(format!("its microVM's join share said message kind {other}")),
+            }
+        }
+        drop(theirs);
+        lock(&self.joiner_links).insert(id.to_string(), (provider.to_string(), link));
+        Ok(())
+    }
+
+    /// [`start_join_share`](Self::start_join_share) on Windows (D197): its stream to the VM
+    /// a duplex pipe the daemon makes, its end the process's and the other the VM's, which
+    /// the daemon hands the VM itself; its door a stream the daemon gives into the process
+    /// on; the process made in its microVM's group's job where it has one, with none of a
+    /// confined child's mitigations, as a run's share process is. Returns its door and the
+    /// process's handle, which each joiner's link gives into.
+    #[cfg(windows)]
+    fn start_join_share<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        socket: &RunSocket,
+        _inbox: &Mutex<Inbox>,
+        parent: &str,
+    ) -> Result<JoinDoor, String> {
+        let failed = |e: io::Error| format!("its microVM's join share: {e}");
+        let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        let (served, vms) = shards_ipc::byte_pair().map_err(failed)?;
+        let (door, theirs) = UnixStream::pair().map_err(failed)?;
+        let theirs = theirs.share().map_err(failed)?;
+        let at = self.home.join(JOIN_ROOT);
+        match crate::os::owner_only_dir(&mut std::fs::DirBuilder::new()).create(&at) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(failed(e)),
+            _ => {}
+        }
+        let root = shards_vmm::platform::open_dir(&at).map_err(failed)?;
+        let ghosts = self.private_dir()?;
+        let group = if parent.is_empty() {
+            None
+        } else {
+            Some(self.group_job(parent)?)
+        };
+        let err = io::stderr();
+        let env = crate::netproc::child_env();
+        let child = shards_ipc::spawn_in_job(
+            group.as_ref(),
+            &exe,
+            &[OsStr::new("share"), OsStr::new("--join")],
+            &[
+                (err.as_fd(), 2),
+                (served.as_fd(), 3),
+                (theirs.as_fd(), 4),
+                (root.as_fd(), 5),
+                (ghosts.as_fd(), 6),
+            ],
+            &crate::netproc::env_pairs(&env),
+        )
+        .map_err(|e| format!("starting its microVM's join share: {e}"))?;
+        let process = child.giver().map_err(failed)?.into_handle();
+        door.gives_to(process.try_clone().map_err(failed)?);
+        self.follow_share(threads, child);
+        // The VM's end, duplicated into the VM as the message goes: nothing of it is in
+        // flight once it is sent, where a Unix descriptor is until its receiver has it (M24).
+        let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
+        socket
+            .send(kind::JOIN_SHARE, &number.to_be_bytes(), &[vms.as_fd()])
+            .map_err(failed)?;
+        door.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        Ok((door, process))
     }
 
     /// Starts a microVM's join share process (D119), its root an empty directory of the
@@ -6592,8 +6786,9 @@ impl<D: Disk> Daemon<D> {
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
             // And each share's DAX window, where the daemon gives one (D189), as its join
             // share's, every range of all of them within the host's mappings where it limits
-            // them.
-            cfg.share_window_mib = self.share_window_mib;
+            // them. None on Windows yet (D197): a section of a host file reaches none of it
+            // past its end, where a window's ranges are 2 MiB each (window_whp.rs).
+            cfg.share_window_mib = if cfg!(windows) { 0 } else { self.share_window_mib };
             if let Some(limit) = self.max_map_count {
                 let windows = u64::try_from(cfg.shares.len())
                     .unwrap_or(u64::MAX)
@@ -7118,9 +7313,8 @@ impl<D: Disk> Daemon<D> {
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // container joins its network (D119): its templates have them, and so every restore
-        // of them. A share is Unix's alone as yet (D38): Windows' microVMs have the disk.
+        // of them.
         args.push("--join".into());
-        #[cfg(unix)]
         args.push("--join-share".into());
         args.extend(["--warm".into(), VM_LINK.into()]);
         // A guest on a network: a fresh MAC, which a template it saves keeps.

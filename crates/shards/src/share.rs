@@ -14,15 +14,30 @@
 //! the microVM's network: the daemon gives it a link for each joiner (`kind::JOIN_LINK`),
 //! on which its volumes come (`kind::JOIN_VOLUME`), served until the link closes as the
 //! joiner ends. It exits as its VM's connection closes.
+//!
+//! On Windows (D197) the daemon makes each share's stream, a duplex pipe, itself, and hands
+//! its VM the other end with the run: a stream a process is given hands no handle on
+//! (shards_ipc's `Stream::given`). This process is made in its microVM's group's job where
+//! it has one, as its VM process is, and given each share's directory as 4 + i, the home's
+//! private directory as 4 + n and its end of each share's stream as 5 + n + i, by number as
+//! the daemon's children on Windows take theirs (`shards_ipc::given_fd`).
 
 use std::collections::HashMap;
 use std::ffi::{CString, OsString};
 use std::io::Write as _;
+#[cfg(unix)]
 use std::os::fd::{FromRawFd as _, OwnedFd};
-use std::os::unix::ffi::OsStrExt as _;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::sync::Mutex;
+
+/// What a join share's daemon and each of its joiners reach it on (D119): a Unix socket on
+/// Unix; on Windows a stream it was given, which hands it what comes on it (D195).
+#[cfg(unix)]
+type Link = UnixStream;
+#[cfg(windows)]
+type Link = shards_ipc::Stream;
 
 use shards_vmm::devices::virtio::fs::{answer, headroom::Headroom, server::Server};
 
@@ -48,7 +63,7 @@ fn parse(args: &[OsString]) -> Result<Vec<Given>, String> {
                 Some("rw") => false,
                 _ => return Err(format!("share: mode {mode:?}: ro or rw")),
             };
-            let only = match name.as_bytes() {
+            let only = match bytes_of(name)?.as_slice() {
                 [] => None,
                 bytes if bytes.contains(&b'/') => {
                     return Err(format!("share: name {name:?} is not one name"));
@@ -60,8 +75,19 @@ fn parse(args: &[OsString]) -> Result<Vec<Given>, String> {
         .collect()
 }
 
+/// `name`'s bytes, as a share's one name holds them: on Windows its UTF-8.
+fn bytes_of(name: &std::ffi::OsStr) -> Result<Vec<u8>, String> {
+    #[cfg(unix)]
+    return Ok(std::os::unix::ffi::OsStrExt::as_bytes(name).to_vec());
+    #[cfg(windows)]
+    name.to_str()
+        .map(|n| n.as_bytes().to_vec())
+        .ok_or_else(|| format!("share: name {name:?} is not UTF-8"))
+}
+
 /// Sends the VM `ends`, as many a message as one carries, and waits for it to say it has
 /// them.
+#[cfg(unix)]
 fn hand_over(vm: &UnixStream, ends: &[UnixStream]) -> Result<(), String> {
     use shards_ipc::kind;
     use std::os::fd::AsFd;
@@ -77,7 +103,90 @@ fn hand_over(vm: &UnixStream, ends: &[UnixStream]) -> Result<(), String> {
     }
 }
 
+/// `shards share MODE NAME…` on Windows (D197): each share's directory, the home's private
+/// directory and its end of each share's stream taken by number (the module's words), each
+/// share served on a thread of its own until its VM's end closes, as Unix's are.
+#[cfg(windows)]
+pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
+    use std::os::windows::io::OwnedHandle;
+    let failed = |e: &str| {
+        let _ = writeln!(std::io::stderr(), "shards: {e}");
+        ExitCode::FAILURE
+    };
+    let args: Vec<OsString> = args.collect();
+    if args.first().is_some_and(|a| a == "--join") {
+        return join();
+    }
+    let given = match parse(&args) {
+        Ok(given) => given,
+        Err(e) => return failed(&e),
+    };
+    let take = |at: usize, what: &str| -> Result<OwnedHandle, String> {
+        let at = i32::try_from(at).map_err(|_| format!("share: {what}: too many shares"))?;
+        shards_ipc::given_fd(at)
+            .map_err(|e| format!("share: {what}: {e}"))?
+            .ok_or_else(|| format!("share: {what} was not given"))
+    };
+    let n = given.len();
+    let ghosts = match take(4 + n, "the home's private directory") {
+        Ok(ghosts) => ghosts,
+        Err(e) => return failed(&e),
+    };
+    let Some(limits) = shards_vmm::devices::virtio::fs::server::Limits::now() else {
+        return failed("share: this process's limit on handles is unknown");
+    };
+    let budget = limits.budget(u64::try_from(n).unwrap_or(u64::MAX));
+    let mut served = Vec::with_capacity(n);
+    for (i, g) in given.into_iter().enumerate() {
+        let made = (|| -> Result<_, String> {
+            let dir = take(4 + i, &format!("share {i}'s directory"))?;
+            let pipe = take(5 + n + i, &format!("share {i}'s stream"))?;
+            let conn = shards_vmm::platform::PipeStream::from_handle(pipe)
+                .map_err(|e| format!("share {i}'s stream: {e}"))?;
+            let server = Server::with_budget(dir, g.read_only, g.only, budget)
+                .map_err(|e| format!("share {i}: {e}"))?;
+            server.keep_ghosts_in(
+                ghosts
+                    .try_clone()
+                    .map_err(|e| format!("share {i}: the home's private directory: {e}"))?,
+            );
+            if let Ok(headroom) = Headroom::of_this_process() {
+                server.drop_reads_past(headroom);
+            }
+            Ok((server, conn))
+        })();
+        match made {
+            Ok(share) => served.push(share),
+            Err(e) => return failed(&e),
+        }
+    }
+    let (servers, conns): (Vec<Server>, Vec<_>) = served.into_iter().unzip();
+    let mut status = ExitCode::SUCCESS;
+    std::thread::scope(|scope| {
+        let mut threads = Vec::new();
+        for (i, (server, conn)) in servers.iter().zip(conns).enumerate() {
+            match std::thread::Builder::new()
+                .name(format!("share {i}"))
+                .spawn_scoped(scope, move || answer(server, conn))
+            {
+                Ok(t) => threads.push(t),
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "shards: share {i}: {e}");
+                    status = ExitCode::FAILURE;
+                }
+            }
+        }
+        for t in threads {
+            if !matches!(t.join(), Ok(Ok(()))) {
+                status = ExitCode::FAILURE;
+            }
+        }
+    });
+    status
+}
+
 /// `shards share MODE NAME…`, or `shards share --join`: not for people to run.
+#[cfg(unix)]
 pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     let failed = |e: &str| {
         let _ = writeln!(std::io::stderr(), "shards: {e}");
@@ -197,6 +306,7 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
 }
 
 /// Whether descriptor `fd` is open, and of file type `want`.
+#[cfg(unix)]
 fn is(fd: i32, want: libc::mode_t) -> bool {
     // SAFETY: fstat(2) into a zeroed stat buffer; any descriptor number is safe to ask about.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
@@ -210,19 +320,50 @@ fn join() -> ExitCode {
         let _ = writeln!(std::io::stderr(), "shards: share --join: {e}");
         ExitCode::FAILURE
     };
-    if !is(3, libc::S_IFSOCK) || !is(4, libc::S_IFSOCK) || !is(5, libc::S_IFDIR) || !is(6, libc::S_IFDIR) {
-        return failed(
-            "descriptors 3 to 6 are not its VM's connection, the daemon's, its root and the home's private directory",
-        );
-    }
-    // SAFETY: the descriptors the daemon left for this process alone, checked above.
-    let (conn, daemon, root, ghosts) = unsafe {
-        (
-            UnixStream::from_raw_fd(3),
-            UnixStream::from_raw_fd(4),
-            OwnedFd::from_raw_fd(5),
-            OwnedFd::from_raw_fd(6),
-        )
+    #[cfg(unix)]
+    let (conn, daemon, root, ghosts) = {
+        if !is(3, libc::S_IFSOCK) || !is(4, libc::S_IFSOCK) || !is(5, libc::S_IFDIR) || !is(6, libc::S_IFDIR)
+        {
+            return failed(
+                "descriptors 3 to 6 are not its VM's connection, the daemon's, its root and the home's private directory",
+            );
+        }
+        // SAFETY: the descriptors the daemon left for this process alone, checked above.
+        unsafe {
+            (
+                UnixStream::from_raw_fd(3),
+                UnixStream::from_raw_fd(4),
+                OwnedFd::from_raw_fd(5),
+                OwnedFd::from_raw_fd(6),
+            )
+        }
+    };
+    // On Windows the same, given by number: its end of its VM's stream, a duplex pipe whose
+    // other end the daemon handed the VM (D197); the daemon's stream; its root and the home's
+    // private directory.
+    #[cfg(windows)]
+    let (conn, daemon, root, ghosts) = {
+        let take = |at: i32, what: &str| -> Result<std::os::windows::io::OwnedHandle, String> {
+            shards_ipc::given_fd(at)
+                .map_err(|e| format!("{what}: {e}"))?
+                .ok_or_else(|| format!("{what} was not given"))
+        };
+        let taken = (|| -> Result<_, String> {
+            let conn = shards_vmm::platform::PipeStream::from_handle(take(3, "its VM's stream")?)
+                .map_err(|e| format!("its VM's stream: {e}"))?;
+            let daemon = shards_ipc::Stream::given(take(4, "the daemon's stream")?)
+                .map_err(|e| format!("the daemon's stream: {e}"))?;
+            Ok((
+                conn,
+                daemon,
+                take(5, "its root")?,
+                take(6, "the home's private directory")?,
+            ))
+        })();
+        match taken {
+            Ok(taken) => taken,
+            Err(e) => return failed(&e),
+        }
     };
     if let Err(e) = shards_vmm::platform::raise_descriptor_limit() {
         let _ = writeln!(
@@ -255,7 +396,7 @@ fn join() -> ExitCode {
         }
     }
     // Each joiner's link while it is served, by number: shut as the VM goes.
-    let links: Mutex<HashMap<u64, UnixStream>> = Mutex::new(HashMap::new());
+    let links: Mutex<HashMap<u64, Link>> = Mutex::new(HashMap::new());
     std::thread::scope(|scope| {
         let (server, links, from) = (&server, &links, &daemon);
         let linked = std::thread::Builder::new()
@@ -267,7 +408,13 @@ fn join() -> ExitCode {
                         continue;
                     }
                     for fd in m.fds {
-                        let link = UnixStream::from(fd);
+                        #[cfg(unix)]
+                        let link = Link::from(fd);
+                        #[cfg(windows)]
+                        let Ok(link) = Link::given(fd) else {
+                            let _ = writeln!(std::io::stderr(), "shards: share --join: a joiner's link");
+                            continue;
+                        };
                         let n = next;
                         next += 1;
                         if let Ok(held) = link.try_clone() {
@@ -311,7 +458,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// Serves a joiner's `link`: each volume it brings added and answered, and all taken out
 /// again as it closes, its joiner gone.
-fn joiner(server: &Server, link: &UnixStream) {
+fn joiner(server: &Server, link: &Link) {
     use shards_ipc::kind;
     let mut added: Vec<CString> = Vec::new();
     while let Ok(Some(m)) = shards_ipc::recv(link) {
@@ -371,6 +518,7 @@ mod tests {
 
     /// A joiner's volumes are served while its link is open, a malformed one refused and
     /// said why, and all go as the link closes, its joiner gone (D119).
+    #[cfg(unix)]
     #[test]
     fn a_joiners_volumes_go_as_its_link_closes() {
         use shards_ipc::kind;
