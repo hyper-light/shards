@@ -6780,7 +6780,8 @@ kernel. What a Windows host makes otherwise:
   Microsoft's "Window Stations"). Only a process that makes one loads user32, which makes
   them; making them costs a GPU VM's start about 0.4 ms (p50; p99 1.1 ms, M385).
 - **Tested** (tests/gpu.rs on jupiter: AMD Ryzen AI Max+ 395 and its Radeon 8060S, AMD's
-  driver 25.20.32.06, Windows 11 10.0.26200): passes. A run given `--gpus all` finds
+  driver 25.20.32.06, Windows 11 10.0.26200): passes, 3 runs of 3 on the Windows daemon's
+  branch with this merged, 48 to 52 s each. A run given `--gpus all` finds
   `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`; a build's steps given the render
   node by a CDI device find it as root and as user 1000, as do a run given it by CDI name
   and a run of user 1000; and the GPU's runs restore templates of their own (D150). The
