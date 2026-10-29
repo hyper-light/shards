@@ -2943,9 +2943,8 @@ fn a_groups_cpu_held_each_second() {
 /// commit together stays under it: a run under a group of 1 GiB that allocates 2 GiB has
 /// its guest's memory refused past it, its command never holding it all, where a run that
 /// allocates as much under no group, and one that allocates within the group's room, run to
-/// their ends. The macOS test below holds its group by give-backs from a host directory's
-/// files, which Windows shares with the platform parity plan's step 6; the test after it,
-/// by give-backs of what a joiner read of its image, on both.
+/// their ends. The tests below hold a group to its `memory.high` by give-backs, of a host
+/// directory's files and of what a joiner read of its image, on macOS and Windows.
 #[test]
 fn a_groups_job_holds_its_microvms_to_its_memory_max() {
     if !cfg!(windows) {
@@ -2988,16 +2987,18 @@ fn a_groups_job_holds_its_microvms_to_its_memory_max() {
     assert!(!past.stdout.contains("allocated 2048"), "{past}");
 }
 
-/// A microVM under a group shards keeps (D183, slice 3), on macOS, whose host has no group
-/// of processes a user's tools make and cap: made with the group's directory of the home,
-/// its budget files `max`, the group's `memory.current` its VM processes' footprints; with
-/// its `memory.high` written short of what it holds, told so and asked to give back what it
-/// holds cold, its group within its budget again; and a microVM of the group that holds
-/// past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's OOM
-/// killer kills within it.
+/// A microVM under a group shards keeps (D183, slice 3), on macOS and Windows, whose hosts
+/// have no group of processes a user's tools make and cap: made with the group's directory
+/// of the home, its budget files `max`, the group's `memory.current` its VM processes'
+/// footprints; with its `memory.high` written short of what it holds, what it read of a
+/// host directory through FUSE (D197 on Windows), told so and asked to give back what it
+/// holds cold, its group within its budget again; and, on macOS, a microVM of the group that
+/// holds past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's
+/// OOM killer kills within it. On Windows the group's job holds its VM processes to its
+/// `memory.max` by what they commit (`a_groups_job_holds_its_microvms_to_its_memory_max`).
 #[test]
 fn a_microvm_under_a_group_is_held_to_its_budget() {
-    if !cfg!(target_os = "macos") || cannot_run_vms() {
+    if !cfg!(any(target_os = "macos", windows)) || cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -3067,28 +3068,29 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
     until("its group was not said short of its budget", &|| {
         said().contains("group agents: its microVMs hold") && said().contains("past its budget")
     });
-    until("nothing given back said", &|| {
-        said().contains("its microVMs gave back")
-    });
+    // Its guest's own kernel takes back as much of its files as it is short as it is told its
+    // room, before its give-back counts what it reclaims, which may then be nothing (D188).
     until("its group was not within its budget again", &|| {
         said().contains("within its budget of") && current() <= high
     });
-    // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it past,
-    // with nothing to give back.
-    std::fs::write(group.join("memory.high"), "max\n").unwrap();
-    std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
-    let args = run_args(
-        &image,
-        &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
-        &["alloc-hold", "768", "600"],
-    );
-    let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
-    assert_eq!(hog.status, Some(0), "{hog}");
-    let waited = shards(&["wait", "hog"]);
-    assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
-    let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
-    assert_eq!(oom.stdout.trim(), "true", "{oom}");
-    assert!(said().contains("past its memory.max"), "{}", said());
+    if cfg!(target_os = "macos") {
+        // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it
+        // past, with nothing to give back.
+        std::fs::write(group.join("memory.high"), "max\n").unwrap();
+        std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
+        let args = run_args(
+            &image,
+            &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
+            &["alloc-hold", "768", "600"],
+        );
+        let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(hog.status, Some(0), "{hog}");
+        let waited = shards(&["wait", "hog"]);
+        assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
+        let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
+        assert_eq!(oom.stdout.trim(), "true", "{oom}");
+        assert!(said().contains("past its memory.max"), "{}", said());
+    }
     // The other runs on: what it held it gave back, and held no more.
     let ps = shards(&["ps", "-q", "--filter", "name=held"]);
     assert_eq!(ps.stdout.lines().count(), 1, "{ps}");
@@ -3108,9 +3110,8 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
 /// D188; D183, slice 3): a joiner's root is its image's EROFS over its microVM's join disk,
 /// read through its guest's page cache, where its provider's root and every run's writable
 /// layer are their host's files mapped into the guest (DAX, D190) and hold none of it. So a
-/// microVM whose joiner read 512 MiB of its image holds them cold, on a host that shares
-/// no directory into a microVM yet as on any other (Windows', with the platform parity
-/// plan's step 6). With its group's `memory.high` written a quarter GiB short of what its VM
+/// microVM whose joiner read 512 MiB of its image holds them cold, with no host directory
+/// shared into it. With its group's `memory.high` written a quarter GiB short of what its VM
 /// process holds, the microVM is told its room and asked to give back what it holds cold
 /// (`ROOM`, `RECLAIM`, over its run's cgroup and its joiners' within it), gives back what
 /// its joiner read, and its VM process holds that much less, its group within its budget

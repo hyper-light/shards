@@ -119,6 +119,39 @@ fn run_steps_run_in_a_confined_builder_and_their_changes_are_built() {
     );
 }
 
+/// A builder boots with little memory and is given more as its build needs it (D133), on
+/// Windows as tests/build.rs's test of the name has it on Unix: a step of a builder that may
+/// have 2,560 MiB, which boots with 512 MiB, allocates and touches three times that, and
+/// succeeds. (On jupiter, one that may have 4 GiB touched 3 GiB too.)
+#[test]
+fn a_builders_memory_is_plugged_as_its_build_needs_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("bw-plug-home");
+    let [home_env, kernel_env, init_env, _] = build_env(&home);
+    let env = [
+        home_env,
+        kernel_env,
+        init_env,
+        ("SHARDS_BUILD_MEMORY", "2560".as_ref()),
+    ];
+    let ctx = context(
+        "bw-plug-ctx",
+        &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"alloc\", \"1536\"]\n"),
+    );
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    assert!(built.stderr.contains("allocated 1536"), "{shown}");
+}
+
 /// A `RUN` step reaches this host's own address on its default route through its
 /// network process, and one with `--network=none` reaches nothing, failing the build.
 #[test]
