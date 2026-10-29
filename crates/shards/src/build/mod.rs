@@ -3924,10 +3924,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     return Err(fail(&v, &why));
                 }
                 if builder.is_none() {
-                    // Steps given this Mac's GPU by a CDI device of its render node have a
-                    // builder with the GPU, booting the kernel with its driver where none is
-                    // given (D145).
-                    let gpu = cfg!(target_os = "macos")
+                    // Steps given a GPU by a CDI device of its render node have a builder
+                    // with the GPU, booting the kernel with its driver where none is given
+                    // (D145).
+                    let gpu = crate::run::GIVES_GPU
                         && cdi_edits.values().any(|e| {
                             let render = |p: &str| p == crate::run::RENDER_NODE;
                             e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))

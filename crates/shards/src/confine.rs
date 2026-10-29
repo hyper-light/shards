@@ -142,6 +142,42 @@ pub fn confine() -> Result<(), String> {
         libc::TIOCGWINSZ as u32,
     ]);
     rules.push(Rule::with(libc::SYS_ioctl, 1, &requests));
+    // The GPU's VM process runs its host's GPU driver (D201): the requests of its drivers'
+    // devices, by their types, whatever their numbers and sizes, as each driver's version
+    // makes them, Landlock's rules giving it those devices alone to make them of; and the
+    // syscalls the drivers and the renderer make besides (PM M382).
+    if shards_vmm::devices::virtio::gpu::RENDERS {
+        rules.push(Rule::masked(
+            libc::SYS_ioctl,
+            1,
+            0xff00,
+            &GPU_IOCTL_TYPES.map(|t| u32::from(t) << 8),
+        ));
+        rules.extend(GPU_SYSCALLS.map(Rule::any));
+        // The render server's and its client's check of their connection's type
+        // (render_socket.c, proxy_socket.c).
+        rules.push(Rule::with(libc::SYS_getsockopt, 2, &[libc::SO_TYPE as u32]));
+        // NVIDIA's driver links /dev/char's names to its devices where udev has not
+        // (/dev/char/195:0 to ../nvidia0), which no user but root may: refused as its host
+        // refuses them, it goes on without (PM M382).
+        #[cfg(target_arch = "x86_64")]
+        rules.push(Rule::fails(libc::SYS_symlink, libc::EACCES as u16));
+        rules.push(Rule::fails(libc::SYS_symlinkat, libc::EACCES as u16));
+        // The renderer seals the shared memory its server hands it, and checks the seals
+        // (proxy_context.c, F_ADD_SEALS and F_GET_SEALS), and its memory files are given
+        // their room (fallocate(2), mode 0).
+        rules.push(Rule::with(
+            libc::SYS_fcntl,
+            1,
+            &[libc::F_ADD_SEALS as u32, libc::F_GET_SEALS as u32],
+        ));
+        rules.push(Rule::with(libc::SYS_fallocate, 1, &[0]));
+        // RADV, Mesa's AMD driver, sets a thread's CPUs as it renders (sched_setaffinity,
+        // from the renderer's ring thread) and renders on where it may not: refused, as a
+        // VM process sets no thread's CPUs, which could be another of its user's
+        // processes' (PM M384).
+        rules.push(Rule::fails(libc::SYS_sched_setaffinity, libc::EPERM as u16));
+    }
     let commands = [
         libc::F_DUPFD,
         libc::F_DUPFD_CLOEXEC,
@@ -203,6 +239,181 @@ pub fn confine() -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 pub fn confine() -> Result<(), String> {
     Ok(())
+}
+
+/// The ioctl types of the GPU drivers' devices (include/uapi/asm-generic/ioctl.h, bits 8
+/// to 15 of a request), as NVIDIA's and Mesa's RADV make them through Venus (PM M382):
+/// NVIDIA's `'F'` (NV_IOCTL_MAGIC, its control and GPU nodes) and `'m'` (NVKMS_IOCTL_MAGIC,
+/// nvidia-modeset's), and DRM's `'d'` (DRM_IOCTL_BASE, every render node's).
+#[cfg(target_os = "linux")]
+const GPU_IOCTL_TYPES: [u8; 3] = *b"Fmd";
+
+/// What else the GPU's VM process's drivers make, every argument allowed (PM M382):
+/// NVIDIA's `statfs` of where it keeps files and `sched_get_priority_max` and `_min` of the
+/// threads it starts, the address of a socket it was given (`getsockname`, libGLX_nvidia),
+/// the C library's `getresuid` and `getresgid` as a driver asks whether it runs set-uid or
+/// set-gid, and anonymous
+/// files of memory (`memfd_create`): Mesa's, NVIDIA's and the renderer's own shared memory.
+#[cfg(target_os = "linux")]
+const GPU_SYSCALLS: [libc::c_long; 7] = [
+    libc::SYS_statfs,
+    libc::SYS_sched_get_priority_max,
+    libc::SYS_sched_get_priority_min,
+    libc::SYS_getsockname,
+    libc::SYS_getresuid,
+    libc::SYS_getresgid,
+    libc::SYS_memfd_create,
+];
+
+/// What a GPU's VM process reads and controls besides a VM process's, on Linux (D201), as
+/// its host's Vulkan loader and drivers reach them, measured with NVIDIA's and Mesa's
+/// (PM M382): the loader's manifests and the libraries they name, the system's libraries
+/// and the drivers' data, the host's devices and processors as sysfs and procfs describe
+/// them, and the GPUs' device nodes, each where the host has it. Nothing is written: the
+/// drivers' shader caches stay off.
+#[cfg(target_os = "linux")]
+pub fn gpu_paths(paths: &mut Paths) {
+    use std::path::{Path, PathBuf};
+    let there = |p: &str| Path::new(p).exists().then(|| PathBuf::from(p));
+    // The loader's manifests, where its search finds them (Vulkan-Loader's
+    // LoaderInterfaceArchitecture.md, Linux's search paths), which a process given no
+    // home's variables searches.
+    let manifests = [
+        "/etc/xdg/vulkan",
+        "/etc/vulkan",
+        "/usr/local/share/vulkan",
+        "/usr/share/vulkan",
+    ];
+    // The system's libraries, which a manifest's library names and its own dependencies
+    // are found among, and the drivers' data: NVIDIA's application profiles, libdrm's
+    // device names, Mesa's options (drirc), EGL's and GLVND's vendors, which NVIDIA's
+    // and Mesa's drivers read as they start.
+    let data = [
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/local/lib",
+        "/lib",
+        "/lib64",
+        "/usr/share/nvidia",
+        "/etc/nvidia",
+        "/usr/share/libdrm",
+        "/usr/share/drirc.d",
+        "/usr/share/egl",
+        "/usr/share/glvnd",
+        "/sys",
+        "/proc/driver",
+    ];
+    paths
+        .read_under
+        .extend(manifests.iter().chain(&data).filter_map(|p| there(p)));
+    // Each library a manifest names by its path, where it is.
+    for dir in manifests
+        .iter()
+        .flat_map(|m| ["icd.d", "implicit_layer.d", "explicit_layer.d"].map(|d| Path::new(m).join(d)))
+    {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            for library in library_paths(&text) {
+                let library = Path::new(&library);
+                if library.components().count() < 2 {
+                    continue;
+                }
+                let library = if library.is_absolute() {
+                    library.to_path_buf()
+                } else {
+                    dir.join(library)
+                };
+                if let Some(parent) = library.parent().filter(|p| p.exists()) {
+                    paths.read_under.push(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    paths.read.extend(
+        [
+            "/etc/ld.so.cache",
+            "/etc/drirc",
+            "/proc/stat",
+            "/proc/meminfo",
+            "/proc/cpuinfo",
+            "/proc/filesystems",
+        ]
+        .iter()
+        .filter_map(|p| there(p)),
+    );
+    // /dev/dri listed, its render nodes used; NVIDIA's control, GPU, modesetting and
+    // unified memory nodes; udmabuf, which Venus makes host memory of where a driver
+    // exports none (vkr_physical_device.c).
+    paths.read_under.extend(there("/dev/dri"));
+    let named = |dir: &str, keep: &dyn Fn(&str) -> bool| -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.file_name().to_str().is_some_and(keep))
+                    .map(|e| e.path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    paths
+        .devices
+        .extend(named("/dev/dri", &|n| n.starts_with("renderD")));
+    paths.devices.extend(named("/dev", &|n| {
+        n == "nvidiactl"
+            || n == "nvidia-modeset"
+            || n == "nvidia-uvm"
+            || n == "nvidia-uvm-tools"
+            || n.strip_prefix("nvidia")
+                .is_some_and(|i| !i.is_empty() && i.bytes().all(|b| b.is_ascii_digit()))
+    }));
+    paths.devices.extend(there("/dev/udmabuf"));
+}
+
+/// The `library_path`s a Vulkan manifest names (LoaderInterfaceArchitecture.md, "Driver
+/// Manifest File Format" and the layers' own): each value of that key, read as a JSON
+/// string.
+#[cfg(target_os = "linux")]
+fn library_paths(manifest: &str) -> Vec<String> {
+    const KEY: &str = "\"library_path\"";
+    let mut found = Vec::new();
+    let mut rest = manifest;
+    while let Some(at) = rest.find(KEY) {
+        rest = rest.get(at + KEY.len()..).unwrap_or_default();
+        let Some(value) = rest
+            .trim_start()
+            .strip_prefix(':')
+            .and_then(|v| v.trim_start().strip_prefix('"'))
+        else {
+            continue;
+        };
+        let mut out = String::new();
+        let mut chars = value.chars();
+        let mut closed = false;
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => {
+                    closed = true;
+                    break;
+                }
+                '\\' => match chars.next() {
+                    Some(c @ ('/' | '\\' | '"')) => out.push(c),
+                    _ => break,
+                },
+                c => out.push(c),
+            }
+        }
+        if closed {
+            found.push(out);
+        }
+        rest = chars.as_str();
+    }
+    found
 }
 
 /// The files and sockets a VM process may use, for the grants its spawner gives it in App
@@ -444,6 +655,25 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    /// A Vulkan manifest's libraries, by the `library_path` keys it has, each read as a JSON
+    /// string: NVIDIA's driver manifest and Mesa's, a layers manifest of two, escapes, space
+    /// around the colon; a key whose value is no string, and one cut short, name none.
+    #[test]
+    fn a_manifest_names_its_libraries() {
+        let nvidia = r#"{"file_format_version" : "1.0.1", "ICD": {"library_path": "libGLX_nvidia.so.0", "api_version" : "1.4.351"}}"#;
+        assert_eq!(library_paths(nvidia), ["libGLX_nvidia.so.0"]);
+        let radeon = r#"{"ICD":{"api_version":"1.4.354","library_arch":"64","library_path":"\/usr\/lib\/libvulkan_radeon.so"},"file_format_version":"1.0.1"}"#;
+        assert_eq!(library_paths(radeon), ["/usr/lib/libvulkan_radeon.so"]);
+        let layers = r#"{"layers": [{"name": "A", "library_path" :  "./a.so"}, {"name": "B", "library_path": "C:\\b \"x\".so"}]}"#;
+        assert_eq!(library_paths(layers), ["./a.so", r#"C:\b "x".so"#]);
+        assert_eq!(
+            library_paths(r#"{"library_path": 7, "x": "library_path"}"#),
+            Vec::<String>::new()
+        );
+        assert_eq!(library_paths(r#"{"library_path": "lib.so"#), Vec::<String>::new());
+        assert_eq!(library_paths("{}"), Vec::<String>::new());
+    }
 
     /// In a child process (this test binary, told by `LANDLOCK_CHILD` where its files
     /// are): confines itself to one file to read, one directory to write in and one to make

@@ -26,13 +26,12 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
-        variant: ['', kvm, hyperv, gpu]
+        variant: ['', kvm, hyperv, gpu, 'hyperv+gpu']
         copy: [a, b]
         exclude:
           # Hyper-V's clocks for a Windows host's x86_64 guests (D140): WHP on arm64 waits.
           - { arch: aarch64, variant: hyperv }
-          # A GPU for Apple silicon's arm64 guests first (D144): x86_64's waits.
-          - { arch: x86_64, variant: gpu }
+          - { arch: aarch64, variant: 'hyperv+gpu' }
         include:
           - { arch: x86_64, runner: ubuntu-24.04 }
           - { arch: aarch64, runner: ubuntu-24.04-arm }
@@ -59,11 +58,14 @@ jobs:
           path: builds
       - name: Both builds of each architecture made the same bytes
         run: |
-          for kernel in x86_64 aarch64 x86_64-kvm aarch64-kvm x86_64-hyperv aarch64-gpu; do
+          kernels="x86_64 aarch64 x86_64-kvm aarch64-kvm x86_64-hyperv x86_64-gpu aarch64-gpu x86_64-hyperv+gpu"
+          for kernel in $kernels; do
             diff -r "builds/kernel-$kernel-a" "builds/kernel-$kernel-b"
           done
           mkdir out
-          cp builds/kernel-x86_64-a/* builds/kernel-aarch64-a/* builds/kernel-x86_64-kvm-a/* builds/kernel-aarch64-kvm-a/* builds/kernel-x86_64-hyperv-a/* builds/kernel-aarch64-gpu-a/* out/
+          for kernel in $kernels; do
+            cp "builds/kernel-$kernel-a"/* out/
+          done
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

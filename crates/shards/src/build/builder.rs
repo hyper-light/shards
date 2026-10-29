@@ -298,7 +298,7 @@ pub struct Boot<'a> {
     /// The build's proxy (D110): where there is one, the builder's network reaches it
     /// alone.
     pub proxy: Option<&'a super::proxy::Proxy>,
-    /// Whether it has this Mac's GPU, for steps given its render node (D145).
+    /// Whether it has a GPU, for steps given its render node (D145).
     pub gpu: bool,
     /// The emulators its steps' platforms need (D179): the emulator image's root
     /// filesystem, one more pmem device after the bases, and the OCI architectures it

@@ -172,24 +172,25 @@ jobs:
             Windows) powershell -NoProfile -Command \
               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
           esac
-      # The GPU's renderer (D144), from pinned sources: `shards` then carries shards-vm-gpu.
-      # Built once for each version of its script and of the runner's image, and kept: its
+      # The GPU's renderer (D144, D201, D202), from pinned sources: `shards` then carries
+      # shards-vm-gpu, on macOS, on Linux with glibc and on x86_64 Windows. Built once for
+      # each version of its script and patch and of the runner's image, and kept: its
       # sources' hosts answering 502 and 504 for eight minutes (run 39191414199) left a run
       # with none, and none of its macOS tests ran.
       - name: The GPU's renderer's key
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-linux-gnu') || matrix.target == 'x86_64-pc-windows-msvc'
         id: gpu-key
         shell: bash
         run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
       - name: The GPU's renderer, as built before
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-linux-gnu') || matrix.target == 'x86_64-pc-windows-msvc'
         id: gpu-kept
         uses: actions/cache@v6.1.0
         with:
           path: ${{ runner.temp }}/gpu-libs
-          key: gpu-libs-${{ steps.gpu-key.outputs.image }}-${{ hashFiles('scripts/gpu-libs') }}
+          key: gpu-libs-${{ steps.gpu-key.outputs.image }}-${{ hashFiles('scripts/gpu-libs', 'resources/gpu/**') }}
       - name: The GPU's renderer
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-linux-gnu') || matrix.target == 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           if [ "${{ steps.gpu-kept.outputs.cache-hit }}" != true ]; then
@@ -200,7 +201,7 @@ jobs:
         shell: bash
         run: cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
       - name: Lints of the GPU's renderer
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-linux-gnu') || matrix.target == 'x86_64-pc-windows-msvc'
         shell: bash
         run: cargo clippy --locked -p shards-vmm --features gpu --all-targets --target ${{ matrix.target }} -- -D warnings
       # The runner's /dev/kvm is root:kvm 0660 and the runner user is not in `kvm`.
@@ -254,7 +255,7 @@ jobs:
             echo "::endgroup::"
           done
       - name: Tests of the GPU's renderer
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-linux-gnu') || matrix.target == 'x86_64-pc-windows-msvc'
         timeout-minutes: 15
         shell: bash
         run: |

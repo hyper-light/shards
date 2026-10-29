@@ -6731,6 +6731,138 @@ shards' own shares' DAX windows (slice 4). What it took, decided:
 Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own tests on
 Windows. 3 (built): the share process and the daemon's shares on Windows, and the volume
 and bind tests on its CI runners. 4: shards' own shares' DAX windows on Windows.
+### D202. A GPU on Windows: Venus in the GPU's VM process, its driver reached from a desktop of its own (built)
+
+The parity plan's step 11, after D201: a run on an x86_64 Windows host is given its host's
+GPU as a Mac's and a Linux host's are (`--gpus`, a CDI device of the render node, a build
+step's `RUN --device`), Vulkan in its guest through Venus, rendered by the host's own
+driver. What D144 and D201 built stands: the device, the window after RAM, `--gpus`'s
+reading, the render node's mode, templates of their own (D150), and the `hyperv+gpu`
+kernel. What a Windows host makes otherwise:
+
+- **The renderer is the krunkit fork**, as on macOS, its Venus in the GPU's VM process:
+  virglrenderer 1.3.0's contexts are served by its render server, over Unix sockets it
+  forks or threads behind, which its Windows build does not have. scripts/gpu-libs builds
+  the fork with clang-cl and shards' patch (resources/gpu/venus-windows.patch): the POSIX
+  names its sources use are given the UCRT's, its ISO names where the UCRT deprecates the
+  POSIX ones; Vulkan's loader is opened from System32 at its first call, not linked, so
+  that a host without one is told so as a run asks for a GPU; and a blob is mapped by its
+  pointer, as on macOS.
+- **A blob's pages are the renderer's** (PM M383). WHP maps a driver's mapping of its
+  host-visible memory into a partition, AMD's twelve host-visible types every one; but the
+  driver frees that memory as the guest frees it, its blob or not, and the stage 2 follows
+  the host's view (M341), so a guest mapping a blob freed could reach what took its place.
+  Every allocation a guest may map is made of pages the renderer allocates and its device
+  imports (VK_EXT_external_memory_host), held by the memory and by its blob and freed by
+  the last of them; the device-local types, which no device imports host memory into
+  (M383: the host-visible types not device-local import, 0xaaaa), are shown the guest as
+  device-local alone, and the window is as long as the heaps of the types it may map. A
+  blob is mapped whole, its pages the renderer's committed, writable memory, and one said
+  to be larger than they are is refused.
+- **The window is the partition's own**: each blob mapped at its place by WHvMapGpaRange,
+  readable and writable, never executable, and unmapped as the guest lets it go, as
+  Hypervisor.framework's stage 2 maps macOS's; a map's p50 34.0 to 37.6 µs (M383).
+- **Confined as every VM process is, but for Win32k** (PM M385). The GPU's VM process
+  keeps its AppContainer of its own, its Job and every other mitigation (D141). A Windows
+  GPU driver is reached through Win32k: the Vulkan loader finds its drivers through gdi32's
+  D3DKMT calls and DXGI, and gdi32 and user32 initialize in no process whose Win32k calls
+  are disabled, nor in an AppContainer not granted the window station and desktop it runs
+  on, with or without the mitigation (a process connects to its window station and
+  desktop as it first calls user32 or gdi32: Microsoft's "Process Connection to a Window
+  Station"). So Win32k's calls are allowed it, and it is made on a window station and a
+  desktop of its own (`shards_ipc::Spawn::graphics`), granted to its AppContainer alone
+  besides their maker, where gdi32 and user32 initialize. There it sends no window message
+  to its user's desktop ("Window messages can be sent only between processes that are on
+  the same desktop", Microsoft's "Desktops"), as Chromium's sandbox puts its targets on a
+  desktop of their own for (chromium/src docs/design/sandbox.md, "The alternate desktop"),
+  and its clipboard and atom table are its window station's, not its user's ("A window
+  station contains a clipboard, an atom table, and one or more desktop objects",
+  Microsoft's "Window Stations"). Only a process that makes one loads user32, which makes
+  them.
+- **Tested** (tests/gpu.rs on jupiter: AMD Ryzen AI Max+ 395 and its Radeon 8060S, AMD's
+  driver 25.20.32.06, Windows 11 10.0.26200): passes. A run given `--gpus all` finds
+  `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`; a build's steps given the render
+  node by a CDI device find it as root and as user 1000, as do a run given it by CDI name
+  and a run of user 1000; and the GPU's runs restore templates of their own (D150). The
+  renderer's own test passes there. The GPU's VM process is spawned so by the Windows
+  daemon's spawner (`shards_ipc`, the parity plan's step 2), and lands with it: tested on
+  step 2's branch with this one merged. CI's Windows runners, which have no GPU, build,
+  lint and test the renderer, and skip what needs one.
+- **Not yet:** an arm64 Windows host (WHP's arm64 backend is the parity plan's step 10),
+  and Windows hosts of NVIDIA's and Intel's GPUs, none being here.
+
+### D201. A GPU on Linux: Venus over its host's own Vulkan driver, in the GPU's VM process (built)
+
+The parity plan's step 11 (docs/audit/2026-10-27_platform-parity.md, row 6), after D144: a
+run on a Linux host is given its host's GPUs as a Mac's is given its own (`--gpus`, a CDI
+device of the render node, a build step's `RUN --device`), Vulkan in its guest through
+Venus, rendered by the host's own driver, NVIDIA's or Mesa's. What D144 built stands: the
+device (`devices::virtio::gpu`), the window after RAM, `--gpus`'s reading, the render
+node's mode, templates of their own (D150). What a Linux host makes otherwise:
+
+- **The renderer is virglrenderer 1.3.0** (scripts/gpu-libs, pinned by digest), not the
+  krunkit fork macOS renders with: its Venus is the upstream one guests' Mesa is written
+  against. Its Venus contexts are served by its render server alone (meson.build,
+  `with_render_server = with_venus`); the GPU's VM process runs the server as a thread of
+  its own, given one end of a socket pair as its client's connection, the renderer the
+  other (`get_server_fd`), and each context the server makes is a thread of it
+  (`render-server-worker=thread`): nothing is forked or exec'd, and what the server logs is
+  the VM process's (gpu/render_log.c, in syslog's place). Each context's fences are waited
+  for on a thread of its own and said from there (VIRGL_RENDERER_THREAD_SYNC and
+  ASYNC_FENCE_CB), as macOS's are.
+- **Vulkan is the host's**, its loader opened by its soname (libvulkan.so.1) as the
+  renderer starts: nothing of it is linked, a host without one is told so as a run asks for
+  a GPU, and the window's length is every GPU's host-visible heaps as Vulkan says them (on
+  the GPU desktop, NVIDIA's 100 GiB and RADV's besides).
+- **The GPU's VM process links glibc, dynamically**, where every other helper is static
+  musl (PM M281): a host's GPU driver is a library of its C library, which a static program
+  cannot load. build.rs builds it for the `-linux-gnu` targets where SHARDS_GPU_LIBS names
+  the renderer's libraries (`gpu_target`), and CI and releases build them there, as on
+  Apple silicon. A musl build carries none yet.
+- **A blob is held by its descriptor** (PM M381). Venus exports host-visible memory as a
+  dma-buf where the driver can, as both NVIDIA's and Mesa's can, and the renderer exports
+  each mappable blob as it is made and keeps the descriptor: a dma-buf maps at any address
+  the process chooses, is the driver's memory, and keeps its pages once the driver frees it
+  while the descriptor or a mapping lives, what D144 held on macOS by remapping. A blob
+  exported as an opaque descriptor, which no mmap takes, is refused, as is one said to be
+  larger than its memory's pages.
+- **The window on KVM is one memslot**, over a range the VM process reserves for it
+  (gpu/window.rs), as a share's DAX window is (D189): a blob is mapped into it at the place
+  its guest chose by mmap(MAP_FIXED) of its descriptor, and unmapped by reserving its range
+  again; KVM's stage 2 follows the host's mapping through its MMU notifiers, a dma-buf's
+  PFN-mapped pages (NVIDIA's, M381) among it. No memslot is made or removed for a blob, and
+  a blob's place and length are whole host pages (`blob_alignment`).
+- **Confined to what its driver needs** (PM M382), as NVIDIA's and Mesa's were measured to
+  reach: Landlock lets the GPU's VM process read the loader's manifests and the libraries
+  they name, the system's libraries and the drivers' data, sysfs, /proc/driver and four of
+  /proc's files, and read, write and control the GPUs' device nodes (render nodes,
+  NVIDIA's control, GPU, modesetting and unified memory nodes, udmabuf); its seccomp filter
+  allows the GPU drivers' ioctls by their types (NVIDIA's 'F' and 'm', DRM's 'd'), which a
+  rule matches by the request's bits 8 to 15 (`Rule::masked`), seven syscalls more, two
+  fcntl commands, fallocate's mode 0 and getsockopt's SO_TYPE, and fails symlink as its
+  host does (NVIDIA's /dev/char links) and sched_setaffinity with EPERM (RADV's, which
+  renders on, M384). Its drivers' shader caches stay off: it writes nothing of its host's.
+- **Vulkan programs** (PM M384): llama.cpp's matrix multiplications in a guest, on
+  NVIDIA's GPU, get its CPU's results case for case; on RADV, 18 of 1,684 shapes are NaN
+  run after run, which RADV's own run would tell apart from Venus's, unmeasured.
+- **The kernels:** the `gpu` variant for x86_64 guests as for arm64's, and `hyperv+gpu`,
+  a Windows host's guest given a GPU, of kernel-6.18.48-64a9427a8997, whose release built
+  every kernel before it byte for byte again and the x86_64 `gpu` kernel byte for byte as
+  the GPU desktop's pinned builder did; scripts/build-kernel.sh takes variants joined by
+  `+`.
+- **Tested** (tests/gpu.rs, on the GPU desktop's NVIDIA GeForce RTX 5060 Ti and Radeon
+  610M, NVIDIA 615.78.08, CachyOS on Linux 7.2.9): passes, 5 runs of 5 of the build that
+  adds D202, 19 to 71 s each, the host busy with other work (load average up to 119).
+  A run given `--gpus all` finds `Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti)` and
+  `Virtio-GPU Venus (AMD Ryzen 9 9950X3D2 16-Core Processor (RADV RAPHAEL_MENDOCINO))`
+  through Debian trixie's Mesa 25.0.7, a build's steps given the render node by a CDI
+  device find it as root and as user 1000, so do a run given it by CDI name and a run of
+  user 1000, and the GPU's runs restore templates of their own (D150). It skips where a
+  host has no GPU's device node, as CI's Linux runners, which build, lint and test the
+  renderer.
+- **Not yet:** an arm64 Linux host with a GPU is built and linted for and untested, none
+  being here; and arm64 KVM maps a PFN-mapped page as device memory unless its mapping
+  allows it otherwise (VM_ALLOW_ANY_UNCACHED), which a discrete GPU's dma-buf does not say.
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
@@ -10531,7 +10663,8 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
   a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
 - **To build:** Linux's VFIO (R2). A build's `RUN` steps: D145; a run's `--device` by
-  CDI name: D146; a GPU's templates: D150.
+  CDI name: D146; a GPU's templates: D150; Linux's hosts, through Venus on their own
+  drivers: D201.
 
 ### D143. `RUN` on Windows hosts: the builder
 

@@ -13,10 +13,11 @@
 //!   inside `shards`. `SHARDS_HELPERS_DIR` names prebuilt ones; `SHARDS_HELPERS=skip`
 //!   carries none, for check builds of other targets (scripts/lint), and such a `shards`
 //!   refuses what needs them.
-//! - The GPU's VM process (`shards-vm-gpu`, D144): the VM process built with its renderer,
-//!   on Apple silicon where `SHARDS_GPU_LIBS` names the renderer's libraries
-//!   (scripts/gpu-libs), into `target/helpers-gpu`, signed as the VM process is; or
-//!   `SHARDS_HELPERS_DIR`'s. Without it, `shards` carries none and refuses a GPU.
+//! - The GPU's VM process (`shards-vm-gpu`, D144, D201, D202): the VM process built with
+//!   its renderer, on Apple silicon, on Linux with glibc and on x86_64 Windows where
+//!   `SHARDS_GPU_LIBS` names the renderer's libraries (scripts/gpu-libs), into
+//!   `target/helpers-gpu`, signed as the VM process is on macOS; or `SHARDS_HELPERS_DIR`'s.
+//!   Without it, `shards` carries none and refuses a GPU.
 //!
 //! The init is built by a nested cargo, for `<arch>-unknown-linux-musl` with the `guest`
 //! profile, into a target directory of its own under `OUT_DIR`. It names its linker,
@@ -320,11 +321,11 @@ fn helpers() -> Result<(), String> {
     let gpu: Option<PathBuf> = match &built {
         None => None,
         Some(dir) if env::var_os("SHARDS_HELPERS_DIR").is_some_and(|d| !d.is_empty()) => {
-            let given = dir.join("shards-vm-gpu");
+            let given = dir.join(format!("shards-vm-gpu{exe}"));
             given.is_file().then_some(given)
         }
         Some(_) => match env::var_os("SHARDS_GPU_LIBS").filter(|d| !d.is_empty()) {
-            Some(libs) if var("TARGET")? == "aarch64-apple-darwin" => {
+            Some(libs) if var("TARGET")?.to_str().is_some_and(gpu_target) => {
                 Some(compile_gpu_helper(&mut out, &PathBuf::from(libs))?)
             }
             _ => None,
@@ -365,16 +366,23 @@ fn helpers() -> Result<(), String> {
 fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
     let var = |name: &str| env::var(name).map_err(|e| format!("{name}: {e}"));
     let root = Path::new(&var("CARGO_MANIFEST_DIR")?).join("..").join("..");
+    // Every crate of the workspace's the helpers are built of, on any target (`cargo tree
+    // -p shards-vm-process -p shards-net-process --target ...`), and the sources of shards'
+    // own they include by path.
     for input in [
         "crates/vm-process",
         "crates/net-process",
+        "crates/afunix",
         "crates/apple",
         "crates/vmm",
         "crates/net",
         "crates/netring",
+        "crates/dns",
         "crates/ipc",
         "crates/abi",
         "crates/cmdline",
+        "crates/syscall-filter",
+        "crates/template",
         "crates/shards/src/confine.rs",
         "crates/shards/src/grant.rs",
         "crates/shards/src/grant_ask.rs",
@@ -451,8 +459,24 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
     Ok(target_dir.join(&target).join(dir_name))
 }
 
-/// Builds the GPU's VM process (D144): the VM process with its renderer, linked from the
-/// libraries in `libs`, for this profile into `target/helpers-gpu`; returns its binary.
+/// Whether `target` carries a GPU's VM process where its renderer's libraries are given
+/// (D144, D201, D202): Apple silicon's, Linux's with glibc, which a GPU's VM process links,
+/// dynamic, as it opens the host's Vulkan driver, a library of the host's C library (on
+/// Linux the other helpers are static, PM M281), and x86_64 Windows's, whose VMs WHP
+/// runs.
+fn gpu_target(target: &str) -> bool {
+    matches!(
+        target,
+        "aarch64-apple-darwin"
+            | "x86_64-unknown-linux-gnu"
+            | "aarch64-unknown-linux-gnu"
+            | "x86_64-pc-windows-msvc"
+    )
+}
+
+/// Builds the GPU's VM process (D144, D201): the VM process with its renderer, linked
+/// from the libraries in `libs`, for this profile into `target/helpers-gpu`; returns its
+/// binary.
 fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, String> {
     let var = |name: &str| env::var(name).map_err(|e| format!("{name}: {e}"));
     if !libs.is_absolute() {
@@ -461,7 +485,13 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
             libs.display()
         ));
     }
-    for lib in ["libvirglrenderer.a", "libepoxy.a", "libMoltenVK.a"] {
+    let os = var("CARGO_CFG_TARGET_OS")?;
+    let given: &[&str] = match os.as_str() {
+        "macos" => &["libvirglrenderer.a", "libepoxy.a", "libMoltenVK.a"],
+        "windows" => &["virglrenderer.lib", "epoxy.lib"],
+        _ => &["libvirglrenderer.a", "librender_server.a", "libepoxy.a"],
+    };
+    for lib in given {
         let _ = writeln!(out, "cargo::rerun-if-changed={}", libs.join(lib).display());
     }
     let root = Path::new(&var("CARGO_MANIFEST_DIR")?).join("..").join("..");
@@ -506,7 +536,11 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
         }
         return Err(message);
     }
-    Ok(target_dir.join(&target).join(dir_name).join("shards-vm"))
+    let exe = if os == "windows" { ".exe" } else { "" };
+    Ok(target_dir
+        .join(&target)
+        .join(dir_name)
+        .join(format!("shards-vm{exe}")))
 }
 
 /// The profile this build runs under, by its name: OUT_DIR is

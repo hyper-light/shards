@@ -1,30 +1,57 @@
-//! The renderer: virglrenderer's Venus, in the krunkit fork that renders in this process on
-//! macOS, over MoltenVK (D144). Linked static, in `shards-vm-gpu` alone (PM M214).
+//! The renderer: virglrenderer's Venus (D144, D201). Linked static, in `shards-vm-gpu`
+//! alone (PM M214).
 //!
-//! A blob of host memory is held by this process from its making: its pages remapped
-//! (`mach_vm_remap`, not copied) into a range of its own, which the window maps and which
-//! lives until the blob does. The renderer frees a blob's Vulkan memory when the guest
-//! frees it, whether or not the blob lives, and MoltenVK's next allocation takes the freed
-//! address (PM M216): mapped from the renderer's address, a blob freed and then mapped
-//! would have given the guest whatever took its place. A held range keeps the blob's own
-//! pages, which no later allocation is given while any mapping of them lives (PM M216). A
-//! blob is mapped whole, in host pages; its pages past its size are its allocation's alone
-//! (PM M216), and a blob the guest says is larger than the memory it is of is refused, as
-//! the memory's region ends before it.
+//! On macOS, the krunkit fork, which renders in this process over MoltenVK. A blob of host
+//! memory is held by this process from its making: its pages remapped (`mach_vm_remap`, not
+//! copied) into a range of its own, which the window maps and which lives until the blob
+//! does. The renderer frees a blob's Vulkan memory when the guest frees it, whether or not
+//! the blob lives, and MoltenVK's next allocation takes the freed address (PM M216): mapped
+//! from the renderer's address, a blob freed and then mapped would have given the guest
+//! whatever took its place. A held range keeps the blob's own pages, which no later
+//! allocation is given while any mapping of them lives (PM M216). A blob is mapped whole, in
+//! host pages; its pages past its size are its allocation's alone (PM M216), and a blob the
+//! guest says is larger than the memory it is of is refused, as the memory's region ends
+//! before it.
+//!
+//! On Linux, virglrenderer 1.3.0, whose Venus contexts its render server serves: here a
+//! thread of this process, given one end of a socket pair as its client's connection
+//! (`get_server_fd`), each context a thread of it (D201). A blob of host memory is held by
+//! the descriptor it is exported as, a dma-buf of the host's driver or shared memory, which
+//! keeps its pages while this process holds it, the driver's free of it notwithstanding
+//! (PM M381); the window maps it by that descriptor, whole host pages, and a blob the guest
+//! says is larger than its memory is refused.
+//!
+//! On Windows, the krunkit fork as on macOS, rendering in this process, built for Windows
+//! with shards' patch (scripts/gpu-libs, D202), over the host's Vulkan loader. A blob of
+//! host memory is held by the renderer: every allocation its guest may map is of pages the
+//! renderer allocates and its device imports (VK_EXT_external_memory_host), which the blob
+//! holds until it goes, whatever the guest frees first; the window maps them where they
+//! are, whole host pages, and a blob the guest says is larger than its pages is refused.
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::{Mutex, PoisonError};
 use std::thread::Thread;
 
 use super::protocol::{Refused, resp};
-use super::{Blob, Capset, HostMemory, Renderer, Signal};
+use super::{Blob, Capset, HostMemory, Pages, Renderer, Signal};
 
 /// The capability set of Venus (virglrenderer_hw.h, VIRGL_RENDERER_CAPSET_VENUS).
 const CAPSET_VENUS: u32 = 4;
 /// virglrenderer.h: VIRGL_RENDERER_VENUS, VIRGL_RENDERER_NO_VIRGL.
 const VENUS: c_int = 1 << 6;
 const NO_VIRGL: c_int = 1 << 7;
+/// How the renderer starts: Venus alone, in this process (the krunkit fork).
+#[cfg(any(target_os = "macos", windows))]
+const FLAGS: c_int = VENUS | NO_VIRGL;
+/// How the renderer starts: Venus alone, its contexts served by its render server
+/// (VIRGL_RENDERER_RENDER_SERVER), each context's fences waited for on a thread of its own
+/// (VIRGL_RENDERER_THREAD_SYNC) and said through `write_context_fence` from there
+/// (VIRGL_RENDERER_ASYNC_FENCE_CB), as QEMU starts it for Venus.
+#[cfg(target_os = "linux")]
+const FLAGS: c_int = VENUS | NO_VIRGL | (1 << 9) | 2 | (1 << 8);
 /// The callbacks' version that has `write_context_fence` (virglrenderer.h).
 const CALLBACKS_VERSION: c_int = 3;
 const FENCE_FLAG_MERGEABLE: u32 = 1 << 0;
@@ -49,6 +76,14 @@ struct Callbacks {
     get_egl_display: Option<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
 }
 
+/// `struct iovec`, POSIX's, which virglrenderer declares itself where the host has none
+/// (vrend_iov.h).
+#[repr(C)]
+struct IoVec {
+    base: *mut c_void,
+    len: usize,
+}
+
 /// `struct virgl_renderer_resource_create_blob_args`.
 #[repr(C)]
 struct CreateBlobArgs {
@@ -58,7 +93,7 @@ struct CreateBlobArgs {
     blob_flags: u32,
     blob_id: u64,
     size: u64,
-    iovecs: *const libc::iovec,
+    iovecs: *const IoVec,
     num_iovs: u32,
 }
 
@@ -81,9 +116,41 @@ unsafe extern "C" {
     fn virgl_renderer_submit_cmd(buffer: *mut c_void, ctx_id: c_int, ndw: c_int) -> c_int;
     fn virgl_renderer_context_create_fence(ctx_id: u32, flags: u32, ring_idx: u32, fence_id: u64) -> c_int;
     fn virgl_renderer_resource_get_map_info(res_handle: u32, map_info: *mut u32) -> c_int;
+    #[cfg(any(target_os = "macos", windows))]
     fn virgl_renderer_resource_get_map_ptr(res_handle: u32, map_ptr: *mut u64) -> c_int;
+    #[cfg(target_os = "linux")]
+    fn virgl_renderer_resource_export_blob(res_id: u32, fd_type: *mut u32, fd: *mut c_int) -> c_int;
 }
 
+/// virglrenderer.h: VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF and _SHM, the descriptors a blob of
+/// host memory is mapped by.
+#[cfg(target_os = "linux")]
+const FD_DMABUF: u32 = 1;
+#[cfg(target_os = "linux")]
+const FD_SHM: u32 = 3;
+
+/// `struct render_context_args` (server/render_context.h): what `render_server_main` says
+/// to a context's process, which a server whose contexts are threads never fills.
+#[cfg(target_os = "linux")]
+#[repr(C)]
+#[derive(Default)]
+struct ContextArgs {
+    valid: bool,
+    init_flags: u32,
+    ctx_id: u32,
+    ctx_name: [c_char; 32],
+    ctx_fd: c_int,
+}
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    /// The render server (server/render_server.c), until its client's connection ends.
+    fn render_server_main(argc: c_int, argv: *mut *mut c_char, ctx_args: *mut ContextArgs) -> bool;
+    /// getopt(3)'s next argument, which a server's options are scanned from.
+    static mut optind: c_int;
+}
+
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h).
     static mach_task_self_: libc::mach_port_t;
@@ -113,6 +180,7 @@ unsafe extern "C" {
 }
 
 /// `struct vm_region_basic_info_64` (mach/vm_region.h), flavor VM_REGION_BASIC_INFO_64.
+#[cfg(target_os = "macos")]
 #[repr(C, packed(4))]
 #[derive(Default)]
 struct BasicInfo {
@@ -127,8 +195,11 @@ struct BasicInfo {
 }
 
 /// mach/vm_region.h, mach/vm_statistics.h, mach/vm_inherit.h.
+#[cfg(target_os = "macos")]
 const VM_REGION_BASIC_INFO_64: i32 = 9;
+#[cfg(target_os = "macos")]
 const VM_FLAGS_ANYWHERE: c_int = 1;
+#[cfg(target_os = "macos")]
 const VM_INHERIT_NONE: u32 = 2;
 
 /// Vulkan's, as MoltenVK exports it (vulkan_core.h): enough to read the host's memory heaps.
@@ -168,7 +239,25 @@ struct MemoryProperties {
 
 const STRUCTURE_TYPE_INSTANCE_CREATE_INFO: i32 = 1;
 const MEMORY_PROPERTY_HOST_VISIBLE: u32 = 1 << 1;
+const MEMORY_PROPERTY_DEVICE_LOCAL: u32 = 1 << 0;
 
+/// `VkExtensionProperties` (vulkan_core.h).
+#[cfg(windows)]
+#[repr(C)]
+struct ExtensionProperties {
+    name: [c_char; 256],
+    spec_version: u32,
+}
+
+type CreateInstance = unsafe extern "C" fn(*const InstanceCreateInfo, *const c_void, *mut *mut c_void) -> i32;
+type DestroyInstance = unsafe extern "C" fn(*mut c_void, *const c_void);
+type EnumeratePhysicalDevices = unsafe extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
+type GetPhysicalDeviceMemoryProperties = unsafe extern "C" fn(*mut c_void, *mut MemoryProperties);
+#[cfg(windows)]
+type EnumerateDeviceExtensionProperties =
+    unsafe extern "C" fn(*mut c_void, *const c_char, *mut u32, *mut ExtensionProperties) -> i32;
+
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn vkCreateInstance(
         info: *const InstanceCreateInfo,
@@ -180,10 +269,237 @@ unsafe extern "C" {
     fn vkGetPhysicalDeviceMemoryProperties(device: *mut c_void, properties: *mut MemoryProperties);
 }
 
-/// The bytes of the host GPU's heaps that host-visible memory comes from, as Vulkan says
-/// them, which Venus tells the guest: the most memory a guest can have mapped into its
-/// window at once.
+/// The Vulkan entry points [`host_visible`] calls: MoltenVK's, linked, on macOS; on Linux
+/// the host's loader's, opened by its soname (libvulkan.so.1), as virglrenderer opens it,
+/// and on Windows from System32 (vulkan-1.dll), as the renderer opens it there; closed as
+/// this goes.
+struct Vulkan {
+    create_instance: CreateInstance,
+    destroy_instance: DestroyInstance,
+    enumerate_physical_devices: EnumeratePhysicalDevices,
+    get_physical_device_memory_properties: GetPhysicalDeviceMemoryProperties,
+    #[cfg(windows)]
+    enumerate_device_extension_properties: EnumerateDeviceExtensionProperties,
+    #[cfg(target_os = "linux")]
+    loader: *mut c_void,
+    #[cfg(windows)]
+    loader: windows_sys::Win32::Foundation::HMODULE,
+}
+
+impl Vulkan {
+    #[cfg(target_os = "macos")]
+    fn open() -> Result<Vulkan, String> {
+        Ok(Vulkan {
+            create_instance: vkCreateInstance,
+            destroy_instance: vkDestroyInstance,
+            enumerate_physical_devices: vkEnumeratePhysicalDevices,
+            get_physical_device_memory_properties: vkGetPhysicalDeviceMemoryProperties,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn open() -> Result<Vulkan, String> {
+        let said = || {
+            // SAFETY: dlerror(3) of this thread's last dl call, copied before the next.
+            let e = unsafe { libc::dlerror() };
+            if e.is_null() {
+                String::new()
+            } else {
+                // SAFETY: a NUL-terminated message of the dynamic linker's.
+                unsafe { std::ffi::CStr::from_ptr(e) }
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        // SAFETY: dlopen(3) of the loader by its soname.
+        let loader = unsafe { libc::dlopen(c"libvulkan.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if loader.is_null() {
+            return Err(format!(
+                "this host has no Vulkan loader, which Venus renders through: {}",
+                said()
+            ));
+        }
+        let entry = |name: &std::ffi::CStr| {
+            // SAFETY: dlsym(3) of the loader just opened.
+            let p = unsafe { libc::dlsym(loader, name.as_ptr()) };
+            if p.is_null() {
+                Err(format!(
+                    "the Vulkan loader has no {}: {}",
+                    name.to_string_lossy(),
+                    said()
+                ))
+            } else {
+                Ok(p)
+            }
+        };
+        let found = (|| {
+            Ok::<_, String>((
+                entry(c"vkCreateInstance")?,
+                entry(c"vkDestroyInstance")?,
+                entry(c"vkEnumeratePhysicalDevices")?,
+                entry(c"vkGetPhysicalDeviceMemoryProperties")?,
+            ))
+        })();
+        let (create, destroy, enumerate, properties) = match found {
+            Ok(found) => found,
+            Err(e) => {
+                // SAFETY: the handle opened above, used no more.
+                unsafe { libc::dlclose(loader) };
+                return Err(e);
+            }
+        };
+        // SAFETY: each the loader's own entry point of that name, which Vulkan declares of
+        // the type it is given (vulkan_core.h).
+        unsafe {
+            Ok(Vulkan {
+                create_instance: std::mem::transmute::<*mut c_void, CreateInstance>(create),
+                destroy_instance: std::mem::transmute::<*mut c_void, DestroyInstance>(destroy),
+                enumerate_physical_devices: std::mem::transmute::<*mut c_void, EnumeratePhysicalDevices>(
+                    enumerate,
+                ),
+                get_physical_device_memory_properties: std::mem::transmute::<
+                    *mut c_void,
+                    GetPhysicalDeviceMemoryProperties,
+                >(properties),
+                loader,
+            })
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Vulkan {
+    fn open() -> Result<Vulkan, String> {
+        use windows_sys::Win32::Foundation::FreeLibrary;
+        use windows_sys::Win32::System::LibraryLoader::{
+            GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+        };
+        let name: Vec<u16> = "vulkan-1.dll".encode_utf16().chain([0]).collect();
+        // SAFETY: the loader by its name, from System32 alone.
+        let loader =
+            unsafe { LoadLibraryExW(name.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+        if loader.is_null() {
+            return Err(format!(
+                "this host has no Vulkan loader (vulkan-1.dll in System32), which Venus renders through: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let entry = |name: &std::ffi::CStr| {
+            // SAFETY: an entry point of the loader just opened, by its NUL-terminated name.
+            unsafe { GetProcAddress(loader, name.as_ptr().cast()) }.ok_or_else(|| {
+                format!(
+                    "the Vulkan loader has no {}: {}",
+                    name.to_string_lossy(),
+                    std::io::Error::last_os_error()
+                )
+            })
+        };
+        let found = (|| {
+            Ok::<_, String>((
+                entry(c"vkCreateInstance")?,
+                entry(c"vkDestroyInstance")?,
+                entry(c"vkEnumeratePhysicalDevices")?,
+                entry(c"vkGetPhysicalDeviceMemoryProperties")?,
+                entry(c"vkEnumerateDeviceExtensionProperties")?,
+            ))
+        })();
+        let (create, destroy, enumerate, properties, extensions) = match found {
+            Ok(found) => found,
+            Err(e) => {
+                // SAFETY: the handle opened above, used no more.
+                unsafe { FreeLibrary(loader) };
+                return Err(e);
+            }
+        };
+        type Proc = unsafe extern "system" fn() -> isize;
+        // SAFETY: each the loader's own entry point of that name, which Vulkan declares of
+        // the type it is given (vulkan_core.h; VKAPI_CALL is the platform's convention).
+        unsafe {
+            Ok(Vulkan {
+                create_instance: std::mem::transmute::<Proc, CreateInstance>(create),
+                destroy_instance: std::mem::transmute::<Proc, DestroyInstance>(destroy),
+                enumerate_physical_devices: std::mem::transmute::<Proc, EnumeratePhysicalDevices>(enumerate),
+                get_physical_device_memory_properties: std::mem::transmute::<
+                    Proc,
+                    GetPhysicalDeviceMemoryProperties,
+                >(properties),
+                enumerate_device_extension_properties: std::mem::transmute::<
+                    Proc,
+                    EnumerateDeviceExtensionProperties,
+                >(extensions),
+                loader,
+            })
+        }
+    }
+
+    /// Whether `device` imports memory of the host's own (VK_EXT_external_memory_host),
+    /// which every allocation a guest maps is of on Windows (D202).
+    fn imports_host_memory(&self, device: *mut c_void) -> bool {
+        let mut count = 0u32;
+        // SAFETY: the count alone asked, of the device's own extensions.
+        let r = unsafe {
+            (self.enumerate_device_extension_properties)(
+                device,
+                std::ptr::null(),
+                &raw mut count,
+                std::ptr::null_mut(),
+            )
+        };
+        if r != 0 {
+            return false;
+        }
+        let mut found: Vec<ExtensionProperties> = (0..count)
+            .map(|_| ExtensionProperties {
+                name: [0; 256],
+                spec_version: 0,
+            })
+            .collect();
+        let mut count = found.len() as u32;
+        // SAFETY: room for `count` properties; VK_INCOMPLETE where there are more, which
+        // reads those it has.
+        let r = unsafe {
+            (self.enumerate_device_extension_properties)(
+                device,
+                std::ptr::null(),
+                &raw mut count,
+                found.as_mut_ptr(),
+            )
+        };
+        (r == 0 || r == 5)
+            && found.iter().take(count as usize).any(|e| {
+                // SAFETY: a NUL-terminated name within its array (vulkan_core.h).
+                unsafe { std::ffi::CStr::from_ptr(e.name.as_ptr()) }.to_bytes()
+                    == b"VK_EXT_external_memory_host"
+            })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Vulkan {
+    fn drop(&mut self) {
+        // SAFETY: the loader this value opened, its entry points used no more.
+        unsafe { libc::dlclose(self.loader) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Vulkan {
+    fn drop(&mut self) {
+        // SAFETY: the loader this value opened, its entry points used no more.
+        unsafe { windows_sys::Win32::Foundation::FreeLibrary(self.loader) };
+    }
+}
+
+/// The most devices whose heaps are counted: more than any host has.
+const MAX_DEVICES: u32 = 64;
+
+/// The bytes of the host GPUs' heaps that host-visible memory comes from, as Vulkan says
+/// them, which Venus tells the guest, every GPU's counted: the most memory a guest can
+/// have mapped into its window at once. On Windows those of the memory the renderer shows
+/// its guest as host-visible: a device's that imports host memory, its types not
+/// device-local (D202).
 fn host_visible() -> Result<u64, String> {
+    let vk = Vulkan::open()?;
     let info = InstanceCreateInfo {
         s_type: STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         next: std::ptr::null(),
@@ -196,36 +512,51 @@ fn host_visible() -> Result<u64, String> {
     };
     let mut instance = std::ptr::null_mut();
     // SAFETY: an instance of no layers and no extensions, destroyed below.
-    let r = unsafe { vkCreateInstance(&raw const info, std::ptr::null(), &raw mut instance) };
+    let r = unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) };
     if r != 0 || instance.is_null() {
         return Err(format!("Vulkan made no instance ({r})"));
     }
-    let mut count = 1u32;
-    let mut device = std::ptr::null_mut();
-    // SAFETY: room for one device; VK_INCOMPLETE where there are more, which is fine.
-    let r = unsafe { vkEnumeratePhysicalDevices(instance, &raw mut count, &raw mut device) };
-    let bytes = if (r == 0 || r == 5) && count > 0 && !device.is_null() {
-        let mut props = MemoryProperties {
-            type_count: 0,
-            types: [MemoryType::default(); 32],
-            heap_count: 0,
-            heaps: [MemoryHeap::default(); 16],
-        };
-        // SAFETY: the instance's device, read into a whole properties structure.
-        unsafe { vkGetPhysicalDeviceMemoryProperties(device, &raw mut props) };
-        let heaps = props.heaps.get(..props.heap_count as usize).unwrap_or_default();
-        let visible = props
-            .types
-            .get(..props.type_count as usize)
-            .unwrap_or_default()
-            .iter()
-            .filter(|t| t.property_flags & MEMORY_PROPERTY_HOST_VISIBLE != 0);
-        let mut counted = Vec::new();
+    let mut count = 0u32;
+    // SAFETY: the count alone asked.
+    let r = unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, std::ptr::null_mut()) };
+    let mut devices = vec![std::ptr::null_mut(); count.min(MAX_DEVICES) as usize];
+    let mut count = devices.len() as u32;
+    let r = if r == 0 {
+        // SAFETY: room for `count` devices; VK_INCOMPLETE where there are more, which is
+        // fine.
+        unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, devices.as_mut_ptr()) }
+    } else {
+        r
+    };
+    let bytes = if (r == 0 || r == 5) && count > 0 {
         let mut total = 0u64;
-        for t in visible {
-            if !counted.contains(&t.heap_index) {
-                counted.push(t.heap_index);
-                total = total.saturating_add(heaps.get(t.heap_index as usize).map_or(0, |h| h.size));
+        for &device in devices.iter().take(count as usize).filter(|d| !d.is_null()) {
+            #[cfg(windows)]
+            if !vk.imports_host_memory(device) {
+                continue;
+            }
+            let mut props = MemoryProperties {
+                type_count: 0,
+                types: [MemoryType::default(); 32],
+                heap_count: 0,
+                heaps: [MemoryHeap::default(); 16],
+            };
+            // SAFETY: the instance's device, read into a whole properties structure.
+            unsafe { (vk.get_physical_device_memory_properties)(device, &raw mut props) };
+            let heaps = props.heaps.get(..props.heap_count as usize).unwrap_or_default();
+            let visible = props
+                .types
+                .get(..props.type_count as usize)
+                .unwrap_or_default()
+                .iter()
+                .filter(|t| t.property_flags & MEMORY_PROPERTY_HOST_VISIBLE != 0)
+                .filter(|t| cfg!(not(windows)) || t.property_flags & MEMORY_PROPERTY_DEVICE_LOCAL == 0);
+            let mut counted = Vec::new();
+            for t in visible {
+                if !counted.contains(&t.heap_index) {
+                    counted.push(t.heap_index);
+                    total = total.saturating_add(heaps.get(t.heap_index as usize).map_or(0, |h| h.size));
+                }
             }
         }
         Ok(total)
@@ -233,7 +564,7 @@ fn host_visible() -> Result<u64, String> {
         Err(format!("Vulkan has no GPU ({r})"))
     };
     // SAFETY: the instance made above.
-    unsafe { vkDestroyInstance(instance, std::ptr::null()) };
+    unsafe { (vk.destroy_instance)(instance, std::ptr::null()) };
     bytes
 }
 
@@ -243,6 +574,9 @@ fn host_visible() -> Result<u64, String> {
 struct Shared {
     signals: Mutex<Vec<Signal>>,
     worker: Mutex<Option<Thread>>,
+    /// The client's end of the render server's connection, until the renderer takes it.
+    #[cfg(target_os = "linux")]
+    server: std::sync::atomic::AtomicI32,
 }
 
 /// A fence of context `ctx`'s `ring` signalled, on whichever thread the renderer signals
@@ -271,19 +605,48 @@ unsafe extern "C" fn write_context_fence(cookie: *mut c_void, ctx: u32, ring: u3
 /// virgl's), and the device answers them itself.
 unsafe extern "C" fn write_fence(_cookie: *mut c_void, _fence: u32) {}
 
+/// The render server's connection, its client's end, given the renderer once: it owns it
+/// then (proxy_server.c, `proxy_server_init_fd`).
+#[cfg(target_os = "linux")]
+unsafe extern "C" fn get_server_fd(cookie: *mut c_void, _version: u32) -> c_int {
+    // SAFETY: the cookie is the renderer's `Shared`, as for `write_context_fence`.
+    let shared = unsafe { &*cookie.cast::<Shared>() };
+    shared.server.swap(-1, std::sync::atomic::Ordering::AcqRel)
+}
+
 /// A blob's host memory, held: `len` bytes at `at` that map its pages, its own until it
 /// goes.
+#[cfg(target_os = "macos")]
 struct Held {
     at: u64,
     len: u64,
     cache: u32,
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for Held {
     fn drop(&mut self) {
         // SAFETY: a range this process remapped for the blob and nothing else holds.
         unsafe { mach_vm_deallocate(mach_task_self_, self.at, self.len) };
     }
+}
+
+/// A blob's host memory, held: the descriptor it was exported as, a dma-buf or shared
+/// memory, `len` bytes of which map it, which keeps its pages until it closes.
+#[cfg(target_os = "linux")]
+struct Held {
+    fd: OwnedFd,
+    len: u64,
+    cache: u32,
+}
+
+/// A blob's host memory: `len` bytes at `at`, its pages, which the renderer holds until
+/// the blob goes (D202).
+#[cfg(windows)]
+struct Held {
+    at: u64,
+    len: u64,
+    cache: u32,
 }
 
 /// The renderer, once a process.
@@ -292,11 +655,14 @@ pub struct Venus {
     capsets: [Capset; 1],
     /// Each blob's guest memory as the renderer holds it, which must live as long as the
     /// blob does: virglrenderer keeps the array's address (virgl_resource.c).
-    iovecs: HashMap<u32, Box<[libc::iovec]>>,
+    iovecs: HashMap<u32, Box<[IoVec]>>,
     held: HashMap<u32, Held>,
     contexts: Vec<u32>,
     page: u64,
     host_visible: u64,
+    /// The render server's thread, which ends as the renderer lets its connection go.
+    #[cfg(target_os = "linux")]
+    server: Option<std::thread::JoinHandle<()>>,
 }
 
 // SAFETY: the renderer's state is process-global and every call is made on the device's
@@ -328,6 +694,19 @@ impl Venus {
             })
             .inspect_err(|_| STARTED.store(false, std::sync::atomic::Ordering::Release))?;
         let mut shared = Box::new(Shared::default());
+        #[cfg(target_os = "linux")]
+        let server = match render_server() {
+            Ok((client, server)) => {
+                shared
+                    .server
+                    .store(client.into_raw_fd(), std::sync::atomic::Ordering::Release);
+                Some(server)
+            }
+            Err(e) => {
+                STARTED.store(false, std::sync::atomic::Ordering::Release);
+                return Err(e);
+            }
+        };
         let mut callbacks = Callbacks {
             version: CALLBACKS_VERSION,
             write_fence: Some(write_fence),
@@ -336,14 +715,31 @@ impl Venus {
             make_current: None,
             get_drm_fd: None,
             write_context_fence: Some(write_context_fence),
+            #[cfg(not(target_os = "linux"))]
             get_server_fd: None,
+            #[cfg(target_os = "linux")]
+            get_server_fd: Some(get_server_fd),
             get_egl_display: None,
         };
         let cookie = std::ptr::from_mut::<Shared>(&mut shared).cast::<c_void>();
         // SAFETY: the callbacks are copied by the renderer; the cookie lives in `shared`,
         // which this value holds until it cleans the renderer up.
-        let r = unsafe { virgl_renderer_init(cookie, VENUS | NO_VIRGL, &raw mut callbacks) };
+        let r = unsafe { virgl_renderer_init(cookie, FLAGS, &raw mut callbacks) };
         if r != 0 {
+            // The server's connection, if the renderer never took it, and so its thread.
+            #[cfg(target_os = "linux")]
+            {
+                let fd = shared.server.swap(-1, std::sync::atomic::Ordering::AcqRel);
+                if fd >= 0 {
+                    // SAFETY: the client's end, which nothing else owns now.
+                    drop(unsafe { OwnedFd::from_raw_fd(fd) });
+                }
+                // SAFETY: the renderer's own state, cleaned up as a failed init leaves it.
+                unsafe { virgl_renderer_cleanup(cookie) };
+                if let Some(t) = server {
+                    let _ = t.join();
+                }
+            }
             STARTED.store(false, std::sync::atomic::Ordering::Release);
             return Err(format!("the GPU renderer did not start: {}", errno(r)));
         }
@@ -362,6 +758,8 @@ impl Venus {
             contexts: Vec::new(),
             page,
             host_visible,
+            #[cfg(target_os = "linux")]
+            server,
         };
         if size == 0 {
             return Err("the GPU renderer offers no Venus capability set: no Vulkan device".into());
@@ -376,6 +774,7 @@ impl Venus {
 
     /// Holds `resource`'s host memory, `size` bytes of it whole pages, where the guest may
     /// map it: refused if its region ends before its size does.
+    #[cfg(target_os = "macos")]
     fn hold(&mut self, resource: u32, size: u64) -> Result<(), Refused> {
         let mut ptr = 0u64;
         // SAFETY: an output of the renderer's.
@@ -443,11 +842,167 @@ impl Venus {
         );
         Ok(())
     }
+
+    /// Holds `resource`'s host memory, `size` bytes of it whole pages, where the guest may
+    /// map it: the descriptor the renderer exports it as, a dma-buf or shared memory;
+    /// refused if the memory ends before its size does, or is of a descriptor that maps
+    /// nowhere (an opaque one, PM M381).
+    #[cfg(target_os = "linux")]
+    fn hold(&mut self, resource: u32, size: u64) -> Result<(), Refused> {
+        let (mut kind, mut fd) = (0u32, -1);
+        // SAFETY: two outputs of the renderer's; the descriptor is a new one, this
+        // process's to close.
+        if unsafe { virgl_renderer_resource_export_blob(resource, &raw mut kind, &raw mut fd) } != 0 || fd < 0
+        {
+            return Ok(());
+        }
+        // SAFETY: the descriptor just exported, which nothing else owns.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let len = size
+            .checked_next_multiple_of(self.page)
+            .ok_or(Refused(resp::ERR_INVALID_PARAMETER))?;
+        // A dma-buf's size and a shared memory file's are where their ends are
+        // (dma_buf_llseek takes SEEK_END alone), its pages to the last one its end is in.
+        // SAFETY: lseek(2) of the descriptor held.
+        let end = unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_END) };
+        let fits = u64::try_from(end)
+            .ok()
+            .and_then(|end| end.checked_next_multiple_of(self.page))
+            .is_some_and(|end| len <= end);
+        if !matches!(kind, FD_DMABUF | FD_SHM) || !fits {
+            return Err(Refused(resp::ERR_INVALID_PARAMETER));
+        }
+        let mut cache = 0;
+        // SAFETY: an output of the renderer's.
+        unsafe { virgl_renderer_resource_get_map_info(resource, &raw mut cache) };
+        self.held.insert(
+            resource,
+            Held {
+                fd,
+                len,
+                cache: cache & MAP_CACHE_MASK,
+            },
+        );
+        Ok(())
+    }
+
+    /// Holds `resource`'s host memory, `size` bytes of it whole pages, where the guest may
+    /// map it: the pages the renderer made it of, which it holds until the blob goes
+    /// (D202); refused if they end before its size does, or are not this process's
+    /// committed, writable memory.
+    #[cfg(windows)]
+    fn hold(&mut self, resource: u32, size: u64) -> Result<(), Refused> {
+        use windows_sys::Win32::System::Memory::{
+            MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_READWRITE, VirtualQuery,
+        };
+        let mut ptr = 0u64;
+        // SAFETY: an output of the renderer's.
+        if unsafe { virgl_renderer_resource_get_map_ptr(resource, &raw mut ptr) } != 0 || ptr == 0 {
+            return Ok(());
+        }
+        let len = size
+            .checked_next_multiple_of(self.page)
+            .ok_or(Refused(resp::ERR_INVALID_PARAMETER))?;
+        // SAFETY: an all-zero MEMORY_BASIC_INFORMATION is a valid one, filled below.
+        let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: VirtualQuery of this process's address, into a whole structure.
+        let got = unsafe {
+            VirtualQuery(
+                ptr as *const c_void,
+                &raw mut info,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        // The region of pages alike from the blob's first, which its last must be within.
+        let start = info.BaseAddress as u64;
+        let within = got != 0
+            && info.State == MEM_COMMIT
+            && info.Protect == PAGE_READWRITE
+            && start <= ptr
+            && ptr
+                .checked_add(len)
+                .is_some_and(|end| end <= start.saturating_add(info.RegionSize as u64));
+        if !within || !ptr.is_multiple_of(self.page) {
+            return Err(Refused(resp::ERR_INVALID_PARAMETER));
+        }
+        let mut cache = 0;
+        // SAFETY: an output of the renderer's.
+        unsafe { virgl_renderer_resource_get_map_info(resource, &raw mut cache) };
+        self.held.insert(
+            resource,
+            Held {
+                at: ptr,
+                len,
+                cache: cache & MAP_CACHE_MASK,
+            },
+        );
+        Ok(())
+    }
+}
+
+/// The render server, on a thread of this process, and its client's end of its connection,
+/// a socket pair of SOCK_SEQPACKET as the server takes it (`--socket-fd`): a context the
+/// client makes the server serves on a thread of its own (render-server-worker=thread).
+#[cfg(target_os = "linux")]
+fn render_server() -> Result<(OwnedFd, std::thread::JoinHandle<()>), String> {
+    let mut fds = [-1; 2];
+    // SAFETY: socketpair(2) into a two-descriptor array.
+    if unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+            0,
+            fds.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return Err(format!(
+            "the GPU's render server's connection: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: the pair just made, each end owned once.
+    let (client, server) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let socket = std::ffi::CString::new(server.as_raw_fd().to_string()).map_err(|e| e.to_string())?;
+    let thread = std::thread::Builder::new()
+        .name("venus-server".into())
+        .spawn(move || {
+            // The server owns its end from here, and closes it as it ends
+            // (render_server.c, `render_server_init`).
+            let _ = server.into_raw_fd();
+            let mut argv = [
+                c"virgl_render_server".as_ptr().cast_mut(),
+                c"--socket-fd".as_ptr().cast_mut(),
+                socket.as_ptr().cast_mut(),
+                std::ptr::null_mut(),
+            ];
+            let mut args = ContextArgs::default();
+            // SAFETY: getopt(3)'s scan started afresh, as only this thread scans options
+            // (glibc and musl reset theirs at 0); then the server, with its arguments, which
+            // live until it returns.
+            let served = unsafe {
+                optind = 0;
+                render_server_main(3, argv.as_mut_ptr(), &raw mut args)
+            };
+            // It ends as its connection does, which it takes for a failure
+            // (render_server.c, `render_server_run`).
+            crate::debug!("virtio-gpu: the render server ended ({served})");
+        })
+        .map_err(|e| format!("the GPU's render server: {e}"))?;
+    Ok((client, thread))
 }
 
 /// A negative errno the renderer returned, said.
+#[cfg(unix)]
 fn errno(r: c_int) -> std::io::Error {
     std::io::Error::from_raw_os_error(r.saturating_abs())
+}
+
+/// A negative errno the renderer returned, its C library's (the UCRT's), which Windows'
+/// own codes are not.
+#[cfg(windows)]
+fn errno(r: c_int) -> std::io::Error {
+    std::io::Error::other(format!("errno {}", r.saturating_abs()))
 }
 
 /// Refused as the renderer refuses: what it did not take.
@@ -508,11 +1063,11 @@ impl Renderer for Venus {
     }
 
     fn create_blob(&mut self, ctx: u32, blob: &Blob, guest: &[(*mut u8, usize)]) -> Result<(), Refused> {
-        let iovecs: Box<[libc::iovec]> = guest
+        let iovecs: Box<[IoVec]> = guest
             .iter()
-            .map(|&(base, len)| libc::iovec {
-                iov_base: base.cast(),
-                iov_len: len,
+            .map(|&(base, len)| IoVec {
+                base: base.cast(),
+                len,
             })
             .collect();
         let args = CreateBlobArgs {
@@ -576,8 +1131,12 @@ impl Renderer for Venus {
             .held
             .get(&resource)
             .ok_or(Refused(resp::ERR_INVALID_PARAMETER))?;
+        #[cfg(any(target_os = "macos", windows))]
+        let pages = Pages::At(held.at as *mut u8);
+        #[cfg(target_os = "linux")]
+        let pages = Pages::Fd(held.fd.as_raw_fd());
         Ok(HostMemory {
-            host: held.at as *mut u8,
+            pages,
             len: usize::try_from(held.len).map_err(|_| Refused(resp::ERR_INVALID_PARAMETER))?,
             cache: held.cache,
         })
@@ -609,6 +1168,13 @@ impl Drop for Venus {
         let cookie = std::ptr::from_mut::<Shared>(&mut self.shared).cast::<c_void>();
         // SAFETY: the renderer this value started, cleaned up before its cookie goes.
         unsafe { virgl_renderer_cleanup(cookie) };
+        // Its connection let go, the render server ends.
+        #[cfg(target_os = "linux")]
+        if let Some(server) = self.server.take()
+            && server.join().is_err()
+        {
+            crate::warn!("virtio-gpu: the render server's thread ended abnormally");
+        }
         STARTED.store(false, std::sync::atomic::Ordering::Release);
     }
 }
@@ -618,6 +1184,7 @@ impl Drop for Venus {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     unsafe extern "C" {
         /// Metal's GPU, retained, or null where the Mac has none (a virtual one, as CI's).
         fn MTLCreateSystemDefaultDevice() -> *mut c_void;
@@ -625,25 +1192,95 @@ mod tests {
     }
 
     /// Whether this Mac has a GPU for Metal, and so for MoltenVK.
-    fn has_gpu() -> bool {
+    #[cfg(target_os = "macos")]
+    fn has_gpu() -> Result<(), String> {
         // SAFETY: Metal's own function, which takes nothing.
         let device = unsafe { MTLCreateSystemDefaultDevice() };
         if device.is_null() {
-            return false;
+            return Err("this Mac has no GPU for Metal".into());
         }
         // SAFETY: the object the call above retained for us, released once.
         unsafe { objc_release(device) };
-        true
+        Ok(())
     }
 
-    /// On this Mac's GPU: the renderer starts once a process, offers Venus's capability set
-    /// and fills it, says the host's heaps, makes a context of Venus; a blob of host memory
-    /// is held from its making, written through the held range as the renderer sees it,
+    /// Whether this host has a GPU for Vulkan: its loader, and a device whose memory the
+    /// host can map.
+    #[cfg(not(target_os = "macos"))]
+    fn has_gpu() -> Result<(), String> {
+        match host_visible()? {
+            0 => Err("this host's Vulkan devices have no memory the host can map".into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// The bytes at `offset` of `pages`, read through a mapping of their own: the held
+    /// range on macOS, the held descriptor mapped afresh on Linux, the pages themselves on
+    /// Windows.
+    #[cfg_attr(windows, allow(unused_variables))]
+    fn read(pages: Pages, len: usize, offset: usize) -> u8 {
+        match pages {
+            // SAFETY: the held range, the blob's pages.
+            Pages::At(at) => unsafe { at.add(offset).read() },
+            #[cfg(unix)]
+            Pages::Fd(fd) => {
+                // SAFETY: a mapping of the held descriptor of its own, unmapped below.
+                let at = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        len,
+                        libc::PROT_READ,
+                        libc::MAP_SHARED,
+                        fd,
+                        0,
+                    )
+                };
+                assert_ne!(at, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
+                // SAFETY: as just mapped.
+                let b = unsafe { at.cast::<u8>().add(offset).read() };
+                // SAFETY: the mapping made above.
+                unsafe { libc::munmap(at, len) };
+                b
+            }
+        }
+    }
+
+    /// The renderer's own mapping of `resource`, which it writes: MoltenVK's on macOS, its
+    /// pages on Windows, virglrenderer's of the blob's descriptor on Linux.
+    fn renderers(resource: u32) -> *mut u8 {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            let mut renderer = 0u64;
+            // SAFETY: an output of the renderer's.
+            let got = unsafe { virgl_renderer_resource_get_map_ptr(resource, &raw mut renderer) };
+            assert_eq!(got, 0);
+            renderer as *mut u8
+        }
+        #[cfg(target_os = "linux")]
+        {
+            unsafe extern "C" {
+                fn virgl_renderer_resource_map(
+                    res_handle: u32,
+                    map: *mut *mut c_void,
+                    size: *mut u64,
+                ) -> c_int;
+            }
+            let (mut map, mut size) = (std::ptr::null_mut(), 0u64);
+            // SAFETY: two outputs of the renderer's; its mapping lives until the blob's unref.
+            let got = unsafe { virgl_renderer_resource_map(resource, &raw mut map, &raw mut size) };
+            assert_eq!(got, 0);
+            map.cast()
+        }
+    }
+
+    /// On this host's GPU: the renderer starts once a process, offers Venus's capability
+    /// set and fills it, says the host's heaps, makes a context of Venus; a blob of host
+    /// memory is held from its making, what the renderer writes seen through what it holds,
     /// and refused where the guest says it is larger than its memory.
     #[test]
     fn the_renderer_offers_venus_and_holds_its_blobs() {
-        if !has_gpu() {
-            println!("SKIP: this Mac has no GPU for Metal");
+        if let Err(why) = has_gpu() {
+            println!("SKIP: {why}");
             return;
         }
         let mut venus = Venus::new().unwrap();
@@ -666,19 +1303,14 @@ mod tests {
         venus.create_blob(1, &blob, &[]).unwrap();
         let held = venus.map(7).unwrap();
         assert_eq!(held.len as u64, 20000u64.next_multiple_of(venus.page));
-        let mut renderer = 0u64;
-        // SAFETY: an output of the renderer's.
-        let got = unsafe { virgl_renderer_resource_get_map_ptr(7, &raw mut renderer) };
-        assert_eq!(got, 0);
-        assert_ne!(
-            held.host as u64, renderer,
-            "the blob's own range, not the renderer's"
-        );
-        // SAFETY: the held range and the renderer's, each the blob's pages.
-        unsafe {
-            held.host.add(100).write(0x5a);
-            assert_eq!((renderer as *const u8).add(100).read(), 0x5a);
+        let renderer = renderers(7);
+        #[cfg(target_os = "macos")]
+        if let Pages::At(at) = held.pages {
+            assert_ne!(at, renderer, "the blob's own range, not the renderer's");
         }
+        // SAFETY: the renderer's mapping of the blob's pages.
+        unsafe { renderer.add(100).write(0x5a) };
+        assert_eq!(read(held.pages, held.len, 100), 0x5a);
         // Said to be larger than its memory: its region ends first, and it is refused.
         assert_eq!(venus.hold(7, 1 << 30), Err(Refused(resp::ERR_INVALID_PARAMETER)));
         venus.unref(7);

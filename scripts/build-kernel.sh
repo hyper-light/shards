@@ -4,7 +4,9 @@
 # Output: OUT_DIR/vmlinux-<version>-x86_64 (ELF) or OUT_DIR/Image-<version>-aarch64, and
 # OUT_DIR/config-<version>-<arch>. A VARIANT adds resources/kernel/VARIANT.config to the
 # fragments and `-VARIANT` to each name (`kvm`: a guest that is itself a KVM host; `hyperv`:
-# a Windows host's guest, which keeps Hyper-V's time). Needs a Linux host with gcc, make,
+# a Windows host's guest, which keeps Hyper-V's time; `gpu`: a guest given a GPU); variants
+# joined by `+` add each one's, in order, and name it by all of them joined by `-`
+# (`hyperv+gpu`: a Windows host's guest given a GPU, `-hyperv-gpu`). Needs a Linux host with gcc, make,
 # bc, bison, flex, patch, libelf and libssl headers; scripts/build-kernel-in-builder.sh
 # runs it in the pinned builder, which releases use. resources/kernel/README.md explains
 # the inputs.
@@ -59,8 +61,11 @@ if [ -e "$repo/resources/kernel/shards-$arch.config" ]; then
 fi
 suffix=
 if [ -n "$variant" ]; then
-    fragments+=("$repo/resources/kernel/$variant.config")
-    suffix=-$variant
+    IFS=+ read -r -a parts <<<"$variant"
+    for part in "${parts[@]}"; do
+        fragments+=("$repo/resources/kernel/$part.config")
+        suffix=$suffix-$part
+    done
 fi
 named=$(sed -nE 's/^(CONFIG_[A-Za-z0-9_]+)=.*/\1/p; s/^# (CONFIG_[A-Za-z0-9_]+) is not set$/\1/p' "${fragments[@]}" | sort | uniq -d)
 if [ -n "$named" ]; then

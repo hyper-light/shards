@@ -27,10 +27,12 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   `vmlinux-<version>-x86_64-hyperv`. Their partitions offer Hyper-V's clocks, and Linux
   keeps time by them only with CONFIG_HYPERV (PM M197, M198); a KVM or HVF guest would
   carry its code and use none of it.
-- **The `gpu` variant:** `gpu.config`, merged last, for a guest given a GPU (D144): DRM's
-  virtio-gpu driver without modesetting, Vulkan through Venus on its render node,
-  `Image-<version>-aarch64-gpu`. Every other guest's kernel stays without DRM: a GPU costs
-  nothing where it is not used.
+- **The `gpu` variant:** `gpu.config`, merged last, for a guest given a GPU (D144, D201):
+  DRM's virtio-gpu driver without modesetting, Vulkan through Venus on its render node,
+  `Image-<version>-aarch64-gpu` and `vmlinux-<version>-x86_64-gpu`; with the `hyperv`
+  variant's before it (`hyperv+gpu`), a Windows host's guest's,
+  `vmlinux-<version>-x86_64-hyperv-gpu`. Every other guest's kernel stays without DRM: a
+  GPU costs nothing where it is not used.
 - **Patches:** `patches/*.patch`, applied in order with no fuzz. Each says what it fixes
   and why:
   - `0001`: an arm64 guest's first exec from a DAX-mapped file oopsed in `fs/dax.c`.

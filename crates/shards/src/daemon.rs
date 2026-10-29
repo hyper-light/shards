@@ -6877,7 +6877,7 @@ impl<D: Disk> Daemon<D> {
             }
             Boot::Stored(guest) => guest,
         };
-        // A run given this Mac's GPU boots the pinned GPU kernel in the GPU's VM process
+        // A run given a GPU boots the pinned GPU kernel in the GPU's VM process
         // (D144), and restores a template of its own, saved before its guest made anything
         // of the GPU's, which its host driver would hold (D150).
         let gpu_guest = prepared.gpu.as_ref().map(|kernel| crate::guest::Guest {
