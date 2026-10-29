@@ -2,29 +2,35 @@
 //! share server's Windows layer makes, each relative to a handle of the shared tree and
 //! following no reparse point, and what they mean in Linux's terms.
 
-use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{
+    AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_OPEN_REPARSE_POINT, FILE_STAT_LX_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileStatLxInformation,
-    LX_FILE_METADATA_HAS_DEVICE_ID, LX_FILE_METADATA_HAS_MODE, LX_FILE_METADATA_HAS_UID, NtCreateFile,
-    NtQueryInformationFile,
+    FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_STAT_LX_INFORMATION,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileStatLxInformation, LX_FILE_METADATA_HAS_DEVICE_ID,
+    LX_FILE_METADATA_HAS_MODE, LX_FILE_METADATA_HAS_UID, NtCreateFile, NtQueryEaFile, NtQueryInformationFile,
+    NtSetEaFile,
 };
 use windows_sys::Win32::Foundation::{
-    NTSTATUS, STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE, STATUS_DELETE_PENDING, STATUS_DIRECTORY_NOT_EMPTY,
-    STATUS_DISK_FULL, STATUS_EAS_NOT_SUPPORTED, STATUS_FILE_DELETED, STATUS_FILE_IS_A_DIRECTORY,
-    STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_PARAMETER, STATUS_MEDIA_WRITE_PROTECTED,
-    STATUS_NAME_TOO_LONG, STATUS_NO_EAS_ON_FILE, STATUS_NONEXISTENT_EA_ENTRY, STATUS_NOT_A_DIRECTORY,
-    STATUS_NOT_A_REPARSE_POINT, STATUS_NOT_SAME_DEVICE, STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION,
-    STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
-    STATUS_SHARING_VIOLATION, UNICODE_STRING,
+    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DISK_FULL, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND,
+    ERROR_INVALID_PARAMETER, ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SUPPORTED, ERROR_PATH_NOT_FOUND,
+    ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE, STATUS_DELETE_PENDING,
+    STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL, STATUS_EAS_NOT_SUPPORTED, STATUS_FILE_DELETED,
+    STATUS_FILE_IS_A_DIRECTORY, STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_PARAMETER,
+    STATUS_MEDIA_WRITE_PROTECTED, STATUS_NAME_TOO_LONG, STATUS_NO_EAS_ON_FILE, STATUS_NO_MORE_EAS,
+    STATUS_NONEXISTENT_EA_ENTRY, STATUS_NOT_A_DIRECTORY, STATUS_NOT_A_REPARSE_POINT, STATUS_NOT_SAME_DEVICE,
+    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID,
+    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_READ_EA,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx,
-    SYNCHRONIZE,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO,
+    FILE_READ_ATTRIBUTES, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
+    GetFileInformationByHandleEx, SYNCHRONIZE,
 };
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
+use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
 
 use super::host::Stat;
 
@@ -32,6 +38,7 @@ use super::host::Stat;
 pub type Errno = i32;
 
 const ENOENT: Errno = 2;
+const E2BIG: Errno = 7;
 const EIO: Errno = 5;
 const ENOMEM: Errno = 12;
 const EACCES: Errno = 13;
@@ -279,11 +286,286 @@ pub fn stat(h: BorrowedHandle<'_>) -> Result<Stat, Errno> {
     })
 }
 
+/// The most a file's extended attributes NTFS keeps take together.
+const EA_ROOM: usize = 64 << 10;
+
+/// A file's extended attributes, each its name and its value.
+pub type Eas = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// `h`'s extended attributes, each name and value (NtQueryEaFile, all at once from the
+/// first: NTFS keeps at most 64 KiB of a file's), none where it has none.
+pub fn eas(h: BorrowedHandle<'_>) -> Result<Eas, Errno> {
+    let mut buf = vec![0u8; EA_ROOM];
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: a buffer of its length; every EA, from the first, no list of names.
+    let status = unsafe {
+        NtQueryEaFile(
+            h.as_raw_handle(),
+            &mut io,
+            buf.as_mut_ptr().cast(),
+            u32::try_from(buf.len()).unwrap_or(0),
+            false,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            true,
+        )
+    };
+    match status {
+        STATUS_NO_EAS_ON_FILE | STATUS_NO_MORE_EAS => return Ok(Vec::new()),
+        s if s < 0 => return Err(errno(s)),
+        _ => {}
+    }
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    // FILE_FULL_EA_INFORMATION: its next's offset, flags, name's and value's lengths, its
+    // name and a NUL, its value.
+    while let Some(head) = buf.get(at..at + 8).and_then(|h| <[u8; 8]>::try_from(h).ok()) {
+        let next = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        let name_len = usize::from(head[5]);
+        let value_len = usize::from(u16::from_le_bytes([head[6], head[7]]));
+        let name = buf.get(at + 8..at + 8 + name_len).ok_or(EIO)?;
+        let value = buf
+            .get(at + 9 + name_len..at + 9 + name_len + value_len)
+            .ok_or(EIO)?;
+        out.push((name.to_vec(), value.to_vec()));
+        if next == 0 {
+            break;
+        }
+        at = at.checked_add(next).ok_or(EIO)?;
+    }
+    Ok(out)
+}
+
+/// `h`'s extended attributes set, each `(name, value)`, an empty value removing its name
+/// (NtSetEaFile, FILE_FULL_EA_INFORMATION entries four-byte aligned).
+pub fn set_eas(h: BorrowedHandle<'_>, eas: &[(&[u8], &[u8])]) -> Result<(), Errno> {
+    let mut list = Vec::new();
+    for (i, (name, value)) in eas.iter().enumerate() {
+        let name_len = u8::try_from(name.len()).map_err(|_| ENAMETOOLONG)?;
+        let value_len = u16::try_from(value.len()).map_err(|_| E2BIG)?;
+        let start = list.len();
+        list.extend([0u8; 4]);
+        list.push(0);
+        list.push(name_len);
+        list.extend(value_len.to_le_bytes());
+        list.extend_from_slice(name);
+        list.push(0);
+        list.extend_from_slice(value);
+        if i + 1 < eas.len() {
+            while (list.len() - start) % 4 != 0 {
+                list.push(0);
+            }
+            let next = u32::try_from(list.len() - start).map_err(|_| E2BIG)?;
+            if let Some(slot) = list.get_mut(start..start + 4) {
+                slot.copy_from_slice(&next.to_le_bytes());
+            }
+        }
+    }
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: a list of this frame's, its length.
+    let status = unsafe {
+        NtSetEaFile(
+            h.as_raw_handle(),
+            &mut io,
+            list.as_ptr().cast(),
+            u32::try_from(list.len()).map_err(|_| E2BIG)?,
+        )
+    };
+    if status < 0 {
+        return Err(errno(status));
+    }
+    Ok(())
+}
+
+/// WSL's metadata of `h`'s file set, each where given: its owner, group and mode (`$LXUID`,
+/// `$LXGID`, `$LXMOD`, each a little-endian u32) and a device file's major and minor
+/// (`$LXDEV`, two), which FileStatLxInformation reads back (PM M362).
+pub fn set_lx(
+    h: BorrowedHandle<'_>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    mode: Option<u32>,
+    dev: Option<(u32, u32)>,
+) -> Result<(), Errno> {
+    let (uid, gid, mode) = (
+        uid.map(u32::to_le_bytes),
+        gid.map(u32::to_le_bytes),
+        mode.map(u32::to_le_bytes),
+    );
+    let dev = dev.map(|(major, minor)| {
+        let mut both = [0u8; 8];
+        both[..4].copy_from_slice(&major.to_le_bytes());
+        both[4..].copy_from_slice(&minor.to_le_bytes());
+        both
+    });
+    let mut list: Vec<(&[u8], &[u8])> = Vec::new();
+    if let Some(v) = &uid {
+        list.push((b"$LXUID", v));
+    }
+    if let Some(v) = &gid {
+        list.push((b"$LXGID", v));
+    }
+    if let Some(v) = &mode {
+        list.push((b"$LXMOD", v));
+    }
+    if let Some(v) = &dev {
+        list.push((b"$LXDEV", v));
+    }
+    if list.is_empty() {
+        return Ok(());
+    }
+    set_eas(h, &list)
+}
+
+/// `h`'s file made a reparse point of `tag` holding `data` (FSCTL_SET_REPARSE_POINT): a
+/// REPARSE_DATA_BUFFER, its tag, its data's length and a reserved word, then the data.
+pub fn set_reparse(h: BorrowedHandle<'_>, tag: u32, data: &[u8]) -> Result<(), Errno> {
+    let mut buf = Vec::with_capacity(8 + data.len());
+    buf.extend(tag.to_le_bytes());
+    buf.extend(u16::try_from(data.len()).map_err(|_| ENAMETOOLONG)?.to_le_bytes());
+    buf.extend(0u16.to_le_bytes());
+    buf.extend_from_slice(data);
+    let mut returned = 0u32;
+    // SAFETY: a buffer of this frame's, its length, on a handle the caller holds.
+    let done = unsafe {
+        DeviceIoControl(
+            h.as_raw_handle(),
+            FSCTL_SET_REPARSE_POINT,
+            buf.as_ptr().cast(),
+            u32::try_from(buf.len()).map_err(|_| ENAMETOOLONG)?,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if done == 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+/// The tag and data of the reparse point `h`'s file is (FSCTL_GET_REPARSE_POINT), none
+/// where it is none.
+pub fn reparse(h: BorrowedHandle<'_>) -> Result<Option<(u32, Vec<u8>)>, Errno> {
+    // MAXIMUM_REPARSE_DATA_BUFFER_SIZE.
+    let mut buf = vec![0u8; 16 << 10];
+    let mut returned = 0u32;
+    // SAFETY: a buffer of this frame's, its length, on a handle the caller holds.
+    let done = unsafe {
+        DeviceIoControl(
+            h.as_raw_handle(),
+            FSCTL_GET_REPARSE_POINT,
+            std::ptr::null(),
+            0,
+            buf.as_mut_ptr().cast(),
+            u32::try_from(buf.len()).unwrap_or(0),
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if done == 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(i32::try_from(ERROR_NOT_A_REPARSE_POINT).unwrap_or(0)) {
+            return Ok(None);
+        }
+        return Err(win32_errno(&e));
+    }
+    let got = buf.get(..usize::try_from(returned).unwrap_or(0)).ok_or(EIO)?;
+    let head = got
+        .get(..8)
+        .and_then(|h| <[u8; 8]>::try_from(h).ok())
+        .ok_or(EIO)?;
+    let tag = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
+    let len = usize::from(u16::from_le_bytes([head[4], head[5]]));
+    Ok(Some((tag, got.get(8..8 + len).ok_or(EIO)?.to_vec())))
+}
+
+/// The version an LX symlink's data starts with (MS-FSCC 2.1.2.7), before its target's
+/// bytes.
+const LX_SYMLINK_VERSION: u32 = 2;
+
+/// A symlink `name` in `dir` to `target`, as WSL makes one: a new empty file made an LX
+/// symlink reparse point holding its target's bytes (MS-FSCC 2.1.2.7), never an NTFS
+/// symlink, which an unelevated process makes only in Developer Mode (PM M362).
+pub fn symlink_at(dir: BorrowedHandle<'_>, name: &[u16], target: &[u8]) -> Result<OwnedHandle, Errno> {
+    let made = open_at(
+        dir,
+        name,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE,
+    )?;
+    let mut data = LX_SYMLINK_VERSION.to_le_bytes().to_vec();
+    data.extend_from_slice(target);
+    set_reparse(made.as_handle(), LX_SYMLINK, &data)?;
+    Ok(made)
+}
+
+/// What the LX symlink `h` is to, its target's bytes; EINVAL for anything else, as
+/// readlink(2) answers of what is no symlink.
+pub fn readlink(h: BorrowedHandle<'_>) -> Result<Vec<u8>, Errno> {
+    match reparse(h)? {
+        Some((LX_SYMLINK, data)) if data.get(..4) == Some(&LX_SYMLINK_VERSION.to_le_bytes()[..]) => {
+            Ok(data.get(4..).unwrap_or_default().to_vec())
+        }
+        _ => Err(EINVAL),
+    }
+}
+
+/// A FIFO, character or block device or Unix socket `name` in `dir`, by its mode's kind
+/// (`S_IFIFO`, `S_IFCHR`, `S_IFBLK`, `S_IFSOCK`), as WSL makes one: a new empty file made a
+/// reparse point of its LX tag, a device's major and minor in `$LXDEV` (PM M362).
+pub fn special_at(
+    dir: BorrowedHandle<'_>,
+    name: &[u16],
+    kind: u32,
+    dev: (u32, u32),
+) -> Result<OwnedHandle, Errno> {
+    let tag = match kind {
+        0o010000 => LX_FIFO,
+        0o020000 => LX_CHR,
+        0o060000 => LX_BLK,
+        0o140000 => AF_UNIX,
+        _ => return Err(EINVAL),
+    };
+    let made = open_at(
+        dir,
+        name,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE,
+    )?;
+    set_reparse(made.as_handle(), tag, &[])?;
+    if matches!(tag, LX_CHR | LX_BLK) {
+        set_lx(made.as_handle(), None, None, None, Some(dev))?;
+    }
+    Ok(made)
+}
+
+/// Linux's errno for a Win32 error a call answered with, by its NTSTATUS's.
+fn win32_errno(e: &std::io::Error) -> Errno {
+    match e.raw_os_error().and_then(|c| u32::try_from(c).ok()) {
+        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => ENOENT,
+        Some(ERROR_ACCESS_DENIED) => EACCES,
+        Some(ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS) => EEXIST,
+        Some(ERROR_SHARING_VIOLATION) => EBUSY,
+        Some(ERROR_INVALID_PARAMETER) => EINVAL,
+        Some(ERROR_NOT_SUPPORTED) => EOPNOTSUPP,
+        Some(ERROR_DISK_FULL) => ENOSPC,
+        _ => EIO,
+    }
+}
+
+/// [`win32_errno`] of the calling thread's last error.
+fn last_error() -> Errno {
+    win32_errno(&std::io::Error::last_os_error())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::os::windows::io::AsHandle as _;
-
     use windows_sys::Wdk::Storage::FileSystem::{
         FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
     };
@@ -366,5 +648,72 @@ mod tests {
             .unwrap_err(),
             ENOENT
         );
+    }
+
+    /// A directory of this test's own, its handle as a share's root is opened.
+    fn tree(label: &str) -> (shards_testdir::TempDir, std::fs::File) {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let dir = shards_testdir::TempDir::new(label).unwrap();
+        let root = std::fs::File::options()
+            .read(true)
+            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&*dir)
+            .unwrap();
+        (dir, root)
+    }
+
+    /// WSL's metadata set reads back as a file's owner and mode, a guest's extended
+    /// attributes beside it as set, and one removed gone.
+    #[test]
+    fn a_files_owner_mode_and_attributes_are_kept_in_its_eas() {
+        let (_dir, root) = tree("ntfs-eas");
+        let f = open_at(
+            root.as_handle(),
+            &nt_name(b"f").unwrap(),
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .unwrap();
+        set_lx(f.as_handle(), Some(1750), Some(1751), Some(0o100600), None).unwrap();
+        let st = stat(f.as_handle()).unwrap();
+        assert_eq!((st.uid, st.mode), (1750, 0o100600));
+        set_eas(f.as_handle(), &[(b"GUEST.A", b"one"), (b"GUEST.B", b"two")]).unwrap();
+        let kept = eas(f.as_handle()).unwrap();
+        assert!(
+            kept.iter().any(|(n, v)| n == b"GUEST.A" && v == b"one"),
+            "{kept:?}"
+        );
+        assert!(
+            kept.iter().any(|(n, v)| n == b"GUEST.B" && v == b"two"),
+            "{kept:?}"
+        );
+        set_eas(f.as_handle(), &[(b"GUEST.A", b"")]).unwrap();
+        assert!(!eas(f.as_handle()).unwrap().iter().any(|(n, _)| n == b"GUEST.A"));
+    }
+
+    /// A guest's symlink is an LX symlink, reading back its target and stat'ing as a
+    /// symlink; a FIFO and a character device each their kind, the device its number.
+    #[test]
+    fn symlinks_and_special_files_are_wsls_reparse_points() {
+        let (_dir, root) = tree("ntfs-reparse");
+        let link = symlink_at(root.as_handle(), &nt_name(b"link").unwrap(), b"../there").unwrap();
+        assert_eq!(readlink(link.as_handle()).unwrap(), b"../there");
+        assert_eq!(stat(link.as_handle()).unwrap().mode & 0o170000, 0o120000);
+        let fifo = special_at(root.as_handle(), &nt_name(b"fifo").unwrap(), 0o010000, (0, 0)).unwrap();
+        assert_eq!(stat(fifo.as_handle()).unwrap().mode & 0o170000, 0o010000);
+        assert_eq!(readlink(fifo.as_handle()), Err(EINVAL));
+        let chr = special_at(root.as_handle(), &nt_name(b"null").unwrap(), 0o020000, (1, 3)).unwrap();
+        let st = stat(chr.as_handle()).unwrap();
+        assert_eq!((st.mode & 0o170000, st.rdev), (0o020000, (1 << 8) | 3));
+        let plain = open_at(
+            root.as_handle(),
+            &nt_name(b"plain").unwrap(),
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .unwrap();
+        assert_eq!(reparse(plain.as_handle()), Ok(None));
     }
 }
