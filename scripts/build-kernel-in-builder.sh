@@ -28,7 +28,7 @@ docker run --rm -v "$repo:/src:ro" -v "$out:/out" \
             gcc --version | head -1
             ld --version | head -1
             dpkg-query -W -f="\${Package} \${Version}\n" $PACKAGES gcc-12 binutils libc6-dev
-        } > "/out/toolchain-$ARCH_${VARIANT_:+-$VARIANT_}.txt"
+        } > "/out/toolchain-$ARCH_${VARIANT_:+-${VARIANT_//+/-}}.txt"
         /src/scripts/build-kernel.sh "$ARCH_" /out "$VARIANT_"
         chown -R "'"$(id -u):$(id -g)"'" /out
     '
