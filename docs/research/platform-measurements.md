@@ -16503,3 +16503,37 @@ revision before comparing a changed API/implementation.
   and Win32k's calls are enough: the driver comes up in the AppContainer, as it does
   outside one. Making them costs a GPU VM's start about 0.4 ms. Measured in session 0, a
   service's, as the runner is; a user's interactive session is unmeasured.
+
+### M386. Vulkan programs in a guest given a Windows host's GPU, against its CPU (D202)
+
+- **Question.** M384's, of a Windows host: on its GPU through Venus (D202), do a guest's
+  Vulkan compute programs get its CPU's results, and how fast do they run?
+- **Method.** M384's `compute.sh` on jupiter, from Git Bash (`MSYS2_ARG_CONV_EXCL`, which
+  leaves the guest's paths to it), of the same image, built there by Docker Desktop and
+  loaded (`shards load`): shards' builder, whose memory stayed at the 2 GiB it booted with,
+  was killed for it compiling llama.cpp with 8 jobs (told to the parity plan's step 7). The
+  guest given the GPU (`--gpus all`, 8 GiB), its Mesa 25.0.7. jupiter: AMD Ryzen AI Max+
+  395 and its Radeon 8060S (AMD's driver 25.20.32.06), Windows 11 10.0.26200; shards built
+  from the Windows daemon's branch with D202 merged; 2026-10-29. Then the matrix cases again
+  with llama.cpp's integer dot product off (GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1).
+- **Results.**
+  - The guest finds `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`, driver venus,
+    Vulkan 1.2 (the krunkit fork's Venus), and Mesa's llvmpipe; ggml sees 105,388 MB of
+    unified device memory.
+  - 1,666 of 1,684 cases match the CPU's. The other 18 are NaN, the same 18 as RADV's
+    through Venus on Linux (M384), case for case. With the integer dot product off, 1,684
+    of 1,684.
+  - llama-bench, n=5 each, milliseconds a run (p50, p90 = p99 = max) and tokens/s:
+
+    | Test | p50 ms | max ms | p50 t/s | min t/s |
+    |---|---|---|---|---|
+    | pp512 | 334.80 | 353.65 | 1,529.3 | 1,447.8 |
+    | tg128 | 1,752.81 | 1,766.56 | 73.0 | 72.5 |
+
+  - Matrix multiplication, 4096 by 14336 by 512: f16 3.36 TFLOPS, q4_0 4.01; by one
+    column, q4_0 832 GFLOPS (141 µs a run).
+- **Reading.** A guest's Vulkan compute runs on a Windows host's GPU through Venus and
+  gets its CPU's results in every case but the 18 of llama.cpp's integer dot product path,
+  which RADV's gives alike on Linux and which the path's absence clears. Whether AMD's
+  Windows driver gives them natively, and its speed natively, are unmeasured: llama.cpp's
+  Windows build needs the Vulkan SDK, which jupiter lacks.

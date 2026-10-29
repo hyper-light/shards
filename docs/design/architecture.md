@@ -6788,6 +6788,10 @@ kernel. What a Windows host makes otherwise:
   daemon's spawner (`shards_ipc`, the parity plan's step 2), and lands with it: tested on
   step 2's branch with this one merged. CI's Windows runners, which have no GPU, build,
   lint and test the renderer, and skip what needs one.
+- **Vulkan programs** (PM M386): llama.cpp's matrix multiplications in a guest on
+  jupiter's Radeon 8060S get its CPU's results case for case, but for the 18 shapes of
+  llama.cpp's integer dot product path that RADV gives NaN on Linux too (M384), which with
+  it off match as well; TinyLlama's pp512 at 1,529 tokens/s (p50).
 - **Not yet:** an arm64 Windows host (WHP's arm64 backend is the parity plan's step 10),
   Windows hosts of NVIDIA's and Intel's GPUs, none being here, and a GPU's VM process
   started from a user's interactive session, measured in session 0 alone (M385).
