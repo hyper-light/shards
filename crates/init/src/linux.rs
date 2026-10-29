@@ -20,6 +20,13 @@ pub fn main() {
     if let Err(e) = mark(marker::INIT_STARTED) {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");
     }
+    // `shards_online=1`: the kernel brought up its boot CPU alone, and this brings the rest
+    // online before anything runs (vm::late_cpus_cmdline, PM M379).
+    if std::env::var_os("shards_online").is_some()
+        && let Err(e) = bring_cpus_online()
+    {
+        let _ = writeln!(io::stderr(), "shards-init: bringing its CPUs online: {e}");
+    }
     // Which contract this init speaks, for the host to check before it hands over a
     // workload. A snapshot keeps it.
     if let Err(e) = control_write64(control::ABI, shards_abi::IDENTITY) {
@@ -59,6 +66,53 @@ pub fn main() {
         dump_kernel_log();
     }
     power_off();
+}
+
+/// Brings each CPU the kernel has and has not brought up online, one after another, through
+/// a sysfs of its own attached nowhere: on CI's Windows runners 3 CPUs in 67 to 109 ms (PM
+/// M379). A CPU that will not come online is said, and the rest still brought up.
+fn bring_cpus_online() -> io::Result<()> {
+    use std::io::Read as _;
+    use std::os::fd::AsRawFd as _;
+    let sysfs = crate::domains::detached(c"sysfs", &[])?;
+    let open = |path: &str, flags: libc::c_int| -> io::Result<std::fs::File> {
+        let c = std::ffi::CString::new(path).map_err(io::Error::other)?;
+        // SAFETY: openat(2) of a NUL-terminated name beneath a descriptor this holds.
+        let fd = unsafe { libc::openat(sysfs.as_raw_fd(), c.as_ptr(), flags | libc::O_CLOEXEC) };
+        if fd < 0 {
+            let e = io::Error::last_os_error();
+            return Err(io::Error::new(e.kind(), format!("{path}: {e}")));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        Ok(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) })
+    };
+    let list = |name: &str| -> io::Result<Vec<u32>> {
+        let mut text = String::new();
+        open(&format!("devices/system/cpu/{name}"), libc::O_RDONLY)?.read_to_string(&mut text)?;
+        cpu_list(&text).ok_or_else(|| io::Error::other(format!("CPUs {name}: {text:?}")))
+    };
+    let online = list("online")?;
+    for cpu in list("present")?.into_iter().filter(|c| !online.contains(c)) {
+        let path = format!("devices/system/cpu/cpu{cpu}/online");
+        if let Err(e) = open(&path, libc::O_WRONLY).and_then(|mut f| f.write_all(b"1")) {
+            let _ = writeln!(io::stderr(), "shards-init: CPU {cpu} not brought online: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// The CPUs of a sysfs CPU list (`0-3,5`), in order; none where it is not one.
+fn cpu_list(text: &str) -> Option<Vec<u32>> {
+    let mut cpus = Vec::new();
+    for part in text.trim().split(',').filter(|p| !p.is_empty()) {
+        let (from, to) = part.split_once('-').unwrap_or((part, part));
+        let (from, to) = (from.parse::<u32>().ok()?, to.parse::<u32>().ok()?);
+        if from > to {
+            return None;
+        }
+        cpus.extend(from..=to);
+    }
+    Some(cpus)
 }
 
 fn dump_kernel_log() {
@@ -207,5 +261,18 @@ pub(crate) fn power_off() -> ! {
     loop {
         // SAFETY: blocks until a signal arrives.
         unsafe { libc::pause() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A sysfs CPU list reads as its CPUs in order, and what is not one as none.
+    #[test]
+    fn cpu_lists_read_as_sysfs_writes_them() {
+        assert_eq!(super::cpu_list("0\n"), Some(vec![0]));
+        assert_eq!(super::cpu_list("0-3,5,7-8\n"), Some(vec![0, 1, 2, 3, 5, 7, 8]));
+        assert_eq!(super::cpu_list("\n"), Some(vec![]));
+        assert_eq!(super::cpu_list("3-1"), None);
+        assert_eq!(super::cpu_list("a-b"), None);
     }
 }

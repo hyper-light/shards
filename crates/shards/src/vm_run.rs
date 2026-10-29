@@ -965,6 +965,9 @@ fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     // `--cpu-rt-runtime` set.
     cfg.cmdline
         .push_str(" quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0");
+    // Its CPUs past the first brought online by shards-init where its backend's boots wait
+    // on them (PM M379).
+    cfg.cmdline.push_str(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus));
     if template {
         cfg.cmdline.push_str(" shards_template=1");
     }

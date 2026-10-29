@@ -10552,6 +10552,19 @@ network process (D142) and its builder (D143) follow.
   in parallel past the host's CPUs, each AP started spins in its turn while the next waits
   for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s
   where one at a time took 96 ms, never slower, at 4 vCPUs as at 240 (M353).
+- **Its CPUs past the first brought online by its init** (`vm::late_cpus_cmdline`, M379).
+  A guest of shards-init's of more than one vCPU boots its kernel with its boot CPU alone
+  (`maxcpus=1`), and init, told `shards_online`, brings the rest online before anything
+  runs, with RCU's normal grace periods: expedited ones took longer eight at once on
+  windows-2022, each an IPI to every CPU online, and saved a guest alone nothing. A
+  boot's initcalls patch its kernel's text as they set static calls and keys (the crypto and
+  CRC libraries', SELinux's netfilter hooks') and switch its clocksource by stop_machine,
+  each waiting for every CPU online, and on CI's runners, nested in Azure, a vCPU waited on
+  had no host CPU while the one waiting spun: eight guests of 4 vCPUs booting at once on
+  windows-2022's 4 CPUs spent 75.7% of their kernels' ticks so and took 46.20 s, with their
+  boot CPUs alone at boot 5.37 s; on windows-2025 11.61 s and 3.84 s; a guest alone 0.09 to
+  0.19 s slower. HVF boots every CPU at boot: on the M5 Max a guest of 18 vCPUs came up in
+  0.11 s so, and in 0.35 s with its CPUs brought online after; KVM as it did, unmeasured.
 - **The guest kernel's `hyperv` variant** (resources/kernel/hyperv.config): Linux 6.18
   marks the TSC unstable on a Hyper-V that does not offer TSC invariance, as no runner did,
   and keeps time by Hyper-V's reference TSC page only with CONFIG_HYPERV (M197). No VMBus,

@@ -45,6 +45,26 @@ pub fn booting_vcpus_at_most(cpus: usize) -> usize {
         usize::MAX
     }
 }
+/// What the kernel of a guest of `vcpus` vCPUs whose init brings its CPUs online itself
+/// (shards-init's `shards_online`) is told, on this build's backend. WHP's: its boot CPU
+/// alone brought up at boot (`maxcpus=1`), its init bringing the rest online. A boot's
+/// initcalls patch its kernel's text as they set static calls and keys, each patch waiting
+/// for every CPU online to sync, and on CI's Windows runners, nested in Azure, every vCPU
+/// waited on was one with no host CPU: eight guests of 4 vCPUs booting at once on
+/// windows-2022's 4 CPUs spent 75.7% of their kernels' ticks waiting so and took 46.20 s,
+/// where with their boot CPUs alone at boot they took 5.37 s, and on windows-2025 11.61 s to
+/// 3.84 s, a guest alone 0.09 to 0.19 s slower (PM M379). RCU's grace periods expedited for
+/// the CPUs brought online took longer eight at once on windows-2022, and none less alone.
+/// Elsewhere nothing: on the M5 Max's HVF a guest of 18 vCPUs alone came up in 0.11 s with
+/// every CPU at boot, and in 0.35 s with them brought online after (M379).
+pub fn late_cpus_cmdline(vcpus: u32) -> &'static str {
+    if cfg!(hv = "whp") && vcpus > 1 {
+        " maxcpus=1 shards_online=1"
+    } else {
+        ""
+    }
+}
+
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
 /// (vm::mapped). Not WHP's yet (D196).
@@ -2626,6 +2646,22 @@ mod tests {
             vfio_given(&unsafe_follow),
             Err("0000:05:00.0: a group without an IOMMU cannot follow the guest's".into())
         );
+    }
+
+    /// A guest whose init brings its CPUs online is told to on WHP alone, and only where it
+    /// has CPUs past its first (PM M379).
+    #[test]
+    fn only_whp_guests_of_many_vcpus_are_brought_up_late() {
+        assert_eq!(late_cpus_cmdline(1), "");
+        let late = late_cpus_cmdline(4);
+        if cfg!(hv = "whp") {
+            assert!(
+                late.contains(" maxcpus=1 ") && late.contains("shards_online=1"),
+                "{late}"
+            );
+        } else {
+            assert_eq!(late, "");
+        }
     }
 
     /// A working set naming a page the guest does not have is not prefetched at all

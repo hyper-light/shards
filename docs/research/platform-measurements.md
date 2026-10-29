@@ -16116,3 +16116,64 @@ revision before comparing a changed API/implementation.
 - **Consequence (D151).** A restore maps the runs of data its state says (snapshot format
   27), a view each, and memory of its own between them: three parts of this template, where
   a view of every block would be 140.
+
+### M379. Where a cold boot's time goes as others boot beside it, and its CPUs brought online after (D140)
+
+- **Question.** Guests of the host's vCPUs booted past linearly slower the more boot at once
+  on WHP, where guests of one vCPU did not (M376): eight of 4 vCPUs at once on windows-2022's
+  4 CPUs took 41 to 45 s each. What do their CPUs do meanwhile, and what do they wait for?
+- **Method.** tests/boot.rs `cold_boots_profiled` (ignored, a measurement) by
+  budget-e2e.yml (`windows:boot`), CI runs 40819202682, 40822581585 and 40824642878,
+  2026-10-29, on a windows-2022 runner (Windows Server 2022, build 20348) and a windows-2025
+  runner (26100), 4 CPUs each, nested in Azure; on jupiter (32 CPUs, Windows 11 26200); and
+  on the M5 Max (macOS 26.4.1, HVF). Guests of the host's vCPUs one alone and eight at
+  once, and of one vCPU eight at once, each booting the test guest quiet with its kernel's
+  profiler on (`profile=4`), `initcall_debug` and a log buffer of 1 MiB; the test guest
+  (`profile`) reports where its kernel's ticks went from boot to its start, its slowest
+  initcalls by its log records' own times (the timekeeper's clock is jiffies until the
+  clocksource's switch, so an initcall's own word of its time is not), the longest gaps
+  between records, its boot's steps and Hyper-V's lines; summed by case. Then each case
+  beside its kernel told `maxcpus=1`, and `maxcpus=1 rcupdate.rcu_expedited=1`, the test
+  guest bringing the rest online through sysfs before it reports, timing that.
+- **Found.**
+  - Where they wait. Windows-2022, eight of 4 vCPUs at once (44.6 s): 75.7% of their
+    kernels' ticks in smp_call_function_many_cond, a CPU spinning until every other CPU
+    online has run its call, 18.5% halted idle; alone, 51.0% idle and 0.5% there. The
+    slowest initcalls, a guest's mean (most): selinux_nf_ip_init 1.69 s (2.50),
+    sha256_mod_init 1.48 (4.12), sha1_mod_init 1.39 (3.73), crc64_mod_init 1.02 (2.35),
+    crc32_mod_init 0.88 (1.98), crypto_algapi_init 0.73, sha512_mod_init 0.67 (2.95),
+    chr_dev_init 0.63, crc_t10dif_mod_init 0.61, clocksource_done_booting 0.34; alone none
+    past 19 ms. They set static calls and keys (the libraries' accelerated routines,
+    netfilter's hooks), each patch of the kernel's text waiting for every CPU online to
+    sync (arch/x86/kernel/alternative.c `text_poke_sync`, an `on_each_cpu`), and the
+    clocksource's switch is a stop_machine. From its CPUs brought up to its clocksource's
+    switch took 2.6 to 17.0 s a guest, where alone 0.05 s; bringing up its CPUs itself 0.07
+    to 0.26 s.
+  - Hyper-V offered every guest the same on both runners and jupiter: hints 0xe2c, its TLB
+    flush and IPI hypercalls in use, PV spinlocks disabled (no guest idle register).
+  - Brought up late. Each case's guests' times up at their test guest's report (after any
+    CPUs brought online), and in brackets the time bringing them online took:
+
+    | case | windows-2022 | windows-2025 | M5 Max |
+    |---|---|---|---|
+    | host vCPUs alone | 0.36 s | 0.41 s | 0.11 s |
+    | alone, `maxcpus=1` | 0.45 s (75 ms) | 0.60 s (109 ms) | 0.35 s (286 ms) |
+    | alone, `maxcpus=1`, expedited | 0.55 s (55 ms; 0.55 s, 87 ms normal) | 0.46 s (43 ms; 0.45 s, 67 ms normal) | 0.16 s (81 ms) |
+    | eight at once | 6.01 to 23.82 s, 46.20 s all | 5.70 to 6.93 s, 11.61 s all | 0.22 to 0.39 s |
+    | eight, `maxcpus=1` | 2.28 to 4.51 s (1.75 to 3.81 s), 5.37 s all | 1.85 to 2.94 s (0.48 to 1.57 s), 3.84 s all | 0.40 to 0.43 s (289 to 319 ms) |
+    | eight, `maxcpus=1`, expedited | 5.87 to 6.60 s (4.65 to 5.69 s), 8.22 s all; normal 3.46 to 5.48 s (2.26 to 4.59 s), 6.63 s all | 1.84 to 2.46 s (0.92 to 1.41 s), 3.27 s all; normal 1.60 to 2.48 s (0.60 to 1.35 s), 3.35 s all | 0.26 to 0.30 s (125 to 152 ms) |
+    | one vCPU, eight at once | 0.99 to 1.29 s | 1.82 to 1.99 s | 0.12 to 0.15 s |
+
+    (Host vCPUs: 4 on the runners, 18 on the M5 Max. The expedited cases' runner run,
+    40824642878, measured its cases with normal grace periods again beside them, given after
+    `normal`; the first two cases' of that run: windows-2022 0.42 s alone and 47.15 s all
+    eight, windows-2025 0.33 s and 11.01 s.) On the M5 Max each CPU brought online took 15
+    to 19 ms with normal grace periods, the scheduler's domains rebuilt for each and its
+    synchronize_rcu a grace period's few jiffies (`partition_sched_domains`), and 4.8 ms
+    expedited. On the runners expedited grace periods cut a guest's alone by 25 to 30 ms and
+    its time up not at all, and eight at once on windows-2022 took longer, each expedited
+    grace period an IPI to every CPU online.
+- **Consequence (D140).** On WHP a guest of shards-init's of more than one vCPU boots its
+  boot CPU alone, and init brings the rest online before anything runs
+  (`vm::late_cpus_cmdline`, `shards_online`), with RCU's normal grace periods. HVF boots every CPU at boot, faster so alone
+  and as fast eight at once; KVM boots as it did, unmeasured so.
