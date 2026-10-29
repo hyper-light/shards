@@ -104,7 +104,8 @@ setup() {
         exit 1
     }
 }
-setup epoxy "$work/epoxy" "$work/src/libepoxy-1.5.10" --prefix="$prefix" --default-library=static \
+# Each into $prefix/lib, whatever libdir the host's meson defaults to (Debian's is multiarch).
+setup epoxy "$work/epoxy" "$work/src/libepoxy-1.5.10" --prefix="$prefix" --libdir=lib --default-library=static \
     -Dtests=false -Ddocs=false -Dx11=false -Degl=no -Dglx=no
 ninja --quiet -C "$work/epoxy" install
 
@@ -121,7 +122,7 @@ if [ "$host" = Darwin-arm64 ]; then
 else
     # Venus served by the render server, each context a thread of it (not a process forked
     # from it), and Vulkan's loader opened as it starts, not linked.
-    setup virgl "$work/virgl" "$work/src/$virgl_name" --prefix="$prefix" \
+    setup virgl "$work/virgl" "$work/src/$virgl_name" --prefix="$prefix" --libdir=lib \
         --default-library=static -Dvenus=true -Drender-server-worker=thread -Dvulkan-dload=true \
         -Dvideo=false -Dtests=false
     ninja --quiet -C "$work/virgl" src/libvirglrenderer.a server/virgl_render_server
