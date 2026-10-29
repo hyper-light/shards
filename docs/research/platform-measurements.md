@@ -16053,3 +16053,47 @@ revision before comparing a changed API/implementation.
   that every daemon on it shares, two on these runners, as its own count's most boots at
   once (D195, `daemon/host_boots.rs`). What an AP costs a boot of many vCPUs is the next
   measurement's.
+
+### M377. What a mapped sparse file takes of an NTFS disk, and what a run's save took (D176, D196)
+
+- **Question.** CI's saved.rs ran windows-2025's temp disk out (`not enough space on the
+  disk`, os error 112), alone as in the whole job: its free space fell from 29.3 GB to 2.5
+  at its lowest (run 40738087092), where windows-2022, which refuses saves (M345), kept 80.
+  On jupiter saved.rs took 60 to 62 GB of free space at once, while every file under the
+  tests' directories together held at most 0.7 GB (GetCompressedFileSizeW) and the page
+  files kept their 7,936 MB, commit 33 to 39 of 131 GB. What takes it?
+- **Method.** `docs/research/measurements/windows-disk/monitor.ps1` beside saved.rs, a test
+  at a time; `docs/research/measurements/whp-run/src/bin/m377.rs`, on jupiter (Windows 11
+  Pro 10.0.26200, NTFS), 2026-10-28: a sparse file of 1 GiB, its volume's free space
+  (GetDiskFreeSpaceExW), what it holds (GetCompressedFileSizeW) and its allocated ranges
+  (FSCTL_QUERY_ALLOCATED_RANGES) as its section is made, a view mapped shared and
+  writable or copy-on-write, one page in 1, 16 or 256 written through it, the view
+  flushed, unmapped and closed; and, a page written and flushed, the file read whole
+  through its handle while its writable view is mapped, before and after its deletion.
+  Then saved.rs's `a_runs_save_takes_of_its_disk` (ignored, a measurement), a run saved
+  and left running, its home's files and the free space after each step, with its VM's
+  word of the ranges it copied (SHARDS_LOG=debug).
+- **Found.**
+  - Each test of saved.rs that saves took 9.4 to 11.2 GB of the free space while it ran,
+    its checkpoint test 20.9, the one whose save is refused none: about a run's writable
+    layer, 10 GiB, a save.
+  - A sparse file's view mapped, or its section made, takes nothing; a copy-on-write
+    view's written pages take nothing of the disk. Written through a shared view, one
+    page in 1, 16 or 256 took 1,028, 1,028 and 64 MiB of the free space as written, the
+    file holding none of it until flushed, and 1,024, 1,024 and 64 MiB after: a written
+    page takes the 64 KiB around it.
+  - Read whole through its handle while a writable view of it is mapped, a sparse file of
+    1 GiB that held one 64 KiB range took 1,028 MiB of the free space, held none, and had
+    all its length as one allocated range after; unmapped and its section closed, it kept
+    it until the file went. Deleted while open and mapped, its ranges were as they were.
+  - The save: its VM said its layer was one range of data, 10,995,367,936 bytes of
+    10,995,367,936, and the save took 10,626 MiB of the free space while the home's files
+    held 104 MiB. A run's VM, given neither a snapshot to save nor a vsock path, had let go
+    of its link to its spawner as it started, and a confined process, which may make no
+    FSCTL (D141), read all of its layer where it had none to ask its ranges of.
+  - With the link kept and sealed (`SEALED`): 19 ranges, 1,507,328 bytes, and 107 MiB of
+    the free space taken.
+- **Consequence (D196).** Every VM on Windows keeps its grants link for its files' ranges,
+  and seals it against more grants as it starts: no save reads a hole of a mapped layer
+  or swap. What its guest writes still takes the 64 KiB around each page it first writes
+  (NTFS's sparse allocation), up to 16 times what scattered writes hold.

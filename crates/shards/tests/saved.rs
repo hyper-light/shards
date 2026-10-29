@@ -1361,3 +1361,117 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
     assert!(!cut.exists(), "{} was left", cut.display());
     assert_eq!(shards(&["rm", "-f", "cp"]).status, Some(0));
 }
+
+/// What a run's save takes of its host's disk on Windows (PM M377): the volume's free space
+/// (GetDiskFreeSpaceExW) before a run, as it runs, after a save that leaves it running and
+/// after its end, and what each file of its home holds of the disk (GetCompressedFileSizeW,
+/// a sparse file's holes holding none), the most first. On CI's windows-2025 each of
+/// saved.rs's saves took some 10 GB of its 29 GB at once, and on jupiter as much, while no
+/// file under the tests' directories held more than 148 MB.
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:saved, ignored:a_runs_save_takes_of_its_disk"]
+fn a_runs_save_takes_of_its_disk() {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::{GetCompressedFileSizeW, GetDiskFreeSpaceExW};
+
+    let Some((home, image)) = home("saved-disk") else {
+        return;
+    };
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
+    let free = || {
+        let mut avail = 0u64;
+        // SAFETY: a NUL-terminated path and a count to fill.
+        unsafe {
+            GetDiskFreeSpaceExW(
+                wide(&home).as_ptr(),
+                &raw mut avail,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        avail as i64 / (1 << 20)
+    };
+    let began = free();
+    let say = |step: &str| {
+        let mut held: Vec<(i64, u64, String)> = Vec::new();
+        let mut stack = vec![home.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                let Ok(meta) = entry.metadata() else { continue };
+                if meta.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let mut high = 0u32;
+                // SAFETY: a NUL-terminated path and the high half to fill.
+                let low = unsafe { GetCompressedFileSizeW(wide(&path).as_ptr(), &raw mut high) };
+                let bytes = if low == u32::MAX {
+                    -1
+                } else {
+                    (((u64::from(high)) << 32) | u64::from(low)) as i64
+                };
+                held.push((
+                    bytes,
+                    meta.len(),
+                    path.strip_prefix(&*home).unwrap().display().to_string(),
+                ));
+            }
+        }
+        held.sort_by_key(|h| std::cmp::Reverse(h.0));
+        // What the file system says the long files hold allocated, as a copy of their
+        // ranges reads them (FSCTL_QUERY_ALLOCATED_RANGES).
+        for (_, len, name) in held.iter().filter(|h| h.1 >= 1 << 30) {
+            let ranges = std::fs::File::open(home.join(name))
+                .and_then(|f| shards_vmm::platform::allocated_ranges(&f, *len))
+                .map(|r| (r.len(), r.iter().map(|x| x.1).sum::<u64>() >> 20));
+            eprintln!("M377 {step}: {name}: {len} bytes long, allocated ranges (count, MiB): {ranges:?}");
+        }
+        let total: i64 = held.iter().map(|h| h.0.max(0)).sum();
+        let top: Vec<String> = held
+            .iter()
+            .take(6)
+            .map(|(h, len, name)| format!("{} MiB of {} MiB {name}", h / (1 << 20), len / (1 << 20)))
+            .collect();
+        eprintln!(
+            "M377 {step}: free {} MiB ({:+} MiB); its files hold {} MiB: {top:#?}",
+            free(),
+            free() - began,
+            total / (1 << 20)
+        );
+    };
+    say("pulled");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let (mut client, mut counts, _said) =
+        start(&home, &image, &["--name", "counter", "--rm"], &["counter", "20"]);
+    let _ = next_count(&mut counts);
+    say("its run counting");
+    let saved = shards(&["save", "vm", "counter", "first", "--leave-running"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    say("saved, left running");
+    // What its VM said of the ranges it copied, where it logs at debug (SHARDS_LOG=debug).
+    let mut stack = vec![home.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "log") {
+                for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+                    if line.contains("ranges of data") {
+                        eprintln!("M377 its VM said: {line}");
+                    }
+                }
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_secs(3));
+    say("3 s on");
+    let _ = next_count(&mut counts);
+    let _ = shards(&["kill", "counter"]);
+    let _ = exit(&mut client);
+    std::thread::sleep(Duration::from_secs(3));
+    say("its run ended");
+}

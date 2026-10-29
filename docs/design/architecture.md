@@ -6634,6 +6634,16 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   within 20 s and failed as it filled, its memory and page file steady (budget-e2e run
   40627507997, its host sampled every 5 s); of a save's files only a run's swap was not
   sparse, which NTFS takes whole as a copy sets its length (M349).
+- **Every VM's grants link kept, sealed, for its files' ranges** (M377). A copy reads only
+  the ranges that hold data, which a confined VM asks its spawner (`RANGES`). A run's VM,
+  given neither a snapshot to save nor a vsock path, let go of its link as it started, and
+  saved later read its whole layer, having none to ask: on NTFS a sparse file's holes read
+  through its handle while a writable view of it is mapped become allocated, so each save
+  of a 10 GiB layer took 10.6 GB of its host's disk while its files held 104 MB, and
+  saved.rs still ran windows-2025 out. Every VM now keeps the link and says `SEALED` once
+  granted what it starts with: its spawner refuses every grant after, as after a vsock
+  path's listen, and answers its ranges for its life (a save's copy then 1.5 MB, 107 MiB of
+  the disk). Held by `a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read`.
 - **One partition a process.** WHP maps no memory into a second partition of a process while
   another lives (STATUS_VID_PARTITION_ALREADY_EXISTS, until the first is deleted, M345). A VM
   process holds one; the partition that reads the host's vCPU limit is deleted before it.
