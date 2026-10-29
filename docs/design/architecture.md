@@ -5840,7 +5840,12 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   budget is reached before the host says so. A kernel that arms none of its user's has
   the host's ten-second average read every ten seconds. On macOS, libdispatch's memory
   pressure source, said again every 2 s while the pressure stays raised, as a trigger is
-  while its stall goes on. The daemon has no other platform yet.
+  while its stall goes on. On Windows, the system's low memory notification
+  (CreateMemoryResourceNotification, `LowMemoryResourceNotification`), signalled while
+  its available memory is low (by default 32 MB of each 4 GB, 64 MB at most: its
+  documentation), said again every 2 s while it stays so, as macOS's is. On macOS and
+  Windows a group shards keeps holds microVMs to a budget (D183's slice 3), whose files
+  the daemon reads each pressure window.
 - **Each time, every running microVM gives back what it holds cold of its files.** Its
   init (builtin `RECLAIM`) reclaims as much of its run's file pages as its memory.stat
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
@@ -6079,9 +6084,20 @@ budget short of what the slice holds and its kernel's inactive buffer, by a mebi
 within the least room a run goes on in and reading within it too (where held at what
 they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
-alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). Not on macOS, which has
-no group of processes a budget holds. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs)
-holds the idle daemon's threads still.
+alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). On macOS and Windows,
+which have no group of processes a user's tools cap, a group shards keeps (D183's slice 3):
+`a_microvm_under_a_group_is_held_to_its_budget` on macOS, a share's files given back;
+and on both, `what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, 512
+MiB of a joiner's image read through its guest's page cache (D119; no host directory, which
+Windows shares with the platform parity plan's step 6), its group's `memory.high` written a
+quarter GiB short of its VM process: told its room and asked to give back, the microVM
+gives back what its joiner read, its VM process from 642 to 651 MiB to 261 to 266 on
+jupiter's WHP and from 1,028 to 1,038 to 265 to 275 on the M5 Max, idle 253 to 256 (PM
+M391). Unit (platform), Windows: each low memory signal a word, one that lasts said again
+every 2 s and none while memory is not low (an event standing in for the system's
+notification), and the system's own unsignalled while a gigabyte is available; each of 8
+mutants caught on jupiter. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the
+idle daemon's threads still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
 and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB
@@ -6096,7 +6112,8 @@ anonymous memory, which its host may take back. Builders (D133) give back at the
 word on their give-back port (`build::GIVE_PORT`, build/give.rs), a build running in `shards
 build`'s own process, not the daemon's; on Windows too since 2026-10-28, free page reporting
 (D151) theirs there as a run's: on jupiter's WHP a builder holding a step's 256 MiB file
-gave back 253 MiB of it, its VM process from 350,516 KiB to 96,168
+gave back 253 MiB of it, its VM process from 350,516 KiB to 96,168, and again at
+d1deefd9, from 352,088 KiB to 96,220
 (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`). And they hold little a pass could take (PM M295): what a
 builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
 MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
@@ -10103,7 +10120,9 @@ has 0006, and nothing reported where it has not; and
 kernel whose allocations did not wait. Mutation-checked: runs without the device hold 562
 MiB; a template saved without the flush has its restores report 212,992 KiB. What a pass
 does to readings and to growing runs is shown by `reporting-dip` and
-`run-plug/report-race.py` (PM M224). In crates/vmm,
+`run-plug/report-race.py` (PM M224). On Windows, jupiter's WHP:
+`a_runs_memory_freed_goes_back_to_the_host` on restores (PM M378), and a cold boot's freed
+memory in D188's give-back tests of runs and builders. In crates/vmm,
 `a_range_is_untouched_as_each_of_its_pages_is`: the device's question of what the host
 holds of a range, asked without taking memory, answered as `untouched` answers it page by
 page, past one read of entries too (PM M391).

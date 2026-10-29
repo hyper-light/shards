@@ -16,8 +16,8 @@
 //! (CI's ubuntu-24.04: a build idling under a budget set 256 MiB short gave back nothing
 //! for 126 s, and its read after crawled, throttled, 18 minutes); one that leaves them room,
 //! each told its share. What they gave back is said once a minute at most, as the daemon
-//! says its microVMs'. Windows watches no pressure yet (D188): there, its builders are
-//! asked nothing.
+//! says its microVMs'. On Windows its host's word is the system's low memory notification,
+//! as the daemon's is (D188).
 
 use std::io;
 use std::sync::OnceLock;
@@ -36,9 +36,10 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// How often what builders gave back is said, at most, as the daemon says its microVMs'
 /// (daemon::reclaim's `SAY_EVERY`): a pressure that goes on says it once in this long.
 const SAY_EVERY: Duration = Duration::from_secs(60);
-/// Where it names a FIFO, a build's memory pressure is what is written to it, each line the
-/// host's word that it is short of memory, in place of its kernel's: so that a test tells it
-/// where no unprivileged process may raise the system's pressure (macOS).
+/// Where it names a FIFO (on Windows, a named pipe), a build's memory pressure is what is
+/// written to it, each line the host's word that it is short of memory, in place of its
+/// kernel's: so that a test tells it where no unprivileged process may raise the system's
+/// pressure (macOS, Windows).
 const TOLD: &str = "SHARDS_BUILD_PRESSURE";
 
 /// The watcher's channel, down which each builder's giver is sent as the builder starts:

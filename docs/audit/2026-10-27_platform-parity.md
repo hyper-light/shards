@@ -67,3 +67,16 @@ Each lone item is confirmed or closed as its row is worked.
   KVM (D154), tested by the snapshot tests themselves on arm64 Linux in a guest with EL2
   on an M3 or later Mac (boot.rs, `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`),
   where all 78 passed (PM M346).
+- Row 4, memory given back on Windows (the plan's step 7): free page reporting under WHP, a
+  cold boot's RAM decommitted and committed again (PM M371), a restore's given back through
+  views of its template's data and memory of its own between them (M375, M378); the
+  system's low memory notification watched as the daemon's and a build's pressure
+  (`platform::MemoryPressure`, D188), each signal a word, mutation-checked on jupiter;
+  budgets, a group shards keeps holding its microVMs (D183's slice 3); and give-backs for
+  runs and builders, on jupiter: a joiner's 512 MiB read given back at its group's budget,
+  its VM process from 642 to 651 MiB to 261 to 266
+  (`what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, PM M391), and a
+  builder's 253 MiB of a 256 MiB file at its build's word, its VM process from 352,088 KiB
+  to 96,220 (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`), with
+  `a_runs_memory_freed_goes_back_to_the_host` passing there too. What a volume's reads hold
+  is given back the same way once row 3 shares host directories on Windows.
