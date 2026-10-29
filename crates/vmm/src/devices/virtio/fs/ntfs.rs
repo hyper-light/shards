@@ -11,27 +11,28 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CASE_SENSITIVE_INFORMATION, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
     FILE_OPEN_REPARSE_POINT, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
     FILE_STAT_LX_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileCaseSensitiveInformation,
-    FileLinkInformation, FileRenameInformationEx, FileStatLxInformation, LX_FILE_METADATA_HAS_DEVICE_ID,
-    LX_FILE_METADATA_HAS_MODE, LX_FILE_METADATA_HAS_UID, NtCreateFile, NtQueryEaFile, NtQueryInformationFile,
-    NtSetEaFile, NtSetInformationFile,
+    FileFsFullSizeInformation, FileLinkInformation, FileRenameInformationEx, FileStatLxInformation,
+    LX_FILE_METADATA_HAS_DEVICE_ID, LX_FILE_METADATA_HAS_MODE, LX_FILE_METADATA_HAS_UID, NtCreateFile,
+    NtQueryEaFile, NtQueryInformationFile, NtQueryVolumeInformationFile, NtSetEaFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DISK_FULL, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND,
-    ERROR_INVALID_PARAMETER, ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SUPPORTED, ERROR_PATH_NOT_FOUND,
-    ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE, STATUS_DELETE_PENDING,
-    STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL, STATUS_EAS_NOT_SUPPORTED, STATUS_FILE_DELETED,
-    STATUS_FILE_IS_A_DIRECTORY, STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_PARAMETER,
+    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SUPPORTED,
+    ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE,
+    STATUS_DELETE_PENDING, STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL, STATUS_EAS_NOT_SUPPORTED,
+    STATUS_FILE_DELETED, STATUS_FILE_IS_A_DIRECTORY, STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_PARAMETER,
     STATUS_MEDIA_WRITE_PROTECTED, STATUS_NAME_TOO_LONG, STATUS_NO_EAS_ON_FILE, STATUS_NO_MORE_EAS,
     STATUS_NONEXISTENT_EA_ENTRY, STATUS_NOT_A_DIRECTORY, STATUS_NOT_A_REPARSE_POINT, STATUS_NOT_SAME_DEVICE,
     STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID,
     STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_FLAG_DELETE,
+    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-    FILE_DISPOSITION_INFO_EX, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_LIST_DIRECTORY,
-    FILE_READ_ATTRIBUTES, FILE_READ_EA, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA, FileDispositionInfoEx, FileIdInfo,
+    FILE_DISPOSITION_INFO_EX, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_EA, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA, FileBasicInfo,
+    FileDispositionInfoEx, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
     GetFileInformationByHandleEx, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
@@ -713,6 +714,206 @@ pub fn mkdir_at(dir: BorrowedHandle<'_>, name: &[u16]) -> Result<OwnedHandle, Er
     Ok(made)
 }
 
+/// `h` as a [`File`](std::fs::File) that never closes it, for std's calls on Windows
+/// handles: what `h` borrows outlives it.
+fn file_of(h: BorrowedHandle<'_>) -> std::mem::ManuallyDrop<std::fs::File> {
+    // SAFETY: a handle the caller holds open while the File lives, which never closes it.
+    std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(h.as_raw_handle()) })
+}
+
+/// `h`'s file read at `offset` into `buf`: the bytes read, none at its end.
+pub fn read_at(h: BorrowedHandle<'_>, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+    std::os::windows::fs::FileExt::seek_read(&*file_of(h), buf, offset).map_err(|e| win32_errno(&e))
+}
+
+/// `buf` written to `h`'s file at `offset`: the bytes written.
+pub fn write_at(h: BorrowedHandle<'_>, buf: &[u8], offset: u64) -> Result<usize, Errno> {
+    std::os::windows::fs::FileExt::seek_write(&*file_of(h), buf, offset).map_err(|e| win32_errno(&e))
+}
+
+/// `h`'s file cut or grown to `size` bytes, its end-of-file set.
+pub fn truncate(h: BorrowedHandle<'_>, size: u64) -> Result<(), Errno> {
+    file_of(h).set_len(size).map_err(|e| win32_errno(&e))
+}
+
+/// `h`'s file's data and metadata written through to its disk (FlushFileBuffers).
+pub fn sync(h: BorrowedHandle<'_>) -> Result<(), Errno> {
+    file_of(h).sync_all().map_err(|e| win32_errno(&e))
+}
+
+/// An NT time, 100 ns since 1601, of seconds and nanoseconds since the Unix epoch.
+fn nt_time((secs, nanos): (u64, u32)) -> i64 {
+    const SINCE_1601: i64 = 116_444_736_000_000_000;
+    i64::try_from(secs)
+        .unwrap_or(i64::MAX / 10_000_000)
+        .saturating_mul(10_000_000)
+        .saturating_add(i64::from(nanos / 100))
+        .saturating_add(SINCE_1601)
+}
+
+/// `h`'s file's access and modification times set, each where given, as seconds and
+/// nanoseconds since the Unix epoch (FileBasicInfo, whose zeros change nothing).
+pub fn set_times(
+    h: BorrowedHandle<'_>,
+    atime: Option<(u64, u32)>,
+    mtime: Option<(u64, u32)>,
+) -> Result<(), Errno> {
+    let info = FILE_BASIC_INFO {
+        CreationTime: 0,
+        LastAccessTime: atime.map_or(0, nt_time),
+        LastWriteTime: mtime.map_or(0, nt_time),
+        ChangeTime: 0,
+        FileAttributes: 0,
+    };
+    // SAFETY: an info of its own size on a handle the caller holds.
+    let done = unsafe {
+        SetFileInformationByHandle(
+            h.as_raw_handle(),
+            FileBasicInfo,
+            (&raw const info).cast(),
+            u32::try_from(size_of::<FILE_BASIC_INFO>()).unwrap_or(0),
+        )
+    };
+    if done == 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+/// What a volume holds and has room for, in its allocation units of `block_size` bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Volume {
+    pub block_size: u32,
+    pub blocks: u64,
+    /// Free, and free to this process (its quota's).
+    pub free: u64,
+    pub available: u64,
+}
+
+/// FILE_FS_FULL_SIZE_INFORMATION (ntifs.h).
+#[repr(C)]
+#[derive(Default)]
+struct FullSize {
+    total: i64,
+    caller_available: i64,
+    actual_available: i64,
+    sectors_per_unit: u32,
+    bytes_per_sector: u32,
+}
+
+/// The [`Volume`] `h`'s file is on (NtQueryVolumeInformationFile, FileFsFullSizeInformation).
+pub fn volume(h: BorrowedHandle<'_>) -> Result<Volume, Errno> {
+    let mut size = FullSize::default();
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: a buffer of its own size for the class asked, on a handle the caller holds.
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            h.as_raw_handle(),
+            &mut io,
+            (&raw mut size).cast(),
+            u32::try_from(size_of::<FullSize>()).unwrap_or(0),
+            FileFsFullSizeInformation,
+        )
+    };
+    if status < 0 {
+        return Err(errno(status));
+    }
+    let units = |n: i64| u64::try_from(n).unwrap_or(0);
+    Ok(Volume {
+        block_size: size.sectors_per_unit.saturating_mul(size.bytes_per_sector),
+        blocks: units(size.total),
+        free: units(size.actual_available),
+        available: units(size.caller_available),
+    })
+}
+
+/// An entry of a directory, as a guest's READDIR tells it: its name, its key's file ID
+/// and its kind (a mode's type bits).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub name: Vec<u8>,
+    pub ino: u64,
+    pub kind: u32,
+}
+
+/// The next of `h`'s directory's entries, from its first where `restart`, as many as one
+/// call gives (GetFileInformationByHandleEx, FileIdExtdDirectoryInfo, whose entries name
+/// their reparse tags): none once it has given them all. `.` and `..` among them, as NTFS
+/// lists them.
+pub fn list(h: BorrowedHandle<'_>, restart: bool) -> Result<Vec<Listed>, Errno> {
+    use std::mem::offset_of;
+    let mut buf = vec![0u8; 64 << 10];
+    let class = if restart {
+        FileIdExtdDirectoryRestartInfo
+    } else {
+        FileIdExtdDirectoryInfo
+    };
+    // SAFETY: a buffer of its length for the class asked, on a handle the caller holds.
+    let done = unsafe {
+        GetFileInformationByHandleEx(
+            h.as_raw_handle(),
+            class,
+            buf.as_mut_ptr().cast(),
+            u32::try_from(buf.len()).unwrap_or(0),
+        )
+    };
+    if done == 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(i32::try_from(ERROR_NO_MORE_FILES).unwrap_or(0)) {
+            return Ok(Vec::new());
+        }
+        return Err(win32_errno(&e));
+    }
+    let word = |at: usize| -> Option<u32> {
+        let b = buf.get(at..at + 4)?;
+        Some(u32::from_le_bytes([
+            *b.first()?,
+            *b.get(1)?,
+            *b.get(2)?,
+            *b.get(3)?,
+        ]))
+    };
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    loop {
+        let next = word(at).ok_or(EIO)? as usize;
+        let attributes = word(at + offset_of!(FILE_ID_EXTD_DIR_INFO, FileAttributes)).ok_or(EIO)?;
+        let name_len = word(at + offset_of!(FILE_ID_EXTD_DIR_INFO, FileNameLength)).ok_or(EIO)? as usize;
+        let tag = word(at + offset_of!(FILE_ID_EXTD_DIR_INFO, ReparsePointTag)).ok_or(EIO)?;
+        let id_at = at + offset_of!(FILE_ID_EXTD_DIR_INFO, FileId);
+        let id = buf.get(id_at..id_at + 8).ok_or(EIO)?;
+        let ino = u64::from_le_bytes(<[u8; 8]>::try_from(id).map_err(|_| EIO)?);
+        let name_at = at + offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+        let name: Vec<u16> = buf
+            .get(name_at..name_at + name_len)
+            .ok_or(EIO)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        let kind = match tag {
+            LX_SYMLINK => 0o120000,
+            LX_FIFO => 0o010000,
+            LX_CHR => 0o020000,
+            LX_BLK => 0o060000,
+            AF_UNIX => 0o140000,
+            _ if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 => 0o040000,
+            _ => 0o100000,
+        };
+        out.push(Listed {
+            name: guest_name(&name),
+            ino,
+            kind,
+        });
+        if next == 0 {
+            break;
+        }
+        at = at.checked_add(next).ok_or(EIO)?;
+    }
+    Ok(out)
+}
+
 /// Linux's errno for a Win32 error a call answered with, by its NTSTATUS's.
 fn win32_errno(e: &std::io::Error) -> Errno {
     match e.raw_os_error().and_then(|c| u32::try_from(c).ok()) {
@@ -733,7 +934,7 @@ fn last_error() -> Errno {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use windows_sys::Wdk::Storage::FileSystem::{
         FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
@@ -947,5 +1148,69 @@ mod tests {
         unlink_at(d.as_handle(), &named(b"a"), false).unwrap();
         drop(d);
         unlink_at(root.as_handle(), &named(b"d"), true).unwrap();
+    }
+
+    /// A file's bytes written at offsets read back, past its end none, cut short, synced
+    /// and its times set; a directory lists its entries with their kinds, an escaped name
+    /// its own again; and its volume says its sizes.
+    #[test]
+    fn data_times_listing_and_volume_are_read_as_linux_reads_them() {
+        let (_dir, root) = tree("ntfs-data");
+        let f = open_at(
+            root.as_handle(),
+            &nt_name(b"f").unwrap(),
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .unwrap();
+        assert_eq!(write_at(f.as_handle(), b"hello", 0).unwrap(), 5);
+        assert_eq!(write_at(f.as_handle(), b"!", 9).unwrap(), 1);
+        let mut buf = [0u8; 16];
+        let n = read_at(f.as_handle(), &mut buf, 0).unwrap();
+        assert_eq!(&buf[..n], b"hello\0\0\0\0!");
+        truncate(f.as_handle(), 2).unwrap();
+        let n = read_at(f.as_handle(), &mut buf, 0).unwrap();
+        assert_eq!(&buf[..n], b"he");
+        assert_eq!(read_at(f.as_handle(), &mut buf, 2).unwrap(), 0);
+        sync(f.as_handle()).unwrap();
+        set_times(
+            f.as_handle(),
+            Some((1_000_000_000, 500)),
+            Some((1_700_000_000, 123_456_700)),
+        )
+        .unwrap();
+        let st = stat(f.as_handle()).unwrap();
+        assert_eq!(st.mtime, (1_700_000_000, 123_456_700));
+        assert_eq!(st.atime.0, 1_000_000_000);
+        drop(mkdir_at(root.as_handle(), &nt_name(b"sub").unwrap()).unwrap());
+        drop(symlink_at(root.as_handle(), &nt_name(b"to:it").unwrap(), b"f").unwrap());
+        let mut seen = list(root.as_handle(), true).unwrap();
+        loop {
+            let more = list(root.as_handle(), false).unwrap();
+            if more.is_empty() {
+                break;
+            }
+            seen.extend(more);
+        }
+        let mut kinds: Vec<(Vec<u8>, u32)> = seen
+            .into_iter()
+            .filter(|l| l.name != b"." && l.name != b"..")
+            .map(|l| (l.name, l.kind))
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            vec![
+                (b"f".to_vec(), 0o100000),
+                (b"sub".to_vec(), 0o040000),
+                (b"to:it".to_vec(), 0o120000)
+            ]
+        );
+        let v = volume(root.as_handle()).unwrap();
+        assert!(
+            v.block_size >= 512 && v.blocks > 0 && v.available <= v.blocks,
+            "{v:?}"
+        );
     }
 }
