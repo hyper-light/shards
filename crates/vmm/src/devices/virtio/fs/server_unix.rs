@@ -404,7 +404,7 @@ pub(super) fn set_times(
         },
         #[allow(clippy::cast_possible_wrap)]
         Time::At(at, ns) => libc::timespec {
-            tv_sec: at as libc::time_t,
+            tv_sec: at as _,
             tv_nsec: libc::c_long::from(ns as i32),
         },
         Time::Kept => libc::timespec {
