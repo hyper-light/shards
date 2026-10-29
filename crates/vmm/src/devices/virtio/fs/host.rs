@@ -182,6 +182,23 @@ pub fn decode_dev(rdev: u32) -> libc::dev_t {
     }
 }
 
+/// What the server holds a file by, and passes its host's calls: a descriptor on Unix, a
+/// handle on Windows (D197).
+#[cfg(unix)]
+pub use std::os::fd::{OwnedFd as Owned, RawFd as Raw};
+
+/// A held file's raw descriptor or handle, as its host's calls take it.
+pub trait AsRaw {
+    fn raw(&self) -> Raw;
+}
+
+#[cfg(unix)]
+impl AsRaw for Owned {
+    fn raw(&self) -> Raw {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
 /// This host's names for what the server asks of its file system, its flags, modes and
 /// kinds: on Unix libc's own; on Windows Linux's, which its layer of NT calls answers in
 /// (D197).
