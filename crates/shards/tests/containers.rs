@@ -2644,6 +2644,25 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             .and_then(|t| t.trim().parse().ok())
             .unwrap_or(0)
     };
+    // Its microVM grown first, as the joiner tests grow theirs: its grower plugs for what
+    // its runs touch, not for what they read (D148), and one booted small kept a quarter
+    // GiB of the half GiB read on Fedora, where a quarter GiB short of what it then held was
+    // short of what a microVM of 32 vCPUs holds with nothing to give back, about 307 MiB:
+    // it gave back all it could, stayed past its budget, and systemd-oomd, which watches
+    // each of Fedora's user slices, ended it 20 s on (PM M393). What it touched and freed
+    // given back (D151) before it reads.
+    let booted = current();
+    let grown = shards(&["exec", "budget", "/bin/testguest", "alloc-free", "1024", "0"]);
+    assert_eq!(grown.status, Some(0), "{grown}");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while current() >= booted + (128 << 20) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{booted} bytes held booted, {} after touching and freeing a GiB",
+            current()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // Half of them read with no budget, held in its guest's page cache; then a budget past
     // what the slice holds, whose first word says what the daemon counts it holding (what
     // its host may take back from its processes alone: not the page cache no process maps,
