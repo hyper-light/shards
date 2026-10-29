@@ -46,23 +46,52 @@ pub fn booting_vcpus_at_most(cpus: usize) -> usize {
     }
 }
 /// What the kernel of a guest of `vcpus` vCPUs whose init brings its CPUs online itself
-/// (shards-init's `shards_online`) is told, on this build's backend. WHP's: its boot CPU
-/// alone brought up at boot (`maxcpus=1`), its init bringing the rest online. A boot's
-/// initcalls patch its kernel's text as they set static calls and keys, each patch waiting
-/// for every CPU online to sync, and on CI's Windows runners, nested in Azure, every vCPU
-/// waited on was one with no host CPU: eight guests of 4 vCPUs booting at once on
-/// windows-2022's 4 CPUs spent 75.7% of their kernels' ticks waiting so and took 46.20 s,
-/// where with their boot CPUs alone at boot they took 5.37 s, and on windows-2025 11.61 s to
-/// 3.84 s, a guest alone 0.09 to 0.19 s slower (PM M379). RCU's grace periods expedited for
-/// the CPUs brought online took longer eight at once on windows-2022, and none less alone.
-/// Elsewhere nothing: on the M5 Max's HVF a guest of 18 vCPUs alone came up in 0.11 s with
-/// every CPU at boot, and in 0.35 s with them brought online after (M379).
+/// (shards-init's `shards_online`) is told, on this build's backend and host. WHP's on a host
+/// whose hypervisor is nested in another's partition ([`nested_hyperv`]), a Windows host that
+/// is itself a virtual machine: its boot CPU alone brought up at boot (`maxcpus=1`), its
+/// init bringing the rest online. A boot's initcalls patch its kernel's text as they set
+/// static calls and keys, each patch waiting for every CPU online to sync, and on CI's
+/// Windows runners, nested in Azure, every vCPU waited on was one with no host CPU: eight
+/// guests of 4 vCPUs booting at once on windows-2022's 4 CPUs spent 75.7% of their kernels'
+/// ticks waiting so and took 46.20 s, where with their boot CPUs alone at boot they took
+/// 5.37 s, and on windows-2025 11.61 s to 3.84 s, a guest alone 0.09 to 0.19 s slower (PM
+/// M379). On jupiter, bare metal, a guest of 32 vCPUs came up in 0.32 s alone and 0.68 to
+/// 1.16 s eight at once with every CPU at boot, and in 2.28 s and 3.89 to 4.24 s so, its 31
+/// CPUs brought online in 2.1 s (M379): nothing there, nor elsewhere (on the M5 Max's HVF a
+/// guest of 18 vCPUs came up in 0.11 s with every CPU at boot, and in 0.35 s so).
 pub fn late_cpus_cmdline(vcpus: u32) -> &'static str {
-    if cfg!(hv = "whp") && vcpus > 1 {
-        " maxcpus=1 shards_online=1"
-    } else {
-        ""
+    #[cfg(hv = "whp")]
+    if vcpus > 1 && host_hyperv_nested() {
+        return " maxcpus=1 shards_online=1";
     }
+    #[cfg(not(hv = "whp"))]
+    let _ = vcpus;
+    ""
+}
+
+/// Whether this host's Hyper-V, whose leaves its processes read, is nested in another's
+/// partition ([`nested_hyperv`]).
+#[cfg(hv = "whp")]
+fn host_hyperv_nested() -> bool {
+    use std::arch::x86_64::__cpuid;
+    let top = __cpuid(0x4000_0000);
+    let info = if top.eax >= 0x4000_0004 {
+        __cpuid(0x4000_0004).eax
+    } else {
+        0
+    };
+    nested_hyperv([top.eax, top.ebx, top.ecx, top.edx], info)
+}
+
+/// Whether CPUID's leaf 0x40000000 (`top`: its highest leaf and vendor) and the EAX of
+/// 0x40000004, Hyper-V's implementation recommendations, say a Hyper-V nested in another
+/// Hyper-V's partition: the vendor "Microsoft Hv", and 0x40000004's bit 12 (Linux's
+/// HV_X64_HYPERV_NESTED, include/hyperv/hvgdk_mini.h, which Linux reads as "running on a
+/// nested hypervisor", arch/x86/kernel/cpu/mshyperv.c). CI's Windows runners' Hyper-V says
+/// so, and their SMBIOS tables that they are virtual machines; jupiter's says neither (M379).
+pub fn nested_hyperv(top: [u32; 4], info: u32) -> bool {
+    let [highest, vendor @ ..] = top;
+    vendor == [0x7263_694d, 0x666f_736f, 0x7648_2074] && highest >= 0x4000_0004 && info & (1 << 12) != 0
 }
 
 /// Whether a VM resumed from its snapshot records its working set, for restores to
@@ -2648,13 +2677,18 @@ mod tests {
         );
     }
 
-    /// A guest whose init brings its CPUs online is told to on WHP alone, and only where it
-    /// has CPUs past its first (PM M379).
+    /// A guest whose init brings its CPUs online is told to on WHP on a nested Hyper-V
+    /// alone, and only where it has CPUs past its first; and a nested Hyper-V is known by its
+    /// leaves as CI's runners and jupiter gave them (PM M379).
     #[test]
-    fn only_whp_guests_of_many_vcpus_are_brought_up_late() {
+    fn guests_are_brought_up_late_on_a_nested_hyperv_alone() {
         assert_eq!(late_cpus_cmdline(1), "");
         let late = late_cpus_cmdline(4);
-        if cfg!(hv = "whp") {
+        #[cfg(hv = "whp")]
+        let nested = host_hyperv_nested();
+        #[cfg(not(hv = "whp"))]
+        let nested = false;
+        if nested {
             assert!(
                 late.contains(" maxcpus=1 ") && late.contains("shards_online=1"),
                 "{late}"
@@ -2662,6 +2696,17 @@ mod tests {
         } else {
             assert_eq!(late, "");
         }
+        let hv = [0x4000_000c, 0x7263_694d, 0x666f_736f, 0x7648_2074];
+        // windows-2022's and windows-2025's leaves, then jupiter's.
+        assert!(nested_hyperv(hv, 0x41d3c));
+        assert!(nested_hyperv(hv, 0x94_1d3c));
+        assert!(!nested_hyperv(hv, 0x94_0d1c));
+        // Another hypervisor's leaves, and a Hyper-V with no recommendations' leaf.
+        assert!(!nested_hyperv(
+            [0x4000_0001, 0x4b4d_564b, 0x564b_4d56, 0x4d],
+            0x1000
+        ));
+        assert!(!nested_hyperv([0x4000_0003, hv[1], hv[2], hv[3]], 0x1000));
     }
 
     /// A working set naming a page the guest does not have is not prefetched at all

@@ -16154,17 +16154,17 @@ revision before comparing a changed API/implementation.
   - Brought up late. Each case's guests' times up at their test guest's report (after any
     CPUs brought online), and in brackets the time bringing them online took:
 
-    | case | windows-2022 | windows-2025 | M5 Max |
-    |---|---|---|---|
-    | host vCPUs alone | 0.36 s | 0.41 s | 0.11 s |
-    | alone, `maxcpus=1` | 0.45 s (75 ms) | 0.60 s (109 ms) | 0.35 s (286 ms) |
-    | alone, `maxcpus=1`, expedited | 0.55 s (55 ms; 0.55 s, 87 ms normal) | 0.46 s (43 ms; 0.45 s, 67 ms normal) | 0.16 s (81 ms) |
-    | eight at once | 6.01 to 23.82 s, 46.20 s all | 5.70 to 6.93 s, 11.61 s all | 0.22 to 0.39 s |
-    | eight, `maxcpus=1` | 2.28 to 4.51 s (1.75 to 3.81 s), 5.37 s all | 1.85 to 2.94 s (0.48 to 1.57 s), 3.84 s all | 0.40 to 0.43 s (289 to 319 ms) |
-    | eight, `maxcpus=1`, expedited | 5.87 to 6.60 s (4.65 to 5.69 s), 8.22 s all; normal 3.46 to 5.48 s (2.26 to 4.59 s), 6.63 s all | 1.84 to 2.46 s (0.92 to 1.41 s), 3.27 s all; normal 1.60 to 2.48 s (0.60 to 1.35 s), 3.35 s all | 0.26 to 0.30 s (125 to 152 ms) |
-    | one vCPU, eight at once | 0.99 to 1.29 s | 1.82 to 1.99 s | 0.12 to 0.15 s |
+    | case | windows-2022 | windows-2025 | jupiter | M5 Max |
+    |---|---|---|---|---|
+    | host vCPUs alone | 0.36 s | 0.41 s | 0.32 s | 0.11 s |
+    | alone, `maxcpus=1` | 0.45 s (75 ms) | 0.60 s (109 ms) | 2.28 s (2.11 s) | 0.35 s (286 ms) |
+    | alone, `maxcpus=1`, expedited | 0.55 s (55 ms; 0.55 s, 87 ms normal) | 0.46 s (43 ms; 0.45 s, 67 ms normal) | 0.60 s (416 ms) | 0.16 s (81 ms) |
+    | eight at once | 6.01 to 23.82 s, 46.20 s all | 5.70 to 6.93 s, 11.61 s all | 0.68 to 1.16 s, 1.98 s all | 0.22 to 0.39 s |
+    | eight, `maxcpus=1` | 2.28 to 4.51 s (1.75 to 3.81 s), 5.37 s all | 1.85 to 2.94 s (0.48 to 1.57 s), 3.84 s all | 3.89 to 4.24 s (3.66 to 4.01 s), 4.52 s all | 0.40 to 0.43 s (289 to 319 ms) |
+    | eight, `maxcpus=1`, expedited | 5.87 to 6.60 s (4.65 to 5.69 s), 8.22 s all; normal 3.46 to 5.48 s (2.26 to 4.59 s), 6.63 s all | 1.84 to 2.46 s (0.92 to 1.41 s), 3.27 s all; normal 1.60 to 2.48 s (0.60 to 1.35 s), 3.35 s all | 3.30 to 3.39 s (3.02 to 3.15 s), 3.67 s all | 0.26 to 0.30 s (125 to 152 ms) |
+    | one vCPU, eight at once | 0.99 to 1.29 s | 1.82 to 1.99 s | 0.23 to 0.27 s | 0.12 to 0.15 s |
 
-    (Host vCPUs: 4 on the runners, 18 on the M5 Max. The expedited cases' runner run,
+    (Host vCPUs: 4 on the runners, 32 on jupiter, 18 on the M5 Max. The expedited cases' runner run,
     40824642878, measured its cases with normal grace periods again beside them, given after
     `normal`; the first two cases' of that run: windows-2022 0.42 s alone and 47.15 s all
     eight, windows-2025 0.33 s and 11.01 s.) On the M5 Max each CPU brought online took 15
@@ -16173,7 +16173,16 @@ revision before comparing a changed API/implementation.
     expedited. On the runners expedited grace periods cut a guest's alone by 25 to 30 ms and
     its time up not at all, and eight at once on windows-2022 took longer, each expedited
     grace period an IPI to every CPU online.
-- **Consequence (D140).** On WHP a guest of shards-init's of more than one vCPU boots its
-  boot CPU alone, and init brings the rest online before anything runs
-  (`vm::late_cpus_cmdline`, `shards_online`), with RCU's normal grace periods. HVF boots every CPU at boot, faster so alone
-  and as fast eight at once; KVM boots as it did, unmeasured so.
+  - What tells the hosts apart (`host_machine_facts`, CI run 40829056565 and jupiter): both
+    runners' SMBIOS tables say a virtual machine (the BIOS characteristics' extension byte
+    2, bit 4), "Microsoft Corporation" "Virtual Machine", and their Hyper-V's leaves that it
+    is nested (CPUID 0x40000004's EAX 0x41d3c and 0x941d3c, bit 12 set, Linux's
+    HV_X64_HYPERV_NESTED); jupiter's neither, an ASUSTeK ROG Flow Z13 whose Hyper-V's
+    0x40000004 is 0x940d1c.
+- **Consequence (D140).** Where the host's Hyper-V is nested in another's partition, a
+  guest of shards-init's of more than one vCPU boots its boot CPU alone, and init brings the
+  rest online before anything runs (`vm::late_cpus_cmdline`, `shards_online`), with RCU's
+  normal grace periods. Bare metal, every CPU at boot: jupiter's guests came up in 0.32 s
+  alone where brought up late they took 2.28, and in 0.68 to 1.16 s eight at once where
+  late 3.89 to 4.24. HVF boots every CPU
+  at boot, faster so alone and as fast eight at once; KVM boots as it did, unmeasured so.
