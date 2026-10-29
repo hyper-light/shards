@@ -2501,9 +2501,10 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
 /// its budget's word, and holds it within the budget's room, in which it reads a gigabyte,
 /// in files of a MiB, to the end. The budget from what the microVM holds, not a size: one of
 /// 384 MiB held a microVM of fedora's 32 CPUs below its own footprint, its VM process
-/// throttled until its give-back missed its 10 s. Linux alone: macOS has no group of
-/// processes a budget holds.
-// Budgets and give-backs on Windows come with the platform parity plan's step 7.
+/// throttled until its give-back missed its 10 s. Linux alone, whose slices are its user's
+/// manager's: macOS and Windows hold their microVMs to groups shards keeps, the group tests
+/// below.
+// Unix's: a slice of the user's manager, at the user's ID (getuid).
 #[cfg(unix)]
 #[test]
 fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
@@ -2925,7 +2926,8 @@ fn a_groups_cpu_held_each_second() {
 /// its guest's memory refused past it, its command never holding it all, where a run that
 /// allocates as much under no group, and one that allocates within the group's room, run to
 /// their ends. The macOS test below holds its group by give-backs from a host directory's
-/// files, which Windows shares with the platform parity plan's step 6.
+/// files, which Windows shares with the platform parity plan's step 6; the test after it,
+/// by give-backs of what a joiner read of its image, on both.
 #[test]
 fn a_groups_job_holds_its_microvms_to_its_memory_max() {
     if !cfg!(windows) {
@@ -3084,6 +3086,142 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
     );
 }
 
+/// What a joiner reads of its image its microVM gives back to its group's budget (D119,
+/// D188; D183, slice 3): a joiner's root is its image's EROFS over its microVM's join disk,
+/// read through its guest's page cache, where its provider's root and every run's writable
+/// layer are their host's files mapped into the guest (DAX, D190) and hold none of it. So a
+/// microVM whose joiner read 512 MiB of its image holds them cold, on a host that shares
+/// no directory into a microVM yet as on any other (Windows', with the platform parity
+/// plan's step 6). With its group's `memory.high` written a quarter GiB short of what its VM
+/// process holds, the microVM is told its room and asked to give back what it holds cold
+/// (`ROOM`, `RECLAIM`, over its run's cgroup and its joiners' within it), gives back what
+/// its joiner read, and its VM process holds that much less, its group within its budget
+/// again.
+#[test]
+fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
+    if !cfg!(any(target_os = "macos", windows)) {
+        return;
+    }
+    let Some((home, image)) = home("containers-group-joiner") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ctx = home.join("big");
+    std::fs::create_dir(&ctx).unwrap();
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
+    noise(&ctx.join("big"), 512);
+    let built = shards_in_within(
+        &home,
+        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
+        Duration::from_secs(600),
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    std::fs::remove_file(ctx.join("big")).unwrap();
+    let provider = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "prov", "--cgroup-parent", "agents"],
+        &["sleep"],
+    );
+    assert_eq!(provider.status, Some(0), "{provider}");
+    let joiner = run_in(
+        &home,
+        "big:1",
+        &["-d", "--name", "reader", "--network", "container:prov"],
+        &["sleep"],
+    );
+    assert_eq!(joiner.status, Some(0), "{joiner}");
+    let group = home.join("groups").join("agents");
+    let log = home.join("daemon.log");
+    let said = || std::fs::read_to_string(&log).unwrap_or_default();
+    let current = || -> u64 {
+        std::fs::read_to_string(group.join("memory.current"))
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    let until = |what: &str, check: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + TIMEOUT;
+        while !check() {
+            assert!(
+                Instant::now() < deadline,
+                "{what}: its group's memory.current {}:\n{}",
+                current(),
+                said()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // What its VM process holds idle, as the daemon writes it each pressure window.
+    until("its group's memory.current never written", &|| current() > 0);
+    let idle = current();
+    // What its guest has and holds of files, as its kernel counts them.
+    let guest = || {
+        shards(&[
+            "exec",
+            "prov",
+            "/bin/testguest",
+            "meminfo",
+            "MemTotal",
+            "MemFree",
+            "Cached",
+        ])
+        .stdout
+        .trim()
+        .replace('\n', ", ")
+    };
+    // Its guest holds what its joiner read: past 512 MiB in its VM process's footprint. A
+    // run is held at the memory it has plugged, its grower plugging more as it reaches it
+    // (D148), and a read faster than the plugging is reclaimed in part by its guest's own
+    // kernel: on WHP 131 to 378 MiB of the 512 stayed after one read (PM M391). The file is
+    // read again into what it has plugged by then, a few times at most.
+    let mut reads = 0;
+    let after_read = loop {
+        let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
+        assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
+        reads += 1;
+        // Its group's memory.current is written each pressure window.
+        let written = Instant::now() + shards_vmm::platform::PRESSURE_WINDOW * 2;
+        while current() <= 512 << 20 && Instant::now() < written {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if current() > 512 << 20 {
+            break guest();
+        }
+        assert!(
+            reads < 4,
+            "its group's memory.current, {idle} idle, never held what its joiner read in {reads} reads ({}): {}:\n{}",
+            guest(),
+            current(),
+            said()
+        );
+    };
+    let holding = current();
+    let high = holding - (256 << 20);
+    std::fs::write(group.join("memory.high"), format!("{high}\n")).unwrap();
+    until("its group was not said short of its budget", &|| {
+        said().contains("group agents: its microVMs hold") && said().contains("past its budget")
+    });
+    // Its VM process holds the quarter GiB less, or more: its guest's own kernel takes back
+    // as much of its files as it is short as it is told its room, before its give-back counts
+    // what it reclaims, which may then be nothing (D188).
+    until("its group was not within its budget again", &|| {
+        said().contains("within its budget of") && current() <= high
+    });
+    let lines: Vec<String> = said()
+        .lines()
+        .filter(|l| l.contains("group agents"))
+        .map(str::to_string)
+        .collect();
+    eprintln!(
+        "a joiner's 512 MiB read under a group: {idle} bytes held idle, {holding} after {reads} reads ({after_read}), {} once it gave back ({}):\n{}",
+        current(),
+        guest(),
+        lines.join("\n")
+    );
+    assert_eq!(shards(&["rm", "-f", "reader", "prov"]).status, Some(0));
+}
+
 /// A microVM held to a budget reads a file through its volume's DAX window to its end
 /// (D188, D189): under a slice of the user's manager whose `MemoryHigh` is past the microVM
 /// idle and short of the file, the file is mapped through the window, its pages its host's
@@ -3093,7 +3231,8 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
 /// itself a virtual machine on an AMD CPU gives none by default (PM M308), and the read up
 /// to 300 s: such a host reads through one at 7 to 25 MiB/s (PM M308). Linux alone, as the
 /// budget test before it.
-// Budgets on Windows come with the platform parity plan's step 7, DAX windows with its step 6.
+// Unix's: a slice of the user's manager, at the user's ID (getuid). A volume's DAX window on
+// Windows comes with the platform parity plan's step 6.
 #[cfg(unix)]
 #[test]
 fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end() {
@@ -13253,6 +13392,24 @@ fn cdi_devices_are_given_to_microvms() {
     let _ = provider.wait();
 }
 
+/// `mib` MiB of xorshift64's bytes at `path`, which no file system keeps as holes or shares.
+fn noise(path: &Path, mib: usize) {
+    use std::io::Write as _;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut block = vec![0u8; 1 << 20];
+    for _ in 0..mib {
+        for word in block.as_chunks_mut::<8>().0 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *word = x.to_le_bytes();
+        }
+        file.write_all(&block).unwrap();
+    }
+    file.flush().unwrap();
+}
+
 /// An image of gigabytes boots as a small one does. Its root is a pmem region, which
 /// libnvdimm probes asynchronously, longest for the largest; init waits for its node
 /// (init's pmem.rs), where a 2.1 GB image's runs found none and failed every time.
@@ -13264,23 +13421,7 @@ fn an_image_of_gigabytes_boots() {
     let ctx = home.join("big");
     std::fs::create_dir(&ctx).unwrap();
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
-    // 2 GiB of xorshift64's bytes, which no filesystem keeps as holes or shares.
-    {
-        use std::io::Write as _;
-        let mut big = std::io::BufWriter::new(std::fs::File::create(ctx.join("big")).unwrap());
-        let mut x = 0x9e37_79b9_7f4a_7c15u64;
-        let mut block = vec![0u8; 1 << 20];
-        for _ in 0..2048 {
-            for word in block.as_chunks_mut::<8>().0 {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                *word = x.to_le_bytes();
-            }
-            big.write_all(&block).unwrap();
-        }
-        big.flush().unwrap();
-    }
+    noise(&ctx.join("big"), 2048);
     // Its build copies 2 GiB through the builder: past TIMEOUT on CI's x86_64 runners,
     // where it stays a guard against a hang.
     let (kernel, init) = (kernel(), guest_init());

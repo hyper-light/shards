@@ -553,7 +553,8 @@ mod tests {
 
     /// The host's memory pressure can be watched where shards' daemon runs: on Linux, a
     /// trigger armed on the host's memory (a kernel of 6.4 or later), or its averages read;
-    /// on macOS, a source made and dropped; on Windows, the system's notification opened.
+    /// on macOS, a source made and dropped; on Windows, the system's notification of low
+    /// memory opened, unsignalled on a host with a gigabyte available.
     #[test]
     fn the_hosts_memory_pressure_can_be_watched() {
         let watched = MemoryPressure::new();
@@ -563,6 +564,25 @@ mod tests {
         }
         let (watched, _) = watched.unwrap();
         assert!(!watched.describe().is_empty());
+        // Windows' notification is of low memory: unsignalled while a gigabyte is available,
+        // where the low one is raised at 64 MB at most by default and the high one is
+        // signalled from three times that (CreateMemoryResourceNotification's documentation).
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+            // SAFETY: MEMORYSTATUSEX is plain data, zeroes a valid value of it.
+            let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+            status.dwLength = u32::try_from(size_of::<MEMORYSTATUSEX>()).unwrap();
+            // SAFETY: a struct of the length it says.
+            assert_ne!(unsafe { GlobalMemoryStatusEx(&raw mut status) }, 0);
+            if status.ullAvailPhys >= 1 << 30 {
+                assert!(
+                    !watched.signalled(0).unwrap(),
+                    "low, with {} bytes available",
+                    status.ullAvailPhys
+                );
+            }
+        }
     }
 
     /// On Windows each low-memory signal is a word, one that lasts said again every
