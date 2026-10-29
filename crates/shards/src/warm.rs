@@ -336,6 +336,32 @@ fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -
     Ok(())
 }
 
+/// Each of `count` shares' streams, which the daemon sends after a run's request on Windows
+/// (D197), `kind::SHARE_ENDS` messages of `MAX_FDS` at most.
+#[cfg(windows)]
+fn share_ends(daemon: &UnixStream, count: usize) -> Result<Vec<OwnedFd>, String> {
+    let mut ends = Vec::with_capacity(count);
+    while ends.len() < count {
+        let m = shards_ipc::recv(daemon)
+            .map_err(|e| format!("waiting for its shares' streams: {e}"))?
+            .ok_or("the daemon closed before its shares' streams")?;
+        if m.kind != kind::SHARE_ENDS {
+            return Err(format!(
+                "expected its shares' streams, got message kind {}",
+                m.kind
+            ));
+        }
+        ends.extend(m.fds);
+    }
+    if ends.len() != count {
+        return Err(format!(
+            "the daemon gave {} streams for {count} shares",
+            ends.len()
+        ));
+    }
+    Ok(ends)
+}
+
 /// Tells the daemon this VM is ready, then waits for its request, and tells the daemon it
 /// has taken it. Until then the daemon holds its own copies of the client's descriptors,
 /// and gives the request to another VM if this one fails. Then makes the client's stdio
@@ -486,7 +512,8 @@ pub fn receive(
     let group = if group { Some(File::from(next()?)) } else { None };
     // Its share process's (D38), where this VM was made with shared directories: its
     // connection to it on Unix, which hands it each share's stream; on Windows each share's
-    // stream itself, whose other end the share process holds (D197).
+    // stream itself, whose other end the share process holds, from the daemon after the
+    // request (D197).
     let slots = crate::vm_run::SHARES.get().map(Vec::as_slice).unwrap_or_default();
     #[cfg(unix)]
     let share_link = if slots.is_empty() {
@@ -494,11 +521,11 @@ pub fn receive(
     } else {
         Some(stream(next()?)?)
     };
-    #[cfg(windows)]
-    let share_ends = slots.iter().map(|_| next()).collect::<Result<Vec<_>, _>>()?;
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
+    #[cfg(windows)]
+    let share_ends = share_ends(daemon, slots.len())?;
     // What must hold for this VM to take a run, checked while the daemon may still give
     // it to another.
     may_take()?;

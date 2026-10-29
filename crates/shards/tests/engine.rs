@@ -678,7 +678,8 @@ fn a_volumes_data_outlives_the_microvm_that_wrote_it() {
     let in_use = api.call("DELETE", "/volumes/work", None);
     assert_eq!(in_use.status, 409, "{}", in_use.text());
     assert_eq!(api.call("DELETE", "/containers/reader?force=1", None).status, 204);
-    assert_eq!(api.call("DELETE", "/volumes/work", None).status, 204);
+    let removed = api.call("DELETE", "/volumes/work", None);
+    assert_eq!(removed.status, 204, "{}", removed.text());
     // Unused, pruned with `all`.
     assert_eq!(
         api.call("POST", "/volumes/create", Some(json!({"Name": "spare"})))

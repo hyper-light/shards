@@ -1133,6 +1133,10 @@ struct Daemon<D: Disk = Real> {
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
     /// Made as the first container joining that microVM's network brings volumes.
     join_shares: Mutex<HashMap<String, JoinDoor>>,
+    /// Each container's share processes (D38) not yet seen to end, by its ID: its removal
+    /// completes once they have, so that none holds a file of its volumes or binds as they
+    /// go, which NTFS renames no directory beneath (D197).
+    shared_by: Mutex<HashMap<String, Vec<Arc<shards_ipc::Child>>>>,
     /// Each joiner's link to its microVM's join share, by its ID, with the ID of the
     /// container whose microVM it is: its volumes are served until the link closes, as it
     /// ends.
@@ -1911,6 +1915,7 @@ impl<D: Disk> Daemon<D> {
             removing: Mutex::default(),
             paused: Mutex::default(),
             join_shares: Mutex::default(),
+            shared_by: Mutex::default(),
             joiner_links: Mutex::default(),
             members: Mutex::default(),
             events,
@@ -3506,7 +3511,7 @@ impl<D: Disk> Daemon<D> {
                     return Ok(None);
                 }
                 crate::spec::fits(&prepared.spec)?;
-                let link = self.start_shares(threads, &opened.dirs, &prepared.parent)?;
+                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
             });
@@ -3674,10 +3679,11 @@ impl<D: Disk> Daemon<D> {
         if let Some(link) = link_fd {
             fds.push(link);
         }
+        // Each share's stream on Windows, sent after the request (`hand_over`).
         #[cfg(windows)]
-        for end in shares.iter().flatten() {
-            fds.push(end.as_fd());
-        }
+        let ends: Vec<BorrowedFd<'_>> = shares.iter().flatten().map(|e| e.as_fd()).collect();
+        #[cfg(unix)]
+        let ends: Vec<BorrowedFd<'_>> = Vec::new();
         // An image whose Agentfile grants its agents anything past the microVM: init keeps
         // the run's own processes from those grants (eth0's own subnet alone, of both
         // versions) before its command starts, as its VM's network process holds the
@@ -3735,6 +3741,7 @@ impl<D: Disk> Daemon<D> {
             &id,
             &payload,
             &fds,
+            &ends,
             Keep {
                 detached,
                 options: prepared.options.clone(),
@@ -3807,12 +3814,14 @@ impl<D: Disk> Daemon<D> {
     /// way to another; one that may have is followed as it is, so no run starts twice.
     /// Returns the run, registered, for [`follow`](Self::follow), or what its client is
     /// told.
+    #[allow(clippy::too_many_arguments)]
     fn start_run<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         id: &str,
         payload: &[u8],
         fds: &[BorrowedFd<'_>],
+        ends: &[BorrowedFd<'_>],
         keep: Keep<'_>,
         mut acquire: impl FnMut() -> Result<Ready, String>,
     ) -> Result<Arc<Mutex<Inbox>>, String> {
@@ -3857,7 +3866,7 @@ impl<D: Disk> Daemon<D> {
             if ready.net.is_some() && keep.mac.is_some() {
                 ready.mac = keep.mac;
             }
-            let handed = hand_over(&ready.socket, payload, fds);
+            let handed = hand_over(&ready.socket, payload, fds, ends);
             // Only now, so that starting its successor delays no run: on the refiller's
             // thread.
             self.refill_soon(threads, ready.pool.as_ref());
@@ -4206,13 +4215,29 @@ impl<D: Disk> Daemon<D> {
     fn start_shares<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
+        id: &str,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
     ) -> Result<Option<ShareEnds>, String> {
         if dirs.is_empty() {
             return Ok(None);
         }
-        self.started_shares(threads, dirs, parent).map(Some)
+        let (ends, child) = self.started_shares(threads, dirs, parent)?;
+        let mut shared = lock(&self.shared_by);
+        let children = shared.entry(id.to_string()).or_default();
+        children.retain(|c| !c.has_ended());
+        children.push(child);
+        Ok(Some(ends))
+    }
+
+    /// Ends container `id`'s share processes and waits for them, as its removal completes:
+    /// its runs have ended, and nothing of theirs is served any more.
+    fn end_shares(&self, id: &str) {
+        let children = lock(&self.shared_by).remove(id).unwrap_or_default();
+        for child in children {
+            let _ = child.kill(shards_ipc::signal::SIGKILL);
+            let _ = child.ended();
+        }
     }
 
     /// [`start_shares`](Self::start_shares)'s process on Windows, for `dirs`, some (D197):
@@ -4230,7 +4255,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
-    ) -> Result<ShareEnds, String> {
+    ) -> Result<(ShareEnds, Arc<shards_ipc::Child>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let group = if parent.is_empty() {
             None
@@ -4266,8 +4291,8 @@ impl<D: Disk> Daemon<D> {
             &crate::netproc::env_pairs(&env),
         )
         .map_err(|e| format!("starting the share process: {e}"))?;
-        self.follow_share(threads, child);
-        Ok(streams.into_iter().map(|(_, vm)| vm).collect())
+        let child = self.follow_share(threads, child);
+        Ok((streams.into_iter().map(|(_, vm)| vm).collect(), child))
     }
 
     /// [`start_shares`](Self::start_shares)'s process, for `dirs`, some.
@@ -4277,7 +4302,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
-    ) -> Result<UnixStream, String> {
+    ) -> Result<(UnixStream, Arc<shards_ipc::Child>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
@@ -4299,8 +4324,8 @@ impl<D: Disk> Daemon<D> {
         // Of its microVM's processes: under its parent (D183).
         let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
-        self.follow_share(threads, child);
-        Ok(vm)
+        let child = self.follow_share(threads, child);
+        Ok((vm, child))
     }
 
     /// Container `id` of `run`, with the name the run gave, or one made for it, as dockerd
@@ -4690,6 +4715,7 @@ impl<D: Disk> Daemon<D> {
                 "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
             )),
         }
+        self.end_shares(id);
         self.delete_aside(&[removal]);
         if removal.container.auto_remove {
             self.drop_anonymous(&removal.container);
@@ -4787,6 +4813,9 @@ impl<D: Disk> Daemon<D> {
                     "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
                 )),
             }
+        }
+        for removal in &aside {
+            self.end_shares(&removal.container.id);
         }
         self.delete_aside(&aside);
         for removal in aside.iter().filter(|r| r.container.auto_remove) {
@@ -7988,8 +8017,14 @@ enum Untaken {
 /// its copies of the client's descriptors until then: macOS flushes a socket in flight
 /// that no process holds (shards_ipc). A warm VM says TAKEN before it touches the client's
 /// stdio or starts anything (warm.rs, receive), and if it cannot, it does neither: one
-/// that ends without a word never started the run.
-fn hand_over(vm: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> Result<(), Untaken> {
+/// that ends without a word never started the run. On Windows each of its shares' streams
+/// (`ends`, D197) follows the request, as a share process hands them to it on Unix.
+fn hand_over(
+    vm: &UnixStream,
+    payload: &[u8],
+    fds: &[BorrowedFd<'_>],
+    ends: &[BorrowedFd<'_>],
+) -> Result<(), Untaken> {
     // A live VM reads its run at once: one that has stopped reading fails the send once a
     // write of it has waited TAKE_TIMEOUT for room, as a run's socket does (`RunSocket`).
     // macOS refuses options on a socket its peer has closed (EINVAL): the send then finds
@@ -8001,6 +8036,10 @@ fn hand_over(vm: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> Result<
     }
     // A request cut short is no request: the VM never had all of it.
     shards_ipc::send(vm, kind::RUN, payload, fds).map_err(|e| Untaken::Surely(e.to_string()))?;
+    // MAX_FDS a message at most; the VM takes the run only once it has them all.
+    for batch in ends.chunks(shards_ipc::MAX_FDS) {
+        shards_ipc::send(vm, kind::SHARE_ENDS, &[], batch).map_err(|e| Untaken::Surely(e.to_string()))?;
+    }
     taken(vm)
 }
 
@@ -8717,7 +8756,13 @@ mod tests {
                     shards_ipc::send(&vm, kind::TAKEN, &[], &[]).unwrap();
                     run.fds
                 });
-                hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap();
+                hand_over(
+                    &daemon,
+                    b"run",
+                    &[shards_ipc::handed(&conn).unwrap().as_fd()],
+                    &[],
+                )
+                .unwrap();
                 drop(conn);
                 let mut fds = warm.join().unwrap();
                 let mut taken = stream_of(&fds.pop().unwrap());
@@ -8734,7 +8779,13 @@ mod tests {
         let (daemon, vm) = UnixStream::pair().unwrap();
         let (_client, conn) = UnixStream::pair().unwrap();
         let warm = std::thread::spawn(move || drop(shards_ipc::recv(&vm)));
-        let e = hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap_err();
+        let e = hand_over(
+            &daemon,
+            b"run",
+            &[shards_ipc::handed(&conn).unwrap().as_fd()],
+            &[],
+        )
+        .unwrap_err();
         assert_eq!(e, Untaken::Surely("it ended first".into()));
         warm.join().unwrap();
     }
@@ -8750,13 +8801,25 @@ mod tests {
             shards_ipc::send(&vm, kind::STARTED, &[], &[]).unwrap();
             vm
         });
-        let e = hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap_err();
+        let e = hand_over(
+            &daemon,
+            b"run",
+            &[shards_ipc::handed(&conn).unwrap().as_fd()],
+            &[],
+        )
+        .unwrap_err();
         assert!(matches!(e, Untaken::Unknown(_)), "{e:?}");
         drop(warm.join().unwrap());
         // So does a VM whose socket is gone before the request is whole.
         let (daemon, vm) = UnixStream::pair().unwrap();
         drop(vm);
-        let e = hand_over(&daemon, b"run", &[shards_ipc::handed(&conn).unwrap().as_fd()]).unwrap_err();
+        let e = hand_over(
+            &daemon,
+            b"run",
+            &[shards_ipc::handed(&conn).unwrap().as_fd()],
+            &[],
+        )
+        .unwrap_err();
         assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
@@ -9081,6 +9144,7 @@ mod tests {
                     &id,
                     b"run",
                     &[null.as_fd()],
+                    &[],
                     Keep {
                         detached: client.as_ref(),
                         options: crate::spec::Options::default(),
@@ -9393,6 +9457,7 @@ mod tests {
                         &id2,
                         b"run",
                         &[null.as_fd()],
+                        &[],
                         Keep {
                             detached: None,
                             options: crate::spec::Options::default(),
@@ -11395,7 +11460,7 @@ mod tests {
         let t0 = Instant::now();
         std::thread::spawn(move || {
             let payload = vec![0u8; shards_ipc::MAX_PAYLOAD];
-            let _ = done.send(hand_over(&daemon, &payload, &[]));
+            let _ = done.send(hand_over(&daemon, &payload, &[], &[]));
         });
         let handed = finished.recv_timeout(TAKE_TIMEOUT * 3).unwrap();
         assert!(matches!(handed, Err(Untaken::Surely(_))));

@@ -424,7 +424,11 @@ impl<D: Disk> Daemon<D> {
 
     /// Follows share process `child` to its end on the followers' loop, which reaps it.
     #[cfg_attr(windows, allow(dead_code))]
-    pub(super) fn follow_share<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, child: shards_ipc::Child) {
+    pub(super) fn follow_share<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        child: shards_ipc::Child,
+    ) -> Arc<shards_ipc::Child> {
         let f = &self.followers;
         let token = f.next.fetch_add(1, Ordering::Relaxed);
         let child = Arc::new(child);
@@ -436,7 +440,8 @@ impl<D: Disk> Daemon<D> {
             },
         );
         self.start_followers(threads);
-        self.watch_exit(threads, token, child);
+        self.watch_exit(threads, token, child.clone());
+        child
     }
 
     /// Follows run `id` on this thread, waiting on its socket alone: where the poller

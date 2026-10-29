@@ -336,6 +336,12 @@ fn a_joiner_is_a_container_of_its_own() {
     );
 }
 
+/// The mode a guest reads of a file the host wrote, as `stat` prints it: its own on Unix,
+/// and on Windows, which has no mode, 0755 (D197).
+fn host_file_mode() -> &'static str {
+    if cfg!(windows) { "755" } else { "644" }
+}
+
 /// A joiner's volumes, as a container's (D119), through its microVM's join share: a host
 /// directory shared both ways, read-only where asked, a file bound alone, a named volume
 /// filled from its image where it is empty, its image's VOLUME; each its own, neither its
@@ -381,8 +387,17 @@ fn a_joiner_takes_volumes_as_a_container_does() {
         &["stat", "/data/a", "/etc/one", "/proc/self/mounts"],
     );
     assert_eq!(ran.status, Some(0), "{ran}");
-    assert!(ran.stdout.contains("/data/a file 644 0:0 4\n= host\n"), "{ran}");
-    assert!(ran.stdout.contains("/etc/one file 644 0:0 5\n= alone\n"), "{ran}");
+    let host = host_file_mode();
+    assert!(
+        ran.stdout
+            .contains(&format!("/data/a file {host} 0:0 4\n= host\n")),
+        "{ran}"
+    );
+    assert!(
+        ran.stdout
+            .contains(&format!("/etc/one file {host} 0:0 5\n= alone\n")),
+        "{ran}"
+    );
     for mount in [
         "shards-join-share /data virtiofs rw,",
         "shards-join-share /ro virtiofs ro,",
@@ -455,8 +470,11 @@ fn a_joiner_takes_volumes_as_a_container_does() {
         &["stat", "/cache/seed", "/proc/self/mounts"],
     );
     assert_eq!(ran.status, Some(0), "{ran}");
+    // A Windows context's file is 0755, as fsutil sends one (shards-build's host.rs).
+    let seeded = if cfg!(windows) { "755" } else { "644" };
     assert!(
-        ran.stdout.contains("/cache/seed file 644 0:0 6\n= seeded\n"),
+        ran.stdout
+            .contains(&format!("/cache/seed file {seeded} 0:0 6\n= seeded\n")),
         "{ran}"
     );
     assert!(
@@ -11015,12 +11033,17 @@ fn run_mounts_binds_volumes_and_tmpfs() {
         &["stat", "/data/a", "/etc/one", "/etc/linked", "/proc/self/mounts"],
     );
     assert_eq!(ran.status, Some(0), "{ran}");
-    assert!(ran.stdout.contains("/data/a file 644 0:0 4\n= host\n"), "{ran}");
-    assert!(ran.stdout.contains("/etc/one file 644 0:0 5\n= alone\n"), "{ran}");
-    assert!(
-        ran.stdout.contains("/etc/linked file 644 0:0 5\n= alone\n"),
-        "{ran}"
-    );
+    let host = host_file_mode();
+    for (path, said) in [
+        ("/data/a", "4\n= host"),
+        ("/etc/one", "5\n= alone"),
+        ("/etc/linked", "5\n= alone"),
+    ] {
+        assert!(
+            ran.stdout.contains(&format!("{path} file {host} 0:0 {said}\n")),
+            "{path}: {ran}"
+        );
+    }
     for mount in [
         "shards0 /data virtiofs rw,",
         "shards1 /ro virtiofs ro,",
@@ -11117,11 +11140,12 @@ fn run_mounts_binds_volumes_and_tmpfs() {
         "{{range .Mounts}}{{.Type}} {{.Destination}} {{.RW}} {{.Mode}} {{.Propagation}};{{end}} {{json .HostConfig.Binds}} {{json .Config.Volumes}}",
         "held",
     ]);
+    // The binds as JSON has them: a Windows path's backslashes escaped.
     assert_eq!(
         shown.stdout,
         format!(
-            "volume /anon true  ;bind /data true  rprivate;volume /v true z ; [\"{}\"] {{\"/anon\":{{}}}}\n",
-            bind
+            "volume /anon true  ;bind /data true  rprivate;volume /v true z ; {} {{\"/anon\":{{}}}}\n",
+            serde_json::to_string(&[&bind]).unwrap()
         ),
         "{shown}"
     );

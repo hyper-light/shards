@@ -149,7 +149,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let opened = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))?;
             prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None, None)?;
             crate::spec::fits(&prepared.spec)?;
-            let link = self.start_shares(threads, &opened.dirs, &prepared.parent)?;
+            let link = self.start_shares(threads, id, &opened.dirs, &prepared.parent)?;
             prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
             link
         } else {
@@ -186,10 +186,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if let Some(link) = &link {
             fds.push(link.as_fd());
         }
+        // Each share's stream on Windows, sent after the request (`hand_over`).
         #[cfg(windows)]
-        for end in link.iter().flatten() {
-            fds.push(end.as_fd());
-        }
+        let ends: Vec<BorrowedFd<'_>> = link.iter().flatten().map(|e| e.as_fd()).collect();
+        #[cfg(unix)]
+        let ends: Vec<BorrowedFd<'_>> = Vec::new();
         let mut payload =
             Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));
         let kept = self.log_retention()?;
@@ -221,6 +222,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             id,
             &payload,
             &fds,
+            &ends,
             Keep {
                 detached: None,
                 options: prepared.options.clone(),

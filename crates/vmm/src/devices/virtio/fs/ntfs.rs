@@ -268,14 +268,17 @@ pub fn stat(h: BorrowedHandle<'_>) -> Result<Stat, Errno> {
         _ if lx.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 => 0o040000,
         _ => 0o100000,
     };
+    // A file with no mode of WSL's is executable, as Windows has no bit to say otherwise
+    // (WSL shows its user's rights, Docker Desktop 0777): 0755, or 0555 read-only, as a
+    // Windows file goes to a build (fsutil; shards-build's host.rs), its owner's to write.
     let mode = if lx.LxFlags & LX_FILE_METADATA_HAS_MODE != 0 {
         kind | (lx.LxMode & 0o7777)
     } else {
         kind | match kind {
             0o040000 => 0o755,
             0o120000 => 0o777,
-            _ if lx.FileAttributes & FILE_ATTRIBUTE_READONLY != 0 => 0o444,
-            _ => 0o644,
+            _ if lx.FileAttributes & FILE_ATTRIBUTE_READONLY != 0 => 0o555,
+            _ => 0o755,
         }
     };
     let rdev = if lx.LxFlags & LX_FILE_METADATA_HAS_DEVICE_ID != 0 {
@@ -1145,7 +1148,7 @@ mod tests {
         )
         .unwrap();
         let st = stat(made.as_handle()).unwrap();
-        assert_eq!((st.mode, st.uid, st.nlink, st.size), (0o100644, 0, 1, 0));
+        assert_eq!((st.mode, st.uid, st.nlink, st.size), (0o100755, 0, 1, 0));
         assert!(st.ino != 0);
         assert!(dir.join("made").is_file());
         assert_eq!(
