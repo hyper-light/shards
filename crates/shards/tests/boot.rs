@@ -1613,6 +1613,8 @@ fn cold_boots_profiled() {
         (host, 8, ""),
         (host, 1, " maxcpus=1"),
         (host, 8, " maxcpus=1"),
+        (host, 1, " maxcpus=1 rcupdate.rcu_expedited=1"),
+        (host, 8, " maxcpus=1 rcupdate.rcu_expedited=1"),
         (1, 8, ""),
     ] {
         let started = std::time::Instant::now();
