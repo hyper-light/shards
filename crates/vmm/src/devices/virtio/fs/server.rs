@@ -1468,7 +1468,14 @@ impl Server {
                 let _ = a.u32()?;
                 let data = a.rest().get(..size as usize).ok_or(EINVAL)?;
                 let fd = file_fd(s, fh)?;
-                let n = pwrite(fd, data, offset)?;
+                // A handle opened to append writes at its file's end as the host has it,
+                // which another writer there may have moved since the guest's kernel looked.
+                let appends = s
+                    .handles
+                    .get(&fh)
+                    .and_then(|h| h.flags)
+                    .is_some_and(|f| f & host::O_APPEND != 0);
+                let n = pwrite(fd, data, (!appends).then_some(offset))?;
                 r.u32(u32::try_from(n).unwrap_or(0)).u32(0);
             }
             op::STATFS => {
@@ -1912,7 +1919,7 @@ fn open_meta(dir: host::Raw, name: &CStr, known: Option<u32>) -> Result<NodeFd, 
         Some(kind) => kind,
         None => mode_of(&stat_at(dir, name)?) & S_IFMT,
     };
-    if matches!(kind, S_IFCHR | S_IFBLK) {
+    if DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK) {
         return Err(ENODATA);
     }
     open_at(dir, name, META_FLAGS, 0).map(NodeFd::Owned)
@@ -2516,6 +2523,9 @@ fn room_for_pin(s: &State) -> bool {
 /// the share process: once its handle's descriptor were let go, none could be opened for it
 /// again by its path.
 fn refuses(mode: u32, flags: host::c_int) -> bool {
+    if !MODES_REFUSE_OPENS {
+        return false;
+    }
     let access = flags & host::O_ACCMODE;
     let reads = access != host::O_WRONLY;
     let writes = access != host::O_RDONLY;
@@ -2540,6 +2550,16 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     } else {
         Removal::Nothing
     };
+    if RENAME_NEEDS_NONE_BENEATH {
+        let moved = s
+            .nodes
+            .iter()
+            .find(|(_, n)| n.dir && n.parent == olddir && n.name.as_c_str() == old)
+            .map(|(id, _)| *id);
+        if let Some(moved) = moved {
+            let_go_beneath(s, moved, [olddir, newdir]);
+        }
+    }
     let rc = renamed(od, old, nd, new, flags);
     removed(s, removal, rc.is_ok());
     rc?;
@@ -2561,6 +2581,43 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
         }
     }
     Ok(())
+}
+
+/// The descriptors held for directory node `dir` and every node beneath it let go, but
+/// `keep`'s, which a request holds: they are a cache, each opened again along its node's
+/// path as it is needed (audit V09), and NTFS renames no directory a handle beneath is open
+/// in (`RENAME_NEEDS_NONE_BENEATH`). A pin is no cache, nor beneath: its file was unlinked,
+/// renamed over, or kept against a mode that refuses opens, which NTFS's are not.
+fn let_go_beneath(s: &mut State, dir: u64, keep: [u64; 2]) {
+    let within = |s: &State, mut node: u64| {
+        for _ in 0..=s.nodes.len() {
+            if node == dir {
+                return true;
+            }
+            match s.nodes.get(&node) {
+                Some(n) if node != ROOT => node = n.parent,
+                _ => return false,
+            }
+        }
+        false
+    };
+    let slots: Vec<Slot> = s
+        .fds
+        .open
+        .keys()
+        .copied()
+        .filter(|slot| {
+            let node = match *slot {
+                Slot::Node(n) if keep.contains(&n) => return false,
+                Slot::Node(n) => n,
+                Slot::Handle(fh) => s.handles.get(&fh).map_or(ROOT, |h| h.node),
+            };
+            within(s, node)
+        })
+        .collect();
+    for slot in slots {
+        s.fds.remove(slot);
+    }
 }
 
 fn hidden(name: &CStr) -> bool {
@@ -2594,11 +2651,12 @@ fn emulated_at(dir: host::Raw, name: &CStr) -> Option<u32> {
 }
 
 // Unix's alone until the slice that runs them on Windows (D197).
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use std::os::fd::{AsRawFd as _, OwnedFd};
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd as _;
 
     /// A request: its header, then `body`.
     fn req(opcode: u32, nodeid: u64, uid: u32, body: &[u8]) -> Vec<u8> {
@@ -2631,9 +2689,124 @@ mod tests {
     /// A share of a directory of the test's own, removed as it goes.
     fn dir() -> (shards_testdir::TempDir, Server) {
         let p = shards_testdir::TempDir::new("fs").unwrap();
-        let fd = std::fs::File::open(&p).unwrap();
-        let server = Server::new(fd.into(), false, None).unwrap();
+        let server = Server::new(root_of(&p), false, None).unwrap();
         (p, server)
+    }
+
+    /// A directory's handle, as a share's root is opened: on Windows with backup semantics,
+    /// which a directory is opened by.
+    fn root_of(p: &std::path::Path) -> host::Owned {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            std::fs::File::options()
+                .read(true)
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                .open(p)
+                .unwrap()
+                .into()
+        }
+        #[cfg(unix)]
+        std::fs::File::open(p).unwrap().into()
+    }
+
+    /// The host's own type and permission bits of `p`, never following it: on Windows
+    /// NTFS's with WSL's metadata, as the server reads them.
+    fn host_mode(p: &std::path::Path) -> u32 {
+        #[cfg(windows)]
+        return host_stat(p).mode;
+        #[cfg(unix)]
+        std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(p).unwrap())
+    }
+
+    /// The host's device and inode of `p`, which the server keys its nodes by.
+    fn host_key(p: &std::path::Path) -> (u64, u64) {
+        #[cfg(windows)]
+        {
+            let st = host_stat(p);
+            (st.dev, st.ino)
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let m = std::fs::symlink_metadata(p).unwrap();
+            (m.dev(), m.ino())
+        }
+    }
+
+    /// `p`'s stat as the server's Windows layer reads it, its reparse point not followed.
+    #[cfg(windows)]
+    fn host_stat(p: &std::path::Path) -> Stat {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let f = std::fs::File::options()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(p)
+            .unwrap();
+        super::super::ntfs::stat(std::os::windows::io::AsHandle::as_handle(&f)).unwrap()
+    }
+
+    /// A link `link` to the directory `target`, as a host's user may plant one: on Unix a
+    /// symlink; on Windows a junction (a mount point reparse point), which any user makes
+    /// and NTFS follows, where a symlink needs Developer Mode.
+    fn link_dir(target: &std::path::Path, link: &std::path::Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            };
+            let full = std::fs::canonicalize(target).unwrap();
+            let full = full.to_str().unwrap();
+            let print = full.strip_prefix(r"\\?\").unwrap_or(full);
+            let wide = |t: &str| t.encode_utf16().collect::<Vec<u16>>();
+            let (sub, print) = (wide(&format!(r"\??\{print}")), wide(print));
+            // A mount point's REPARSE_DATA_BUFFER past its header: its substitute name's
+            // offset and length, its print name's, then each NUL-ended.
+            let mut data = Vec::new();
+            for word in [0, sub.len() * 2, sub.len() * 2 + 2, print.len() * 2] {
+                data.extend(u16::try_from(word).unwrap().to_le_bytes());
+            }
+            for c in sub.iter().chain(&[0]).chain(&print).chain(&[0]) {
+                data.extend(c.to_le_bytes());
+            }
+            std::fs::create_dir(link).unwrap();
+            let dir = std::fs::File::options()
+                .read(true)
+                .write(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(link)
+                .unwrap();
+            const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+            super::super::ntfs::set_reparse(
+                std::os::windows::io::AsHandle::as_handle(&dir),
+                IO_REPARSE_TAG_MOUNT_POINT,
+                &data,
+            )
+            .unwrap();
+        }
+    }
+
+    /// A link [`link_dir`] made, removed.
+    fn unlink_dir(link: &std::path::Path) {
+        #[cfg(unix)]
+        std::fs::remove_file(link).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(link).unwrap();
+    }
+
+    /// `p` made read-only on the host, or writable again: its write bits taken away on
+    /// Unix, its read-only attribute on Windows.
+    fn host_read_only(p: &std::path::Path, read_only: bool) {
+        let mut perms = std::fs::metadata(p).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(read_only);
+        std::fs::set_permissions(p, perms).unwrap();
     }
 
     /// DAX_SMALLEST is what PM M338's measurement found by its rule: 1 MiB, the smallest
@@ -2657,11 +2830,7 @@ mod tests {
         std::fs::write(p.join("big"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
         std::fs::write(p.join("small"), vec![1u8; DAX_SMALLEST as usize - 1]).unwrap();
         std::fs::write(p.join("kept"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
-        std::fs::set_permissions(
-            p.join("kept"),
-            std::os::unix::fs::PermissionsExt::from_mode(0o444),
-        )
-        .unwrap();
+        host_read_only(&p.join("kept"), true);
         let mut init = Vec::new();
         for word in [
             7u32,
@@ -2678,8 +2847,7 @@ mod tests {
         let flags = u32::from_le_bytes(out[12..16].try_into().unwrap());
         let alignment = u16::from_le_bytes(out[30..32].try_into().unwrap());
         let flags2 = u32::from_le_bytes(out[32..36].try_into().unwrap());
-        // SAFETY: sysconf(3) of a constant.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+        let page = crate::platform::page_size().unwrap() as u64;
         assert_ne!(flags & init::MAP_ALIGNMENT, 0);
         assert_eq!(u32::from(alignment), page.trailing_zeros());
         assert_ne!(flags2 & init::HAS_INODE_DAX, 0);
@@ -2712,7 +2880,7 @@ mod tests {
         assert_eq!(s.descriptor(999, false).err(), Some(ENOENT));
         // A read-only share: its file read alone, never written; where a mapping's
         // descriptor is opened to write too, neither, and no file is mapped.
-        let ro = Server::new(std::fs::File::open(&p).unwrap().into(), true, None).unwrap();
+        let ro = Server::new(root_of(&p), true, None).unwrap();
         let (err, out) = answer(&ro, &req(op::LOOKUP, ROOT, 0, &name("big")));
         assert_eq!(err, 0);
         let node = u64::from_le_bytes(out[0..8].try_into().unwrap());
@@ -2737,7 +2905,7 @@ mod tests {
         let (b, _) = dir();
         std::fs::write(a.join("x"), "x").unwrap();
         std::fs::write(b.join("y"), "y").unwrap();
-        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let fd = root_of;
         let c = |n: &str| CString::new(n).unwrap();
         let s = Server::joined(fd(&root), 64).unwrap();
         s.add(c("a"), fd(&a), false, None).unwrap();
@@ -2803,7 +2971,7 @@ mod tests {
         };
         assert_eq!(read(&s), (0, b"kept bytes".to_vec()));
         let tables = s.save().unwrap();
-        let again = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let again = Server::new(root_of(&root), false, None).unwrap();
         again.restore(&tables).unwrap();
         assert_eq!(read(&again), (0, b"kept bytes".to_vec()));
         assert_eq!(id(answer(&again, &req(op::LOOKUP, d, 0, &name("f")))), f);
@@ -2827,11 +2995,11 @@ mod tests {
             }
         }
         assert!(moved >= 4, "the root's and each node's: {moved}");
-        let rebooted = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let rebooted = Server::new(root_of(&root), false, None).unwrap();
         rebooted.restore(&renumbered).unwrap();
         assert_eq!(read(&rebooted), (0, b"kept bytes".to_vec()));
         let (other, _) = dir();
-        let elsewhere = Server::new(std::fs::File::open(&other).unwrap().into(), false, None).unwrap();
+        let elsewhere = Server::new(root_of(&other), false, None).unwrap();
         assert!(
             elsewhere
                 .restore(&tables)
@@ -2857,8 +3025,8 @@ mod tests {
         assert_eq!(read_h(&s), (0, b"held after its removal".to_vec()));
         let tables = s.save().unwrap();
         let private = shards_testdir::TempDir::new("fs-ghosts").unwrap();
-        let held = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
-        held.keep_ghosts_in(std::fs::File::open(&private).unwrap().into());
+        let held = Server::new(root_of(&root), false, None).unwrap();
+        held.keep_ghosts_in(root_of(&private));
         held.restore(&tables).unwrap();
         assert_eq!(read_h(&held), (0, b"held after its removal".to_vec()));
         assert!(
@@ -2866,7 +3034,7 @@ mod tests {
             "no name left"
         );
         assert_eq!(read(&held), (0, b"kept bytes".to_vec()));
-        let nowhere = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let nowhere = Server::new(root_of(&root), false, None).unwrap();
         assert!(
             nowhere
                 .restore(&tables)
@@ -2896,7 +3064,7 @@ mod tests {
         for n in ["a", "b", "c"] {
             std::fs::write(root.join(n), n).unwrap();
         }
-        let other = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let other = Server::new(root_of(&root), false, None).unwrap();
         let ids = |s: &Server| -> Vec<u64> {
             ["a", "b", "c"]
                 .iter()
@@ -2923,7 +3091,7 @@ mod tests {
         let (a, _) = dir();
         std::fs::create_dir_all(a.join("d/e")).unwrap();
         std::fs::write(a.join("d/e/f"), "f").unwrap();
-        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let fd = root_of;
         let s = Server::joined(fd(&root), 64).unwrap();
         s.add(CString::new("a").unwrap(), fd(&a), false, None).unwrap();
         let node = |r: (i32, Vec<u8>)| {
@@ -2972,7 +3140,7 @@ mod tests {
         let (p, _) = dir();
         std::fs::write(p.join("bound"), "b").unwrap();
         std::fs::write(p.join("secret"), "s").unwrap();
-        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let fd = root_of;
         let s = Server::joined(fd(&root), 64).unwrap();
         s.add(
             CString::new("f").unwrap(),
@@ -3014,8 +3182,7 @@ mod tests {
         let (path, _) = dir();
         std::fs::write(path.join("bound"), "b").unwrap();
         std::fs::write(path.join("secret"), "s").unwrap();
-        let fd = std::fs::File::open(&path).unwrap();
-        let s = Server::new(fd.into(), false, Some(CString::new("bound").unwrap())).unwrap();
+        let s = Server::new(root_of(&path), false, Some(CString::new("bound").unwrap())).unwrap();
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("bound"))).0, 0);
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("secret"))).0, -ENOENT);
         assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("bound"))).0, -EBUSY);
@@ -3115,23 +3282,24 @@ mod tests {
     /// symlink's mode (EOPNOTSUPP); a regular file's still changes.
     #[test]
     fn a_mode_change_follows_no_symlink() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (path, s) = dir();
         let elsewhere = shards_testdir::TempDir::new("fs-outside").unwrap();
         let outside = elsewhere.join("outside");
         std::fs::write(&outside, "secret").unwrap();
-        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&outside, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
         let mut body = name("link");
         body.extend(name(outside.to_str().unwrap()));
         assert_eq!(answer(&s, &req(op::SYMLINK, ROOT, 0, &body)).0, 0);
         let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("link")));
         assert_eq!(e, 0);
         let link = u64::from_le_bytes(entry[0..8].try_into().unwrap());
-        let mode = || std::fs::metadata(&outside).unwrap().permissions().mode() & 0o7777;
+        let mode = || host_mode(&outside) & 0o7777;
+        let before = mode();
         for valid in [fattr::MODE, fattr::KILL_SUIDGID] {
             let (e, _) = answer(&s, &req(op::SETATTR, link, 0, &setattr(valid, 0o777)));
             assert_eq!(e, -EOPNOTSUPP, "valid {valid:#x}");
-            assert_eq!(mode(), 0o600, "valid {valid:#x}: the file outside the share");
+            assert_eq!(mode(), before, "valid {valid:#x}: the file outside the share");
         }
         std::fs::write(path.join("file"), "f").unwrap();
         let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
@@ -3140,8 +3308,7 @@ mod tests {
             answer(&s, &req(op::SETATTR, file, 0, &setattr(fattr::MODE, 0o640))).0,
             0
         );
-        let changed = std::fs::metadata(path.join("file")).unwrap().permissions().mode();
-        assert_eq!(changed & 0o7777, 0o640);
+        assert_eq!(host_mode(&path.join("file")) & 0o7777, 0o640);
         let _ = std::fs::remove_dir_all(&path);
         let _ = std::fs::remove_file(&outside);
     }
@@ -3171,8 +3338,7 @@ mod tests {
     fn special_files_are_never_opened() {
         let (path, s) = dir();
         let fields = |v: [u32; 4]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
-        #[allow(clippy::unnecessary_cast)]
-        let fifo_mode = libc::S_IFIFO as u32 | 0o644;
+        let fifo_mode = S_IFIFO | 0o644;
         let mut mknod = fields([fifo_mode, 0, 0, 0]);
         mknod.extend(name("fifo"));
         assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &mknod)).0, 0);
@@ -3186,32 +3352,49 @@ mod tests {
             let errno = answered_or_stuck(&s, request, &path.join("fifo"));
             assert_eq!(errno, Some(-EBADF), "{what} of a FIFO");
         }
-        let dev = Server::new(std::fs::File::open("/dev").unwrap().into(), true, None).unwrap();
-        let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name("null")));
+        // A device node a share reaches: on Unix the host's; on Windows one a guest made,
+        // WSL's, which the host holds as any file.
+        #[cfg(unix)]
+        let (dev, device) = (
+            Server::new(root_of(std::path::Path::new("/dev")), true, None).unwrap(),
+            "null",
+        );
+        #[cfg(windows)]
+        let (dev, device) = {
+            let mut chr = fields([S_IFCHR | 0o644, 0x103, 0, 0]);
+            chr.extend(name("null"));
+            assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &chr)).0, 0);
+            (Server::new(root_of(&path), true, None).unwrap(), "null")
+        };
+        let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name(device)));
         assert_eq!(e, 0);
         let null = u64::from_le_bytes(entry[0..8].try_into().unwrap());
         assert_eq!(answer(&dev, &req(op::OPEN, null, 0, &[0u8; 8])).0, -EBADF);
         // A regular file opens with the status flags asked for: opened without waiting,
-        // it waits again unless the guest asked otherwise.
-        std::fs::write(path.join("file"), "f").unwrap();
-        let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
-        let file = u64::from_le_bytes(entry[0..8].try_into().unwrap());
-        for (guest, nonblocking) in [(linux::O_APPEND | 1, false), (linux::O_NONBLOCK, true)] {
-            let (e, opened) = answer(&s, &req(op::OPEN, file, 0, &fields([guest, 0, 0, 0])[..8]));
-            assert_eq!(e, 0);
-            let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
-            let state = s.state.lock().unwrap();
-            let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fh)) else {
-                panic!("no file handle {fh}");
-            };
-            // SAFETY: F_GETFL of a descriptor the server holds.
-            let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-            assert_eq!(status & libc::O_NONBLOCK != 0, nonblocking, "{guest:#o}");
-            assert_eq!(
-                status & libc::O_APPEND != 0,
-                guest & linux::O_APPEND != 0,
-                "{guest:#o}"
-            );
+        // it waits again unless the guest asked otherwise. Unix's: Windows' handles have
+        // no such flags (an appending one's writes are placed as they are made).
+        #[cfg(unix)]
+        {
+            std::fs::write(path.join("file"), "f").unwrap();
+            let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
+            let file = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+            for (guest, nonblocking) in [(linux::O_APPEND | 1, false), (linux::O_NONBLOCK, true)] {
+                let (e, opened) = answer(&s, &req(op::OPEN, file, 0, &fields([guest, 0, 0, 0])[..8]));
+                assert_eq!(e, 0);
+                let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+                let state = s.state.lock().unwrap();
+                let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fh)) else {
+                    panic!("no file handle {fh}");
+                };
+                // SAFETY: F_GETFL of a descriptor the server holds.
+                let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+                assert_eq!(status & libc::O_NONBLOCK != 0, nonblocking, "{guest:#o}");
+                assert_eq!(
+                    status & libc::O_APPEND != 0,
+                    guest & linux::O_APPEND != 0,
+                    "{guest:#o}"
+                );
+            }
         }
         let _ = std::fs::remove_dir_all(&path);
     }
@@ -3313,10 +3496,13 @@ mod tests {
 
     /// A device node is never opened only to be looked at, which runs its driver's open
     /// where the guest only looked (a serial line raises DTR): a share of /dev looks up,
-    /// stats and lists the attributes of `null` without opening it, and it has none.
+    /// stats and lists the attributes of `null` without opening it, and it has none. Unix's:
+    /// on Windows a device node is WSL's reparse point, which no open reaches a driver
+    /// through (`DEVICE_OPENS_DRIVER`).
+    #[cfg(unix)]
     #[test]
     fn a_device_is_never_opened_to_be_looked_at() {
-        let dev = Server::new(std::fs::File::open("/dev").unwrap().into(), true, None).unwrap();
+        let dev = Server::new(root_of(std::path::Path::new("/dev")), true, None).unwrap();
         OPENED.with(|o| o.borrow_mut().clear());
         let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name("null")));
         assert_eq!(e, 0);
@@ -3337,8 +3523,7 @@ mod tests {
 
     /// A server over `path` holding at most `budget` descriptors between requests.
     fn small(path: &std::path::Path, budget: u64) -> Server {
-        let root = std::fs::File::open(path).unwrap();
-        Server::with_budget(root.into(), false, None, budget).unwrap()
+        Server::with_budget(root_of(path), false, None, budget).unwrap()
     }
 
     fn found(s: &Server, parent: u64, n: &str) -> u64 {
@@ -3374,23 +3559,25 @@ mod tests {
         assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
         assert_eq!(getattr(other), 0);
         assert_eq!(getattr(b), 0, "along z/b, the guest's rename");
-        // Renamed on the host: stale.
+        // Renamed on the host: stale. (Let go of first, as NTFS renames no directory a
+        // handle beneath is open in.)
+        assert_eq!(getattr(other), 0);
         std::fs::rename(path.join("z"), path.join("y")).unwrap();
         assert_eq!(getattr(other), 0);
         assert_eq!(getattr(b), -ESTALE, "renamed on the host");
         // A symlink in its path, to the very directory it was: not followed.
-        std::os::unix::fs::symlink("y", path.join("z")).unwrap();
+        link_dir(&path.join("y"), &path.join("z"));
         assert_eq!(getattr(b), -ESTALE, "through a symlink to itself");
         // A symlink out of the share: not followed, nothing made there.
-        std::fs::remove_file(path.join("z")).unwrap();
-        std::os::unix::fs::symlink(&outside, path.join("z")).unwrap();
+        unlink_dir(&path.join("z"));
+        link_dir(&outside, &path.join("z"));
         let mut mkdir = 0o755u32.to_le_bytes().to_vec();
         mkdir.extend_from_slice(&[0u8; 4]);
         mkdir.extend(name("made"));
         assert_eq!(answer(&s, &req(op::MKDIR, b, 0, &mkdir)).0, -ESTALE);
         assert!(!outside.join("b/made").exists(), "made outside the share");
         // Back at its path: found again.
-        std::fs::remove_file(path.join("z")).unwrap();
+        unlink_dir(&path.join("z"));
         std::fs::rename(path.join("y"), path.join("z")).unwrap();
         assert_eq!(getattr(b), 0, "back along z/b");
         // Replaced on the host by another directory of its name: stale, and a lookup finds
@@ -3702,7 +3889,6 @@ mod tests {
     /// host, or whose mode the host takes away, as none can be opened for it again.
     #[test]
     fn a_file_replaced_on_the_host_while_open_is_stale_once_let_go() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (path, _) = dir();
         std::fs::write(path.join("a"), "old").unwrap();
         crowded(&path, 20);
@@ -3720,13 +3906,29 @@ mod tests {
         std::fs::remove_file(path.join("a")).unwrap();
         crowd(&s, 20);
         assert_eq!(read(&s, b, fb, 0, 16).0, -ESTALE);
-        // Its mode taken away on the host: stale, not refused.
+        // Its mode taken away on the host: stale, not refused. On Unix a reader's, its read
+        // bits taken; on Windows a writer's, its file made read-only.
         std::fs::write(path.join("c"), "c").unwrap();
         let c = found(&s, ROOT, "c");
-        let fc = open(&s, c, 0);
-        std::fs::set_permissions(path.join("c"), std::fs::Permissions::from_mode(0o200)).unwrap();
-        crowd(&s, 20);
-        assert_eq!(read(&s, c, fc, 0, 16).0, -ESTALE);
+        #[cfg(unix)]
+        {
+            let fc = open(&s, c, 0);
+            std::fs::set_permissions(
+                path.join("c"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o200),
+            )
+            .unwrap();
+            crowd(&s, 20);
+            assert_eq!(read(&s, c, fc, 0, 16).0, -ESTALE);
+        }
+        #[cfg(windows)]
+        {
+            let fc = open(&s, c, 1);
+            host_read_only(&path.join("c"), true);
+            crowd(&s, 20);
+            assert_eq!(write(&s, c, fc, 0, b"x"), -ESTALE);
+            host_read_only(&path.join("c"), false);
+        }
         let _ = std::fs::remove_dir_all(&path);
     }
 
@@ -3845,6 +4047,7 @@ mod tests {
     }
 
     /// Linux's numbers for the host's refusals the tests expect.
+    const ENXIO: i32 = 6;
     const EEXIST: i32 = 17;
     const ENOTEMPTY: i32 = 39;
 
@@ -3854,7 +4057,6 @@ mod tests {
     /// however long since the server let go of everything else (audit V09).
     #[test]
     fn a_file_made_read_only_is_filled_through_its_handle() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (path, _) = dir();
         crowded(&path, 20);
         let s = small(&path, 4);
@@ -3867,8 +4069,14 @@ mod tests {
         assert_eq!(std::fs::read(path.join("ro")).unwrap(), b"filled twice");
         // The host's file lets its owner, the share process, write it; the guest sees the
         // mode it made it with (D174).
-        let mode = std::fs::metadata(path.join("ro")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o644);
+        assert!(
+            !std::fs::metadata(path.join("ro"))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        #[cfg(unix)]
+        assert_eq!(host_mode(&path.join("ro")) & 0o777, 0o644);
         let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("ro")));
         assert_eq!(
             u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap()) & 0o7777,
@@ -3881,7 +4089,9 @@ mod tests {
     /// The guest's names for the host's attributes: its own `trusted.` and `security.` ones
     /// as the host keeps them (`user.shards.`), its `user.` ones as they are; and on Linux,
     /// none for the host's own `trusted.` and `security.` ones (an SELinux label), which the
-    /// guest could list and never read; nor for the server's.
+    /// guest could list and never read; nor for the server's. Unix's: on Windows each guest
+    /// attribute is an EA of its own name ([`calls::ea_name`]'s test).
+    #[cfg(unix)]
     #[test]
     fn the_guest_sees_its_own_attributes_and_not_the_hosts_security_ones() {
         assert_eq!(guest_xattr(b"user.x"), Some(&b"user.x"[..]));
@@ -3911,25 +4121,22 @@ mod tests {
     ///   kept, read and listed back under its own name.
     #[test]
     fn what_the_host_cannot_hold_is_kept_beside_it() {
-        use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
         let (path, s) = dir();
         let mode_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap());
         let rdev_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 76..40 + 80].try_into().unwrap());
         let node_in = |entry: &[u8]| u64::from_le_bytes(entry[0..8].try_into().unwrap());
         let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
-        let host_mode = |name: &str| {
-            std::fs::symlink_metadata(path.join(name))
-                .unwrap()
-                .permissions()
-                .mode()
-        };
         // A directory of mode 0, and one made in it by the guest's root.
         let mut mkdir = fields(&[0, 0]);
         mkdir.extend(name("work"));
         let (e, entry) = answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir));
         assert_eq!(e, 0);
         assert_eq!(mode_in(&entry), S_IFDIR, "mode 0 to the guest");
-        assert_eq!(host_mode("work") & 0o777, 0o700);
+        // The host's, its owner's to reach: on Windows NTFS's access, which WSL's mode is
+        // none of.
+        #[cfg(unix)]
+        assert_eq!(host_mode(&path.join("work")) & 0o777, 0o700);
+        assert!(std::fs::read_dir(path.join("work")).is_ok());
         let mut inner = fields(&[0, 0]);
         inner.extend(name("work"));
         assert_eq!(answer(&s, &req(op::MKDIR, node_in(&entry), 0, &inner)).0, 0);
@@ -3946,9 +4153,16 @@ mod tests {
             );
             let (_, looked) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name(file)));
             assert_eq!((mode_in(&looked), rdev_in(&looked)), (S_IFCHR | 0o644, rdev));
-            // An unprivileged host keeps an empty regular file; a privileged one, the device.
-            let kept = std::fs::symlink_metadata(path.join(file)).unwrap().file_type();
-            assert!(kept.is_file() || kept.is_char_device(), "{file}: {kept:?}");
+            // An unprivileged host keeps an empty regular file; a privileged one, the device;
+            // NTFS, the device as WSL keeps one.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt as _;
+                let kept = std::fs::symlink_metadata(path.join(file)).unwrap().file_type();
+                assert!(kept.is_file() || kept.is_char_device(), "{file}: {kept:?}");
+            }
+            #[cfg(windows)]
+            assert_eq!(host_mode(&path.join(file)), S_IFCHR | 0o644, "{file}");
         }
         // Listed as the device it is, as overlayfs finds whiteouts in a listing.
         let (_, open) = answer(&s, &req(op::OPENDIR, ROOT, 0, &[0u8; 8]));
@@ -3964,7 +4178,7 @@ mod tests {
             rest = &rest[(24 + len + 7) & !7..];
         }
         assert!(
-            kinds.contains(&("gone".into(), u32::from(libc::DT_CHR))),
+            kinds.contains(&("gone".into(), u32::from(host::DT_CHR))),
             "{kinds:?}"
         );
         // A mode taken away: the host's owner keeps its access, the guest has the mode.
@@ -3976,7 +4190,16 @@ mod tests {
         // fuse_attr_out: 16 bytes before its attribute, where an entry has 40.
         let changed_mode = u32::from_le_bytes(changed[16 + 60..16 + 64].try_into().unwrap());
         assert_eq!(changed_mode & 0o7777, 0, "the guest's mode");
-        assert_eq!(host_mode("file") & 0o777, 0o600, "the host's");
+        #[cfg(unix)]
+        assert_eq!(host_mode(&path.join("file")) & 0o777, 0o600, "the host's");
+        assert!(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path.join("file"))
+                .is_ok(),
+            "the host's owner's still"
+        );
         // An attribute of trusted., set, read and listed back.
         let mut set = fields(&[1, 0]);
         set.extend(name("trusted.overlay.opaque"));
@@ -4065,16 +4288,22 @@ mod tests {
         assert_eq!(chmod(r, 0o200), 0);
         crowd(&s, 20);
         assert_eq!(read(&s, r, fr, 0, 16), (0, b"read me".to_vec()));
-        // A new handle to `w` opens a descriptor of its own, with its own status flags.
+        // A new handle to `w` opens a descriptor of its own, with its own status flags
+        // (Unix's).
         let fresh = open(&s, w, linux::O_NONBLOCK);
         {
             let state = s.state.lock().unwrap();
             let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fresh)) else {
                 panic!("no descriptor of its own");
             };
-            // SAFETY: F_GETFL of a descriptor the server holds.
-            let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-            assert_ne!(status & libc::O_NONBLOCK, 0);
+            #[cfg(unix)]
+            {
+                // SAFETY: F_GETFL of a descriptor the server holds.
+                let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+                assert_ne!(status & libc::O_NONBLOCK, 0);
+            }
+            #[cfg(windows)]
+            let _ = fd;
         }
         assert_eq!(read(&s, w, fresh, 0, 16), (0, b"still".to_vec()));
         // A mode that refuses none of its handles keeps nothing more.
@@ -4205,7 +4434,6 @@ mod tests {
     /// once), and that file is not the one the handles opened. One opened after reads it.
     #[test]
     fn a_file_unlinked_unpinned_is_not_found_again_by_its_number() {
-        use std::os::unix::fs::MetadataExt as _;
         let (path, _) = dir();
         std::fs::write(path.join("p"), "p").unwrap();
         std::fs::write(path.join("a"), "gone").unwrap();
@@ -4219,13 +4447,287 @@ mod tests {
         assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("a"))).0, 0);
         // Another file at its name, given its number as a host may give it.
         std::fs::write(path.join("a"), "another").unwrap();
-        let m = std::fs::metadata(path.join("a")).unwrap();
-        s.state.lock().unwrap().nodes.get_mut(&a).unwrap().key = (m.dev(), m.ino());
+        s.state.lock().unwrap().nodes.get_mut(&a).unwrap().key = host_key(&path.join("a"));
         crowd(&s, 20);
         assert_eq!(read(&s, a, fa, 0, 16).0, -ESTALE);
         let fresh = open(&s, a, 0);
         assert_eq!(read(&s, a, fresh, 0, 16), (0, b"another".to_vec()));
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A handle opened to append writes at its file's end as the host then has it, whatever
+    /// offset the guest's kernel names, which took the end to be where it last looked: what
+    /// the host appended since stays, as two writers' appends to one log do. A handle that
+    /// does not append writes where it is told; and one whose file is unlinked, served by a
+    /// pin of the server's, still appends.
+    #[test]
+    fn an_appending_handle_writes_at_its_files_end_as_the_host_has_it() {
+        use std::io::Write as _;
+        let (path, s) = dir();
+        std::fs::write(path.join("log"), "host\n").unwrap();
+        let log = found(&s, ROOT, "log");
+        let fh = open(&s, log, 1 | linux::O_APPEND);
+        let mut host = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path.join("log"))
+            .unwrap();
+        host.write_all(b"more\n").unwrap();
+        assert_eq!(write(&s, log, fh, 5, b"guest\n"), 0);
+        assert_eq!(std::fs::read(path.join("log")).unwrap(), b"host\nmore\nguest\n");
+        let at = open(&s, log, 1);
+        assert_eq!(write(&s, log, at, 0, b"HOST"), 0);
+        assert_eq!(std::fs::read(path.join("log")).unwrap(), b"HOST\nmore\nguest\n");
+        release(&s, log, fh);
+        release(&s, log, at);
+        drop(host);
+        crowded(&path, 20);
+        let small = small(&path, 4);
+        let log = found(&small, ROOT, "log");
+        let fh = open(&small, log, 2 | linux::O_APPEND);
+        assert_eq!(answer(&small, &req(op::UNLINK, ROOT, 0, &name("log"))).0, 0);
+        crowd(&small, 20);
+        assert_eq!(write(&small, log, fh, 0, b"end\n"), 0);
+        assert_eq!(
+            read(&small, log, fh, 0, 64),
+            (0, b"HOST\nmore\nguest\nend\n".to_vec())
+        );
+    }
+
+    /// An attribute of no value is kept as one, as Linux keeps it (overlayfs's
+    /// `metacopy`): set, read back empty, its size asked as none, listed, and removed.
+    #[test]
+    fn an_attribute_of_no_value_is_kept() {
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "f").unwrap();
+        let f = found(&s, ROOT, "f");
+        let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let with = |head: &[u32], n: &str| {
+            let mut b = fields(head);
+            b.extend(name(n));
+            b
+        };
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, f, 0, &with(&[0, 0], "user.empty"))).0,
+            0
+        );
+        assert_eq!(
+            answer(&s, &req(op::GETXATTR, f, 0, &with(&[64, 0], "user.empty"))),
+            (0, Vec::new())
+        );
+        assert_eq!(
+            answer(&s, &req(op::GETXATTR, f, 0, &with(&[0, 0], "user.empty"))),
+            (0, vec![0; 8])
+        );
+        assert_eq!(
+            answer(&s, &req(op::LISTXATTR, f, 0, &fields(&[4096, 0]))),
+            (0, b"user.empty\0".to_vec())
+        );
+        let mut gone = name("user.empty");
+        assert_eq!(answer(&s, &req(op::REMOVEXATTR, f, 0, &gone)).0, 0);
+        assert_eq!(
+            answer(&s, &req(op::GETXATTR, f, 0, &with(&[64, 0], "user.empty"))).0,
+            -ENODATA
+        );
+        gone = name("user.never");
+        assert_eq!(answer(&s, &req(op::REMOVEXATTR, f, 0, &gone)).0, -ENODATA);
+    }
+
+    /// A symlink the guest makes is one, reads back its target byte for byte, characters
+    /// no Windows name holds among them, and is never followed by the server.
+    #[test]
+    fn a_symlink_reads_back_its_target() {
+        let (path, s) = dir();
+        let mut body = name("link");
+        body.extend(name("../some/where?*:"));
+        let (e, entry) = answer(&s, &req(op::SYMLINK, ROOT, 0, &body));
+        assert_eq!(e, 0);
+        let link = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let mode = u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap());
+        assert_eq!(mode & S_IFMT, S_IFLNK);
+        assert_eq!(
+            answer(&s, &req(op::READLINK, link, 0, &[])),
+            (0, b"../some/where?*:".to_vec())
+        );
+        assert_eq!(host_mode(&path.join("link")) & S_IFMT, S_IFLNK);
+        std::fs::write(path.join("file"), "f").unwrap();
+        let file = found(&s, ROOT, "file");
+        assert_eq!(answer(&s, &req(op::READLINK, file, 0, &[])).0, -EINVAL);
+    }
+
+    /// STATFS answers for the share's volume, as statfs(2) of its host's would: its blocks,
+    /// free and available ones within them, a block size, and Linux's longest name.
+    #[test]
+    fn statfs_answers_for_the_shares_volume() {
+        let (_path, s) = dir();
+        let (e, out) = answer(&s, &req(op::STATFS, ROOT, 0, &[]));
+        assert_eq!(e, 0);
+        let word = |at: usize| u64::from_le_bytes(out[at..at + 8].try_into().unwrap());
+        let half = |at: usize| u32::from_le_bytes(out[at..at + 4].try_into().unwrap());
+        let (blocks, free, available) = (word(0), word(8), word(16));
+        assert!(
+            blocks > 0 && free <= blocks && available <= free,
+            "{blocks} {free} {available}"
+        );
+        assert!(half(40) >= 512, "block size {}", half(40));
+        assert_eq!(half(44), 255);
+    }
+
+    /// SETATTR's times are the file's, to the 100 ns every host keeps: read back by the
+    /// guest and by the host.
+    #[test]
+    fn times_set_are_the_files() {
+        let (path, s) = dir();
+        std::fs::write(path.join("t"), "t").unwrap();
+        let t = found(&s, ROOT, "t");
+        let mut b = (fattr::ATIME | fattr::MTIME).to_le_bytes().to_vec();
+        b.extend([0u8; 4 + 3 * 8]);
+        b.extend(1_000_000_000u64.to_le_bytes());
+        b.extend(1_234_567_890u64.to_le_bytes());
+        b.extend(0u64.to_le_bytes());
+        b.extend(500u32.to_le_bytes());
+        b.extend(700u32.to_le_bytes());
+        b.extend([0u8; 6 * 4]);
+        let (e, out) = answer(&s, &req(op::SETATTR, t, 0, &b));
+        assert_eq!(e, 0);
+        // fuse_attr_out: its attribute after 16 bytes; atime, mtime, then their nanoseconds.
+        let word = |at: usize| u64::from_le_bytes(out[16 + at..16 + at + 8].try_into().unwrap());
+        let half = |at: usize| u32::from_le_bytes(out[16 + at..16 + at + 4].try_into().unwrap());
+        assert_eq!((word(24), half(48)), (1_000_000_000, 500));
+        assert_eq!((word(32), half(52)), (1_234_567_890, 700));
+        let modified = std::fs::metadata(path.join("t")).unwrap().modified().unwrap();
+        assert_eq!(
+            modified,
+            std::time::UNIX_EPOCH + std::time::Duration::new(1_234_567_890, 700)
+        );
+    }
+
+    /// FALLOCATE grows a file to what it is given, KEEP_SIZE leaves its size, and any other
+    /// mode is refused (EOPNOTSUPP); LSEEK finds a written file's data where asked and its
+    /// end as its hole, past its end none (ENXIO), as lseek(2) does.
+    #[test]
+    fn fallocate_grows_and_lseek_finds_data() {
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "0123456789").unwrap();
+        let f = found(&s, ROOT, "f");
+        let fh = open(&s, f, 2);
+        let seek = |offset: u64, whence: u32| {
+            let mut b = fh.to_le_bytes().to_vec();
+            b.extend(offset.to_le_bytes());
+            b.extend(whence.to_le_bytes());
+            b.extend([0u8; 4]);
+            let (e, out) = answer(&s, &req(op::LSEEK, f, 0, &b));
+            (
+                e,
+                (e == 0).then(|| u64::from_le_bytes(out[0..8].try_into().unwrap())),
+            )
+        };
+        assert_eq!(seek(2, linux::SEEK_DATA), (0, Some(2)));
+        assert_eq!(seek(2, linux::SEEK_HOLE), (0, Some(10)));
+        assert_eq!(seek(10, linux::SEEK_DATA).0, -ENXIO);
+        assert_eq!(seek(3, 2 /* SEEK_END */), (0, Some(13)));
+        let allocate = |offset: u64, length: u64, mode: u32| {
+            let mut b = fh.to_le_bytes().to_vec();
+            b.extend(offset.to_le_bytes());
+            b.extend(length.to_le_bytes());
+            b.extend(mode.to_le_bytes());
+            b.extend([0u8; 4]);
+            answer(&s, &req(op::FALLOCATE, f, 0, &b)).0
+        };
+        let size = || std::fs::metadata(path.join("f")).unwrap().len();
+        assert_eq!(allocate(0, 4096, linux::FALLOC_FL_KEEP_SIZE), 0);
+        assert_eq!(size(), 10);
+        assert_eq!(allocate(8, 4096, 0), 0);
+        assert_eq!(size(), 4104);
+        assert_eq!(std::fs::read(path.join("f")).unwrap()[..10], *b"0123456789");
+        assert_eq!(allocate(0, 10, 0x02 /* PUNCH_HOLE */), -EOPNOTSUPP);
+    }
+
+    /// Names Windows holds none of keep their characters to the guest, escaped on NTFS as
+    /// WSL escapes them: made, looked up and listed as the guest named them.
+    #[cfg(windows)]
+    #[test]
+    fn names_no_windows_name_holds_are_the_guests() {
+        let (path, s) = dir();
+        let weird = "a:b?c*<d>|\"e\\";
+        let (node, fh) = create(&s, ROOT, weird, 1, 0o644);
+        release(&s, node, fh);
+        assert_eq!(found(&s, ROOT, weird), node);
+        let (_, opened) = answer(&s, &req(op::OPENDIR, ROOT, 0, &[0u8; 8]));
+        let dir_fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        let (e, listed) = answer(&s, &req(op::READDIR, ROOT, 0, &readdir(dir_fh, 0, 4096)));
+        assert_eq!(e, 0);
+        assert!(page(&listed, false).iter().any(|(n, _)| n == weird));
+        let on_host: Vec<String> = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(on_host.len(), 1, "{on_host:?}");
+        assert!(
+            !on_host[0].contains([':', '?', '*', '<', '>', '|', '"', '\\']),
+            "{on_host:?}"
+        );
+    }
+
+    /// A directory the guest makes tells names apart by their case, as Linux's do
+    /// (FileCaseSensitiveInformation), where the host's own may not.
+    #[cfg(windows)]
+    #[test]
+    fn a_guests_directory_tells_names_apart_by_case() {
+        let (_path, s) = dir();
+        let mut mkdir = 0o755u32.to_le_bytes().to_vec();
+        mkdir.extend([0u8; 4]);
+        mkdir.extend(name("d"));
+        let (e, entry) = answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir));
+        assert_eq!(e, 0);
+        let d = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let (upper, uh) = create(&s, d, "Makefile", 1 | linux::O_EXCL, 0o644);
+        let (lower, lh) = create(&s, d, "makefile", 1 | linux::O_EXCL, 0o644);
+        assert_ne!(upper, lower);
+        assert_eq!(write(&s, upper, uh, 0, b"upper"), 0);
+        assert_eq!(write(&s, lower, lh, 0, b"lower"), 0);
+        let rh = open(&s, upper, 0);
+        assert_eq!(read(&s, upper, rh, 0, 16), (0, b"upper".to_vec()));
+        assert_eq!(answer(&s, &req(op::LOOKUP, d, 0, &name("MAKEFILE"))).0, -ENOENT);
+    }
+
+    /// A guest's O_SYNC or O_DSYNC write is on its disk before it is answered: its handle
+    /// opened to write through (FILE_WRITE_THROUGH), another not.
+    #[cfg(windows)]
+    #[test]
+    fn a_synchronous_open_writes_through() {
+        use windows_sys::Wdk::Storage::FileSystem::{
+            FILE_MODE_INFORMATION, FILE_WRITE_THROUGH, FileModeInformation, NtQueryInformationFile,
+        };
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "f").unwrap();
+        let f = found(&s, ROOT, "f");
+        let through = |fh: u64| {
+            let state = s.state.lock().unwrap();
+            let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fh)) else {
+                panic!("no file handle {fh}");
+            };
+            let mut info = FILE_MODE_INFORMATION::default();
+            let mut io = windows_sys::Win32::System::IO::IO_STATUS_BLOCK::default();
+            // SAFETY: a buffer of its own size for the class asked, of a handle the server
+            // holds while its state is locked.
+            let status = unsafe {
+                NtQueryInformationFile(
+                    std::os::windows::io::AsRawHandle::as_raw_handle(fd),
+                    &mut io,
+                    (&raw mut info).cast(),
+                    u32::try_from(size_of::<FILE_MODE_INFORMATION>()).unwrap(),
+                    FileModeInformation,
+                )
+            };
+            assert!(status >= 0, "{status:#x}");
+            info.Mode & FILE_WRITE_THROUGH != 0
+        };
+        for (flags, want) in [(linux::O_SYNC, true), (linux::O_DSYNC, true), (0, false)] {
+            let fh = open(&s, f, 1 | flags);
+            assert_eq!(through(fh), want, "{flags:#o}");
+            assert_eq!(write(&s, f, fh, 0, b"x"), 0);
+            release(&s, f, fh);
+        }
     }
 
     #[test]

@@ -209,9 +209,9 @@ impl AsRaw for Owned {
 #[cfg(unix)]
 pub use libc::{
     AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_NOFOLLOW, DT_BLK, DT_CHR, DT_FIFO, DT_REG, DT_SOCK, O_ACCMODE,
-    O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR, O_TRUNC,
-    O_WRONLY, PATH_MAX, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK, S_IROTH,
-    S_IRUSR, S_ISGID, S_ISUID, S_IWOTH, S_IWUSR, SEEK_SET, c_int, c_long, c_uint, mode_t, off_t,
+    O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR,
+    O_TRUNC, O_WRONLY, PATH_MAX, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK,
+    S_IROTH, S_IRUSR, S_ISGID, S_ISUID, S_IWOTH, S_IWUSR, SEEK_SET, c_int, c_long, c_uint, mode_t, off_t,
 };
 
 /// Windows' errno is Linux's own: its layer of NT calls answers in Linux's (D197).
@@ -285,6 +285,7 @@ mod linux_host {
     pub const O_EXCL: c_int = 0o200;
     pub const O_NOCTTY: c_int = 0o400;
     pub const O_TRUNC: c_int = 0o1000;
+    pub const O_APPEND: c_int = 0o2000;
     pub const O_NONBLOCK: c_int = 0o4000;
     #[cfg(target_arch = "x86_64")]
     pub const O_DIRECTORY: c_int = 0o200000;

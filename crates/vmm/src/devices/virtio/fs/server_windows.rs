@@ -6,10 +6,13 @@
 
 use std::os::windows::io::{AsHandle as _, BorrowedHandle};
 
-use windows_sys::Wdk::Storage::FileSystem::{FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF};
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_WRITE_THROUGH,
+};
 use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+    FILE_WRITE_EA,
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -19,6 +22,21 @@ use super::*;
 /// The flags a node is opened with for its metadata, never following it.
 pub(super) const META_FLAGS: host::c_int =
     host::O_RDONLY | host::O_NOFOLLOW | host::O_NONBLOCK | host::O_NOCTTY;
+
+/// Whether an open of a device node runs its driver's: on Windows a device node is WSL's
+/// reparse point (`ntfs::make_special`), which no open reaches a driver through, and is
+/// opened for its metadata as any file.
+pub(super) const DEVICE_OPENS_DRIVER: bool = false;
+
+/// Whether a file's mode refuses opens of it: on Windows a mode is WSL's metadata, which NT
+/// refuses no open by (its access is the file's ACL's and read-only attribute's), so that
+/// no descriptor is kept against a mode the guest set (`refuses`).
+pub(super) const MODES_REFUSE_OPENS: bool = false;
+
+/// Whether a directory is renamed only where no handle beneath it is open: NTFS's rule,
+/// its rename refused STATUS_ACCESS_DENIED otherwise (ntfs.rs's test), so that the server
+/// lets go of what it holds beneath one it renames.
+pub(super) const RENAME_NEEDS_NONE_BENEATH: bool = true;
 
 const EOPNOTSUPP: Errno = 95;
 const ENXIO: Errno = 6;
@@ -40,8 +58,10 @@ fn nt(name: &CStr) -> Result<Vec<u16>, Errno> {
 }
 
 /// `name` in `dir` opened as Linux's `flags` ask: its access mode, creation (exclusive,
-/// or not), a directory where `O_DIRECTORY`, and truncation after the open, which keeps the
-/// file's extended attributes, WSL's metadata among them, as FILE_OVERWRITE would not.
+/// or not), a directory where `O_DIRECTORY`, each write on its disk before it is answered
+/// where `O_SYNC` or `O_DSYNC` (FILE_WRITE_THROUGH), and truncation after the open, which
+/// keeps the file's extended attributes, WSL's metadata among them, as FILE_OVERWRITE would
+/// not; with `O_RDONLY` too, as Linux's open(2) truncates.
 pub(super) fn open_at(
     dir: host::Raw,
     name: &CStr,
@@ -60,16 +80,47 @@ pub(super) fn open_at(
         (true, false) => FILE_OPEN_IF,
         (false, _) => FILE_OPEN,
     };
-    let options = if flags & host::O_DIRECTORY != 0 {
+    let mut options = if flags & host::O_DIRECTORY != 0 {
         FILE_DIRECTORY_FILE
     } else {
         0
     };
+    if u32::try_from(flags).is_ok_and(|f| f & (linux::O_SYNC | linux::O_DSYNC) != 0) {
+        options |= FILE_WRITE_THROUGH;
+    }
     let opened = ntfs::open_at(borrow(dir), &nt(name)?, access, disposition, options)?;
-    if flags & host::O_TRUNC != 0 && flags & host::O_ACCMODE != host::O_RDONLY {
-        ntfs::truncate(opened.as_handle(), 0)?;
+    if flags & host::O_TRUNC != 0 {
+        let writer = able(host::AsRaw::raw(&opened), FILE_WRITE_DATA)?;
+        ntfs::truncate(writer.handle(), 0)?;
     }
     Ok(opened)
+}
+
+/// A handle of `fd`'s file that may do what `access` names: `fd` itself where it was opened
+/// to, else another of its file's opened for it (a relative open of no name, as ReOpenFile
+/// opens one). A Unix descriptor changes its file's attributes whatever it was opened to
+/// do, the file's own permissions checked; NT checks each handle's own access.
+fn able<'a>(fd: host::Raw, access: u32) -> Result<Able<'a>, Errno> {
+    let h = borrow(fd);
+    if ntfs::granted(h)? & access == access {
+        return Ok(Able::Same(h));
+    }
+    ntfs::open_at(h, &[], access, FILE_OPEN, 0).map(Able::Again)
+}
+
+/// What [`able`] gives: the handle asked of, or another.
+enum Able<'a> {
+    Same(BorrowedHandle<'a>),
+    Again(host::Owned),
+}
+
+impl Able<'_> {
+    fn handle(&self) -> BorrowedHandle<'_> {
+        match self {
+            Able::Same(h) => *h,
+            Able::Again(owned) => owned.as_handle(),
+        }
+    }
 }
 
 /// `name` in `dir` opened for a guest's OPEN or CREATE, if it is a regular file (server_unix.rs's
@@ -121,10 +172,12 @@ pub(super) fn mknod_at(dir: host::Raw, name: &CStr, mode: u32, rdev: u32) -> Res
     if kind == S_IFREG {
         return open_at(dir, name, host::O_CREAT | host::O_EXCL | host::O_WRONLY, 0).map(drop);
     }
-    // Linux's new_decode_dev.
-    let major = (rdev & 0xfff00) >> 8;
-    let minor = (rdev & 0xff) | ((rdev >> 12) & 0xfff00);
-    ntfs::special_at(borrow(dir), &nt(name)?, kind, (major, minor)).map(drop)
+    ntfs::special_at(borrow(dir), &nt(name)?, kind, major_minor(rdev)).map(drop)
+}
+
+/// A guest's device number's major and minor (Linux's new_decode_dev).
+fn major_minor(rdev: u32) -> (u32, u32) {
+    ((rdev & 0xfff00) >> 8, (rdev & 0xff) | ((rdev >> 12) & 0xfff00))
 }
 
 /// A directory `name` in `dir`, case-sensitive as WSL makes its own; its permissions the
@@ -157,7 +210,7 @@ pub(super) fn chmod_at(dir: host::Raw, name: &CStr, mode: u32) -> Result<(), Err
 }
 
 pub(super) fn chmod_fd(fd: host::Raw, perm: u32) -> Result<(), Errno> {
-    chmod_handle(borrow(fd), perm)
+    chmod_handle(able(fd, FILE_WRITE_EA)?.handle(), perm)
 }
 
 /// The user this process serves as: on Windows none of a guest's, its files root's where
@@ -206,6 +259,8 @@ pub(super) fn fs_stats(fd: host::Raw) -> Result<FsStats, Errno> {
 /// The EA a guest's extended attribute `name` is kept in: its bytes as hexadecimal after
 /// `SH.`, as NTFS keeps an EA's name in upper case, ASCII, and at most 255 bytes long, where
 /// a guest's names are any bytes, case kept (so at most 126 bytes of one, ERANGE past it).
+/// Its value is the attribute's after a byte of 0 ([`KEPT`]), as NTFS keeps no EA of no
+/// value, where Linux keeps an attribute of one (overlayfs's `metacopy`).
 fn ea_name(name: &[u8]) -> Result<Vec<u8>, Errno> {
     if name.len() > 126 {
         return Err(ERANGE);
@@ -260,22 +315,18 @@ pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, 
     Ok(eas
         .into_iter()
         .find(|(n, _)| n.eq_ignore_ascii_case(&ea))
-        .map(|(_, v)| v))
+        .map(|(_, v)| v.get(KEPT.len()..).unwrap_or_default().to_vec()))
 }
 
+/// What a guest's attribute's value is kept after in its EA ([`ea_name`]).
+const KEPT: &[u8] = &[0];
+
 pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -> Result<(), Errno> {
-    let h = borrow(fd);
     if name.to_bytes() == OWNER_XATTR.as_bytes() {
-        let owner = Owner::parse(value).ok_or(EINVAL)?;
-        let kind = ntfs::stat(h)?.mode & S_IFMT;
-        return ntfs::set_lx(
-            h,
-            Some(owner.uid),
-            Some(owner.gid),
-            owner.mode.map(|m| kind | m),
-            None,
-        );
+        return set_owner(fd, &Owner::parse(value).ok_or(EINVAL)?);
     }
+    let able = able(fd, FILE_WRITE_EA)?;
+    let h = able.handle();
     let ea = ea_name(name.to_bytes())?;
     if flags & (linux::XATTR_CREATE | linux::XATTR_REPLACE) != 0 {
         let had = ntfs::eas(h)?.iter().any(|(n, _)| n.eq_ignore_ascii_case(&ea));
@@ -286,16 +337,41 @@ pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -
             return Err(ENODATA);
         }
     }
-    // NTFS keeps no EA of an empty value: such a one is removed.
-    if value.is_empty() {
-        return Err(EOPNOTSUPP);
+    let mut kept = KEPT.to_vec();
+    kept.extend_from_slice(value);
+    ntfs::set_eas(h, &[(&ea, &kept)])
+}
+
+/// The owner's attribute (server.rs `Owner`) kept as WSL's metadata: its owner, group and
+/// mode; and where it names a kind of node a host made an empty regular file in the place
+/// of (`Owner::kind`: a host that makes no device, or a whiteout RENAME_WHITEOUT leaves),
+/// the file made that node, as WSL makes one, NTFS holding every kind.
+fn set_owner(fd: host::Raw, owner: &Owner) -> Result<(), Errno> {
+    let mut kind = stat_fd(fd)?.mode & S_IFMT;
+    let made = owner.kind.filter(|_| kind == S_IFREG);
+    let access = if made.is_some() {
+        FILE_WRITE_EA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES
+    } else {
+        FILE_WRITE_EA
+    };
+    let able = able(fd, access)?;
+    if let Some(special) = made {
+        ntfs::make_special(able.handle(), special, major_minor(owner.rdev.unwrap_or(0)))?;
+        kind = special;
     }
-    ntfs::set_eas(h, &[(&ea, value)])
+    ntfs::set_lx(
+        able.handle(),
+        Some(owner.uid),
+        Some(owner.gid),
+        owner.mode.map(|m| kind | m),
+        None,
+    )
 }
 
 pub(super) fn fremove_xattr(fd: host::Raw, name: &CStr) -> Result<(), Errno> {
     let ea = ea_name(name.to_bytes())?;
-    let h = borrow(fd);
+    let able = able(fd, FILE_WRITE_EA)?;
+    let h = able.handle();
     if !ntfs::eas(h)?.iter().any(|(n, _)| n.eq_ignore_ascii_case(&ea)) {
         return Err(ENODATA);
     }
@@ -372,7 +448,7 @@ pub(super) fn set_times(
         Time::Kept => None,
     };
     match own {
-        Some(fd) => ntfs::set_times(borrow(fd), of(atime), of(mtime)),
+        Some(fd) => ntfs::set_times(able(fd, FILE_WRITE_ATTRIBUTES)?.handle(), of(atime), of(mtime)),
         None => {
             let opened = ntfs::open_at(borrow(dir), &nt(name)?, FILE_WRITE_ATTRIBUTES, FILE_OPEN, 0)?;
             ntfs::set_times(opened.as_handle(), of(atime), of(mtime))
@@ -380,23 +456,23 @@ pub(super) fn set_times(
     }
 }
 
-/// `names` opened beneath `dir`, one component at a time, never following a reparse
-/// point: one that is no directory along the way refused (ENOTDIR).
+/// The directory `names` leads to beneath `dir`, opened one component at a time, never
+/// following a reparse point (a junction opened is its own empty directory): a path that
+/// no longer leads to one stale, as Unix's (`stale`).
 pub(super) fn open_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Owned, Errno> {
-    let (last, path) = names.split_last().ok_or(EINVAL)?;
     let mut at: Option<host::Owned> = None;
-    for name in path {
+    for name in names {
         let from = at.as_ref().map_or(dir, host::AsRaw::raw);
-        at = Some(ntfs::open_at(
+        let next = ntfs::open_at(
             borrow(from),
             &nt(name)?,
             FILE_LIST_DIRECTORY,
             FILE_OPEN,
             FILE_DIRECTORY_FILE,
-        )?);
+        );
+        at = Some(next.map_err(stale)?);
     }
-    let from = at.as_ref().map_or(dir, host::AsRaw::raw);
-    ntfs::open_at(borrow(from), &nt(last)?, 0, FILE_OPEN, 0)
+    at.ok_or(EINVAL)
 }
 
 /// A directory's entries, read whole as it is opened and from its start again at offset
@@ -489,8 +565,11 @@ pub(super) fn pread(fd: host::Raw, buf: &mut [u8], offset: u64) -> Result<usize,
 /// process ask it of no file's ranges, and keeps it as its memory manager will.
 pub(super) fn drop_cached(_fd: host::Raw, _offset: u64, _len: usize) {}
 
-pub(super) fn pwrite(fd: host::Raw, buf: &[u8], offset: u64) -> Result<usize, Errno> {
-    ntfs::write_at(borrow(fd), buf, offset)
+/// `buf` written to `fd`'s file at `offset`, or at its end where none: WriteFile's offset of
+/// every bit set, which writes at the end as it then is, as Linux's O_APPEND (FILE_APPEND_DATA's
+/// write, WriteFile's OVERLAPPED).
+pub(super) fn pwrite(fd: host::Raw, buf: &[u8], offset: Option<u64>) -> Result<usize, Errno> {
+    ntfs::write_at(borrow(fd), buf, offset.unwrap_or(u64::MAX))
 }
 
 pub(super) fn durable(fd: host::Raw) -> Result<(), Errno> {
@@ -537,4 +616,40 @@ pub(super) fn ghost(dir: host::Raw, bytes: &[u8]) -> Result<host::Owned, String>
     }
     unlink_at(dir, &name, false).map_err(|e| format!("removing a ghost's name: errno {e}"))?;
     Ok(made)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    /// A guest's attribute names are EAs of names of their own, NTFS's upper-case ASCII,
+    /// every byte and its case kept and turned back as listed; one too long for an EA's
+    /// name refused (ERANGE); WSL's EAs and any other none of a guest's; the server's
+    /// private names refused the guest.
+    #[test]
+    fn a_guests_attribute_names_are_eas_of_their_own() {
+        for guest in [
+            &b"user.x"[..],
+            b"user.Mixed.Case",
+            b"trusted.overlay.opaque",
+            b"user.\xff?",
+        ] {
+            let ea = ea_name(guest).unwrap();
+            assert!(
+                ea.iter()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'.'),
+                "{ea:?}"
+            );
+            assert_eq!(ea_guest(&ea).as_deref(), Some(guest));
+        }
+        assert_ne!(ea_name(b"user.a").unwrap(), ea_name(b"user.A").unwrap());
+        assert_eq!(ea_name(&[b'a'; 126]).map(|e| e.len()), Ok(255));
+        assert_eq!(ea_name(&[b'a'; 127]), Err(ERANGE));
+        for theirs in [&b"$LXUID"[..], b"$LXMOD", b"SH.4", b"SH.ZZ", b"OTHER"] {
+            assert_eq!(ea_guest(theirs), None, "{theirs:?}");
+        }
+        assert_eq!(host_xattr(c"user.shards.x"), Err(EOPNOTSUPP));
+        assert_eq!(host_xattr(c"user.x").unwrap().as_bytes(), b"user.x");
+    }
 }

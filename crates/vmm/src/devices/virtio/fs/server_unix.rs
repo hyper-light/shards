@@ -14,6 +14,19 @@ pub(super) const META_FLAGS: host::c_int =
 pub(super) const META_FLAGS: host::c_int =
     host::O_RDONLY | host::O_NOFOLLOW | host::O_NONBLOCK | host::O_NOCTTY;
 
+/// Whether an open of a device node runs its driver's: on Unix it does, a serial line's
+/// raising DTR, so that the server opens none (`open_meta`).
+pub(super) const DEVICE_OPENS_DRIVER: bool = true;
+
+/// Whether a file's mode refuses opens of it: on Unix it does, the share process its files'
+/// owner and unprivileged, so that a descriptor is kept against a mode the guest sets
+/// (`refuses`).
+pub(super) const MODES_REFUSE_OPENS: bool = true;
+
+/// Whether a directory is renamed only where no handle beneath it is open: on Unix none is
+/// needed.
+pub(super) const RENAME_NEEDS_NONE_BENEATH: bool = false;
+
 /// A file holding `bytes`, made in directory `dir` and removed from it at once: the
 /// descriptor of a file no path reaches, as its guest held one before its save (D176).
 pub(super) fn ghost(dir: host::Raw, bytes: &[u8]) -> Result<host::Owned, String> {
@@ -750,18 +763,37 @@ pub(super) fn drop_cached(fd: host::Raw, offset: u64, len: usize) {
     let _ = (fd, offset, len);
 }
 
-pub(super) fn pwrite(fd: host::Raw, buf: &[u8], offset: u64) -> Result<usize, Errno> {
+/// `buf` written to `fd`'s file at `offset`, or at its end where none: through a descriptor
+/// opened O_APPEND by write(2), which puts each write at the end its file then has (POSIX),
+/// where macOS's pwrite(2) writes at the offset named; through another (a pin), at the end
+/// its file has as it is written.
+pub(super) fn pwrite(fd: host::Raw, buf: &[u8], offset: Option<u64>) -> Result<usize, Errno> {
+    let appends = offset.is_none() && {
+        // SAFETY: F_GETFL of a descriptor the server holds.
+        let status = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        status >= 0 && status & libc::O_APPEND != 0
+    };
+    let at = match offset {
+        Some(at) => at,
+        None if appends => 0,
+        None => stat_fd(fd)?.size,
+    };
     let mut done = 0;
     while done < buf.len() {
         let rest = buf.get(done..).ok_or(EIO)?;
-        // SAFETY: pwrite(2) of the rest of the guest's data.
-        let n = unsafe {
-            libc::pwrite(
-                fd,
-                rest.as_ptr().cast(),
-                rest.len(),
-                (offset + done as u64) as host::off_t,
-            )
+        let n = if appends {
+            // SAFETY: write(2) of the rest of the guest's data, at its file's end.
+            unsafe { libc::write(fd, rest.as_ptr().cast(), rest.len()) }
+        } else {
+            // SAFETY: pwrite(2) of the rest of the guest's data.
+            unsafe {
+                libc::pwrite(
+                    fd,
+                    rest.as_ptr().cast(),
+                    rest.len(),
+                    (at + done as u64) as host::off_t,
+                )
+            }
         };
         match n {
             n if n > 0 => done += n as usize,

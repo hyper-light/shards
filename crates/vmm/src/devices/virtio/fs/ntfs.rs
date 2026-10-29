@@ -6,7 +6,7 @@ use std::os::windows::io::{
     AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
 };
 
-use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Foundation::{NtQueryObject, OBJECT_ATTRIBUTES, ObjectBasicInformation};
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CASE_SENSITIVE_INFORMATION, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
     FILE_OPEN_REPARSE_POINT, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
@@ -16,15 +16,18 @@ use windows_sys::Wdk::Storage::FileSystem::{
     NtQueryEaFile, NtQueryInformationFile, NtQueryVolumeInformationFile, NtSetEaFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DISK_FULL, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND,
-    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SUPPORTED,
-    ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE,
-    STATUS_DELETE_PENDING, STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL, STATUS_EAS_NOT_SUPPORTED,
-    STATUS_FILE_DELETED, STATUS_FILE_IS_A_DIRECTORY, STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_PARAMETER,
+    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DIR_NOT_EMPTY, ERROR_DIRECTORY, ERROR_DISK_FULL,
+    ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_NAME,
+    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SAME_DEVICE,
+    ERROR_NOT_SUPPORTED, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION, ERROR_WRITE_PROTECT, NTSTATUS,
+    STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE, STATUS_DELETE_PENDING, STATUS_DIRECTORY_NOT_EMPTY,
+    STATUS_DISK_FULL, STATUS_EAS_NOT_SUPPORTED, STATUS_FILE_DELETED, STATUS_FILE_IS_A_DIRECTORY,
+    STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_PARAMETER, STATUS_IO_REPARSE_TAG_NOT_HANDLED,
     STATUS_MEDIA_WRITE_PROTECTED, STATUS_NAME_TOO_LONG, STATUS_NO_EAS_ON_FILE, STATUS_NO_MORE_EAS,
     STATUS_NONEXISTENT_EA_ENTRY, STATUS_NOT_A_DIRECTORY, STATUS_NOT_A_REPARSE_POINT, STATUS_NOT_SAME_DEVICE,
     STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID,
-    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, UNICODE_STRING,
+    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_REPARSE_POINT_NOT_RESOLVED,
+    STATUS_SHARING_VIOLATION, STATUS_STOPPED_ON_SYMLINK, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
@@ -38,6 +41,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
 use windows_sys::Win32::System::SystemServices::FILE_CS_FLAG_CASE_SENSITIVE_DIR;
+use windows_sys::Win32::System::WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION;
 
 use super::host::Stat;
 
@@ -58,6 +62,7 @@ const EINVAL: Errno = 22;
 const ENOSPC: Errno = 28;
 const EROFS: Errno = 30;
 const ENAMETOOLONG: Errno = 36;
+const ELOOP: Errno = 40;
 const ENOTEMPTY: Errno = 39;
 const ENODATA: Errno = 61;
 const EILSEQ: Errno = 84;
@@ -143,6 +148,11 @@ pub fn errno(status: NTSTATUS) -> Errno {
         STATUS_INSUFFICIENT_RESOURCES => ENOMEM,
         STATUS_NOT_SUPPORTED | STATUS_EAS_NOT_SUPPORTED => EOPNOTSUPP,
         STATUS_NO_EAS_ON_FILE | STATUS_NONEXISTENT_EA_ENTRY | STATUS_NOT_A_REPARSE_POINT => ENODATA,
+        // A name beneath a reparse point opened as itself, which NT resolves through none
+        // (PM M362): as Linux's openat2(2) answers a symlink met with RESOLVE_NO_SYMLINKS.
+        STATUS_REPARSE_POINT_NOT_RESOLVED | STATUS_STOPPED_ON_SYMLINK | STATUS_IO_REPARSE_TAG_NOT_HANDLED => {
+            ELOOP
+        }
         _ => EIO,
     }
 }
@@ -522,21 +532,13 @@ pub fn readlink(h: BorrowedHandle<'_>) -> Result<Vec<u8>, Errno> {
 }
 
 /// A FIFO, character or block device or Unix socket `name` in `dir`, by its mode's kind
-/// (`S_IFIFO`, `S_IFCHR`, `S_IFBLK`, `S_IFSOCK`), as WSL makes one: a new empty file made a
-/// reparse point of its LX tag, a device's major and minor in `$LXDEV` (PM M362).
+/// (`S_IFIFO`, `S_IFCHR`, `S_IFBLK`, `S_IFSOCK`), as WSL makes one ([`make_special`]).
 pub fn special_at(
     dir: BorrowedHandle<'_>,
     name: &[u16],
     kind: u32,
     dev: (u32, u32),
 ) -> Result<OwnedHandle, Errno> {
-    let tag = match kind {
-        0o010000 => LX_FIFO,
-        0o020000 => LX_CHR,
-        0o060000 => LX_BLK,
-        0o140000 => AF_UNIX,
-        _ => return Err(EINVAL),
-    };
     let made = open_at(
         dir,
         name,
@@ -544,11 +546,46 @@ pub fn special_at(
         FILE_CREATE,
         FILE_NON_DIRECTORY_FILE,
     )?;
-    set_reparse(made.as_handle(), tag, &[])?;
-    if matches!(tag, LX_CHR | LX_BLK) {
-        set_lx(made.as_handle(), None, None, None, Some(dev))?;
-    }
+    make_special(made.as_handle(), kind, dev)?;
     Ok(made)
+}
+
+/// `h`'s file, an empty one, made the FIFO, character or block device or Unix socket of
+/// `kind` as WSL makes one: a reparse point of its LX tag, a device's major and minor in
+/// `$LXDEV` (PM M362). `h` may write its data and attributes.
+pub fn make_special(h: BorrowedHandle<'_>, kind: u32, dev: (u32, u32)) -> Result<(), Errno> {
+    let tag = match kind {
+        0o010000 => LX_FIFO,
+        0o020000 => LX_CHR,
+        0o060000 => LX_BLK,
+        0o140000 => AF_UNIX,
+        _ => return Err(EINVAL),
+    };
+    set_reparse(h, tag, &[])?;
+    if matches!(tag, LX_CHR | LX_BLK) {
+        set_lx(h, None, None, None, Some(dev))?;
+    }
+    Ok(())
+}
+
+/// The access `h` was opened with (NtQueryObject's ObjectBasicInformation), which NT checks
+/// each call on it against, where Unix checks its file's.
+pub fn granted(h: BorrowedHandle<'_>) -> Result<u32, Errno> {
+    let mut info = PUBLIC_OBJECT_BASIC_INFORMATION::default();
+    // SAFETY: a buffer of its own size for the class asked, of a handle the caller holds.
+    let status = unsafe {
+        NtQueryObject(
+            h.as_raw_handle(),
+            ObjectBasicInformation,
+            (&raw mut info).cast(),
+            u32::try_from(size_of::<PUBLIC_OBJECT_BASIC_INFORMATION>()).unwrap_or(0),
+            std::ptr::null_mut(),
+        )
+    };
+    if status < 0 {
+        return Err(errno(status));
+    }
+    Ok(info.GrantedAccess)
 }
 
 /// A FILE_RENAME_INFORMATION or FILE_LINK_INFORMATION, laid out as Win32's FILE_RENAME_INFO: `flags`, its root
@@ -921,9 +958,14 @@ fn win32_errno(e: &std::io::Error) -> Errno {
         Some(ERROR_ACCESS_DENIED) => EACCES,
         Some(ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS) => EEXIST,
         Some(ERROR_SHARING_VIOLATION) => EBUSY,
-        Some(ERROR_INVALID_PARAMETER) => EINVAL,
+        Some(ERROR_INVALID_PARAMETER | ERROR_INVALID_NAME) => EINVAL,
         Some(ERROR_NOT_SUPPORTED) => EOPNOTSUPP,
         Some(ERROR_DISK_FULL) => ENOSPC,
+        Some(ERROR_DIR_NOT_EMPTY) => ENOTEMPTY,
+        Some(ERROR_DIRECTORY) => ENOTDIR,
+        Some(ERROR_NOT_SAME_DEVICE) => EXDEV,
+        Some(ERROR_WRITE_PROTECT) => EROFS,
+        Some(ERROR_FILENAME_EXCED_RANGE) => ENAMETOOLONG,
         _ => EIO,
     }
 }
@@ -1090,6 +1132,29 @@ mod tests {
     /// A name removed while held is gone at once and made again; a rename goes over a held
     /// file, and over nothing where told not to replace; a link is a second name of one
     /// file; and a directory made holds two names differing in case.
+    /// NTFS renames no directory a handle beneath is open in, POSIX semantics or not, nor
+    /// does Win32's MoveFileEx: refused EACCES; renamed once let go. The share server lets go
+    /// of what it holds beneath a directory it renames (`RENAME_NEEDS_NONE_BENEATH`).
+    #[test]
+    fn a_directory_a_handle_beneath_is_open_in_is_renamed_by_none() {
+        let (dir, root) = tree("ntfs-beneath");
+        let a = mkdir_at(root.as_handle(), &nt_name(b"a").unwrap()).unwrap();
+        let b = mkdir_at(a.as_handle(), &nt_name(b"b").unwrap()).unwrap();
+        drop(a);
+        let (from, to) = (nt_name(b"a").unwrap(), nt_name(b"z").unwrap());
+        for replace in [false, true] {
+            assert_eq!(
+                rename_at(root.as_handle(), &from, root.as_handle(), &to, replace),
+                Err(EACCES),
+                "replace {replace}"
+            );
+        }
+        assert!(std::fs::rename(dir.join("a"), dir.join("y")).is_err());
+        drop(b);
+        rename_at(root.as_handle(), &from, root.as_handle(), &to, false).unwrap();
+        assert!(dir.join("z").join("b").is_dir());
+    }
+
     #[test]
     fn removal_rename_links_and_case_are_linuxs() {
         let (_dir, root) = tree("ntfs-names");
