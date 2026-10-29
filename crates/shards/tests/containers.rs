@@ -3226,6 +3226,193 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
     assert_eq!(shards(&["rm", "-f", "reader", "prov"]).status, Some(0));
 }
 
+/// The pipe a test tells its daemon its host is short of memory through
+/// (`SHARDS_PRESSURE`, D188), each line a word: a FIFO on Unix, a named pipe on Windows,
+/// there before the daemon opens it as it starts.
+struct Told {
+    path: std::ffi::OsString,
+    #[cfg(windows)]
+    server: std::fs::File,
+}
+
+impl Told {
+    fn new(home: &Path) -> Told {
+        #[cfg(unix)]
+        {
+            let path = home.join("pressure");
+            let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: mkfifo(3) of a NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            Told {
+                path: path.into_os_string(),
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+            use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+            use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
+            let _ = home;
+            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
+            let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
+            // SAFETY: a NUL-terminated name and plain arguments.
+            let server = unsafe {
+                CreateNamedPipeW(
+                    name.as_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_WAIT,
+                    1,
+                    4096,
+                    4096,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            assert_ne!(
+                server,
+                INVALID_HANDLE_VALUE,
+                "{pipe}: {}",
+                std::io::Error::last_os_error()
+            );
+            Told {
+                path: pipe.into(),
+                // SAFETY: the pipe just made, ours alone.
+                server: std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(server) }),
+            }
+        }
+    }
+
+    /// Its host's word that it is short of memory, once.
+    fn say(&mut self) {
+        use std::io::Write as _;
+        #[cfg(unix)]
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .unwrap()
+            .write_all(b"\n")
+            .unwrap();
+        #[cfg(windows)]
+        self.server.write_all(b"\n").unwrap();
+    }
+}
+
+/// What a microVM holds cold it gives back at its host's word, on every host (D188): its
+/// daemon told its host is short of memory through a pipe it opened as it started
+/// (`SHARDS_PRESSURE`, as no unprivileged process may raise macOS's or Windows' pressure), a
+/// microVM whose joiner read 512 MiB of its image, which its guest's page cache holds
+/// (D119), gives back what it holds cold, its daemon says how much, and its VM process holds
+/// that much less.
+#[test]
+fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-host-word");
+    let mut told = Told::new(&home);
+    let pipe = told.path.clone();
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_PRESSURE", pipe.as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    // Its daemon, started by the pull, hears its host's word from the pipe.
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let ctx = home.join("big");
+    std::fs::create_dir(&ctx).unwrap();
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
+    noise(&ctx.join("big"), 512);
+    let built = run_shards_env(
+        &[],
+        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
+        &env,
+        Duration::from_secs(600),
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    std::fs::remove_file(ctx.join("big")).unwrap();
+    let provider = shards(
+        &run_args(&image, &["-d", "--name", "prov"], &["sleep"])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(provider.status, Some(0), "{provider}");
+    let joiner = shards(
+        &run_args(
+            "big:1",
+            &["-d", "--name", "reader", "--network", "container:prov"],
+            &["sleep"],
+        )
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>(),
+    );
+    assert_eq!(joiner.status, Some(0), "{joiner}");
+    let pid: u32 = shards(&["inspect", "-f", "{{.State.Pid}}", "prov"])
+        .stdout
+        .trim()
+        .parse()
+        .unwrap();
+    let held = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
+    let log = home.join("daemon.log");
+    let said = || std::fs::read_to_string(&log).unwrap_or_default();
+    let idle = held();
+    // Its guest holds what its joiner read, a quarter of it or more, read again into what it
+    // has plugged where a read outran its plugging (D148, PM M391), a few times at most.
+    let mut reads = 0;
+    while held() <= idle + (128 << 20) {
+        assert!(
+            reads < 4,
+            "{idle} bytes held idle, {} after {reads} reads",
+            held()
+        );
+        let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
+        assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
+        reads += 1;
+    }
+    let before = held();
+    let word = Instant::now();
+    told.say();
+    let deadline = word + TIMEOUT;
+    let gave = loop {
+        let given = said()
+            .lines()
+            .filter_map(|l| l.split_once("the host is short of memory: its microVMs gave back "))
+            .find_map(|(_, rest)| rest.split_whitespace().next()?.parse::<u64>().ok());
+        if let Some(gave) = given {
+            break gave;
+        }
+        assert!(Instant::now() < deadline, "nothing given back said:\n{}", said());
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(gave > 0, "nothing given back:\n{}", said());
+    // Its VM process holds that much less, or half of it, once its guest has given it back:
+    // what it reported free, and what its device unplugs as it was asked to, after the
+    // give-back's answer (D148, D151).
+    let deadline = Instant::now() + TIMEOUT;
+    while before.saturating_sub(held()) < (gave << 20) / 2 {
+        assert!(
+            Instant::now() < deadline,
+            "its VM process held {before} bytes, then {}, having given back {gave} MiB:\n{}",
+            held(),
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    eprintln!(
+        "a joiner's 512 MiB read: {idle} bytes held idle, {before} after {reads} reads, {} {:?} after its host's word, {gave} MiB given back",
+        held(),
+        word.elapsed()
+    );
+    assert_eq!(shards(&["rm", "-f", "reader", "prov"]).status, Some(0));
+}
+
 /// A microVM held to a budget reads a file through its volume's DAX window to its end
 /// (D188, D189): under a slice of the user's manager whose `MemoryHigh` is past the microVM
 /// idle and short of the file, the file is mapped through the window, its pages its host's

@@ -1,6 +1,6 @@
 //! What a build's builders give back as their host runs short of memory (D188 for D133's
 //! builders): the build's process watches its host's memory pressure as the daemon does
-//! ([`MemoryPressure`]), and at each word of it asks each builder it has to give back what
+//! ([`Pressure`]), and at each word of it asks each builder it has to give back what
 //! it holds cold of its files and what it holds plugged past twice what it uses
 //! (build::GIVE_PORT, [`Giver`]): every builder asked at once, one ask out to each at a
 //! time, an answer not come within [`PATIENCE`] said to have had none and that builder
@@ -26,7 +26,7 @@ use std::sync::mpsc;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use shards_vmm::platform::MemoryPressure;
+use crate::pressure::Pressure;
 
 use super::builder::{Answer, Giver};
 
@@ -91,7 +91,7 @@ enum Woke {
 /// pressure is heard on a thread of its own, and a budget's writes by the process's watch of
 /// its files, each a word down one channel.
 fn start(plain: bool) -> Option<mpsc::Sender<Giver>> {
-    let mut pressure = Pressure::new().ok()?;
+    let mut pressure = Pressure::new(TOLD).ok()?.0;
     let (sender, givers) = mpsc::channel();
     let (word, woke) = mpsc::channel();
     let heard = word.clone();
@@ -392,43 +392,6 @@ impl Unsaid {
             ..Unsaid::default()
         };
         Some(said)
-    }
-}
-
-/// What tells the watcher its host is short of memory: its kernel ([`MemoryPressure`]), or
-/// a FIFO [`TOLD`] names.
-enum Pressure {
-    Kernel(MemoryPressure),
-    Told(std::fs::File),
-}
-
-impl Pressure {
-    fn new() -> io::Result<Pressure> {
-        if let Some(path) = std::env::var_os(TOLD) {
-            // Read and written, so that a writer's going is no end: reads wait for the next.
-            let fifo = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
-            return Ok(Pressure::Told(fifo));
-        }
-        MemoryPressure::new().map(|(pressure, _)| Pressure::Kernel(pressure))
-    }
-
-    /// Waits for the next word that its host is short of memory.
-    fn wait(&mut self) -> io::Result<()> {
-        match self {
-            Pressure::Kernel(pressure) => pressure.wait(),
-            Pressure::Told(fifo) => {
-                use std::io::Read as _;
-                let mut byte = [0u8; 1];
-                loop {
-                    if fifo.read(&mut byte)? == 0 {
-                        return Err(io::ErrorKind::UnexpectedEof.into());
-                    }
-                    if byte == *b"\n" {
-                        return Ok(());
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -771,43 +734,5 @@ mod tests {
             ),
             None
         );
-    }
-
-    /// A FIFO's lines are its words of pressure, each heard once, and a writer that goes is
-    /// no end of them. A FIFO is Unix's: Windows' named pipe is build_windows.rs's.
-    #[cfg(unix)]
-    #[test]
-    fn a_fifo_tells_its_pressure_a_line_at_a_time() {
-        let dir = shards_testdir::TempDir::new("told").unwrap();
-        let path = dir.join("p");
-        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: mkfifo(3) of a NUL-terminated path.
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-        let fifo = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        let mut told = Pressure::Told(fifo);
-        {
-            let mut w = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-            w.write_all(b"\n\n").unwrap();
-        }
-        told.wait().unwrap();
-        told.wait().unwrap();
-        let (heard, hear) = std::sync::mpsc::channel();
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                told.wait().unwrap();
-                heard.send(()).unwrap();
-            });
-            assert!(
-                hear.recv_timeout(Duration::from_millis(100)).is_err(),
-                "no third word yet"
-            );
-            let mut w = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-            w.write_all(b"\n").unwrap();
-            hear.recv_timeout(Duration::from_secs(10)).unwrap();
-        });
     }
 }

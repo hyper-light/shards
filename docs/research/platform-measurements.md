@@ -16275,3 +16275,12 @@ revision before comparing a changed API/implementation.
   A joiner's read is given back at a group's budget on both, no host directory needed;
   `RECLAIM` counted 107 to 130 MiB of it, the rest taken back as init held the run within
   the room it was told (D188), once all of it.
+- **At its host's word** (`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, the
+  daemon told through `SHARDS_PRESSURE`, n = 10). After one read a joiner's guest held 128 to
+  188 MiB of it on jupiter and 128 to 130 on Fedora, 142 to 382 on the M5 Max: a reader's
+  page cache outgrows the run's hold only as its grower plugs more, and the grower plugs
+  only where it finds the run at or past its hold (`plug.rs`, `grow`), which the kernel's
+  reclaim of the cache keeps it from (D148). The microVM gave back all of it, and its VM
+  process was back to within 4.0 MiB of what it held idle 1.11 to 1.21 s after the word on
+  jupiter (n = 3), within 5.4 MiB 1.61 to 1.66 s after it on Fedora (n = 4), and within
+  14.5 MiB 1.90 to 2.03 s after it on the M5 Max (n = 3).
