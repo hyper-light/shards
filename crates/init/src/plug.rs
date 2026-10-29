@@ -947,14 +947,27 @@ pub fn mount_cgroups() -> io::Result<()> {
     Ok(())
 }
 
-/// What the kernel keeps beside the build's `memory.high`: [`SLACK`], and the page
-/// structures of the memory plugged next, a 64th of it (a 64-byte `struct page` for each
-/// 4 KiB page), which the kernel takes from what it has before the memory comes online.
-/// Growth asks for as much as the builder has ([`grow`]), so that is a 64th of what it
-/// has, until it has all it may.
+/// What the kernel keeps beside the build's `memory.high`: [`SLACK`]; the page structures
+/// of the memory plugged next, a 64th of it (a 64-byte `struct page` for each 4 KiB page),
+/// which the kernel takes from what it has before the memory comes online (growth asks for
+/// as much as the builder has, [`grow`], so that is a 64th of what it has, until it has all
+/// it may); and the free pages its CPUs may keep on their own lists, which are neither free
+/// to its readers nor charged to the build ([`PCP_FRACTION`]).
 fn reserve(total: u64, left: u64) -> u64 {
-    SLACK.saturating_add(total.min(left) / 64)
+    SLACK
+        .saturating_add(total.min(left) / 64)
+        .saturating_add(total / PCP_FRACTION)
 }
+
+/// The share of a zone's pages its CPUs' own lists of free pages may hold between them:
+/// an eighth, as the kernel tunes each CPU's list up to (mm/page_alloc.c,
+/// `MIN_PERCPU_PAGELIST_HIGH_FRACTION`, `zone_set_pageset_high_and_batch`, Linux 6.7 on).
+/// Those pages are not in MemFree, and no cgroup is charged for them: a reserve without
+/// them was taken by them as a build of 8 compilers grew on 32 vCPUs, 98 MiB on their
+/// lists of 2,010 MiB, 77 MiB more than as the hold was set, and the guest ran out of
+/// memory with the build 25 MiB short of its `memory.high`, so that its grower, woken
+/// only there, was never asked to plug more (PM M392).
+const PCP_FRACTION: u64 = 8;
 
 /// The build's `memory.high`: what it holds now and what is free and stays plugged, less
 /// the [`reserve`] for what may still be plugged, `left` of it. Its page cache counts as
@@ -1535,9 +1548,10 @@ mod tests {
         let (boot, total, free, current) = (244_293_632u64, 378_511_360u64, 316_907_520u64, 20_647_936u64);
         let (kernel, leaving) = (total - free - current, total - boot);
         let reserve = reserve(total, u64::MAX);
+        // 264,532,352 before the reserve kept an eighth for its CPUs' lists (PM M392).
         assert_eq!(
             hold_of(current, free, 0, reserve),
-            264_532_352,
+            217_218_432,
             "the hold it was given"
         );
         assert_eq!(hold_of(current, free, 0, reserve) + kernel + reserve, total);
@@ -1546,6 +1560,33 @@ mod tests {
         // With nothing going, as before.
         assert_eq!(hold_of(current, free, 0, 0), current + free);
         assert_eq!(hold_of(current, free, current + free, reserve), 0);
+    }
+
+    /// A build reaches its hold, which wakes its grower, while its guest still has memory
+    /// free, whatever its CPUs keep on their own lists. On jupiter a builder of 2,010 MiB was
+    /// held at 1,829.5 MiB, its build and the free memory 1,925 MiB as the hold was set; as
+    /// 8 compilers grew, what the build was not charged for went from 85 MiB to 175, 98 of it
+    /// on the CPUs' lists, and the guest ran out of memory with the build 25 MiB short of its
+    /// hold. Held with what the lists may keep in reserve, it was woken with 243 MiB free
+    /// (PM M392).
+    #[test]
+    fn a_build_reaches_its_hold_with_memory_free_whatever_its_cpus_keep() {
+        let total = 2010 * MIB;
+        let at_hold = 1925 * MIB;
+        let uncharged = 175 * MIB;
+        // Free as the build reaches its hold, with what it was not charged for as it ran out.
+        let free_at = |reserve: u64| {
+            total
+                .saturating_sub(uncharged)
+                .saturating_sub(hold_of(at_hold, 0, 0, reserve))
+        };
+        let without = SLACK + total / 64;
+        assert!(free_at(without) < 8 * MIB, "{}", free_at(without) / MIB);
+        // At least a memory block free, which its driver adds the memory asked for in.
+        assert!(free_at(reserve(total, u64::MAX)) >= ALIGN);
+        // An eighth of what it has, past all its lists held as it ran out.
+        assert_eq!(reserve(total, u64::MAX) - without, total / 8);
+        assert!(total / 8 >= 98 * MIB);
     }
 
     /// The least room a run is held within covers what its kernel charges it ahead on
