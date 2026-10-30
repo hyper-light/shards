@@ -1,0 +1,21 @@
+# WHP partitions on arm64 Windows (PM M414), before shards' arm64 WHP backend is written:
+# what the platform offers there, whether a partition of two vCPUs runs under its GICv3
+# emulation, what an MMIO exit costs, how PSCI's CPU_ON and SYSTEM_OFF come back, an SPI
+# delivered, and what a snapshot's GIC and timer state rest on (src/main.rs). Built with
+# `cargo xwin build --release --target aarch64-pc-windows-msvc` and run on the host.
+[package]
+name = "whp-arm64"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Performance",
+  "Win32_System_Registry",
+] }
