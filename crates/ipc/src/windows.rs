@@ -1200,9 +1200,13 @@ pub fn footprint_kib() -> u64 {
 }
 
 /// What process `pid` has done so far, for a log that says why it seems stuck: its CPU time
-/// in user mode and in the kernel (GetProcessTimes) and its working set, two of which, a
-/// while apart, tell one that never ran from one that runs on and one that ran and waits;
-/// or why it cannot say (a process gone, or not this user's).
+/// in user mode and in the kernel (GetProcessTimes), its working set and page faults, two of
+/// which, a while apart, tell one that never ran from one that runs on and one that ran and
+/// waits; each of its threads' state and what it waits for ([`thread_states`]); and the
+/// host's memory available; or why it cannot say (a process gone, or not this user's).
+/// CI's windows-2022 left a VM process 0 ms of CPU in 10 s and 15 ms in 20 s while its
+/// working set grew from 5,740 KiB to 28,788 (CI 41004323062), which its threads' waits
+/// tell apart: on the disk (PageIn), on a CPU (Ready), or never resumed (Suspended).
 pub fn process_activity(pid: u32) -> String {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
@@ -1240,14 +1244,164 @@ pub fn process_activity(pid: u32) -> String {
     let counted =
         unsafe { GetProcessMemoryInfo(process.as_raw_handle(), &raw mut counters, counters.cb) } != 0;
     let working = if counted {
-        format!("{} KiB", counters.WorkingSetSize / 1024)
+        format!(
+            "{} KiB, {} page faults",
+            counters.WorkingSetSize / 1024,
+            counters.PageFaultCount
+        )
     } else {
         io::Error::last_os_error().to_string()
     };
     format!(
-        "its CPU time {} ms in user mode and {} ms in the kernel, its working set {working}",
+        "its CPU time {} ms in user mode and {} ms in the kernel, its working set {working}; {}; {}",
         ms(user),
-        ms(kernel)
+        ms(kernel),
+        thread_states(pid),
+        memory_available()
+    )
+}
+
+/// Each thread of process `pid` as the system lists it (NtQuerySystemInformation's
+/// SystemProcessInformation, winternl.h's SYSTEM_PROCESS_INFORMATION and the
+/// SYSTEM_THREAD_INFORMATION after it, one a thread): its state, as the Thread object's
+/// "Thread State" counter numbers them, and, waiting, why (wdm.h's KWAIT_REASON); a thread
+/// that is ready and does not run waits for a CPU, one in PageIn for the disk.
+fn thread_states(pid: u32) -> String {
+    use windows_sys::Wdk::System::SystemInformation::{NtQuerySystemInformation, SystemProcessInformation};
+    use windows_sys::Win32::Foundation::STATUS_INFO_LENGTH_MISMATCH;
+    use windows_sys::Win32::System::WindowsProgramming::{
+        SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION,
+    };
+    // The list of every process and thread: grown to what the system says it needs, which
+    // may grow again between two asks.
+    let mut buf: Vec<u64> = vec![0; 1 << 16];
+    let mut status = STATUS_INFO_LENGTH_MISMATCH;
+    for _ in 0..4 {
+        let len = u32::try_from(buf.len().saturating_mul(8)).unwrap_or(u32::MAX);
+        let mut needed = 0u32;
+        // SAFETY: a buffer of `len` bytes for the call to fill, and its length's.
+        status = unsafe {
+            NtQuerySystemInformation(
+                SystemProcessInformation,
+                buf.as_mut_ptr().cast(),
+                len,
+                &raw mut needed,
+            )
+        };
+        if status != STATUS_INFO_LENGTH_MISMATCH {
+            break;
+        }
+        buf.resize(
+            (needed as usize / 8)
+                .saturating_add(1 << 13)
+                .max(buf.len().saturating_mul(2)),
+            0,
+        );
+    }
+    if status < 0 {
+        return format!("its threads: NTSTATUS {:#010x}", status as u32);
+    }
+    let bytes = buf.len().saturating_mul(8);
+    let base = buf.as_ptr().cast::<u8>();
+    let process_size = size_of::<SYSTEM_PROCESS_INFORMATION>();
+    let thread_size = size_of::<SYSTEM_THREAD_INFORMATION>();
+    let mut at = 0usize;
+    loop {
+        if at.saturating_add(process_size) > bytes {
+            return "its threads: not listed".into();
+        }
+        // SAFETY: an entry within the buffer the call filled, read as it lies.
+        let process = unsafe { std::ptr::read_unaligned(base.add(at).cast::<SYSTEM_PROCESS_INFORMATION>()) };
+        if process.UniqueProcessId as usize == pid as usize {
+            let mut states = Vec::new();
+            for i in 0..process.NumberOfThreads as usize {
+                let Some(offset) = i
+                    .checked_mul(thread_size)
+                    .and_then(|o| o.checked_add(at.saturating_add(process_size)))
+                    .filter(|o| o.saturating_add(thread_size) <= bytes)
+                else {
+                    break;
+                };
+                // SAFETY: a thread's entry after its process's, within the buffer.
+                let thread =
+                    unsafe { std::ptr::read_unaligned(base.add(offset).cast::<SYSTEM_THREAD_INFORMATION>()) };
+                states.push(thread_state(thread.ThreadState, thread.WaitReason));
+            }
+            return format!("its {} threads: {}", process.NumberOfThreads, states.join(", "));
+        }
+        if process.NextEntryOffset == 0 {
+            return "its threads: not listed".into();
+        }
+        at = at.saturating_add(process.NextEntryOffset as usize);
+    }
+}
+
+/// A thread's state and, where it waits, why: the "Thread State" counter's 0 to 6 and wdm.h's
+/// KWAIT_REASON by name, where they have one.
+fn thread_state(state: u32, reason: u32) -> String {
+    let name = match state {
+        0 => "initialized",
+        1 => "ready",
+        2 => "running",
+        3 => "standby",
+        4 => "terminated",
+        5 => "waiting",
+        6 => "in transition",
+        _ => return format!("state {state}"),
+    };
+    if state != 5 {
+        return name.into();
+    }
+    let why = match reason {
+        0 => "Executive",
+        1 => "FreePage",
+        2 => "PageIn",
+        3 => "PoolAllocation",
+        4 => "DelayExecution",
+        5 => "Suspended",
+        6 => "UserRequest",
+        7 => "WrExecutive",
+        8 => "WrFreePage",
+        9 => "WrPageIn",
+        10 => "WrPoolAllocation",
+        11 => "WrDelayExecution",
+        12 => "WrSuspended",
+        13 => "WrUserRequest",
+        15 => "WrQueue",
+        16 => "WrLpcReceive",
+        17 => "WrLpcReply",
+        18 => "WrVirtualMemory",
+        19 => "WrPageOut",
+        21 => "WrKeyedEvent",
+        23 => "WrProcessInSwap",
+        24 => "WrCpuRateControl",
+        27 => "WrResource",
+        28 => "WrPushLock",
+        29 => "WrMutex",
+        34 => "WrFastMutex",
+        35 => "WrGuardedMutex",
+        37 => "WrAlertByThreadId",
+        39 => "WrPhysicalFault",
+        _ => return format!("waiting ({reason})"),
+    };
+    format!("waiting ({why})")
+}
+
+/// The host's memory available to processes now, and its total (GlobalMemoryStatusEx).
+fn memory_available() -> String {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: u32::try_from(size_of::<MEMORYSTATUSEX>()).unwrap_or(0),
+        ..Default::default()
+    };
+    // SAFETY: a status of the size its `dwLength` says, for the call to fill.
+    if unsafe { GlobalMemoryStatusEx(&raw mut status) } == 0 {
+        return format!("the host's memory: {}", io::Error::last_os_error());
+    }
+    format!(
+        "the host's memory {} MiB available of {} MiB",
+        status.ullAvailPhys >> 20,
+        status.ullTotalPhys >> 20
     )
 }
 
@@ -2303,5 +2457,42 @@ mod tests {
         assert_eq!(child.wait().unwrap(), 128 + SIGKILL);
         assert!(child.has_ended());
         child.kill(SIGKILL).unwrap();
+    }
+
+    /// What a process has done names each of its threads' states, as the system lists
+    /// them: of this process's, the thread that asks is running as it asks, and one made
+    /// suspended waits so.
+    #[test]
+    fn a_processs_activity_names_its_threads_states() {
+        use windows_sys::Win32::System::Threading::{CREATE_SUSPENDED, CreateThread, WaitForSingleObject};
+        unsafe extern "system" fn nothing(_: *mut std::ffi::c_void) -> u32 {
+            0
+        }
+        // SAFETY: a thread of a function that returns at once, made suspended.
+        let raw = unsafe {
+            CreateThread(
+                std::ptr::null(),
+                0,
+                Some(nothing),
+                std::ptr::null(),
+                CREATE_SUSPENDED,
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(!raw.is_null());
+        // SAFETY: the thread just made, owned here.
+        let thread = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let said = process_activity(std::process::id());
+        // SAFETY: the thread made suspended above, then waited for as it returns.
+        unsafe {
+            ResumeThread(thread.as_raw_handle());
+            WaitForSingleObject(thread.as_raw_handle(), INFINITE);
+        }
+        assert!(said.contains(" threads: ") && said.contains("running"), "{said}");
+        assert!(said.contains("waiting (Suspended)"), "{said}");
+        assert!(
+            said.contains("page faults") && said.contains("MiB available of"),
+            "{said}"
+        );
     }
 }
