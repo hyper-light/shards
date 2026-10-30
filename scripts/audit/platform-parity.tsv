@@ -1,0 +1,147 @@
+# Platform parity twins (platform-parity.py): FILE, KIND NAME, TWIN FILE, TWIN KIND NAME, what they do.
+crates/ipc/src/lib.rs	mod spawner	crates/ipc/src/lib.rs	mod windows	what starts the daemon's children: Unix's spawner process (D158), Windows' spawn_confined and spawn
+crates/ipc/src/lib.rs	use spawner	crates/ipc/src/lib.rs	use windows	the spawner's names, each host's
+crates/ipc/src/lib.rs	mod unix	crates/ipc/src/lib.rs	mod pipe	the transport of shards' messages: Unix sockets, Windows' pipes
+crates/ipc/src/lib.rs	mod unix	crates/ipc/src/lib.rs	mod windows	each host's processes and handles handed on
+crates/ipc/src/lib.rs	use unix	crates/ipc/src/lib.rs	use pipe	the transport's names, each host's
+crates/ipc/src/lib.rs	mod pipe	crates/ipc/src/lib.rs	mod unix	the transport of shards' messages: Windows' pipes, Unix sockets
+crates/ipc/src/lib.rs	use pipe	crates/ipc/src/lib.rs	use unix	the transport's names, each host's
+crates/ipc/src/lib.rs	mod windows	crates/ipc/src/lib.rs	mod unix	each host's processes and handles handed on
+crates/ipc/src/lib.rs	use windows	crates/ipc/src/lib.rs	use unix	their names, each host's
+crates/ipc/src/lib.rs	type Stream	crates/ipc/src/pipe.rs	struct Stream	what carries shards' messages: a Unix socket, a Windows pipe's end
+crates/ipc/src/lib.rs	trait AsFd	crates/ipc/src/lib.rs	use std	a descriptor's borrow: std's on Unix, a handle's under Unix's name on Windows
+crates/ipc/src/lib.rs	impl impl<T: std::os::windows::io::AsHandle + ?Sized> AsFd for T 	crates/ipc/src/lib.rs	use std	AsFd for every handle, as std has it for every descriptor
+crates/ipc/src/lib.rs	trait AsRawFd	crates/ipc/src/lib.rs	use std	a descriptor's raw value: std's on Unix, a handle's on Windows
+crates/ipc/src/lib.rs	impl impl<T: std::os::windows::io::AsRawHandle + ?Sized> AsRawFd 	crates/ipc/src/lib.rs	use std	AsRawFd for every handle, as std has it for every descriptor
+crates/ipc/src/lib.rs	use libc	crates/ipc/src/lib.rs	const SIGKILL	the signals a child ends by: libc's on Unix, their numbers on Windows
+crates/ipc/src/lib.rs	const SIGHUP	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGINT	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGQUIT	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGKILL	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGTERM	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGCONT	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGSTOP	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	fn fd	crates/ipc/src/lib.rs	fn event	what a wait on a latch wakes on: a pipe's read end on Unix, an event on Windows
+crates/ipc/src/lib.rs	fn event	crates/ipc/src/lib.rs	fn fd	what a wait on a latch wakes on: an event on Windows, a pipe's read end on Unix
+crates/ipc/src/slots.rs	mod fifo	crates/ipc/src/slots.rs	mod named	the daemon's request slots (D185): FIFOs in the home on Unix, named pipes on Windows
+crates/ipc/src/slots.rs	use fifo	crates/ipc/src/slots.rs	use named	the slots' names, each host's
+crates/ipc/src/slots.rs	mod named	crates/ipc/src/slots.rs	mod fifo	the daemon's request slots (D185): named pipes on Windows, FIFOs on Unix
+crates/ipc/src/slots.rs	use named	crates/ipc/src/slots.rs	use fifo	the slots' names, each host's
+crates/ipc/src/slots/fifo.rs	struct ListWatch	crates/ipc/src/slots/fifo.rs	fn record	a slot list's records waited for: a kqueue on macOS, which also says the list's going and its daemon's exit; poll(2) elsewhere (M253)
+crates/ipc/src/slots/fifo.rs	fn watch	crates/ipc/src/slots/fifo.rs	fn record	the kqueue macOS waits on a list by; poll(2) elsewhere
+crates/vmm/src/platform/unix.rs	fn populate_writable	crates/vmm/src/hv/hvf/mod.rs	fn prefetch [macos]	a restore's written pages copied ahead: Linux's madvise on KVM's mapped working set; HVF's vCPU touches its working set, written pages written (Windows records no working set yet, D196: a gap)
+crates/vmm/src/platform/unix.rs	fn mapped_pages	crates/vmm/src/platform/windows_process.rs	fn mapped_pages	what a restore's host maps of guest memory, its working set: /proc/self/pagemap, QueryWorkingSetEx
+crates/vmm/src/platform/unix.rs	fn mapped_pages	crates/vmm/src/hv/hvf/mod.rs	struct Watch [macos]	a working set recorded: HVF's stage 2 taken away and given back page by page
+crates/vmm/src/platform/unix.rs	struct FaultAroundOff	-	none: macos	Linux's page cache maps around a fault; Hypervisor.framework maps a guest's stage 2 a page at a time as it is touched (PM M5) (Windows' FaultAroundOff is a stub, as its restores record no working set yet, D196: a gap)
+crates/vmm/src/platform/unix.rs	impl FaultAroundOff	-	none: macos	as FaultAroundOff
+crates/vmm/src/platform/unix.rs	mod uffd	-	none: macos	userfaultfd, FaultAroundOff's: as FaultAroundOff
+crates/vmm/src/platform/unix.rs	fn pids_max	crates/vmm/src/platform/unix.rs	fn sysctl_count	the tasks a user may have: cgroups' pids.max on Linux, kern.maxprocperuid on macOS
+crates/vmm/src/platform/unix.rs	fn pids_max	crates/vmm/src/platform/windows_process.rs	fn user_processes	the tasks a user may have: Windows' job and system limits
+crates/vmm/src/platform/unix.rs	fn fewer	crates/vmm/src/platform/unix.rs	fn sysctl_count	pids_max's: the fewer of two limits, as a cgroup and its parents give them
+crates/vmm/src/platform/unix.rs	fn fewer	crates/vmm/src/platform/windows_process.rs	fn user_processes	as pids_max
+crates/vmm/src/platform/unix.rs	fn count	crates/vmm/src/platform/unix.rs	fn sysctl_count	a count the kernel keeps: a /proc or cgroup file on Linux, a sysctl on macOS
+crates/vmm/src/platform/unix.rs	fn count	crates/vmm/src/platform/windows_process.rs	fn thread_limit	the kernel's counts, Windows' as its own calls give them
+crates/vmm/src/platform/unix.rs	fn sysctl_count	crates/vmm/src/platform/unix.rs	fn count	a count the kernel keeps: a sysctl on macOS, a /proc or cgroup file on Linux
+crates/vmm/src/platform/unix.rs	fn sysctl_count	crates/vmm/src/platform/windows_process.rs	fn thread_limit	the kernel's counts, Windows' as its own calls give them
+crates/vmm/src/platform/unix.rs	fn change	crates/vmm/src/platform/unix.rs	mod notify	a file watched: macOS' kqueue, Linux's one inotify instance (PM M257)
+crates/vmm/src/platform/unix.rs	fn change	crates/vmm/src/platform/windows_watch.rs	struct FileWatch	a file watched: Windows' directory changes and oplocks
+crates/vmm/src/platform/unix.rs	fn register	crates/vmm/src/platform/unix.rs	mod notify	as change
+crates/vmm/src/platform/unix.rs	fn register	crates/vmm/src/platform/windows_watch.rs	struct FileWatch	as change
+crates/vmm/src/platform/unix.rs	mod notify	crates/vmm/src/platform/unix.rs	fn register	a file watched: Linux's one inotify instance, macOS' kqueue
+crates/vmm/src/platform/unix.rs	mod notify	crates/vmm/src/platform/windows_watch.rs	struct FileWatch	a file watched: Windows' directory changes and oplocks
+crates/vmm/src/platform/unix.rs	impl Drop	-	none: macos	a Linux watch lets its shared inotify instance's watches go as it drops; macOS' kqueue and the files it watches close with it, as their OwnedFd and File do
+crates/vmm/src/platform/unix.rs	fn task_events	-	none: linux,windows	the counters HVF's prefetch says what its working set's page-ins took by (hv::hvf, Vcpu::prefetch); KVM's working set is mapped by its host (vm::mapped), and Windows records none yet (D196)
+crates/vmm/src/platform/unix.rs	fn watch_writes	crates/shards/src/daemon/groups.rs	fn hold_groups [macos,windows]	a budget written, heard: Linux's cgroup files (memory.high, memory.max, memory.events) watched for writes; the groups macOS and Windows keep in the home, read again every pressure window (D183)
+crates/vmm/src/platform/unix.rs	fn watch_writes	-	none: macos,windows	its other use, a DAX window's file cut short under KVM's mapping (daemon/cuts.rs): Hypervisor.framework takes a cut as a fault the VMM fills (PM M271), and NTFS refuses to cut a file while a section of it exists (PM M412)
+crates/vmm/src/platform/unix.rs	fn unwatch_writes	crates/shards/src/daemon/groups.rs	fn hold_groups [macos,windows]	as watch_writes
+crates/vmm/src/platform/unix.rs	fn unwatch_writes	-	none: macos,windows	as watch_writes
+crates/vmm/src/platform/granted.rs	use std	crates/vmm/src/platform/granted.rs	type Bound	a descriptor's names, Unix's; Windows' bound sockets are its own type
+crates/vmm/src/platform/granted.rs	fn input_file_id	crates/vmm/src/platform/granted.rs	fn input_metadata [linux,macos]	which file a granted path is: Windows' volume serial and file index; a Unix file's device and inode, in its metadata
+crates/vmm/src/platform/granted.rs	fn opened_path	crates/vmm/src/platform/granted.rs	fn grant_input [windows]	a granted file's real path: F_GETPATH on macOS, /proc/self/fd on Linux; on Windows its spawner says it, as an AppContainer may not ask where a handle is (PM M203)
+crates/vmm/src/platform/pressure.rs	const STALL_US	crates/vmm/src/platform/pressure.rs	mod dispatch [macos]	the host's memory pressure heard (D188): Linux's PSI trigger, macOS' dispatch source
+crates/vmm/src/platform/pressure.rs	const STALL_US	crates/vmm/src/platform/pressure.rs	impl MemoryPressure [windows]	Windows' low memory notification
+crates/vmm/src/platform/pressure.rs	const AVERAGE_PERCENT	crates/vmm/src/platform/pressure.rs	const REPEAT [macos,windows]	a pressure said again while it lasts: Linux's ten-second average where no trigger arms, macOS' and Windows' every two seconds
+crates/vmm/src/platform/pressure.rs	const AVERAGE_EVERY	crates/vmm/src/platform/pressure.rs	const REPEAT [macos,windows]	as AVERAGE_PERCENT
+crates/vmm/src/platform/pressure.rs	fn arm	crates/vmm/src/platform/pressure.rs	mod dispatch [macos]	a pressure watch armed: a PSI trigger on Linux, a dispatch source on macOS
+crates/vmm/src/platform/pressure.rs	fn arm	crates/vmm/src/platform/pressure.rs	impl MemoryPressure [windows]	Windows' low memory notification
+crates/vmm/src/platform/pressure.rs	fn average	crates/vmm/src/platform/pressure.rs	const REPEAT [macos,windows]	Linux's ten-second average, read where no trigger arms; macOS' and Windows' notifications said again every two seconds
+crates/vmm/src/platform/pressure.rs	mod dispatch	crates/vmm/src/platform/pressure.rs	fn arm [linux]	the host's memory pressure heard (D188): macOS' dispatch source, Linux's PSI trigger
+crates/vmm/src/platform/pressure.rs	mod dispatch	crates/vmm/src/platform/pressure.rs	impl MemoryPressure [windows]	Windows' low memory notification
+crates/vmm/src/vm/aarch64.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	a host's PCI function passed through (D154): Linux's VFIO and its irqfds; macOS and Windows refuse it with their OS's own limit (PM M356)
+crates/vmm/src/vm/aarch64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/aarch64.rs	impl crate	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	IrqfdRoute's Route: as route
+crates/vmm/src/vm/x86_64.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as aarch64.rs's route
+crates/vmm/src/vm/x86_64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/x86_64.rs	impl crate	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/mod.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	crates/vmm/src/devices/pci/mod.rs	mod vfio [linux]	the refusal of macOS and Windows, with their OS's own limit (D154, PM M356); Linux's VFIO
+crates/vmm/src/devices/pci/mod.rs	mod vfio	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	Linux's VFIO; macOS' and Windows' refusal, with their OS's own limit (D154, PM M356)
+crates/vmm/src/devices/virtio/vsock/mod.rs	fn iovecs	crates/vmm/src/devices/virtio/vsock/mod.rs	fn runs	a packet's spans as a socket writes them: iovecs on Unix, (pointer, length) runs on Windows
+crates/vmm/src/devices/virtio/vsock/mod.rs	fn runs	crates/vmm/src/devices/virtio/vsock/mod.rs	fn iovecs	as iovecs
+crates/vmm/src/devices/virtio/vsock/mod.rs	fn nonblocking_pipe	crates/vmm/src/devices/virtio/vsock/mod.rs	struct Waker	the worker's waker: a self-pipe on Unix, a WSA event on Windows
+crates/vmm/src/devices/virtio/vsock/mod.rs	impl Drop	-	none: linux,macos	Windows' waker's event closed as it drops; a Unix self-pipe's OwnedFds close as theirs do
+crates/vmm/src/devices/virtio/vsock/mod.rs	impl Send	-	none: linux,macos	Windows' waker, a raw event handle, said Send; a Unix waker's OwnedFds are
+crates/vmm/src/devices/virtio/vsock/mod.rs	impl Sync	-	none: linux,macos	as Send
+crates/vmm/src/devices/virtio/vsock/conn.rs	impl Drop	-	none: linux,macos	Windows loses what a peer had not read of a socket its process's exit closes, and keeps it where the socket was shut down and closed first; a Unix close keeps it as it is (PM M199)
+crates/vmm/src/devices/virtio/vsock/conn.rs	fn linger	-	none: linux,macos	Windows' close discards a peer's unread data where the closer held some of the peer's unread, or where the peer writes after; a Unix close does not (PM M358)
+crates/vmm/src/devices/virtio/vsock/conn.rs	fn drained	-	none: linux,macos	as linger
+crates/vmm/src/devices/virtio/vsock/poll.rs	fn millis	crates/vmm/src/devices/virtio/vsock/poll.rs	impl Poller [macos,windows]	a wait's timeout as each host's poll takes it: epoll's milliseconds, kqueue's timespec, WSAPoll's milliseconds
+crates/vmm/src/devices/virtio/vsock/poll.rs	const NO_INTEREST	-	none: linux,windows	kqueue's change of no interest, a deletion; epoll and WSAPoll delete by their own calls
+crates/vmm/src/devices/virtio/vsock/poll.rs	impl Drop	-	none: linux,macos	Windows' poller's event closed as it drops; epoll's and kqueue's descriptors close as their OwnedFds do
+crates/vmm/src/devices/virtio/net.rs	fn drain	-	none: windows	a Unix doorbell pipe's bytes taken; a Windows event resets as its wait takes it
+crates/vmm/src/devices/virtio/fs/host.rs	mod linux_host	crates/vmm/src/devices/virtio/fs/host.rs	use libc [linux,macos]	the share server's names for its host's flags, modes and kinds: Linux's own on Windows (D197), libc's on Unix
+crates/vmm/src/devices/virtio/fs/host.rs	impl From	crates/vmm/src/devices/virtio/fs/ntfs.rs	fn stat [windows]	a file's status as the share server answers it: from a Unix stat(2), from NT's file information on Windows
+crates/vmm/src/devices/virtio/fs/mod.rs	mod ntfs	crates/vmm/src/devices/virtio/fs/server.rs	mod calls [linux,macos]	the share server's calls of its host's file system (D197): NT's on Windows, Unix's (server_unix.rs)
+crates/vmm/src/devices/virtio/fs/server.rs	const ENAMETOOLONG	-	none: macos,windows	one of Linux's openat2(2) refusals that mean the server walks the path instead; macOS has no openat2 and walks, and Windows opens beneath its root through NT calls (ntfs.rs)
+crates/vmm/src/devices/virtio/fs/server_unix.rs	const META_FLAGS	crates/vmm/src/devices/virtio/fs/server_windows.rs	const META_FLAGS	how a node is opened for its metadata, never followed: each host's flags
+crates/shards/src/grant_answer.rs	fn bookmark	crates/shards/src/grant_answer.rs	fn handed [windows]	a directory granted: macOS' bookmark for another process to resolve; Windows' handle put in the VM's process
+crates/shards/src/grant_answer.rs	fn bookmark	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	enum Answer	crates/shards/src/grant_answer.rs	enum Handed [windows]	what is granted for a path: a file, a bookmark, nothing, or a socket bound there; on Windows a handle, a staging directory or a socket
+crates/shards/src/grant_answer.rs	enum Answer	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn beneath	crates/shards/src/grant_answer.rs	fn handed [windows]	which of a template's files a path names, granted as the template's own; Windows hands each file's handle
+crates/shards/src/grant_answer.rs	fn beneath	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn names	crates/shards/src/grant_answer.rs	fn handed [windows]	as beneath
+crates/shards/src/grant_answer.rs	fn names	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn answer	crates/shards/src/grant_answer.rs	fn handed [windows]	what a path is granted as, each host's
+crates/shards/src/grant_answer.rs	fn answer	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn listen	crates/shards/src/grant_answer.rs	fn bound [windows]	a vsock socket bound for the VM, an earlier VM's left one replaced: Unix's descriptor, Windows' AF_UNIX listener
+crates/shards/src/grant_answer.rs	fn listen	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn bind	crates/shards/src/grant_answer.rs	fn bound [windows]	as listen
+crates/shards/src/grant_answer.rs	fn bind	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn dial	crates/shards/src/grant_answer.rs	fn dial_for [windows]	a vsock host port dialled for the VM beside the path it was granted
+crates/shards/src/grant_answer.rs	fn dial	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn serve_waiting	crates/shards/src/grant_answer.rs	fn serve [windows]	the VM's asks answered, a caller watching for a VM gone quiet: macOS', and Windows' serve
+crates/shards/src/grant_answer.rs	fn serve_waiting	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn broker	crates/shards/src/cli/mod.rs	fn vm [windows]	the broker of shards run --kernel and shards restore: macOS' shards grants process; on Windows the CLI serves the grants itself as it runs the VM (cli/mod.rs vm)
+crates/shards/src/grant_answer.rs	fn broker	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	trait Recipient	crates/shards/src/grant_answer.rs	fn broker [macos]	the process a broker puts handles and sockets in: the VM it started; macOS' broker grants by descriptors and bookmarks
+crates/shards/src/grant_answer.rs	trait Recipient	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	impl Recipient	crates/shards/src/grant_answer.rs	fn broker [macos]	as Recipient
+crates/shards/src/grant_answer.rs	impl Recipient	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	enum Handed	crates/shards/src/grant_answer.rs	enum Answer [macos]	what is granted for a path, each host's
+crates/shards/src/grant_answer.rs	enum Handed	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn handed	crates/shards/src/grant_answer.rs	fn bookmark [macos]	a directory granted: Windows' handle, macOS' bookmark
+crates/shards/src/grant_answer.rs	fn handed	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn bound	crates/shards/src/grant_answer.rs	fn listen [macos]	a vsock socket bound for the VM: Windows' AF_UNIX listener, Unix's descriptor
+crates/shards/src/grant_answer.rs	fn bound	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn dial_for	crates/shards/src/grant_answer.rs	fn dial [macos]	a vsock host port dialled for the VM
+crates/shards/src/grant_answer.rs	fn dial_for	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn serve	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn stage	-	none: linux,macos	the snapshots an AppContainer cannot write and the file ranges it cannot ask for (it makes no FSCTL), staged and read by its spawner (D141, D196); macOS' VM writes its snapshots itself in the directories its bookmarks grant (D30), and Linux's opens its own files under Landlock
+crates/shards/src/grant_answer.rs	fn ranges	-	none: linux,macos	the snapshots an AppContainer cannot write and the file ranges it cannot ask for (it makes no FSCTL), staged and read by its spawner (D141, D196); macOS' VM writes its snapshots itself in the directories its bookmarks grant (D30), and Linux's opens its own files under Landlock
+crates/shards/src/grant_answer.rs	fn reply	-	none: linux,macos	the snapshots an AppContainer cannot write and the file ranges it cannot ask for (it makes no FSCTL), staged and read by its spawner (D141, D196); macOS' VM writes its snapshots itself in the directories its bookmarks grant (D30), and Linux's opens its own files under Landlock
+crates/shards/src/grant.rs	struct Link	crates/shards/src/grant_ask.rs	fn obtain [macos]	the link a VM asks its spawner over: a Unix socket on macOS, two pipes on Windows, one each way
+crates/shards/src/grant.rs	struct Link	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	mod cf	crates/shards/src/grant_ask.rs	fn handed_file [windows]	a granted directory resolved: macOS' bookmark, by CoreFoundation; Windows' handle, handed with its path
+crates/shards/src/grant_ask.rs	mod cf	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn resolve	crates/shards/src/grant_ask.rs	fn handed_file [windows]	as cf
+crates/shards/src/grant_ask.rs	fn resolve	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn sandboxed	crates/ipc/src/windows.rs	fn in_app_container [windows]	whether this process is the confined VM: in App Sandbox on macOS, in an AppContainer on Windows
+crates/shards/src/grant_ask.rs	fn sandboxed	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn obtain	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn dial	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn handed_file	crates/shards/src/grant_ask.rs	fn resolve [macos]	a granted file taken: Windows' handle with its path, macOS' descriptor or bookmark
+crates/shards/src/grant_ask.rs	fn handed_file	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn stage	-	none: linux,macos	the VM side of what its spawner stages and reads for an AppContainer (D141, D196); macOS' VM writes its snapshots itself, and Linux's opens its own files
+crates/shards/src/grant_ask.rs	fn ranges	-	none: linux,macos	the VM side of what its spawner stages and reads for an AppContainer (D141, D196); macOS' VM writes its snapshots itself, and Linux's opens its own files
+crates/shards/src/grant_ask.rs	fn commit	-	none: linux,macos	the VM side of what its spawner stages and reads for an AppContainer (D141, D196); macOS' VM writes its snapshots itself, and Linux's opens its own files
