@@ -65,7 +65,7 @@ pub struct Restored {
 /// What vCPU `index` sets itself up from ([`split`]): moved to its thread, its own alone.
 #[derive(Debug)]
 #[cfg_attr(
-    hv = "hvf",
+    any(hv = "hvf", hv = "whp"),
     expect(
         clippy::large_enum_variant,
         reason = "moved once to each vCPU's thread at its setup: boxing the state would add an allocation per vCPU to every restore"
@@ -237,7 +237,7 @@ fn pci_intx_spi(device: u8) -> u32 {
 /// ID, or to its GICv2m frame `frame`, whose SPIs they name (Hypervisor.framework's).
 struct PciLines {
     gic: Gic,
-    #[cfg(hv = "hvf")]
+    #[cfg(any(hv = "hvf", hv = "whp"))]
     frame: boot::MsiFrame,
 }
 
@@ -249,7 +249,7 @@ impl super::PciInterrupts for PciLines {
         })
     }
 
-    #[cfg(hv = "hvf")]
+    #[cfg(any(hv = "hvf", hv = "whp"))]
     fn msi(&self, _requester: u32) -> Arc<dyn crate::devices::pci::Msi> {
         Arc::new(V2mFrame {
             gic: self.gic.clone(),
@@ -257,7 +257,7 @@ impl super::PciInterrupts for PciLines {
         })
     }
 
-    #[cfg(not(hv = "hvf"))]
+    #[cfg(hv = "kvm")]
     fn msi(&self, requester: u32) -> Arc<dyn crate::devices::pci::Msi> {
         Arc::new(ItsMsi {
             gic: self.gic.clone(),
@@ -282,13 +282,13 @@ impl super::PciInterrupts for PciLines {
 /// The MSIs of the function of requester ID `requester`, which the VMM emulates, to the
 /// GIC's ITS: translated by that ID as its device ID (KVM_SIGNAL_MSI with
 /// KVM_MSI_VALID_DEVID; the devicetree's msi-map makes the two one).
-#[cfg(not(hv = "hvf"))]
+#[cfg(hv = "kvm")]
 struct ItsMsi {
     gic: Gic,
     requester: u32,
 }
 
-#[cfg(not(hv = "hvf"))]
+#[cfg(hv = "kvm")]
 impl crate::devices::pci::Msi for ItsMsi {
     fn send(&self, address: u64, data: u32) {
         if let Err(e) = self.gic.its_msi(address, data, self.requester) {
@@ -341,20 +341,21 @@ impl crate::devices::pci::vfio::Route for IrqfdRoute {
     }
 }
 
-/// The GIC's GICv2m frame, Hypervisor.framework's (Arm's GICv2m specification, as Linux's
-/// irq-gic-v2m.c drives it): a write to its doorbell, MSI_SETSPI_NS, raises the SPI it
+/// The GIC's GICv2m frame, Hypervisor.framework's, or the one the VMM keeps for WHP's GIC,
+/// which has none (Arm's GICv2m specification, as Linux's irq-gic-v2m.c drives it, its SPIs
+/// named by the devicetree): a write to its doorbell, MSI_SETSPI_NS, raises the SPI it
 /// names, edge-triggered. The MSIs of the functions the VMM emulates.
-#[cfg(hv = "hvf")]
+#[cfg(any(hv = "hvf", hv = "whp"))]
 #[derive(Debug)]
 struct V2mFrame {
     gic: Gic,
     frame: boot::MsiFrame,
 }
 
-#[cfg(hv = "hvf")]
+#[cfg(any(hv = "hvf", hv = "whp"))]
 const V2M_MSI_SETSPI_NS: u64 = 0x040;
 
-#[cfg(hv = "hvf")]
+#[cfg(any(hv = "hvf", hv = "whp"))]
 impl V2mFrame {
     /// Raises SPI `intid`, where it is one of the frame's.
     fn raise(&self, intid: u32) {
@@ -369,7 +370,7 @@ impl V2mFrame {
     }
 }
 
-#[cfg(hv = "hvf")]
+#[cfg(any(hv = "hvf", hv = "whp"))]
 impl crate::devices::pci::Msi for V2mFrame {
     /// An MSI the guest aimed at the frame's doorbell; any other address is none of its.
     fn send(&self, address: u64, data: u32) {
@@ -740,7 +741,7 @@ fn assemble(
     // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window, each
     // device's INTx on an SPI of its own, its MSIs to the ITS or the GICv2m frame.
     let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
-    #[cfg(hv = "hvf")]
+    #[cfg(any(hv = "hvf", hv = "whp"))]
     let lines = match msi {
         Some(boot::Msi::V2m(frame)) => Some(PciLines {
             gic: gic.clone(),
@@ -748,7 +749,7 @@ fn assemble(
         }),
         _ => None,
     };
-    #[cfg(not(hv = "hvf"))]
+    #[cfg(hv = "kvm")]
     let lines = msi.map(|_| PciLines { gic: gic.clone() });
     let irqs = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
     let machine = super::PciMachine {
@@ -841,7 +842,6 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let a = super::beside_copy(&memory, &pieces, || {
         let hosts = super::Hosts {
             vsock: cfg.vsock.as_ref(),
-            #[cfg(unix)]
             net: cfg.net.as_ref(),
             shares: &cfg.shares,
             join: cfg.join,
@@ -926,6 +926,10 @@ pub type Recorder = Arc<hv::Watch>;
 #[cfg(hv = "kvm")]
 pub type Recorder = mapped::Recorder;
 
+/// Nothing on arm64's WHP, whose microVMs take no snapshot yet ([`hv::restores`]).
+#[cfg(hv = "whp")]
+pub type Recorder = std::convert::Infallible;
+
 /// Starts recording `vm`'s working set: its stage 2 watches RAM and pmem alike. Every
 /// vCPU must be out of the guest.
 #[cfg(hv = "hvf")]
@@ -936,8 +940,8 @@ pub fn record(vm: &hv::Vm) -> Result<Option<Recorder>, String> {
 }
 
 /// None: on KVM, the run that saves a template records nothing; its first warm restore
-/// does ([`recorder`], `vm::RESTORES_RECORD`).
-#[cfg(hv = "kvm")]
+/// does ([`recorder`], `vm::RESTORES_RECORD`); and on arm64's WHP, which takes no snapshot.
+#[cfg(any(hv = "kvm", hv = "whp"))]
 pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     Ok(None)
 }
@@ -954,8 +958,15 @@ pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
     mapped::recorded(recorder)
 }
 
-/// None: on HVF, the run that saves a template records its working set ([`record`]).
-#[cfg(hv = "hvf")]
+/// None is ever made on arm64's WHP ([`Recorder`]).
+#[cfg(hv = "whp")]
+pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
+    match *recorder {}
+}
+
+/// None: on HVF, the run that saves a template records its working set ([`record`]); and on
+/// arm64's WHP, which takes no snapshot.
+#[cfg(any(hv = "hvf", hv = "whp"))]
 pub fn recorder(_m: &Machine) -> Option<Recorder> {
     None
 }
@@ -984,7 +995,7 @@ pub struct Kept {
 }
 
 /// What the start leaves the running machine, once every vCPU is set up.
-#[cfg(hv = "hvf")]
+#[cfg(any(hv = "hvf", hv = "whp"))]
 pub fn keep(rest: Option<&mut Remainder>, first: &SetUp) -> Kept {
     Kept {
         counter: rest.map(|r| r.counter),
@@ -1165,6 +1176,13 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
     let began = crate::log::uptime_us();
     let mut vcpu = vm.create_vcpu(index).map_err(e)?;
     let created = crate::log::uptime_us();
+    #[cfg_attr(
+        hv = "whp",
+        expect(
+            unused_mut,
+            reason = "set by HVF's prefetch and KVM's counter, of which arm64's WHP has neither yet"
+        )
+    )]
     let mut set_up = SetUp::default();
     match start {
         VcpuStart::Boot(entry) => {
@@ -1195,6 +1213,8 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                     drop(working_set);
                     set_up.counter = Some(vcpu.counter());
                 }
+                #[cfg(hv = "whp")]
+                drop(working_set);
                 prefetched = crate::log::uptime_us();
             }
             vcpu.restore_state(&state).map_err(e)?;
@@ -1214,7 +1234,7 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
 
 /// For a restore, the counter offset every vCPU applies at release, taken now so the
 /// guest counter continues from the snapshot.
-#[cfg(hv = "hvf")]
+#[cfg(any(hv = "hvf", hv = "whp"))]
 pub fn release_offset(kept: &Kept) -> Result<Option<u64>, String> {
     Ok(kept
         .counter
@@ -1237,7 +1257,7 @@ pub fn release_offset(kept: &Kept) -> Result<Option<u64>, String> {
     Ok(None)
 }
 
-#[cfg(hv = "hvf")]
+#[cfg(any(hv = "hvf", hv = "whp"))]
 pub fn set_counter_offset(vcpu: &mut hv::Vcpu, offset: u64) -> Result<(), String> {
     vcpu.set_counter_offset(offset).map_err(|e| e.to_string())
 }

@@ -30,8 +30,12 @@ use x86_64 as machine;
 #[cfg(any(hv = "kvm", all(hv, target_arch = "x86_64")))]
 mod mapped;
 /// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's, on x86_64 and
-/// arm64 (D154), and WHP's (D196).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm", hv = "whp"));
+/// arm64 (D154), and WHP's on x86_64 (D196); not yet WHP's on arm64.
+pub const SNAPSHOTS: bool = cfg!(any(
+    hv = "hvf",
+    hv = "kvm",
+    all(hv = "whp", target_arch = "x86_64")
+));
 
 /// The most vCPUs of VMs booting at once that a host of `cpus` CPUs boots the most VMs a
 /// second with, on this build's backend. WHP's: twice its CPUs, the most boots a second CI's
@@ -39,7 +43,7 @@ pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm", hv = "whp"));
 /// were slower than one after another on Windows Server 2022, and eight took 52 to 55 s
 /// each there where one took 1.6 (PM M357). Elsewhere unmeasured, and so unheld.
 pub fn booting_vcpus_at_most(cpus: usize) -> usize {
-    if cfg!(hv = "whp") {
+    if cfg!(all(hv = "whp", target_arch = "x86_64")) {
         cpus.saturating_mul(2).max(1)
     } else {
         usize::MAX
@@ -60,18 +64,18 @@ pub fn booting_vcpus_at_most(cpus: usize) -> usize {
 /// CPUs brought online in 2.1 s (M379): nothing there, nor elsewhere (on the M5 Max's HVF a
 /// guest of 18 vCPUs came up in 0.11 s with every CPU at boot, and in 0.35 s so).
 pub fn late_cpus_cmdline(vcpus: u32) -> &'static str {
-    #[cfg(hv = "whp")]
+    #[cfg(all(hv = "whp", target_arch = "x86_64"))]
     if vcpus > 1 && host_hyperv_nested() {
         return " maxcpus=1 shards_online=1";
     }
-    #[cfg(not(hv = "whp"))]
+    #[cfg(not(all(hv = "whp", target_arch = "x86_64")))]
     let _ = vcpus;
     ""
 }
 
 /// Whether this host's Hyper-V, whose leaves its processes read, is nested in another's
 /// partition ([`nested_hyperv`]).
-#[cfg(hv = "whp")]
+#[cfg(all(hv = "whp", target_arch = "x86_64"))]
 fn host_hyperv_nested() -> bool {
     use std::arch::x86_64::__cpuid;
     let top = __cpuid(0x4000_0000);
@@ -2671,9 +2675,9 @@ mod tests {
     fn guests_are_brought_up_late_on_a_nested_hyperv_alone() {
         assert_eq!(late_cpus_cmdline(1), "");
         let late = late_cpus_cmdline(4);
-        #[cfg(hv = "whp")]
+        #[cfg(all(hv = "whp", target_arch = "x86_64"))]
         let nested = host_hyperv_nested();
-        #[cfg(not(hv = "whp"))]
+        #[cfg(not(all(hv = "whp", target_arch = "x86_64")))]
         let nested = false;
         if nested {
             assert!(

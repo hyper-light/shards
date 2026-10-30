@@ -2502,7 +2502,6 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     // spawner stages, over the link (D196), which stays open for them.
     #[cfg(windows)]
     {
-        #[cfg(target_arch = "x86_64")]
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
         let stages = !paths.write_under.is_empty();

@@ -1436,7 +1436,15 @@ mod tests {
             eprintln!("SKIP: no WHP here ({why})");
             return;
         }
-        let vm = crate::hv::Vm::new(crate::hv::VmConfig { vcpus: 1 }).unwrap();
+        #[cfg(target_arch = "x86_64")]
+        let config = crate::hv::VmConfig { vcpus: 1 };
+        #[cfg(target_arch = "aarch64")]
+        let config = crate::hv::VmConfig {
+            ipa_bits: 40,
+            mpidrs: vec![0],
+            el2: false,
+        };
+        let vm = crate::hv::Vm::new(config).unwrap();
         let answered = Arc::new(Mutex::new(Vec::new()));
         let len = 8 * MIB;
         let w = Window::new(GPA, len, |host| {

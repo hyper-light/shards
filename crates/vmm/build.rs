@@ -13,7 +13,7 @@ fn main() {
     if let Some(backend) = match (os.as_str(), arch.as_str()) {
         ("macos", "aarch64") => Some("hvf"),
         ("linux", "x86_64" | "aarch64") => Some("kvm"),
-        ("windows", "x86_64") => Some("whp"),
+        ("windows", "x86_64" | "aarch64") => Some("whp"),
         _ => None,
     } {
         println!("cargo::rustc-cfg=hv");
