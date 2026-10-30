@@ -67,6 +67,24 @@ Each lone item is confirmed or closed as its row is worked.
   KVM (D154), tested by the snapshot tests themselves on arm64 Linux in a guest with EL2
   on an M3 or later Mac (boot.rs, `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`),
   where all 78 passed (PM M346).
+- Row 3, host directories shared into a microVM on Windows and their DAX windows (the
+  plan's step 6): the share process's FUSE server over NTFS, a guest's files kept there as
+  WSL keeps them (D197's slices 1 and 2); the share process and the daemon's shares on
+  Windows, each share's stream a pipe, and a Windows host's bind sources its drives' paths
+  (slice 3, D207); and shards' own shares' DAX windows on WHP, each range a view of the
+  share process's section of its file, as long as the file's bytes there and zeros past
+  them, followed as the file grows and let go of before its guest cuts it, the window's
+  head committed as its guest first touches each 2 MiB block (slice 4, PM M412, M413).
+  Tested with real VMs on CI's windows-2022 and windows-2025 runners and on jupiter:
+  containers.rs's volume, bind and DAX tests (`run_mounts_binds_volumes_and_tmpfs`,
+  `a_volumes_data_outlives_the_microvm_that_wrote_it`,
+  `a_volumes_large_files_go_through_its_dax_window`, `..._by_default`,
+  `a_volumes_files_are_mapped_from_dax_smallest_bytes`,
+  `a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range` among them),
+  saved.rs's `a_saved_microvm_reads_on_through_its_dax_window` and
+  `a_saved_microvm_writes_on_through_its_volume`, engine.rs and compose.rs: CI 40916747277
+  at 652aae3b for slice 3, and 40961442989 at 4b6e135f and 41004323062 at 1cdaef68 for
+  slice 4; on jupiter containers.rs 141 of 141, engine.rs 27, compose.rs 3, saved.rs 13.
 - Row 4, memory given back on Windows (the plan's step 7): free page reporting under WHP, a
   cold boot's RAM decommitted and committed again (PM M371), a restore's given back through
   views of its template's data and memory of its own between them (M375, M378); the
