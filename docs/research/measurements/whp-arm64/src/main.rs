@@ -571,6 +571,10 @@ mod probe {
         }
         println!("== limits");
         limits();
+        println!("== dynamic code forbidden once set up (D141, as PM M202 on x86_64)");
+        if let Err(e) = acg(code) {
+            println!("ACG: {e}");
+        }
 
         let said = said.into_inner().map_err(|_| "poisoned".to_string())?;
         println!("== found");
@@ -853,6 +857,118 @@ mod probe {
                 }
             }
         }
+    }
+
+    /// A partition set up, then this process's dynamic code forbidden for good
+    /// (SetProcessMitigationPolicy, ProcessDynamicCodePolicy), as the VM process forbids it
+    /// (D141): whether that partition's RAM is then mapped, its vCPU made and run to the
+    /// guest's first MMIO write, and whether another partition is set up after.
+    fn acg(code: &[u8]) -> Result<()> {
+        use windows_sys::Win32::System::SystemServices::{
+            PROCESS_MITIGATION_DYNAMIC_CODE_POLICY, PROCESS_MITIGATION_DYNAMIC_CODE_POLICY_0,
+        };
+        use windows_sys::Win32::System::Threading::{ProcessDynamicCodePolicy, SetProcessMitigationPolicy};
+        let mut partition: Partition = std::ptr::null_mut();
+        // SAFETY: a handle the call fills.
+        hr("WHvCreatePartition", unsafe {
+            WHvCreatePartition(&raw mut partition)
+        })?;
+        let vm = Vm { partition };
+        vm.set(PROP_PROCESSOR_COUNT, &1u32)?;
+        let ic = IcParameters {
+            emulation_mode: IC_EMULATION_GICV3,
+            gic_v3: GicV3Parameters {
+                gicd_base: GICD,
+                gits_translater_base: GITS,
+                ppi_cntv_overflow: PPI_VTIMER,
+                ppi_performance_monitors: PPI_PMU,
+                ..GicV3Parameters::default()
+            },
+            ..IcParameters::default()
+        };
+        vm.set(PROP_ARM64_IC_PARAMETERS, &ic)?;
+        // SAFETY: the partition, its properties set.
+        hr("WHvSetupPartition", unsafe { WHvSetupPartition(vm.partition) })?;
+        let policy = PROCESS_MITIGATION_DYNAMIC_CODE_POLICY {
+            Anonymous: PROCESS_MITIGATION_DYNAMIC_CODE_POLICY_0 { Flags: 1 },
+        };
+        // SAFETY: a policy of its own size, for this process.
+        let set = unsafe {
+            SetProcessMitigationPolicy(
+                ProcessDynamicCodePolicy,
+                (&raw const policy).cast(),
+                size_of::<PROCESS_MITIGATION_DYNAMIC_CODE_POLICY>(),
+            )
+        };
+        println!("dynamic code forbidden: {}", if set != 0 { "yes" } else { "no" });
+        // SAFETY: memory this process owns for the partition's life, committed.
+        let ram = unsafe {
+            VirtualAlloc(
+                std::ptr::null(),
+                RAM_SIZE,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        if ram.is_null() {
+            return Err("VirtualAlloc failed".into());
+        }
+        // SAFETY: `code.len()` bytes into the RAM just committed, which holds them.
+        unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ram.cast::<u8>(), code.len().min(RAM_SIZE)) };
+        // SAFETY: the RAM stays mapped for the partition's life.
+        let mapped = hr("WHvMapGpaRange", unsafe {
+            WHvMapGpaRange(
+                vm.partition,
+                ram.cast_const(),
+                RAM,
+                RAM_SIZE as u64,
+                MAP_READ | MAP_WRITE | MAP_EXECUTE,
+            )
+        });
+        println!("its RAM mapped after: {mapped:?}");
+        // SAFETY: the partition, set up.
+        let made = hr("WHvCreateVirtualProcessor", unsafe {
+            WHvCreateVirtualProcessor(vm.partition, 0, 0)
+        })
+        .and_then(|()| {
+            vm.put(
+                0,
+                &[GICR_BASE_GPA, PC, PSTATE, SCTLR_EL1],
+                &[GICR, RAM, PSTATE_EL1H, SCTLR_RESET],
+            )
+        });
+        println!("its vCPU made after: {made:?}");
+        if mapped.is_ok() && made.is_ok() {
+            let mut exit = ExitContext::default();
+            // SAFETY: an exit context of its own size, 16-aligned.
+            let ran = hr("WHvRunVirtualProcessor", unsafe {
+                WHvRunVirtualProcessor(
+                    vm.partition,
+                    0,
+                    (&raw mut exit).cast::<c_void>(),
+                    size_of::<ExitContext>() as u32,
+                )
+            });
+            let access = exit.memory_access();
+            println!(
+                "its vCPU run after: {ran:?}, exit {:#x} at GPA {:#x} (the guest's first write: {:#x})",
+                exit.exit_reason, access.gpa, MMIO
+            );
+        }
+        let mut other: Partition = std::ptr::null_mut();
+        // SAFETY: a handle the call fills.
+        let second = hr("WHvCreatePartition", unsafe {
+            WHvCreatePartition(&raw mut other)
+        })
+        .and_then(|()| {
+            let vm = Vm { partition: other };
+            vm.set(PROP_PROCESSOR_COUNT, &1u32)?;
+            vm.set(PROP_ARM64_IC_PARAMETERS, &ic)?;
+            // SAFETY: the partition, its properties set.
+            hr("WHvSetupPartition", unsafe { WHvSetupPartition(vm.partition) })
+        });
+        println!("another partition set up after: {second:?}");
+        Ok(())
     }
 
     /// The virtual counter as vCPU 0 has it, and set a second back: what a restore's time
