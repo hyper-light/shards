@@ -8,7 +8,9 @@
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
 
 pub type Hresult = i32;
 /// WHV_PARTITION_HANDLE.
@@ -35,6 +37,7 @@ pub const FEATURE_ARM64_SUPPORT: u64 = 1 << 11;
 pub const PROP_EXTENDED_VM_EXITS: u32 = 0x0000_0001;
 pub const PROP_ARM64_IC_PARAMETERS: u32 = 0x0000_1012;
 pub const PROP_PROCESSOR_COUNT: u32 = 0x0000_1fff;
+pub const PROP_REFERENCE_TIME: u32 = 0x0000_100B;
 
 // WHV_RUN_VP_EXIT_REASON
 pub const EXIT_NONE: u32 = 0x0000_0000;
@@ -181,7 +184,12 @@ pub struct ExitContext {
 
 impl Default for ExitContext {
     fn default() -> Self {
-        ExitContext { exit_reason: 0, reserved: 0, reserved1: 0, body: [0; 32] }
+        ExitContext {
+            exit_reason: 0,
+            reserved: 0,
+            reserved1: 0,
+            body: [0; 32],
+        }
     }
 }
 
@@ -307,6 +315,9 @@ winhv! {
     fn WHvResetPartition(partition: Partition);
     fn WHvDeletePartition(partition: Partition);
     fn WHvSetPartitionProperty(partition: Partition, code: u32, value: *const c_void, size: u32);
+    fn WHvGetPartitionProperty(partition: Partition, code: u32, value: *mut c_void, size: u32, written: *mut u32);
+    fn WHvSuspendPartitionTime(partition: Partition);
+    fn WHvResumePartitionTime(partition: Partition);
     fn WHvMapGpaRange(partition: Partition, source: *const c_void, gpa: u64, size: u64, flags: u32);
     fn WHvCreateVirtualProcessor(partition: Partition, index: u32, flags: u32);
     fn WHvRunVirtualProcessor(partition: Partition, index: u32, exit: *mut c_void, size: u32);

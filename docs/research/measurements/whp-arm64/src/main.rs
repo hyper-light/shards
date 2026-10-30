@@ -36,7 +36,9 @@ mod probe {
     use std::time::{Duration, Instant};
 
     use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
-    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
+    use windows_sys::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW,
+    };
 
     use crate::ffi::*;
 
@@ -92,6 +94,10 @@ mod probe {
         str xzr, [x21, #0x6108]             // GICD_IROUTER33: to vCPU 0 (affinity 0)
         movz w12, #2
         str w12, [x21, #0x104]              // GICD_ISENABLER1: INTID 33 enabled
+        ldr w12, [x21, #0x4]                // GICD_TYPER: the INTIDs it has, and more
+        str x12, [x20, #0x70]               // 0x70: GICD_TYPER
+        ldr x13, [x22, #0x8]                // GICR_TYPER of vCPU 0's redistributor
+        str x13, [x20, #0x78]               // 0x78: GICR_TYPER
         mrs x12, S3_0_C12_C12_5             // ICC_SRE_EL1
         orr x12, x12, #1
         msr S3_0_C12_C12_5, x12
@@ -194,7 +200,11 @@ mod probe {
     type Result<T> = std::result::Result<T, String>;
 
     fn hr(op: &str, hr: Hresult) -> Result<()> {
-        if hr < 0 { Err(format!("{op}: HRESULT {:#010x}", hr as u32)) } else { Ok(()) }
+        if hr < 0 {
+            Err(format!("{op}: HRESULT {:#010x}", hr as u32))
+        } else {
+            Ok(())
+        }
     }
 
     fn registry(key: &str, value: &str, dword: bool) -> String {
@@ -205,7 +215,15 @@ mod probe {
         let flags = if dword { RRF_RT_REG_DWORD } else { RRF_RT_REG_SZ };
         // SAFETY: NUL-terminated names and a buffer of `size` bytes.
         let r = unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), name.as_ptr(), flags, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &raw mut size)
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                name.as_ptr(),
+                flags,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &raw mut size,
+            )
         };
         if r != 0 {
             return format!("(error {r})");
@@ -223,7 +241,12 @@ mod probe {
         let mut written = 0u32;
         // SAFETY: a buffer of the union's size, which the call fills.
         hr("WHvGetCapability", unsafe {
-            WHvGetCapability(code, buf.as_mut_ptr().cast(), size_of_val(&buf) as u32, &raw mut written)
+            WHvGetCapability(
+                code,
+                buf.as_mut_ptr().cast(),
+                size_of_val(&buf) as u32,
+                &raw mut written,
+            )
         })?;
         Ok(buf)
     }
@@ -246,7 +269,12 @@ mod probe {
         fn set<T>(&self, code: u32, value: &T) -> Result<()> {
             // SAFETY: a property of its own size.
             hr("WHvSetPartitionProperty", unsafe {
-                WHvSetPartitionProperty(self.partition, code, (value as *const T).cast(), size_of::<T>() as u32)
+                WHvSetPartitionProperty(
+                    self.partition,
+                    code,
+                    (value as *const T).cast(),
+                    size_of::<T>() as u32,
+                )
             })
         }
 
@@ -254,7 +282,13 @@ mod probe {
             let mut values = vec![Value::default(); names.len()];
             // SAFETY: as many names as values.
             hr("WHvGetVirtualProcessorRegisters", unsafe {
-                WHvGetVirtualProcessorRegisters(self.partition, vp, names.as_ptr(), names.len() as u32, values.as_mut_ptr())
+                WHvGetVirtualProcessorRegisters(
+                    self.partition,
+                    vp,
+                    names.as_ptr(),
+                    names.len() as u32,
+                    values.as_mut_ptr(),
+                )
             })?;
             Ok(values.iter().map(|v| v.0[0]).collect())
         }
@@ -263,7 +297,13 @@ mod probe {
             let values: Vec<Value> = values.iter().map(|&v| Value([v, 0])).collect();
             // SAFETY: as many names as values.
             hr("WHvSetVirtualProcessorRegisters", unsafe {
-                WHvSetVirtualProcessorRegisters(self.partition, vp, names.as_ptr(), names.len() as u32, values.as_ptr())
+                WHvSetVirtualProcessorRegisters(
+                    self.partition,
+                    vp,
+                    names.as_ptr(),
+                    names.len() as u32,
+                    values.as_ptr(),
+                )
             })
         }
 
@@ -280,7 +320,11 @@ mod probe {
             };
             // SAFETY: a control of its own size.
             hr("WHvRequestInterrupt", unsafe {
-                WHvRequestInterrupt(self.partition, &raw const control, size_of::<InterruptControl>() as u32)
+                WHvRequestInterrupt(
+                    self.partition,
+                    &raw const control,
+                    size_of::<InterruptControl>() as u32,
+                )
             })
         }
 
@@ -288,13 +332,22 @@ mod probe {
         /// and set back as read: how many bytes it took, and what setting it back said.
         fn state(&self, vp: u32, kind: u32) -> String {
             // SAFETY: a page this process owns, committed.
-            let page = unsafe { VirtualAlloc(std::ptr::null(), 1 << 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
+            let page = unsafe {
+                VirtualAlloc(
+                    std::ptr::null(),
+                    1 << 16,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_READWRITE,
+                )
+            };
             if page.is_null() {
                 return "no page".into();
             }
             let mut written = 0u32;
             // SAFETY: 64 KiB of committed memory.
-            let got = unsafe { WHvGetVirtualProcessorState(self.partition, vp, kind, page, 1 << 16, &raw mut written) };
+            let got = unsafe {
+                WHvGetVirtualProcessorState(self.partition, vp, kind, page, 1 << 16, &raw mut written)
+            };
             if got < 0 {
                 return format!("get {:#010x}", got as u32);
             }
@@ -334,11 +387,20 @@ mod probe {
             registry(nt, "CurrentBuild", false),
             registry(nt, "UBR", true)
         );
-        println!("{}", registry("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString", false));
+        println!(
+            "{}",
+            registry(
+                "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                "ProcessorNameString",
+                false
+            )
+        );
 
         println!("== capabilities");
         if !loaded() {
-            return Err("WinHvPlatform.dll is not here: the optional feature HypervisorPlatform is off".into());
+            return Err(
+                "WinHvPlatform.dll is not here: the optional feature HypervisorPlatform is off".into(),
+            );
         }
         let present = capability(CAP_HYPERVISOR_PRESENT)?[0] & 1;
         println!("HypervisorPresent {present}");
@@ -352,7 +414,10 @@ mod probe {
             ("ProcessorVendor", CAP_PROCESSOR_VENDOR),
             ("ProcessorFeatures", CAP_PROCESSOR_FEATURES),
             ("ProcessorClockFrequency", CAP_PROCESSOR_CLOCK_FREQUENCY),
-            ("SyntheticProcessorFeaturesBanks", CAP_SYNTHETIC_PROCESSOR_FEATURES_BANKS),
+            (
+                "SyntheticProcessorFeaturesBanks",
+                CAP_SYNTHETIC_PROCESSOR_FEATURES_BANKS,
+            ),
             ("PhysicalAddressWidth", CAP_PHYSICAL_ADDRESS_WIDTH),
             ("GicLpiIntIdBits", CAP_GIC_LPI_INT_ID_BITS),
             ("MaxSveVectorLength", CAP_MAX_SVE_VECTOR_LENGTH),
@@ -369,7 +434,9 @@ mod probe {
         println!("== partition");
         let mut partition: Partition = std::ptr::null_mut();
         // SAFETY: a handle the call fills.
-        hr("WHvCreatePartition", unsafe { WHvCreatePartition(&raw mut partition) })?;
+        hr("WHvCreatePartition", unsafe {
+            WHvCreatePartition(&raw mut partition)
+        })?;
         let vm = Vm { partition };
         vm.set(PROP_PROCESSOR_COUNT, &2u32)?;
         let ic = IcParameters {
@@ -390,7 +457,14 @@ mod probe {
         println!("set up: 2 vCPUs, GICv3 at {GICD:#x}, ITS at {GITS:#x}");
 
         // SAFETY: memory this process owns for the partition's life, committed.
-        let ram = unsafe { VirtualAlloc(std::ptr::null(), RAM_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
+        let ram = unsafe {
+            VirtualAlloc(
+                std::ptr::null(),
+                RAM_SIZE,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
         if ram.is_null() {
             return Err("VirtualAlloc of the guest's RAM failed".into());
         }
@@ -407,25 +481,58 @@ mod probe {
         unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ram.cast::<u8>(), code.len()) };
         // SAFETY: the RAM stays mapped for the partition's life.
         hr("WHvMapGpaRange", unsafe {
-            WHvMapGpaRange(vm.partition, ram.cast_const(), RAM, RAM_SIZE as u64, MAP_READ | MAP_WRITE | MAP_EXECUTE)
+            WHvMapGpaRange(
+                vm.partition,
+                ram.cast_const(),
+                RAM,
+                RAM_SIZE as u64,
+                MAP_READ | MAP_WRITE | MAP_EXECUTE,
+            )
         })?;
-        println!("RAM: {} KiB at {RAM:#x}, the guest's code {} bytes", RAM_SIZE >> 10, code.len());
+        println!(
+            "RAM: {} KiB at {RAM:#x}, the guest's code {} bytes",
+            RAM_SIZE >> 10,
+            code.len()
+        );
 
         for vp in 0..2u32 {
             // SAFETY: the partition, set up.
-            hr("WHvCreateVirtualProcessor", unsafe { WHvCreateVirtualProcessor(vm.partition, vp, 0) })?;
+            hr("WHvCreateVirtualProcessor", unsafe {
+                WHvCreateVirtualProcessor(vm.partition, vp, 0)
+            })?;
             vm.put(vp, &[GICR_BASE_GPA], &[GICR + GICR_STRIDE * u64::from(vp)])?;
         }
         for vp in 0..2u32 {
-            let ids = vm.get(vp, &[MIDR_EL1, MPIDR_EL1, SCTLR_EL1, PSTATE, CNTVCT_EL0, INTERNAL_ACTIVITY_STATE])?;
+            let ids = vm.get(
+                vp,
+                &[
+                    MIDR_EL1,
+                    MPIDR_EL1,
+                    SCTLR_EL1,
+                    PSTATE,
+                    CNTVCT_EL0,
+                    INTERNAL_ACTIVITY_STATE,
+                ],
+            )?;
             println!(
                 "vCPU {vp} as made: MIDR {:#x} MPIDR {:#x} SCTLR {:#x} PSTATE {:#x} CNTVCT {:#x} activity {:#x}",
                 ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]
             );
         }
-        let global = vm.get(ANY_VP, &[ID_AA64PFR0_EL1, ID_AA64PFR1_EL1, ID_AA64ISAR0_EL1, ID_AA64MMFR0_EL1]);
+        let global = vm.get(
+            ANY_VP,
+            &[
+                ID_AA64PFR0_EL1,
+                ID_AA64PFR1_EL1,
+                ID_AA64ISAR0_EL1,
+                ID_AA64MMFR0_EL1,
+            ],
+        );
         match global {
-            Ok(v) => println!("ID_AA64PFR0 {:#x} PFR1 {:#x} ISAR0 {:#x} MMFR0 {:#x}", v[0], v[1], v[2], v[3]),
+            Ok(v) => println!(
+                "ID_AA64PFR0 {:#x} PFR1 {:#x} ISAR0 {:#x} MMFR0 {:#x}",
+                v[0], v[1], v[2], v[3]
+            ),
             Err(e) => println!("ID registers: {e}"),
         }
         vm.put(0, &[PC, PSTATE, SCTLR_EL1], &[RAM, PSTATE_EL1H, SCTLR_RESET])?;
@@ -453,13 +560,17 @@ mod probe {
             });
             let first = run_vcpu(&vm, 0, &said, &stop);
             stop.store(true, Ordering::SeqCst);
-            let second = secondary.join().map_err(|_| "vCPU 1's thread panicked".to_string())?;
+            let second = secondary
+                .join()
+                .map_err(|_| "vCPU 1's thread panicked".to_string())?;
             let _ = watchdog.join();
             first.and(second)
         });
         if let Err(e) = &outcome {
             println!("run: {e}");
         }
+        println!("== limits");
+        limits();
 
         let said = said.into_inner().map_err(|_| "poisoned".to_string())?;
         println!("== found");
@@ -468,6 +579,14 @@ mod probe {
         }
         for (vp, offset, value) in said.writes.iter().filter(|w| w.1 != 0x18) {
             println!("vCPU {vp} wrote {value:#x} at {offset:#x}");
+        }
+        if let Some((_, _, typer)) = said.writes.iter().find(|w| w.1 == 0x70) {
+            // GICD_TYPER.ITLinesNumber (bits 4:0): 32 * (N + 1) INTIDs; IDbits (23:19).
+            println!(
+                "GICD_TYPER {typer:#x}: INTIDs up to {}, ID bits {}",
+                32 * ((typer & 0x1f) + 1) - 1,
+                ((typer >> 19) & 0x1f) + 1
+            );
         }
         for p in &said.psci_by_vmm {
             println!("{p}");
@@ -504,7 +623,12 @@ mod probe {
             let mut exit = ExitContext::default();
             // SAFETY: an exit context of its own size, 16-aligned.
             hr("WHvRunVirtualProcessor", unsafe {
-                WHvRunVirtualProcessor(vm.partition, vp, (&raw mut exit).cast::<c_void>(), size_of::<ExitContext>() as u32)
+                WHvRunVirtualProcessor(
+                    vm.partition,
+                    vp,
+                    (&raw mut exit).cast::<c_void>(),
+                    size_of::<ExitContext>() as u32,
+                )
             })?;
             let at = Instant::now();
             exits += 1;
@@ -565,6 +689,7 @@ mod probe {
                                 ));
                                 drop(said);
                                 counter(vm)?;
+                                time(vm)?;
                             }
                             0x60 | 0x68 | 0x58 => {
                                 said.done = true;
@@ -596,7 +721,11 @@ mod probe {
                     let answer: u64 = match function {
                         0x8400_0000 => 0x1_0001,
                         0xc400_0003 => {
-                            vm.put(1, &[PC, X0, PSTATE, SCTLR_EL1], &[call.x[2], call.x[3], PSTATE_EL1H, SCTLR_RESET])?;
+                            vm.put(
+                                1,
+                                &[PC, X0, PSTATE, SCTLR_EL1],
+                                &[call.x[2], call.x[3], PSTATE_EL1H, SCTLR_RESET],
+                            )?;
                             vm.put(1, &[INTERNAL_ACTIVITY_STATE], &[0])?;
                             0
                         }
@@ -626,11 +755,104 @@ mod probe {
                 }
                 other => {
                     let h = exit.header();
-                    return Err(format!("vCPU {vp}: exit {other:#x} at PC {:#x}, after {exits} exits", h.pc));
+                    return Err(format!(
+                        "vCPU {vp}: exit {other:#x} at PC {:#x}, after {exits} exits",
+                        h.pc
+                    ));
                 }
             }
         }
         Ok(())
+    }
+
+    /// The partition's reference time (100 ns units), its virtual counter as vCPU 0 has it,
+    /// and both after 100 ms with the partition's time suspended and after it resumes: what a
+    /// snapshot's time rests on.
+    fn time(vm: &Vm) -> Result<()> {
+        let reference = || -> Result<u64> {
+            let mut t = 0u64;
+            let mut written = 0u32;
+            // SAFETY: a u64, the property's own type.
+            hr("WHvGetPartitionProperty(ReferenceTime)", unsafe {
+                WHvGetPartitionProperty(
+                    vm.partition,
+                    PROP_REFERENCE_TIME,
+                    (&raw mut t).cast(),
+                    8,
+                    &raw mut written,
+                )
+            })?;
+            Ok(t)
+        };
+        let both = || -> Result<(u64, u64)> { Ok((reference()?, vm.get(0, &[CNTVCT_EL0])?[0])) };
+        let (r0, c0) = both()?;
+        // SAFETY: the partition, its vCPUs out of the guest here (vCPU 1 may run: the call
+        // says whether that is refused).
+        let suspended = unsafe { WHvSuspendPartitionTime(vm.partition) };
+        std::thread::sleep(Duration::from_millis(100));
+        let (r1, c1) = both()?;
+        // SAFETY: as above.
+        let resumed = unsafe { WHvResumePartitionTime(vm.partition) };
+        std::thread::sleep(Duration::from_millis(100));
+        let (r2, c2) = both()?;
+        println!(
+            "reference time {r0} then, its time suspended ({:#010x}), {r1} 100 ms later, resumed ({:#010x}), {r2} 100 ms after",
+            suspended as u32, resumed as u32
+        );
+        println!(
+            "CNTVCT_EL0 {c0:#x}, {c1:#x}, {c2:#x}: {} and {} ticks",
+            c1.wrapping_sub(c0),
+            c2.wrapping_sub(c1)
+        );
+        Ok(())
+    }
+
+    /// The most vCPUs a partition takes: each of 64 to 1,024 set up, under the GIC at
+    /// shards' places, and its last vCPU made.
+    fn limits() {
+        for n in [64u32, 128, 256, 512, 1024] {
+            let mut partition: Partition = std::ptr::null_mut();
+            // SAFETY: a handle the call fills.
+            if hr("WHvCreatePartition", unsafe {
+                WHvCreatePartition(&raw mut partition)
+            })
+            .is_err()
+            {
+                println!("{n} vCPUs: no partition");
+                return;
+            }
+            let vm = Vm { partition };
+            let ic = IcParameters {
+                emulation_mode: IC_EMULATION_GICV3,
+                gic_v3: GicV3Parameters {
+                    gicd_base: GICD,
+                    gits_translater_base: GITS,
+                    ppi_cntv_overflow: PPI_VTIMER,
+                    ppi_performance_monitors: PPI_PMU,
+                    ..GicV3Parameters::default()
+                },
+                ..IcParameters::default()
+            };
+            let set = vm
+                .set(PROP_PROCESSOR_COUNT, &n)
+                .and_then(|()| vm.set(PROP_ARM64_IC_PARAMETERS, &ic));
+            // SAFETY: the partition, its properties set.
+            let setup =
+                set.and_then(|()| hr("WHvSetupPartition", unsafe { WHvSetupPartition(vm.partition) }));
+            // SAFETY: the partition, set up.
+            let last = setup.and_then(|()| {
+                hr("WHvCreateVirtualProcessor", unsafe {
+                    WHvCreateVirtualProcessor(vm.partition, n - 1, 0)
+                })
+            });
+            match last {
+                Ok(()) => println!("{n} vCPUs: set up, its vCPU {} made", n - 1),
+                Err(e) => {
+                    println!("{n} vCPUs: {e}");
+                    return;
+                }
+            }
+        }
     }
 
     /// The virtual counter as vCPU 0 has it, and set a second back: what a restore's time
