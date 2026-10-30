@@ -625,16 +625,14 @@ pub(super) fn fallocate(fd: host::Raw, mode: u32, offset: u64, length: u64) -> R
 }
 
 /// A file in `dir` holding `bytes` that no name reaches (a restored server's ghost, D176):
-/// made under a name of its own, written, and its name removed as it is held.
+/// made under a name of its own, [`GHOST_PREFIX`]'s as Unix's are, which a daemon's start
+/// removes where a crash left one before its name went; written, and its name removed as
+/// it is held.
 pub(super) fn ghost(dir: host::Raw, bytes: &[u8]) -> Result<host::Owned, String> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    let name = format!(
-        ".shards-ghost-{}-{}",
-        std::process::id(),
-        COUNT.fetch_add(1, Ordering::Relaxed)
-    );
-    let name = cstring(&name).map_err(|e| format!("a ghost's name: errno {e}"))?;
+    let mut random = [0u8; 16];
+    crate::platform::fill_random(&mut random).map_err(|e| format!("a ghost's name: {e}"))?;
+    let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let name = cstring(&format!("{GHOST_PREFIX}{name}")).map_err(|e| format!("a ghost's name: errno {e}"))?;
     let made = open_at(dir, &name, host::O_CREAT | host::O_EXCL | host::O_RDWR, 0)
         .map_err(|e| format!("making a ghost: errno {e}"))?;
     let mut at = 0usize;

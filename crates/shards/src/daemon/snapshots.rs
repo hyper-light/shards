@@ -209,9 +209,8 @@ pub(super) fn remove_unsaved(dir: &std::path::Path, note: &mut dyn FnMut(String)
 
 /// Removes from the home's private directory `dir` the files share processes made for
 /// restored guests (D176) that a crash left before removing them, as a daemon starts, no
-/// share process of its own running yet. Unix's alone: Windows runs no share process yet
-/// (D38).
-#[cfg(unix)]
+/// share process of its own running yet: on every host, as Windows' share processes make
+/// them too (D197).
 pub(super) fn remove_ghosts(dir: &std::path::Path, note: &mut dyn FnMut(String)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -802,6 +801,25 @@ impl<D: Disk> Daemon<D> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A daemon's start removes the ghost files a crash left in the home's private
+    /// directory, whichever host's share process made them, and nothing else there.
+    #[test]
+    fn a_crashs_ghosts_are_removed_and_nothing_else() {
+        let dir = shards_testdir::TempDir::new("ghosts").unwrap();
+        let ghost = dir.path().join(format!(
+            "{}0123abcd",
+            shards_vmm::devices::virtio::fs::server::GHOST_PREFIX
+        ));
+        let kept = dir.path().join("kept");
+        std::fs::write(&ghost, b"left").unwrap();
+        std::fs::write(&kept, b"mine").unwrap();
+        let mut notes = Vec::new();
+        remove_ghosts(dir.path(), &mut |n| notes.push(n));
+        assert!(!ghost.exists(), "{notes:?}");
+        assert!(kept.exists());
+        assert!(notes.is_empty(), "{notes:?}");
+    }
 
     /// A snapshot is named as a checkpoint is, and one saved without a name takes the
     /// time's, made unique.

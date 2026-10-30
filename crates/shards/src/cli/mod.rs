@@ -814,8 +814,6 @@ fn confirmed(question: &str) -> bool {
 
 /// Draws a page that changes as it is watched over the last one drawn into `live`: a
 /// search's (D172), its results filled in as their lookups answer.
-// The daemon's, Unix's alone as yet (D195).
-#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn show_live(sheet: &shards_ipc::Sheet, live: &mut shards_tui::frame::Frame) {
     screens::show(sheet, live);
 }

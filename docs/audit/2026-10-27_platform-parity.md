@@ -20,6 +20,17 @@ The guest's crates, `init`, `testguest` and `server` (the in-VM server), are Lin
 nature: each runs inside a microVM's Linux guest, on every host. Their `target_os = "linux"`
 items are not gaps.
 
+Since 2026-10-30 the script checks each host, Linux, macOS and Windows, where it checked
+Unix against Windows; leaves out imports, which do no work of their own, and the guest's
+crates; and stands an item with its twin, the item that does its part on the hosts it
+misses under a name of its own, or with why those hosts need none, from
+`scripts/audit/platform-parity.tsv`, whose every twin it checks is there. It exits 1 while
+any item stands alone. Of the 404 items its first run found, 352 stand with their twins; the
+52 left are rows 10 and 11's. Two more were fixed as found: `shards search`'s page and the
+styled failures of `search` and `login` on a Windows colour terminal, which gates of "the
+daemon, Unix's alone" had kept off, and the ghost files a crash left in a Windows home
+(D176, D197), which no daemon start removed there.
+
 ## The gaps
 
 | # | What | Hosts without it | Evidence |
@@ -34,6 +45,8 @@ items are not gaps.
 | 7 | `--cgroup-parent` (D183) | macOS (refused: "no host resource group a process can be placed in"), Windows (refused until D183's slice 3, a job object) | D183 "Refused before anything starts" |
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | journald on macOS and Windows; etwlogs nowhere yet | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
+| 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | Windows | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
+| 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
 (29), `vm_run.rs` (18), `context.rs` (14) and `cli/*` items are the daemon's and its client's
@@ -60,6 +73,8 @@ Each lone item is confirmed or closed as its row is worked.
    itself, held to their budgets by D188's give-backs.
 9. Row 8, `etwlogs` on Windows, and journald's counterparts on macOS and Windows.
 10. Row 9, a function passed through where a host allows one.
+11. Row 10, a Windows machine serving other machines' clients through a context.
+12. Row 11, working sets on Windows: a restore's pages recorded and mapped ahead.
 
 ## Closed
 

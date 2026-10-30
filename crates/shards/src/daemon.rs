@@ -1607,7 +1607,6 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     for c in containers.all() {
         snapshots::remove_unsaved(&containers.dir(&c.id), &mut |note| log(note));
     }
-    #[cfg(unix)]
     snapshots::remove_ghosts(&home.join(PRIVATE), &mut |note| log(note));
     let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
         .map_err(|e| format!("following runs: {e}"))?;

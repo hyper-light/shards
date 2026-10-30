@@ -56,7 +56,6 @@ pub(crate) fn host(searched: &Searched) -> &str {
 }
 
 /// The registry a search of `term` asks, as people name it: what its page says.
-#[cfg(unix)]
 fn registry_named(term: &str) -> String {
     match search::searched(term).0 {
         Searched::Hub => "Docker Hub".into(),
@@ -203,7 +202,6 @@ fn names_lookups(format: &str) -> bool {
 /// `text` on stderr, and status 1, as the Docker CLI fails a command; in a panel under
 /// search's head on a colour terminal.
 fn failed(text: &str) -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = crate::cli::look::styled_err() {
         let first = text.lines().next().unwrap_or(text);
         crate::cli::look::error(&p, "search", first, &[]);
@@ -246,7 +244,6 @@ pub fn search(args: impl Iterator<Item = OsString>) -> ExitCode {
         Err(refusal) => return failed(&format!("shards: {}", refusal.text)),
     };
     let format = parsed.string("format");
-    #[cfg(unix)]
     if format.is_empty()
         && let Some(_paint) = crate::cli::look::styled()
     {
@@ -293,7 +290,6 @@ pub fn search(args: impl Iterator<Item = OsString>) -> ExitCode {
 
 /// shards' page of `found` on a colour terminal, drawn at once and again as each result's
 /// lookup answers.
-#[cfg(unix)]
 fn live(term: &str, found: &[Found], env: Env<'_>) -> ExitCode {
     let mut answers: Vec<Option<Result<Here, String>>> = vec![None; found.len()];
     let mut frame = shards_tui::frame::Frame::new();
