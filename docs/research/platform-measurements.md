@@ -16391,6 +16391,21 @@ revision before comparing a changed API/implementation.
   to 76 s, no scope ended. The test now says SKIP where its volume's directory is a tmpfs
   (statfs(2), TMPFS_MAGIC), as its budget's give-back is of files a disk keeps, and takes its
   budget from what its microVM holds idle.
+- **The FUSE give-back test too** (`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`,
+  TMPDIR on a disk): systemd-oomd ended it in 1 run of 2 on Fedora, whose every user slice
+  oomd watches (80% for 20 s): "memory pressure for .../shardsbudget2237959.slice being
+  95.75% > 80.00% for > 20s with reclaim activity". Its microVM, booted small, kept a
+  quarter GiB of the half GiB it read (D148: its grower plugs for what its runs touch, not
+  for what they read), so that its budget, a quarter GiB short of what it held, 296 MiB, was
+  short of the 307 MiB a microVM of 32 vCPUs holds with nothing left to give back: it gave
+  back 112 MiB in 3 s and stayed 135 MiB past its budget for 35 s. With the slice's oomd
+  watch off, two runs kept 328 and 870 MiB of the read and met budgets of 379 and 924 MiB in
+  seconds, their guests' free memory whole blocks the guest reported (buddyinfo). Grown
+  first, a GiB touched and freed, its guest kept all of the read: 4 runs of 4 passed with
+  oomd watching, in 61 to 75 s. CI's read of a MiB in 26.6 s, after its runner's own word
+  had it give back 479 MiB and ask to unplug 512 (CI 40961442989), did not come back on
+  Fedora with the same word written to its daemon (`SHARDS_PRESSURE`): 473 to 486 MiB given
+  back, 512 asked to unplug, the files read again in 0.87 to 0.92 s.
 - **Consequence.** A microVM whose budget is short of what nothing may reclaim, its anonymous
   memory, a tmpfs's files it maps, is held throttled for as long as it runs, and where
   systemd-oomd watches the user's manager, as Fedora's does, it is ended 20 s on. The daemon
