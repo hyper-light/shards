@@ -939,6 +939,27 @@ mod probe {
         });
         println!("its vCPU made after: {made:?}");
         if mapped.is_ok() && made.is_ok() {
+            // A cancel while the vCPU is out of the guest: whether its next run returns at
+            // once, as a kick that comes between two runs must (hv::whp Kicker).
+            // SAFETY: the partition's vCPU, not running.
+            let cancelled = unsafe { WHvCancelRunVirtualProcessor(vm.partition, 0, 0) };
+            let mut exit = ExitContext::default();
+            let began = Instant::now();
+            // SAFETY: an exit context of its own size, 16-aligned.
+            let ran = hr("WHvRunVirtualProcessor", unsafe {
+                WHvRunVirtualProcessor(
+                    vm.partition,
+                    0,
+                    (&raw mut exit).cast::<c_void>(),
+                    size_of::<ExitContext>() as u32,
+                )
+            });
+            println!(
+                "a cancel before a run ({:#010x}): the run {ran:?} in {:?}, exit {:#x} (Canceled is {EXIT_CANCELED:#x})",
+                cancelled as u32,
+                began.elapsed(),
+                exit.exit_reason
+            );
             let mut exit = ExitContext::default();
             // SAFETY: an exit context of its own size, 16-aligned.
             let ran = hr("WHvRunVirtualProcessor", unsafe {
