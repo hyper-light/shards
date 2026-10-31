@@ -1090,19 +1090,66 @@ pub unsafe fn all_untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::R
     Ok(None)
 }
 
-/// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): asked
-/// only for a working set's written pages, which a restore on Windows does not record yet
-/// (vm::WORKING_SETS, D196).
-pub fn populate_writable(_ptr: *mut u8, _len: usize) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "pages are not faulted in ahead on Windows: its restores record no working set yet",
-    ))
+/// Faults in the `len` bytes at `ptr` writable, copying each page a copy-on-write view
+/// still shares with its file, as the guest's first write of it would (unix.rs
+/// `populate_writable`): each page written once, by an atomic add of nothing to its first
+/// word, which leaves every byte as it was whoever else reads or writes it meanwhile.
+/// Windows has no call that faults a range in writable (PrefetchVirtualMemory reads it
+/// in). Every page must be committed and writable (VirtualQuery): a range that is not is
+/// refused, untouched.
+pub fn populate_writable(ptr: *mut u8, len: usize) -> io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_GUARD,
+        PAGE_READWRITE, PAGE_WRITECOPY, VirtualQuery,
+    };
+    let page = page_size()?;
+    let start = ptr as usize;
+    let end = start.checked_add(len).ok_or(io::ErrorKind::InvalidInput)?;
+    if !start.is_multiple_of(page) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let mut at = start;
+    while at < end {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: a query of this process's own address space, into a structure of its size.
+        let got = unsafe {
+            VirtualQuery(
+                at as *const std::ffi::c_void,
+                &raw mut info,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        if got == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let writable = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+        if info.State != MEM_COMMIT || info.Protect & writable == 0 || info.Protect & PAGE_GUARD != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{at:#x} is not committed writable memory"),
+            ));
+        }
+        let region_end = (info.BaseAddress as usize)
+            .saturating_add(info.RegionSize)
+            .min(end);
+        while at < region_end {
+            // SAFETY: the first word of a page of this process's that VirtualQuery says is
+            // committed and writable, aligned as a page is; an atomic add of zero writes it
+            // with the value it holds.
+            unsafe { AtomicU64::from_ptr(at as *mut u64) }.fetch_add(0, Ordering::Relaxed);
+            at = at.saturating_add(page);
+        }
+    }
+    Ok(())
 }
 
 /// The host's fault-around held off over ranges (unix.rs `FaultAroundOff`), so that a
-/// working set recorded or mapped ahead holds what the guest touched alone: none on
-/// Windows, whose restores record no working set yet (vm::WORKING_SETS, D196).
+/// working set recorded or mapped ahead holds what the guest touched alone: none to hold on
+/// Windows, where a fault maps the page it touches alone, whether its file's pages are in
+/// the cache or read from disk with those around it, which go to the cache alone
+/// (windows_process.rs `mapped_pages_are_the_working_sets`,
+/// `a_fault_from_disk_maps_the_page_it_touches_alone`).
 #[derive(Debug)]
 pub struct FaultAroundOff;
 

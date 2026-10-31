@@ -1072,13 +1072,12 @@ fn vm(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// `args` with `--working-set FD` given, its writer started on the pipe's other end, where
-/// they restore a snapshot whose generation has no working set and this backend records a
-/// restore's (`vm::RESTORES_RECORD`); none otherwise, or where the writer cannot start: a
-/// restore without one only takes the faults it would have.
-#[cfg(target_os = "linux")]
-fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
-    use std::os::fd::{AsFd as _, IntoRawFd as _};
+/// The snapshot directory, made absolute, whose working set a restore of `args` records:
+/// one whose generation has none, where this backend records a restore's
+/// (`vm::RESTORES_RECORD`); none for a warm VM's or a run's the daemon starts (`--warm`,
+/// `--resume`), which hand theirs to it, or one given a writer already (`--working-set`).
+#[cfg(any(target_os = "linux", windows))]
+fn recording_restore(args: &[OsString]) -> Result<Option<std::path::PathBuf>, String> {
     let spawned_by_daemon = args
         .iter()
         .take_while(|a| *a != "--")
@@ -1094,7 +1093,21 @@ fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String
     {
         return Ok(None);
     }
-    let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::path::absolute(dir)
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+/// `args` with `--working-set FD` given, its writer started on the pipe's other end, where
+/// they restore a snapshot whose working set the restore records ([`recording_restore`]);
+/// none otherwise, or where the writer cannot start: a restore without one only takes the
+/// faults it would have.
+#[cfg(target_os = "linux")]
+fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
+    use std::os::fd::{AsFd as _, IntoRawFd as _};
+    let Some(dir) = recording_restore(args)? else {
+        return Ok(None);
+    };
     let (from_vm, to_writer) = std::io::pipe().map_err(|e| format!("the working set's pipe: {e}"))?;
     let writer = shardsd()?;
     // SAFETY: signal(2) setting SIGCHLD's disposition, before any thread starts.
@@ -1131,6 +1144,28 @@ fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String
     Ok(Some(with))
 }
 
+/// The pipe a restore on Windows hands its working set to, where `args` restore a snapshot
+/// whose working set the restore records ([`recording_restore`]): the snapshot's
+/// directory, the end this process keeps the working set from as the VM ends
+/// ([`crate::working_set::keep`]), and the VM's end, given it as [`WORKING_SET`]. Linux's
+/// writer is a process of its own, as the CLI there becomes the VM; this one, which waits
+/// for its VM as a child, keeps it itself: no VM writes its snapshot (D30).
+#[cfg(windows)]
+fn working_set_writer(
+    args: &[OsString],
+) -> Result<Option<(std::path::PathBuf, std::io::PipeReader, std::io::PipeWriter)>, String> {
+    let Some(dir) = recording_restore(args)? else {
+        return Ok(None);
+    };
+    let (from_vm, to_keeper) = std::io::pipe().map_err(|e| format!("the working set's pipe: {e}"))?;
+    Ok(Some((dir, from_vm, to_keeper)))
+}
+
+/// The name a restore's working-set pipe is given to the VM by (`--working-set`), on
+/// Windows.
+#[cfg(windows)]
+const WORKING_SET: &str = "working-set";
+
 /// No other Unix but macOS records a restore's working set, so none starts a writer.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
@@ -1159,6 +1194,12 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
+    // A restore that records its generation's working set hands it to this process.
+    let (keeping, to_keeper) = match working_set_writer(args) {
+        Ok(Some((dir, from_vm, to_keeper))) => (Some((dir, from_vm)), Some(OwnedHandle::from(to_keeper))),
+        Ok(None) => (None, None),
+        Err(e) => return failed(&e),
+    };
     let container = match crate::helpers::containers().and_then(|records| {
         shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("the VM's AppContainer: {e}"))
     }) {
@@ -1177,10 +1218,14 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(cwd) => cwd,
         Err(e) => return failed(&format!("the working directory: {e}")),
     };
-    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 2);
+    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 4);
     with.extend(args.first().map(OsString::as_os_str));
     with.push("--cwd".as_ref());
     with.push(cwd.as_os_str());
+    if to_keeper.is_some() {
+        with.push("--working-set".as_ref());
+        with.push(WORKING_SET.as_ref());
+    }
     with.extend(args.iter().skip(1).map(OsString::as_os_str));
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
     let env = crate::netproc::child_env();
@@ -1197,6 +1242,10 @@ fn vm(args: &[OsString]) -> ExitCode {
     given.extend(served.iter().map(|(name, handle)| shards_ipc::Given {
         name,
         handle: *handle,
+    }));
+    given.extend(to_keeper.as_ref().map(|to_keeper| shards_ipc::Given {
+        name: WORKING_SET,
+        handle: to_keeper.as_handle(),
     }));
     // A warm VM holds its spawner's NUL for the clients it lets go of, as the daemon's
     // do: its AppContainer opens no file by name (PM M351).
@@ -1223,8 +1272,9 @@ fn vm(args: &[OsString]) -> ExitCode {
         holds: shards_ipc::Holds::Hypervisor,
         group: None,
     });
-    // The VM's ends are its own now: its exit ends the requests.
-    drop((asks_to, answers_from));
+    // The VM's ends are its own now: its exit ends the requests, and what it hands over of
+    // its working set.
+    drop((asks_to, answers_from, to_keeper));
     let child = match spawned {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
@@ -1248,10 +1298,31 @@ fn vm(args: &[OsString]) -> ExitCode {
         let serving = std::thread::Builder::new()
             .name("grants".into())
             .spawn_scoped(scope, || crate::grant_answer::serve(&link, &child));
+        // Not kept, the next restore takes the faults this one did.
+        let keeper = keeping.and_then(|(dir, from_vm)| {
+            let kept = std::thread::Builder::new()
+                .name("working-set".into())
+                .spawn_scoped(scope, move || {
+                    if let Err(e) = crate::working_set::keep(from_vm, &dir) {
+                        let _ = writeln!(std::io::stderr(), "shards: the working set: {e}");
+                    }
+                });
+            match kept {
+                Ok(keeper) => Some(keeper),
+                Err(e) => {
+                    shards_vmm::debug!("not keeping this restore's working set: {e}");
+                    None
+                }
+            }
+        });
         let ended = child.wait();
         // What it could not grant, the VM was told and said.
         if let Ok(serving) = serving {
             let _ = serving.join();
+        }
+        // What it handed over is kept before this process says how it ended.
+        if let Some(keeper) = keeper {
+            let _ = keeper.join();
         }
         ended
     });

@@ -53,7 +53,7 @@ mod spec;
 mod spiffe;
 mod synced;
 mod volumes;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod working_set;
 
 const USAGE: &str = "usage: shards ACTION THING [ARG...]

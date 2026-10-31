@@ -6908,14 +6908,28 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   µs of that, and from there to the guest's next store after its snapshot point took 79 to 95
   ms, and 3.4 ms with the whole of RAM populated at stage 2 beforehand (a populate that itself
   took 74 to 79 ms). The same at 1 GiB: what a guest touches, not what it has.
-- **Not yet on WHP**: working sets (`vm::WORKING_SETS`), so a restore takes each page into
-  stage 2 as its guest first touches it (M345: 6.4 µs a page read and 8.3 µs a page written
-  at p50 on jupiter, where a populate maps a 2 MiB range at 0.4 to 0.7 µs a page, M341):
-  what a working set recorded and populated ahead takes off a restore's path, with the
-  daemon's templates and warm pools (D25, D26), which wait for the daemon on Windows (D195,
-  the parity plan's step 4). Its recording is WHP's to find: no access bit is read back at
-  stage 2, and a confined VM process may not ask its memory file's allocated ranges (an
-  FSCTL, D141).
+- **Working sets** (`vm::WORKING_SETS`, the platform parity audit's row 11). Without one a
+  restore takes each page into stage 2 as its guest first touches it (M345: 6.4 µs a page
+  read and 8.3 µs a page written at p50 on jupiter, where a populate maps a 2 MiB range at
+  0.4 to 0.7 µs a page, M341). WHP reads back no access bit at stage 2, and a confined VM
+  process may not ask its memory file's allocated ranges (an FSCTL, D141); what the VM
+  process's host maps of its guest's memory is what it touched, as on KVM (`vm::mapped`):
+  its own working set, which QueryWorkingSetEx reads it (`platform::mapped_pages`), a page
+  there valid and shareable its file's, read, and one valid and private a copy its guest
+  wrote. A fault maps the page it touches alone, whether its file's pages are in the cache
+  or read in around it from disk, which go to the cache alone, so no fault-around is held
+  off (`platform::FaultAroundOff` holds nothing; windows_process.rs
+  `mapped_pages_are_the_working_sets`, `a_fault_from_disk_maps_the_page_it_touches_alone`).
+  As KVM's, the first warm restore of a template records it (`vm::RESTORES_RECORD`), for the
+  daemon (D25, D26), and `shards restore` of a generation without one hands what it records
+  to the CLI that started it, which keeps it beside the generation as the VM ends, on a
+  thread of its own (`working_set::keep`): the confined VM writes none of its snapshot's
+  files (D30), and the CLI, which waits for its VM as a child, needs no writer process, as
+  Linux's, which becomes its VM, does. A restore of a generation that has one maps it ahead
+  before its guest runs: its written pages copied in the host first, each page's first word
+  written as it holds it (`platform::populate_writable`: Windows has no call that faults a
+  range in writable, PrefetchVirtualMemory reading one in), then each run of its pages
+  populated at stage 2 (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate).
 
 **Tested.** Unit: the states' round trips and damage, and a state naming any other register
 refused (`hv::whp::state`); a restored IOAPIC going on as the saved one; a generation staged by
@@ -10808,8 +10822,8 @@ network process (D142) and its builder (D143) follow.
   loses the peer all it had not read, as a reset (M358).
 - **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
   every other host.
-- **Snapshots** came after (D196); templates and warm pools wait for the daemon on Windows
-  (D195).
+- **Snapshots** came after (D196), with templates and warm pools once the daemon ran on
+  Windows (D195), and working sets after them (D196).
 - **Recorded differences** from a KVM guest's machine: its clock is Hyper-V's reference TSC
   page where KVM's is kvm-clock; its APICs are xAPIC alone, offering neither x2APIC nor
   TSC-deadline (M198).

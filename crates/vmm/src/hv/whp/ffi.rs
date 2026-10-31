@@ -93,6 +93,7 @@ winhv! {
     fn WHvResumePartitionTime(partition: WHV_PARTITION_HANDLE);
     fn WHvMapGpaRange(partition: WHV_PARTITION_HANDLE, source: *const c_void, gpa: u64, size: u64, flags: WHV_MAP_GPA_RANGE_FLAGS);
     fn WHvUnmapGpaRange(partition: WHV_PARTITION_HANDLE, gpa: u64, size: u64);
+    fn WHvAdviseGpaRange(partition: WHV_PARTITION_HANDLE, ranges: *const WHV_MEMORY_RANGE_ENTRY, count: u32, advice: WHV_ADVISE_GPA_RANGE_CODE, buffer: *const c_void, size: u32);
     fn WHvCreateVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32, flags: u32);
     fn WHvDeleteVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32);
     fn WHvRunVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32, exit: *mut c_void, size: u32);

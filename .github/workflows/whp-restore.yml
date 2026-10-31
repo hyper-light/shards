@@ -1,0 +1,63 @@
+name: whp restore
+
+# What a Windows restore's working set buys it (D196, the platform parity audit's row 11):
+# the restore benchmark (crates/shards/benches/restore.rs) on windows-2025, each restore
+# with the working set the first restore recorded mapped ahead and without it, interleaved.
+# windows-2022's WHP restores no snapshot (PM M345). Runs when the workflow changes, or
+# when asked.
+on:
+  push:
+    paths:
+      - .github/workflows/whp-restore.yml
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: restores in each arm
+        default: "100"
+      memory:
+        description: the guest's memory, MiB
+        default: "256"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  restore:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Host
+        shell: pwsh
+        run: |
+          [Environment]::ProcessorCount
+          (Get-CimInstance Win32_Processor).Name
+          [System.Environment]::OSVersion.VersionString
+      - name: Restores with and without the working set
+        shell: bash
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+          RUNS: ${{ github.event.inputs.runs || '100' }}
+          MEMORY: ${{ github.event.inputs.memory || '256' }}
+        run: |
+          cargo bench --locked --target x86_64-pc-windows-msvc -p shards --bench restore -- \
+            --runs "$RUNS" --memory "$MEMORY" --working-set both

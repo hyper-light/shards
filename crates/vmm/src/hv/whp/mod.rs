@@ -1146,9 +1146,33 @@ mod emulate {
 }
 
 impl Vcpu {
-    /// Memory is not mapped ahead on WHP.
-    pub fn pre_fault(&self, _: u64, _: u64) -> Result<bool> {
-        Ok(false)
+    /// Maps the `len` bytes of guest memory at `gpa` into stage 2 ahead of the guest's first
+    /// touch of them (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate, read): each page the
+    /// guest would take into stage 2 one exit at a time, 6 to 23 µs a page, populated at
+    /// 0.4 to 0.7 µs a page (PM M341). Pages a working set says the guest wrote are copied
+    /// in the host first (`platform::populate_writable`), so a read populate maps them as
+    /// they will be written.
+    pub fn pre_fault(&self, gpa: u64, len: u64) -> Result<bool> {
+        let range = WHV_MEMORY_RANGE_ENTRY {
+            GuestAddress: gpa,
+            SizeInBytes: len,
+        };
+        let populate = WHV_ADVISE_GPA_RANGE_POPULATE {
+            Flags: WHV_ADVISE_GPA_RANGE_POPULATE_FLAGS { AsUINT32: 0 },
+            AccessType: WHvMemoryAccessRead,
+        };
+        // SAFETY: one range of the partition's, and an advice of its own type and size.
+        check("WHvAdviseGpaRange(Populate)", unsafe {
+            WHvAdviseGpaRange(
+                self.partition.0,
+                &raw const range,
+                1,
+                WHvAdviseGpaRangeCodePopulate,
+                (&raw const populate).cast(),
+                size_of::<WHV_ADVISE_GPA_RANGE_POPULATE>() as u32,
+            )
+        })?;
+        Ok(true)
     }
 
     pub fn kicker(&self) -> Kicker {
