@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::devices::virtio::pmem;
 use crate::hv;
 use crate::memory::GuestMemory;
-use crate::{debug, platform};
+use crate::{debug, info, platform};
 
 /// The host's page, which a working set recorded from its mappings is made of: a host of
 /// pages of another size records none.
@@ -20,13 +20,24 @@ const PAGE: u64 = 4 << 10;
 /// where a write to a page mapped read-only would fault, copy, and fault again. Every run
 /// it can ([`every_run`]).
 pub fn copy_written(memory: &GuestMemory, working_set: &[hv::Touch]) -> Result<(), String> {
-    let written = working_set.iter().filter(|t| t.written).map(|t| t.gpa);
-    every_run(runs(written), |gpa, len| {
+    let t0 = crate::log::uptime_us();
+    let written = runs(working_set.iter().filter(|t| t.written).map(|t| t.gpa));
+    let (pages, count) = (
+        written.iter().map(|(_, len)| len / PAGE).sum::<u64>(),
+        written.len(),
+    );
+    let copied = every_run(written, |gpa, len| {
         let len = usize::try_from(len).map_err(|e| e.to_string())?;
         let host = memory.host_ptr(gpa, len).map_err(|e| e.to_string())?;
         platform::populate_writable(host, len).map_err(|e| e.to_string())
-    })
-    .map_err(|e| format!("copying written pages {e}"))
+    });
+    if pages > 0 {
+        info!(
+            "copied {pages} written working-set pages ahead, in {count} runs, in {} us",
+            crate::log::uptime_us().saturating_sub(t0)
+        );
+    }
+    copied.map_err(|e| format!("copying written pages {e}"))
 }
 
 /// Does `f` to each run of pages of `runs`, past any it fails on: what it does only

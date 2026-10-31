@@ -161,10 +161,16 @@ pub mod terminal;
 #[path = "terminal_windows.rs"]
 pub mod terminal;
 
-/// The file `name` of the snapshot generation `dir` points at, as the store reads its
-/// pointer (vmm snapshot/mod.rs: its newest version on Windows, platform `write_in`).
+/// The file `name` of the snapshot generation `dir` points at, as the store reads both:
+/// its pointer, and the file's newest version, which on Windows a file written after its
+/// generation was committed (its working set) lands as (platform `write_in`); the name
+/// itself where none has.
 pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
-    shards_vmm::snapshot::generation(dir).unwrap().join(name)
+    let generation = shards_vmm::snapshot::generation(dir).unwrap();
+    let newest = shards_vmm::platform::open_dir(&generation)
+        .and_then(|d| shards_vmm::platform::newest_in(&d, name))
+        .unwrap_or_else(|_| name.to_string());
+    generation.join(newest)
 }
 
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's

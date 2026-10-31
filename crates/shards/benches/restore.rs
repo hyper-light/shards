@@ -4,6 +4,8 @@
 //!
 //! - cold: a fresh `shards vm restore` process per sample
 //!   - `restore`: VMM `main` → guest running again (the RESUMED marker)
+//!   - `entry`: VMM `main` → its first vCPU's entry into the guest: the restore's setup,
+//!     its working set mapped ahead among it
 //!   - `spawn_to_exit`: host wall clock around the whole process
 //! - warm: a `--hold` process prepares everything, then gets its start request
 //!   - `request`: release → guest running again: the cost of a start request to a warm VM
@@ -127,6 +129,7 @@ fn main() {
     let rows = |cold: &[support::Sample], warm: &[support::Sample], suffix: &str| {
         [
             stats(&format!("cold_restore{suffix}"), "us", us(cold, resumed)),
+            stats(&format!("cold_entry{suffix}"), "us", us(cold, |r| r.entry_us())),
             stats(&format!("cold_spawn_exit{suffix}"), "us", wall_us(cold)),
             stats(
                 &format!("warm_request{suffix}"),
@@ -139,6 +142,18 @@ fn main() {
     let mut table = Vec::new();
     if with {
         table.extend(rows(&cold, &warm, ""));
+        // Where the VM logs at info (SHARDS_LOG=info): what of its setup mapping the
+        // working set ahead was, its written pages' copies and the rest, each over its runs.
+        for (name, what, part) in [
+            ("cold_copy_ahead", "copied", 0),
+            ("cold_copy_runs", "copied", 1),
+            ("cold_map_ahead", "mapped", 0),
+            ("cold_map_runs", "mapped", 1),
+        ] {
+            let unit = if part == 0 { "us" } else { "runs" };
+            let seen = cold.iter().map(|s| ahead(&s.run, what)[part]).collect();
+            table.push(support::diagnostic(name, unit, seen));
+        }
     }
     if without {
         table.extend(rows(&cold_bare, &warm_bare, "_no_ws"));
@@ -156,6 +171,23 @@ fn main() {
         ],
         &table,
     );
+}
+
+/// What a restore's log says it took to put its working set ahead, `what` it did of it
+/// (`copied` its written pages, `mapped` them all): the microseconds, then the runs of
+/// consecutive pages; NaN where it says none.
+fn ahead(r: &common::Run, what: &str) -> [f64; 2] {
+    let said = r
+        .stderr
+        .lines()
+        .find(|l| l.contains(&format!("] {what} ")) && l.contains("working-set pages ahead, in "))
+        .and_then(|l| {
+            let mut parts = l.trim_end().split(", in ");
+            let runs = parts.nth(1)?.strip_suffix(" runs")?.parse::<f64>().ok()?;
+            let us = parts.next()?.strip_suffix(" us")?.parse::<f64>().ok()?;
+            Some([us, runs])
+        });
+    said.unwrap_or([f64::NAN, f64::NAN])
 }
 
 /// The pages of the working set the snapshot in `dir` keeps for the generation it restores,

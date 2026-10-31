@@ -776,12 +776,14 @@ pub fn restore(
     })
 }
 
-/// Maps every page of `working_set` into the stage-2 tables; how many it mapped. A page
-/// that cannot be mapped ahead is only a fault later: every run it can
-/// ([`mapped::every_run`]).
-fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
+/// Maps every page of `working_set` into the stage-2 tables; how many it mapped, and in how
+/// many runs of consecutive pages. A page that cannot be mapped ahead is only a fault later:
+/// every run it can ([`mapped::every_run`]).
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
     let (mut ahead, mut unable) = (0, false);
-    let done = mapped::every_run(mapped::runs(working_set.iter().map(|t| t.gpa)), |gpa, len| {
+    let runs = mapped::runs(working_set.iter().map(|t| t.gpa));
+    let count = runs.len();
+    let done = mapped::every_run(runs, |gpa, len| {
         if unable {
             return Ok(());
         }
@@ -798,7 +800,7 @@ fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
     if let Err(e) = done {
         warn!("mapping the working set ahead {e}: the guest faults those pages in");
     }
-    ahead
+    (ahead, count)
 }
 
 /// Stage-2 pages, as working sets record them: the host's pages.
@@ -884,9 +886,10 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                 // After the state, which sets the paging mode KVM maps for.
                 if !working_set.is_empty() {
                     let t0 = crate::log::uptime_us();
-                    set_up.prefetched = pre_fault(&vcpu, &working_set);
+                    let (prefetched, runs) = pre_fault(&vcpu, &working_set);
+                    set_up.prefetched = prefetched;
                     info!(
-                        "mapped {} of {} working-set pages ahead in {} us",
+                        "mapped {} of {} working-set pages ahead, in {runs} runs, in {} us",
                         set_up.prefetched,
                         working_set.len(),
                         crate::log::uptime_us().saturating_sub(t0)

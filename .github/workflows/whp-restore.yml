@@ -56,6 +56,8 @@ jobs:
         shell: bash
         env:
           SHARDS_REQUIRE_VMS: "1"
+          # Each restore says what mapping its working set ahead took, in each arm alike.
+          SHARDS_LOG: info
           RUNS: ${{ github.event.inputs.runs || '100' }}
           MEMORY: ${{ github.event.inputs.memory || '256' }}
         run: |
