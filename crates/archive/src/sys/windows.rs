@@ -297,8 +297,33 @@ impl Root {
         })
     }
 
-    pub(crate) fn lchtimes(&self, _: &[u8], _: &[u8], _: Time, _: Time) -> Result<io::Result<()>, WalkError> {
-        Ok(Ok(()))
+    /// Lutimes: a symlink's own access and modification times, and its creation time set to
+    /// its modification time, as [`chtimes`](Self::chtimes) sets a file's: the link itself
+    /// opened (FILE_FLAG_OPEN_REPARSE_POINT), its directory walked inside the root as any
+    /// name's is. What go-archive's unpack leaves undone on Windows (`UnpackOptions`'s
+    /// `link_times`).
+    pub(crate) fn lchtimes(
+        &self,
+        dir: &[u8],
+        base: &[u8],
+        atime: Time,
+        mtime: Time,
+    ) -> Result<io::Result<()>, WalkError> {
+        self.walk(&join(dir, base), |parent, last| {
+            let set = OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(os_path(&join(parent, last)))
+                .and_then(|f| {
+                    f.set_times(
+                        FileTimes::new()
+                            .set_accessed(system_time(atime))
+                            .set_modified(system_time(mtime))
+                            .set_created(system_time(mtime)),
+                    )
+                });
+            Ok(Step::Done(set))
+        })
     }
 
     /// rootSymlink (root_windows.go): a directory link when a relative target names a

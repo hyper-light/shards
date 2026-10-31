@@ -867,13 +867,15 @@ pub fn write_at(file: &std::fs::File, bytes: &[u8], at: u64) {
 /// `path`'s DACL on Windows, as SDDL writes it, and what it is where the file is its user's
 /// alone, as `shards_ipc::create_private` makes one: protected from its directory's, one
 /// ACE, allowing this process's user all of a file (`FA`), and no one else anything, which
-/// NTFS keeps of a file made with `D:P(A;;GA;;;USER)` (jupiter, Windows 11 26200).
+/// NTFS keeps of a file made with `D:P(A;;GA;;;USER)` (jupiter, Windows 11 26200). Each as
+/// SDDL writes a descriptor back, its user's SID an alias where it has one: `LA`, a
+/// machine's administrator (RID 500), as CI's runners run as.
 #[cfg(windows)]
 pub fn dacl_and_private(path: &Path) -> (String, String) {
     use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, GetNamedSecurityInfoW,
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
         SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
@@ -897,26 +899,9 @@ pub fn dacl_and_private(path: &Path) -> (String, String) {
         )
     };
     assert_eq!(got, 0, "{}", path.display());
-    let mut text: *mut u16 = std::ptr::null_mut();
-    let mut len = 0u32;
-    // SAFETY: the descriptor read above, and a string for the call to fill, freed below.
-    let converted = unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            sd,
-            SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
-            &raw mut text,
-            &raw mut len,
-        )
-    };
-    assert_ne!(converted, 0, "{}", std::io::Error::last_os_error());
-    // SAFETY: the `len` characters the call wrote.
-    let dacl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) });
-    // SAFETY: what the calls above allocated, each freed once.
-    unsafe {
-        LocalFree(text.cast());
-        LocalFree(sd);
-    }
+    let dacl = dacl_text(sd);
+    // SAFETY: what the call above allocated, freed once.
+    unsafe { LocalFree(sd) };
     // This process's user, as SDDL names it.
     let mut token: HANDLE = std::ptr::null_mut();
     // SAFETY: this process's own token, for querying, never closed: the test's life.
@@ -948,10 +933,51 @@ pub fn dacl_and_private(path: &Path) -> (String, String) {
         LocalFree(named.cast());
         user
     };
-    (
-        dacl.trim_end_matches('\0').to_string(),
-        format!("D:P(A;;FA;;;{user})"),
-    )
+    let private: Vec<u16> = format!("D:P(A;;FA;;;{user})").encode_utf16().chain([0]).collect();
+    let mut made: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated SDDL string, and a descriptor for the call to fill, freed
+    // below.
+    let parsed = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            private.as_ptr(),
+            SDDL_REVISION_1,
+            &raw mut made,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(parsed, 0, "{}", std::io::Error::last_os_error());
+    let private = dacl_text(made);
+    // SAFETY: what the call above allocated, freed once.
+    unsafe { LocalFree(made) };
+    (dacl, private)
+}
+
+/// The DACL of the descriptor `sd` as SDDL writes it.
+#[cfg(windows)]
+fn dacl_text(sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR) -> String {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    let mut text: *mut u16 = std::ptr::null_mut();
+    let mut len = 0u32;
+    // SAFETY: a descriptor its caller holds, and a string for the call to fill, freed below.
+    let converted = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &raw mut text,
+            &raw mut len,
+        )
+    };
+    assert_ne!(converted, 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: the `len` characters the call wrote.
+    let dacl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) });
+    // SAFETY: what the call allocated, freed once.
+    unsafe { LocalFree(text.cast()) };
+    dacl.trim_end_matches('\0').to_string()
 }
 
 /// `cmd` started so that [`interrupt`] reaches it: on Windows in a process group of its own,

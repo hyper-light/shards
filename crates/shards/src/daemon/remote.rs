@@ -414,15 +414,14 @@ fn command(
             .into_iter()
             .filter_map(|(handle, n)| handle.as_ref().map(|h| (h.as_fd(), n)))
             .collect();
-    let (cidfile, signals) = (
-        crate::context::CIDFILE_DESCRIPTOR.to_string(),
-        crate::context::SIGNAL_DESCRIPTOR.to_string(),
-    );
+    let cidfile = crate::context::CIDFILE_DESCRIPTOR.to_string();
     if let Some(w) = &made_w {
         fds.push((w.as_fd(), crate::context::CIDFILE_DESCRIPTOR));
         set.push((crate::context::CIDFILE_FD, OsStr::new(&cidfile)));
     }
-    fds.push((signals_r.as_fd(), crate::context::SIGNAL_DESCRIPTOR));
+    let at = crate::context::signal_descriptor(fds.iter().map(|&(_, n)| n));
+    let signals = at.to_string();
+    fds.push((signals_r.as_fd(), at));
     set.push((crate::context::SIGNAL_FD, OsStr::new(&signals)));
     let console = console.map(|console| Console::new(console, typed));
     let started = match &console {
@@ -1028,14 +1027,16 @@ impl Building {
         }
         fds.extend_from_slice(more);
         #[cfg(windows)]
-        let (signals_r, number) = {
+        let (signals_r, at) = {
             let (r, w) = std::io::pipe().map_err(|e| format!("a pipe for the build's signals: {e}"))?;
             *super::lock(&self.signals) = Some(w);
-            (r, crate::context::SIGNAL_DESCRIPTOR.to_string())
+            (r, crate::context::signal_descriptor(fds.iter().map(|&(_, n)| n)))
         };
         #[cfg(windows)]
+        let number = at.to_string();
+        #[cfg(windows)]
         {
-            fds.push((signals_r.as_fd(), crate::context::SIGNAL_DESCRIPTOR));
+            fds.push((signals_r.as_fd(), at));
             set.push((crate::context::SIGNAL_FD, OsStr::new(&number)));
             if matches!(err, BuildErr::Console(_)) {
                 set.push((crate::context::TAKE_TERMINAL, OsStr::new("2")));

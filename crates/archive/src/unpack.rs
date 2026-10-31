@@ -48,6 +48,13 @@ pub struct UnpackOptions {
     /// WhiteoutFormat: with Overlay, `.wh.` entries become overlayfs' whiteouts and
     /// opaque directories, for an upper directory.
     pub whiteout: WhiteoutFormat,
+    /// A symlink's own times as its header says them, on Windows too, where go-archive sets
+    /// none (`system.LUtimesNano` does nothing there): a copy kept in step with its source,
+    /// a context's (synced.rs), took a link's making for its time, so that it went again at
+    /// each step, and an artifact built of the copy differed from one built of the source
+    /// wherever the two were made in different seconds (tests/context.rs, CI's
+    /// windows-2022 and windows-2025).
+    pub link_times: bool,
 }
 
 /// Untar: `dest` cleaned, then [`unpack`]. Archives must be uncompressed.
@@ -452,7 +459,7 @@ pub(crate) fn create(
     let mtime = bound(hdr.mtime);
     match hdr.typeflag {
         TYPE_SYMLINK => {
-            if NATIVE != Os::Windows {
+            if NATIVE != Os::Windows || opts.link_times {
                 root.lchtimes(&dir, &base, atime, mtime)
                     .map_err(|e| e.error("openat", &dir))?
                     .map_err(|e| Error::path("lchtimes", dst, &e))?;

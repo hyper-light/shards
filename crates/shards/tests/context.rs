@@ -2221,8 +2221,13 @@ fn a_cidfile_through_a_context_is_the_clients() {
     assert_eq!(id.len(), 64, "{id:?}");
     assert_eq!(made.stdout.trim(), id, "{made}");
     // Named as a run here names it: its path from the working directory, as getcwd(3) says
-    // it.
-    let named = laptop.canonicalize().unwrap().join("held.id");
+    // it, and on Windows as its process was given it (GetCurrentDirectoryW), short names and
+    // all.
+    let named = if cfg!(windows) {
+        laptop.join("held.id")
+    } else {
+        laptop.canonicalize().unwrap().join("held.id")
+    };
     let recorded = there(&["inspect", "-f", "{{.HostConfig.ContainerIDFile}}", "held"]);
     assert_eq!(recorded.stdout.trim(), named.to_str().unwrap(), "{recorded}");
     // The file there already: refused as a run here refuses it, nothing run there.

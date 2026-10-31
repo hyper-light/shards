@@ -810,6 +810,7 @@ pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, 
     let opts = shards_archive::UnpackOptions {
         no_lchown: true,
         best_effort_xattrs: true,
+        link_times: true,
         ..shards_archive::UnpackOptions::default()
     };
     shards_archive::apply_layer(input, context, &opts).map_err(|e| format!("applying a tree: {e}"))

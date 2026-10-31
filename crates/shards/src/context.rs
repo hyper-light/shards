@@ -82,9 +82,16 @@ pub(crate) const CIDFILE_DESCRIPTOR: i32 = 3;
 #[cfg(windows)]
 pub(crate) const SIGNAL_FD: &str = "SHARDS_SIGNAL_FD";
 
-/// The number [`SIGNAL_FD`] names, past the cidfile's.
+/// The number a Windows daemon gives a client's command its signals' pipe at, which
+/// [`SIGNAL_FD`] names: past every other it gives the command, its cidfile's and a build's
+/// secrets' and agents' among them, which number from 3 as a Unix command's descriptors
+/// do. A constant 4 was a build's second secret's too: its CLI took that secret's pipe for
+/// its signals and the pipe's end for its hang-up, and the build ended at 129
+/// (tests/context.rs, CI's windows-2022).
 #[cfg(windows)]
-pub(crate) const SIGNAL_DESCRIPTOR: i32 = 4;
+pub(crate) fn signal_descriptor(given: impl IntoIterator<Item = i32>) -> i32 {
+    given.into_iter().fold(2, i32::max).saturating_add(1)
+}
 
 /// The descriptor [`take_cidfile`] took.
 static TOLD: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
@@ -1582,7 +1589,34 @@ fn build_there(
                 }
             })
             .map_err(|e| shards_remote::Error::new(format!("a thread for the build's agents: {e}")))?;
-        client::exec(
+        // On Windows no signal says this terminal resized: its size is asked every quarter
+        // second while the build runs, as docker/cli's MonitorTtySize asks a container's
+        // (cli/command/container/tty.go), and sent as it changes. Its console's input says
+        // a resize too, but reading it takes the keys typed ahead of the next command.
+        #[cfg(windows)]
+        let (ended, end) = std::sync::mpsc::channel::<()>();
+        #[cfg(windows)]
+        if let Some(t) = terminal {
+            std::thread::Builder::new()
+                .name("build-size".into())
+                .spawn_scoped(scope, move || {
+                    let mut said = (t.rows, t.cols);
+                    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                        end.recv_timeout(std::time::Duration::from_millis(250))
+                    {
+                        let now = crate::cli::terminal::size(2);
+                        let steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if now != said
+                            && let Some(controls) = steered.as_ref()
+                            && controls.resize(now.0, now.1).is_ok()
+                        {
+                            said = now;
+                        }
+                    }
+                })
+                .map_err(|e| shards_remote::Error::new(format!("a thread for the build's terminal: {e}")))?;
+        }
+        let ran = client::exec(
             identity,
             context.remote(),
             request,
@@ -1590,7 +1624,10 @@ fn build_there(
             crate::synced::Demux::new(io::stdout(), fetched),
             io::stderr(),
             steered,
-        )
+        );
+        #[cfg(windows)]
+        drop(ended);
+        ran
     });
     let sent = sending.join();
     // An output not kept is the build's failure, as one the build here could not write is.
