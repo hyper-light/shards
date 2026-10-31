@@ -1587,10 +1587,27 @@ fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_
     std::fs::hard_link(dir.join("data"), dir.join("data-three")).unwrap();
     let made_here = made(here(&build));
     let made_there = made(there(&build));
-    assert_eq!(
-        made_there, made_here,
-        "made again, the agent there is not the one here"
-    );
+    // Where they differ, each tree as a build of it reads it: the client's and the machine's
+    // copies of it, the one or more under its home's `synced` that hold the agent's config.
+    if made_there != made_here {
+        let copies: Vec<PathBuf> = std::fs::read_dir(machine.join("synced"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .flat_map(|client| std::fs::read_dir(client.path()).into_iter().flatten().flatten())
+            .map(|copy| copy.path())
+            .filter(|copy| copy.join("agent.json").exists())
+            .collect();
+        let there: Vec<String> = copies
+            .iter()
+            .map(|c| format!("{}:\n{}", c.display(), tree_of(c).join("\n")))
+            .collect();
+        panic!(
+            "made again, the agent there is not the one here: {made_there} against {made_here}\nhere:\n{}\n{}",
+            tree_of(&dir).join("\n"),
+            there.join("\n")
+        );
+    }
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
     let came: Vec<u64> = log
         .lines()
@@ -2189,6 +2206,40 @@ fn a_build_through_a_context_on_a_terminal_is_drawn_as_here() {
         let line = line.trim_end_matches('\r');
         assert!(line.chars().count() <= 36, "{line:?} in {plain:?}");
     }
+}
+
+/// Each entry under `root` as a build reads it: its path from `root`, its length, its own
+/// modification time in nanoseconds since the epoch (a link's not followed), whether it is
+/// read-only, and a link's target.
+fn tree_of(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut todo = vec![root.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            let m = std::fs::symlink_metadata(&path).unwrap();
+            let ns = m
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let link = std::fs::read_link(&path)
+                .map(|t| t.display().to_string())
+                .unwrap_or_default();
+            if m.is_dir() {
+                todo.push(path.clone());
+            }
+            out.push(format!(
+                "{} len={} mtime={ns} read-only={} link={link}",
+                path.strip_prefix(root).unwrap().display(),
+                m.len(),
+                m.permissions().readonly()
+            ));
+        }
+    }
+    out.sort();
+    out
 }
 
 /// `--cidfile` through a context is the client's file, as Docker's CLI keeps its own: made

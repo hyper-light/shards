@@ -338,9 +338,10 @@ crates/shards/src/daemon/ship.rs	mod oslog	crates/shards/src/daemon/ship.rs	mod 
 crates/shards/src/daemon/ship.rs	mod etwlogs	crates/shards/src/daemon/ship.rs	mod journald [linux]	as journald
 crates/shards/src/daemon/ship.rs	mod etwlogs	crates/shards/src/daemon/ship.rs	mod oslog [macos]	as journald
 crates/shards/src/context.rs	const SIGNAL_FD	-	none: linux,macos	a client's command's signals and hang-up through a pipe its Windows daemon gave it, as Windows sends a process no signal; a Unix daemon sends them by kill(2)
-crates/shards/src/context.rs	const SIGNAL_DESCRIPTOR	-	none: linux,macos	as SIGNAL_FD
+crates/shards/src/context.rs	fn signal_descriptor	-	none: linux,macos	as SIGNAL_FD: the number its pipe is given at, past every other a command is given
 crates/shards/src/synced.rs	fn given_secrets	-	none: linux,macos	a Windows build reads a secret its daemon gave it at a number from that handle; a Unix build reads the descriptor's path (/dev/fd/N) as any file's
 crates/shards/src/cli/client.rs	fn take_signal_pipe	-	none: linux,macos	a Windows client's command takes its signals from its daemon's pipe (context::SIGNAL_FD); a Unix command takes them as any process does
+crates/shards/src/daemon/relay.rs	impl Default	-	none: linux,macos	Relays' Default, which Unix derives (cfg_attr(unix, derive(Default))); Windows' channel of clients taken has none to derive
 crates/shards/src/daemon/relay.rs	type Taken	crates/shards/src/daemon/relay.rs	fn relay_polled	a context's engine clients taken: on Windows by a thread per context's pipe (WaitForMultipleObjects waits on 64 handles at most), on Unix by the daemon's poll(2) of the listeners
 crates/shards/src/daemon/relay.rs	struct Came	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
 crates/shards/src/daemon/relay.rs	struct Taker	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
