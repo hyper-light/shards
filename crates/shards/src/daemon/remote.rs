@@ -6,9 +6,12 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use shards_ipc::fd::{AsFd, OwnedFd};
 
 use shards_remote::frame::Request;
 use shards_remote::server::{self, Host, Running};
@@ -20,9 +23,11 @@ pub(super) struct Machine {
     pub exe: PathBuf,
     /// The connections builds' steps made to the SSH agents their clients name, by client and
     /// token, until the client claims each (`agent_step`).
-    pub agents:
-        Arc<std::sync::Mutex<std::collections::HashMap<(String, String), std::os::unix::net::UnixStream>>>,
+    pub agents: Arc<std::sync::Mutex<Agents>>,
 }
+
+/// The connections to agents a client may claim, by client and token ([`Machine::agents`]).
+type Agents = std::collections::HashMap<(String, String), shards_ipc::Stream>;
 
 /// `n` random bytes, as hex.
 fn token(n: usize) -> Result<String, String> {
@@ -141,115 +146,315 @@ impl Host for Machine {
             }
             false => (None, None),
         };
-        let tty = |e: std::io::Error| Error::new(format!("the command's terminal: {e}"));
-        // The client's terminal: the command's stdin, stdout and stderr that the client's
-        // terminal is are a terminal of its own here, as sshd gives a session's command one
-        // (OpenSSH session.c, do_exec_pty); the rest are pipes.
-        let terminal = request.terminal;
-        let pty = match terminal {
-            Some(t) => Some(open_pty(t.rows, t.cols).map_err(tty)?),
-            None => None,
-        };
-        let on = |fd: usize| terminal.is_some_and(|t| [t.stdin, t.stdout, t.stderr].get(fd) == Some(&true));
-        let (child_in, stdin): (OwnedFd, Box<dyn Write + Send>) = match &pty {
-            Some((controller, peer)) if on(0) => (
-                peer.try_clone().map_err(tty)?,
-                Box::new(File::from(controller.try_clone().map_err(tty)?)),
-            ),
-            _ => {
-                let (r, w) = pipe()?;
-                (r.into(), Box::new(w))
-            }
-        };
-        // What the terminal shows is read once, whole ([`Kept`]): as stdout's, where stdout is
-        // on it, else as stderr's.
-        let (shown, kept) = match &pty {
-            Some((controller, peer)) if on(1) || on(2) => {
-                let (reader, kept) = kept_terminal(controller, peer).map_err(tty)?;
-                (Some(reader), Some(kept))
-            }
-            _ => (None, None),
-        };
-        let (out_shown, err_shown) = if on(1) { (shown, None) } else { (None, shown) };
-        let (child_out, stdout): (OwnedFd, Box<dyn Read + Send>) = match (&pty, out_shown) {
-            (Some((_, peer)), Some(reader)) => (peer.try_clone().map_err(tty)?, Box::new(reader)),
-            _ => {
-                let (r, w) = pipe()?;
-                (w.into(), Box::new(r))
-            }
-        };
-        let (child_err, stderr): (OwnedFd, Box<dyn Read + Send>) = match (&pty, err_shown) {
-            (Some((_, peer)), _) if on(2) && on(1) => {
-                (peer.try_clone().map_err(tty)?, Box::new(std::io::empty()))
-            }
-            (Some((_, peer)), Some(reader)) => (peer.try_clone().map_err(tty)?, Box::new(reader)),
-            _ => {
-                let (r, w) = pipe()?;
-                (w.into(), Box::new(r))
-            }
-        };
         let env = self.command_env(request.env);
-        let mut set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-        if pty.is_some() {
-            set.push((crate::context::TAKE_TERMINAL, OsStr::new("1")));
-        }
-        let argv: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        let mut fds = vec![
-            (child_in.as_fd(), 0),
-            (child_out.as_fd(), 1),
-            (child_err.as_fd(), 2),
-        ];
-        let descriptor = crate::context::CIDFILE_DESCRIPTOR.to_string();
-        if let Some(w) = &made_w {
-            fds.push((w.as_fd(), crate::context::CIDFILE_DESCRIPTOR));
-            set.push((crate::context::CIDFILE_FD, OsStr::new(&descriptor)));
-        }
-        // A session of its own, out of reach of what a terminal of the daemon's sends its
-        // group, whose controlling terminal is its own where it has one.
-        let child = shards_ipc::spawn_in(&self.exe, &argv, &fds, true, &set)
-            .map_err(|e| Error::new(format!("starting the command: {e}")))?;
-        // The child holds its ends, and the terminal's peer: once it has gone, reading the
-        // controller ends.
-        drop((child_in, child_out, child_err, made_w));
-        let controller = pty.map(|(controller, _peer)| controller);
-        // Waited for on one thread, hung up and signalled from others: kill refuses a child
-        // reaped.
-        let child = Arc::new(child);
-        let (hung, signalled) = (Arc::clone(&child), Arc::clone(&child));
-        let abandoned = kept.clone();
-        let resize = controller.map(resizer);
-        Ok(Running {
-            stdin,
-            stdout,
-            stderr,
-            wait: Box::new(move || {
-                let status = child.wait().unwrap_or(1);
-                if let Some(kept) = &kept {
-                    kept.end();
-                }
-                status
-            }),
-            hangup: Box::new(move || {
-                let _ = hung.kill(libc::SIGHUP);
-                if let Some(kept) = &abandoned {
-                    kept.abandon();
-                }
-            }),
-            resize,
-            // What the client received, as this system numbers it; one it has not goes
-            // nowhere.
-            signal: Box::new(move |linux| {
-                if let Some(sig) = shards_ipc::local_signal(linux) {
-                    let _ = signalled.kill(sig);
-                }
-            }),
-            made: made.map(|r| Box::new(r) as Box<dyn Read + Send>),
-        })
+        command(&self.exe, &args, &env, request.terminal, made, made_w)
     }
 
     fn invited(&self) -> usize {
         crate::context::open_invitations(&self.home)
     }
+}
+
+/// A client's command `args` started on Unix, `env` its environment, as [`Machine::start`]
+/// starts one: on the client's terminal, where it has one, a pseudo-terminal of its own here
+/// for those of its stdin, stdout and stderr that the client's terminal is; and `made_w` the
+/// pipe its microVM's ID is told on, where the client asked for it.
+#[cfg(unix)]
+fn command(
+    exe: &std::path::Path,
+    args: &[String],
+    env: &[(String, OsString)],
+    terminal: Option<shards_remote::frame::Terminal>,
+    made: Option<std::io::PipeReader>,
+    made_w: Option<std::io::PipeWriter>,
+) -> Result<Running, Error> {
+    let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
+    let tty = |e: std::io::Error| Error::new(format!("the command's terminal: {e}"));
+    // The client's terminal: the command's stdin, stdout and stderr that the client's
+    // terminal is are a terminal of its own here, as sshd gives a session's command one
+    // (OpenSSH session.c, do_exec_pty); the rest are pipes.
+    let pty = match terminal {
+        Some(t) => Some(open_pty(t.rows, t.cols).map_err(tty)?),
+        None => None,
+    };
+    let on = |fd: usize| terminal.is_some_and(|t| [t.stdin, t.stdout, t.stderr].get(fd) == Some(&true));
+    let (child_in, stdin): (OwnedFd, Box<dyn Write + Send>) = match &pty {
+        Some((controller, peer)) if on(0) => (
+            peer.try_clone().map_err(tty)?,
+            Box::new(File::from(controller.try_clone().map_err(tty)?)),
+        ),
+        _ => {
+            let (r, w) = pipe()?;
+            (r.into(), Box::new(w))
+        }
+    };
+    // What the terminal shows is read once, whole ([`Kept`]): as stdout's, where stdout is
+    // on it, else as stderr's.
+    let (shown, kept) = match &pty {
+        Some((controller, peer)) if on(1) || on(2) => {
+            let (reader, kept) = kept_terminal(controller, peer).map_err(tty)?;
+            (Some(reader), Some(kept))
+        }
+        _ => (None, None),
+    };
+    let (out_shown, err_shown) = if on(1) { (shown, None) } else { (None, shown) };
+    let (child_out, stdout): (OwnedFd, Box<dyn Read + Send>) = match (&pty, out_shown) {
+        (Some((_, peer)), Some(reader)) => (peer.try_clone().map_err(tty)?, Box::new(reader)),
+        _ => {
+            let (r, w) = pipe()?;
+            (w.into(), Box::new(r))
+        }
+    };
+    let (child_err, stderr): (OwnedFd, Box<dyn Read + Send>) = match (&pty, err_shown) {
+        (Some((_, peer)), _) if on(2) && on(1) => {
+            (peer.try_clone().map_err(tty)?, Box::new(std::io::empty()))
+        }
+        (Some((_, peer)), Some(reader)) => (peer.try_clone().map_err(tty)?, Box::new(reader)),
+        _ => {
+            let (r, w) = pipe()?;
+            (w.into(), Box::new(r))
+        }
+    };
+    let mut set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+    if pty.is_some() {
+        set.push((crate::context::TAKE_TERMINAL, OsStr::new("1")));
+    }
+    let argv: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let mut fds = vec![
+        (child_in.as_fd(), 0),
+        (child_out.as_fd(), 1),
+        (child_err.as_fd(), 2),
+    ];
+    let descriptor = crate::context::CIDFILE_DESCRIPTOR.to_string();
+    if let Some(w) = &made_w {
+        fds.push((w.as_fd(), crate::context::CIDFILE_DESCRIPTOR));
+        set.push((crate::context::CIDFILE_FD, OsStr::new(&descriptor)));
+    }
+    // A session of its own, out of reach of what a terminal of the daemon's sends its
+    // group, whose controlling terminal is its own where it has one.
+    let child = shards_ipc::spawn_in(exe, &argv, &fds, true, &set)
+        .map_err(|e| Error::new(format!("starting the command: {e}")))?;
+    // The child holds its ends, and the terminal's peer: once it has gone, reading the
+    // controller ends.
+    drop((child_in, child_out, child_err, made_w));
+    let controller = pty.map(|(controller, _peer)| controller);
+    // Waited for on one thread, hung up and signalled from others: kill refuses a child
+    // reaped.
+    let child = Arc::new(child);
+    let (hung, signalled) = (Arc::clone(&child), Arc::clone(&child));
+    let abandoned = kept.clone();
+    let resize = controller.map(resizer);
+    Ok(Running {
+        stdin,
+        stdout,
+        stderr,
+        wait: Box::new(move || {
+            let status = child.wait().unwrap_or(1);
+            if let Some(kept) = &kept {
+                kept.end();
+            }
+            status
+        }),
+        hangup: Box::new(move || {
+            let _ = hung.kill(libc::SIGHUP);
+            if let Some(kept) = &abandoned {
+                kept.abandon();
+            }
+        }),
+        resize,
+        // What the client received, as this system numbers it; one it has not goes
+        // nowhere.
+        signal: Box::new(move |linux| {
+            if let Some(sig) = shards_ipc::local_signal(linux) {
+                let _ = signalled.kill(sig);
+            }
+        }),
+        made: made.map(|r| Box::new(r) as Box<dyn Read + Send>),
+    })
+}
+
+/// A pseudoconsole a client's command or build is made in (ConPTY), with its input's writer
+/// where nothing else writes it, as a console whose input closed reads nothing more: made on
+/// one thread, resized from another, and closed from a third, each under its lock for that
+/// alone. Closed on a thread of its own, as before Windows 11 24H2 the close waits for what
+/// it shows to be read, which its reader, the client's, does.
+#[cfg(windows)]
+#[derive(Clone)]
+struct Console(Arc<std::sync::Mutex<Option<Held>>>);
+
+/// What a [`Console`] holds until it is closed: the pseudoconsole, and its input's writer.
+#[cfg(windows)]
+type Held = (shards_ipc::PseudoConsole, Option<std::io::PipeWriter>);
+
+#[cfg(windows)]
+impl Console {
+    fn new(console: shards_ipc::PseudoConsole, typed: Option<std::io::PipeWriter>) -> Console {
+        Console(Arc::new(std::sync::Mutex::new(Some((console, typed)))))
+    }
+
+    /// `exe` started in it, as `shards_ipc::spawn_in_console` starts one.
+    fn spawn(
+        &self,
+        exe: &std::path::Path,
+        args: &[&OsStr],
+        fds: &[(shards_ipc::fd::BorrowedFd<'_>, i32)],
+        env: &[(&str, &OsStr)],
+    ) -> std::io::Result<shards_ipc::Child> {
+        match super::lock(&self.0).as_ref() {
+            Some((console, _)) => shards_ipc::spawn_in_console(exe, args, fds, env, console),
+            None => Err(std::io::Error::other("its console is closed")),
+        }
+    }
+
+    /// What sizes it, as its client's terminal is sized.
+    fn resizer(&self) -> Box<dyn Fn(u16, u16) + Send> {
+        let held = self.clone();
+        Box::new(move |rows, cols| {
+            if let Some((console, _)) = super::lock(&held.0).as_ref() {
+                let _ = console.resize(rows, cols);
+            }
+        })
+    }
+
+    /// Its build has ended: closed, what it shows read to its end by its client.
+    fn end(&self) {
+        self.close();
+    }
+
+    /// Its client has gone: closed, what it shows read by no one.
+    fn abandon(&self) {
+        self.close();
+    }
+
+    /// Closes it, once its command has ended, or its client gone.
+    fn close(&self) {
+        if let Some(held) = super::lock(&self.0).take() {
+            let _ = std::thread::Builder::new()
+                .name("console-close".into())
+                .spawn(move || drop(held));
+        }
+    }
+}
+
+/// [`command`] on Windows: on the client's terminal, where it has one, a pseudoconsole of its
+/// own here (ConPTY), as Windows' OpenSSH hosts a session's command, of the client's size
+/// and sized with it, which those of its stdin, stdout and stderr that the client's terminal
+/// is are opened in ([`crate::context::TAKE_TERMINAL`]); the rest pipes. What the client's
+/// signals and its hang-up do to a Unix command, they do to this one through a pipe of its
+/// own ([`crate::context::SIGNAL_FD`]): Windows sends a process no signal.
+#[cfg(windows)]
+fn command(
+    exe: &std::path::Path,
+    args: &[String],
+    env: &[(String, OsString)],
+    terminal: Option<shards_remote::frame::Terminal>,
+    made: Option<std::io::PipeReader>,
+    made_w: Option<std::io::PipeWriter>,
+) -> Result<Running, Error> {
+    let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
+    let tty = |e: std::io::Error| Error::new(format!("the command's terminal: {e}"));
+    let on = |fd: usize| terminal.is_some_and(|t| [t.stdin, t.stdout, t.stderr].get(fd) == Some(&true));
+    let (console, mut typed, shown) = match terminal {
+        Some(t) => {
+            let (console, typed, shown) = shards_ipc::PseudoConsole::new(t.rows, t.cols).map_err(tty)?;
+            (Some(console), Some(typed), Some(shown))
+        }
+        None => (None, None, None),
+    };
+    let (child_in, stdin): (Option<OwnedFd>, Box<dyn Write + Send>) = match typed.take() {
+        Some(keys) if on(0) => (None, Box::new(keys)),
+        unused => {
+            // Kept with the console, which a closed input would leave reading nothing.
+            typed = unused;
+            let (r, w) = pipe()?;
+            (Some(r.into()), Box::new(w))
+        }
+    };
+    // What the console shows: as stdout's, where stdout is on it, else as stderr's; read
+    // to its end where neither is, as a console whose screen is not read stops its writer.
+    let (mut out_shown, mut err_shown) = if on(1) { (shown, None) } else { (None, shown) };
+    if !on(1)
+        && !on(2)
+        && let Some(mut unread) = err_shown.take()
+    {
+        std::thread::Builder::new()
+            .name("console-drain".into())
+            .spawn(move || {
+                let _ = std::io::copy(&mut unread, &mut std::io::sink());
+            })
+            .map_err(|e| Error::new(format!("a thread for the command's console: {e}")))?;
+    }
+    let (child_out, stdout): (Option<OwnedFd>, Box<dyn Read + Send>) = match out_shown.take() {
+        Some(screen) => (None, Box::new(screen)),
+        None => {
+            let (r, w) = pipe()?;
+            (Some(w.into()), Box::new(r))
+        }
+    };
+    let (child_err, stderr): (Option<OwnedFd>, Box<dyn Read + Send>) = match err_shown.take() {
+        _ if on(2) && on(1) => (None, Box::new(std::io::empty())),
+        Some(screen) => (None, Box::new(screen)),
+        None => {
+            let (r, w) = pipe()?;
+            (Some(w.into()), Box::new(r))
+        }
+    };
+    let (signals_r, signals_w) = pipe()?;
+    let mut set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+    let streams: String = (0..3u8)
+        .filter(|&fd| on(usize::from(fd)))
+        .map(|fd| char::from(b'0' + fd))
+        .collect();
+    if console.is_some() {
+        set.push((crate::context::TAKE_TERMINAL, OsStr::new(&streams)));
+    }
+    let argv: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let mut fds: Vec<(shards_ipc::fd::BorrowedFd<'_>, i32)> =
+        [(&child_in, 0), (&child_out, 1), (&child_err, 2)]
+            .into_iter()
+            .filter_map(|(handle, n)| handle.as_ref().map(|h| (h.as_fd(), n)))
+            .collect();
+    let (cidfile, signals) = (
+        crate::context::CIDFILE_DESCRIPTOR.to_string(),
+        crate::context::SIGNAL_DESCRIPTOR.to_string(),
+    );
+    if let Some(w) = &made_w {
+        fds.push((w.as_fd(), crate::context::CIDFILE_DESCRIPTOR));
+        set.push((crate::context::CIDFILE_FD, OsStr::new(&cidfile)));
+    }
+    fds.push((signals_r.as_fd(), crate::context::SIGNAL_DESCRIPTOR));
+    set.push((crate::context::SIGNAL_FD, OsStr::new(&signals)));
+    let console = console.map(|console| Console::new(console, typed));
+    let started = match &console {
+        Some(console) => console.spawn(exe, &argv, &fds, &set),
+        None => shards_ipc::spawn_in(exe, &argv, &fds, true, &set),
+    };
+    let child = started.map_err(|e| Error::new(format!("starting the command: {e}")))?;
+    drop((child_in, child_out, child_err, made_w, signals_r));
+    let resize = console.as_ref().map(Console::resizer);
+    let signals = Arc::new(std::sync::Mutex::new(Some(signals_w)));
+    let hung = Arc::clone(&signals);
+    Ok(Running {
+        stdin,
+        stdout,
+        stderr,
+        wait: Box::new(move || {
+            let status = child.wait().unwrap_or(1);
+            if let Some(console) = &console {
+                console.close();
+            }
+            status
+        }),
+        // The pipe's end, as a terminal gone ends a Unix command by SIGHUP.
+        hangup: Box::new(move || drop(super::lock(&hung).take())),
+        resize,
+        signal: Box::new(move |linux| {
+            if let Some(pipe) = super::lock(&signals).as_mut() {
+                let _ = pipe.write_all(&linux.to_le_bytes());
+            }
+        }),
+        made: made.map(|r| Box::new(r) as Box<dyn Read + Send>),
+    })
 }
 
 impl Machine {
@@ -259,7 +464,7 @@ impl Machine {
     /// connection's, so that a client's half-close (an attach's end of stdin) reaches it.
     fn engine_step(&self) -> Result<Running, Error> {
         let reached = |e: std::io::Error| Error::new(format!("this machine's Engine API: {e}"));
-        let conn = std::os::unix::net::UnixStream::connect(super::engine::SOCKET).map_err(reached)?;
+        let conn = engine_api().map_err(reached)?;
         let (asking, hung) = (
             conn.try_clone().map_err(reached)?,
             conn.try_clone().map_err(reached)?,
@@ -425,10 +630,13 @@ impl Machine {
         // ([`Machine::start`]), on which the build draws the display it draws on one
         // (build/live.rs). Its stdin and stdout are the step's streams, pipes.
         let tty = |e: std::io::Error| Error::new(format!("the build's terminal: {e}"));
-        let pty = match terminal {
-            Some(t) if t.stderr && step == "build" => Some(open_pty(t.rows, t.cols).map_err(tty)?),
-            _ => None,
+        let on_terminal = terminal.filter(|t| t.stderr && step == "build");
+        #[cfg(unix)]
+        let pty = match on_terminal {
+            Some(t) => Some(open_pty(t.rows, t.cols).map_err(tty)?),
+            None => None,
         };
+        #[cfg(unix)]
         let (err_r, mut err_w, kept): (Box<dyn Read + Send>, File, _) = match &pty {
             Some((controller, peer)) => {
                 let (reader, kept) = kept_terminal(controller, peer).map_err(tty)?;
@@ -443,8 +651,28 @@ impl Machine {
                 (Box::new(r), File::from(OwnedFd::from(w)), None)
             }
         };
-        let (exe, env) = (self.exe.clone(), self.command_env(env));
+        #[cfg(unix)]
         let resize = pty.map(|(controller, _peer)| resizer(controller));
+        // On Windows the build is made in a pseudoconsole of its own (ConPTY), what it shows
+        // read first; then what the daemon itself says of the build, on a pipe of its own, as
+        // no process writes into a console it is not in.
+        #[cfg(windows)]
+        let (err_r, mut err_w, kept): (Box<dyn Read + Send>, File, Option<Console>) = {
+            let (errors_r, errors_w) = pipe()?;
+            let errors_w = File::from(OwnedFd::from(errors_w));
+            match on_terminal {
+                Some(t) => {
+                    let (console, typed, screen) =
+                        shards_ipc::PseudoConsole::new(t.rows, t.cols).map_err(tty)?;
+                    let console = Console::new(console, Some(typed));
+                    (Box::new(screen.chain(errors_r)), errors_w, Some(console))
+                }
+                None => (Box::new(errors_r), errors_w, None),
+            }
+        };
+        #[cfg(windows)]
+        let resize = kept.as_ref().map(Console::resizer);
+        let (exe, env) = (self.exe.clone(), self.command_env(env));
         let (done, status) = std::sync::mpsc::channel();
         let building = Arc::new(Building::default());
         let ending = kept.clone();
@@ -508,7 +736,7 @@ impl Machine {
                                 if agent_places.contains_key(id) {
                                     continue;
                                 }
-                                let (ours, theirs) = std::os::unix::net::UnixStream::pair()
+                                let (ours, theirs) = shards_ipc::Stream::pair()
                                     .map_err(|e| format!("a pair for the build's agent: {e}"))?;
                                 let fd = first_agent
                                     .saturating_add(i32::try_from(given.len()).unwrap_or(i32::MAX));
@@ -558,11 +786,16 @@ impl Machine {
                                     })
                                     .map_err(|e| format!("a thread for the build's secrets: {e}"))?;
                             }
+                            let ends = given
+                                .iter()
+                                .map(|(s, fd)| agent_end(s).map(|end| (end, *fd)))
+                                .collect::<std::io::Result<Vec<_>>>()
+                                .map_err(|e| format!("the build's agents: {e}"))?;
                             let fds: Vec<_> = readers
                                 .iter()
                                 .zip(crate::synced::SECRET_FD..)
                                 .map(|(r, fd)| (r.as_fd(), fd))
-                                .chain(given.iter().map(|(s, fd)| (s.as_fd(), *fd)))
+                                .chain(ends.iter().map(|(end, fd)| (end.as_fd(), *fd)))
                                 .collect();
                             // Its stdout framed as it comes (synced::SAID); then, once it is
                             // through, its outputs.
@@ -579,17 +812,40 @@ impl Machine {
                                     .spawn_scoped(scope, move || crate::synced::say(said_r, framed))
                                     .map_err(|e| format!("a thread for the build's output: {e}"))?;
                                 let (asking, stop_r, registry, whose) = (&asking, &stop_r, &registry, &whose);
-                                let serving = std::thread::Builder::new()
-                                    .name("context-agents".into())
-                                    .spawn_scoped(scope, move || {
-                                        serve_agents(asking, stop_r, framed, whose, registry)
-                                    })
-                                    .map_err(|e| format!("a thread for the build's agents: {e}"))?;
-                                let ran = ours.run(&exe, &argv, &env, &said_w, &err_w, &fds);
+                                #[cfg(unix)]
+                                let err = BuildErr::Fd(err_w.as_fd());
+                                #[cfg(windows)]
+                                let err = match &ending {
+                                    Some(console) => BuildErr::Console(console),
+                                    None => BuildErr::Fd(err_w.as_fd()),
+                                };
+                                // Its agents served once it is made: on Windows each pair's end
+                                // gives it what comes on it, the connections it asks for.
+                                let mut serving = None;
+                                let ran = ours.run(&exe, &argv, &env, &said_w, err, &fds, |child| {
+                                    #[cfg(windows)]
+                                    for (_, ours) in asking {
+                                        let giver =
+                                            child.giver().map_err(|e| format!("the build's agents: {e}"))?;
+                                        ours.gives_to(giver.into_handle());
+                                    }
+                                    #[cfg(unix)]
+                                    let _ = child;
+                                    let thread = std::thread::Builder::new()
+                                        .name("context-agents".into())
+                                        .spawn_scoped(scope, move || {
+                                            serve_agents(asking, stop_r, framed, whose, registry)
+                                        })
+                                        .map_err(|e| format!("a thread for the build's agents: {e}"))?;
+                                    serving = Some(thread);
+                                    Ok(())
+                                });
                                 drop((said_w, stop_w));
-                                claimable = serving
-                                    .join()
-                                    .map_err(|_| "the build's agents' thread ended".to_string())?;
+                                if let Some(serving) = serving {
+                                    claimable = serving
+                                        .join()
+                                        .map_err(|_| "the build's agents' thread ended".to_string())?;
+                                }
                                 let said = saying
                                     .join()
                                     .map_err(|_| "the build's output's thread ended".to_string())?;
@@ -636,7 +892,7 @@ impl Machine {
             stderr: Box::new(crate::synced::Shown::new(err_r, pairs)),
             wait: Box::new(move || status.recv().unwrap_or(1)),
             hangup: Box::new(move || {
-                hung.end(libc::SIGHUP);
+                hung.end(shards_ipc::signal::SIGHUP);
                 if let Some(kept) = &abandoned {
                     kept.abandon();
                 }
@@ -697,8 +953,17 @@ impl Machine {
     }
 }
 
+/// A connection to this machine's Engine API: its socket, relative to the home, the
+/// daemon's working directory; on Windows the named pipe the home's file names.
+fn engine_api() -> std::io::Result<shards_ipc::Stream> {
+    #[cfg(unix)]
+    return std::os::unix::net::UnixStream::connect(super::engine::SOCKET);
+    #[cfg(windows)]
+    return shards_ipc::Stream::connect(std::fs::read_to_string(super::engine::SOCKET)?.trim());
+}
+
 /// A connection's writing half, closed as it drops: what its reader then reads is the end.
-struct HalfClosed(std::os::unix::net::UnixStream);
+struct HalfClosed(shards_ipc::Stream);
 
 impl Write for HalfClosed {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -717,51 +982,110 @@ impl Drop for HalfClosed {
 }
 
 /// A build a context step runs: its command once it has started, and whether its client
-/// left before then, which ends it as it starts.
+/// left before then, which ends it as it starts; on Windows, the pipe its command takes its
+/// client's signals from ([`crate::context::SIGNAL_FD`]), as Windows sends a process none.
 #[derive(Default)]
 struct Building {
     child: std::sync::OnceLock<shards_ipc::Child>,
     hung: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    signals: std::sync::Mutex<Option<std::io::PipeWriter>>,
+}
+
+/// Where a build's stderr goes: a descriptor of its own, or on Windows the pseudoconsole it
+/// is made in, its stderr opened there ([`crate::context::TAKE_TERMINAL`]).
+#[derive(Clone, Copy)]
+enum BuildErr<'a> {
+    Fd(shards_ipc::fd::BorrowedFd<'a>),
+    #[cfg(windows)]
+    Console(&'a Console),
 }
 
 impl Building {
     /// `argv` run as a client's command runs, in a session of its own, writing to `out` and
-    /// `err`; its status.
+    /// `err`, given `more` too; `started` told of it once it is made, before it is waited
+    /// for (on Windows, what hands it the connections its agents' pairs bring). Its status.
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
         exe: &std::path::Path,
         argv: &[OsString],
         env: &[(String, OsString)],
         out: &impl AsFd,
-        err: &impl AsFd,
-        more: &[(std::os::fd::BorrowedFd<'_>, i32)],
+        err: BuildErr<'_>,
+        more: &[(shards_ipc::fd::BorrowedFd<'_>, i32)],
+        started: impl FnOnce(&shards_ipc::Child) -> Result<(), String>,
     ) -> Result<i32, String> {
         let (input, _end) = std::io::pipe().map_err(|e| format!("a pipe for the build: {e}"))?;
         let args: Vec<&OsStr> = argv.iter().map(OsString::as_os_str).collect();
-        let set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-        let mut fds = vec![(input.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)];
+        #[cfg_attr(unix, allow(unused_mut))]
+        let mut set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+        let mut fds = vec![(input.as_fd(), 0), (out.as_fd(), 1)];
+        match err {
+            BuildErr::Fd(err) => fds.push((err, 2)),
+            #[cfg(windows)]
+            BuildErr::Console(_) => {}
+        }
         fds.extend_from_slice(more);
+        #[cfg(windows)]
+        let (signals_r, number) = {
+            let (r, w) = std::io::pipe().map_err(|e| format!("a pipe for the build's signals: {e}"))?;
+            *super::lock(&self.signals) = Some(w);
+            (r, crate::context::SIGNAL_DESCRIPTOR.to_string())
+        };
+        #[cfg(windows)]
+        {
+            fds.push((signals_r.as_fd(), crate::context::SIGNAL_DESCRIPTOR));
+            set.push((crate::context::SIGNAL_FD, OsStr::new(&number)));
+            if matches!(err, BuildErr::Console(_)) {
+                set.push((crate::context::TAKE_TERMINAL, OsStr::new("2")));
+            }
+        }
         if self.hung.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(129);
         }
-        let child = shards_ipc::spawn_in(exe, &args, &fds, true, &set)
-            .map_err(|e| format!("starting the build: {e}"))?;
+        #[cfg(unix)]
+        let child = shards_ipc::spawn_in(exe, &args, &fds, true, &set);
+        #[cfg(windows)]
+        let child = match err {
+            BuildErr::Console(console) => console.spawn(exe, &args, &fds, &set),
+            BuildErr::Fd(_) => shards_ipc::spawn_in(exe, &args, &fds, true, &set),
+        };
+        let child = child.map_err(|e| format!("starting the build: {e}"))?;
         drop(input);
+        #[cfg(windows)]
+        drop(signals_r);
         let child = self.child.get_or_init(|| child);
+        if let Err(e) = started(child) {
+            let _ = child.kill(shards_ipc::signal::SIGKILL);
+            let _ = child.wait();
+            return Err(e);
+        }
         // A hang-up between the start and the line above found no command to end.
         if self.hung.load(std::sync::atomic::Ordering::SeqCst) {
-            let _ = child.kill(libc::SIGHUP);
+            self.end(shards_ipc::signal::SIGHUP);
         }
         child.wait().map_err(|e| format!("the build: {e}"))
     }
 
-    /// Ends the build with `sig`, or, not started yet, as it starts.
-    fn end(&self, sig: libc::c_int) {
-        if sig == libc::SIGHUP {
+    /// Ends the build with `sig`, or, not started yet, as it starts: on Windows told it on
+    /// its signals' pipe, its hang-up that pipe's end.
+    fn end(&self, sig: i32) {
+        if sig == shards_ipc::signal::SIGHUP {
             self.hung.store(true, std::sync::atomic::Ordering::SeqCst);
         }
+        #[cfg(unix)]
         if let Some(child) = self.child.get() {
             let _ = child.kill(sig);
+        }
+        #[cfg(windows)]
+        {
+            let mut signals = super::lock(&self.signals);
+            if sig == shards_ipc::signal::SIGHUP {
+                drop(signals.take());
+            } else if let (Some(pipe), Ok(linux)) = (signals.as_mut(), u32::try_from(sig)) {
+                let _ = pipe.write_all(&linux.to_le_bytes());
+            }
         }
     }
 }
@@ -772,17 +1096,18 @@ impl Building {
 /// until the build says it has it (`TAKEN`), as XNU's collector flushes a socket in flight
 /// that no process holds (M24); then let go, so that the step's close is the end the
 /// client's relay sees. The tokens told.
+#[cfg(unix)]
 fn serve_agents<W: Write>(
-    asking: &[(String, std::os::unix::net::UnixStream)],
+    asking: &[(String, shards_ipc::Stream)],
     stop: &std::io::PipeReader,
     framed: &crate::synced::Framed<W>,
     client: &str,
-    registry: &std::sync::Mutex<std::collections::HashMap<(String, String), std::os::unix::net::UnixStream>>,
+    registry: &std::sync::Mutex<Agents>,
 ) -> Vec<String> {
     use shards_ipc::kind;
     let mut told = Vec::new();
     // Each pair's: whether its build still asks on it, and the ends sent it not yet taken.
-    let mut pairs: Vec<(bool, std::collections::VecDeque<std::os::unix::net::UnixStream>)> = asking
+    let mut pairs: Vec<(bool, std::collections::VecDeque<shards_ipc::Stream>)> = asking
         .iter()
         .map(|_| (true, std::collections::VecDeque::new()))
         .collect();
@@ -824,26 +1149,10 @@ fn serve_agents<W: Write>(
                     sent.pop_front();
                 }
                 Ok(Some(m)) if m.kind == kind::DIAL => {
-                    let made = std::os::unix::net::UnixStream::pair()
-                        .map_err(|e| format!("a connection to the agent: {e}"))
-                        .and_then(|pair| token(16).map(|t| (pair, t)));
-                    let ((conn, theirs), t) = match made {
-                        Ok(made) => made,
-                        Err(why) => {
-                            let _ = shards_ipc::send(socket, kind::ERR, why.as_bytes(), &[]);
-                            continue;
-                        }
-                    };
-                    if shards_ipc::send(socket, kind::GRANTED, &[], &[theirs.as_fd()]).is_err() {
-                        continue;
+                    if let Some((t, theirs)) = grant(socket, id, framed, client, registry) {
+                        told.push(t);
+                        sent.push_back(theirs);
                     }
-                    registry
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert((client.to_string(), t.clone()), conn);
-                    let _ = framed.frame(crate::synced::AGENT, format!("{id}\0{t}").as_bytes());
-                    told.push(t);
-                    sent.push_back(theirs);
                 }
                 // The build ended, or asked what no build asks: no more of this pair.
                 _ => {
@@ -853,6 +1162,105 @@ fn serve_agents<W: Write>(
             }
         }
     }
+}
+
+/// [`serve_agents`] on Windows, which has no poll(2) of pipes: each pair answered on a thread
+/// of its own, what comes on it read as it comes, until the build's end closes it or `stop`
+/// ends, when each pair's reads are ended, which ends its thread's.
+#[cfg(windows)]
+fn serve_agents<W: Write + Send>(
+    asking: &[(String, shards_ipc::Stream)],
+    stop: &std::io::PipeReader,
+    framed: &crate::synced::Framed<W>,
+    client: &str,
+    registry: &std::sync::Mutex<Agents>,
+) -> Vec<String> {
+    use shards_ipc::kind;
+    std::thread::scope(|scope| {
+        let answering: Vec<_> = asking
+            .iter()
+            .filter_map(|(id, socket)| {
+                std::thread::Builder::new()
+                    .name("context-agent".into())
+                    .spawn_scoped(scope, move || {
+                        let (mut told, mut sent) = (Vec::new(), std::collections::VecDeque::new());
+                        loop {
+                            match shards_ipc::recv(socket) {
+                                Ok(Some(m)) if m.kind == kind::TAKEN => {
+                                    sent.pop_front();
+                                }
+                                Ok(Some(m)) if m.kind == kind::DIAL => {
+                                    if let Some((t, theirs)) = grant(socket, id, framed, client, registry) {
+                                        told.push(t);
+                                        sent.push_back(theirs);
+                                    }
+                                }
+                                // The build ended, or asked what no build asks.
+                                _ => return told,
+                            }
+                        }
+                    })
+                    .ok()
+            })
+            .collect();
+        // Its end the build's: the pairs' reads end, and each thread with them.
+        let mut ended = stop;
+        let _ = ended.read(&mut [0u8; 1]);
+        for (_, socket) in asking {
+            let _ = socket.shutdown(std::net::Shutdown::Read);
+        }
+        answering
+            .into_iter()
+            .flat_map(|thread| thread.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+/// Answers a build's `DIAL` on `socket`, its agent `id`'s pair: a pair made for it, one end
+/// sent the build (`GRANTED`), the other held for `client` to claim by a token, which
+/// `framed` tells it, with the agent's id. The token, and the end sent, which is kept until
+/// the build says it has it (`TAKEN`), as XNU's collector flushes a socket in flight that no
+/// process holds (M24); none where it could make or send none, the build told why.
+fn grant<W: Write>(
+    socket: &shards_ipc::Stream,
+    id: &str,
+    framed: &crate::synced::Framed<W>,
+    client: &str,
+    registry: &std::sync::Mutex<Agents>,
+) -> Option<(String, shards_ipc::Stream)> {
+    use shards_ipc::kind;
+    let made = shards_ipc::Stream::pair()
+        .map_err(|e| format!("a connection to the agent: {e}"))
+        .and_then(|pair| token(16).map(|t| (pair, t)))
+        .and_then(|((conn, theirs), t)| {
+            agent_end(&theirs)
+                .map(|end| (conn, theirs, end, t))
+                .map_err(|e| format!("a connection to the agent: {e}"))
+        });
+    let (conn, theirs, end, t) = match made {
+        Ok(made) => made,
+        Err(why) => {
+            let _ = shards_ipc::send(socket, kind::ERR, why.as_bytes(), &[]);
+            return None;
+        }
+    };
+    shards_ipc::send(socket, kind::GRANTED, &[], &[end.as_fd()]).ok()?;
+    registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((client.to_string(), t.clone()), conn);
+    let _ = framed.frame(crate::synced::AGENT, format!("{id}\0{t}").as_bytes());
+    Some((t, theirs))
+}
+
+/// What a child is given of `pair`'s end, by number, or sent of it: its descriptor on Unix;
+/// on Windows another handle to its pipe's end, which the child takes as given
+/// (`shards_ipc::Stream::given`).
+fn agent_end(pair: &shards_ipc::Stream) -> std::io::Result<OwnedFd> {
+    #[cfg(unix)]
+    return pair.as_fd().try_clone_to_owned();
+    #[cfg(windows)]
+    return pair.share();
 }
 
 /// `argv` asked of this daemon as its CLI asks it, with `fds` the streams its request stands
@@ -885,6 +1293,7 @@ fn ask_self(
 /// registry with what its client sent alone (shards_registry::credentials, lookup); nor the
 /// settings that are the client's, which its request carries (frame::ENV), nor shards'
 /// tests' credentials.
+#[cfg(unix)]
 fn kept(name: &str) -> bool {
     if shards_remote::frame::ENV.contains(&name) {
         return false;
@@ -905,6 +1314,27 @@ fn kept(name: &str) -> bool {
     ) || (name.starts_with("SHARDS_") && !name.starts_with("SHARDS_TEST_"))
 }
 
+/// [`kept`] on Windows, whose variables' names are a name whatever their case (`Path`):
+/// its own names for the same, `USERNAME` and the temporary directory's `TEMP` and `TMP`,
+/// and `PROGRAMDATA`, under which the machine's own registry certificates are kept
+/// (certs.d), no user's; never `USERPROFILE`, the home under which the owner's registry
+/// logins are kept (`.docker`).
+#[cfg(windows)]
+fn kept(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if shards_remote::frame::ENV
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(name))
+    {
+        return false;
+    }
+    matches!(
+        upper.as_str(),
+        "PATH" | "USERNAME" | "TEMP" | "TMP" | "PROGRAMDATA" | "HTTP_PROXY" | "HTTPS_PROXY" | "NO_PROXY"
+    ) || (upper.starts_with("SHARDS_") && !upper.starts_with("SHARDS_TEST_"))
+}
+
+#[cfg(unix)]
 /// What sizes the terminal `controller` controls, as its client's is sized.
 fn resizer(controller: OwnedFd) -> Box<dyn Fn(u16, u16) + Send> {
     Box::new(move |rows, cols| {
@@ -920,6 +1350,7 @@ fn resizer(controller: OwnedFd) -> Box<dyn Fn(u16, u16) + Send> {
     })
 }
 
+#[cfg(unix)]
 /// A writer of a terminal of a client's command's own, kept until the command has ended and
 /// nothing written to the terminal is unread, so that the command's close of it is never its
 /// last: at a terminal's last close XNU waits 60 ticks for what is unread to be read
@@ -933,6 +1364,7 @@ struct Kept {
     ended: std::sync::atomic::AtomicBool,
 }
 
+#[cfg(unix)]
 impl Kept {
     /// The command has ended: the writer goes now, where nothing is unread, else once its
     /// reader ([`Controller`]) has read it.
@@ -960,6 +1392,7 @@ impl Kept {
     }
 }
 
+#[cfg(unix)]
 /// How many bytes written to the terminal `writer` writes to are unread (TIOCOUTQ); none
 /// where it cannot say.
 fn unread(writer: &File) -> usize {
@@ -971,6 +1404,7 @@ fn unread(writer: &File) -> usize {
     usize::try_from(n).unwrap_or(0)
 }
 
+#[cfg(unix)]
 /// A terminal's controller, read to its end: once its command has ended and it has read
 /// all, its [`Kept`] writer goes; once the last writer has, Linux's read says EIO, after all
 /// that came before (drivers/tty/n_tty.c, n_tty_read, TTY_OTHER_CLOSED), which is the end.
@@ -979,6 +1413,7 @@ struct Controller {
     kept: Arc<Kept>,
 }
 
+#[cfg(unix)]
 impl Read for Controller {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = match self.file.read(buf) {
@@ -992,6 +1427,7 @@ impl Read for Controller {
     }
 }
 
+#[cfg(unix)]
 /// The reader of the terminal `controller` controls, and the [`Kept`] writer of its `peer`
 /// it shares with its command's waiter.
 fn kept_terminal(controller: &OwnedFd, peer: &OwnedFd) -> std::io::Result<(Controller, Arc<Kept>)> {
@@ -1006,6 +1442,7 @@ fn kept_terminal(controller: &OwnedFd, peer: &OwnedFd) -> std::io::Result<(Contr
     Ok((reader, kept))
 }
 
+#[cfg(unix)]
 /// A pseudo-terminal of `rows` by `cols`: its controller, and the peer a command's stdio is,
 /// both close-on-exec. openpty(3) opens them without; no child takes them meanwhile, as a
 /// daemon's children are its spawner's (PM M158), which holds only what it is sent.
@@ -1090,6 +1527,7 @@ pub(super) fn listen(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     /// What a command writes to its terminal is read whole however late its reader comes,
     /// later than XNU waits at a terminal's last close (PM M246), and through what shows a
     /// client's paths, a tail that might have begun one among it; and a terminal its command
@@ -1188,6 +1626,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     /// A build's step's connection to its agent ends, for the client's relay, with the
     /// step's close once the build has it: the daemon lets its own end go at `TAKEN`, where
     /// keeping it would have held each relay open until the build ended.

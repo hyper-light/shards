@@ -751,7 +751,6 @@ fn before_create(request: &Run) -> Result<Option<CidFile>, String> {
     if request.cidfile.is_empty() {
         return Ok(None);
     }
-    #[cfg(unix)]
     if let Some(file) = crate::context::told_cidfile() {
         return Ok(Some(CidFile {
             path: PathBuf::from(&request.cidfile),
@@ -766,11 +765,7 @@ fn before_create(request: &Run) -> Result<Option<CidFile>, String> {
 /// Whether this command's `--cidfile` is a client's over a context, whose ID goes to it
 /// (`context::take_cidfile`).
 fn told_cidfile() -> bool {
-    #[cfg(unix)]
-    let told = crate::context::tells_cidfile();
-    #[cfg(not(unix))]
-    let told = false;
-    told
+    crate::context::tells_cidfile()
 }
 
 /// A platform a run asks for, read as containerd reads it, that this host's microVMs run,

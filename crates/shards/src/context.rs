@@ -35,15 +35,31 @@ pub(crate) fn engine_socket(name: &str) -> PathBuf {
     Path::new("e").join(format!("{short}.sock"))
 }
 
-/// Context `name`'s engine as `DOCKER_HOST` names one.
+/// Context `name`'s engine as `DOCKER_HOST` names one: its socket; on Windows the named
+/// pipe the file at that path names, as the home's own engine's is named
+/// ([`own_endpoint`]), or the path where its daemon has named none yet.
 fn engine_endpoint(home: &Path, name: &str) -> String {
-    format!("unix://{}", home.join(engine_socket(name)).display())
+    let path = home.join(engine_socket(name));
+    #[cfg(unix)]
+    return format!("unix://{}", path.display());
+    #[cfg(windows)]
+    return std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|named| {
+            named
+                .trim()
+                .strip_prefix(r"\\.\pipe\")
+                .map(|pipe| format!("npipe:////./pipe/{pipe}"))
+        })
+        .unwrap_or_else(|| path.display().to_string());
 }
 
-/// The variable a daemon sets for a client's command on a terminal of its own: the command
-/// takes the terminal as its session's controlling terminal, first thing, as a login's
-/// command has its own (D180), which no action of posix_spawn(3) makes on every system.
-#[cfg(unix)]
+/// The variable a daemon sets for a client's command on a terminal of its own (D180). On
+/// Unix the command takes the terminal as its session's controlling terminal, first thing,
+/// as a login's command has its own, which no action of posix_spawn(3) makes on every
+/// system. On Windows, whose command is made in the terminal's pseudoconsole (ConPTY), it
+/// names which of its standard streams the terminal is (`0`, `1`, `2`), each opened there
+/// (CONIN$, CONOUT$) as the command's own.
 pub(crate) const TAKE_TERMINAL: &str = "SHARDS_TAKE_TERMINAL";
 
 /// What a client says in place of a run's or create's `--cidfile` path, before it: the file is
@@ -52,40 +68,58 @@ pub(crate) const CIDFILE: &str = "\0cidfile/";
 
 /// The variable a daemon sets for a client's command whose `--cidfile` is the client's
 /// ([`CIDFILE`]): the descriptor the command writes its microVM's ID to, which the daemon
-/// tells the client.
-#[cfg(unix)]
+/// tells the client; on Windows the handle its daemon gave it at that number
+/// (`shards_ipc::given_fd`).
 pub(crate) const CIDFILE_FD: &str = "SHARDS_CIDFILE_FD";
 
 /// The descriptor [`CIDFILE_FD`] names.
-#[cfg(unix)]
 pub(crate) const CIDFILE_DESCRIPTOR: i32 = 3;
 
+/// The variable a Windows daemon sets for a client's command: the number it gave the
+/// command a pipe at, which the client's signals and hang-up come on as Unix's come by
+/// kill(2), each its Linux number, four bytes little-endian, and the hang-up its end
+/// (cli::client `take_signal_pipe`). Windows sends a process no signal.
+#[cfg(windows)]
+pub(crate) const SIGNAL_FD: &str = "SHARDS_SIGNAL_FD";
+
+/// The number [`SIGNAL_FD`] names, past the cidfile's.
+#[cfg(windows)]
+pub(crate) const SIGNAL_DESCRIPTOR: i32 = 4;
+
 /// The descriptor [`take_cidfile`] took.
-#[cfg(unix)]
 static TOLD: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
 
 /// Takes what [`CIDFILE_FD`] names, close-on-exec, and lets the variable go, so that nothing
 /// this process starts takes it too.
-#[cfg(unix)]
 pub(crate) fn take_cidfile() {
-    use std::os::fd::FromRawFd as _;
     let Some(fd) = std::env::var(CIDFILE_FD).ok().and_then(|v| v.parse::<i32>().ok()) else {
         return;
     };
     // SAFETY: first thing in main, before any thread: the environment is this one's alone.
     unsafe { std::env::remove_var(CIDFILE_FD) };
-    // SAFETY: fcntl(2) of a descriptor past stdio's, which its daemon gave this process.
-    if fd <= 2 || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+    if fd <= 2 {
         return;
     }
-    // SAFETY: the descriptor its daemon gave this process for the ID, which nothing else
-    // here holds.
-    let file = unsafe { fs::File::from_raw_fd(fd) };
+    #[cfg(unix)]
+    let file = {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: fcntl(2) of a descriptor past stdio's, which its daemon gave this process.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return;
+        }
+        // SAFETY: the descriptor its daemon gave this process for the ID, which nothing
+        // else here holds.
+        unsafe { fs::File::from_raw_fd(fd) }
+    };
+    #[cfg(windows)]
+    let file = match shards_ipc::given_fd(fd) {
+        Ok(Some(handle)) => fs::File::from(handle),
+        _ => return,
+    };
     *TOLD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file);
 }
 
 /// The descriptor a client's `--cidfile` is told through ([`take_cidfile`]), once.
-#[cfg(unix)]
 pub(crate) fn told_cidfile() -> Option<fs::File> {
     TOLD.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -93,7 +127,6 @@ pub(crate) fn told_cidfile() -> Option<fs::File> {
 }
 
 /// Whether this process's `--cidfile` is a client's ([`take_cidfile`]).
-#[cfg(unix)]
 pub(crate) fn tells_cidfile() -> bool {
     TOLD.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -114,6 +147,36 @@ pub(crate) fn take_terminal() {
         // SAFETY: TIOCSCTTY on our own descriptor: a session's leader with no controlling
         // terminal takes it.
         unsafe { libc::ioctl(fd, libc::TIOCSCTTY as _, 0) };
+    }
+}
+
+/// [`take_terminal`] on Windows: each standard stream [`TAKE_TERMINAL`] names is the
+/// pseudoconsole's, its input buffer (CONIN$) or its screen (CONOUT$), opened read and
+/// write as a console's own handles are and set as this process's, for its life.
+#[cfg(windows)]
+pub(crate) fn take_terminal() {
+    use std::os::windows::io::IntoRawHandle as _;
+    use windows_sys::Win32::System::Console::{
+        STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+    let Some(streams) = std::env::var_os(TAKE_TERMINAL) else {
+        return;
+    };
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(TAKE_TERMINAL) };
+    for stream in streams.to_string_lossy().chars() {
+        let (buffer, which) = match stream {
+            '0' => ("CONIN$", STD_INPUT_HANDLE),
+            '1' => ("CONOUT$", STD_OUTPUT_HANDLE),
+            '2' => ("CONOUT$", STD_ERROR_HANDLE),
+            _ => continue,
+        };
+        let Ok(opened) = fs::OpenOptions::new().read(true).write(true).open(buffer) else {
+            continue;
+        };
+        // SAFETY: a console handle this process owns, given to its standard stream for the
+        // process's life.
+        unsafe { SetStdHandle(which, opened.into_raw_handle()) };
     }
 }
 
@@ -460,13 +523,10 @@ fn unnamed(path: &Path) -> PathBuf {
     path.with_file_name(format!("~{name}.{}", std::process::id()))
 }
 
-/// A new file at `path`, only its owner's, holding `bytes` on disk.
+/// A new file at `path`, only its owner's wherever the home is (shards_ipc::create_private),
+/// holding `bytes` on disk.
 fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(path)?;
+    let mut file = shards_ipc::create_private(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -2499,7 +2559,6 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     // A copy is driven here, as this machine's CLI drives one, each of its steps asked of the
     // machine's daemon: its files here are this client's. What steers a command steers no
     // step, so a signal ends the client, and the step there with its stream.
-    #[cfg(unix)]
     if let Some(parsed) = copying(&words_sent) {
         return crate::cli::cp::copy(&parsed, &|argv, fds| step_there(&identity, context, argv, fds));
     }
@@ -2701,7 +2760,6 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
 
 /// `words`' copy, read as `cp` reads it (cli/cp.rs), where the command is one; a command
 /// shards' parser refuses, or `-h`, goes as it is.
-#[cfg(unix)]
 fn copying(words: &[String]) -> Option<shards_cmdline::flags::Parsed> {
     let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
@@ -2720,7 +2778,6 @@ fn copying(words: &[String]) -> Option<shards_cmdline::flags::Parsed> {
 /// CLI there would ask its daemon, the step's stream its descriptors, an archive's written
 /// into the one in `fds` and an extract's read from it; else what it said on stdout, and on
 /// stderr, taken whole, with its status.
-#[cfg(unix)]
 fn step_there(
     identity: &Identity,
     context: &Context,
@@ -3016,8 +3073,7 @@ pub(crate) fn clients(home: &Path) -> Vec<Client> {
     out
 }
 
-/// Enrolls `key` as client `name`: the daemon's, which listens on Unix alone.
-#[cfg(unix)]
+/// Enrolls `key` as client `name`: the daemon's, as a client joins.
 pub(crate) fn enroll(home: &Path, name: &str, key: &[u8]) -> Result<(), String> {
     let text = format!(
         "{CLIENT}\nname {name}\nkey {}\nenrolled {}\n",
@@ -3061,7 +3117,6 @@ fn invitations(home: &Path) -> Vec<(Invitation, u64)> {
 }
 
 /// How many of this machine's invitations are open: unspent, and not lapsed.
-#[cfg(unix)]
 pub(crate) fn open_invitations(home: &Path) -> usize {
     invitations(home)
         .iter()

@@ -7,7 +7,6 @@
 //! terminal raw while the command's own reads it, sized and resized, ^C and the detach keys
 //! as they are; and without one, the signals the client receives reach the command.
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -21,6 +20,51 @@ use common::terminal::{Terminal, cooked};
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, run_shards_env_in, served};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
+
+/// SIGINT, as Linux numbers it, which a client ended by an interrupt exits by (128 + it), on
+/// every host: Windows' clients exit by Linux's numbers.
+const SIGINT: i32 = 2;
+
+/// A connection to the engine served at `socket`: its Unix socket; on Windows the named pipe
+/// the file there names.
+#[cfg(unix)]
+fn connect(socket: &Path) -> std::os::unix::net::UnixStream {
+    let conn = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+    conn
+}
+
+#[cfg(windows)]
+fn connect(socket: &Path) -> std::fs::File {
+    let named = std::fs::read_to_string(socket).unwrap();
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(named.trim())
+        .unwrap()
+}
+
+/// What `DOCKER_HOST` names the engine served at `socket` by: its socket; on Windows its
+/// pipe, which the file there names.
+fn docker_host(socket: &Path) -> String {
+    #[cfg(unix)]
+    return format!("unix://{}", socket.display());
+    #[cfg(windows)]
+    return std::fs::read_to_string(socket)
+        .unwrap()
+        .trim()
+        .strip_prefix(r"\\.\pipe\")
+        .map(|pipe| format!("npipe:////./pipe/{pipe}"))
+        .unwrap();
+}
+
+/// Where a home's own engine is served, in it: its socket; on Windows the file that names
+/// its pipe.
+const OWN_ENGINE: &str = if cfg!(windows) {
+    "engine.pipe"
+} else {
+    "engine.sock"
+};
 
 /// A home whose daemon listens for other machines' clients, stopped as this drops, as when a
 /// test fails: a daemon that listens does not end when idle.
@@ -153,7 +197,7 @@ fn ctrl_c_and_the_detach_keys_cross_a_context() {
     term.wait_for("ready\r\n");
     term.type_in(&[3]);
     let (_, status, restored) = term.exit();
-    assert_eq!((status, restored), (128 + libc::SIGINT, true));
+    assert_eq!((status, restored), (128 + SIGINT, true));
 
     let mut term = there(&laptop, &["-it", "--name", "left", &image, "sleep"], 24, 80);
     term.wait_for("ready\r\n");
@@ -571,8 +615,7 @@ fn a_build_through_a_context_is_of_the_clients_context_kept_in_step() {
 /// connection of its own: the answer's status, and its body, a length's or a chunked one's.
 fn engine_get(socket: &Path, path: &str) -> (u16, String) {
     use std::io::{BufRead as _, Write as _};
-    let mut conn = std::os::unix::net::UnixStream::connect(socket).unwrap();
-    conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let mut conn = connect(socket);
     write!(conn, "GET {path} HTTP/1.1\r\nHost: api\r\n\r\n").unwrap();
     let mut reader = std::io::BufReader::new(conn);
     let mut line = String::new();
@@ -624,12 +667,22 @@ fn a_contexts_engine_is_its_machines() {
     let inspected = run_shards_env(&["inspect", "context"], &["gpu"], &on_laptop, TIMEOUT);
     assert_eq!(inspected.status, Some(0), "{inspected}");
     let doc: serde_json::Value = serde_json::from_str(&inspected.stdout).unwrap();
+    // On Windows the file of the home that names the pipe, which the endpoint names once the
+    // context's engine is served, and its own path until then.
+    #[cfg(unix)]
     let engine = PathBuf::from(
         doc[0]["Engine"]
             .as_str()
             .and_then(|e| e.strip_prefix("unix://"))
             .unwrap_or_else(|| panic!("{doc}")),
     );
+    #[cfg(windows)]
+    let engine = {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(b"gpu");
+        let short: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+        laptop.join("e").join(format!("{short}.sock"))
+    };
     // Served as the daemon starts, for the contexts its home joined.
     let served = |engine: &Path| {
         let start = std::time::Instant::now();
@@ -639,13 +692,24 @@ fn a_contexts_engine_is_its_machines() {
         }
     };
     served(&engine);
+    // On Windows, once served, the endpoint names its pipe, as Docker's clients write one.
+    #[cfg(windows)]
+    {
+        let _ = doc;
+        let inspected = run_shards_env(&["inspect", "context"], &["gpu"], &on_laptop, TIMEOUT);
+        let doc: serde_json::Value = serde_json::from_str(&inspected.stdout).unwrap();
+        assert_eq!(
+            doc[0]["Engine"].as_str(),
+            Some(docker_host(&engine).as_str()),
+            "{doc}"
+        );
+    }
     assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
     // A client that reads to the end, as one asking to close does: the API's end of its
     // answer is the client's end of reading, through the relay.
     {
         use std::io::{Read as _, Write as _};
-        let mut conn = std::os::unix::net::UnixStream::connect(&engine).unwrap();
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut conn = connect(&engine);
         conn.write_all(b"GET /_ping HTTP/1.1\r\nHost: api\r\nConnection: close\r\n\r\n")
             .unwrap();
         let mut answer = String::new();
@@ -665,7 +729,7 @@ fn a_contexts_engine_is_its_machines() {
     let (status, there) = engine_get(&engine, "/containers/json?all=1");
     assert_eq!(status, 200, "{there}");
     assert!(there.contains("\"/relayed\""), "{there}");
-    let (status, here) = engine_get(&laptop.join("engine.sock"), "/containers/json?all=1");
+    let (status, here) = engine_get(&laptop.join(OWN_ENGINE), "/containers/json?all=1");
     assert_eq!(status, 200, "{here}");
     assert!(!here.contains("relayed"), "{here}");
     // Docker's own CLI, where this host has one: its listing, and a run, whose attach takes
@@ -674,7 +738,7 @@ fn a_contexts_engine_is_its_machines() {
     let docker = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join("docker"))
+        .map(|d| d.join(format!("docker{}", std::env::consts::EXE_SUFFIX)))
         .find(|p| p.is_file());
     if docker.is_none() {
         eprintln!("no docker CLI on this host: its part not run");
@@ -682,13 +746,14 @@ fn a_contexts_engine_is_its_machines() {
     let (config, no_helpers) = (laptop.join("docker-config"), laptop.join("no-helpers"));
     std::fs::create_dir_all(&config).unwrap();
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", engine.display());
+    // Named as it is now: on Windows each pipe the context's engine is served at again is
+    // a new name.
     let docker = |args: &[&str], stdin: Stdio| {
         docker.as_ref().map(|docker| {
             let out = common::output_within(
                 std::process::Command::new(docker)
                     .args(args)
-                    .env("DOCKER_HOST", &host)
+                    .env("DOCKER_HOST", docker_host(&engine))
                     .env("DOCKER_CONFIG", &config)
                     .env("PATH", &no_helpers)
                     .env_remove("DOCKER_CONTEXT")
@@ -776,8 +841,7 @@ fn a_contexts_engine_is_its_machines() {
     assert_eq!(held.status, Some(0), "{held}");
     {
         use std::io::{BufRead as _, Read as _, Write as _};
-        let attach = std::os::unix::net::UnixStream::connect(&engine).unwrap();
-        attach.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let attach = connect(&engine);
         (&attach)
             .write_all(
                 b"POST /containers/held/attach?stream=1&stdout=1&stderr=1 HTTP/1.1\r\nHost: api\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
@@ -1051,36 +1115,39 @@ fn a_clients_logins_are_its_own() {
 
 /// With no terminal, a signal the client receives reaches the command there, by the number
 /// Linux gives it, as `docker run`'s signal proxy sends a container its own: SIGUSR1 is 30
-/// on macOS, 10 to the guest.
+/// on macOS, 10 to the guest. On Windows, which sends a process no signal but its console's
+/// events, the client's interrupt, Ctrl-Break to its process group, is SIGINT there.
 #[test]
 fn a_signal_to_the_client_reaches_the_command_there() {
     let Some((_machine, _listening, laptop, image)) = joined("ctx-sig") else {
         return;
     };
-    for (name, host, linux) in [("INT", libc::SIGINT, 2), ("USR1", libc::SIGUSR1, 10)] {
-        let mut child = common::command()
+    #[cfg(unix)]
+    let signals = [("INT", libc::SIGINT, 2), ("USR1", libc::SIGUSR1, 10)];
+    #[cfg(windows)]
+    let signals = [("INT", 0, 2)];
+    for (name, host, linux) in signals {
+        let mut command = common::command();
+        command
             .args(["--context", "gpu", "run", "--pull", "never", &image, "trap", name])
             .env("SHARDS_HOME", laptop.as_os_str())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::piped());
+        let mut child = common::interruptible(&mut command).spawn().unwrap();
         // A regression fails the test instead of hanging it.
-        let pid = child.id() as libc::pid_t;
+        let ender = Ender::of(&child);
         let (done, watch) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             if watch.recv_timeout(TIMEOUT).is_err() {
-                // SAFETY: kill(2) of our own child, which is only reaped after `done`.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+                ender.end();
             }
         });
         let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
         let mut ready = String::new();
         out.read_line(&mut ready).unwrap();
         assert_eq!(ready, "ready\n", "{name}");
-        // SAFETY: kill(2) of our own child.
-        unsafe { libc::kill(pid, host) };
+        signal(&child, host);
         let mut rest = String::new();
         out.read_to_string(&mut rest).unwrap();
         let mut stderr = String::new();
@@ -1092,6 +1159,60 @@ fn a_signal_to_the_client_reaches_the_command_there() {
             (Some(0), format!("got {linux}\n").as_str()),
             "{name}: {stderr}"
         );
+    }
+}
+
+/// What ends a test's child that outlives its time, from another thread: its process.
+struct Ender {
+    #[cfg(unix)]
+    pid: libc::pid_t,
+    #[cfg(windows)]
+    process: std::os::windows::io::OwnedHandle,
+}
+
+impl Ender {
+    fn of(child: &std::process::Child) -> Ender {
+        #[cfg(unix)]
+        return Ender {
+            pid: libc::pid_t::try_from(child.id()).unwrap(),
+        };
+        #[cfg(windows)]
+        return Ender {
+            process: std::os::windows::io::AsHandle::as_handle(child)
+                .try_clone_to_owned()
+                .unwrap(),
+        };
+    }
+
+    fn end(&self) {
+        // SAFETY: kill(2) of our own child, which is only reaped once the test is done.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(self.pid, libc::SIGKILL)
+        };
+        // SAFETY: a handle of the child's process, which this holds open.
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&self.process),
+                1,
+            )
+        };
+    }
+}
+
+/// Sends `child`, started [`common::interruptible`], signal `sig`; on Windows its
+/// interrupt ([`common::interrupt`]), the one event a process sends another's group.
+fn signal(child: &std::process::Child, sig: i32) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of our own child.
+    unsafe {
+        libc::kill(libc::pid_t::try_from(child.id()).unwrap(), sig)
+    };
+    #[cfg(windows)]
+    {
+        let _ = sig;
+        common::interrupt(child);
     }
 }
 
@@ -1139,9 +1260,14 @@ fn a_context_runs_commands_on_its_machine_whole() {
     );
     assert_eq!(invited.status, Some(0), "{invited}");
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(&invite).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "the invitation is private");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&invite).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the invitation is private");
+        }
+        #[cfg(windows)]
+        assert!(common::private_to_its_user(&invite), "the invitation is private");
     }
     assert!(
         !invited.stdout.contains("secret") && !invited.stderr.contains("secret"),
@@ -1423,7 +1549,10 @@ fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_
     std::fs::write(dir.join("bin/run.sh"), "#!/bin/sh\necho agent\n").unwrap();
     std::fs::write(dir.join("data"), vec![7u8; 64 << 10]).unwrap();
     std::fs::hard_link(dir.join("data"), dir.join("data-too")).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink("bin/run.sh", dir.join("run")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file("bin/run.sh", dir.join("run")).unwrap();
     let (pem, password, pkcs8) = cosign_key();
     let key = laptop.join("cosign.key");
     std::fs::write(&key, &pem).unwrap();
@@ -1836,47 +1965,60 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
     let Some((machine, _listening, laptop, image)) = joined("ctx-ssh") else {
         return;
     };
-    let tools = ["ssh-agent", "ssh-keygen", "ssh-add"];
-    if tools
-        .iter()
-        .any(|t| std::process::Command::new(t).arg("-h").output().is_err())
-    {
-        eprintln!("SKIP: no OpenSSH tools on this host");
-        return;
-    }
-    let sock = laptop.join("agent.sock");
-    let mut agent = common::ssh_agent(&sock);
-    struct Ended<'a>(&'a mut std::process::Child);
-    impl Drop for Ended<'_> {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let _agent = Ended(&mut agent);
-    for _ in 0..100 {
-        if sock.exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
     let key = laptop.join("id");
-    let made = std::process::Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
-        .arg(&key)
-        .output()
-        .unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
-    let added = std::process::Command::new("ssh-add")
-        .arg(&key)
-        .env("SSH_AUTH_SOCK", &sock)
-        .output()
-        .unwrap();
-    assert!(
-        added.status.success(),
-        "{}",
-        String::from_utf8_lossy(&added.stderr)
-    );
+    // On Unix OpenSSH's own agent, its key made and added by its tools; on Windows an agent
+    // of the test's own at a pipe (common::SshAgent), whose OpenSSH agent is a service of the
+    // machine's, its key written as ssh-keygen writes one.
+    #[cfg(unix)]
+    let (sock, _agent) = {
+        let tools = ["ssh-agent", "ssh-keygen", "ssh-add"];
+        if tools
+            .iter()
+            .any(|t| std::process::Command::new(t).arg("-h").output().is_err())
+        {
+            eprintln!("SKIP: no OpenSSH tools on this host");
+            return;
+        }
+        let sock = laptop.join("agent.sock");
+        struct Ended(std::process::Child);
+        impl Drop for Ended {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let agent = Ended(common::ssh_agent(&sock));
+        for _ in 0..100 {
+            if sock.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
+            .arg(&key)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let added = std::process::Command::new("ssh-add")
+            .arg(&key)
+            .env("SSH_AUTH_SOCK", &sock)
+            .output()
+            .unwrap();
+        assert!(
+            added.status.success(),
+            "{}",
+            String::from_utf8_lossy(&added.stderr)
+        );
+        (sock, agent)
+    };
+    #[cfg(windows)]
+    let (sock, agent) = {
+        let seed = [7u8; 32];
+        common::ssh_key_file(&key, &seed, "shards-test-key");
+        let agent = common::ssh_agent_windows(seed, "shards-test-key");
+        (PathBuf::from(&agent.pipe), agent)
+    };
     let app = laptop.join("app");
     std::fs::create_dir_all(&app).unwrap();
     std::fs::write(
@@ -1911,12 +2053,22 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
     ] {
         assert!(built.stderr.contains(line), "{line:?}\n{built}");
     }
-    let listed = std::process::Command::new("ssh-add")
-        .arg("-l")
-        .env("SSH_AUTH_SOCK", &sock)
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
+    // The agent keeps its key: no removal reached it.
+    #[cfg(unix)]
+    {
+        let listed = std::process::Command::new("ssh-add")
+            .arg("-l")
+            .env("SSH_AUTH_SOCK", &sock)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
+    }
+    #[cfg(windows)]
+    assert_eq!(
+        agent.removals.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a removal reached the client's agent"
+    );
     // The key file itself, answered here: the key without its comment, as x/crypto drops it.
     let from_file = build(&format!("default={}", key.display()));
     assert_eq!(from_file.status, Some(0), "{from_file}");
@@ -1932,7 +2084,8 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
         );
     }
     // The build reached its agents by descriptors alone: no socket file the machine's other
-    // processes could dial.
+    // processes could dial. On Windows its pairs are pipes no name reaches.
+    #[cfg(unix)]
     let sockets: Vec<PathBuf> = every_path(&machine)
         .into_iter()
         .filter(|p| {
@@ -1941,10 +2094,12 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
         })
         .filter(|p| !p.ends_with("engine.sock"))
         .collect();
+    #[cfg(unix)]
     assert!(sockets.is_empty(), "sockets in the machine's home: {sockets:?}");
 }
 
 /// Every path under `root`.
+#[cfg(unix)]
 fn every_path(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut dirs = vec![root.to_path_buf()];

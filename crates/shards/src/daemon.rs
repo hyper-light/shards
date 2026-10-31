@@ -80,8 +80,7 @@ mod reclaim;
 mod record;
 mod refill;
 mod relay;
-// Other machines' clients (D180): Unix's alone as yet.
-#[cfg(unix)]
+// Other machines' clients (D180).
 mod remote;
 mod restart;
 mod rmi;
@@ -1618,15 +1617,9 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
     // Other machines' clients (D180), before it says it serves: an address it cannot bind
-    // is its starter's to hear. Unix's alone as yet: what they run here (their contexts,
-    // secrets and agents) is Unix's.
+    // is its starter's to hear.
     if let Some(at) = listen {
-        #[cfg(unix)]
         remote::listen(daemon.home.clone(), exe.clone(), at)?;
-        #[cfg(windows)]
-        return Err(format!(
-            "listening at {at}: other machines' clients are not served on Windows yet"
-        ));
     }
     // Its starter returns once it hears this: its slots are offered from now on.
     if let Some(mut ready) = ready {
@@ -2237,8 +2230,10 @@ impl<D: Disk> Daemon<D> {
 
     /// [`wait_for_work`](Self::wait_for_work) on Windows: its wake, its watches and the
     /// Engine API's listener are events, waited on together (WaitForMultipleObjects), each
-    /// looked at as the wait ends, as a wait names the first alone. Windows has no
-    /// contexts' engines yet (relay.rs), so `relays` is none.
+    /// looked at as the wait ends, as a wait names the first alone. The contexts' listeners
+    /// are their takers' to wait on, which wake it as each client comes (relay.rs), so that
+    /// a home of any number of contexts waits on these alone: WaitForMultipleObjects waits
+    /// on 64 at most.
     #[cfg(windows)]
     fn wait_for_work(
         &self,

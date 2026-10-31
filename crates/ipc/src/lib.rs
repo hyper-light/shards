@@ -1976,6 +1976,25 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+/// A new file at `path`, its user's alone wherever it is, as a file a user's secret is
+/// written to must be (an invitation, a home's identity): mode 0600 on Unix; on Windows a
+/// DACL that grants this process's user, and no one else, all of it, protected from what
+/// its directory would give it, where an ACL inherited is whatever the directory's is.
+/// Refused where a file is there already.
+pub fn create_private(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    }
+    #[cfg(windows)]
+    pipe::create_private(path)
+}
+
 /// What carries shards' own messages between its processes: a Unix socket on Unix; on
 /// Windows a pipe's end ([`pipe::Stream`]), which Unix's code takes as it takes the socket.
 #[cfg(unix)]

@@ -371,6 +371,36 @@ pub(crate) fn attributes() -> io::Result<SECURITY_ATTRIBUTES> {
     }
 }
 
+/// [`crate::create_private`] on Windows: a new file at `path` made with the DACL
+/// [`attributes`] gives, this process's user's alone, protected from what its directory
+/// would give it; shared with no other open while this one is (share mode 0).
+pub(crate) fn create_private(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
+    let attributes = attributes()?;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a NUL-terminated path, and attributes whose descriptor lives as long as the
+    // process.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            &raw const attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the handle just made, owned from here on.
+    Ok(std::fs::File::from(unsafe {
+        OwnedHandle::from_raw_handle(handle)
+    }))
+}
+
 /// This process's user's SID, as SDDL writes it.
 fn user_sid() -> io::Result<String> {
     let mut token: HANDLE = std::ptr::null_mut();
@@ -1199,6 +1229,11 @@ struct Waiting {
     overlapped: Box<OVERLAPPED>,
     connected: bool,
 }
+
+// SAFETY: its OVERLAPPED's pointers are its listener's own event's handle and nothing of
+// any thread's: an overlapped connect belongs to no thread, and its instance and OVERLAPPED
+// are touched under the listener's lock alone, from whichever thread holds the listener.
+unsafe impl Send for Waiting {}
 
 impl std::fmt::Debug for Waiting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

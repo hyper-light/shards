@@ -7,10 +7,8 @@
 //! ignore file beside it, a few kilobytes, go whole each time, ahead of the layer.
 
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(unix)]
 use std::io::Read;
 use std::io::{self, Write};
-#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 use shards_build::host::Stat;
@@ -36,10 +34,8 @@ pub(crate) const OUT: &str = "\u{0}out/";
 /// What stands for the `N`th secret a client sends with its build (`\0secret/N`), which the
 /// machine's build reads from a pipe, the descriptor [`SECRET_FD`] + N.
 pub(crate) const SECRET: &str = "\u{0}secret/";
-#[cfg(unix)]
 pub(crate) const SECRET_FD: i32 = 3;
 
-#[cfg(unix)]
 /// Where a build's words are put on the machine: the copies of its context and its build
 /// file's directory, the directory of its outputs, and the client's copies.
 pub(crate) struct Places<'a> {
@@ -51,7 +47,6 @@ pub(crate) struct Places<'a> {
     pub agents: &'a BTreeMap<String, PathBuf>,
 }
 
-#[cfg(unix)]
 /// A word of a build's command line on the machine: [`CONTEXT`] its copy of the context; and
 /// wherever they stand, [`DOCKERFILE`]'s files its copy of the build file's directory's,
 /// each [`OUT`] the directory of its outputs, each [`TREE`] the copy of that tree, and a
@@ -84,6 +79,50 @@ pub(crate) fn placed(word: &str, places: &Places<'_>) -> std::ffi::OsString {
     std::ffi::OsString::from(said)
 }
 
+/// The secrets of `secrets` its daemon gave this build at a number, on Windows
+/// (`src=/dev/fd/N`, [`placed`]): each read whole from what was given there
+/// (`shards_ipc::given_fd`), at most `max` bytes past which the store refuses it, and named
+/// for the store (`buildflags::store`) by a variable no environment holds, a NUL its
+/// first character, which the build answers from what was read. A number given nothing is
+/// a path as any other, which no file of Windows' names.
+#[cfg(windows)]
+pub(crate) fn given_secrets(
+    secrets: Vec<shards_cmdline::buildflags::Secret>,
+    max: u64,
+) -> Result<
+    (
+        Vec<shards_cmdline::buildflags::Secret>,
+        BTreeMap<String, shards_cmdline::buildflags::SecretBytes>,
+    ),
+    String,
+> {
+    let mut given = BTreeMap::new();
+    let mut kept = Vec::with_capacity(secrets.len());
+    for mut secret in secrets {
+        let at = secret
+            .file
+            .strip_prefix("/dev/fd/")
+            .and_then(|n| n.parse::<i32>().ok());
+        let handle = match at {
+            Some(n) => shards_ipc::given_fd(n).map_err(|e| format!("{}: {e}", secret.file))?,
+            None => None,
+        };
+        if let Some(handle) = handle {
+            let mut bytes = Vec::new();
+            std::fs::File::from(handle)
+                .take(max.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("reading secret {}: {e}", secret.id))?;
+            let name = format!("\u{0}given{}", secret.file);
+            given.insert(name.clone(), shards_cmdline::buildflags::SecretBytes::new(bytes));
+            secret.file = String::new();
+            secret.env = name;
+        }
+        kept.push(secret);
+    }
+    Ok((kept, given))
+}
+
 /// What starts what a client sends of a build: the build file's directory, its secrets,
 /// then the layer; and says the build's step frames its stdout ([`SAID`]).
 const MAGIC: &[u8] = b"shards context 3\n";
@@ -101,12 +140,10 @@ pub(crate) const DONE: u8 = 4;
 /// and the token the client claims it by, which it then relays (the step `agent`).
 pub(crate) const AGENT: u8 = 5;
 
-#[cfg(unix)]
 /// A step's stdout, framed, a whole frame at a time from whichever thread says one: the
 /// build's own output, and its agents' connections as they come.
 pub(crate) struct Framed<W>(std::sync::Mutex<W>);
 
-#[cfg(unix)]
 impl<W: Write> Framed<W> {
     pub(crate) fn new(out: W) -> Framed<W> {
         Framed(std::sync::Mutex::new(out))
@@ -125,21 +162,17 @@ impl<W: Write> Framed<W> {
 }
 
 /// A frame's most bytes: what a read of the build's stdout takes at once.
-#[cfg(unix)]
 const FRAME_MOST: usize = 64 << 10;
 
-#[cfg(unix)]
 fn frame(out: &mut dyn Write, tag: u8, bytes: &[u8]) -> io::Result<()> {
     out.write_all(&[tag])?;
     out.write_all(&u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes())?;
     out.write_all(bytes)
 }
 
-#[cfg(unix)]
 /// What writes [`CHUNK`] frames, a frame a write.
 struct Chunks<'a>(&'a mut dyn Write);
 
-#[cfg(unix)]
 impl Write for Chunks<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let n = bytes.len().min(FRAME_MOST);
@@ -152,7 +185,6 @@ impl Write for Chunks<'_> {
     }
 }
 
-#[cfg(unix)]
 /// The build's stdout as [`SAID`] frames, as it comes, to its end.
 pub(crate) fn say<W: Write>(mut build: impl Read, out: &Framed<W>) -> io::Result<()> {
     let mut buf = vec![0u8; FRAME_MOST];
@@ -165,7 +197,6 @@ pub(crate) fn say<W: Write>(mut build: impl Read, out: &Framed<W>) -> io::Result
     }
 }
 
-#[cfg(unix)]
 /// Each output the build wrote in `dir`, by its name, in its order: a file's bytes, a
 /// directory's archive.
 pub(crate) fn send_outputs(dir: &Path, out: &mut dyn Write) -> Result<(), String> {
@@ -262,11 +293,9 @@ impl<S: Write, O: Outputs> Write for Demux<S, O> {
     }
 }
 
-#[cfg(unix)]
 /// The most of a secret a build takes: what a step's frame carries, as a build here takes.
 const SECRET_MAX: u64 = shards_abi::run::MAX_PAYLOAD as u64;
 
-#[cfg(unix)]
 /// The most a build file's directory sends: as much as a build reads of a Dockerfile.
 const DOCKERFILE_MAX: u64 = 64 << 20;
 
@@ -310,7 +339,6 @@ impl Seen {
 /// What a copy holds, by each entry's path.
 pub(crate) type Manifest = BTreeMap<Vec<u8>, Seen>;
 
-#[cfg(unix)]
 /// A copy's entries, walked as a build walks its context, nothing excluded.
 pub(crate) fn manifest_of(dir: &Path) -> Result<Manifest, String> {
     if !dir.is_dir() {
@@ -329,7 +357,6 @@ fn put(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-#[cfg(unix)]
 /// The manifest as it crosses: each entry's path and link, length first, and its mode,
 /// size and time.
 pub(crate) fn encode(manifest: &Manifest) -> Vec<u8> {
@@ -517,7 +544,6 @@ pub(crate) fn send(
     pack(out)
 }
 
-#[cfg(unix)]
 fn read_array<const N: usize>(input: &mut dyn Read) -> Result<[u8; N], String> {
     let mut b = [0u8; N];
     input
@@ -526,7 +552,6 @@ fn read_array<const N: usize>(input: &mut dyn Read) -> Result<[u8; N], String> {
     Ok(b)
 }
 
-#[cfg(unix)]
 fn read_vec(input: &mut dyn Read, n: u64) -> Result<Vec<u8>, String> {
     if n > DOCKERFILE_MAX {
         return Err(format!("a build file's directory past {DOCKERFILE_MAX} bytes"));
@@ -542,7 +567,6 @@ fn read_vec(input: &mut dyn Read, n: u64) -> Result<Vec<u8>, String> {
     Ok(v)
 }
 
-#[cfg(unix)]
 /// Reads what [`send`] wrote, on the machine: the build file's directory written whole into
 /// `dockerfile`, made afresh, then the layer applied over `context`. Names are a file's
 /// alone, no path. Returns the bytes the layer's files held.
@@ -615,7 +639,6 @@ pub(crate) fn receive(
     Ok((sent, secrets))
 }
 
-#[cfg(unix)]
 /// A secret of `n` bytes from `input`, read into a buffer of that length, held as a secret
 /// before it is filled: no growth leaves a copy, and one cut short is overwritten too.
 fn read_secret(input: &mut dyn Read, n: u64) -> Result<shards_cmdline::buildflags::SecretBytes, String> {
@@ -627,7 +650,6 @@ fn read_secret(input: &mut dyn Read, n: u64) -> Result<shards_cmdline::buildflag
     Ok(held)
 }
 
-#[cfg(unix)]
 /// `bytes` as the file `path`, of `mode`'s permissions and time `mtime`.
 fn write_file(path: &Path, mode: u32, mtime: (i64, u32), bytes: &[u8]) -> Result<(), String> {
     let at = |e: io::Error| format!("{}: {e}", path.display());
@@ -651,7 +673,6 @@ fn write_file(path: &Path, mode: u32, mtime: (i64, u32), bytes: &[u8]) -> Result
 /// a NUL before each, each tree's key and its path, a NUL between.
 pub(crate) const SHOWN_AS: &str = "SHARDS_SYNCED_AS";
 
-#[cfg(unix)]
 /// What a command run of a client's copy prints, its copy's paths said as the client's own
 /// (each pair the copy's path, then the client's), as it comes: all but a tail that may yet
 /// begin one, held until what follows says.
@@ -664,7 +685,6 @@ pub(crate) struct Shown<R> {
     ended: bool,
 }
 
-#[cfg(unix)]
 impl<R: Read> Shown<R> {
     pub(crate) fn new(inner: R, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Shown<R> {
         let mut pairs: Vec<(Vec<u8>, Vec<u8>)> =
@@ -682,7 +702,6 @@ impl<R: Read> Shown<R> {
     }
 }
 
-#[cfg(unix)]
 impl<R: Read> Read for Shown<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         while self.at >= self.ready.len() {
@@ -712,7 +731,6 @@ impl<R: Read> Read for Shown<R> {
     }
 }
 
-#[cfg(unix)]
 /// `text` with each pair's path said as the other, as far as it can be said: all of it
 /// where nothing follows (`ended`), else up to a tail that may yet begin a path. What it
 /// says, and how much of `text` that was.
@@ -746,14 +764,12 @@ fn replaced(text: &[u8], pairs: &[(Vec<u8>, Vec<u8>)], ended: bool) -> (Vec<u8>,
     (out, i)
 }
 
-#[cfg(unix)]
 /// The copy a client's build keeps on the machine of `home`: `synced/CLIENT/KEY`, KEY the
 /// hex the client names it by, of 64 hex digits.
 pub(crate) fn copy_of(home: &Path, client: &str, key: &str) -> Result<PathBuf, String> {
     copy_of_key(&home.join("synced").join(client), key)
 }
 
-#[cfg(unix)]
 /// The copy `key` names among a client's `copies`.
 fn copy_of_key(copies: &Path, key: &str) -> Result<PathBuf, String> {
     if key.len() != 64
@@ -780,7 +796,6 @@ pub(crate) fn send_tree(
     pack(out)
 }
 
-#[cfg(unix)]
 /// What a client sends of another tree, brought into its copy, `context`: the bytes of files
 /// that came.
 pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, String> {

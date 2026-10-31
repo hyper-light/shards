@@ -1400,15 +1400,12 @@ pub(crate) const SIGN_STEP: &str = "\u{0}sign";
 
 /// The most of a bundle a client may send: a keyless one's certificates, its logs' entries
 /// and their proofs come to a few KiB.
-#[cfg(unix)]
 const BUNDLE_MOST: u64 = 1 << 20;
 
 /// A step of a signature made through a context, on the machine whose store holds the
 /// artifact: `subject KIND NAME` says what a signature of it is of, as its descriptor;
 /// `keep KIND NAME DIGEST` keeps the bundle `input` holds as one, and says the referrer's
-/// digest. Signing is the client's, between the two. The machine's half, which listens on
-/// Unix alone.
-#[cfg(unix)]
+/// digest. Signing is the client's, between the two. The machine's half.
 pub(crate) fn sign_step(
     home: &Path,
     args: &[String],

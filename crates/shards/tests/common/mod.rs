@@ -864,6 +864,92 @@ pub fn write_at(file: &std::fs::File, bytes: &[u8], at: u64) {
     );
 }
 
+/// Whether `path` is its user's alone on Windows, as `shards_ipc::create_private` makes a
+/// file: its DACL protected from its directory's, one ACE, allowing this process's user all
+/// of a file (`FA`), and no one else anything.
+#[cfg(windows)]
+pub fn private_to_its_user(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+        TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated path, and a descriptor for the call to fill, freed below.
+    let got = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut sd,
+        )
+    };
+    assert_eq!(got, 0, "{}", path.display());
+    let mut text: *mut u16 = std::ptr::null_mut();
+    let mut len = 0u32;
+    // SAFETY: the descriptor read above, and a string for the call to fill, freed below.
+    let converted = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &raw mut text,
+            &raw mut len,
+        )
+    };
+    assert_ne!(converted, 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: the `len` characters the call wrote.
+    let dacl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) });
+    // SAFETY: what the calls above allocated, each freed once.
+    unsafe {
+        LocalFree(text.cast());
+        LocalFree(sd);
+    }
+    // This process's user, as SDDL names it.
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: this process's own token, for querying, never closed: the test's life.
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) };
+    assert_ne!(opened, 0);
+    let mut buf = vec![0u8; 256];
+    let mut needed = 0u32;
+    // SAFETY: a buffer of its own size for the token's user.
+    let read = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            buf.as_mut_ptr().cast(),
+            u32::try_from(buf.len()).unwrap(),
+            &raw mut needed,
+        )
+    };
+    assert_ne!(read, 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: TokenUser's TOKEN_USER, at the start of the buffer it filled.
+    let sid = unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut named: *mut u16 = std::ptr::null_mut();
+    // SAFETY: the SID the token holds, and a string for the call to fill, freed below.
+    let converted = unsafe { ConvertSidToStringSidW(sid, &raw mut named) };
+    assert_ne!(converted, 0);
+    // SAFETY: a NUL-terminated string the call made.
+    let user = unsafe {
+        let n = (0..).take_while(|&i| *named.add(i) != 0).count();
+        let user = String::from_utf16_lossy(std::slice::from_raw_parts(named, n));
+        LocalFree(named.cast());
+        user
+    };
+    dacl.trim_end_matches('\0') == format!("D:P(A;;FA;;;{user})")
+}
+
 /// `cmd` started so that [`interrupt`] reaches it: on Windows in a process group of its own,
 /// which a console's events reach by its leader's id (CREATE_NEW_PROCESS_GROUP).
 pub fn interruptible(cmd: &mut Command) -> &mut Command {
@@ -3456,10 +3542,214 @@ pub fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
     (index, blobs, layer_digest)
 }
 
+/// An SSH agent of this test's own on Windows, at a named pipe, as Windows' OpenSSH serves
+/// its own (`\\.\pipe\openssh-ssh-agent`), whose agent is a service of the machine's that no
+/// test may take over: it holds one ed25519 key, which it lists and signs with
+/// (draft-miller-ssh-agent: SSH_AGENTC_REQUEST_IDENTITIES, SSH_AGENTC_SIGN_REQUEST), and
+/// refuses all else, counting each removal it is asked for. Served for the test's life.
+#[cfg(windows)]
+pub struct SshAgent {
+    /// What `SSH_AUTH_SOCK` names it by: its pipe.
+    pub pipe: String,
+    /// The removals it was asked for, which it refused.
+    pub removals: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// `bytes` as the agent protocol's string: its length, then itself.
+#[cfg(windows)]
+fn ssh_string(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// An ed25519 public key as SSH writes its blob: its type's name, then its 32 bytes.
+#[cfg(windows)]
+fn ed25519_blob(public: &[u8]) -> Vec<u8> {
+    let mut blob = Vec::new();
+    ssh_string(&mut blob, b"ssh-ed25519");
+    ssh_string(&mut blob, public);
+    blob
+}
+
+/// Writes at `path` the ed25519 key of `seed`, with `comment`, as `ssh-keygen -N ""` writes
+/// one: an unencrypted OpenSSH private key (openssh-key-v1, OpenSSH's PROTOCOL.key).
+#[cfg(windows)]
+pub fn ssh_key_file(path: &Path, seed: &[u8; 32], comment: &str) {
+    use base64::Engine as _;
+    let pair = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(seed).unwrap();
+    let public = aws_lc_rs::signature::KeyPair::public_key(&pair).as_ref().to_vec();
+    let mut private = Vec::new();
+    // Its check, any word written twice.
+    let check = 0x5348_4152u32.to_be_bytes();
+    private.extend_from_slice(&check);
+    private.extend_from_slice(&check);
+    ssh_string(&mut private, b"ssh-ed25519");
+    ssh_string(&mut private, &public);
+    let secret: Vec<u8> = seed.iter().chain(&public).copied().collect();
+    ssh_string(&mut private, &secret);
+    ssh_string(&mut private, comment.as_bytes());
+    let mut pad = 1u8;
+    while !private.len().is_multiple_of(8) {
+        private.push(pad);
+        pad += 1;
+    }
+    let mut body = b"openssh-key-v1\0".to_vec();
+    ssh_string(&mut body, b"none");
+    ssh_string(&mut body, b"none");
+    ssh_string(&mut body, b"");
+    body.extend_from_slice(&1u32.to_be_bytes());
+    ssh_string(&mut body, &ed25519_blob(&public));
+    ssh_string(&mut body, &private);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&body);
+    let mut text = String::from("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    for line in encoded.as_bytes().chunks(70) {
+        text.push_str(std::str::from_utf8(line).unwrap());
+        text.push('\n');
+    }
+    text.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+    std::fs::write(path, text).unwrap();
+}
+
+/// An instance of the pipe `name`, waiting for its client; the first of its name, which no
+/// other process may already hold, where `first`.
+#[cfg(windows)]
+fn agent_instance(name: &[u16], first: bool) -> std::fs::File {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+    use windows_sys::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+    let flags = PIPE_ACCESS_DUPLEX | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 };
+    // SAFETY: a NUL-terminated name and plain arguments; checked below.
+    let handle = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            flags,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES,
+            1 << 16,
+            1 << 16,
+            0,
+            std::ptr::null(),
+        )
+    };
+    assert_ne!(
+        handle,
+        INVALID_HANDLE_VALUE,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: the instance just made, owned from here on.
+    unsafe { std::fs::File::from_raw_handle(handle) }
+}
+
+/// Starts [`SshAgent`]: the ed25519 key of `seed`, its comment `comment`.
+#[cfg(windows)]
+pub fn ssh_agent_windows(seed: [u8; 32], comment: &str) -> SshAgent {
+    use std::os::windows::io::AsRawHandle as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED;
+    use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
+    static MADE: AtomicUsize = AtomicUsize::new(0);
+    let pipe = format!(
+        r"\\.\pipe\shards-test-agent-{}-{}",
+        std::process::id(),
+        MADE.fetch_add(1, Ordering::Relaxed)
+    );
+    let name: Vec<u16> = pipe.encode_utf16().chain([0]).collect();
+    let removals = std::sync::Arc::new(AtomicUsize::new(0));
+    // Its first instance made now: a client may connect as soon as this returns.
+    let first = agent_instance(&name, true);
+    let (counted, comment) = (removals.clone(), comment.to_string());
+    std::thread::spawn(move || {
+        let mut next = Some(first);
+        loop {
+            let conn = next.take().unwrap_or_else(|| agent_instance(&name, false));
+            // SAFETY: an instance this thread holds, waited on to its client.
+            let connected = unsafe { ConnectNamedPipe(conn.as_raw_handle(), std::ptr::null_mut()) } != 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32);
+            if connected {
+                let (counted, comment) = (counted.clone(), comment.clone());
+                std::thread::spawn(move || serve_agent(conn, &seed, &comment, &counted));
+            }
+        }
+    });
+    SshAgent { pipe, removals }
+}
+
+/// Answers one client of [`SshAgent`] until it goes.
+#[cfg(windows)]
+fn serve_agent(
+    mut conn: std::fs::File,
+    seed: &[u8; 32],
+    comment: &str,
+    removals: &std::sync::atomic::AtomicUsize,
+) {
+    use std::io::{Read as _, Write as _};
+    const FAILURE: u8 = 5;
+    const IDENTITIES: u8 = 11;
+    const IDENTITIES_ANSWER: u8 = 12;
+    const SIGN: u8 = 13;
+    const SIGN_RESPONSE: u8 = 14;
+    const REMOVE: u8 = 18;
+    let pair = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(seed).unwrap();
+    let public = aws_lc_rs::signature::KeyPair::public_key(&pair).as_ref().to_vec();
+    let blob = ed25519_blob(&public);
+    loop {
+        let mut len = [0u8; 4];
+        if conn.read_exact(&mut len).is_err() {
+            return;
+        }
+        let mut message = vec![0u8; u32::from_be_bytes(len) as usize];
+        if conn.read_exact(&mut message).is_err() {
+            return;
+        }
+        let mut answer = Vec::new();
+        match message.first() {
+            Some(&IDENTITIES) => {
+                answer.push(IDENTITIES_ANSWER);
+                answer.extend_from_slice(&1u32.to_be_bytes());
+                ssh_string(&mut answer, &blob);
+                ssh_string(&mut answer, comment.as_bytes());
+            }
+            Some(&SIGN) => {
+                // Its key's blob, then the data to sign, then its flags.
+                let rest = &message[1..];
+                let at = 4 + u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+                let asked = &rest[4..at];
+                let n = u32::from_be_bytes(rest[at..at + 4].try_into().unwrap()) as usize;
+                let data = &rest[at + 4..at + 4 + n];
+                if asked == blob.as_slice() {
+                    let mut signature = Vec::new();
+                    ssh_string(&mut signature, b"ssh-ed25519");
+                    ssh_string(&mut signature, pair.sign(data).as_ref());
+                    answer.push(SIGN_RESPONSE);
+                    ssh_string(&mut answer, &signature);
+                } else {
+                    answer.push(FAILURE);
+                }
+            }
+            Some(&REMOVE) => {
+                removals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                answer.push(FAILURE);
+            }
+            _ => answer.push(FAILURE),
+        }
+        let mut framed = u32::try_from(answer.len()).unwrap().to_be_bytes().to_vec();
+        framed.extend_from_slice(&answer);
+        if conn.write_all(&framed).is_err() {
+            return;
+        }
+    }
+}
+
 /// An SSH agent at `sock`, which goes as this test's process does, however it ends:
 /// ssh-agent given a command runs it as its parent and exits once that has gone
 /// (OpenSSH ssh-agent.c, check_parent_exists), the command a wait on this process. The
 /// child is that command; killing it ends the agent too.
+#[cfg(unix)]
 pub fn ssh_agent(sock: &Path) -> std::process::Child {
     let me = std::process::id();
     std::process::Command::new("ssh-agent")

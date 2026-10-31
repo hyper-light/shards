@@ -19,10 +19,14 @@ use shards_ipc::Stream as UnixStream;
 
 use super::{ApiListener, Daemon, Disk, Threads, lock, log};
 
-/// A context's engine socket, as it is served: a listener as the Engine API's is, which
-/// Windows has none of yet (`ApiListener`).
+/// A context's engine socket, as it is served: a listener as the Engine API's is
+/// (`ApiListener`), on Windows a named pipe the file at its path names, whose clients its
+/// [`Taker`] takes.
 struct Relay {
+    #[cfg(unix)]
     listener: ApiListener,
+    #[cfg(windows)]
+    _taker: Taker,
     context: crate::context::Context,
     path: PathBuf,
     /// The socket file bound, by device and inode: one removed, or another put at its
@@ -31,7 +35,7 @@ struct Relay {
 }
 
 impl Relay {
-    fn bind(context: crate::context::Context) -> io::Result<Relay> {
+    fn bind(context: crate::context::Context, #[cfg(windows)] came: Came) -> io::Result<Relay> {
         let path = crate::context::engine_socket(&context.name);
         if let Some(dir) = path.parent() {
             shards_vmm::platform::create_private_dir(dir)?;
@@ -41,6 +45,9 @@ impl Relay {
         let file = crate::os::path_id(&path)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "its socket, bound, is gone"))?;
         Ok(Relay {
+            #[cfg(windows)]
+            _taker: Taker::start(listener, context.name.clone(), came)?,
+            #[cfg(unix)]
             listener,
             context,
             path,
@@ -62,11 +69,30 @@ impl Relay {
 }
 
 /// The engine sockets this daemon serves, by context, and the contexts whose socket it
-/// could not bind, said once until it can.
-#[derive(Default)]
+/// could not bind, said once until it can; on Windows, the clients its takers took, by
+/// context, for the daemon to relay.
+#[cfg_attr(unix, derive(Default))]
 pub(super) struct Relays {
     served: BTreeMap<String, Relay>,
     unbound: BTreeSet<String>,
+    #[cfg(windows)]
+    came: (mpsc::Sender<Taken>, mpsc::Receiver<Taken>),
+}
+
+/// A client a context's taker took on Windows ([`Taker`]): the context's name, and its
+/// connection.
+#[cfg(windows)]
+type Taken = (String, UnixStream);
+
+#[cfg(windows)]
+impl Default for Relays {
+    fn default() -> Relays {
+        Relays {
+            served: BTreeMap::new(),
+            unbound: BTreeSet::new(),
+            came: mpsc::channel(),
+        }
+    }
 }
 
 impl Relays {
@@ -78,6 +104,86 @@ impl Relays {
     #[cfg(unix)]
     pub(super) fn fds(&self) -> impl Iterator<Item = RawFd> + '_ {
         self.served.values().map(|r| r.listener.as_raw_fd())
+    }
+}
+
+/// Where a context's [`Taker`] hands each client it takes on Windows, by the context's
+/// name, and what it wakes the daemon by.
+#[cfg(windows)]
+struct Came {
+    to: mpsc::Sender<Taken>,
+    wake: shards_ipc::Event,
+}
+
+/// The thread that takes the clients of a context's engine pipe on Windows, each handed to
+/// the daemon ([`Came`]) as it comes: the daemon waits on no context's listener, as
+/// WaitForMultipleObjects waits on 64 handles at most and a home joins as many contexts as
+/// it is told. Stopped as this drops, its listener with it.
+#[cfg(windows)]
+struct Taker {
+    stop: shards_ipc::Event,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Taker {
+    fn start(listener: ApiListener, name: String, came: Came) -> io::Result<Taker> {
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects, WaitForSingleObject};
+        let stop = shards_ipc::Event::new()?;
+        let stopped = stop.try_clone()?;
+        let thread = std::thread::Builder::new()
+            .name("relay-taker".into())
+            .spawn(move || {
+                let waited = [listener.event(), stopped.raw()];
+                loop {
+                    // SAFETY: two events this thread holds, the listener's and its stop.
+                    if unsafe { WaitForMultipleObjects(2, waited.as_ptr(), 0, INFINITE) } == WAIT_FAILED
+                        || stopped.is_set()
+                    {
+                        return;
+                    }
+                    let mut failed = false;
+                    loop {
+                        match listener.accept() {
+                            Ok(conn) => {
+                                if came.to.send((name.clone(), conn)).is_err() {
+                                    return;
+                                }
+                                came.wake.set();
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                            Err(e) => {
+                                log(format!("context {name}: accepting its engine's client: {e}"));
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    // Out of handles, say, its listener's event may stay set: it looks
+                    // again as the daemon's own listener does (RETRY), not at once.
+                    let retry = u32::try_from(super::RETRY.as_millis()).unwrap_or(u32::MAX);
+                    // SAFETY: its stop event, which this thread holds.
+                    if failed && unsafe { WaitForSingleObject(stopped.raw(), retry) } == WAIT_OBJECT_0 {
+                        return;
+                    }
+                }
+            })?;
+        Ok(Taker {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Taker {
+    fn drop(&mut self) {
+        self.stop.set();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -169,7 +275,22 @@ impl<D: Disk> Daemon<D> {
 
     fn serve_relay(&self, relays: &mut Relays, context: crate::context::Context) {
         let name = context.name.clone();
-        match Relay::bind(context) {
+        #[cfg(windows)]
+        let came = match self.listener_wake.event().try_clone() {
+            Ok(wake) => Came {
+                to: relays.came.0.clone(),
+                wake,
+            },
+            Err(e) => {
+                log(format!("context {name}: its engine is not served: {e}"));
+                return;
+            }
+        };
+        match Relay::bind(
+            context,
+            #[cfg(windows)]
+            came,
+        ) {
             Ok(relay) => {
                 relays.unbound.remove(&name);
                 relays.served.insert(name, relay);
@@ -189,6 +310,24 @@ impl<D: Disk> Daemon<D> {
     /// Relays each client waiting at a context's engine socket: false where one could not be
     /// accepted now (out of descriptors), which the listener waits a while for.
     pub(super) fn relay_waiting<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, relays: &Relays) -> bool {
+        // On Windows each context's taker took its clients: relayed as the context they
+        // came to is now, where it is still served.
+        #[cfg(windows)]
+        {
+            while let Ok((name, conn)) = relays.came.1.try_recv() {
+                if let Some(relay) = relays.served.get(&name) {
+                    self.relay(threads, conn, relay.context.clone());
+                }
+            }
+            true
+        }
+        #[cfg(unix)]
+        self.relay_polled(threads, relays)
+    }
+
+    /// [`relay_waiting`](Self::relay_waiting) of the listeners poll(2) said have clients.
+    #[cfg(unix)]
+    fn relay_polled<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, relays: &Relays) -> bool {
         let mut ready = true;
         for relay in relays.served.values() {
             loop {
@@ -234,9 +373,8 @@ impl<D: Disk> Daemon<D> {
         context: crate::context::Context,
     ) {
         let name = context.name.clone();
-        // On Windows a relay's listener is the Engine API's, which has none yet: its named
-        // pipe, whose DACL admits this user's processes alone (ipc pipe.rs `attributes`),
-        // comes with the plan's step 8.
+        // On Windows a relay's listener is a named pipe whose DACL admits this user's
+        // processes alone (ipc pipe.rs `attributes`), as the Engine API's is.
         // SAFETY: geteuid(2) cannot fail.
         #[cfg(unix)]
         let ours = unsafe { libc::geteuid() };

@@ -2525,12 +2525,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
     let exports = buildflags::parse_exports(parsed.many("output"))?;
     buildflags::check_iidfile(&exports, parsed.string("iidfile"))?;
-    let env = |name: &str| std::env::var_os(name).map(os_bytes);
-    let secrets = buildflags::store(
-        buildflags::parse_secrets(parsed.many("secret"))?,
-        &env,
-        u64::from(shards_abi::run::MAX_PAYLOAD),
-    )?;
+    let asked = buildflags::parse_secrets(parsed.many("secret"))?;
+    // On Windows a secret its daemon gave this build at a number (`src=/dev/fd/N`, D180's
+    // machine side) is read from what it gave there, as a Unix build reads the
+    // descriptor's path (crate::synced::given_secrets).
+    #[cfg(windows)]
+    let (asked, given) = crate::synced::given_secrets(asked, u64::from(shards_abi::run::MAX_PAYLOAD))?;
+    let env = |name: &str| {
+        #[cfg(windows)]
+        if let Some(held) = given.get(name) {
+            return Some(held.bytes().to_vec());
+        }
+        std::env::var_os(name).map(os_bytes)
+    };
+    let secrets = buildflags::store(asked, &env, u64::from(shards_abi::run::MAX_PAYLOAD))?;
     // --builder, or SHARDS_BUILDER, else BUILDX_BUILDER: shards' own builder, which
     // `default` names too; any other is none shards has.
     let builder_name = match parsed.string("builder") {

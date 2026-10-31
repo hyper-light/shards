@@ -1454,6 +1454,7 @@ dependencies = [
  "bytes",
  "hyper-quic",
  "sha2",
+ "shards-ipc",
  "shards-testdir",
 ]
 
