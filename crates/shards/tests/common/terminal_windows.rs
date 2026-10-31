@@ -278,6 +278,13 @@ impl Terminal {
                     let raw = std::mem::take(&mut self.pending) + &String::from_utf8_lossy(&bytes);
                     let (text, rest) = text_of(&raw);
                     self.seen.push_str(&text);
+                    // A run of carriage returns before a line feed, as a screen shows it: one.
+                    // A pseudoconsole that starts at its terminal's cursor on its last row
+                    // writes a scroll of its own, CR LF, after its command's CR (CI's
+                    // windows-2022 and windows-2025, PSEUDOCONSOLE_INHERIT_CURSOR).
+                    while let Some(at) = self.seen.find("\r\r\n") {
+                        self.seen.remove(at);
+                    }
                     self.pending = rest.to_string();
                 }
                 Err(_) => assert!(
