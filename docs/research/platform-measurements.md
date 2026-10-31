@@ -16524,6 +16524,66 @@ revision before comparing a changed API/implementation.
   `platform::reserve_withheld` makes one) answered as one readable and writable did, in
   every step above.
 
+### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
+
+- **Question.** What does a working set mapped ahead buy a Windows restore, as Linux's and
+  macOS's restores have one (D29)? And how should a WHP restore make the copies of the pages
+  its guest wrote, and map the rest: copies made from the VM process or WHP's populate for
+  writing, a call a run of pages or one for them all?
+- **Method.** `benches/restore.rs --working-set both`: each restore with the working set the
+  first restore recorded mapped ahead, and without it, the arms interleaved on one snapshot,
+  n=100 each, 1 vCPU, 256 MiB. The VM logs at info what mapping ahead took (rows
+  `cold_copy_ahead` and `cold_map_ahead`, its time and its runs of consecutive pages), on
+  CI's windows-2025 (whp-restore.yml). And `hv::whp`
+  `a_write_populate_copies_a_views_pages_in_the_kernel` on jupiter (AMD Ryzen AI Max+ 395,
+  Windows 11 26200), 20 runs on
+  2026-10-30: a 16 MiB copy-on-write view of a file mapped as a partition's RAM; 512 single
+  pages populated for writing in one call and 512 for reading in one call; then 512 more for
+  reading, a call each, and 512 copied from the process, a page's first word written as it
+  holds it.
+- **Found, copies from the process and a call a run.**
+  - 1b4cc6be (CI 41152847498, AMD EPYC 7763, Windows 10.0.26100, a working set of 991 pages,
+    322 of them written), with it against without, p50 / p90 / p99 / max:
+    - warm_request: 8.3 / 8.4 / 8.4 / 8.4 ms against 121.2 / 133.2 / 169.0 / 204.0.
+    - cold_restore: 88.7 / 95.7 / 102.8 / 103.9 against 133.3 / 144.8 / 165.1 / 184.8.
+    - cold_spawn_exit: 141.1 / 150.0 / 156.5 / 167.5 against 283.6 / 295.4 / 314.5 / 322.3.
+  - Its setup, 15f4ea19 (CI 41167805556 and 41167803615, Intel Xeon Platinum 8573C, working
+    sets of 1011 and 999 pages): cold_entry, from the VM process's start to its first vCPU's
+    entry, was 69.3 and 48.3 ms at p50 against 11.6 and 11.2 without. Of it, the copies took
+    26.4 ms over 202 runs and 18.0 over 195, and the populate 31.2 ms over 507 runs and 19.1
+    over 501.
+- **Found, each way on jupiter** (n=20, 512 pages each, ms, p50 / p90 / p99 / max):
+  - Populated for writing in one call: 3.68 / 4.36 / 4.87 / 4.87.
+  - For reading in one call: 1.33 / 1.59 / 1.80 / 1.80.
+  - For reading, a call each: 2.33 / 2.61 / 2.65 / 2.65.
+  - Copied from the process: 2.58 / 3.05 / 3.12 / 3.12.
+  - Every page populated for writing was a private copy holding the file's bytes, every one
+    for reading the file's own, no other page was mapped, and the file was as it was.
+  - So one write populate costs what a copy and a populate after it did (3.95 ms at p50 with
+    the populate in one call, 4.78 a call each). A call's own cost: 1.96 µs, 1.00 ms more over
+    511 more calls.
+  - A single run before, beside two builds of the bench and the tests, measured 6.3 ms
+    written and 12.1 copied; no run of the 20 came near either.
+- **Found, two calls** (54f7c0fb, CI 41176481995 and 41176486907, AMD EPYC 7763, Windows
+  10.0.26100.33650, working sets of 999 and 959 pages, 325 and 308 written), with it against
+  without, p50 / p90 / p99 / max:
+  - cold_restore: 84.6 / 91.1 / 96.8 / 100.2 ms against 129.7 / 137.6 / 147.5 / 161.6; and
+    78.1 / 83.0 / 104.9 / 106.8 against 114.4 / 126.4 / 177.8 / 204.2.
+  - cold_spawn_exit: 141.2 / 147.3 / 156.0 / 169.7 against 281.0 / 289.9 / 302.0 / 309.6; and
+    134.4 / 140.8 / 162.6 / 164.2 against 277.0 / 286.4 / 327.2 / 357.3.
+  - warm_request: 7.96 / 7.98 / 8.01 / 8.02 against 117.4 / 125.4 / 162.1 / 165.1; and 12.26 /
+    12.28 / 12.32 / 12.49 against 101.7 / 113.5 / 136.2 / 234.7.
+  - cold_entry: 76.7 and 66.3 ms at p50 against 12.6 and 12.5 without. The two calls took
+    64.2 and 53.8 ms, of which the written pages' took 25.3 and 21.5: 50 to 58 µs a page read
+    and 70 to 78 written.
+  - Against 1b4cc6be's on the same CPU, about the same. On CI's runners, VMs whose WHP runs
+    nested (M308), a populate's cost is its pages', not its calls'.
+- **Decided.** A Windows restore records its working set and maps it ahead by default, as
+  Linux's and macOS's do: a cold restore 1.5 times as fast, its start to exit twice as fast,
+  a warm one 8 to 15 times as fast, for 54 to 64 ms more of cold setup on CI. It maps ahead in
+  two calls, written pages for writing and the rest for reading: one mechanism where there
+  were two (Windows' `populate_writable` is gone), at what the copies and the calls cost.
+
 ### M416. A budget's give-back with no answer, and a budget past what a microVM gives back (D188, D151)
 
 - **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` failed

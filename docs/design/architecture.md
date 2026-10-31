@@ -6930,12 +6930,14 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate; `hv::Vcpu::pre_fault_runs`): the pages
   its guest wrote for writing, which copies each one its copy-on-write view of the snapshot
   still shares with the file in the host's kernel, as the guest's first write would, and
-  the rest for reading. A call costs 40 to 60 µs whatever it holds (M415), and on jupiter 512
-  pages populated for writing in one call took 6.3 ms, where copying them from the VM process,
-  writing each page's first word as it holds it (Windows has no call that faults a range in
-  writable from user mode, PrefetchVirtualMemory reading one in), took 12.1 (hv::whp
+  the rest for reading. What a populate costs is its pages': on CI's windows-2025, whose WHP
+  runs nested (M308), 50 to 58 µs a page read and 70 to 78 written (M415). On jupiter, 512
+  pages populated for writing in one call took 3.68 ms at p50 (n=20), where copying them from
+  the VM process, each page's first word written as it holds it (Windows has no call that
+  faults a range in writable from user mode, PrefetchVirtualMemory reading one in), took 2.58
+  and populating them for reading after it 1.33 in one call or 2.33 a call each (hv::whp
   `a_write_populate_copies_a_views_pages_in_the_kernel`, which checks each copy holds the
-  file's bytes and no other page is mapped).
+  file's bytes and no other page is mapped): one call does both, for about what the two cost.
 
 **Tested.** Unit: the states' round trips and damage, and a state naming any other register
 refused (`hv::whp::state`); a restored IOAPIC going on as the saved one; a generation staged by
@@ -6952,6 +6954,15 @@ commit of what is not staged, giving the directory up, and removing what is neve
 tests/snapshot.rs, every test, the storms of busy machines among them, which run on Windows
 now, and the unwritable directory by an access list there; tests/restore.rs, cold restores of
 one snapshot side by side and a held (warm) restore whose guest runs nothing until released.
+Working sets (the platform parity audit's row 11): unit, `platform::windows_process`
+`mapped_pages_are_the_working_sets`, a working set read back exact, the pages touched and no
+other, and `a_fault_from_disk_maps_the_page_it_touches_alone`, and `hv::whp`
+`a_write_populate_copies_a_views_pages_in_the_kernel`; on real WHP guests, snapshot.rs
+`a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded` and images.rs
+`repeat_runs_restore_a_template_of_the_image`, a template's working set recorded by its first
+warm restore and mapped ahead by the next: each on CI's windows-2025 (41176475317 at
+54f7c0fb), which fails rather than skips a VM test it cannot run; and the restore bench's
+arms with and without (M415).
 
 ### D195. The daemon and its client on Windows: request slots of named pipes (built)
 

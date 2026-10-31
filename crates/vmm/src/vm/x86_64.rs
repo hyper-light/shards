@@ -779,9 +779,9 @@ pub fn restore(
 }
 
 /// [`pre_fault`] on WHP: every run of `working_set` in one call, the rest's for reading, then
-/// its written pages' for writing, which makes their copies in the host's kernel, as each
-/// call costs a restore 40 to 60 µs whatever it holds (PM M415); the copies' said as
-/// `mapped::copy_written` says them on the other backends. A page that cannot be mapped
+/// its written pages' for writing, which makes their copies in the host's kernel: no copy
+/// made from the VM process and no call a run, for about what the copies and the calls cost
+/// (PM M415); the copies' said as `mapped::copy_written` says them on the other backends. A page that cannot be mapped
 /// ahead is only a fault later, so a call that fails is made again a run at a time
 /// ([`mapped::every_run`]).
 #[cfg(hv = "whp")]

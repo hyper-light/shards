@@ -1149,11 +1149,13 @@ impl Vcpu {
     /// Maps each of `runs`, `(gpa, len)`, of guest memory into stage 2 ahead of the guest's
     /// first touch of them, all in one call (WHvAdviseGpaRange,
     /// WHvAdviseGpaRangeCodePopulate): each page the guest would take into stage 2 one exit
-    /// at a time, 6 to 23 µs a page, populated at 0.4 to 0.7 µs a page (PM M341), where each
-    /// call of its own cost a restore 40 to 60 µs whatever its length (M415). For writing
-    /// where `write`: a page a copy-on-write view still shares with its file is copied, in
-    /// the host's kernel, as the guest's first write of it would copy it, where a copy made
-    /// by writing it from this process cost 55 to 80 µs a page (M415); else for reading,
+    /// at a time, 6 to 23 µs a page, populated at 0.4 to 0.7 µs a page of a 2 MiB range (PM
+    /// M341). What a populate costs is its pages': single pages, as a restore's working set's
+    /// mostly are, 2.6 µs a page on jupiter and a call's own 1.96 µs, and 50 to 58 µs a
+    /// page on CI's windows-2025, whose WHP runs nested (M308, M415). For writing where
+    /// `write`: a page a copy-on-write view still shares with its file is copied, in the
+    /// host's kernel, as the guest's first write of it would copy it, in about the time a copy
+    /// made from this process and a populate after it take together (M415); else for reading,
     /// mapping the file's own pages.
     pub fn pre_fault_runs(&self, runs: &[(u64, u64)], write: bool) -> Result<()> {
         if runs.is_empty() {

@@ -3470,6 +3470,20 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         "{idle} bytes held idle, {} after its read",
         held()
     );
+    // What its guest's kernel counts of the read as the word comes, said if nothing is
+    // given back: a give-back takes inactive file pages alone, and twice in CI's x86_64
+    // Linux runs (1cdaef68's musl, 54f7c0fb's gnu) one gave back none of them, asking only
+    // to unplug 896 MiB, with no count of where the read was.
+    let counted = shards(&[
+        "exec",
+        "prov",
+        "/bin/testguest",
+        "meminfo",
+        "MemFree",
+        "Cached",
+        "Active(file)",
+        "Inactive(file)",
+    ]);
     let before = held();
     let word = Instant::now();
     told.say();
@@ -3485,7 +3499,12 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         assert!(Instant::now() < deadline, "nothing given back said:\n{}", said());
         std::thread::sleep(Duration::from_millis(50));
     };
-    assert!(gave > 0, "nothing given back:\n{}", said());
+    assert!(
+        gave > 0,
+        "nothing given back, its guest's kernel counting as the word came:\n{}\n{}",
+        counted.stdout,
+        said()
+    );
     // Its VM process holds that much less, or half of it, once its guest has given it back:
     // what it reported free, and what its device unplugs as it was asked to, after the
     // give-back's answer (D148, D151).
