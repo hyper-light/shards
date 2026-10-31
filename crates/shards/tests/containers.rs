@@ -2712,6 +2712,38 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         set("infinity");
         first(unset, &["held to no budget"]);
     };
+    // Short of its budget still past all it held cold, its host sleeps each page its guest
+    // touches afresh (memory.high, no swap): where its host's own pressure had it give
+    // back first, a quarter GiB short of what it then held was short of what it holds with
+    // nothing to give back, and its read of a GiB ran past a minute, 26 s its first file
+    // (CI 41004323062, 40961442989). Its budget is raised to give it room first, and read
+    // once the daemon's last word of it is no shortage: it says a budget has room again
+    // once, which its microVM giving back on past its answer may have had it say already.
+    if gave.contains("budget is short by") {
+        let holds = mib_after(&gave, "MiB, holds ");
+        set(&((holds + 128) << 20).to_string());
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let log = said();
+            let words = [
+                "held within its budget",
+                "budget is short by",
+                "budget has room again",
+            ];
+            let last = log
+                .lines()
+                .rfind(|l| words.iter().any(|w| l.contains(w)))
+                .unwrap_or_default();
+            if !last.contains("budget is short by") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "short still, its budget raised:\n{log}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     read(&files);
     // Held within the room its budget leaves, or, short of it, within the least room a run
     // goes on in: its host's taking back its template's pages as the budget was set counts

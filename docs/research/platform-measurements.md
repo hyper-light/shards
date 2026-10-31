@@ -16523,3 +16523,53 @@ revision before comparing a changed API/implementation.
   windows on by default. A reservation inaccessible (PAGE_NOACCESS, as
   `platform::reserve_withheld` makes one) answered as one readable and writable did, in
   every step above.
+
+### M416. A budget's give-back with no answer, and a budget past what a microVM gives back (D188, D151)
+
+- **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` failed
+  on CI's x86_64 Linux in 3 of the 6 runs of win-pools from 4b6e135f to 15f4ea19 (CI
+  40961442989, 41004323062, 41167803629). Why, each time?
+- **Method.** The daemon's log each failing job printed, and mm/memcontrol.c (Linux 6.19):
+  memory.high's throttle and `memory.reclaim`. Then the test on Fedora (Intel Core
+  i9-14900HX, 32 CPUs, Linux 6.19.10, its other users' work at a load of 15 to 33), 2026-10-30,
+  in four batches as the daemon and the test changed.
+- **Found, CI.**
+  - 41167803629: with its budget set a quarter GiB short of the 824 MiB its microVM held, its
+    give-back had no answer within the daemon's 10 s (`TAKE_TIMEOUT`) and was ended. The
+    daemon's word said its budget was short by 26 MiB and 0 MiB given back, as its microVM held
+    514 MiB, and a moment later 454 MiB with room again: it had given back 310 MiB and more,
+    its answer lost.
+  - 41004323062 and 40961442989: its host's own pressure had it give back 365 and 479 MiB of
+    what it read before its budget came, so a budget a quarter GiB short of the 429 and 289 MiB
+    it then held was short of what it held with nothing to give back. It gave back 127 and 7
+    MiB, stayed short by 151 and 247 MiB, held within the least room a run goes on in, and its
+    read of a GiB after took 26.6 s for its first file of 1 MiB, past the test's minute.
+  - Past memory.high, the host sleeps each of a cgroup's processes as it returns to user mode
+    (a vCPU before each entry into its guest), overage² seconds for each page charged to it
+    and at most 2 s (`mem_cgroup_handle_over_high`, `calculate_high_delay`): 0.2 s a page at
+    45% past it. A kill ends a guest's `memory.reclaim` (`memory_reclaim`, at a pending signal).
+- **Decided.** Where a give-back its budget asked for has no answer, the budget's word says
+  what its host holds less of the microVM, counted as the word counts what it holds
+  (`budget.rs`, `held_now`): "past 0 warm VMs ended and N MiB its host holds less of it as it
+  gave back what it held cold, with no answer". The deadline stays. A group's give-backs are
+  asked in turn (groups.rs), and with no deadline one that never answered would keep the rest
+  waiting, as a pass that waited on each in turn once did (M308). The test raises a budget
+  that leaves its microVM short past all it held cold before its read of a GiB, and reads
+  once the daemon's last word of the budget is no shortage: the daemon says a budget has room
+  again once, and a microVM that went on giving back past its answer may have had it said
+  before the raise.
+- **Found, Fedora.** Every user slice there is watched by systemd-oomd, which ends one held
+  past 80% of memory pressure for 20 s (`/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf`).
+  - With no deadline anywhere and the test's first raise, which waited for a word said before
+    it: 6 runs of 8 passed. The 2 failures were the test's wait.
+  - With no deadline on the budget's give-back nor the host's pressure's: 3 of 7 passed. oomd
+    ended 3 microVMs in their give-back, and in 1 the gigabyte touched and freed first was not
+    back within a minute.
+  - With the deadline and the word above: 0 of 4. No budget word came within a minute.
+  - With init reclaiming before it forks a give-back's child: 0 of 2. Still no answer in 10 s,
+    and oomd ended both. That change was not kept.
+  - So, under that load, a microVM a quarter GiB past its budget answered nothing for a
+    minute, whatever the daemon did. Its VM process's own threads are slept as they allocate,
+    as M391 found its balloon thread.
+  - Open: what of the path from the daemon to a guest's give-back, and of the give-back
+    itself, allocates under a budget.
