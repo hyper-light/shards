@@ -1588,7 +1588,8 @@ fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_
     let made_here = made(here(&build));
     let made_there = made(there(&build));
     // Where they differ, each tree as a build of it reads it: the client's and the machine's
-    // copies of it, the one or more under its home's `synced` that hold the agent's config.
+    // copies of it, the one or more under its home's `synced` that hold the agent's config,
+    // a build's context in its copy's `context`.
     if made_there != made_here {
         let copies: Vec<PathBuf> = std::fs::read_dir(machine.join("synced"))
             .into_iter()
@@ -1596,6 +1597,7 @@ fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_
             .flatten()
             .flat_map(|client| std::fs::read_dir(client.path()).into_iter().flatten().flatten())
             .map(|copy| copy.path())
+            .flat_map(|copy| [copy.clone(), copy.join("context")])
             .filter(|copy| copy.join("agent.json").exists())
             .collect();
         let there: Vec<String> = copies

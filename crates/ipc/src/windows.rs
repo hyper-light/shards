@@ -1520,13 +1520,18 @@ pub struct PseudoConsole(windows_sys::Win32::System::Console::HPCON);
 
 impl PseudoConsole {
     /// A pseudoconsole of `rows` by `cols`; its writer, its typed input; and its reader,
-    /// what it shows.
-    pub fn new(
-        rows: u16,
-        cols: u16,
-    ) -> io::Result<(PseudoConsole, std::io::PipeWriter, std::io::PipeReader)> {
-        use windows_sys::Win32::System::Console::CreatePseudoConsole;
-        let (input_read, input_write) = std::io::pipe()?;
+    /// what it shows ([`Shown`]). It starts where its terminal's cursor is
+    /// (PSEUDOCONSOLE_INHERIT_CURSOR), as a pty does, where one made without that clears
+    /// the screen it is shown on as it starts: a client's terminal through a context had its
+    /// screen cleared as each command began, and a test's showed the 22 blank lines of its
+    /// repaint (tests/context.rs, CI's windows-2022 and windows-2025). It asks where the
+    /// cursor is as it starts (`ESC[6n`), and is answered here, its last row and first
+    /// column, as LLDB answers its own ("so ConPTY won't scroll back over existing output",
+    /// lldb/source/Host/windows/PseudoConsole.cpp): the terminal it is shown on may be
+    /// another machine's, whose answer would come as typed input, or none at all.
+    pub fn new(rows: u16, cols: u16) -> io::Result<(PseudoConsole, std::io::PipeWriter, Shown)> {
+        use windows_sys::Win32::System::Console::{CreatePseudoConsole, PSEUDOCONSOLE_INHERIT_CURSOR};
+        let (input_read, mut input_write) = std::io::pipe()?;
         let (output_read, output_write) = std::io::pipe()?;
         let mut pc = 0;
         // SAFETY: the pipes' ends the pseudoconsole takes copies of, and a handle to fill.
@@ -1535,16 +1540,18 @@ impl PseudoConsole {
                 size(rows, cols),
                 input_read.as_raw_handle(),
                 output_write.as_raw_handle(),
-                0,
+                PSEUDOCONSOLE_INHERIT_CURSOR,
                 &raw mut pc,
             )
         };
         if made < 0 {
             return Err(io::Error::from_raw_os_error(made));
         }
+        let console = PseudoConsole(pc);
         // Its ends are its own now: ours go, so that its close is its output's end.
         drop((input_read, output_write));
-        Ok((PseudoConsole(pc), input_write, output_read))
+        input_write.write_all(format!("\x1b[{};1R", rows.max(1)).as_bytes())?;
+        Ok((console, input_write, Shown::new(output_read)))
     }
 
     /// Sizes it `rows` by `cols`, as a terminal resized is, which its programs read as a
@@ -1568,6 +1575,87 @@ impl Drop for PseudoConsole {
     fn drop(&mut self) {
         // SAFETY: the pseudoconsole this holds, closed once.
         unsafe { windows_sys::Win32::System::Console::ClosePseudoConsole(self.0) };
+    }
+}
+
+/// What a [`PseudoConsole`] shows, less the one question it asks as it starts, where the
+/// cursor is (`ESC[6n`), which [`PseudoConsole::new`] answers: passed on, a terminal
+/// would answer it again, its answer the command's input.
+#[derive(Debug)]
+pub struct Shown {
+    reader: std::io::PipeReader,
+    /// Whether the question is still to come.
+    asking: bool,
+    /// What was read that may begin the question, held until what follows says.
+    held: Vec<u8>,
+    /// What was read and is the screen's, not yet taken.
+    ready: std::collections::VecDeque<u8>,
+}
+
+/// The question a pseudoconsole asks as it starts (PSEUDOCONSOLE_INHERIT_CURSOR): DSR 6, a
+/// cursor position report.
+const ASKED: &[u8] = b"\x1b[6n";
+
+impl Shown {
+    fn new(reader: std::io::PipeReader) -> Shown {
+        Shown {
+            reader,
+            asking: true,
+            held: Vec::new(),
+            ready: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// `came` read: the question taken out where it comes whole, the start of one held.
+    fn sift(&mut self, came: &[u8]) {
+        let mut all = std::mem::take(&mut self.held);
+        all.extend_from_slice(came);
+        if let Some(at) = all.windows(ASKED.len()).position(|w| w == ASKED) {
+            self.asking = false;
+            self.ready.extend(all.get(..at).unwrap_or_default());
+            self.ready.extend(all.get(at + ASKED.len()..).unwrap_or_default());
+            return;
+        }
+        // The longest tail that begins the question waits for what follows.
+        let keep = (1..ASKED.len().min(all.len() + 1))
+            .rev()
+            .find(|&n| {
+                all.get(all.len() - n..)
+                    .is_some_and(|tail| ASKED.starts_with(tail))
+            })
+            .unwrap_or(0);
+        let cut = all.len() - keep;
+        self.ready.extend(all.get(..cut).unwrap_or_default());
+        self.held = all.get(cut..).unwrap_or_default().to_vec();
+    }
+}
+
+impl Read for Shown {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            if !self.ready.is_empty() {
+                let n = buf.len().min(self.ready.len());
+                for (to, from) in buf.iter_mut().zip(self.ready.drain(..n)) {
+                    *to = from;
+                }
+                return Ok(n);
+            }
+            if !self.asking {
+                return self.reader.read(buf);
+            }
+            let mut came = [0u8; 4096];
+            let n = self.reader.read(&mut came)?;
+            if n == 0 {
+                // Its end: what was held is the screen's.
+                self.asking = false;
+                self.ready.extend(std::mem::take(&mut self.held));
+                if self.ready.is_empty() {
+                    return Ok(0);
+                }
+                continue;
+            }
+            self.sift(came.get(..n).unwrap_or_default());
+        }
     }
 }
 
@@ -2355,6 +2443,36 @@ mod tests {
         let mut w = command_line(Path::new(r"C:\bin\shards-vm.exe"), &args);
         w.pop();
         String::from_utf16(&w).unwrap()
+    }
+
+    /// What a pseudoconsole shows, each of `writes` written whole in turn, as [`Shown`] reads
+    /// it to its end.
+    fn shown_of(writes: &[&[u8]]) -> Vec<u8> {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let writes: Vec<Vec<u8>> = writes.iter().map(|w| w.to_vec()).collect();
+        let writing = std::thread::spawn(move || {
+            for w in writes {
+                writer.write_all(&w).unwrap();
+                writer.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let mut shown = Vec::new();
+        Shown::new(reader).read_to_end(&mut shown).unwrap();
+        writing.join().unwrap();
+        shown
+    }
+
+    /// The question a pseudoconsole asks as it starts goes, whole or split across its
+    /// writes, and nothing else does: a second, later, is the screen's, as is anything that
+    /// only begins as it does.
+    #[test]
+    fn a_pseudoconsoles_question_as_it_starts_is_not_shown() {
+        assert_eq!(shown_of(&[b"\x1b[?25l\x1b[6nready\r\n"]), b"\x1b[?25lready\r\n");
+        assert_eq!(shown_of(&[b"\x1b[?25l\x1b[", b"6", b"nready"]), b"\x1b[?25lready");
+        assert_eq!(shown_of(&[b"\x1b[6n", b"a\x1b[6nb"]), b"a\x1b[6nb");
+        assert_eq!(shown_of(&[b"\x1b[6m\x1b[", b"6x"]), b"\x1b[6m\x1b[6x");
+        assert_eq!(shown_of(&[b"held \x1b["]), b"held \x1b[");
     }
 
     /// A message goes over whole, kind and payload; a stream that ends between messages
