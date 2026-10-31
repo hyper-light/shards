@@ -346,10 +346,16 @@ fn a_clients_command_has_the_clients_environment_not_the_owners() {
         TIMEOUT,
     );
     assert_eq!(missing.status, Some(125), "{missing}");
+    // Its system's own words for a file not there, as Go's os.Open says them on each.
+    let not_there = if cfg!(windows) {
+        "The system cannot find the file specified."
+    } else {
+        "no such file or directory"
+    };
     assert!(
-        missing
-            .stderr
-            .starts_with("shards: opening seccomp profile (gone.json) failed: open gone.json: no such file or directory\n\nRun 'shards run --help'"),
+        missing.stderr.starts_with(&format!(
+            "shards: opening seccomp profile (gone.json) failed: open gone.json: {not_there}\n\nRun 'shards run --help'"
+        )),
         "{missing}"
     );
 }
@@ -1267,7 +1273,10 @@ fn a_context_runs_commands_on_its_machine_whole() {
             assert_eq!(mode, 0o600, "the invitation is private");
         }
         #[cfg(windows)]
-        assert!(common::private_to_its_user(&invite), "the invitation is private");
+        {
+            let (dacl, private) = common::dacl_and_private(&invite);
+            assert_eq!(dacl, private, "the invitation is private");
+        }
     }
     assert!(
         !invited.stdout.contains("secret") && !invited.stderr.contains("secret"),
@@ -1596,10 +1605,13 @@ fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_
     assert_eq!(came.len(), 2, "{log}");
     // Each file's bytes once: the config, the script and the data, whose second name goes
     // as a link; then the script rewritten alone, the data's third name none of its own.
+    // Windows' walk tells no hard links apart, as fsutil's sends Windows files
+    // (shards_build::host::lstat): each name goes with its bytes there.
     let script = "#!/bin/sh\necho agent, again\n".len() as u64;
+    let names = if cfg!(windows) { [2, 1] } else { [1, 0] };
     assert_eq!(
         came,
-        [33 + 21 + (64 << 10), script],
+        [33 + 21 + names[0] * (64 << 10), script + names[1] * (64 << 10)],
         "the bytes of files that came"
     );
     // What the build says names this client's paths, not the machine's copy's.

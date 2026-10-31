@@ -1656,6 +1656,13 @@ fn spawn_env(
         .map(|(i, h)| inheritable_copy(h).map(|c| (i, c)))
         .collect::<io::Result<_>>()?;
     let grants = if past.is_empty() { None } else { Some(pipe()?) };
+    // Its grants pipe is this spawn's alone: a variable of the name already in `env` is
+    // another process's, as the daemon's own is in a client's command's (daemon/remote.rs
+    // `kept`, every `SHARDS_` variable of the daemon's), and the block's sort keeps it
+    // first, where the child's lookup found it and read the daemon's handle value as its
+    // own pipe: "/dev/fd/3: The handle is invalid", a build's secret through a context
+    // (tests/context.rs, CI's windows-2022 and windows-2025).
+    env.retain(|(k, _)| !k.eq_ignore_ascii_case(GIVEN));
     if let Some((read, _)) = &grants {
         env.push((GIVEN.into(), (read.as_raw_handle() as usize).to_string().into()));
     }

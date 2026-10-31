@@ -708,9 +708,8 @@ fn not_carried(args: &[OsString]) -> Option<String> {
         .collect();
     let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
-    let first = refs.first().copied().unwrap_or_default();
-    // `cp` is driven here, step by step, where this client's CLI drives one (cli/cp.rs, Unix);
-    // a build's context is kept in step on the machine ([`building`]), and all else a build
+    // `cp` is driven here, step by step, as this client's CLI drives one (cli/cp.rs); a
+    // build's context is kept in step on the machine ([`building`]), and all else a build
     // names of this client's crosses with it ([`build_there`]).
     if shards_cmdline::commands::build(&refs).is_some() {
         return None;
@@ -719,13 +718,8 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     // the machine as its builder: not carried yet. Every other
     // `buildx` and `builder` command asks the machine's builder alone, and `compose`,
     // which is no command of shards', is the machine's to say so of, as this one's would.
-    let policy = matches!(refs.as_slice(), ["buildx", "policy", "eval" | "test", ..]);
-    if policy || (first == "cp" && !cfg!(unix)) {
-        let named = if policy {
-            refs.get(..3).unwrap_or_default().join(" ")
-        } else {
-            first.to_string()
-        };
+    if matches!(refs.as_slice(), ["buildx", "policy", "eval" | "test", ..]) {
+        let named = refs.get(..3).unwrap_or_default().join(" ");
         return Some(format!(
             "{named} over a context reads this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
@@ -3504,6 +3498,9 @@ mod tests {
         assert!(not_carried(&args("run -it alpine sh")).is_none());
         assert!(not_carried(&args("exec -it web sh")).is_none());
         assert!(not_carried(&args("attach web")).is_none());
+        // A copy is driven here a step at a time, on every host (cli/cp.rs).
+        assert!(not_carried(&args("cp web:/a b")).is_none());
+        assert!(not_carried(&args("cp b web:/a")).is_none());
         // No command of shards', said so there as here.
         assert!(not_carried(&args("compose up")).is_none());
         // The builder's own, asked of the machine's; a policy's files here, not yet.

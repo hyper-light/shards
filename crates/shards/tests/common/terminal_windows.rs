@@ -120,10 +120,10 @@ impl Terminal {
         assert_eq!(made, 0, "CreatePseudoConsole: {made:#x}");
         drop((its_input, its_output));
         // The shell: this binary's console_shell test, in the directory that says what it
-        // runs.
+        // runs: every test binary's, as each holds this module.
         let exe = std::env::current_exe().unwrap();
         let mut line: Vec<u16> = format!(
-            "\"{}\" --exact console_shell --nocapture --test-threads=1",
+            "\"{}\" common::terminal::console_shell --exact --ignored --nocapture --test-threads=1",
             exe.display()
         )
         .encode_utf16()
@@ -372,12 +372,20 @@ pub fn cooked(m: &Modes) -> (bool, bool, bool) {
     )
 }
 
+/// The shell a Windows terminal runs its client in ([`shell_if_asked`]), run by name by a
+/// test that holds one ([`Terminal::run`]), in any test binary.
+#[test]
+#[ignore = "the shell of a terminal a test holds, which runs it"]
+fn console_shell() {
+    shell_if_asked();
+}
+
 /// The shell's part, where the test that holds a terminal started this binary as its
 /// shell, in a directory that says what to run ([`Terminal::run`]); elsewhere nothing. It
 /// writes the console's modes as they are before the client runs, as they change while it
 /// runs, and after it; says its status, `exit N`; and waits for a line, so that the console
 /// outlives the client, as a pty does a login shell's.
-pub fn shell_if_asked() {
+fn shell_if_asked() {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::System::Console::GetConsoleMode;
     let Ok(asked) = std::fs::read_to_string(ASKED) else {

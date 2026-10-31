@@ -864,11 +864,12 @@ pub fn write_at(file: &std::fs::File, bytes: &[u8], at: u64) {
     );
 }
 
-/// Whether `path` is its user's alone on Windows, as `shards_ipc::create_private` makes a
-/// file: its DACL protected from its directory's, one ACE, allowing this process's user all
-/// of a file (`FA`), and no one else anything.
+/// `path`'s DACL on Windows, as SDDL writes it, and what it is where the file is its user's
+/// alone, as `shards_ipc::create_private` makes one: protected from its directory's, one
+/// ACE, allowing this process's user all of a file (`FA`), and no one else anything, which
+/// NTFS keeps of a file made with `D:P(A;;GA;;;USER)` (jupiter, Windows 11 26200).
 #[cfg(windows)]
-pub fn private_to_its_user(path: &Path) -> bool {
+pub fn dacl_and_private(path: &Path) -> (String, String) {
     use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
@@ -947,7 +948,10 @@ pub fn private_to_its_user(path: &Path) -> bool {
         LocalFree(named.cast());
         user
     };
-    dacl.trim_end_matches('\0') == format!("D:P(A;;FA;;;{user})")
+    (
+        dacl.trim_end_matches('\0').to_string(),
+        format!("D:P(A;;FA;;;{user})"),
+    )
 }
 
 /// `cmd` started so that [`interrupt`] reaches it: on Windows in a process group of its own,
