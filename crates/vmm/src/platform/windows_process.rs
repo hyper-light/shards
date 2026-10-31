@@ -301,6 +301,81 @@ mod tests {
         }
     }
 
+    /// Pages faulted in writable ahead of a restored guest (windows.rs `populate_writable`):
+    /// each page of a copy-on-write view a private copy, its bytes the file's still, and no
+    /// other page touched; a range that is not all committed and writable refused, none of
+    /// it touched.
+    #[test]
+    fn populate_writable_copies_each_page_as_it_holds_it() {
+        use windows_sys::Win32::System::Memory::{
+            CreateFileMappingW, FILE_MAP_COPY, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
+            MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
+            UnmapViewOfFile, VirtualAlloc, VirtualFree,
+        };
+        let page = super::super::page_size().unwrap();
+        let len = 64 * page;
+        let dir = shards_testdir::TempDir::new("populate").unwrap();
+        // Each page's bytes its own: its index.
+        let bytes: Vec<u8> = (0..len).map(|i| (i / page) as u8).collect();
+        std::fs::write(dir.join("f"), &bytes).unwrap();
+        let file = std::fs::File::open(dir.join("f")).unwrap();
+        // SAFETY: a copy-on-write mapping of the whole file, and a view of it, both closed
+        // below.
+        let mapping = unsafe {
+            CreateFileMappingW(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&file),
+                std::ptr::null(),
+                PAGE_WRITECOPY,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert!(!mapping.is_null());
+        // SAFETY: as above.
+        let view = unsafe { MapViewOfFile(mapping, FILE_MAP_COPY, 0, 0, len) };
+        let at = view.Value.cast::<u8>();
+        assert!(!at.is_null());
+        super::super::populate_writable(at.wrapping_add(8 * page), 4 * page).unwrap();
+        assert_eq!(
+            mapped_pages(at, len).unwrap(),
+            [(8, true), (9, true), (10, true), (11, true)]
+        );
+        // SAFETY: the view's `len` bytes, read.
+        let seen = unsafe { std::slice::from_raw_parts(at, len) };
+        assert!(seen == bytes.as_slice(), "the view's bytes changed");
+        // SAFETY: the view and mapping made above, each closed once.
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view.Value });
+            windows_sys::Win32::Foundation::CloseHandle(mapping);
+        }
+
+        // Two pages committed, then one read-only, then one reserved alone.
+        // SAFETY: a fresh reservation, its first three pages committed, freed below.
+        let reserved = unsafe { VirtualAlloc(std::ptr::null(), 4 * page, MEM_RESERVE, PAGE_READWRITE) };
+        assert!(!reserved.is_null());
+        // SAFETY: pages of the reservation above.
+        unsafe {
+            assert!(!VirtualAlloc(reserved, 2 * page, MEM_COMMIT, PAGE_READWRITE).is_null());
+            let third = reserved.cast::<u8>().add(2 * page).cast();
+            assert!(!VirtualAlloc(third, page, MEM_COMMIT, PAGE_READONLY).is_null());
+        }
+        let base = reserved.cast::<u8>();
+        assert!(
+            super::super::populate_writable(base, 3 * page).is_err(),
+            "read-only"
+        );
+        assert!(
+            super::super::populate_writable(base.wrapping_add(3 * page), page).is_err(),
+            "reserved"
+        );
+        assert_eq!(mapped_pages(base, 2 * page).unwrap(), [], "none of it touched");
+        super::super::populate_writable(base, 2 * page).unwrap();
+        assert_eq!(mapped_pages(base, 2 * page).unwrap(), [(0, true), (1, true)]);
+        // SAFETY: the reservation made above, released whole.
+        unsafe { VirtualFree(reserved, 0, MEM_RELEASE) };
+    }
+
     /// A page read in from disk is the one page of its view a fault maps: the pages read
     /// in around it go to the cache alone, so a working set read of a restore's mapped pages
     /// (vm::mapped) holds what its guest touched and no neighbour (windows.rs

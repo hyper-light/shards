@@ -1092,17 +1092,15 @@ pub unsafe fn all_untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::R
 
 /// Faults in the `len` bytes at `ptr` writable, copying each page a copy-on-write view
 /// still shares with its file, as the guest's first write of it would (unix.rs
-/// `populate_writable`): each page written once, by an atomic add of nothing to its first
-/// word, which leaves every byte as it was whoever else reads or writes it meanwhile.
-/// Windows has no call that faults a range in writable (PrefetchVirtualMemory reads it
-/// in). Every page must be committed and writable (VirtualQuery): a range that is not is
-/// refused, untouched.
+/// `populate_writable`): each page written once, by a compare-exchange of its first word
+/// with the value it holds, which leaves every byte as it was whoever else reads or writes
+/// it meanwhile. An atomic add of nothing, which would say the same, LLVM compiles to no
+/// access of the word at all on x86_64 (a fence, `lock or` of the stack), so that it faults
+/// nothing in. Windows has no call that faults a range in writable (PrefetchVirtualMemory
+/// reads it in). Every page must be committed and writable (VirtualQuery): a range that is
+/// not is refused, untouched.
 pub fn populate_writable(ptr: *mut u8, len: usize) -> io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use windows_sys::Win32::System::Memory::{
-        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_GUARD,
-        PAGE_READWRITE, PAGE_WRITECOPY, VirtualQuery,
-    };
     let page = page_size()?;
     let start = ptr as usize;
     let end = start.checked_add(len).ok_or(io::ErrorKind::InvalidInput)?;
@@ -1111,37 +1109,53 @@ pub fn populate_writable(ptr: *mut u8, len: usize) -> io::Result<()> {
     }
     let mut at = start;
     while at < end {
-        let mut info = MEMORY_BASIC_INFORMATION::default();
-        // SAFETY: a query of this process's own address space, into a structure of its size.
-        let got = unsafe {
-            VirtualQuery(
-                at as *const std::ffi::c_void,
-                &raw mut info,
-                size_of::<MEMORY_BASIC_INFORMATION>(),
-            )
-        };
-        if got == 0 {
-            return Err(io::Error::last_os_error());
+        let next = writable_until(at)?;
+        if next <= at {
+            return Err(io::Error::other(format!("{at:#x}: a region of no length")));
         }
-        let writable = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-        if info.State != MEM_COMMIT || info.Protect & writable == 0 || info.Protect & PAGE_GUARD != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{at:#x} is not committed writable memory"),
-            ));
+        at = next;
+    }
+    let mut at = start;
+    while at < end {
+        // SAFETY: the first word of a page of this process's that VirtualQuery says is
+        // committed and writable, aligned as a page is.
+        let word = unsafe { AtomicU64::from_ptr(at as *mut u64) };
+        let mut held = word.load(Ordering::Relaxed);
+        while let Err(now) = word.compare_exchange_weak(held, held, Ordering::Relaxed, Ordering::Relaxed) {
+            held = now;
         }
-        let region_end = (info.BaseAddress as usize)
-            .saturating_add(info.RegionSize)
-            .min(end);
-        while at < region_end {
-            // SAFETY: the first word of a page of this process's that VirtualQuery says is
-            // committed and writable, aligned as a page is; an atomic add of zero writes it
-            // with the value it holds.
-            unsafe { AtomicU64::from_ptr(at as *mut u64) }.fetch_add(0, Ordering::Relaxed);
-            at = at.saturating_add(page);
-        }
+        at = at.saturating_add(page);
     }
     Ok(())
+}
+
+/// The end of the region of this process's address space that holds `at`, whose pages are
+/// committed and writable (VirtualQuery); an error where they are not.
+fn writable_until(at: usize) -> io::Result<usize> {
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_GUARD,
+        PAGE_READWRITE, PAGE_WRITECOPY, VirtualQuery,
+    };
+    let mut info = MEMORY_BASIC_INFORMATION::default();
+    // SAFETY: a query of this process's own address space, into a structure of its size.
+    let got = unsafe {
+        VirtualQuery(
+            at as *const std::ffi::c_void,
+            &raw mut info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if got == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let writable = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if info.State != MEM_COMMIT || info.Protect & writable == 0 || info.Protect & PAGE_GUARD != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{at:#x} is not committed writable memory"),
+        ));
+    }
+    Ok((info.BaseAddress as usize).saturating_add(info.RegionSize))
 }
 
 /// The host's fault-around held off over ranges (unix.rs `FaultAroundOff`), so that a
