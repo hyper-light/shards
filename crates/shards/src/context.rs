@@ -884,8 +884,12 @@ fn csv_path_here(
 
 /// An `--output` of `value` to a file or directory here: said as the same output to the
 /// machine's directory of this build's outputs, under its own name, recorded in `outputs`.
-/// None for one of the machine's own, a registry's, or stdout's, and for one the build
-/// refuses, which it says there.
+/// A directory's files (`type=local`) are asked of the machine as their archive
+/// (`type=tar`), which comes back as a file and is unpacked here: the files never land on
+/// the machine's own disk, where a Windows machine's would keep none of their modes, links
+/// or owners (an output packed again from NTFS has its modes made up). None for one of
+/// the machine's own, a registry's, or stdout's, and for one the build refuses, which it
+/// says there.
 fn output_here(value: &str, outputs: &mut Vec<(String, PathBuf, bool)>) -> Option<String> {
     let mut exports = shards_cmdline::buildflags::parse_exports(&[value.to_string()]).ok()?;
     let e = exports.pop().filter(|_| exports.is_empty())?;
@@ -897,8 +901,9 @@ fn output_here(value: &str, outputs: &mut Vec<(String, PathBuf, bool)>) -> Optio
     let here = std::path::absolute(&e.dest).ok()?;
     let name = outputs.len().to_string();
     outputs.push((name.clone(), here, dir));
+    let kind = if e.kind == "local" { "tar" } else { e.kind.as_str() };
     let fields = [
-        format!("type={}", e.kind),
+        format!("type={kind}"),
         format!("dest={}{name}", crate::synced::OUT),
     ]
     .into_iter()
@@ -1741,11 +1746,13 @@ impl Fetched {
 
 impl crate::synced::Outputs for Fetched {
     fn begin(&mut self, name: &str, dir: bool) -> io::Result<()> {
-        let Some((_, dest, _)) = self.wanted.iter().find(|(n, ..)| n == name) else {
+        let Some((_, dest, asked_dir)) = self.wanted.iter().find(|(n, ..)| n == name) else {
             return Err(io::Error::other(format!("an output {name:?} not asked for")));
         };
         let dest = dest.clone();
-        if dir {
+        // A directory comes as its archive, a directory's of the machine's (`dir`) or the
+        // file its build exported in its place ([`output_here`]): unpacked here alike.
+        if dir || *asked_dir {
             fs::create_dir_all(&dest).map_err(|e| self.failed(&dest, e))?;
             let (output, input) = io::pipe().map_err(|e| self.failed(&dest, e))?;
             let to = dest.clone();
@@ -3524,6 +3531,22 @@ mod tests {
         });
         drop(agent);
         assert_eq!(yes.join().unwrap(), [11], "what reached the agent");
+    }
+
+    /// An output to a directory here is asked of the machine as its archive, which comes
+    /// back as a file to unpack into it; one to a file here, and a directory of OCI's
+    /// layout, as asked.
+    #[test]
+    fn a_directorys_output_is_asked_as_its_archive() {
+        let mut outputs = Vec::new();
+        let local = output_here("type=local,dest=out", &mut outputs).unwrap();
+        assert_eq!(local, format!("type=tar,dest={}0", crate::synced::OUT));
+        let tar = output_here("type=tar,dest=r.tar", &mut outputs).unwrap();
+        assert_eq!(tar, format!("type=tar,dest={}1", crate::synced::OUT));
+        let oci = output_here("type=oci,dest=layout,tar=false", &mut outputs).unwrap();
+        assert!(oci.starts_with("type=oci,"), "{oci}");
+        let dirs: Vec<bool> = outputs.iter().map(|(_, _, dir)| *dir).collect();
+        assert_eq!(dirs, [true, false, true]);
     }
 
     #[test]
