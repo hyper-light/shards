@@ -629,9 +629,13 @@ pub(crate) fn receive(
         secrets.push((id, read_secret(input, size)?));
     }
     std::fs::create_dir_all(context).map_err(|e| format!("{}: {e}", context.display()))?;
+    // A link's own time kept, as a tree's is ([`receive_tree`]): a build's context copied
+    // with none had its symlink's time its making's, and an artifact made of it differed
+    // from the one made of the client's (CI 41237707540, windows-2025).
     let opts = shards_archive::UnpackOptions {
         no_lchown: true,
         best_effort_xattrs: true,
+        link_times: true,
         ..shards_archive::UnpackOptions::default()
     };
     let sent = shards_archive::apply_layer(input, context, &opts)
