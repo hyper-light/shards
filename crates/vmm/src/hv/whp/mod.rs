@@ -1146,33 +1146,50 @@ mod emulate {
 }
 
 impl Vcpu {
-    /// Maps the `len` bytes of guest memory at `gpa` into stage 2 ahead of the guest's first
-    /// touch of them (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate, read): each page the
-    /// guest would take into stage 2 one exit at a time, 6 to 23 µs a page, populated at
-    /// 0.4 to 0.7 µs a page (PM M341). Pages a working set says the guest wrote are copied
-    /// in the host first (`platform::populate_writable`), so a read populate maps them as
-    /// they will be written.
-    pub fn pre_fault(&self, gpa: u64, len: u64) -> Result<bool> {
-        let range = WHV_MEMORY_RANGE_ENTRY {
-            GuestAddress: gpa,
-            SizeInBytes: len,
-        };
+    /// Maps each of `runs`, `(gpa, len)`, of guest memory into stage 2 ahead of the guest's
+    /// first touch of them, all in one call (WHvAdviseGpaRange,
+    /// WHvAdviseGpaRangeCodePopulate): each page the guest would take into stage 2 one exit
+    /// at a time, 6 to 23 µs a page, populated at 0.4 to 0.7 µs a page (PM M341), where each
+    /// call of its own cost a restore 40 to 60 µs whatever its length (M415). For writing
+    /// where `write`: a page a copy-on-write view still shares with its file is copied, in
+    /// the host's kernel, as the guest's first write of it would copy it, where a copy made
+    /// by writing it from this process cost 55 to 80 µs a page (M415); else for reading,
+    /// mapping the file's own pages.
+    pub fn pre_fault_runs(&self, runs: &[(u64, u64)], write: bool) -> Result<()> {
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let ranges: Vec<WHV_MEMORY_RANGE_ENTRY> = runs
+            .iter()
+            .map(|&(gpa, len)| WHV_MEMORY_RANGE_ENTRY {
+                GuestAddress: gpa,
+                SizeInBytes: len,
+            })
+            .collect();
         let populate = WHV_ADVISE_GPA_RANGE_POPULATE {
             Flags: WHV_ADVISE_GPA_RANGE_POPULATE_FLAGS { AsUINT32: 0 },
-            AccessType: WHvMemoryAccessRead,
+            AccessType: if write {
+                WHvMemoryAccessWrite
+            } else {
+                WHvMemoryAccessRead
+            },
         };
-        // SAFETY: one range of the partition's, and an advice of its own type and size.
-        check("WHvAdviseGpaRange(Populate)", unsafe {
-            WHvAdviseGpaRange(
-                self.partition.0,
-                &raw const range,
-                1,
-                WHvAdviseGpaRangeCodePopulate,
-                (&raw const populate).cast(),
-                size_of::<WHV_ADVISE_GPA_RANGE_POPULATE>() as u32,
-            )
-        })?;
-        Ok(true)
+        // As many ranges a call as its count holds.
+        for chunk in ranges.chunks(u32::MAX as usize) {
+            // SAFETY: the chunk's ranges, of the partition's, and an advice of its own type
+            // and size.
+            check("WHvAdviseGpaRange(Populate)", unsafe {
+                WHvAdviseGpaRange(
+                    self.partition.0,
+                    chunk.as_ptr(),
+                    chunk.len() as u32,
+                    WHvAdviseGpaRangeCodePopulate,
+                    (&raw const populate).cast(),
+                    size_of::<WHV_ADVISE_GPA_RANGE_POPULATE>() as u32,
+                )
+            })?;
+        }
+        Ok(())
     }
 
     pub fn kicker(&self) -> Kicker {
@@ -1515,5 +1532,122 @@ impl Kicker {
         // SAFETY: the partition, which this kicker holds; a vCPU that no longer exists
         // fails the call, harmlessly.
         unsafe { WHvCancelRunVirtualProcessor(self.partition.0, self.index, 0) };
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Do, on a real partition: map a copy-on-write view of a file as guest RAM, and populate
+    /// 512 of its pages for writing and 512 for reading, each a run of its own as a restore's
+    /// working set's mostly are, each way's runs in one call. Expect each page populated for
+    /// writing a private copy of the file's bytes, each for reading the file's own, no other
+    /// page mapped, and the file as it was; and say what each way costs: in one call, a call
+    /// a run, and copied from this process as a write copies a page, for the choice a
+    /// restore makes (PM M415). Skips where the host offers no WHP.
+    #[test]
+    fn a_write_populate_copies_a_views_pages_in_the_kernel() {
+        use std::io::Write as _;
+        use windows_sys::Win32::System::Memory::{
+            CreateFileMappingW, FILE_MAP_COPY, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_WRITECOPY,
+            UnmapViewOfFile,
+        };
+        if let Err(why) = check_host() {
+            eprintln!("SKIP: no WHP here ({why})");
+            return;
+        }
+        const PAGE: usize = 4096;
+        let pages = 4096;
+        let len = pages * PAGE;
+        let dir = shards_testdir::TempDir::new("populate-w").unwrap();
+        // Each page's bytes its own: its index's low byte.
+        let bytes: Vec<u8> = (0..len).map(|i| (i / PAGE) as u8).collect();
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("memory"))
+            .unwrap();
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+        // SAFETY: a copy-on-write mapping of the whole file, and a view of it, closed below.
+        let mapping = unsafe {
+            CreateFileMappingW(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&file),
+                std::ptr::null(),
+                PAGE_WRITECOPY,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert!(!mapping.is_null());
+        // SAFETY: as above.
+        let view = unsafe { MapViewOfFile(mapping, FILE_MAP_COPY, 0, 0, len) };
+        let at = view.Value.cast::<u8>();
+        assert!(!at.is_null());
+        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        // SAFETY: the view stays mapped until the VM is dropped, below.
+        unsafe { vm.map_ram(at, 0, len) }.unwrap();
+        let vcpu = vm.create_vcpu(0).unwrap();
+        let run = |page: usize| ((page * PAGE) as u64, PAGE as u64);
+        let written: Vec<_> = (0..512).map(|i| run(2 * i)).collect();
+        let read: Vec<_> = (0..512).map(|i| run(2 * i + 1)).collect();
+        let started = std::time::Instant::now();
+        vcpu.pre_fault_runs(&written, true).unwrap();
+        let write_once = started.elapsed();
+        let started = std::time::Instant::now();
+        vcpu.pre_fault_runs(&read, false).unwrap();
+        let read_once = started.elapsed();
+        let mapped = crate::platform::mapped_pages(at, len).unwrap();
+        let expected: Vec<(usize, bool)> = (0..1024).map(|p| (p, p % 2 == 0)).collect();
+        assert_eq!(
+            mapped, expected,
+            "each populated for writing a copy, for reading the file's"
+        );
+        // Each way again over pages of their own: a call a run, and copies from this process.
+        let started = std::time::Instant::now();
+        for i in 0..512 {
+            vcpu.pre_fault_runs(&[run(2048 + 2 * i + 1)], false).unwrap();
+        }
+        let read_each = started.elapsed();
+        // A copy from this process, as its write makes one: each page's first word written as
+        // it holds it, by a compare-exchange, which x86_64 writes whatever it compares (an
+        // atomic add of nothing LLVM compiles to no access of the word at all).
+        let started = std::time::Instant::now();
+        for i in 0..512 {
+            // SAFETY: the first word of a page of the view, mapped copy-on-write above.
+            let word = unsafe {
+                std::sync::atomic::AtomicU64::from_ptr(at.wrapping_add((2048 + 2 * i) * PAGE).cast())
+            };
+            let held = word.load(std::sync::atomic::Ordering::Relaxed);
+            let _ = word.compare_exchange(
+                held,
+                held,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        let copied_here = started.elapsed();
+        // SAFETY: the view's `len` bytes, read.
+        let seen = unsafe { std::slice::from_raw_parts(at, len) };
+        assert!(seen == bytes.as_slice(), "the view's bytes changed");
+        drop((vcpu, vm));
+        // SAFETY: the view and mapping made above, each closed once, the VM gone.
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view.Value });
+            windows_sys::Win32::Foundation::CloseHandle(mapping);
+        }
+        assert!(
+            std::fs::read(dir.join("memory")).unwrap() == bytes,
+            "the file changed"
+        );
+        eprintln!(
+            "512 pages a way, a run each: populated for writing {write_once:?} in one call, \
+             for reading {read_once:?} in one call and {read_each:?} a call each; \
+             copied from this process {copied_here:?}"
+        );
     }
 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::devices::virtio::pmem;
 use crate::hv;
 use crate::memory::GuestMemory;
-use crate::{debug, info, platform};
+use crate::{debug, platform};
 
 /// The host's page, which a working set recorded from its mappings is made of: a host of
 /// pages of another size records none.
@@ -18,7 +18,9 @@ const PAGE: u64 = 4 << 10;
 /// Makes the private copies of RAM that the guest wrote while its working set was
 /// recorded, as its writes would make them: KVM then maps these pages writable ahead,
 /// where a write to a page mapped read-only would fault, copy, and fault again. Every run
-/// it can ([`every_run`]).
+/// it can ([`every_run`]). Not WHP's, whose populate for writing copies them in the host's
+/// kernel (vm::x86_64 `pre_fault`).
+#[cfg(not(hv = "whp"))]
 pub fn copy_written(memory: &GuestMemory, working_set: &[hv::Touch]) -> Result<(), String> {
     let t0 = crate::log::uptime_us();
     let written = runs(working_set.iter().filter(|t| t.written).map(|t| t.gpa));
@@ -32,7 +34,7 @@ pub fn copy_written(memory: &GuestMemory, working_set: &[hv::Touch]) -> Result<(
         platform::populate_writable(host, len).map_err(|e| e.to_string())
     });
     if pages > 0 {
-        info!(
+        crate::info!(
             "copied {pages} written working-set pages ahead, in {count} runs, in {} us",
             crate::log::uptime_us().saturating_sub(t0)
         );
@@ -207,7 +209,7 @@ mod tests {
     /// damaged working set's write to what is not RAM (read-only pmem, say) leaves the
     /// rest of the copies ahead (review 1.19). Where restores take working sets
     /// (`WORKING_SETS`).
-    #[cfg(any(hv = "hvf", hv = "kvm", all(hv = "whp", target_arch = "x86_64")))]
+    #[cfg(any(hv = "hvf", hv = "kvm"))]
     #[test]
     fn written_pages_past_a_run_that_fails_are_copied() {
         let path_dir = shards_testdir::TempDir::new("copy-written").unwrap();

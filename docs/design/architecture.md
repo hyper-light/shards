@@ -6926,10 +6926,16 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   thread of its own (`working_set::keep`): the confined VM writes none of its snapshot's
   files (D30), and the CLI, which waits for its VM as a child, needs no writer process, as
   Linux's, which becomes its VM, does. A restore of a generation that has one maps it ahead
-  before its guest runs: its written pages copied in the host first, each page's first word
-  written as it holds it (`platform::populate_writable`: Windows has no call that faults a
-  range in writable, PrefetchVirtualMemory reading one in), then each run of its pages
-  populated at stage 2 (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate).
+  before its guest runs, every run of its pages populated at stage 2 in two calls
+  (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate; `hv::Vcpu::pre_fault_runs`): the pages
+  its guest wrote for writing, which copies each one its copy-on-write view of the snapshot
+  still shares with the file in the host's kernel, as the guest's first write would, and
+  the rest for reading. A call costs 40 to 60 µs whatever it holds (M415), and on jupiter 512
+  pages populated for writing in one call took 6.3 ms, where copying them from the VM process,
+  writing each page's first word as it holds it (Windows has no call that faults a range in
+  writable from user mode, PrefetchVirtualMemory reading one in), took 12.1 (hv::whp
+  `a_write_populate_copies_a_views_pages_in_the_kernel`, which checks each copy holds the
+  file's bytes and no other page is mapped).
 
 **Tested.** Unit: the states' round trips and damage, and a state naming any other register
 refused (`hv::whp::state`); a restored IOAPIC going on as the saved one; a generation staged by
