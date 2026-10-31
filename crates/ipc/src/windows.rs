@@ -2482,7 +2482,16 @@ mod tests {
         assert!(!raw.is_null());
         // SAFETY: the thread just made, owned here.
         let thread = unsafe { OwnedHandle::from_raw_handle(raw) };
-        let said = process_activity(std::process::id());
+        // Asked until the thread made suspended waits so: on a 4-CPU runner one was listed
+        // ready, not yet waiting, among 78 (CI's windows-2025 at 1415ad8f).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let said = loop {
+            let said = process_activity(std::process::id());
+            if said.contains("waiting (Suspended)") || std::time::Instant::now() > deadline {
+                break said;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
         // SAFETY: the thread made suspended above, then waited for as it returns.
         unsafe {
             ResumeThread(thread.as_raw_handle());
