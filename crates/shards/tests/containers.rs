@@ -1992,11 +1992,25 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     }
     std::fs::write(dir.join("mapped-go"), b"").unwrap();
     let mapped = mapper.join().unwrap();
-    assert_eq!(
-        mapped.stdout,
-        format!("map2m /v/mapped {}\n", (9 << 20) + 1),
-        "{mapped}"
-    );
+    // Where the guest saw the size it had before, what the host holds of the file then, and
+    // its byte past that size read again two seconds on, opened afresh: twice on CI's
+    // windows-2022 (793abaeb, 1415ad8f) the guest saw 9 MiB, with no word of which of its
+    // cache and the share's server answered so.
+    if mapped.stdout != format!("map2m /v/mapped {}\n", (9 << 20) + 1) {
+        let host = std::fs::metadata(dir.join("mapped")).map(|m| m.len());
+        std::thread::sleep(Duration::from_secs(2));
+        let again = shards(&[
+            "exec",
+            "dax2m",
+            "/bin/testguest",
+            "fs",
+            &format!("peek:/v/mapped:{}", 9 << 20),
+        ]);
+        panic!(
+            "the guest saw {:?}: its host holds {host:?} bytes, and the byte at 9 MiB read 2 s on: {again}",
+            mapped.stdout.trim()
+        );
+    }
     let log = shards(&["exec", "dax2m", "/bin/testguest", "fs", "kmsg:fs/dax.c"]);
     assert_eq!(log.status, Some(0), "{log}");
     assert!(log.stdout.ends_with("kmsg fs/dax.c 0\n"), "{log}");

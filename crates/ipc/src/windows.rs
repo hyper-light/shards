@@ -2482,8 +2482,9 @@ mod tests {
         assert!(!raw.is_null());
         // SAFETY: the thread just made, owned here.
         let thread = unsafe { OwnedHandle::from_raw_handle(raw) };
-        // Asked until the thread made suspended waits so: on a 4-CPU runner one was listed
-        // ready, not yet waiting, among 78 (CI's windows-2025 at 1415ad8f).
+        // Asked until the thread made suspended waits so: on a 4-CPU runner none of the
+        // process's 78 threads was listed waiting (Suspended), 9 of them ready (CI's
+        // windows-2025 at 1415ad8f).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let said = loop {
             let said = process_activity(std::process::id());
