@@ -3008,9 +3008,41 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
     // Past its attributes' second (the share's VALID_S): the stat asks the host.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let size = std::fs::metadata(path)?.len();
+    // And asked of the file system afresh, whatever the kernel holds of it, said on stderr:
+    // where the size seen is not the file's, which of the kernel's cache and the share's
+    // server held it (containers.rs's DAX test, CI's windows-2022).
+    let asked = size_asked(path)?;
+    let _ = writeln!(io::stderr(), "map2m {path} asked afresh {asked}");
     drop(std::fs::File::open(path)?);
     let _ = read_all();
     Ok(size)
+}
+
+/// `path`'s size as its file system says it now (statx(2), AT_STATX_FORCE_SYNC): a FUSE
+/// file's asked of its server whatever its attributes' time (fs/fuse/dir.c,
+/// fuse_update_get_attr).
+fn size_asked(path: &str) -> io::Result<u64> {
+    // include/uapi/linux/stat.h: STATX_SIZE, AT_STATX_FORCE_SYNC, and stx_size struct
+    // statx's sixth word.
+    const STATX_SIZE: libc::c_uint = 0x200;
+    const AT_STATX_FORCE_SYNC: libc::c_int = 0x2000;
+    let c = std::ffi::CString::new(path).map_err(io::Error::other)?;
+    let mut st = [0u64; 32];
+    // SAFETY: statx(2) of a NUL-terminated path into a buffer of struct statx's size.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            AT_STATX_FORCE_SYNC,
+            STATX_SIZE,
+            st.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(st[5])
 }
 
 /// `file`'s whole pages mapped shared, `prot` their access: where, and how many bytes,

@@ -1992,10 +1992,11 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     }
     std::fs::write(dir.join("mapped-go"), b"").unwrap();
     let mapped = mapper.join().unwrap();
-    // Where the guest saw the size it had before, what the host holds of the file then, and
-    // its byte past that size read again two seconds on, opened afresh: twice on CI's
-    // windows-2022 (793abaeb, 1415ad8f) the guest saw 9 MiB, with no word of which of its
-    // cache and the share's server answered so.
+    // Where the guest saw the size it had before, what the host holds of the file then, the
+    // size the guest's file system asked of the share's server afresh as it looked (its
+    // stderr), and the byte past that size read again two seconds on, opened afresh: three
+    // times on CI's windows-2022 (793abaeb, 1415ad8f, d3d996b7) the guest saw 9 MiB, and at
+    // d3d996b7 read the new byte 2 s on.
     if mapped.stdout != format!("map2m /v/mapped {}\n", (9 << 20) + 1) {
         let host = std::fs::metadata(dir.join("mapped")).map(|m| m.len());
         std::thread::sleep(Duration::from_secs(2));
@@ -2007,8 +2008,9 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             &format!("peek:/v/mapped:{}", 9 << 20),
         ]);
         panic!(
-            "the guest saw {:?}: its host holds {host:?} bytes, and the byte at 9 MiB read 2 s on: {again}",
-            mapped.stdout.trim()
+            "the guest saw {:?} ({}): its host holds {host:?} bytes, and the byte at 9 MiB read 2 s on: {again}",
+            mapped.stdout.trim(),
+            mapped.stderr.trim()
         );
     }
     let log = shards(&["exec", "dax2m", "/bin/testguest", "fs", "kmsg:fs/dax.c"]);
@@ -2768,8 +2770,12 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         said()
     );
     // What it asked to unplug of the memory it had plugged to hold them, said with what it
-    // gave back of its files.
-    let _said = mib_after(&gave, "asking to unplug ");
+    // gave back of its files, where its give-back answered; where none came in time, what
+    // its host holds less of it, which the word then says in its place (PM M416): CI
+    // 41255435995's x86_64 Linux said 213 MiB, with no answer.
+    if !gave.contains("with no answer") {
+        let _said = mib_after(&gave, "asking to unplug ");
+    }
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
