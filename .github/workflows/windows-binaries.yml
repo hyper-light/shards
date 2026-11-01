@@ -32,8 +32,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
-  WORKSPACE: ${{ github.event.inputs.workspace || 'C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-cli-6628f0fd9d' }}
-  TARGET: ${{ github.event.inputs.target || 'C:\Users\corph\g121-db-pre' }}
+  WORKSPACE: ${{ github.event.inputs.workspace || 'C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-venus-win-090bd613d3' }}
+  TARGET: ${{ github.event.inputs.target || 'C:\Users\corph\g121-db-gpu' }}
 
 jobs:
   build:
@@ -43,10 +43,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - kind: bench
-            names: ${{ github.event.inputs.benches || 'restore' }}
+          # tests/gpu.rs, its shards carrying the GPU's VM process (D202): built with the
+          # GPU's renderer, as CI's Windows lanes build it.
           - kind: test
-            names: ${{ github.event.inputs.tests || 'context' }}
+            names: ${{ github.event.inputs.tests || 'gpu' }}
+            gpu: true
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -71,6 +72,27 @@ jobs:
           # makes no symlink).
           git worktree add --detach "$(cygpath -u "$WORKSPACE")" HEAD
           pwsh -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round(\$_.Free/1GB,1)}}"
+      # The GPU's renderer (D202), from pinned sources, as ci.yml builds and keeps it.
+      - name: The GPU's renderer's key
+        if: matrix.gpu
+        id: gpu-key
+        shell: bash
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: The GPU's renderer, as built before
+        if: matrix.gpu
+        id: gpu-kept
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/gpu-libs
+          key: gpu-libs-${{ steps.gpu-key.outputs.image }}-${{ hashFiles('scripts/gpu-libs', 'resources/gpu/**') }}
+      - name: The GPU's renderer
+        if: matrix.gpu
+        shell: bash
+        run: |
+          if [ "${{ steps.gpu-kept.outputs.cache-hit }}" != true ]; then
+            scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          fi
+          echo "SHARDS_GPU_LIBS=$RUNNER_TEMP/gpu-libs" >> "$GITHUB_ENV"
       - name: Build
         shell: bash
         working-directory: ${{ env.WORKSPACE }}
