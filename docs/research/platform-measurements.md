@@ -16661,3 +16661,35 @@ revision before comparing a changed API/implementation.
   comes (a triple fault, a hypervisor's reset or crash event, PSCI's SYSTEM_RESET, WHP's
   unrecoverable exception, the keyboard controller's reset Linux reboots by), as a triple
   fault writes nothing. boot.rs `a_reset_with_no_console_says_its_guests_panic` holds it so.
+
+### M418. How long kiln's headroom guard freezes a run on jupiter
+
+- **Question.** The restore bench's runs on jupiter (M415's arms with and without the working
+  set, D196) sat suspended for hours: a bench build started 2026-10-31 at 14:05 PDT timed
+  out unbuilt by 18:45, its compilers' threads `Wait/Suspended` whenever looked at. kiln's
+  headroom guard on jupiter (`kiln.exe headroom-guard`) suspends the processes of kiln's
+  runs while its "kiln server" probe answers past its second (`kiln.log`'s `headroom
+  event=… CPU cut to … cores`), and holds them to a learned budget between
+  (`headroom/learned.json`, `cpu_knee`: unsafe at 0.0148 cores, a budget of 0.008 to
+  0.031). How long is a run frozen at a time, and how long does it run between, so that a
+  measurement taken under it can tell a sample it froze across from one it did not?
+- **Method.** `docs/research/measurements/kiln-guard/ticks.ps1`, as a kiln run on jupiter
+  (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200) beside the bench's build, 2026-11-01
+  05:00:38 to 05:03:40 UTC: a thread sleeping a millisecond at a time (Thread.Sleep, the
+  system's default timer resolution) for three minutes, each gap between its wakings
+  counted.
+- **Found.** Of 181.7 s, 177.8 s frozen: 258 wakings, at p50 15.44 ms and p90 15.78 ms
+  apart (the timer's 15.6 ms resolution), one gap of 51 ms, and 8 freezes, of 1,471 ms, then
+  29,059 ms and six of 24,260 to 24,971 ms, about every 25 s, the run running half a second
+  or less between them. They do not follow the guard's log: it said its probe was out past
+  its second at 05:00:57, 05:01:52, 05:02:47 and 05:03:35, back to calm 8 to 18 s after
+  each, some cutting kiln's CPU to 0.0 or 0.1 cores, but the freeze from 05:01:11 ran 24.6 s
+  through the calm from 05:01:10 to 05:01:52, and each began about 25 s after the one before
+  whatever the log said. So the log does not say when a run is frozen, and no freeze was
+  shorter than 1.4 s, where a running sleeper's longest gap was 51 ms.
+- **Decided.** A benchmark's process watches for its own freezes: a ticker thread sleeping
+  a millisecond at a time records each gap between its ticks past 250 ms, above every gap
+  it ran through here and below every freeze, and a sample taken across one is taken again,
+  counted in the report (`frozen_retaken`; support `unfrozen`); the restore bench takes each
+  of its samples so, its working set set aside again with a sample that runs without one.
+  On a host no guard freezes, none is taken again.

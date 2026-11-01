@@ -40,7 +40,7 @@ use std::path::Path;
 
 fn main() {
     use shards_abi::marker;
-    use support::{peak_rss_mib, report, run, stats, us, wall_us};
+    use support::{peak_rss_mib, report, run, stats, unfrozen, us, wall_us};
 
     const WARMUP: usize = 3;
     let runs: usize = support::option("--runs").map_or(50, |v| v.parse().expect("--runs N"));
@@ -108,14 +108,18 @@ fn main() {
     };
     let (mut cold, mut warm) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
     let (mut cold_bare, mut warm_bare) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
+    // A sample this process was frozen across is taken again, its working set set aside
+    // again with it (support::frozen): its time a freeze's, as kiln's guard freezes a run's
+    // every process on jupiter (PM M418).
+    let mut retaken = 0usize;
     for i in 0..runs {
         for bare_first in [i % 2 == 1, i % 2 == 0] {
             if bare_first && without {
-                cold_bare.push(bare(&cold_args, false));
-                warm_bare.push(bare(&warm_args, true));
+                cold_bare.push(unfrozen(&mut retaken, || bare(&cold_args, false)));
+                warm_bare.push(unfrozen(&mut retaken, || bare(&warm_args, true)));
             } else if !bare_first && with {
-                cold.push(run(&cold_args, false));
-                warm.push(run(&warm_args, true));
+                cold.push(unfrozen(&mut retaken, || run(&cold_args, false)));
+                warm.push(unfrozen(&mut retaken, || run(&warm_args, true)));
             }
         }
     }
@@ -168,6 +172,7 @@ fn main() {
             ("working_set", arms),
             ("working_set_pages", pages.to_string()),
             ("working_set_written", written.to_string()),
+            ("frozen_retaken", retaken.to_string()),
         ],
         &table,
     );
