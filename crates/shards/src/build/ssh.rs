@@ -1488,15 +1488,25 @@ fn asked_of(path: &std::path::Path) -> std::io::Result<Option<shards_ipc::Stream
     return shards_ipc::Stream::given(conn).map(Some);
 }
 
-/// A client's end of the named pipe at `path`: opened, or opened once an instance is free
-/// where all are busy (ERROR_PIPE_BUSY), as winio.DialPipe waits for one (2 s here, as
-/// BuildKit gives an agent's socket to connect).
+/// A client's end of the named pipe at `path`, as BuildKit v0.27.1 dials an agent's
+/// (sshprovider/agentprovider_windows.go, winio.DialPipe): anonymous to the pipe's server
+/// (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), which cannot impersonate this process; and
+/// opened once an instance is free where all are busy (ERROR_PIPE_BUSY), as winio.DialPipe
+/// waits for one (2 s here, as BuildKit gives an agent's socket to connect).
 #[cfg(windows)]
 fn pipe(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
     use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::Storage::FileSystem::SECURITY_ANONYMOUS;
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
-    let open = || std::fs::File::options().read(true).write(true).open(path);
+    let open = || {
+        std::fs::File::options()
+            .read(true)
+            .write(true)
+            .security_qos_flags(SECURITY_ANONYMOUS)
+            .open(path)
+    };
     match open() {
         Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
             let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();

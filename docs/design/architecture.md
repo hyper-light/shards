@@ -11847,8 +11847,8 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     GitHub Actions, Google's workload identity (the metadata server, or Application Default
     Credentials: a service account's key, an impersonated account, federation from a file
     or URL), Google impersonation (IAM's generateIdToken), SPIFFE's Workload API (gRPC on
-    its socket, over the frontend's HTTP/2 client, D113). `--oidc-provider` names one,
-    `--oidc-disable-ambient-providers` none.
+    its socket, or on Windows its named pipe, over the frontend's HTTP/2 client, D113).
+    `--oidc-provider` names one, `--oidc-disable-ambient-providers` none.
   - Else it signs in (`--fulcio-auth-flow`, cosign's flows): in a browser on a terminal
     (PKCE; the code brought back to a listener on this host, or typed in), by a device
     code without one, or by client credentials. Each token is checked as go-oidc checks it:
@@ -11879,11 +11879,21 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     answer it closed and says "http: read on closed response body" (seen in the oracle).
   - GitHub's token endpoint refusing is said; cosign decodes the refusal as a token.
   - `SPIFFE_ENDPOINT_SOCKET` is read as the SPIFFE spec writes it, `unix://PATH`, too.
+  - SPIFFE's Workload API is reached on Windows, by its named pipe: SPIRE's agent's,
+    `\\.\pipe\spire-agent\public\api` (spire v1.15.5's DefaultNamedPipeName), or the one
+    `SPIFFE_ENDPOINT_SOCKET` names, `npipe:NAME` as go-spiffe reads it there or the pipe's
+    path. cosign dials `unix://` and its socket's path alone (pkg/providers/spiffe), which
+    go-spiffe v2.7.0 refuses on Windows, dialling `npipe:` and `tcp:` there
+    (workloadapi/addr_windows.go): no cosign on Windows reaches a Workload API. Its pipe is
+    opened as go-winio v0.6.2 dials one for go-spiffe, anonymous to its server
+    (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), and waited for where each instance is in
+    use; whether it is there is asked without connecting (WaitNamedPipeW), as an instance
+    a connection takes is one the agent's workloads wait for.
   - Messages go to stderr, which shards keeps for people (oauthflow prints some to stdout).
   - `-h` is help on `shards sign` and every action of `shards agent|harness|mcp`.
 - **Not taken**: Google federation from AWS or from an executable (its file and URL sources
-  are taken), and SPIFFE's Workload API on Windows (a named pipe). A signer there gives the
-  token itself with `--identity-token`; no demand for either has been seen.
+  are taken). A signer there gives the token itself with `--identity-token`; no demand for
+  it has been seen.
 - **Tested**:
   - Against a local Sigstore (PM M184): shards' signatures and cosign's, of each signing
     config (Rekor v2 with a timestamp authority, Rekor v1 with one and without), each
@@ -11904,6 +11914,11 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
   - Unit tests of each part: the signing config, Fulcio, Rekor, the timestamp request,
     OIDC (JWS by each algorithm, claims, PKCE, the authorization URL), the flows' listener
     and token answers, the providers' sources.
+  - A JWT-SVID asked of a Workload API that answers as a gRPC server does, on a Unix
+    socket and, on Windows, on a named pipe of this machine as SPIRE's agent serves one,
+    found there without a connection taken (spiffe.rs
+    `a_jwt_svid_is_asked_of_the_workload_api_on_its_socket` and `..._on_its_named_pipe`,
+    the latter on CI's Windows runners); the pipe's names as go-spiffe reads them.
 
 ### D125. A run's microVM has every CPU of its host unless it is limited
 
