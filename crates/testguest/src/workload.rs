@@ -3005,17 +3005,54 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
     while std::fs::symlink_metadata(signal).is_err() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Past its attributes' second (the share's VALID_S): the stat asks the host.
+    // Past its attributes' second (the share's VALID_S): the stat asks the host. How far
+    // the kernel's jiffies, which FUSE times its attributes' second by (fs/fuse/dir.c,
+    // fuse_dentry_revalidate), went against CLOCK_MONOTONIC, which the sleep is timed by:
+    // CI's windows-2025 saw a stat 1.2 s past its file's attributes ask nothing of its
+    // share's server (05e9cc57, the server's log).
+    let (mono, ticks) = (std::time::Instant::now(), clock_ticks());
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let size = std::fs::metadata(path)?.len();
+    let slept = (mono.elapsed(), clock_ticks().saturating_sub(ticks));
     // And asked of the file system afresh, whatever the kernel holds of it, said on stderr:
     // where the size seen is not the file's, which of the kernel's cache and the share's
     // server held it (containers.rs's DAX test, CI's windows-2022).
     let asked = size_asked(path)?;
-    let _ = writeln!(io::stderr(), "map2m {path} asked afresh {asked}");
+    let clocks = [
+        "clocksource/clocksource0/current_clocksource",
+        "clockevents/clockevent0/current_device",
+    ]
+    .map(|at| {
+        std::fs::read_to_string(format!("/sys/devices/system/{at}"))
+            .map_or_else(|e| e.to_string(), |s| s.trim().to_string())
+    });
+    let _ = writeln!(
+        io::stderr(),
+        "map2m {path} asked afresh {asked}; slept {} us of CLOCK_MONOTONIC, {} clock ticks of jiffies at {} a second; clocksource {}, clockevent {}",
+        slept.0.as_micros(),
+        slept.1,
+        // SAFETY: sysconf(3) reads a constant.
+        unsafe { libc::sysconf(libc::_SC_CLK_TCK) },
+        clocks[0],
+        clocks[1]
+    );
     drop(std::fs::File::open(path)?);
     let _ = read_all();
     Ok(size)
+}
+
+/// The kernel's jiffies as clock ticks since boot, as times(2) gives them (kernel/sys.c,
+/// `jiffies_64_to_clock_t`): what a FUSE attribute's time is counted in.
+fn clock_ticks() -> u64 {
+    let mut t = libc::tms {
+        tms_utime: 0,
+        tms_stime: 0,
+        tms_cutime: 0,
+        tms_cstime: 0,
+    };
+    // SAFETY: times(2) fills a tms this frame owns.
+    let ticks = unsafe { libc::times(&mut t) };
+    u64::try_from(ticks).unwrap_or(0)
 }
 
 /// `path`'s size as its file system says it now (statx(2), AT_STATX_FORCE_SYNC): a FUSE

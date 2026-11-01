@@ -100,14 +100,16 @@ pub fn unfrozen(retaken: &mut usize, mut take: impl FnMut() -> Sample) -> Sample
 /// Runs `shards-vm <args>`, the VMM's own process without the `shards` command in front,
 /// to completion. With `hold`, waits for `shards-ready` on stderr, then sends the start
 /// line.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn run(args: &[String], hold: bool) -> Sample {
     measure(common::shards_vm(), args, hold, &[])
 }
 
-/// [`run`] on Windows, where a VM process runs only confined, in the AppContainer `shards`
-/// starts it in (D141): `shards <args>`, its VM process's own timing line passed through.
-#[cfg(windows)]
+/// [`run`] where a VM process opens only what its spawner grants it: on macOS, in App
+/// Sandbox (D30), and on Windows, in the AppContainer `shards` starts it in (D141): `shards
+/// <args>`, which grants it its files, its VM process's own timing line passed through. A
+/// VM process started alone there refuses to start ("nothing was granted to this VM").
+#[cfg(any(target_os = "macos", windows))]
 pub fn run(args: &[String], hold: bool) -> Sample {
     measure(common::shards(), args, hold, &[])
 }
