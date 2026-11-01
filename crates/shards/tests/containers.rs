@@ -13858,7 +13858,8 @@ fn an_image_of_gigabytes_boots() {
 /// windows-2025, the cp test on windows-2022 in 41277401058). Four threads each start a run
 /// of `sleep` and stop it, `M419_ROUNDS` times each (10) with nothing beside them, then
 /// again for as long as that test's build goes on beside them: its 2 GiB file written,
-/// built into an image and read by a run. Each way's stops told as n, p50, p90, p99 and max
+/// built into an image and read by a run; and eight runs idle from before the build are
+/// stopped together 5 s into that read. Each way's stops told as n, p50, p90, p99 and max
 /// (nearest rank), and each that heard no end with what it said, its VM process's CPU time
 /// and resident memory as it gave up, and how long the process outlived it.
 #[test]
@@ -13872,53 +13873,62 @@ fn stops_beside_a_gigabyte_build() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
-    // Four threads' stops, each making them while `more` says so of its next: their times
-    // in ms, and what each that heard no end found.
+    // Run `name`'s stop, `run` its client: its time in ms, and where it heard no end, what
+    // it said, its VM process's CPU time and resident memory as it gave up, and how long the
+    // process outlived it.
+    let stop_one = |name: &str, mut run: Child| -> (f64, Option<String>) {
+        let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", name]);
+        let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
+        let t0 = Instant::now();
+        let stopped = shards_in(&home, &["stop", name]);
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        let mut lost = None;
+        if stopped.status != Some(0) {
+            let usage = shards_vmm::platform::process_usage(vm).map_or_else(
+                |e| format!("unread ({e})"),
+                |u| {
+                    format!(
+                        "{:.2} s of CPU, {} MiB resident",
+                        u.cpu_ns as f64 / 1e9,
+                        u.resident >> 20
+                    )
+                },
+            );
+            let gave_up = Instant::now();
+            let mut outlived = "ran on a minute after".to_string();
+            while gave_up.elapsed() < Duration::from_secs(60) {
+                if !common::alive(i32::try_from(vm).unwrap_or(0)) {
+                    outlived = format!("had ended {:?} after", gave_up.elapsed());
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            lost = Some(format!(
+                "{name}: its stop {ms:.0} ms ({}); its VM process {vm} as it gave up: {usage}; {outlived}",
+                stopped.stderr.trim()
+            ));
+            let _ = run.kill();
+        }
+        let _ = exit(&mut run);
+        let _ = shards_in(&home, &["rm", "-f", name]);
+        (ms, lost)
+    };
+    // Four threads each starting runs of `sleep` and stopping them while `more` says so of
+    // their next: their stops' times, and what each that heard no end found.
     let stops = |more: &(dyn Fn(usize) -> bool + Sync)| -> (Vec<f64>, Vec<String>) {
         std::thread::scope(|s| {
             let threads: Vec<_> = (0..4)
                 .map(|t| {
-                    let (home, image) = (&home, &image);
+                    let (stop_one, home, image) = (&stop_one, &home, &image);
                     s.spawn(move || {
                         let (mut took, mut lost) = (Vec::new(), Vec::new());
                         let mut i = 0;
                         while more(i) {
                             let name = format!("m419-{t}-{i}");
-                            let mut run = start(home, image, &["--name", &name], &["sleep"]);
-                            let vm = shards_in(home, &["inspect", "-f", "{{.State.Pid}}", &name]);
-                            let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
-                            let t0 = Instant::now();
-                            let stopped = shards_in(home, &["stop", &name]);
-                            let ms = t0.elapsed().as_secs_f64() * 1e3;
+                            let run = start(home, image, &["--name", &name], &["sleep"]);
+                            let (ms, gave_up) = stop_one(&name, run);
                             took.push(ms);
-                            if stopped.status != Some(0) {
-                                let usage = shards_vmm::platform::process_usage(vm).map_or_else(
-                                    |e| format!("unread ({e})"),
-                                    |u| {
-                                        format!(
-                                            "{:.2} s of CPU, {} MiB resident",
-                                            u.cpu_ns as f64 / 1e9,
-                                            u.resident >> 20
-                                        )
-                                    },
-                                );
-                                let gave_up = Instant::now();
-                                let mut outlived = "ran on a minute after".to_string();
-                                while gave_up.elapsed() < Duration::from_secs(60) {
-                                    if !common::alive(i32::try_from(vm).unwrap_or(0)) {
-                                        outlived = format!("had ended {:?} after", gave_up.elapsed());
-                                        break;
-                                    }
-                                    std::thread::sleep(Duration::from_millis(100));
-                                }
-                                lost.push(format!(
-                                    "{name}: its stop {ms:.0} ms ({}); its VM process {vm} as it gave up: {usage}; {outlived}",
-                                    stopped.stderr.trim()
-                                ));
-                                let _ = run.kill();
-                            }
-                            let _ = exit(&mut run);
-                            let _ = shards_in(home, &["rm", "-f", &name]);
+                            lost.extend(gave_up);
                             i += 1;
                         }
                         (took, lost)
@@ -13936,8 +13946,18 @@ fn stops_beside_a_gigabyte_build() {
         })
     };
     let alone = stops(&|i| i < rounds);
-    let done = AtomicBool::new(false);
-    let (beside, load) = std::thread::scope(|s| {
+    // Eight runs idle from before the load, as the suite's runs are beside it, stopped
+    // together 5 s into the run that reads the build's image: where the three stops on
+    // Windows CI gave up, each some 6 s before an_image_of_gigabytes_boots ended.
+    let idle: Vec<(String, Child)> = (0..8)
+        .map(|i| {
+            let name = format!("m419-idle-{i}");
+            let run = start(&home, &image, &["--name", &name], &["sleep"]);
+            (name, run)
+        })
+        .collect();
+    let (done, reading) = (AtomicBool::new(false), AtomicBool::new(false));
+    let (beside, as_read, load) = std::thread::scope(|s| {
         let load = s.spawn(|| {
             let ctx = home.join("big");
             std::fs::create_dir(&ctx).unwrap();
@@ -13956,6 +13976,7 @@ fn stops_beside_a_gigabyte_build() {
                 &env,
                 Duration::from_secs(600),
             );
+            reading.store(true, Ordering::SeqCst);
             let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
             done.store(true, Ordering::SeqCst);
             format!(
@@ -13965,15 +13986,42 @@ fn stops_beside_a_gigabyte_build() {
                 t0.elapsed()
             )
         });
+        let as_read = s.spawn(|| {
+            while !reading.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            std::thread::sleep(Duration::from_secs(5));
+            std::thread::scope(|s| {
+                let stopping: Vec<_> = idle
+                    .into_iter()
+                    .map(|(name, run)| {
+                        let stop_one = &stop_one;
+                        s.spawn(move || stop_one(&name, run))
+                    })
+                    .collect();
+                stopping
+                    .into_iter()
+                    .fold((Vec::new(), Vec::new()), |(mut took, mut lost), t| {
+                        let (ms, gave_up) = t.join().unwrap();
+                        took.push(ms);
+                        lost.extend(gave_up);
+                        (took, lost)
+                    })
+            })
+        });
         let beside = stops(&|_| !done.load(Ordering::SeqCst));
-        (beside, load.join().unwrap())
+        (beside, as_read.join().unwrap(), load.join().unwrap())
     });
     let quantile = |sorted: &[f64], q: f64| {
         let rank = ((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
         sorted[rank - 1]
     };
     eprintln!("M419 the load: {load}");
-    for (label, (mut took, lost)) in [("alone", alone), ("beside the build", beside)] {
+    for (label, (mut took, lost)) in [
+        ("alone", alone),
+        ("beside the build", beside),
+        ("idle, stopped as its image is read", as_read),
+    ] {
         took.sort_by(f64::total_cmp);
         if took.is_empty() {
             eprintln!("M419 {label}: no stops");

@@ -16895,9 +16895,18 @@ revision before comparing a changed API/implementation.
   `windows:containers ignored:stops_beside_a_gigabyte_build`): four threads each start a
   run of `sleep` and stop it, 10 times each with nothing beside them, then for as long as
   that test's build goes on beside them, its 2 GiB file written, built into an image and
-  read by a run. Each way's stops as n, p50, p90, p99 and max (nearest rank); each that
+  read by a run; and eight runs idle from before the build, as the suite's are beside it,
+  are stopped together 5 s into that read, where each give-up on CI came some 6 s before
+  the test ended. Each way's stops as n, p50, p90, p99 and max (nearest rank); each that
   heard no end with what it said, its VM process's CPU time and resident memory as it gave
   up, and how long the process outlived it.
 - **Found, the M5 Max** (Apple M5 Max, macOS 26.4.1, 6b17d663 and the test, 2 rounds alone):
   alone, n 8, p50 10,026.1 ms, max 10,048.9; beside the build (270 s), n 100, p50 10,086.3,
   p90 10,406.2, p99 10,877.3, max 10,885.3; none gave up.
+- **Found, CI's Windows runners** (ade1ed09, budget-e2e 41288094847; the four threads
+  alone): windows-2025 (windows-2025-vs2026), alone n 40, p50 10,031.7 ms, p99 10,072.6, max
+  10,072.6; beside the build (125.9 s) n 23, p50 10,043.4, p90 10,090.4, max 10,650.6.
+  windows-2022, alone n 40, p50 10,025.7, max 10,094.0; beside the build (107.4 s) n 26, p50
+  10,035.1, p90 10,611.8, max 10,847.0. None gave up: a run just started stops beside the
+  build as it does alone. So the measurement now stops runs idle from before the build
+  too (Method).
