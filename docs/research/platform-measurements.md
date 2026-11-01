@@ -17099,10 +17099,11 @@ revision before comparing a changed API/implementation.
   restored at 82.9 to 86.6 ms at p50 with the working set mapped ahead and 132.7 to 135.3
   without it, where M345 had 69.8 without: its populate took 65.8 to 66.2 ms at p50 for 991
   to 1,014 pages, and up to 928 ms, where jupiter's own populate of 512 pages written
-  took 3.68 ms (M415). The host read 11,000 to 20,000 pages a second from its disk while it
-  ran, in 800 to 1,350 reads a second, and about 10 before and after it (`\Memory\Pages
-  Input/sec`, `\Memory\Page Reads/sec`): a restore's pages came from the disk, not the
-  cache. Why does a restore's memory file not stay cached, from one restore to the next?
+  took 3.68 ms (M415). The host read 11,000 to 20,000 pages a second from its disk for most
+  of the 103 s the second run took, in 800 to 1,350 reads a second (2,185 to 8,264 pages for
+  a few seconds of it), and about 10 before and after it (`\Memory\Pages Input/sec`,
+  `\Memory\Page Reads/sec`): a restore's pages came from the disk, not the cache. Why
+  does a restore's memory file not stay cached, from one restore to the next?
 - **Method.** On jupiter (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200.9711),
   2026-11-01, `docs/research/measurements/windows-mapped-cache/run.sh`: a 256 MiB file
   written past the cache (write.ps1: FILE_FLAG_NO_BUFFERING), dense, then sparse with its
@@ -17139,7 +17140,8 @@ revision before comparing a changed API/implementation.
     working sets of 1,051 and 1,119 pages): a cold restore
     with the working set 15.1 / 17.0 held against 59.0 / 74.3 not, without it 17.5 / 22.4
     against 108.9 / 152.2; a cold start to exit 69.4 / 83.5 against 114.1 / 129.1; the
-    populate 2.64 / 3.46 against 44.6 / 60.7, 2.5 µs a page, as M415's single calls. The
+    populate 2.64 / 3.46 against 44.6 / 60.7, 2.5 µs a page, M415's single calls' 2.6 a
+    page read and 7.2 written. The
     host read 2,341 pages a second from its disk on average as the held run ran, 25,014 as
     the other did.
   - CI's windows-2025 (whp-restore 41337030127 at 757013d, AMD EPYC 9V45, Windows Server
