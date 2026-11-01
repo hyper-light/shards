@@ -16819,6 +16819,18 @@ revision before comparing a changed API/implementation.
     as M391 found its balloon thread.
   - Open: what of the path from the daemon to a guest's give-back, and of the give-back
     itself, allocates under a budget.
+- **Found, short with nothing given back** (f0880522, CI 41292358322, x86_64 Linux with
+  glibc, the test's try 1, its guest's kernel counting what it read as the test asks): the
+  budget's first word counted the slice holding 818 MiB; its host's own pressure (140 ms
+  stalled in 2 s) then had the microVM give back 513 MiB it held cold of its files; the
+  budget set a quarter GiB short of 818 found it short by 256 MiB with none left to give
+  back, the 512 MiB its guest read still counted inactive (Inactive(file) 524,268 kB as the
+  budget came). Its host still counted them: memory.current, which caps what the budget
+  counts held, falls as its guest reports the pages free, each 2 s (Linux 6.18
+  mm/page_reporting.c, PAGE_REPORTING_DELAY), and the daemon tells a microVM held short its
+  room again each window. So the test's race of its host's pressure taking first, which it
+  already met as a budget within reach, is met as a budget short too where its host took
+  first between the word that counted and the budget (containers.rs, `host_took`).
 
 ### M417. What a guest's kernel writes to a console told to be quiet, as it panics
 

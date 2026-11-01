@@ -2720,8 +2720,13 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     // microVMs give back what they hold cold too, and where it took them first the microVM
     // was within its budget as it was set, with nothing to give back (CI 40715919365: 220
     // MiB given back at its host's pressure, then 190 MiB of room): the budget is let go of
-    // and the files read again, a few times at most. Short of it with nothing given back
-    // is no such race.
+    // and the files read again, a few times at most. Where that give-back came between the
+    // word that counted it and its budget, the budget fell short with nothing left to give
+    // back, the pages its guest freed not yet back on its host: its guest reports free pages
+    // each 2 s (Linux 6.18 mm/page_reporting.c, PAGE_REPORTING_DELAY), and its daemon tells
+    // a short microVM its room again each window (CI 41292358322: 513 MiB given back at its
+    // host's pressure, then short by 256 with none to give). Short of it with nothing given
+    // back, its host having taken none first, is no such race.
     let mut tries = 0;
     let gave = loop {
         read(files.get(..512).unwrap());
@@ -2739,9 +2744,9 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             std::thread::sleep(Duration::from_millis(50));
             read(files.get(..512).unwrap());
         }
-        let before = said().len();
+        let counting = said().len();
         set(&(current() + (1 << 30)).to_string());
-        let counted = first(before, &["held within its budget", "budget is short by"]);
+        let counted = first(counting, &["held within its budget", "budget is short by"]);
         let held = mib_after(&counted, "MiB, holds ");
         // What its guest's kernel counts of the read as its budget comes, said if nothing is
         // given back: a give-back takes inactive file pages alone, and CI's x86_64 Linux at
@@ -2764,8 +2769,12 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             break word;
         }
         tries += 1;
+        let host_took = said().get(counting..).unwrap_or_default().lines().any(|l| {
+            l.contains("the host is short of memory: its microVMs gave back ")
+                && mib_after(l, "gave back ") > 0
+        });
         assert!(
-            tries < 5 && word.contains("held within its budget"),
+            tries < 5 && (word.contains("held within its budget") || host_took),
             "nothing given back said, try {tries}: {word}\nits guest's kernel counting as its budget came:\n{}\n{}",
             counted.stdout,
             said()
