@@ -498,6 +498,7 @@ impl Reply {
     /// ([`Server::dax_of`]).
     fn attr(&mut self, st: &Stat, owner: Owner, dax: bool) -> &mut Self {
         let (size, blocks, at, mt, ct) = (st.size, st.blocks, st.atime, st.mtime, st.ctime);
+        crate::debug!("virtio-fs: told the attributes of file {}: {size} bytes", st.ino);
         let host_mode = mode_of(st);
         let perm = owner.mode.unwrap_or(host_mode & 0o7777);
         // A node the host keeps as an empty regular file, as the guest made it.
@@ -1157,6 +1158,10 @@ impl Server {
         r: &mut Reply,
     ) -> Result<(), Errno> {
         let mut a = Args(body);
+        // Each request at debug, and each size it tells ([`Reply::attr`]): what a guest holds
+        // of a file for its attributes' second (containers.rs's DAX test on CI's Windows
+        // runners, a guest that saw a file's old size past it).
+        crate::debug!("virtio-fs: request {opcode} of node {nodeid}");
         match opcode {
             op::INIT => {
                 // A session begins: nothing the guest knew before it holds.
