@@ -45,6 +45,7 @@ use crate::whiteout::{WHITEOUT_META_PREFIX, WHITEOUT_OPAQUE_DIR, WHITEOUT_PREFIX
 const S_IFMT: u32 = 0o170_000;
 const S_IFDIR: u32 = 0o040_000;
 const S_IFREG: u32 = 0o100_000;
+const S_IFLNK: u32 = 0o120_000;
 const S_IFIFO: u32 = 0o010_000;
 const S_IFCHR: u32 = 0o020_000;
 const S_IFBLK: u32 = 0o060_000;
@@ -250,7 +251,7 @@ fn open_dir(parent: BorrowedHandle<'_>, name: &[u8], make: bool) -> Result<Owned
 
 /// createTarFile of the entry `hdr` as `base` in the directory `path`, its data read from
 /// `data`, over whatever was there but a directory a directory merges with; its handle,
-/// its mode set (a symlink's is its kind's).
+/// its mode set, a symlink's too.
 fn create(
     tree: &mut Tree,
     path: &[Vec<u8>],
@@ -323,7 +324,13 @@ fn create(
             h
         }
         TYPE_SYMLINK => {
-            ntfs::symlink_at(dir, &wide, &hdr.linkname).map_err(|e| Failed::Call("symlinkat", e))?
+            // Its mode its header's too, which WSL's metadata keeps of a symlink, where Linux
+            // keeps every one 0777: a Windows client's are fsutil's 0755, and an agent made of
+            // the copy was not the one the client made (tests/context.rs, at 41c3560d).
+            let h = ntfs::symlink_at(dir, &wide, &hdr.linkname).map_err(|e| Failed::Call("symlinkat", e))?;
+            ntfs::set_lx(h.as_handle(), None, None, mode(S_IFLNK), None)
+                .map_err(|e| Failed::Call("chmod", e))?;
+            h
         }
         TYPE_BLOCK | TYPE_CHAR | TYPE_FIFO => {
             let kind = match hdr.typeflag {
@@ -352,7 +359,7 @@ fn create(
                 .map_err(|e| Failed::Call("openat", e))?;
             let st = ntfs::stat(h.as_handle()).map_err(|e| Failed::Call("lstat", e))?;
             // handleLChmod: no mode for a hard link to a symlink.
-            if st.mode & S_IFMT != 0o120_000 {
+            if st.mode & S_IFMT != S_IFLNK {
                 ntfs::set_lx(h.as_handle(), None, None, Some((st.mode & S_IFMT) | perm), None)
                     .map_err(|e| Failed::Call("chmod", e))?;
             }

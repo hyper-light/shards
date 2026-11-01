@@ -103,7 +103,8 @@ fn read(root: &OwnedHandle, path: &str) -> Vec<u8> {
 }
 
 /// Do: a layer of a Linux client's tree applied over an empty directory: modes NTFS keeps
-/// none of (0600, 0750, setuid), a symlink, a hard link, a FIFO and a device, names differing
+/// none of (0600, 0750, setuid), a symlink, one of a Windows client's mode (fsutil's 0755,
+/// which Linux keeps of no symlink), a hard link, a FIFO and a device, names differing
 /// in case alone and one NTFS holds no name with (`a:b`), an extended attribute, and a file
 /// in directories the layer only implies. Expect each read back as Linux's: its mode, its
 /// link's target, both names one file of two links, the device's numbers, the attribute,
@@ -134,6 +135,7 @@ fn a_linux_tree_keeps_what_ntfs_holds_none_of() {
         file("Make", 0o644, b"upper"),
         file("make", 0o644, b"lower"),
         linked(TYPE_SYMLINK, "link", 0o777, "bin/run.sh"),
+        linked(TYPE_SYMLINK, "windows-link", 0o755, "secret"),
         linked(TYPE_LINK, "again", 0o600, "secret"),
         (header(TYPE_FIFO, "pipe", 0o644), b""),
         (null, b""),
@@ -151,6 +153,7 @@ fn a_linux_tree_keeps_what_ntfs_holds_none_of() {
         ("Make", 0o100_644),
         ("make", 0o100_644),
         ("link", 0o120_777),
+        ("windows-link", 0o120_755),
         ("pipe", 0o010_644),
         ("null", 0o020_666),
         ("deep", 0o040_755),
