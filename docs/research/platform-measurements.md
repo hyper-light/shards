@@ -7504,9 +7504,10 @@ revision before comparing a changed API/implementation.
   but its slowest round trip 105 to 115 ms at every count, each the 100 ms the probe
   bounds a wait by: the event did not come, where the port had the socket ready. On
   windows-2022 it stalled so often that the job's 20 minutes ran out on its first count.
-  Since 2026-11-01 the probe ends that way's count once a hundred of its wakes are lost,
-  10 s of its waits, and says so: beside 100 sockets on windows-2025 its rounds outlasted
-  the job's 15 minutes three times (CI 40961442817, 40964375764, 41281977635).
+  Since 2026-11-01 the probe ends that way's count once its waits come to 10 s, the event
+  late or lost, and says so: beside 100 sockets on windows-2025 its rounds outlasted the
+  job's 15 minutes three times (CI 40961442817, 40964375764, 41281977635), and beside none
+  on windows-2022 (41284231274), its waits ending late, not timed out.
   The completion port alone was slowest at 8.1 ms (10,000 idle, windows-2025).
 
   | doorbell | windows-2022 | windows-2025 |
@@ -16818,6 +16819,18 @@ revision before comparing a changed API/implementation.
     as M391 found its balloon thread.
   - Open: what of the path from the daemon to a guest's give-back, and of the give-back
     itself, allocates under a budget.
+- **Found, short with nothing given back** (f0880522, CI 41292358322, x86_64 Linux with
+  glibc, the test's try 1, its guest's kernel counting what it read as the test asks): the
+  budget's first word counted the slice holding 818 MiB; its host's own pressure (140 ms
+  stalled in 2 s) then had the microVM give back 513 MiB it held cold of its files; the
+  budget set a quarter GiB short of 818 found it short by 256 MiB with none left to give
+  back, the 512 MiB its guest read still counted inactive (Inactive(file) 524,268 kB as the
+  budget came). Its host still counted them: memory.current, which caps what the budget
+  counts held, falls as its guest reports the pages free, each 2 s (Linux 6.18
+  mm/page_reporting.c, PAGE_REPORTING_DELAY), and the daemon tells a microVM held short its
+  room again each window. So the test's race of its host's pressure taking first, which it
+  already met as a budget within reach, is met as a budget short too where its host took
+  first between the word that counted and the budget (containers.rs, `host_took`).
 
 ### M417. What a guest's kernel writes to a console told to be quiet, as it panics
 
@@ -16877,5 +16890,63 @@ revision before comparing a changed API/implementation.
   it ran through here and below every freeze, and a sample taken across one is taken again,
   counted in the report (`frozen_retaken`; support `unfrozen`); the restore bench takes each
   of its samples so, its working set set aside again with a sample that runs without one.
-  On a host no guard freezes, none is taken again.
+  On a host no guard freezes, none is taken again. Its waits, for a child's readiness and
+  end and for a working set kept, count only the time its process could run, the wall's less
+  each freeze its ticker saw and the one it has not yet ticked past (support
+  `runnable_since`): a process ran 0.2 to 0.6 s between freezes of 25 s (above), so a
+  child given a minute of the wall's had 1.8 s at most to run, where on a host no guard
+  froze it had the minute.
 
+
+### M419. Stops beside a gigabyte build (D27's stop, D195's daemon on Windows)
+
+- **Question.** Windows CI gave up on stops, its daemon saying "no end heard 2s after its
+  microVM was killed: its VM process runs on", each time as `an_image_of_gigabytes_boots`
+  ran beside them (9fdbed51's exec test on windows-2025, twice; the cp test on
+  windows-2022 at 3b1e42af, CI 41277401058). A stop of a `sleep`, which ignores SIGTERM as a
+  container's first process does, waits its 10 s of grace, sends SIGKILL and waits 10 s
+  more (`KILL_WAIT`, moby daemon/kill.go's), then kills the VM process and waits 2 s
+  (`LAST_WAIT`). How often does a stop give up beside that build, and does its VM process
+  end late or never, its pages resident or trimmed?
+- **Method.** containers.rs `stops_beside_a_gigabyte_build` (ignored;
+  docs/research/measurements/stop-under-io/run.sh, and on CI's Windows runners budget-e2e's
+  `windows:containers ignored:stops_beside_a_gigabyte_build`): four threads each start a
+  run of `sleep` and stop it, 10 times each with nothing beside them, then for as long as
+  that test's build goes on beside them, its 2 GiB file written, built into an image and
+  read by a run; and eight runs idle from before the build, as the suite's are beside it,
+  are stopped together 5 s into that read, where each give-up on CI came some 6 s before
+  the test ended. Each way's stops as n, p50, p90, p99 and max (nearest rank); each that
+  heard no end with what it said, its VM process's CPU time and resident memory as it gave
+  up, and how long the process outlived it.
+- **Found, the M5 Max** (Apple M5 Max, macOS 26.4.1, 6b17d663 and the test, 2 rounds alone):
+  alone, n 8, p50 10,026.1 ms, max 10,048.9; beside the build (270 s), n 100, p50 10,086.3,
+  p90 10,406.2, p99 10,877.3, max 10,885.3; none gave up.
+- **Found, CI's Windows runners** (ade1ed09, budget-e2e 41288094847; the four threads
+  alone): windows-2025 (windows-2025-vs2026), alone n 40, p50 10,031.7 ms, p99 10,072.6, max
+  10,072.6; beside the build (125.9 s) n 23, p50 10,043.4, p90 10,090.4, max 10,650.6.
+  windows-2022, alone n 40, p50 10,025.7, max 10,094.0; beside the build (107.4 s) n 26, p50
+  10,035.1, p90 10,611.8, max 10,847.0. None gave up: a run just started stops beside the
+  build as it does alone. So the measurement now stops runs idle from before the build
+  too (Method).
+- **Found, with the idle runs** (f3760b80, budget-e2e 41292368066): windows-2022, alone n
+  40, p50 10,023.2 ms, max 10,079.2; beside the build (119.4 s) n 24, p50 10,027.0, p90
+  10,349.5, max 19,383.1; idle, stopped as its image is read, n 8, p50 10,292.9, max
+  10,317.8. windows-2025, alone n 40, p50 10,028.6, max 10,083.8; beside n 24, p50 10,058.9,
+  p90 10,217.8, max 14,809.3; idle n 8, p50 10,190.7, max 10,239.5. None gave up, but
+  beside the build a stop's SIGKILL took up to 9.4 s to be heard (19.4 s, less its 10 s of
+  grace), against `KILL_WAIT`'s 10: a guest stalled near the wait whose end is the VM's
+  kill. How long a VM process takes to end once killed there, `LAST_WAIT`'s 2 s, the
+  measurement now times too: eight more runs' VM processes killed outright 5 s into the
+  read, each's end after the kill.
+- **Found, killed outright** (8bdb04f2, budget-e2e 41295804483, windows-2025): the eight VM
+  processes killed 5 s into the read ended within 1.4 ms of their kills, the last of them;
+  a VM process idle beside the build ends at once. So a stop that gave up, its VM process
+  running on 2 s after its kill, killed one the host held up, and its guest's SIGKILL took
+  up to 9.4 s beside the build: the stalls are the host's, beside its disk's gigabytes.
+  dev's CI at de631b49 (41291108866, windows-2025) failed two runs not ready in 60 s, their
+  VMs idle 20 s with every thread waiting and 11.9 GiB of memory free, again as
+  an_image_of_gigabytes_boots read its image: the same tree had passed (41284231177).
+- **Decided.** an_image_of_gigabytes_boots runs alone, in a test binary of its own
+  (tests/gigabytes.rs): cargo runs a crate's test binaries one after another, so no test
+  waits on a host whose disk it fills. A stop or a start held up by its host's disk as long
+  as Docker's waits (KILL_WAIT, LAST_WAIT, READY_TIMEOUT) still fails as Docker's does.
