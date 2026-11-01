@@ -67,9 +67,9 @@ jobs:
       - name: The checkout, where the machine keeps its own
         shell: bash
         run: |
-          ws=$(cygpath -u "$WORKSPACE")
-          mkdir -p "$ws"
-          cp -a . "$ws"
+          # A worktree of the checkout, its links made as the checkout made them (MSYS's cp
+          # makes no symlink).
+          git worktree add --detach "$(cygpath -u "$WORKSPACE")" HEAD
           pwsh -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round(\$_.Free/1GB,1)}}"
       - name: Build
         shell: bash
