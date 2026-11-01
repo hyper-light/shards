@@ -591,6 +591,7 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         container: Some(&container),
         holds: shards_ipc::Holds::Network,
         group: None,
+        graphics: false,
     })
     .map_err(|e| format!("starting {}: {e}", binary.display()))?;
     drop(theirs);

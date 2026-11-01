@@ -1272,6 +1272,8 @@ fn vm(args: &[OsString]) -> ExitCode {
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,
         group: None,
+        // A GPU's VM process runs its host's GPU driver (D202).
+        graphics: args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu"),
     });
     // The VM's ends are its own now: its exit ends the requests, and what it hands over of
     // its working set.

@@ -434,3 +434,7 @@ crates/vmm/src/devices/virtio/fs/server_unix.rs	struct DirStream	crates/vmm/src/
 crates/vmm/src/devices/virtio/fs/server_unix.rs	impl DirStream	crates/vmm/src/devices/virtio/fs/server_windows.rs	impl DirStream [windows]	as struct DirStream
 crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Drop	-	none: linux,windows	macOS' DirStream is a DIR stream, closed as it drops (closedir); Linux's descriptor and Windows' handle close themselves
 crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Send	-	none: linux,windows	macOS' DIR pointer said Send, used by one thread at a time under the server's lock; Linux's descriptor and Windows' handle are Send
+crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	crates/ipc/src/windows.rs	struct Station [windows]	what a GPU's VM process is given beyond a VM process's, for its host's driver: on Linux the drivers' ioctls, syscalls and files past seccomp and Landlock (D201, PM M382); on Windows Win32k's calls and a window station and desktop of its own, granted to its AppContainer, which are all its driver needs to come up there (D202, PM M385)
+crates/shards/src/confine.rs	const GPU_SYSCALLS	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn gpu_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn library_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
