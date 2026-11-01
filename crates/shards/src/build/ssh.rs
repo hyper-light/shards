@@ -1378,7 +1378,6 @@ impl<T: Read + Write + Send> AgentStream for T {}
 /// pipe's where `path` names one (OpenSSH's agent's, as BuildKit dials it with
 /// winio.DialPipe), or an AF_UNIX socket's.
 pub fn agent_stream(path: &std::path::Path) -> std::io::Result<Box<dyn AgentStream>> {
-    #[cfg(unix)]
     if let Some(asked) = asked_of(path)? {
         return Ok(Box::new(asked));
     }
@@ -1391,20 +1390,17 @@ pub fn agent_stream(path: &std::path::Path) -> std::io::Result<Box<dyn AgentStre
 
 /// The variable a daemon sets for a client's build whose SSH agents are the client's
 /// (synced::AGENT_SOCKET): the descriptors, comma-separated, it asks on for connections to
-/// them ([`take_agents`]).
-#[cfg(unix)]
+/// them ([`take_agents`]); on Windows the handles its daemon gave it at those numbers
+/// (`shards_ipc::given_fd`).
 pub(crate) const AGENT_FDS: &str = "SHARDS_AGENT_FDS";
 
 /// The descriptors [`take_agents`] took, by number.
-#[cfg(unix)]
-static ASKED: std::sync::Mutex<std::collections::BTreeMap<i32, std::os::unix::net::UnixStream>> =
+static ASKED: std::sync::Mutex<std::collections::BTreeMap<i32, shards_ipc::Stream>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// Takes the sockets [`AGENT_FDS`] names, close-on-exec, and lets the variable go, so that
 /// nothing this process starts takes them too.
-#[cfg(unix)]
 pub(crate) fn take_agents() {
-    use std::os::fd::FromRawFd as _;
     let Ok(told) = std::env::var(AGENT_FDS) else {
         return;
     };
@@ -1419,18 +1415,33 @@ pub(crate) fn take_agents() {
         let std::collections::btree_map::Entry::Vacant(place) = asked.entry(n) else {
             continue;
         };
-        // SAFETY: an all-zero stat is a valid out-parameter, which fstat(2) fills.
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: fstat(2) and fcntl(2) of a descriptor past stdio's, into `st` on this stack.
-        let socket = unsafe { libc::fstat(n, &mut st) } == 0
-            && st.st_mode & libc::S_IFMT == libc::S_IFSOCK
-            && unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) } == 0;
-        if socket {
-            // SAFETY: a socket its daemon gave this process to ask agents' connections on,
-            // which nothing else here holds.
-            place.insert(unsafe { std::os::unix::net::UnixStream::from_raw_fd(n) });
+        if let Some(socket) = given_socket(n) {
+            place.insert(socket);
         }
     }
+}
+
+/// The socket its daemon gave this process at descriptor `n`, made close-on-exec.
+#[cfg(unix)]
+fn given_socket(n: i32) -> Option<shards_ipc::Stream> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: an all-zero stat is a valid out-parameter, which fstat(2) fills.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat(2) and fcntl(2) of a descriptor past stdio's, into `st` on this stack.
+    let socket = unsafe { libc::fstat(n, &mut st) } == 0
+        && st.st_mode & libc::S_IFMT == libc::S_IFSOCK
+        && unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) } == 0;
+    // SAFETY: a socket its daemon gave this process to ask agents' connections on, which
+    // nothing else here holds.
+    socket.then(|| unsafe { std::os::unix::net::UnixStream::from_raw_fd(n) })
+}
+
+/// The pipe its daemon gave this process at number `n` (`shards_ipc::given_fd`), on which
+/// the connections it is granted come as handles.
+#[cfg(windows)]
+fn given_socket(n: i32) -> Option<shards_ipc::Stream> {
+    let handle = shards_ipc::given_fd(n).ok()??;
+    shards_ipc::Stream::given(handle).ok()
 }
 
 /// A connection to an agent asked of the descriptor `/dev/fd/N` names, where it is one its
@@ -1438,9 +1449,9 @@ pub(crate) fn take_agents() {
 /// the agent, which answers each `DIAL` with a connection of its own, one end of a pair it
 /// made for it, held for the client to claim and relay to its agent of that id. So a
 /// build's agents are reached through what it was given, by no path any other process
-/// could dial (D180 part 3h). `None` where `path` names no such descriptor.
-#[cfg(unix)]
-fn asked_of(path: &std::path::Path) -> std::io::Result<Option<std::os::unix::net::UnixStream>> {
+/// could dial (D180 part 3h). On Windows the name is the same, the number one its daemon
+/// gave it a pipe at. `None` where `path` names no such descriptor.
+fn asked_of(path: &std::path::Path) -> std::io::Result<Option<shards_ipc::Stream>> {
     use shards_ipc::kind;
     let Some(n) = path
         .to_str()
@@ -1471,7 +1482,10 @@ fn asked_of(path: &std::path::Path) -> std::io::Result<Option<std::os::unix::net
         .ok_or_else(|| std::io::Error::other("no connection to the agent"))?;
     // The daemon keeps its own until this one says it has it (M24).
     shards_ipc::send(socket, kind::TAKEN, &[], &[])?;
-    Ok(Some(std::os::unix::net::UnixStream::from(conn)))
+    #[cfg(unix)]
+    return Ok(Some(std::os::unix::net::UnixStream::from(conn)));
+    #[cfg(windows)]
+    return shards_ipc::Stream::given(conn).map(Some);
 }
 
 /// A client's end of the named pipe at `path`: opened, or opened once an instance is free

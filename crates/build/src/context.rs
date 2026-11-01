@@ -50,13 +50,14 @@ pub fn load(
     walker.entries(b"", &mut Vec::new(), &mut sent)?;
     reset_hardlinks(&mut sent);
     let mut taker = host::Stage::new(stage).map_err(|e| Error(format!("{}: {e}", stage.display())))?;
+    taker.of_tree(&walker.tree);
     let whole = match host::CLONES_DIRS {
         true => whole_dirs(&sent, &walker.partial),
         false => std::collections::HashSet::new(),
     };
     let pack = std::fs::File::open(taker.pack_path()).map_err(|e| Error(e.to_string()))?;
     let pack = sources.archive(pack).map_err(|e| Error(e.to_string()))?;
-    let fs = receive(&root, sent, sources, now, &mut taker, pack, &whole)?;
+    let fs = receive(&walker.tree, sent, sources, now, &mut taker, pack, &whole)?;
     taker.finish().map_err(|e| Error(e.to_string()))?;
     Ok(fs)
 }
@@ -150,8 +151,8 @@ struct Visited {
     called: bool,
 }
 
-struct Walker<'a> {
-    root: &'a Path,
+struct Walker {
+    tree: host::Tree,
     include: Option<PatternMatcher>,
     exclude: Option<PatternMatcher>,
     only_prefix_includes: bool,
@@ -170,18 +171,19 @@ fn without_trailing_glob(p: &[u8]) -> &[u8] {
     p.strip_suffix(b"/*").unwrap_or(p)
 }
 
-impl<'a> Walker<'a> {
+impl Walker {
     /// NewFilterFS.
-    fn new(root: &'a Path, f: &Filters) -> Result<Walker<'a>, Error> {
+    fn new(root: &Path, f: &Filters) -> Result<Walker, Error> {
+        let tree = host::Tree::at(root);
         let mut includes = f.include.clone();
         if !f.follow.is_empty()
-            && let Some(targets) = follow_links(root, &f.follow)?
+            && let Some(targets) = follow_links(&tree, &f.follow)?
         {
             includes.extend(targets);
             includes = dedupe(includes);
         }
         let mut w = Walker {
-            root,
+            tree,
             include: None,
             exclude: None,
             only_prefix_includes: true,
@@ -237,7 +239,7 @@ impl<'a> Walker<'a> {
         parents: &mut Vec<Visited>,
         sent: &mut Vec<(Vec<u8>, Stat)>,
     ) -> Result<bool, Error> {
-        let names = match host::read_dir(&host::path(self.root, rel)) {
+        let names = match self.tree.read_dir(rel) {
             Ok(n) => n,
             // A directory gone is skipped; one unreadable is skipped only if filtered out.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
@@ -247,10 +249,7 @@ impl<'a> Walker<'a> {
                     self.partial.insert(rel.to_vec());
                     return Ok(false);
                 }
-                return Err(Error(format!(
-                    "open {}: {e}",
-                    host::path(self.root, rel).display()
-                )));
+                return Err(Error(format!("open {}: {e}", self.tree.path(rel).display())));
             }
         };
         let mut whole = true;
@@ -299,14 +298,11 @@ impl<'a> Walker<'a> {
         parents: &mut Vec<Visited>,
         sent: &mut Vec<(Vec<u8>, Stat)>,
     ) -> Result<bool, Error> {
-        let stat = match host::lstat(&host::path(self.root, rel)) {
+        let stat = match self.tree.lstat(rel) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
             Err(e) => {
-                return Err(Error(format!(
-                    "lstat {}: {e}",
-                    host::path(self.root, rel).display()
-                )));
+                return Err(Error(format!("lstat {}: {e}", self.tree.path(rel).display())));
             }
         };
         // stat_unix.go setUnixOpt, before mkstat sets a symlink's own target. buildx's
@@ -385,16 +381,20 @@ impl<'a> Walker<'a> {
 
 /// followlinks.go FollowLinks: the paths with every symlink on the way resolved, each
 /// link kept too; none when the whole context is wanted.
-fn follow_links(root: &Path, paths: &[Vec<u8>]) -> Result<Option<Vec<Vec<u8>>>, Error> {
+fn follow_links(tree: &host::Tree, paths: &[Vec<u8>]) -> Result<Option<Vec<Vec<u8>>>, Error> {
     let mut resolved = std::collections::BTreeSet::new();
     for p in paths {
-        append(root, &mut resolved, p)?;
+        append(tree, &mut resolved, p)?;
     }
     let v = dedupe(resolved.into_iter().collect());
     Ok((!v.is_empty()).then_some(v))
 }
 
-fn append(root: &Path, resolved: &mut std::collections::BTreeSet<Vec<u8>>, p: &[u8]) -> Result<(), Error> {
+fn append(
+    tree: &host::Tree,
+    resolved: &mut std::collections::BTreeSet<Vec<u8>>,
+    p: &[u8],
+) -> Result<(), Error> {
     let mut p = go::join(&[b".", p]);
     let mut current = b".".to_vec();
     loop {
@@ -406,7 +406,7 @@ fn append(root: &Path, resolved: &mut std::collections::BTreeSet<Vec<u8>>, p: &[
             None => (p.clone(), Vec::new()),
         };
         current = go::join(&[&current, &first]);
-        let targets = read_symlink(root, &current, true)?;
+        let targets = read_symlink(tree, &current, true)?;
         p = rest;
         if (p.is_empty() || targets.is_some()) && resolved.contains(&current) {
             return Ok(());
@@ -414,7 +414,7 @@ fn append(root: &Path, resolved: &mut std::collections::BTreeSet<Vec<u8>>, p: &[
         if let Some(targets) = targets {
             resolved.insert(current.clone());
             for t in targets {
-                append(root, resolved, &go::join(&[&t, &p]))?;
+                append(tree, resolved, &go::join(&[&t, &p]))?;
             }
             return Ok(());
         }
@@ -427,11 +427,11 @@ fn append(root: &Path, resolved: &mut std::collections::BTreeSet<Vec<u8>>, p: &[
 
 /// followlinks.go readSymlink: what a symlink at `p` points to, absolute; nothing for
 /// what is not one or is not there. A wildcard last element reads every match.
-fn read_symlink(root: &Path, p: &[u8], wildcard: bool) -> Result<Option<Vec<Vec<u8>>>, Error> {
+fn read_symlink(tree: &host::Tree, p: &[u8], wildcard: bool) -> Result<Option<Vec<Vec<u8>>>, Error> {
     let base = crate::copy::base(p);
     let parent = crate::copy::dir(p);
     if wildcard && contains_wildcards(&base) {
-        let names = match host::read_dir(&host::path(root, if parent == b"." { b"" } else { &parent })) {
+        let names = match tree.read_dir(if parent == b"." { b"" } else { &parent }) {
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(Error(format!("readdir: {e}"))),
@@ -439,7 +439,7 @@ fn read_symlink(root: &Path, p: &[u8], wildcard: bool) -> Result<Option<Vec<Vec<
         let mut out = Vec::new();
         for name in names {
             if glob::filepath_match(&base, &name).unwrap_or(false)
-                && let Some(t) = read_symlink(root, &go::join(&[&parent, &name]), false)?
+                && let Some(t) = read_symlink(tree, &go::join(&[&parent, &name]), false)?
             {
                 out.extend(t);
             }
@@ -451,7 +451,7 @@ fn read_symlink(root: &Path, p: &[u8], wildcard: bool) -> Result<Option<Vec<Vec<
     if clean == b"/" || clean == b"." {
         return Ok(None);
     }
-    let stat = match host::lstat(&host::path(root, &clean)) {
+    let stat = match tree.lstat(&clean) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(Error(e.to_string())),
@@ -499,7 +499,7 @@ fn dedupe(paths: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
 
 /// The disk writer's calls for each path sent, then each directory's time restored.
 fn receive(
-    root: &Path,
+    tree: &host::Tree,
     sent: Vec<(Vec<u8>, Stat)>,
     sources: &mut Sources,
     now: (i64, u32),
@@ -553,7 +553,7 @@ fn receive(
         } else {
             // The bytes and the stat they go with, as one version of the file: a small
             // one of a whole directory read in place, the directory's clone to say so.
-            let src = host::path(root, &rel);
+            let src = tree.path(&rel);
             let dir = whole_of(whole, &rel).filter(|_| st.size < host::CLONE_MIN);
             let (got, taken, seen) = match dir {
                 Some(_) => stage.read(&src).map(|(g, t, s)| (g, t, Some(s))),
@@ -585,12 +585,12 @@ fn receive(
     // cloned, each of its files is taken again on its own, and is what it was or refused.
     let mut cloned = std::collections::HashMap::new();
     for r in read {
-        let src = host::path(root, &r.rel);
+        let src = tree.path(&r.rel);
         let changed = || Error(format!("{}: file changed as the build read it", src.display()));
         let dir = match cloned.get(&r.dir) {
             Some(&done) => done,
             None => {
-                let at = host::path(root, &r.dir);
+                let at = tree.path(&r.dir);
                 let done = stage
                     .clone_dir(&at, &r.dir)
                     .map_err(|e| Error(format!("{}: {e}", at.display())))?;

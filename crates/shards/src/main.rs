@@ -64,12 +64,11 @@ fn main() -> ExitCode {
     // (`client_us`, cli/client.rs).
     let _ = shards_vmm::log::uptime_us();
     // A command a daemon started for another machine's client on a terminal (D180).
-    #[cfg(unix)]
-    {
-        context::take_terminal();
-        context::take_cidfile();
-        build::ssh::take_agents();
-    }
+    context::take_terminal();
+    context::take_cidfile();
+    build::ssh::take_agents();
+    #[cfg(windows)]
+    cli::take_signal_pipe();
     cli::main()
 }
 

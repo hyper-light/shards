@@ -16,6 +16,8 @@ bytes = "1"
 # (hyper-quic's VENDORED.md §20).
 hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "f116ac276d2d53296de24c2a43837baf66ed1cbd", default-features = false }
 sha2 = "0.11"
+# A file of its user's alone wherever it is: an identity's, an invitation's.
+shards-ipc = { path = "../ipc" }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

@@ -337,3 +337,28 @@ crates/shards/src/daemon/ship.rs	mod oslog	crates/shards/src/daemon/ship.rs	mod 
 crates/shards/src/daemon/ship.rs	mod oslog	crates/shards/src/daemon/ship.rs	mod etwlogs [windows]	as journald
 crates/shards/src/daemon/ship.rs	mod etwlogs	crates/shards/src/daemon/ship.rs	mod journald [linux]	as journald
 crates/shards/src/daemon/ship.rs	mod etwlogs	crates/shards/src/daemon/ship.rs	mod oslog [macos]	as journald
+crates/shards/src/context.rs	const SIGNAL_FD	-	none: linux,macos	a client's command's signals and hang-up through a pipe its Windows daemon gave it, as Windows sends a process no signal; a Unix daemon sends them by kill(2)
+crates/shards/src/context.rs	fn signal_descriptor	-	none: linux,macos	as SIGNAL_FD: the number its pipe is given at, past every other a command is given
+crates/shards/src/synced.rs	fn given_secrets	-	none: linux,macos	a Windows build reads a secret its daemon gave it at a number from that handle; a Unix build reads the descriptor's path (/dev/fd/N) as any file's
+crates/shards/src/cli/client.rs	fn take_signal_pipe	-	none: linux,macos	a Windows client's command takes its signals from its daemon's pipe (context::SIGNAL_FD); a Unix command takes them as any process does
+crates/shards/src/daemon/relay.rs	impl Default	-	none: linux,macos	Relays' Default, which Unix derives (cfg_attr(unix, derive(Default))); Windows' channel of clients taken has none to derive
+crates/shards/src/daemon/relay.rs	type Taken	crates/shards/src/daemon/relay.rs	fn relay_polled	a context's engine clients taken: on Windows by a thread per context's pipe (WaitForMultipleObjects waits on 64 handles at most), on Unix by the daemon's poll(2) of the listeners
+crates/shards/src/daemon/relay.rs	struct Came	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
+crates/shards/src/daemon/relay.rs	struct Taker	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
+crates/shards/src/daemon/relay.rs	impl Taker	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
+crates/shards/src/daemon/relay.rs	impl Drop	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken: the Windows taker's stop
+crates/shards/src/daemon/relay.rs	fn fds	crates/shards/src/daemon/relay.rs	struct Taker	as Taken: the listeners the Unix daemon polls
+crates/shards/src/daemon/relay.rs	fn relay_polled	crates/shards/src/daemon/relay.rs	struct Taker	as Taken
+crates/shards/src/daemon/remote.rs	struct Console	crates/shards/src/daemon/remote.rs	fn open_pty	a client's command's or build's terminal: a pseudoconsole (ConPTY) on Windows, a pseudo-terminal on Unix
+crates/shards/src/daemon/remote.rs	type Held	crates/shards/src/daemon/remote.rs	fn open_pty	as Console
+crates/shards/src/daemon/remote.rs	impl Console	crates/shards/src/daemon/remote.rs	fn open_pty	as Console
+crates/shards/src/daemon/remote.rs	fn open_pty	crates/shards/src/daemon/remote.rs	struct Console	as Console
+crates/shards/src/daemon/remote.rs	fn resizer	crates/shards/src/daemon/remote.rs	struct Console	as Console: its resize (TIOCSWINSZ; ResizePseudoConsole)
+crates/shards/src/daemon/remote.rs	struct Kept	crates/shards/src/daemon/remote.rs	struct Console	as Console: what it shows kept until read (XNU's last close; a pseudoconsole closed once its command ends, its reader then reading what it held)
+crates/shards/src/daemon/remote.rs	impl Kept	crates/shards/src/daemon/remote.rs	struct Console	as Kept
+crates/shards/src/daemon/remote.rs	fn unread	crates/shards/src/daemon/remote.rs	struct Console	as Kept
+crates/shards/src/daemon/remote.rs	struct Controller	crates/shards/src/daemon/remote.rs	struct Console	as Kept: the terminal's reader
+crates/shards/src/daemon/remote.rs	impl Read	crates/shards/src/daemon/remote.rs	struct Console	as Controller
+crates/shards/src/daemon/remote.rs	fn kept_terminal	crates/shards/src/daemon/remote.rs	struct Console	as Kept
+crates/archive/src/lib.rs	mod lx	crates/archive/src/layer.rs	fn apply_layer [linux,macos]	a client's context's copy on its machine (D180): on Windows a Linux tree kept on NTFS as WSL keeps one (apply_layer_lx); on Unix the host's own files hold a Linux tree's modes, owners, links and devices (apply_layer)
+crates/build/src/host.rs	mod lx	crates/build/src/host.rs	fn lstat [linux,macos]	a Linux tree's files read as fsutil reads a Linux host's: on Windows a tree kept as WSL keeps one (Tree, shards_ntfs); on Unix its host's own lstat

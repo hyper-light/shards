@@ -568,36 +568,42 @@ pub fn not_the_kind(name: &str, found: Kind, want: Kind) -> String {
     format!("{name} is {}, not {}", a(found), a(want))
 }
 
-/// The tar of `dir`'s files but `skip` at its root: names in order, owned by root,
-/// times kept; refused if it holds what no domain may (§9.2).
+/// The tar of `dir`'s files but `skip` at its root, read as a build reads its context
+/// (shards-build's walk of it, fsutil's: a Windows host's files of the modes fsutil gives
+/// them, a Linux tree a Windows machine keeps of a client's context of its own, D180): names
+/// in order, owned by root, times kept; refused if it holds what no domain may (§9.2). So an
+/// agent built through a context, of the client's files copied to its machine, is the one
+/// the client builds of them.
 fn pack(dir: &Path, skip: &[&str], out: &mut Vec<u8>) -> Result<(), String> {
     use shards_archive::tar::{self as gotar, Header};
+    use shards_build::copy::{fm, syscall_mode};
     let root = fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let tree = shards_build::host::Tree::at(&root);
     let mut tw = gotar::Writer::new(out);
-    let mut seen: BTreeMap<(u64, u64), String> = BTreeMap::new();
-    let mut stack: Vec<PathBuf> = vec![PathBuf::new()];
+    // A file's first name, by its inode: each other name of it a hard link to it.
+    let mut seen: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+    let mut stack: Vec<Vec<u8>> = vec![Vec::new()];
     while let Some(rel) = stack.pop() {
-        let mut names: Vec<OsString> = fs::read_dir(root.join(&rel))
-            .map_err(|e| format!("{}: {e}", root.join(&rel).display()))?
-            .map(|e| e.map(|e| e.file_name()))
-            .collect::<io::Result<_>>()
-            .map_err(|e| e.to_string())?;
-        names.sort();
+        let names = tree
+            .read_dir(&rel)
+            .map_err(|e| format!("{}: {e}", tree.path(&rel).display()))?;
         // Directories pushed in reverse, to be walked in name order after their parent.
         let mut dirs = Vec::new();
         for n in names {
-            let path = rel.join(&n);
-            let shown = path.to_string_lossy().replace('\\', "/");
-            if rel.as_os_str().is_empty() && skip.iter().any(|s| *s == shown) {
+            let path = if rel.is_empty() {
+                n
+            } else {
+                [rel.as_slice(), b"/", &n].concat()
+            };
+            let shown = String::from_utf8_lossy(&path).into_owned();
+            if rel.is_empty() && skip.iter().any(|s| s.as_bytes() == path.as_slice()) {
                 continue;
             }
-            let full = root.join(&path);
-            let md = fs::symlink_metadata(&full).map_err(|e| format!("{shown}: {e}"))?;
-            let ft = md.file_type();
+            let st = tree.lstat(&path).map_err(|e| format!("{shown}: {e}"))?;
             let mut h = Header {
-                name: shown.clone().into_bytes(),
-                mode: mode_of(&md),
-                mtime: gotar::Time::unix(mtime_of(&md), 0),
+                name: path.clone(),
+                mode: i64::from(syscall_mode(st.mode) & 0o7777),
+                mtime: gotar::Time::unix(st.mtime.0.max(0), 0),
                 ..Header::default()
             };
             if h.mode & 0o6000 != 0 {
@@ -605,47 +611,61 @@ fn pack(dir: &Path, skip: &[&str], out: &mut Vec<u8>) -> Result<(), String> {
                     "{shown}: set-ID bits, which nothing in an agent's directory may have"
                 ));
             }
-            if ft.is_dir() {
+            if st.mode & fm::DIR != 0 {
                 h.typeflag = gotar::TYPE_DIR;
                 h.name.push(b'/');
                 tw.write_header(&h).map_err(|e| e.to_string())?;
                 dirs.push(path);
-            } else if ft.is_symlink() {
-                let target = fs::read_link(&full).map_err(|e| format!("{shown}: {e}"))?;
-                if !stays_inside(&rel, &target) {
+            } else if st.mode & fm::SYMLINK != 0 {
+                let target = walked_path(&st.link);
+                if !stays_inside(&walked_path(&rel), &target) {
                     return Err(format!(
                         "{shown}: a symlink to {}, outside the directory",
                         target.display()
                     ));
                 }
                 h.typeflag = gotar::TYPE_SYMLINK;
-                h.linkname = target.to_string_lossy().into_owned().into_bytes();
+                h.linkname = st.link.clone();
                 tw.write_header(&h).map_err(|e| e.to_string())?;
-            } else if ft.is_file() {
-                if let Some(first) = link_key(&md).and_then(|k| seen.get(&k)) {
-                    h.typeflag = gotar::TYPE_LINK;
-                    h.linkname = first.clone().into_bytes();
-                    tw.write_header(&h).map_err(|e| e.to_string())?;
-                    continue;
-                }
-                if let Some(k) = link_key(&md) {
-                    seen.insert(k, shown.clone());
-                }
-                h.typeflag = gotar::TYPE_REG;
-                h.size = i64::try_from(md.len()).map_err(|e| e.to_string())?;
-                tw.write_header(&h).map_err(|e| e.to_string())?;
-                let f = fs::File::open(&full).map_err(|e| format!("{shown}: {e}"))?;
-                tw.copy_from(f).map_err(|e| format!("{shown}: {e}"))?;
-            } else {
+            } else if st.socket || st.mode & (fm::DEVICE | fm::NAMED_PIPE) != 0 {
                 return Err(format!(
                     "{shown}: a device, FIFO or socket, which no agent's directory may hold"
                 ));
+            } else {
+                let linked = st.inode.filter(|&(_, links)| links > 1).map(|(ino, _)| ino);
+                if let Some(first) = linked.and_then(|ino| seen.get(&ino)) {
+                    h.typeflag = gotar::TYPE_LINK;
+                    h.linkname = first.clone();
+                    tw.write_header(&h).map_err(|e| e.to_string())?;
+                    continue;
+                }
+                if let Some(ino) = linked {
+                    seen.insert(ino, path.clone());
+                }
+                h.typeflag = gotar::TYPE_REG;
+                h.size = i64::try_from(st.size).map_err(|e| e.to_string())?;
+                tw.write_header(&h).map_err(|e| e.to_string())?;
+                let f = fs::File::open(tree.path(&path)).map_err(|e| format!("{shown}: {e}"))?;
+                tw.copy_from(f).map_err(|e| format!("{shown}: {e}"))?;
             }
         }
         stack.extend(dirs.into_iter().rev());
     }
     tw.finish().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// A walked name or a symlink's target, slash-separated bytes, as a path of the host's.
+fn walked_path(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
 }
 
 /// Whether a symlink in `dir` (relative to the root) pointing at `target` resolves inside
@@ -669,41 +689,6 @@ fn stays_inside(dir: &Path, target: &Path) -> bool {
         }
     }
     true
-}
-
-#[cfg(unix)]
-fn mode_of(md: &fs::Metadata) -> i64 {
-    use std::os::unix::fs::PermissionsExt;
-    i64::from(md.permissions().mode() & 0o7777)
-}
-
-#[cfg(not(unix))]
-fn mode_of(md: &fs::Metadata) -> i64 {
-    if md.is_dir() {
-        0o755
-    } else if md.permissions().readonly() {
-        0o444
-    } else {
-        0o644
-    }
-}
-
-#[cfg(unix)]
-fn link_key(md: &fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    (md.nlink() > 1).then(|| (md.dev(), md.ino()))
-}
-
-#[cfg(not(unix))]
-fn link_key(_: &fs::Metadata) -> Option<(u64, u64)> {
-    None
-}
-
-fn mtime_of(md: &fs::Metadata) -> i64 {
-    md.modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
 /// Each content layer of a stored artifact read through, refusing what no domain may
@@ -1400,15 +1385,12 @@ pub(crate) const SIGN_STEP: &str = "\u{0}sign";
 
 /// The most of a bundle a client may send: a keyless one's certificates, its logs' entries
 /// and their proofs come to a few KiB.
-#[cfg(unix)]
 const BUNDLE_MOST: u64 = 1 << 20;
 
 /// A step of a signature made through a context, on the machine whose store holds the
 /// artifact: `subject KIND NAME` says what a signature of it is of, as its descriptor;
 /// `keep KIND NAME DIGEST` keeps the bundle `input` holds as one, and says the referrer's
-/// digest. Signing is the client's, between the two. The machine's half, which listens on
-/// Unix alone.
-#[cfg(unix)]
+/// digest. Signing is the client's, between the two. The machine's half.
 pub(crate) fn sign_step(
     home: &Path,
     args: &[String],
@@ -1587,6 +1569,101 @@ pub fn diff_ids(store: &Store, kind: Kind, m: &oci::Manifest) -> Result<Vec<Dige
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// Each entry of the tar `bytes`: its name, type and mode, and a link's target.
+    fn entries(bytes: &[u8]) -> Vec<(String, u8, i64, Vec<u8>)> {
+        let mut r = shards_archive::tar::Reader::new(bytes);
+        let mut out = Vec::new();
+        while let Some(h) = r.next_header().unwrap() {
+            out.push((
+                String::from_utf8_lossy(&h.name).into_owned(),
+                h.typeflag,
+                h.mode,
+                h.linkname,
+            ));
+        }
+        out
+    }
+
+    /// An agent's directory is read as a build reads its context: a file's mode its own on
+    /// Unix and fsutil's on Windows (0755, its scripts runnable), each in name order; and on
+    /// Windows a Linux tree, as a machine keeps a client's context (D180), of its own modes,
+    /// symlinks and hard links, as the client reads them.
+    #[test]
+    fn an_agents_files_are_read_as_a_build_reads_its_context() {
+        use shards_archive::tar::{TYPE_DIR, TYPE_REG};
+        let top = shards_testdir::TempDir::new("agent-pack").unwrap();
+        let top: &Path = top.as_ref();
+        let dir = top.join("host");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("agent.json"), "{}").unwrap();
+        fs::write(dir.join("bin/run.sh"), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(dir.join("bin/run.sh"), fs::Permissions::from_mode(0o750)).unwrap();
+            fs::set_permissions(dir.join("agent.json"), fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(dir.join("bin"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut tar = Vec::new();
+        pack(&dir, &[], &mut tar).unwrap();
+        let (file, script) = if cfg!(windows) {
+            (0o755, 0o755)
+        } else {
+            (0o600, 0o750)
+        };
+        assert_eq!(
+            entries(&tar)
+                .into_iter()
+                .map(|(name, kind, mode, _)| (name, kind, mode))
+                .collect::<Vec<_>>(),
+            [
+                ("agent.json".to_string(), TYPE_REG, file),
+                ("bin/".to_string(), TYPE_DIR, 0o755),
+                ("bin/run.sh".to_string(), TYPE_REG, script),
+            ]
+        );
+
+        #[cfg(windows)]
+        {
+            use shards_archive::tar::{Format, Header, TYPE_LINK, TYPE_SYMLINK, Writer};
+            let linux = top.join("linux");
+            fs::create_dir(&linux).unwrap();
+            let mut w = Writer::new(Vec::new());
+            for (typeflag, name, mode, data, link) in [
+                (TYPE_REG, "agent.json", 0o600, &b"{}"[..], ""),
+                (TYPE_LINK, "again", 0o600, b"", "agent.json"),
+                (TYPE_SYMLINK, "run", 0o777, b"", "bin/run.sh"),
+                (TYPE_DIR, "bin", 0o750, b"", ""),
+                (TYPE_REG, "bin/run.sh", 0o750, b"#!/bin/sh\n", ""),
+            ] {
+                let h = Header {
+                    typeflag,
+                    name: name.as_bytes().to_vec(),
+                    linkname: link.as_bytes().to_vec(),
+                    mode,
+                    size: i64::try_from(data.len()).unwrap(),
+                    format: Format::PAX,
+                    ..Header::default()
+                };
+                w.write_header(&h).unwrap();
+                std::io::Write::write_all(&mut w, data).unwrap();
+            }
+            shards_archive::apply_layer_lx(&w.finish().unwrap()[..], &linux).unwrap();
+            let mut tar = Vec::new();
+            pack(&linux, &[], &mut tar).unwrap();
+            assert_eq!(
+                entries(&tar),
+                [
+                    ("again".to_string(), TYPE_REG, 0o600, Vec::new()),
+                    ("agent.json".to_string(), TYPE_LINK, 0o600, b"again".to_vec()),
+                    ("bin/".to_string(), TYPE_DIR, 0o750, Vec::new()),
+                    ("run".to_string(), TYPE_SYMLINK, 0o777, b"bin/run.sh".to_vec()),
+                    ("bin/run.sh".to_string(), TYPE_REG, 0o750, Vec::new()),
+                ]
+            );
+        }
+    }
 
     /// The PKCS #8 of a key cosign v3.1.3 made (crates/sigstore's oracle).
     fn pkcs8() -> Vec<u8> {

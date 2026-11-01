@@ -22,6 +22,7 @@ members = [
   "crates/net",
   "crates/net-process",
   "crates/netring",
+  "crates/ntfs",
   "crates/gitsign",
   "crates/tuf",
   "crates/sigstore",

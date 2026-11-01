@@ -1441,7 +1441,15 @@ pub fn spawn_with(
     let given = set
         .iter()
         .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
-    spawn_env(program, args, fds, detach, inherited.chain(given).collect(), None)
+    spawn_env(
+        program,
+        args,
+        fds,
+        detach,
+        inherited.chain(given).collect(),
+        None,
+        None,
+    )
 }
 
 /// [`spawn`], with the variables `env` alone for the child's environment, and what Windows
@@ -1460,7 +1468,203 @@ pub fn spawn_in(
     let given = env
         .iter()
         .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
-    spawn_env(program, args, fds, detach, kept.chain(given).collect(), None)
+    spawn_env(
+        program,
+        args,
+        fds,
+        detach,
+        kept.chain(given).collect(),
+        None,
+        None,
+    )
+}
+
+/// [`spawn_in`], made in the pseudoconsole `console` (ConPTY): what of `fds` it is given,
+/// its standard streams that are not the console's among them, and those it has none of
+/// opened there by the child itself (CONIN$, CONOUT$), as a console's own are. In no Job
+/// of this process's, where the Job lets it go.
+pub fn spawn_in_console(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    env: &[(&str, &OsStr)],
+    console: &PseudoConsole,
+) -> io::Result<Child> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(
+        program,
+        args,
+        fds,
+        false,
+        kept.chain(given).collect(),
+        None,
+        Some(console),
+    )
+}
+
+/// A pseudoconsole (ConPTY) of a terminal's size, for a child made in it
+/// ([`spawn_in_console`]), as Windows Terminal and Windows' OpenSSH host a command: what its
+/// programs write there comes on the reader [`PseudoConsole::new`] gives, rendered as a
+/// terminal shows it, and what is written to its writer is typed there. Closed as this
+/// drops (ClosePseudoConsole), once its last program has gone; its reader then reads what
+/// it held, and its end. Before Windows 11 24H2 the close waits for that read, so a closer
+/// whose reader may not be read on closes it where it can wait.
+#[derive(Debug)]
+pub struct PseudoConsole(windows_sys::Win32::System::Console::HPCON);
+
+impl PseudoConsole {
+    /// A pseudoconsole of `rows` by `cols`; its writer, its typed input; and its reader,
+    /// what it shows ([`Shown`]). It starts where its terminal's cursor is
+    /// (PSEUDOCONSOLE_INHERIT_CURSOR), as a pty does, where one made without that clears
+    /// the screen it is shown on as it starts: a client's terminal through a context had its
+    /// screen cleared as each command began, and a test's showed the 22 blank lines of its
+    /// repaint (tests/context.rs, CI's windows-2022 and windows-2025). It asks where the
+    /// cursor is as it starts (`ESC[6n`), and is answered here, its last row and first
+    /// column, as LLDB answers its own ("so ConPTY won't scroll back over existing output",
+    /// lldb/source/Host/windows/PseudoConsole.cpp): the terminal it is shown on may be
+    /// another machine's, whose answer would come as typed input, or none at all.
+    pub fn new(rows: u16, cols: u16) -> io::Result<(PseudoConsole, std::io::PipeWriter, Shown)> {
+        use windows_sys::Win32::System::Console::{CreatePseudoConsole, PSEUDOCONSOLE_INHERIT_CURSOR};
+        let (input_read, mut input_write) = std::io::pipe()?;
+        let (output_read, output_write) = std::io::pipe()?;
+        let mut pc = 0;
+        // SAFETY: the pipes' ends the pseudoconsole takes copies of, and a handle to fill.
+        let made = unsafe {
+            CreatePseudoConsole(
+                size(rows, cols),
+                input_read.as_raw_handle(),
+                output_write.as_raw_handle(),
+                PSEUDOCONSOLE_INHERIT_CURSOR,
+                &raw mut pc,
+            )
+        };
+        if made < 0 {
+            return Err(io::Error::from_raw_os_error(made));
+        }
+        let console = PseudoConsole(pc);
+        // Its ends are its own now: ours go, so that its close is its output's end.
+        drop((input_read, output_write));
+        input_write.write_all(format!("\x1b[{};1R", rows.max(1)).as_bytes())?;
+        Ok((console, input_write, Shown::new(output_read)))
+    }
+
+    /// Sizes it `rows` by `cols`, as a terminal resized is, which its programs read as a
+    /// console's resize.
+    pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
+        use windows_sys::Win32::System::Console::ResizePseudoConsole;
+        // SAFETY: the pseudoconsole this holds.
+        let resized = unsafe { ResizePseudoConsole(self.0, size(rows, cols)) };
+        if resized < 0 {
+            return Err(io::Error::from_raw_os_error(resized));
+        }
+        Ok(())
+    }
+
+    fn raw(&self) -> windows_sys::Win32::System::Console::HPCON {
+        self.0
+    }
+}
+
+impl Drop for PseudoConsole {
+    fn drop(&mut self) {
+        // SAFETY: the pseudoconsole this holds, closed once.
+        unsafe { windows_sys::Win32::System::Console::ClosePseudoConsole(self.0) };
+    }
+}
+
+/// What a [`PseudoConsole`] shows, less the one question it asks as it starts, where the
+/// cursor is (`ESC[6n`), which [`PseudoConsole::new`] answers: passed on, a terminal
+/// would answer it again, its answer the command's input.
+#[derive(Debug)]
+pub struct Shown {
+    reader: std::io::PipeReader,
+    /// Whether the question is still to come.
+    asking: bool,
+    /// What was read that may begin the question, held until what follows says.
+    held: Vec<u8>,
+    /// What was read and is the screen's, not yet taken.
+    ready: std::collections::VecDeque<u8>,
+}
+
+/// The question a pseudoconsole asks as it starts (PSEUDOCONSOLE_INHERIT_CURSOR): DSR 6, a
+/// cursor position report.
+const ASKED: &[u8] = b"\x1b[6n";
+
+impl Shown {
+    fn new(reader: std::io::PipeReader) -> Shown {
+        Shown {
+            reader,
+            asking: true,
+            held: Vec::new(),
+            ready: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// `came` read: the question taken out where it comes whole, the start of one held.
+    fn sift(&mut self, came: &[u8]) {
+        let mut all = std::mem::take(&mut self.held);
+        all.extend_from_slice(came);
+        if let Some(at) = all.windows(ASKED.len()).position(|w| w == ASKED) {
+            self.asking = false;
+            self.ready.extend(all.get(..at).unwrap_or_default());
+            self.ready.extend(all.get(at + ASKED.len()..).unwrap_or_default());
+            return;
+        }
+        // The longest tail that begins the question waits for what follows.
+        let keep = (1..ASKED.len().min(all.len() + 1))
+            .rev()
+            .find(|&n| {
+                all.get(all.len() - n..)
+                    .is_some_and(|tail| ASKED.starts_with(tail))
+            })
+            .unwrap_or(0);
+        let cut = all.len() - keep;
+        self.ready.extend(all.get(..cut).unwrap_or_default());
+        self.held = all.get(cut..).unwrap_or_default().to_vec();
+    }
+}
+
+impl Read for Shown {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            if !self.ready.is_empty() {
+                let n = buf.len().min(self.ready.len());
+                for (to, from) in buf.iter_mut().zip(self.ready.drain(..n)) {
+                    *to = from;
+                }
+                return Ok(n);
+            }
+            if !self.asking {
+                return self.reader.read(buf);
+            }
+            let mut came = [0u8; 4096];
+            let n = self.reader.read(&mut came)?;
+            if n == 0 {
+                // Its end: what was held is the screen's.
+                self.asking = false;
+                self.ready.extend(std::mem::take(&mut self.held));
+                if self.ready.is_empty() {
+                    return Ok(0);
+                }
+                continue;
+            }
+            self.sift(came.get(..n).unwrap_or_default());
+        }
+    }
+}
+
+/// A console's size of `rows` by `cols`, each at most what a COORD holds.
+fn size(rows: u16, cols: u16) -> windows_sys::Win32::System::Console::COORD {
+    windows_sys::Win32::System::Console::COORD {
+        X: i16::try_from(cols).unwrap_or(i16::MAX),
+        Y: i16::try_from(rows).unwrap_or(i16::MAX),
+    }
 }
 
 /// [`spawn_in`], made in `group`'s job where there is one (D183's groups on Windows): held
@@ -1481,7 +1685,15 @@ pub fn spawn_in_job(
     let given = env
         .iter()
         .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
-    spawn_env(program, args, fds, false, kept.chain(given).collect(), group)
+    spawn_env(
+        program,
+        args,
+        fds,
+        false,
+        kept.chain(given).collect(),
+        group,
+        None,
+    )
 }
 
 /// Whether this process has a console: a child that would share it has none else, and is
@@ -1510,6 +1722,7 @@ fn spawn_env(
     detach: bool,
     mut env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     group: Option<&GroupJob>,
+    console: Option<&PseudoConsole>,
 ) -> io::Result<Child> {
     use windows_sys::Win32::System::Threading::{
         CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
@@ -1531,6 +1744,13 @@ fn spawn_env(
         .map(|(i, h)| inheritable_copy(h).map(|c| (i, c)))
         .collect::<io::Result<_>>()?;
     let grants = if past.is_empty() { None } else { Some(pipe()?) };
+    // Its grants pipe is this spawn's alone: a variable of the name already in `env` is
+    // another process's, as the daemon's own is in a client's command's (daemon/remote.rs
+    // `kept`, every `SHARDS_` variable of the daemon's), and the block's sort keeps it
+    // first, where the child's lookup found it and read the daemon's handle value as its
+    // own pipe: "/dev/fd/3: The handle is invalid", a build's secret through a context
+    // (tests/context.rs, CI's windows-2022 and windows-2025).
+    env.retain(|(k, _)| !k.eq_ignore_ascii_case(GIVEN));
     if let Some((read, _)) = &grants {
         env.push((GIVEN.into(), (read.as_raw_handle() as usize).to_string().into()));
     }
@@ -1544,24 +1764,28 @@ fn spawn_env(
     };
     let mut line = command_line(program, args);
     let block = environment_of(&env);
+    // Made in a pseudoconsole, it holds that console alone, and none of this process's: it
+    // breaks away from this process's Job as a detached child does.
     let flags = EXTENDED_STARTUPINFO_PRESENT
         | CREATE_SUSPENDED
         | CREATE_UNICODE_ENVIRONMENT
-        | if detach {
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
-        } else {
-            no_window()
+        | match (console.is_some(), detach) {
+            (true, _) => CREATE_BREAKAWAY_FROM_JOB,
+            (false, true) => DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+            (false, false) => no_window(),
         };
+    let pc = console.map(PseudoConsole::raw);
     let made = match create_plain(
         &mut line,
         &inherited,
         [std_of(0), std_of(1), std_of(2)],
         &block,
         flags,
+        pc,
     ) {
         // A Job that lets nothing break away from it: the child stays in it.
         Err(e)
-            if detach
+            if flags & CREATE_BREAKAWAY_FROM_JOB != 0
                 && e.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32) =>
         {
             create_plain(
@@ -1570,6 +1794,7 @@ fn spawn_env(
                 [std_of(0), std_of(1), std_of(2)],
                 &block,
                 flags & !CREATE_BREAKAWAY_FROM_JOB,
+                pc,
             )
         }
         made => made,
@@ -1643,24 +1868,46 @@ fn inheritable_copy(handle: RawHandle) -> io::Result<OwnedHandle> {
 }
 
 /// CreateProcessW for [`spawn_env`]: `inherited` its only inherited handles, `std` its
-/// standard ones, `env` its environment block, `flags` its creation flags.
+/// standard ones, `env` its environment block, `flags` its creation flags, and `console`
+/// the pseudoconsole it is made in, where it is made in one.
 fn create_plain(
     line: &mut [u16],
     inherited: &[RawHandle],
     std: [RawHandle; 3],
     env: &[u16],
     flags: u32,
+    console: Option<windows_sys::Win32::System::Console::HPCON>,
 ) -> io::Result<PROCESS_INFORMATION> {
+    use windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE;
+    let count = 1 + u32::from(console.is_some());
     let mut size = 0usize;
     // SAFETY: the size query, which fails and fills `size`.
-    unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &raw mut size) };
+    unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), count, 0, &raw mut size) };
     let mut list = vec![0usize; size.div_ceil(size_of::<usize>())];
     let attrs = list.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
     // SAFETY: a buffer of at least the size asked, aligned for the list.
-    if unsafe { InitializeProcThreadAttributeList(attrs, 1, 0, &raw mut size) } == 0 {
+    if unsafe { InitializeProcThreadAttributeList(attrs, count, 0, &raw mut size) } == 0 {
         return Err(last());
     }
     let made = (|| -> io::Result<PROCESS_INFORMATION> {
+        if let Some(pc) = console {
+            // SAFETY: the pseudoconsole's handle, its value itself the attribute, which the
+            // caller keeps open past the call.
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    attrs,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                    pc as *const std::ffi::c_void,
+                    size_of::<windows_sys::Win32::System::Console::HPCON>(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            } == 0
+            {
+                return Err(last());
+            }
+        }
         if !inherited.is_empty() {
             // SAFETY: a list of handles that outlives the attribute list, deleted below.
             if unsafe {
@@ -2196,6 +2443,36 @@ mod tests {
         let mut w = command_line(Path::new(r"C:\bin\shards-vm.exe"), &args);
         w.pop();
         String::from_utf16(&w).unwrap()
+    }
+
+    /// What a pseudoconsole shows, each of `writes` written whole in turn, as [`Shown`] reads
+    /// it to its end.
+    fn shown_of(writes: &[&[u8]]) -> Vec<u8> {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let writes: Vec<Vec<u8>> = writes.iter().map(|w| w.to_vec()).collect();
+        let writing = std::thread::spawn(move || {
+            for w in writes {
+                writer.write_all(&w).unwrap();
+                writer.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let mut shown = Vec::new();
+        Shown::new(reader).read_to_end(&mut shown).unwrap();
+        writing.join().unwrap();
+        shown
+    }
+
+    /// The question a pseudoconsole asks as it starts goes, whole or split across its
+    /// writes, and nothing else does: a second, later, is the screen's, as is anything that
+    /// only begins as it does.
+    #[test]
+    fn a_pseudoconsoles_question_as_it_starts_is_not_shown() {
+        assert_eq!(shown_of(&[b"\x1b[?25l\x1b[6nready\r\n"]), b"\x1b[?25lready\r\n");
+        assert_eq!(shown_of(&[b"\x1b[?25l\x1b[", b"6", b"nready"]), b"\x1b[?25lready");
+        assert_eq!(shown_of(&[b"\x1b[6n", b"a\x1b[6nb"]), b"a\x1b[6nb");
+        assert_eq!(shown_of(&[b"\x1b[6m\x1b[", b"6x"]), b"\x1b[6m\x1b[6x");
+        assert_eq!(shown_of(&[b"held \x1b["]), b"held \x1b[");
     }
 
     /// A message goes over whole, kind and payload; a stream that ends between messages

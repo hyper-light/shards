@@ -4019,7 +4019,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3j)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3k)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -4108,10 +4108,10 @@ local administration is (../focal docs/cluster-admin.md).
   each source's metadata resolved there as a build there resolves it, its store and its
   network with the client's logins (`policy::Resolve`, whose requests and answers, image
   configs and attestation chains among them, have no encoding to cross yet).
-- From a Windows client, `shards copy vm` (refused) and Docker's CLI through a context:
-  shards serves neither on Windows itself yet, cp.rs's daemon passing descriptors and
-  the relay being the daemon's, which Windows runs none of.
 - Extended attributes in a build's copy beyond `security.capability`.
+- On a macOS machine, two names of a Linux client's context that differ in case alone:
+  APFS, case-insensitive as macOS formats it by default, keeps them as one file (part 3k
+  keeps them apart on Windows).
 - One connection for a context's commands, where each command, and each SSH agent
   connection a step makes, is a handshake of its own.
 - Credentials found only when the machine pulls. A run or create that may pull
@@ -4837,9 +4837,8 @@ where the machine sent the rest of the archive first.
 Where Docker's `ssh://` context starts `docker system dial-stdio` through a shell account
 for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
 each relayed connection opens a QUIC connection of its own, a handshake each, where one
-connection kept for the context, a stream each, would not (part 5 measures both); a Windows
-client, whose daemon serves no Engine API yet (D195; the parity plan's step 8), has no
-engine socket (Docker's `npipe://`).
+connection kept for the context, a stream each, would not (part 5 measures both). On
+Windows a context's engine is a named pipe (Docker's `npipe://`, part 3k).
 Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` through the
 socket; a microVM made through the context, listed there and not by the client's own engine;
 Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
@@ -4856,6 +4855,74 @@ on, the machine's or the client's; an enrolled key's join refused; the contexts 
 removed socket not bound again; the sockets kept as the daemon closes; the relays not hung
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
+
+**Part 3k, built: a Windows machine serves other machines' clients** (the platform parity
+audit's row 10). Since D195 a Windows host runs shards' daemon; its listener runs there now
+too, so that a laptop builds and runs on a Windows box with a GPU or 32 cores as on a Linux
+one. What serves a client there is the Unix machine's code, but where Windows has no
+descriptors to give, no pseudo-terminal and no file system of Linux's:
+- **A client's command gets its streams and grants as handles.** It is started through the
+  daemon's spawner with its stdio, its signals' pipe, a build's secrets, its SSH agents'
+  pipes and a `--cidfile`'s pipe each given by number (shards_ipc `spawn`, its grants pipe
+  named by `SHARDS_GIVEN`). The daemon's own `SHARDS_GIVEN`, which its environment passes to
+  its children, came first and was the one taken, so every such command found none of its
+  grants: a child's environment now holds its own alone. Its signals' pipe is past every
+  number given it (`signal_descriptor`), where a constant 4 was a build's second secret's.
+- **Its terminal is a pseudoconsole** (ConPTY), sized and resized as the client's terminal
+  is. One made with no flags draws its screen whole as it starts (a clear, home, and an
+  erased line a row), which, relayed, cleared the client's screen as each command started;
+  made with `PSEUDOCONSOLE_INHERIT_CURSOR`, it asks where its cursor is instead (`ESC[6n`)
+  and waits for an answer (CreatePseudoConsole's documentation), which the daemon gives it
+  at once, its last row's first column, and keeps from the client (`Shown`). A build's
+  progress follows a resize as docker/cli's MonitorTtySize follows one on Windows, its
+  terminal's size asked every quarter second (cli/command/container/tty.go).
+- **A build's context copy is a Linux tree on NTFS**, as D197's shares keep a guest's
+  files, as WSL keeps Linux's (crates/ntfs, `shards_archive::apply_layer_lx`): each name as
+  Linux names it, the characters no NTFS name holds escaped into the Private Use Area; a
+  mode, owner and device in WSL's `$LX` attributes; a symlink, FIFO or device WSL's reparse
+  point, which an unelevated process makes; each directory case-sensitive; an extended
+  attribute an EA of its own; each name opened relative to its directory's handle,
+  following no reparse point, so that no entry of a layer reaches past the copy, and one
+  beneath a symlink is refused, as no client's walk sends one. The copy is marked a Linux
+  tree, and the build's walk of it (shards-build's `host::Tree`), and the manifest the
+  client compares with, read it as fsutil reads a Linux host's: its names, modes, links,
+  devices, inodes and attributes the client's. A tree of the Windows host's own is read as
+  fsutil reads one there, though WSL kept some of its files' metadata, as Docker's builds
+  of it are. Kept as NTFS keeps its own files, a Linux or macOS client's context went to
+  its build with every file 0755, its symlinks only where the machine's user may make one,
+  and two names differing in case alone one file; and a time NTFS keeps to 100 ns, where
+  a Linux or macOS client's is to the nanosecond, is the client's where it is the client's
+  cut to 100 ns (`same_time`), as a copy whose times were never the client's went whole
+  again at each build.
+- **A build's output to a directory comes as its archive**: the client asks for a
+  `type=local` output as `type=tar` and unpacks the archive into its directory, so that the
+  output's files never land on the machine's disk, where NTFS would have kept their modes,
+  links and owners as its own (part 3f's frames, unchanged).
+- **An agent's directory is read as a build reads its context** (shards-build's walk, here
+  and there alike), so that an agent built through a context, of the client's files copied
+  to its machine, is the one the client builds of them: a Linux client's modes, symlinks and
+  hard links its own; and an agent built on Windows has fsutil's modes, 0755 and 0555
+  read-only, as a build of the same files has, where its files were 0644 and 0444, none of
+  its scripts executable, and std read none of a Linux tree's symlinks ("Unsupported reparse
+  point type", tests/context.rs's artifact test on windows-2025 at 2d53e206).
+- **And a Windows client** copies through a context (`copy vm`, driven here step by step as
+  on Unix, cli/cp.rs), and its daemon serves each context's engine at a named pipe, which
+  the file at the context's socket path names and `inspect context` gives as
+  `npipe:////./pipe/…`: a thread of each context's takes its clients and hands them to the
+  daemon, as WaitForMultipleObjects waits on 64 handles at most and a home joins as many
+  contexts as it is told.
+
+Tested in `tests/context.rs`, whole, on CI's windows-2022 and windows-2025, where the client
+and the machine are the runner's, a Windows client's own context its case (budget-e2e
+41273324343 at 7452404e, the copy a Linux tree: 19 of 19 on each, `SHARDS_REQUIRE_VMS=1`;
+before it, 41242328368 at ca024da3 and 41246900473 at 4c5fa52c). A Linux client's tree on a
+Windows machine is tested by `crates/archive/tests/lx.rs` (a layer of modes, symlinks of
+0777 and 0755, a hard link, a FIFO, a device, case-distinct names and `a:b` applied and read
+back, its whiteouts, and what reaches past the tree refused: all 8 copies of 41273319640 on
+windows-2025), `synced::tests::a_linux_clients_tree_is_its_own_in_a_windows_copy` (the
+manifest and a build's load of such a copy the client's) and
+`agent::tests::an_agents_files_are_read_as_a_build_reads_its_context` (the binary's own
+tests on both runners, 41262337649 at 41c3560d).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 

@@ -14,8 +14,9 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 
 mod client;
 pub(crate) use client::Stream;
-// The daemon's, Unix's alone as yet (D195).
-#[cfg(unix)]
+#[cfg(windows)]
+pub(crate) use client::take_signal_pipe;
+// The daemon's, for a context's copy step (D180).
 pub(crate) use client::ask_here;
 pub(crate) mod cp;
 pub(crate) mod listing;

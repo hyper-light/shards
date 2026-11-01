@@ -109,7 +109,7 @@ pub fn run(args: &[String], hold: bool) -> Sample {
 /// Sandbox (D30), and on Windows, in the AppContainer `shards` starts it in (D141): `shards
 /// <args>`, which grants it its files, its VM process's own timing line passed through. A
 /// VM process started alone there refuses to start ("nothing was granted to this VM").
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(not(target_os = "linux"))]
 pub fn run(args: &[String], hold: bool) -> Sample {
     measure(common::shards(), args, hold, &[])
 }
