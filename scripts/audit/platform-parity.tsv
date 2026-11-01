@@ -51,7 +51,7 @@ crates/vmm/src/platform/unix.rs	fn register	crates/vmm/src/platform/windows_watc
 crates/vmm/src/platform/unix.rs	mod notify	crates/vmm/src/platform/unix.rs	fn register	a file watched: Linux's one inotify instance, macOS' kqueue
 crates/vmm/src/platform/unix.rs	mod notify	crates/vmm/src/platform/windows_watch.rs	struct FileWatch	a file watched: Windows' directory changes and oplocks
 crates/vmm/src/platform/unix.rs	impl Drop	-	none: macos	a Linux watch lets its shared inotify instance's watches go as it drops; macOS' kqueue and the files it watches close with it, as their OwnedFd and File do
-crates/vmm/src/platform/unix.rs	fn task_events	-	none: linux,windows	the counters HVF's prefetch says what its working set's page-ins took by (hv::hvf, Vcpu::prefetch); KVM's working set is mapped by its host (vm::mapped), and Windows records none yet (D196)
+crates/vmm/src/platform/unix.rs	fn task_events	-	none: linux,windows	the counters HVF's prefetch says what its working set's page-ins took by (hv::hvf, Vcpu::prefetch); KVM's working set is mapped by its host (vm::mapped) and WHP's by its populate (hv::whp, Vcpu::pre_fault_runs), each timed by its restore's log (D196, PM M415)
 crates/vmm/src/platform/unix.rs	fn watch_writes	crates/shards/src/daemon/groups.rs	fn hold_groups [macos,windows]	a budget written, heard: Linux's cgroup files (memory.high, memory.max, memory.events) watched for writes; the groups macOS and Windows keep in the home, read again every pressure window (D183)
 crates/vmm/src/platform/unix.rs	fn watch_writes	-	none: macos,windows	its other use, a DAX window's file cut short under KVM's mapping (daemon/cuts.rs): Hypervisor.framework takes a cut as a fault the VMM fills (PM M271), and NTFS refuses to cut a file while a section of it exists (PM M412)
 crates/vmm/src/platform/unix.rs	fn unwatch_writes	crates/shards/src/daemon/groups.rs	fn hold_groups [macos,windows]	as watch_writes
@@ -362,3 +362,42 @@ crates/shards/src/daemon/remote.rs	impl Read	crates/shards/src/daemon/remote.rs	
 crates/shards/src/daemon/remote.rs	fn kept_terminal	crates/shards/src/daemon/remote.rs	struct Console	as Kept
 crates/archive/src/lib.rs	mod lx	crates/archive/src/layer.rs	fn apply_layer [linux,macos]	a client's context's copy on its machine (D180): on Windows a Linux tree kept on NTFS as WSL keeps one (apply_layer_lx); on Unix the host's own files hold a Linux tree's modes, owners, links and devices (apply_layer)
 crates/build/src/host.rs	mod lx	crates/build/src/host.rs	fn lstat [linux,macos]	a Linux tree's files read as fsutil reads a Linux host's: on Windows a tree kept as WSL keeps one (Tree, shards_ntfs); on Unix its host's own lstat
+crates/vmm/src/devices/virtio/gpu/mod.rs	mod window	crates/vmm/src/vm/mod.rs	fn gpu_window [macos,windows]	the window a GPU's blobs are mapped into: KVM's a range of this process reserved, one memslot over it, each blob mapped by its descriptor (D201); Hypervisor.framework's stage 2 and WHP's partition each map a blob at its place by its address (D144, D202)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_get_map_ptr	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_export_blob	a mappable blob's host memory reached: its address in this process, from the krunkit fork's renderer on macOS and Windows (D144, D202); the descriptor virglrenderer 1.3.0's render server exports it as, on Linux (D201)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_export_blob	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_get_map_ptr	as virgl_renderer_resource_get_map_ptr
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const FD_DMABUF	-	none: macos,windows	the descriptors a Linux render server exports a blob as (virglrenderer.h); macOS' and Windows' renderer gives a blob's address (virgl_renderer_resource_get_map_ptr)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const FD_SHM	-	none: macos,windows	as FD_DMABUF
+crates/vmm/src/devices/virtio/gpu/virgl.rs	struct ContextArgs	-	none: macos,windows	what virglrenderer 1.3.0's render server says to a context's process (server/render_context.h), Linux's alone: the krunkit fork has no render server, its Venus served in this process on macOS and Windows (D144, D202)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn render_server	-	none: macos,windows	as ContextArgs
+crates/vmm/src/devices/virtio/gpu/virgl.rs	struct BasicInfo	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	a blob's host memory held as long as its blob: on macOS its pages remapped into a range of this process's (mach_vm_region, mach_vm_remap), on Linux the descriptor it was exported as, on Windows the pages the renderer allocated for it (D202)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const VM_REGION_BASIC_INFO_64	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	as BasicInfo
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const VM_FLAGS_ANYWHERE	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	as BasicInfo
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const VM_INHERIT_NONE	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	as BasicInfo
+crates/vmm/src/devices/virtio/gpu/virgl.rs	struct ExtensionProperties	-	none: linux,macos	Windows asks its device whether it imports host memory (VK_EXT_external_memory_host), as every page a guest may map there is the renderer's (D202, PM M383); macOS holds a blob's own pages remapped and Linux the descriptor it was exported as (struct Held)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	type EnumerateDeviceExtensionProperties	-	none: linux,macos	as ExtensionProperties
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	crates/vmm/src/devices/virtio/gpu/virgl.rs	impl Vulkan [windows]	Vulkan's entry points: MoltenVK's, linked, on macOS; the host's loader's on Linux (libvulkan.so.1) and on Windows (System32's vulkan-1.dll), opened as the renderer opens it
+crates/vmm/src/devices/virtio/gpu/virgl.rs	impl Vulkan	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	as fn open
+crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	-	none: macos	the GPU's VM process is signed with every VM process's App Sandbox entitlements and no other (build.rs, resources/vm.entitlements), the sandbox giving it Metal as any sandboxed app's (D144)
+crates/shards/src/confine.rs	const GPU_SYSCALLS	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn gpu_paths	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn library_paths	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/daemon.rs	mod groups	-	none: linux	the groups shards keeps for --cgroup-parent where a host has no cgroups its user's own tools make and cap (D183, slice 3); on Linux a run's processes are born in a slice of the user's service manager, whose cgroup the kernel holds to its budgets (D183, slice 1)
+crates/shards/src/daemon/groups.rs	const CPU_BUDGET	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	struct Member	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	struct Woke	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	struct Groups	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	fn held_cpu	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/main.rs	mod grant	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/main.rs	mod grant_answer	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn newest	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	fn granted	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	fn granted_template	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/vm-process/src/main.rs	mod grant	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/vm-process/src/main.rs	mod grant_ask	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/cli/mod.rs	fn recording_restore	-	none: macos	the restores that record their working set (vm::RESTORES_RECORD): Hypervisor.framework's is recorded by the run that saves its template, as recording slows a command sixfold there (PM M30)
+crates/net/src/bridge.rs	fn routes_of	crates/net/src/bridge.rs	fn on_link_routes [macos,windows]	the host's on-link routes read: a netlink dump's on Linux, a route sysctl's on macOS (dumped_routes), GetIpForwardTable2's on Windows
+crates/net/src/bridge.rs	fn dumped_routes	crates/net/src/bridge.rs	fn on_link_routes [linux,windows]	as routes_of
+crates/archive/src/error.rs	fn platform_errno	-	none: windows	Go's texts of each Unix's own errnos (x/sys zerrors_linux.go, zerrors_darwin.go), which go_errno reads on Unix; Windows' errors are said in Windows' own words, which errno_text keeps of Rust's
+crates/archive/src/sys/unix.rs	fn fd_path	crates/archive/src/sys/unix.rs	fn set_xattr_in [linux]	a name beneath a directory's descriptor reached by its path: F_GETPATH's on macOS; on Linux /proc/self/fd's (set_xattr_in, chmod_fallback)
+crates/ipc/src/unix.rs	static PREVIOUS	-	none: macos,windows	the actions Linux's fault signals had before take_rest caught them, to forward those another process sends (FAULTS); XNU tells no fault signal's sender, which the Docker CLI on macOS takes as a fault too (FAULTS), and Windows has no signals
+crates/vmm/src/platform/pressure.rs	const REPEAT	crates/vmm/src/platform/pressure.rs	const AVERAGE_PERCENT	a pressure said again while it lasts: macOS' and Windows' notifications every two seconds, Linux's ten-second average where no trigger arms

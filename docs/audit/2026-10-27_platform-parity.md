@@ -31,6 +31,13 @@ styled failures of `search` and `login` on a Windows colour terminal, which gate
 daemon, Unix's alone" had kept off, and the ghost files a crash left in a Windows home
 (D176, D197), which no daemon start removed there.
 
+Since 2026-11-01 it reads a cfg's any(), all() and not() of `unix`, `windows` and
+`target_os`, `test` holding on no host, where it read nine forms alone and took an item of
+any other as every host's: 25 items stood alone unseen, the groups shards keeps (D183), the
+grants' modules and SPIFFE's client among them. These, and the 20 the GPUs' work brought
+(D201, D202), are each a host's own mechanism with its twin, or with why the other hosts
+need none, but for rows 12 and 13's.
+
 ## The gaps
 
 | # | What | Hosts without it | Evidence |
@@ -47,6 +54,8 @@ daemon, Unix's alone" had kept off, and the ghost files a crash left in a Window
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
 | 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | Windows | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
 | 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
+| 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | Windows | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
+| 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | Windows, until gpu-windows lands: its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
 (29), `vm_run.rs` (18), `context.rs` (14) and `cli/*` items are the daemon's and its client's
@@ -75,6 +84,9 @@ Each lone item is confirmed or closed as its row is worked.
 10. Row 9, a function passed through where a host allows one.
 11. Row 10, a Windows machine serving other machines' clients through a context.
 12. Row 11, working sets on Windows: a restore's pages recorded and mapped ahead.
+13. Row 12, the SPIFFE Workload API reached on Windows by its named pipe, as SPIRE's agent
+    serves it there.
+14. Row 13, with gpu-windows, after win-pools lands.
 
 ## Closed
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Platform parity, the user's criterion (2026-10-27): every feature built for Windows, macOS
 and Linux, on amd64 and arm64 (macOS on x86_64 aside). Lists each item a source file compiles
-for some hosts alone -- a `#[cfg(unix)]`, `#[cfg(not(windows))]`, `#[cfg(target_os = ...)]` or
-`#[cfg(windows)]` before a fn, mod, struct, enum, impl, const, static, type or use -- that no
+for some hosts alone -- a cfg of `unix`, `windows` or `target_os = ...`, or any(), all() or
+not() of them, before a fn, mod, struct, enum, impl, const, static, type or use -- that no
 item of its name in its file, nor a twin platform-parity.tsv names for it, is compiled for on
 the hosts it misses, so that what stands alone on one host is found. Test code (`#[cfg(test)]`
 modules, tests/ and benches/) is left out, and so are imports (`use`), which do no work of
@@ -29,24 +29,51 @@ Hypervisor.framework's stage 2 never does) says so in their place, its reason wi
 import os, re, sys
 
 HOSTS = {"linux", "macos", "windows"}
-SIDES = {
-    "unix": {"linux", "macos"},
-    "not(windows)": {"linux", "macos"},
-    "windows": {"windows"},
-    "not(unix)": {"windows"},
-    'target_os = "linux"': {"linux"},
-    'target_os = "macos"': {"macos"},
-    'target_os = "windows"': {"windows"},
-    'not(target_os = "linux")': {"macos", "windows"},
-    'not(target_os = "macos")': {"linux", "windows"},
-}
 GUEST = ("crates/init/", "crates/testguest/", "crates/server/")
-CFG = re.compile(r'^\s*#\[cfg\((' + "|".join(re.escape(s) for s in SIDES) + r')\)\]\s*$')
+CFG = re.compile(r'^\s*#\[cfg\((.*)\)\]\s*$')
 ITEM = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:async\s+)?(fn|mod|struct|enum|impl|const|static|type|use|trait)\b\s*([^\s<({:;=]*)')
+
+def args_of(args):
+    """The arguments of a cfg's any(), all() or not(), split at their own commas."""
+    out, depth, start = [], 0, 0
+    for i, c in enumerate(args):
+        depth += {"(": 1, ")": -1}.get(c, 0)
+        if c == "," and depth == 0:
+            out.append(args[start:i])
+            start = i + 1
+    out.append(args[start:])
+    return [a.strip() for a in out if a.strip()]
+
+def hosts(cfg):
+    """The hosts a cfg's condition holds on outside tests, of `unix`, `windows` and
+    `target_os = ...` and any(), all() and not() of them, `test` holding on none; None
+    where it names anything else (an architecture, a backend, a feature), which the audit
+    takes as every host's, as it takes an item with no cfg."""
+    cfg = cfg.strip()
+    if cfg == "unix":
+        return {"linux", "macos"}
+    if cfg == "windows":
+        return {"windows"}
+    if cfg == "test":
+        return set()
+    os_ = re.fullmatch(r'target_os\s*=\s*"(\w+)"', cfg)
+    if os_:
+        return {os_.group(1)} & HOSTS
+    m = re.fullmatch(r'(any|all|not)\((.*)\)', cfg, re.S)
+    if not m:
+        return None
+    sets = [hosts(a) for a in args_of(m.group(2))]
+    if not sets or any(h is None for h in sets):
+        return None
+    if m.group(1) == "not":
+        return HOSTS - sets[0] if len(sets) == 1 else None
+    if m.group(1) == "any":
+        return set().union(*sets)
+    return set(HOSTS).intersection(*sets)
 
 def items(path):
     """Each item of `path` outside its tests, at any depth: its line, its cfg (None where it
-    has none of SIDES' forms), its kind and its name."""
+    has none whose hosts [`hosts`] are known), its kind and its name."""
     lines = open(path, errors="replace").read().split("\n")
     out, in_test = [], False
     for i, line in enumerate(lines):
@@ -60,8 +87,8 @@ def items(path):
         cfg, j = None, i - 1
         while j >= 0 and (lines[j].strip().startswith(("#[", "//")) or not lines[j].strip()):
             c = CFG.match(lines[j])
-            if c:
-                cfg = c.group(1)
+            if c and hosts(c.group(1)) is not None:
+                cfg = c.group(1) if cfg is None else f"all({c.group(1)}, {cfg})"
             if not lines[j].strip():
                 break
             j -= 1
@@ -69,7 +96,7 @@ def items(path):
     return out
 
 def sides_of(cfg):
-    return HOSTS if cfg is None else SIDES[cfg]
+    return HOSTS if cfg is None else hosts(cfg)
 
 cache = {}
 
@@ -80,7 +107,7 @@ def defs(path):
 
 def hosts_of(path, key, everywhere):
     """The hosts item `key` (KIND NAME) of `path` is compiled for, over its items of that name
-    with a cfg of SIDES' forms, and, where `everywhere`, those with none (a twin named in
+    with a cfg whose hosts are known, and, where `everywhere`, those with none (a twin named in
     platform-parity.tsv may be compiled everywhere; an item's own name, matched alone, is
     held to its cfg'd namesakes, as `fn new` of another type is no twin)."""
     found = set()
@@ -110,7 +137,8 @@ for dirpath, _, files in os.walk(root):
         if not f.endswith(".rs"):
             continue
         path = os.path.join(dirpath, f)
-        its = [i for i in defs(path) if i[1] is not None and i[2] != "use"]
+        # An item no host compiles outside its tests (`all(test, unix)`) is a test's.
+        its = [i for i in defs(path) if i[1] is not None and i[2] != "use" and hosts(i[1])]
         for line, cfg, kind, name in its:
             key = f"{kind} {name}"
             covered = hosts_of(path, key, False)
