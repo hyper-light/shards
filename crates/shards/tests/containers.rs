@@ -34,6 +34,37 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
     shards_in_within(home, args, TIMEOUT)
 }
 
+/// Stops run `name` of `home`, as a test that needs it stopped does. A stop that hears no
+/// end shows what it said, its VM process's stacks and its daemon's
+/// ([`common::stacks_of`]), and how long its VM process outlived the stop, looked for every
+/// 100 ms for a minute: a VM process that ends late from one that never does. Windows CI
+/// gave up on stops as an_image_of_gigabytes_boots ran (9fdbed51's exec test on
+/// windows-2025, the cp test on windows-2022 in 41277401058), their VM processes running
+/// on 2 s after their kill.
+fn stop_run(home: &Path, name: &str) {
+    let vm = shards_in(home, &["inspect", "-f", "{{.State.Pid}}", name]);
+    let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
+    let stopped = shards_in(home, &["stop", name]);
+    if stopped.status == Some(0) {
+        return;
+    }
+    let gave_up = Instant::now();
+    let stacks = common::stacks_of(&[("its VM process", vm)], Some(home));
+    let outlived = (vm != 0).then(|| {
+        while gave_up.elapsed() < Duration::from_secs(60) {
+            if !common::alive(i32::try_from(vm).unwrap_or(0)) {
+                return format!("had ended {:?} after the stop gave up", gave_up.elapsed());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        "ran on a minute after the stop gave up".to_string()
+    });
+    panic!(
+        "{stopped}{stacks}\n--- its VM process {vm}: {}",
+        outlived.unwrap_or_else(|| "not found".into())
+    );
+}
+
 /// [`shards_in`] with a timeout of its own, for a run whose work is heavier than a start:
 /// a large `-m` whose guest plugs and touches gigabytes takes far longer than [`TIMEOUT`]
 /// on a slow, contended CI runner (it progresses, it is not hung: the whole of
@@ -818,7 +849,7 @@ fn a_joiner_under_init_has_a_reaper_of_its_own() {
     let top = shards(&["top", "joiner", "-o", "pid,args"]);
     assert_eq!(top.stdout.lines().count(), 3, "{top}");
     let stopping = Instant::now();
-    assert_eq!(shards(&["stop", "joiner"]).status, Some(0));
+    stop_run(&home, "joiner");
     assert!(
         stopping.elapsed() < Duration::from_secs(5),
         "{:?}",
@@ -3820,7 +3851,7 @@ fn top_lists_a_microvms_processes() {
     let paused = shards(&["top", "listed"]);
     assert!(paused.stderr.contains("is paused"), "{paused}");
     assert_eq!(shards(&["unpause", "listed"]).status, Some(0));
-    assert_eq!(shards(&["stop", "listed"]).status, Some(0));
+    stop_run(&home, "listed");
     exit(&mut sleeper);
     let ended = shards(&["top", "listed"]);
     assert!(ended.stderr.ends_with("is not running\n"), "{ended}");
@@ -3861,7 +3892,7 @@ fn diff_shows_what_a_microvm_changed() {
         ),
         "{diff}"
     );
-    assert_eq!(shards(&["stop", "changed"]).status, Some(0));
+    stop_run(&home, "changed");
     exit(&mut sleeper);
     // Stopped, its changes are still there to show (visit.rs).
     let ended = shards(&["diff", "changed"]);
@@ -4077,7 +4108,7 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
         "{listed}"
     );
     assert_eq!(tar.len() % 512, 0);
-    assert_eq!(shards(&["stop", "exported"]).status, Some(0));
+    stop_run(&home, "exported");
     exit(&mut sleeper);
     // Stopped, its files are still there to export (visit.rs).
     let ended = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
@@ -4168,7 +4199,7 @@ fn cp_copies_files_into_and_out_of_a_microvm() {
         no_dir.stderr.starts_with("invalid output path: directory "),
         "{no_dir}"
     );
-    assert_eq!(shards(&["stop", "copier"]).status, Some(0));
+    stop_run(&home, "copier");
     exit(&mut sleeper);
     // Stopped, its files are still there to copy (visit.rs).
     let ended = shards(&["cp", "copier:/in", home.join("cp-stopped").to_str().unwrap()]);
@@ -6910,7 +6941,7 @@ fn logs_keep_what_a_container_wrote() {
         .spawn()
         .unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(shards_in(&home, &["stop", "follow"]).status, Some(0));
+    stop_run(&home, "follow");
     assert_eq!(exit(&mut sleeper), Some(128 + 15));
     let followed = follower.wait_with_output().unwrap();
     assert_eq!(followed.status.code(), Some(0));
@@ -9129,20 +9160,7 @@ fn exec_runs_commands_in_a_running_microvm() {
         1,
         "invalid detach keys (ctrl-P): Unknown character: 'ctrl-P'\n",
     );
-    // Its VM process, whose stacks a stop that hears no end shows with its daemon's.
-    let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", "ex"]);
-    let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
-    let stopped = shards_in(&home, &["stop", "ex"]);
-    assert_eq!(
-        stopped.status,
-        Some(0),
-        "{stopped}{}",
-        if stopped.status == Some(0) {
-            String::new()
-        } else {
-            common::stacks_of(&[("its VM process", vm)], Some(&home))
-        }
-    );
+    stop_run(&home, "ex");
     let _ = exit(&mut run);
     refused(
         &["ex", "/bin/testguest", "report"],
@@ -9624,7 +9642,7 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
         made.iter().any(|(_, args)| args.contains("shards-vm")),
         "the spawner's children: {made:?}"
     );
-    assert_eq!(shards_in(&home, &["stop", "asleep"]).status, Some(0));
+    stop_run(&home, "asleep");
     exit(&mut asleep);
 }
 
@@ -12973,7 +12991,7 @@ fn attach_joins_a_running_microvm() {
         assert_eq!(line, "again\n");
     }
     // Both end with the command, with its status: SIGTERM's.
-    assert_eq!(shards(&["stop", "echo"]).status, Some(0));
+    stop_run(&home, "echo");
     assert_eq!(exit(&mut first), Some(143));
     assert_eq!(exit(&mut second), Some(143));
     drop(second_in);
