@@ -4912,14 +4912,17 @@ descriptors to give, no pseudo-terminal and no file system of Linux's:
   daemon, as WaitForMultipleObjects waits on 64 handles at most and a home joins as many
   contexts as it is told.
 
-Tested in `tests/context.rs`, whole, on CI's windows-2022 and windows-2025 (budget-e2e
-41242328368 at ca024da3 and 41246900473 at 4c5fa52c, 19 of 19 each, `SHARDS_REQUIRE_VMS=1`),
-where the client and the machine are the runner's: a Windows client's own context, its
-modes fsutil's made-up ones, is the case they test; a Linux client's tree on a Windows
-machine is tested by `crates/archive/tests/lx.rs` (a layer of modes, a symlink, a hard link,
-a FIFO, a device, case-distinct names and `a:b` applied and read back, its whiteouts, and
-what reaches past the tree refused) and `synced::tests::a_linux_clients_tree_is_its_own_in_a_windows_copy`
-(the manifest and a build's load of such a copy the client's).
+Tested in `tests/context.rs`, whole, on CI's windows-2022 and windows-2025, where the client
+and the machine are the runner's, a Windows client's own context its case (budget-e2e
+41273324343 at 7452404e, the copy a Linux tree: 19 of 19 on each, `SHARDS_REQUIRE_VMS=1`;
+before it, 41242328368 at ca024da3 and 41246900473 at 4c5fa52c). A Linux client's tree on a
+Windows machine is tested by `crates/archive/tests/lx.rs` (a layer of modes, symlinks of
+0777 and 0755, a hard link, a FIFO, a device, case-distinct names and `a:b` applied and read
+back, its whiteouts, and what reaches past the tree refused: all 8 copies of 41273319640 on
+windows-2025), `synced::tests::a_linux_clients_tree_is_its_own_in_a_windows_copy` (the
+manifest and a build's load of such a copy the client's) and
+`agent::tests::an_agents_files_are_read_as_a_build_reads_its_context` (the binary's own
+tests on both runners, 41262337649 at 41c3560d).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
