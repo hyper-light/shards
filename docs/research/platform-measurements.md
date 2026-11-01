@@ -16950,3 +16950,45 @@ revision before comparing a changed API/implementation.
   (tests/gigabytes.rs): cargo runs a crate's test binaries one after another, so no test
   waits on a host whose disk it fills. A stop or a start held up by its host's disk as long
   as Docker's waits (KILL_WAIT, LAST_WAIT, READY_TIMEOUT) still fails as Docker's does.
+
+### M420. CI's native tests' steps at their limits again (M245)
+
+- **Question.** dev's CI at beb04a58 (41311980102) ran out of x86_64 Linux's tests' step's
+  41 minutes, the limit M245 set a third above the slowest it measured (30.2), as seven more
+  of the runs before it had. Were their runners slow or their tests hung, and what limits do
+  the native jobs' steps need now?
+- **Method.** GitHub's records of the last 79 CI runs (2026-10-27 15:05 to 2026-11-01 13:35
+  UTC, runs 40527550618 to 41311980102; `docs/research/measurements/ci-limits/runs.txt`),
+  through `ci-limits/limits.py`: each native job's steps' starts and ends, a job's time its
+  steps' (GitHub recorded one macOS job's end, 41284231177's, an hour past its last step's);
+  and x86_64 Linux's logs, each tests' step split at cargo's `Finished` line into building
+  the tests and running them, and for each step that ran out, the binary it was in, how long
+  since the suite last moved, and what the rest of the suite took from that binary's start
+  in the runs that ran through.
+- **Found** (minutes; n, p50, p90, p99, max of the steps that ran through):
+
+  | job | tests' step | ran out | other steps' max |
+  |---|---|---|---|
+  | x86_64-unknown-linux-gnu | 54, 35.6, 40.2, 40.8, 40.8 | 8 | 13.0 |
+  | aarch64-unknown-linux-gnu | 66, 15.0, 16.1, 16.5, 16.5 | 0 | 7.3 |
+  | aarch64-apple-darwin | 61, 24.8, 27.9, 28.8, 28.8 | 0 | 11.3 |
+  | x86_64-pc-windows-msvc (windows-2025) | 57, 58.1, 75.7, 90.9, 90.9 | 2 | 16.1 |
+  | x86_64-pc-windows-msvc (windows-2022) | 44, 62.1, 66.9, 80.4, 80.4 | 2 | 15.0 |
+
+  - x86_64 Linux's step has grown 8.7 minutes at p50 since M245's 26.9, two weeks before.
+    Building its tests took 14.5 at p50 and 16.4 at most, running them 22.0 and 24.7.
+  - Four of the eight that ran out were slow runners in the suite's last binaries, at most
+    1.6 minutes since the suite last moved: 41311980102 (dev) in tests/image.rs, 41291076590
+    (gpu), 41167803629 and 40614692136 (win-pools) in the last tests/oracle.rs, whose rest took
+    0.3 to 0.5 in the runs that ran through: steps of 41.5 to 41.7.
+  - The other four, all of 2026-10-27, stopped far from the end, 7.8 to 22.6 minutes of the
+    suite left by those runs' times: 40527550618 in tests/daemon.rs, 40537861914 and 40571636357 in
+    tests/containers.rs (a test running 3.2 and 4.9 minutes since the suite last moved), and
+    40544371607 in tests/build.rs (`run_caches_are_shared_among_concurrent_builds`, 23.8).
+  - Windows' four that ran out were one tree's: 23b2841a's, on both runners of win-pools'
+    run 40631138814 and win-pools-stage's 40631141474.
+- **Decided.** Each limit a third above the slowest measured, as M245 set them: the tests'
+  step 56 minutes (41.7 slowest, x86_64 Linux's), and the job 74, those 56 and a third above
+  its other steps' slowest (13.0); on Windows, whose runs now say how long the slowest take,
+  the tests' step 122 (90.9 slowest, windows-2025's) where it had 120, and the job 144, those
+  122 and a third above its other steps' slowest (16.1), where it had 150.
