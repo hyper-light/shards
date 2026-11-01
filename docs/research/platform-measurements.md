@@ -16879,3 +16879,25 @@ revision before comparing a changed API/implementation.
   of its samples so, its working set set aside again with a sample that runs without one.
   On a host no guard freezes, none is taken again.
 
+
+### M419. Stops beside a gigabyte build (D27's stop, D195's daemon on Windows)
+
+- **Question.** Windows CI gave up on stops, its daemon saying "no end heard 2s after its
+  microVM was killed: its VM process runs on", each time as `an_image_of_gigabytes_boots`
+  ran beside them (9fdbed51's exec test on windows-2025, twice; the cp test on
+  windows-2022 at 3b1e42af, CI 41277401058). A stop of a `sleep`, which ignores SIGTERM as a
+  container's first process does, waits its 10 s of grace, sends SIGKILL and waits 10 s
+  more (`KILL_WAIT`, moby daemon/kill.go's), then kills the VM process and waits 2 s
+  (`LAST_WAIT`). How often does a stop give up beside that build, and does its VM process
+  end late or never, its pages resident or trimmed?
+- **Method.** containers.rs `stops_beside_a_gigabyte_build` (ignored;
+  docs/research/measurements/stop-under-io/run.sh, and on CI's Windows runners budget-e2e's
+  `windows:containers ignored:stops_beside_a_gigabyte_build`): four threads each start a
+  run of `sleep` and stop it, 10 times each with nothing beside them, then for as long as
+  that test's build goes on beside them, its 2 GiB file written, built into an image and
+  read by a run. Each way's stops as n, p50, p90, p99 and max (nearest rank); each that
+  heard no end with what it said, its VM process's CPU time and resident memory as it gave
+  up, and how long the process outlived it.
+- **Found, the M5 Max** (Apple M5 Max, macOS 26.4.1, 6b17d663 and the test, 2 rounds alone):
+  alone, n 8, p50 10,026.1 ms, max 10,048.9; beside the build (270 s), n 100, p50 10,086.3,
+  p90 10,406.2, p99 10,877.3, max 10,885.3; none gave up.
