@@ -10795,6 +10795,9 @@ network process (D142) and its builder (D143) follow.
   root, quiet took 0.50 s of 2.14 on windows-2022, 0.50 of 1.49 on windows-2025, and on an
   M5 Max's HVF 27.9 ms of 65.2 (n=20 each, interleaved). What it says stays in its ring
   buffer, which `dmesg` reads; a VM whose console is shown (`run --kernel`) boots as told.
+  The VM process keeps the last page of it, and says its lines with a reset, which a panic
+  writes there whole (`console_verbose`), its reason and call trace in 858 bytes of 6.18's
+  (M417); each reset says too which it was, as a triple fault writes nothing.
 - **Its CPUs brought up one at a time.** Its kernel is told `cpuhp.parallel=0`: brought up
   in parallel past the host's CPUs, each AP started spins in its turn while the next waits
   for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s

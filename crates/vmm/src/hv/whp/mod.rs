@@ -1297,7 +1297,10 @@ impl Vcpu {
                 }
                 WHvRunVpExitReasonCanceled => return Ok(Exit::Canceled),
                 // A triple fault: the guest crashed.
-                WHvRunVpExitReasonUnrecoverableException => return Ok(Exit::Reset),
+                WHvRunVpExitReasonUnrecoverableException => {
+                    crate::warn!("the guest triple-faulted (WHvRunVpExitReasonUnrecoverableException)");
+                    return Ok(Exit::Reset);
+                }
                 WHvRunVpExitReasonX64Halt => {
                     return Err(Error::Guest("HLT exit despite the emulated LAPIC".into()));
                 }

@@ -16633,3 +16633,31 @@ revision before comparing a changed API/implementation.
     as M391 found its balloon thread.
   - Open: what of the path from the daemon to a guest's give-back, and of the give-back
     itself, allocates under a budget.
+
+### M417. What a guest's kernel writes to a console told to be quiet, as it panics
+
+- **Question.** A microVM or a builder whose guest resets said only "guest requested a reset":
+  its console is no one's (`--no-console`, every microVM and builder the daemon runs), so
+  what its kernel wrote there of why went nowhere (CI 41240176793's x86_64 Linux, build.rs
+  `a_builders_memory_is_plugged_as_its_build_needs_it`). How much does a kernel write there
+  as it panics, told to be quiet as `--no-console` tells it (`vm::kernel_cmdline`), for the
+  VM process to keep what says why?
+- **Method.** The M5 Max (macOS 26.4.1, Hypervisor.framework), 2026-10-31: shards' pinned
+  kernel (6.18.48, arm64, `Image-6.18.48-aarch64-e39058b2b627`) booted with no root, `shards
+  run --kernel … --memory 256 --cmdline "console=ttyS0 panic=-1 quiet"`, its console's
+  bytes counted from the VM process's stdout; and again without `quiet`.
+- **Found.** Quiet, 1,129 bytes in all: the errors before its panic (the root device it
+  could not open, the file systems it knows), then 858 bytes from `Kernel panic - not
+  syncing: VFS: Unable to mount root fs on unknown-block(0,0)` to its reset (the panic's
+  line, its CPU, the hardware's name, a call trace of 11 frames, the kernel's offset, its
+  CPU features, its memory limit). Not quiet, 14,232 bytes, its whole boot. A panic's own
+  lines reach a quiet console whole, as the kernel makes its console verbose before it says
+  why it panics (kernel/panic.c, `console_verbose()` before `pr_emerg("Kernel panic - not
+  syncing: …")`).
+- **Decided.** The VM process keeps the last page its guest's console wrote (4 KiB,
+  devices::serial `said`), which holds this panic and its errors with room for a longer
+  call trace, and says its whole lines with the reset of a guest whose console no one read,
+  each other character a terminal acts on escaped; each reset says which it was as it
+  comes (a triple fault, a hypervisor's reset or crash event, PSCI's SYSTEM_RESET, WHP's
+  unrecoverable exception, the keyboard controller's reset Linux reboots by), as a triple
+  fault writes nothing. boot.rs `a_reset_with_no_console_says_its_guests_panic` holds it so.

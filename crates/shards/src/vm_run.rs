@@ -2560,13 +2560,55 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
         }
         ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
         ExitReason::Reset => {
-            report("guest requested a reset");
+            let said = if console == Console::Discard {
+                last_said(&handle.console_said())
+            } else {
+                String::new()
+            };
+            report(format!("guest requested a reset{said}"));
             ExitCode::from(3)
         }
         ExitReason::Error(e) => {
             report(e);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What a guest whose console no one read wrote to it last, `said`, as a kernel writes there
+/// why it panics (`panic=-1` resets it): its lines, each other character a terminal acts on
+/// written as its escape, so that what a guest wrote moves no terminal it is shown on.
+/// Nothing where it wrote nothing.
+fn last_said(said: &[u8]) -> String {
+    let mut text = String::new();
+    for c in String::from_utf8_lossy(said).chars() {
+        match c {
+            '\r' => {}
+            '\n' | '\t' => text.push(c),
+            c if c.is_control() => text.extend(c.escape_default()),
+            c => text.push(c),
+        }
+    }
+    match text.trim_start_matches('\n').trim_end() {
+        "" => String::new(),
+        said => format!(", its console's last lines:\n{said}"),
+    }
+}
+
+#[cfg(test)]
+mod said {
+    use super::last_said;
+
+    /// A guest's last words are its lines as it wrote them, their carriage returns gone and
+    /// each other character a terminal acts on escaped; nothing where it said nothing.
+    #[test]
+    fn a_guests_last_words_move_no_terminal() {
+        assert_eq!(last_said(b""), "");
+        assert_eq!(last_said(b"\r\n \r\n"), "");
+        assert_eq!(
+            last_said(b"\r\n[    0.44] Kernel panic - not syncing: VFS\r\n\x1b[2J\x1b]0;mine\x07\tyes\r\n"),
+            ", its console's last lines:\n[    0.44] Kernel panic - not syncing: VFS\n\\u{1b}[2J\\u{1b}]0;mine\\u{7}\tyes"
+        );
     }
 }
 
