@@ -56,8 +56,10 @@ fn file(name: &str, mode: i64, data: &'static [u8]) -> (Header, &'static [u8]) {
     (header(TYPE_REG, name, mode), data)
 }
 
-fn linked(typeflag: u8, name: &str, to: &str) -> (Header, &'static [u8]) {
-    let mut h = header(typeflag, name, 0o777);
+/// A link `name` to `to`, of `mode`: a symlink's 0777, a hard link's its file's, as a
+/// packer writes it (go-archive's unpack sets a hard link's mode on the file it shares).
+fn linked(typeflag: u8, name: &str, mode: i64, to: &str) -> (Header, &'static [u8]) {
+    let mut h = header(typeflag, name, mode);
     h.linkname = to.as_bytes().to_vec();
     (h, b"")
 }
@@ -131,8 +133,8 @@ fn a_linux_tree_keeps_what_ntfs_holds_none_of() {
         file("a:b", 0o644, b"colon"),
         file("Make", 0o644, b"upper"),
         file("make", 0o644, b"lower"),
-        linked(TYPE_SYMLINK, "link", "bin/run.sh"),
-        linked(TYPE_LINK, "again", "secret"),
+        linked(TYPE_SYMLINK, "link", 0o777, "bin/run.sh"),
+        linked(TYPE_LINK, "again", 0o600, "secret"),
         (header(TYPE_FIFO, "pipe", 0o644), b""),
         (null, b""),
         file("deep/er/set", 0o4755, b"x"),
@@ -203,7 +205,7 @@ fn a_linux_tree_keeps_what_ntfs_holds_none_of() {
     for (bad, says) in [
         (file("link/x", 0o644, b"x"), "beneath"),
         (file("../x", 0o644, b"x"), "invalid entry name"),
-        (linked(TYPE_LINK, "h", "../x"), "invalid hardlink target"),
+        (linked(TYPE_LINK, "h", 0o644, "../x"), "invalid hardlink target"),
     ] {
         let name = String::from_utf8_lossy(&bad.0.name).into_owned();
         let e = apply_layer_lx(&layer(vec![bad])[..], &dir)

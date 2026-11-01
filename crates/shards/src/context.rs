@@ -3623,9 +3623,9 @@ mod tests {
         ] {
             assert!(not_carried(&args(remote)).is_none(), "{remote}");
         }
-        // A copy is driven here, where cp.rs runs.
+        // A copy is driven here, as cli/cp.rs drives one, on every host.
         for copy in ["cp web:/x .", "container cp web:/x .", "copy vm web:/x ."] {
-            assert_eq!(not_carried(&args(copy)).is_none(), cfg!(unix), "{copy}");
+            assert!(not_carried(&args(copy)).is_none(), "{copy}");
         }
         assert!(not_carried(&args("agent ls")).is_none());
         // A file a command writes or reads whole crosses as its output or input ([`here_files`]).

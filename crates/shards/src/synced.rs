@@ -920,9 +920,13 @@ mod tests {
         assert_eq!(mode("link") & MODE_SYMLINK, MODE_SYMLINK);
         assert_eq!(manifest[b"link".as_slice()].link, b"bin/run.sh");
         assert_eq!(manifest[b"secret".as_slice()].mtime, (1_700_000_000, 123_456_700));
+        // The second name of one file in the walk's order is a link to the first.
         let walked = shards_build::context::walk(&copy, &shards_build::context::Filters::default()).unwrap();
-        let again = walked.iter().find(|(p, _)| p == b"again").unwrap();
-        assert_eq!(again.1.link, b"secret", "the second name of one file is its link");
+        let link_of = |name: &[u8]| walked.iter().find(|(p, _)| p == name).unwrap().1.link.clone();
+        assert_eq!(
+            (link_of(b"again"), link_of(b"secret")),
+            (Vec::new(), b"again".to_vec())
+        );
 
         let stage = top.join("stage");
         std::fs::create_dir(&stage).unwrap();

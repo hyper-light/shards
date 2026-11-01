@@ -4898,6 +4898,13 @@ descriptors to give, no pseudo-terminal and no file system of Linux's:
   `type=local` output as `type=tar` and unpacks the archive into its directory, so that the
   output's files never land on the machine's disk, where NTFS would have kept their modes,
   links and owners as its own (part 3f's frames, unchanged).
+- **An agent's directory is read as a build reads its context** (shards-build's walk, here
+  and there alike), so that an agent built through a context, of the client's files copied
+  to its machine, is the one the client builds of them: a Linux client's modes, symlinks and
+  hard links its own; and an agent built on Windows has fsutil's modes, 0755 and 0555
+  read-only, as a build of the same files has, where its files were 0644 and 0444, none of
+  its scripts executable, and std read none of a Linux tree's symlinks ("Unsupported reparse
+  point type", tests/context.rs's artifact test on windows-2025 at 2d53e206).
 - **And a Windows client** copies through a context (`copy vm`, driven here step by step as
   on Unix, cli/cp.rs), and its daemon serves each context's engine at a named pipe, which
   the file at the context's socket path names and `inspect context` gives as

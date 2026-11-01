@@ -1584,13 +1584,23 @@ mod tests {
 
     /// A client's command takes shards' settings of the daemon's environment, and what it
     /// needs to act as this machine's shards; none of the owner's other variables, nor its
-    /// tests' credentials.
+    /// tests' credentials. Its temporary directory is each host's own variable's: `TMPDIR`,
+    /// Windows' `TEMP` and `TMP`, which keeps no home of the owner's (`USERPROFILE`).
     #[test]
     fn a_clients_command_takes_shards_settings_alone() {
-        for name in ["PATH", "TMPDIR", "HTTPS_PROXY", "SHARDS_KERNEL", "SHARDS_LOG"] {
+        let temporary: &[&str] = if cfg!(windows) {
+            &["TEMP", "TMP"]
+        } else {
+            &["TMPDIR"]
+        };
+        for name in ["PATH", "HTTPS_PROXY", "SHARDS_KERNEL", "SHARDS_LOG"]
+            .iter()
+            .chain(temporary)
+        {
             assert!(kept(name), "{name}");
         }
         for name in [
+            "USERPROFILE",
             "HOME",
             "DOCKER_CONFIG",
             "DOCKER_AUTH_CONFIG",
