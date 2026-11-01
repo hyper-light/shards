@@ -2712,6 +2712,20 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         set(&(current() + (1 << 30)).to_string());
         let counted = first(before, &["held within its budget", "budget is short by"]);
         let held = mib_after(&counted, "MiB, holds ");
+        // What its guest's kernel counts of the read as its budget comes, said if nothing is
+        // given back: a give-back takes inactive file pages alone, and CI's x86_64 Linux at
+        // 05e9cc57 (41273348014) gave back none, short by 42 MiB, its daemon having asked no
+        // give-back at its host's word, as its slice went from 1025 MiB counted to 813.
+        let counted = shards(&[
+            "exec",
+            "budget",
+            "/bin/testguest",
+            "meminfo",
+            "MemFree",
+            "Cached",
+            "Active(file)",
+            "Inactive(file)",
+        ]);
         let before = said().len();
         set(&(held.saturating_sub(256) << 20).to_string());
         let word = first(before, &["held within its budget", "budget is short by"]);
@@ -2721,7 +2735,8 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         tries += 1;
         assert!(
             tries < 5 && word.contains("held within its budget"),
-            "nothing given back said, try {tries}: {word}\n{}",
+            "nothing given back said, try {tries}: {word}\nits guest's kernel counting as its budget came:\n{}\n{}",
+            counted.stdout,
             said()
         );
         let unset = said().len();
