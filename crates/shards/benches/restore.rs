@@ -89,9 +89,12 @@ fn main() {
     // The command a user runs, which records the working set where restores record one,
     // kept once the VM has handed it over as it ends: on Linux by a process of its own.
     support::run_env(&cold_args, false, &[]);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let waited = std::time::Instant::now();
     while shards_vmm::vm::RESTORES_RECORD && !shards_vmm::snapshot::has_working_set(Path::new(&snapshot)) {
-        assert!(std::time::Instant::now() < deadline, "no working set kept");
+        assert!(
+            support::runnable_since(waited) < std::time::Duration::from_secs(30),
+            "no working set kept"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     for _ in 0..WARMUP {
@@ -232,9 +235,13 @@ fn put_back(dir: &Path, aside: &Path, moved: &[std::ffi::OsString]) {
     let generation = shards_vmm::snapshot::generation(dir).unwrap();
     for name in working_set_files(&generation) {
         let path = generation.join(&name);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let waited = std::time::Instant::now();
         while let Err(e) = std::fs::remove_file(&path) {
-            assert!(std::time::Instant::now() < deadline, "{}: {e}", path.display());
+            assert!(
+                support::runnable_since(waited) < std::time::Duration::from_secs(10),
+                "{}: {e}",
+                path.display()
+            );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }

@@ -16890,7 +16890,12 @@ revision before comparing a changed API/implementation.
   it ran through here and below every freeze, and a sample taken across one is taken again,
   counted in the report (`frozen_retaken`; support `unfrozen`); the restore bench takes each
   of its samples so, its working set set aside again with a sample that runs without one.
-  On a host no guard freezes, none is taken again.
+  On a host no guard freezes, none is taken again. Its waits, for a child's readiness and
+  end and for a working set kept, count only the time its process could run, the wall's less
+  each freeze its ticker saw and the one it has not yet ticked past (support
+  `runnable_since`): a process ran 0.2 to 0.6 s between freezes of 25 s (above), so a
+  child given a minute of the wall's had 1.8 s at most to run, where on a host no guard
+  froze it had the minute.
 
 
 ### M419. Stops beside a gigabyte build (D27's stop, D195's daemon on Windows)
