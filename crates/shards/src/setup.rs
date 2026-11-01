@@ -728,7 +728,7 @@ fn devices(
         (b"ri", &run.device_read_iops),
         (b"wi", &run.device_write_iops),
     ];
-    // A run given this Mac's GPU has its render node, as `--device` gives one (D144).
+    // A run given a GPU has its render node, as `--device` gives one (D144).
     let gpu = crate::run::wants_gpu(run).unwrap_or(false);
     if !run.privileged
         && !gpu

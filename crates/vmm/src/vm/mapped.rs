@@ -18,15 +18,28 @@ const PAGE: u64 = 4 << 10;
 /// Makes the private copies of RAM that the guest wrote while its working set was
 /// recorded, as its writes would make them: KVM then maps these pages writable ahead,
 /// where a write to a page mapped read-only would fault, copy, and fault again. Every run
-/// it can ([`every_run`]).
+/// it can ([`every_run`]). Not WHP's, whose populate for writing copies them in the host's
+/// kernel (vm::x86_64 `pre_fault`).
+#[cfg(not(hv = "whp"))]
 pub fn copy_written(memory: &GuestMemory, working_set: &[hv::Touch]) -> Result<(), String> {
-    let written = working_set.iter().filter(|t| t.written).map(|t| t.gpa);
-    every_run(runs(written), |gpa, len| {
+    let t0 = crate::log::uptime_us();
+    let written = runs(working_set.iter().filter(|t| t.written).map(|t| t.gpa));
+    let (pages, count) = (
+        written.iter().map(|(_, len)| len / PAGE).sum::<u64>(),
+        written.len(),
+    );
+    let copied = every_run(written, |gpa, len| {
         let len = usize::try_from(len).map_err(|e| e.to_string())?;
         let host = memory.host_ptr(gpa, len).map_err(|e| e.to_string())?;
         platform::populate_writable(host, len).map_err(|e| e.to_string())
-    })
-    .map_err(|e| format!("copying written pages {e}"))
+    });
+    if pages > 0 {
+        crate::info!(
+            "copied {pages} written working-set pages ahead, in {count} runs, in {} us",
+            crate::log::uptime_us().saturating_sub(t0)
+        );
+    }
+    copied.map_err(|e| format!("copying written pages {e}"))
 }
 
 /// Does `f` to each run of pages of `runs`, past any it fails on: what it does only
@@ -195,7 +208,7 @@ mod tests {
     /// The written pages of a run after one that cannot be copied are copied still: a
     /// damaged working set's write to what is not RAM (read-only pmem, say) leaves the
     /// rest of the copies ahead (review 1.19). Where restores take working sets
-    /// (`WORKING_SETS`): Windows faults no pages in ahead yet (D140).
+    /// (`WORKING_SETS`).
     #[cfg(any(hv = "hvf", hv = "kvm"))]
     #[test]
     fn written_pages_past_a_run_that_fails_are_copied() {

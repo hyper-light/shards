@@ -291,12 +291,79 @@ mod tests {
             assert_eq!(at.add(5 * page).read_volatile(), 7);
             at.add(40 * page).write_volatile(9);
         }
-        let mapped = mapped_pages(at, len).unwrap();
-        assert!(
-            mapped.contains(&(5, false)) && mapped.contains(&(40, true)),
-            "{mapped:?}"
-        );
-        assert!(mapped.iter().all(|&(p, copy)| !copy || p == 40), "{mapped:?}");
+        // The pages touched alone, the file's others in the cache as they are: a fault maps
+        // no page around it, as Linux's page cache does (unix.rs `FaultAroundOff`).
+        assert_eq!(mapped_pages(at, len).unwrap(), [(5, false), (40, true)]);
+        // SAFETY: the view and mapping made above, each closed once.
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view.Value });
+            windows_sys::Win32::Foundation::CloseHandle(mapping);
+        }
+    }
+
+    /// A page read in from disk is the one page of its view a fault maps: the pages read
+    /// in around it go to the cache alone, so a working set read of a restore's mapped pages
+    /// (vm::mapped) holds what its guest touched and no neighbour (windows.rs
+    /// `FaultAroundOff`).
+    #[test]
+    fn a_fault_from_disk_maps_the_page_it_touches_alone() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_NO_BUFFERING;
+        use windows_sys::Win32::System::Memory::{
+            CreateFileMappingW, FILE_MAP_READ, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
+            MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile,
+            VirtualAlloc, VirtualFree,
+        };
+        let page = super::super::page_size().unwrap();
+        let len = 256 * page;
+        let dir = shards_testdir::TempDir::new("cold").unwrap();
+        // Written past the cache, which holds none of it: each page a view reads is read
+        // from disk, with those around it.
+        // SAFETY: a fresh reservation, committed, as an unbuffered write's page-aligned
+        // buffer, freed below.
+        let buf = unsafe { VirtualAlloc(std::ptr::null(), len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) }
+            .cast::<u8>();
+        assert!(!buf.is_null());
+        // SAFETY: the `len` bytes committed above, filled before they are read.
+        let bytes = unsafe {
+            buf.write_bytes(7, len);
+            std::slice::from_raw_parts(buf, len)
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(FILE_FLAG_NO_BUFFERING)
+            .open(dir.join("f"))
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        // SAFETY: the reservation made above, released whole.
+        unsafe { VirtualFree(buf.cast(), 0, MEM_RELEASE) };
+        let file = std::fs::File::open(dir.join("f")).unwrap();
+        // SAFETY: a read-only mapping of the whole file, and a view of it, both closed below.
+        let mapping = unsafe {
+            CreateFileMappingW(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&file),
+                std::ptr::null(),
+                PAGE_READONLY,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert!(!mapping.is_null());
+        // SAFETY: as above.
+        let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, len) };
+        let at = view.Value.cast::<u8>();
+        assert!(!at.is_null());
+        assert_eq!(mapped_pages(at, len).unwrap(), []);
+        // SAFETY: pages 5 and 100 read, of the view's 256.
+        unsafe {
+            assert_eq!(at.add(5 * page).read_volatile(), 7);
+            assert_eq!(at.add(100 * page).read_volatile(), 7);
+        }
+        assert_eq!(mapped_pages(at, len).unwrap(), [(5, false), (100, false)]);
         // SAFETY: the view and mapping made above, each closed once.
         unsafe {
             UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view.Value });

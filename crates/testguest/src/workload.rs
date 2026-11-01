@@ -3005,12 +3005,81 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
     while std::fs::symlink_metadata(signal).is_err() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Past its attributes' second (the share's VALID_S): the stat asks the host.
+    // Past its attributes' second (the share's VALID_S): the stat asks the host. How far
+    // the kernel's jiffies, which FUSE times its attributes' second by (fs/fuse/dir.c,
+    // fuse_dentry_revalidate), went against CLOCK_MONOTONIC, which the sleep is timed by:
+    // CI's windows-2025 saw a stat 1.2 s past its file's attributes ask nothing of its
+    // share's server (05e9cc57, the server's log).
+    let (mono, ticks) = (std::time::Instant::now(), clock_ticks());
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let size = std::fs::metadata(path)?.len();
+    let slept = (mono.elapsed(), clock_ticks().saturating_sub(ticks));
+    // And asked of the file system afresh, whatever the kernel holds of it, said on stderr:
+    // where the size seen is not the file's, which of the kernel's cache and the share's
+    // server held it (containers.rs's DAX test, CI's windows-2022).
+    let asked = size_asked(path)?;
+    let clocks = [
+        "clocksource/clocksource0/current_clocksource",
+        "clockevents/clockevent0/current_device",
+    ]
+    .map(|at| {
+        std::fs::read_to_string(format!("/sys/devices/system/{at}"))
+            .map_or_else(|e| e.to_string(), |s| s.trim().to_string())
+    });
+    let _ = writeln!(
+        io::stderr(),
+        "map2m {path} asked afresh {asked}; slept {} us of CLOCK_MONOTONIC, {} clock ticks of jiffies at {} a second; clocksource {}, clockevent {}",
+        slept.0.as_micros(),
+        slept.1,
+        // SAFETY: sysconf(3) reads a constant.
+        unsafe { libc::sysconf(libc::_SC_CLK_TCK) },
+        clocks[0],
+        clocks[1]
+    );
     drop(std::fs::File::open(path)?);
     let _ = read_all();
     Ok(size)
+}
+
+/// The kernel's jiffies as clock ticks since boot, as times(2) gives them (kernel/sys.c,
+/// `jiffies_64_to_clock_t`): what a FUSE attribute's time is counted in.
+fn clock_ticks() -> u64 {
+    let mut t = libc::tms {
+        tms_utime: 0,
+        tms_stime: 0,
+        tms_cutime: 0,
+        tms_cstime: 0,
+    };
+    // SAFETY: times(2) fills a tms this frame owns.
+    let ticks = unsafe { libc::times(&mut t) };
+    u64::try_from(ticks).unwrap_or(0)
+}
+
+/// `path`'s size as its file system says it now (statx(2), AT_STATX_FORCE_SYNC): a FUSE
+/// file's asked of its server whatever its attributes' time (fs/fuse/dir.c,
+/// fuse_update_get_attr).
+fn size_asked(path: &str) -> io::Result<u64> {
+    // include/uapi/linux/stat.h: STATX_SIZE, AT_STATX_FORCE_SYNC, and stx_size struct
+    // statx's sixth word.
+    const STATX_SIZE: libc::c_uint = 0x200;
+    const AT_STATX_FORCE_SYNC: libc::c_int = 0x2000;
+    let c = std::ffi::CString::new(path).map_err(io::Error::other)?;
+    let mut st = [0u64; 32];
+    // SAFETY: statx(2) of a NUL-terminated path into a buffer of struct statx's size.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            AT_STATX_FORCE_SYNC,
+            STATX_SIZE,
+            st.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(st[5])
 }
 
 /// `file`'s whole pages mapped shared, `prot` their access: where, and how many bytes,
@@ -3486,11 +3555,11 @@ fn orphan() -> i32 {
 /// Leaves a child holding `mib` MiB, its output closed, and exits once the child holds
 /// them: the run's end kills the child after its command and output have ended, and the
 /// child's end takes freeing them, for a record of processes to wait for (D123).
-/// Spins `threads` threads for `ms` milliseconds each (D191), first, with `escape`,
-/// leaving the run's cgroup for its microVM's root, as a workload root of its own guest
-/// may with `--privileged --cgroupns host`: `/sys/fs/cgroup` is then the whole tree,
-/// writable, and it writes itself into the root's `cgroup.procs`, out of the run's cpuset.
-/// Says the cgroup it spins in (`cgroup PATH`), then `burned`.
+/// Spins `threads` threads at once, `ms` milliseconds past the last one asked for (D191),
+/// first, with `escape`, leaving the run's cgroup for its microVM's root, as a workload root
+/// of its own guest may with `--privileged --cgroupns host`: `/sys/fs/cgroup` is then the
+/// whole tree, writable, and it writes itself into the root's `cgroup.procs`, out of the
+/// run's cpuset. Says the cgroup it spins in (`cgroup PATH`), then `burned`.
 fn burn(threads: usize, ms: u64, escape: bool) -> i32 {
     if escape && let Err(e) = std::fs::write("/sys/fs/cgroup/cgroup.procs", "0") {
         let _ = writeln!(io::stdout(), "escape: cgroup.procs: {e}");
@@ -3498,22 +3567,36 @@ fn burn(threads: usize, ms: u64, escape: bool) -> i32 {
     }
     let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
     let _ = writeln!(io::stdout(), "cgroup {}", cgroup.trim());
-    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
-    let spinning: Vec<_> = (0..threads)
-        .filter_map(|_| {
-            std::thread::Builder::new()
-                .spawn(move || {
-                    while std::time::Instant::now() < until {
-                        std::hint::spin_loop();
-                    }
-                })
-                .ok()
-        })
-        .collect();
-    let spun = spinning.len();
-    for t in spinning {
-        let _ = t.join();
-    }
+    // Their end, set once every thread has been asked for: each spins from its start to it,
+    // so that the threads asked for spin at once however slowly a starved guest makes them,
+    // as a pids limit's test needs them to. With the end fixed before them, CI's windows-2022
+    // at beb04a58 (41311980102) made all 8 under a limit of 4: threads made past that end
+    // end at once, freeing their places for the next.
+    let start = std::time::Instant::now();
+    let micros = || u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let end = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let spun = std::thread::scope(|s| {
+        let spinning: Vec<_> = (0..threads)
+            .filter_map(|_| {
+                std::thread::Builder::new()
+                    .spawn_scoped(s, || {
+                        while micros() < end.load(std::sync::atomic::Ordering::Acquire) {
+                            std::hint::spin_loop();
+                        }
+                    })
+                    .ok()
+            })
+            .collect();
+        end.store(
+            micros().saturating_add(ms.saturating_mul(1000)),
+            std::sync::atomic::Ordering::Release,
+        );
+        let spun = spinning.len();
+        for t in spinning {
+            let _ = t.join();
+        }
+        spun
+    });
     if spun < threads {
         let _ = writeln!(io::stdout(), "burn: {spun} of {threads} threads");
         return 1;

@@ -21,8 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, registry, run_shards_env, served,
-    served_counting, sha256_digest, test_index,
+    Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, noise, registry, run_shards_env,
+    served, served_counting, sha256_digest, test_index,
 };
 #[cfg(unix)]
 use common::{shards, shards_vm};
@@ -32,6 +32,37 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     shards_in_within(home, args, TIMEOUT)
+}
+
+/// Stops run `name` of `home`, as a test that needs it stopped does. A stop that hears no
+/// end shows what it said, its VM process's stacks and its daemon's
+/// ([`common::stacks_of`]), and how long its VM process outlived the stop, looked for every
+/// 100 ms for a minute: a VM process that ends late from one that never does. Windows CI
+/// gave up on stops as gigabytes.rs's an_image_of_gigabytes_boots ran beside them (9fdbed51's exec test on
+/// windows-2025, the cp test on windows-2022 in 41277401058), their VM processes running
+/// on 2 s after their kill.
+fn stop_run(home: &Path, name: &str) {
+    let vm = shards_in(home, &["inspect", "-f", "{{.State.Pid}}", name]);
+    let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
+    let stopped = shards_in(home, &["stop", name]);
+    if stopped.status == Some(0) {
+        return;
+    }
+    let gave_up = Instant::now();
+    let stacks = common::stacks_of(&[("its VM process", vm)], Some(home));
+    let outlived = (vm != 0).then(|| {
+        while gave_up.elapsed() < Duration::from_secs(60) {
+            if !common::alive(i32::try_from(vm).unwrap_or(0)) {
+                return format!("had ended {:?} after the stop gave up", gave_up.elapsed());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        "ran on a minute after the stop gave up".to_string()
+    });
+    panic!(
+        "{stopped}{stacks}\n--- its VM process {vm}: {}",
+        outlived.unwrap_or_else(|| "not found".into())
+    );
 }
 
 /// [`shards_in`] with a timeout of its own, for a run whose work is heavier than a start:
@@ -818,7 +849,7 @@ fn a_joiner_under_init_has_a_reaper_of_its_own() {
     let top = shards(&["top", "joiner", "-o", "pid,args"]);
     assert_eq!(top.stdout.lines().count(), 3, "{top}");
     let stopping = Instant::now();
-    assert_eq!(shards(&["stop", "joiner"]).status, Some(0));
+    stop_run(&home, "joiner");
     assert!(
         stopping.elapsed() < Duration::from_secs(5),
         "{:?}",
@@ -1992,11 +2023,27 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     }
     std::fs::write(dir.join("mapped-go"), b"").unwrap();
     let mapped = mapper.join().unwrap();
-    assert_eq!(
-        mapped.stdout,
-        format!("map2m /v/mapped {}\n", (9 << 20) + 1),
-        "{mapped}"
-    );
+    // Where the guest saw the size it had before, what the host holds of the file then, the
+    // size the guest's file system asked of the share's server afresh as it looked (its
+    // stderr), and the byte past that size read again two seconds on, opened afresh: three
+    // times on CI's windows-2022 (793abaeb, 1415ad8f, d3d996b7) the guest saw 9 MiB, and at
+    // d3d996b7 read the new byte 2 s on.
+    if mapped.stdout != format!("map2m /v/mapped {}\n", (9 << 20) + 1) {
+        let host = std::fs::metadata(dir.join("mapped")).map(|m| m.len());
+        std::thread::sleep(Duration::from_secs(2));
+        let again = shards(&[
+            "exec",
+            "dax2m",
+            "/bin/testguest",
+            "fs",
+            &format!("peek:/v/mapped:{}", 9 << 20),
+        ]);
+        panic!(
+            "the guest saw {:?} ({}): its host holds {host:?} bytes, and the byte at 9 MiB read 2 s on: {again}",
+            mapped.stdout.trim(),
+            mapped.stderr.trim()
+        );
+    }
     let log = shards(&["exec", "dax2m", "/bin/testguest", "fs", "kmsg:fs/dax.c"]);
     assert_eq!(log.status, Some(0), "{log}");
     assert!(log.stdout.ends_with("kmsg fs/dax.c 0\n"), "{log}");
@@ -2673,8 +2720,13 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     // microVMs give back what they hold cold too, and where it took them first the microVM
     // was within its budget as it was set, with nothing to give back (CI 40715919365: 220
     // MiB given back at its host's pressure, then 190 MiB of room): the budget is let go of
-    // and the files read again, a few times at most. Short of it with nothing given back
-    // is no such race.
+    // and the files read again, a few times at most. Where that give-back came between the
+    // word that counted it and its budget, the budget fell short with nothing left to give
+    // back, the pages its guest freed not yet back on its host: its guest reports free pages
+    // each 2 s (Linux 6.18 mm/page_reporting.c, PAGE_REPORTING_DELAY), and its daemon tells
+    // a short microVM its room again each window (CI 41292358322: 513 MiB given back at its
+    // host's pressure, then short by 256 with none to give). Short of it with nothing given
+    // back, its host having taken none first, is no such race.
     let mut tries = 0;
     let gave = loop {
         read(files.get(..512).unwrap());
@@ -2692,10 +2744,24 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             std::thread::sleep(Duration::from_millis(50));
             read(files.get(..512).unwrap());
         }
-        let before = said().len();
+        let counting = said().len();
         set(&(current() + (1 << 30)).to_string());
-        let counted = first(before, &["held within its budget", "budget is short by"]);
+        let counted = first(counting, &["held within its budget", "budget is short by"]);
         let held = mib_after(&counted, "MiB, holds ");
+        // What its guest's kernel counts of the read as its budget comes, said if nothing is
+        // given back: a give-back takes inactive file pages alone, and CI's x86_64 Linux at
+        // 05e9cc57 (41273348014) gave back none, short by 42 MiB, its daemon having asked no
+        // give-back at its host's word, as its slice went from 1025 MiB counted to 813.
+        let counted = shards(&[
+            "exec",
+            "budget",
+            "/bin/testguest",
+            "meminfo",
+            "MemFree",
+            "Cached",
+            "Active(file)",
+            "Inactive(file)",
+        ]);
         let before = said().len();
         set(&(held.saturating_sub(256) << 20).to_string());
         let word = first(before, &["held within its budget", "budget is short by"]);
@@ -2703,15 +2769,52 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             break word;
         }
         tries += 1;
+        let host_took = said().get(counting..).unwrap_or_default().lines().any(|l| {
+            l.contains("the host is short of memory: its microVMs gave back ")
+                && mib_after(l, "gave back ") > 0
+        });
         assert!(
-            tries < 5 && word.contains("held within its budget"),
-            "nothing given back said, try {tries}: {word}\n{}",
+            tries < 5 && (word.contains("held within its budget") || host_took),
+            "nothing given back said, try {tries}: {word}\nits guest's kernel counting as its budget came:\n{}\n{}",
+            counted.stdout,
             said()
         );
         let unset = said().len();
         set("infinity");
         first(unset, &["held to no budget"]);
     };
+    // Short of its budget still past all it held cold, its host sleeps each page its guest
+    // touches afresh (memory.high, no swap): where its host's own pressure had it give
+    // back first, a quarter GiB short of what it then held was short of what it holds with
+    // nothing to give back, and its read of a GiB ran past a minute, 26 s its first file
+    // (CI 41004323062, 40961442989). Its budget is raised to give it room first, and read
+    // once the daemon's last word of it is no shortage: it says a budget has room again
+    // once, which its microVM giving back on past its answer may have had it say already.
+    if gave.contains("budget is short by") {
+        let holds = mib_after(&gave, "MiB, holds ");
+        set(&((holds + 128) << 20).to_string());
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let log = said();
+            let words = [
+                "held within its budget",
+                "budget is short by",
+                "budget has room again",
+            ];
+            let last = log
+                .lines()
+                .rfind(|l| words.iter().any(|w| l.contains(w)))
+                .unwrap_or_default();
+            if !last.contains("budget is short by") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "short still, its budget raised:\n{log}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     read(&files);
     // Held within the room its budget leaves, or, short of it, within the least room a run
     // goes on in: its host's taking back its template's pages as the budget was set counts
@@ -2722,8 +2825,12 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         said()
     );
     // What it asked to unplug of the memory it had plugged to hold them, said with what it
-    // gave back of its files.
-    let _said = mib_after(&gave, "asking to unplug ");
+    // gave back of its files, where its give-back answered; where none came in time, what
+    // its host holds less of it, which the word then says in its place (PM M416): CI
+    // 41255435995's x86_64 Linux said 213 MiB, with no answer.
+    if !gave.contains("with no answer") {
+        let _said = mib_after(&gave, "asking to unplug ");
+    }
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
@@ -3438,6 +3545,20 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         "{idle} bytes held idle, {} after its read",
         held()
     );
+    // What its guest's kernel counts of the read as the word comes, said if nothing is
+    // given back: a give-back takes inactive file pages alone, and twice in CI's x86_64
+    // Linux runs (1cdaef68's musl, 54f7c0fb's gnu) one gave back none of them, asking only
+    // to unplug 896 MiB, with no count of where the read was.
+    let counted = shards(&[
+        "exec",
+        "prov",
+        "/bin/testguest",
+        "meminfo",
+        "MemFree",
+        "Cached",
+        "Active(file)",
+        "Inactive(file)",
+    ]);
     let before = held();
     let word = Instant::now();
     told.say();
@@ -3453,7 +3574,12 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         assert!(Instant::now() < deadline, "nothing given back said:\n{}", said());
         std::thread::sleep(Duration::from_millis(50));
     };
-    assert!(gave > 0, "nothing given back:\n{}", said());
+    assert!(
+        gave > 0,
+        "nothing given back, its guest's kernel counting as the word came:\n{}\n{}",
+        counted.stdout,
+        said()
+    );
     // Its VM process holds that much less, or half of it, once its guest has given it back:
     // what it reported free, and what its device unplugs as it was asked to, after the
     // give-back's answer (D148, D151).
@@ -3734,7 +3860,7 @@ fn top_lists_a_microvms_processes() {
     let paused = shards(&["top", "listed"]);
     assert!(paused.stderr.contains("is paused"), "{paused}");
     assert_eq!(shards(&["unpause", "listed"]).status, Some(0));
-    assert_eq!(shards(&["stop", "listed"]).status, Some(0));
+    stop_run(&home, "listed");
     exit(&mut sleeper);
     let ended = shards(&["top", "listed"]);
     assert!(ended.stderr.ends_with("is not running\n"), "{ended}");
@@ -3775,7 +3901,7 @@ fn diff_shows_what_a_microvm_changed() {
         ),
         "{diff}"
     );
-    assert_eq!(shards(&["stop", "changed"]).status, Some(0));
+    stop_run(&home, "changed");
     exit(&mut sleeper);
     // Stopped, its changes are still there to show (visit.rs).
     let ended = shards(&["diff", "changed"]);
@@ -3991,7 +4117,7 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
         "{listed}"
     );
     assert_eq!(tar.len() % 512, 0);
-    assert_eq!(shards(&["stop", "exported"]).status, Some(0));
+    stop_run(&home, "exported");
     exit(&mut sleeper);
     // Stopped, its files are still there to export (visit.rs).
     let ended = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
@@ -4082,7 +4208,7 @@ fn cp_copies_files_into_and_out_of_a_microvm() {
         no_dir.stderr.starts_with("invalid output path: directory "),
         "{no_dir}"
     );
-    assert_eq!(shards(&["stop", "copier"]).status, Some(0));
+    stop_run(&home, "copier");
     exit(&mut sleeper);
     // Stopped, its files are still there to copy (visit.rs).
     let ended = shards(&["cp", "copier:/in", home.join("cp-stopped").to_str().unwrap()]);
@@ -6824,7 +6950,7 @@ fn logs_keep_what_a_container_wrote() {
         .spawn()
         .unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(shards_in(&home, &["stop", "follow"]).status, Some(0));
+    stop_run(&home, "follow");
     assert_eq!(exit(&mut sleeper), Some(128 + 15));
     let followed = follower.wait_with_output().unwrap();
     assert_eq!(followed.status.code(), Some(0));
@@ -9043,20 +9169,7 @@ fn exec_runs_commands_in_a_running_microvm() {
         1,
         "invalid detach keys (ctrl-P): Unknown character: 'ctrl-P'\n",
     );
-    // Its VM process, whose stacks a stop that hears no end shows with its daemon's.
-    let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", "ex"]);
-    let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
-    let stopped = shards_in(&home, &["stop", "ex"]);
-    assert_eq!(
-        stopped.status,
-        Some(0),
-        "{stopped}{}",
-        if stopped.status == Some(0) {
-            String::new()
-        } else {
-            common::stacks_of(&[("its VM process", vm)], Some(&home))
-        }
-    );
+    stop_run(&home, "ex");
     let _ = exit(&mut run);
     refused(
         &["ex", "/bin/testguest", "report"],
@@ -9538,7 +9651,7 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
         made.iter().any(|(_, args)| args.contains("shards-vm")),
         "the spawner's children: {made:?}"
     );
-    assert_eq!(shards_in(&home, &["stop", "asleep"]).status, Some(0));
+    stop_run(&home, "asleep");
     exit(&mut asleep);
 }
 
@@ -12887,7 +13000,7 @@ fn attach_joins_a_running_microvm() {
         assert_eq!(line, "again\n");
     }
     // Both end with the command, with its status: SIGTERM's.
-    assert_eq!(shards(&["stop", "echo"]).status, Some(0));
+    stop_run(&home, "echo");
     assert_eq!(exit(&mut first), Some(143));
     assert_eq!(exit(&mut second), Some(143));
     drop(second_in);
@@ -13699,54 +13812,240 @@ fn cdi_devices_are_given_to_microvms() {
     let _ = provider.wait();
 }
 
-/// `mib` MiB of xorshift64's bytes at `path`, which no file system keeps as holes or shares.
-fn noise(path: &Path, mib: usize) {
-    use std::io::Write as _;
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
-    let mut x = 0x9e37_79b9_7f4a_7c15u64;
-    let mut block = vec![0u8; 1 << 20];
-    for _ in 0..mib {
-        for word in block.as_chunks_mut::<8>().0 {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            *word = x.to_le_bytes();
-        }
-        file.write_all(&block).unwrap();
-    }
-    file.flush().unwrap();
-}
-
-/// An image of gigabytes boots as a small one does. Its root is a pmem region, which
-/// libnvdimm probes asynchronously, longest for the largest; init waits for its node
-/// (init's pmem.rs), where a 2.1 GB image's runs found none and failed every time.
+/// PM M419: stops beside a gigabyte build. Windows CI gave up on stops whose VM processes
+/// ran on 2 s after their kill as an_image_of_gigabytes_boots (gigabytes.rs, then this
+/// binary's) ran beside them: 9fdbed51's exec test on windows-2025, the cp test on
+/// windows-2022 in 41277401058. Four threads each start a run of `sleep` and stop it, `M419_ROUNDS` times each (10) with nothing beside them, then
+/// again for as long as that test's build goes on beside them: its 2 GiB file written,
+/// built into an image and read by a run; and eight runs idle from before the build are
+/// stopped together 5 s into that read. Each way's stops told as n, p50, p90, p99 and max
+/// (nearest rank), and each that heard no end with what it said, its VM process's CPU time
+/// and resident memory as it gave up, and how long the process outlived it.
 #[test]
-fn an_image_of_gigabytes_boots() {
-    let Some((home, image)) = home("containers-big") else {
+#[ignore = "a measurement: docs/research/measurements/stop-under-io/run.sh"]
+fn stops_beside_a_gigabyte_build() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some((home, image)) = home("containers-m419") else {
         return;
     };
-    let ctx = home.join("big");
-    std::fs::create_dir(&ctx).unwrap();
-    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
-    noise(&ctx.join("big"), 2048);
-    // Its build copies 2 GiB through the builder: past TIMEOUT on CI's x86_64 runners,
-    // where it stays a guard against a hang.
-    let (kernel, init) = (kernel(), guest_init());
-    let env: [(&str, &OsStr); 3] = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_KERNEL", kernel.as_os_str()),
-        ("SHARDS_INIT", init.as_os_str()),
-    ];
-    let built = run_shards_env(
-        &[],
-        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-        &env,
-        Duration::from_secs(600),
-    );
-    assert_eq!(built.status, Some(0), "{built}");
-    std::fs::remove_file(ctx.join("big")).unwrap();
-    let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
-    assert_eq!(ran.status, Some(0), "{ran}");
+    let rounds: usize = std::env::var("M419_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    // Run `name`'s stop, `run` its client: its time in ms, and where it heard no end, what
+    // it said, its VM process's CPU time and resident memory as it gave up, and how long the
+    // process outlived it.
+    let stop_one = |name: &str, mut run: Child| -> (f64, Option<String>) {
+        let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", name]);
+        let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
+        let t0 = Instant::now();
+        let stopped = shards_in(&home, &["stop", name]);
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        let mut lost = None;
+        if stopped.status != Some(0) {
+            let usage = shards_vmm::platform::process_usage(vm).map_or_else(
+                |e| format!("unread ({e})"),
+                |u| {
+                    format!(
+                        "{:.2} s of CPU, {} MiB resident",
+                        u.cpu_ns as f64 / 1e9,
+                        u.resident >> 20
+                    )
+                },
+            );
+            let gave_up = Instant::now();
+            let mut outlived = "ran on a minute after".to_string();
+            while gave_up.elapsed() < Duration::from_secs(60) {
+                if !common::alive(i32::try_from(vm).unwrap_or(0)) {
+                    outlived = format!("had ended {:?} after", gave_up.elapsed());
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            lost = Some(format!(
+                "{name}: its stop {ms:.0} ms ({}); its VM process {vm} as it gave up: {usage}; {outlived}",
+                stopped.stderr.trim()
+            ));
+            let _ = run.kill();
+        }
+        let _ = exit(&mut run);
+        let _ = shards_in(&home, &["rm", "-f", name]);
+        (ms, lost)
+    };
+    // Four threads each starting runs of `sleep` and stopping them while `more` says so of
+    // their next: their stops' times, and what each that heard no end found.
+    let stops = |more: &(dyn Fn(usize) -> bool + Sync)| -> (Vec<f64>, Vec<String>) {
+        std::thread::scope(|s| {
+            let threads: Vec<_> = (0..4)
+                .map(|t| {
+                    let (stop_one, home, image) = (&stop_one, &home, &image);
+                    s.spawn(move || {
+                        let (mut took, mut lost) = (Vec::new(), Vec::new());
+                        let mut i = 0;
+                        while more(i) {
+                            let name = format!("m419-{t}-{i}");
+                            let run = start(home, image, &["--name", &name], &["sleep"]);
+                            let (ms, gave_up) = stop_one(&name, run);
+                            took.push(ms);
+                            lost.extend(gave_up);
+                            i += 1;
+                        }
+                        (took, lost)
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .fold((Vec::new(), Vec::new()), |(mut took, mut lost), t| {
+                    let (t_took, t_lost) = t.join().unwrap();
+                    took.extend(t_took);
+                    lost.extend(t_lost);
+                    (took, lost)
+                })
+        })
+    };
+    let alone = stops(&|i| i < rounds);
+    // Eight runs idle from before the load, as the suite's runs are beside it, stopped
+    // together 5 s into the run that reads the build's image: where the three stops on
+    // Windows CI gave up, each some 6 s before an_image_of_gigabytes_boots ended.
+    let idle: Vec<(String, Child)> = (0..8)
+        .map(|i| {
+            let name = format!("m419-idle-{i}");
+            let run = start(&home, &image, &["--name", &name], &["sleep"]);
+            (name, run)
+        })
+        .collect();
+    // Eight more whose VM processes are killed outright there, as a stop's last step kills
+    // one (LAST_WAIT): how long each takes to end once killed.
+    let killed: Vec<(String, Child, u32)> = (0..8)
+        .map(|i| {
+            let name = format!("m419-kill-{i}");
+            let run = start(&home, &image, &["--name", &name], &["sleep"]);
+            let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", &name]);
+            (name, run, vm.stdout.trim().parse().unwrap_or(0))
+        })
+        .collect();
+    let (done, reading) = (AtomicBool::new(false), AtomicBool::new(false));
+    let ends = std::sync::Mutex::new(Vec::new());
+    let (beside, as_read, load) = std::thread::scope(|s| {
+        let load = s.spawn(|| {
+            let ctx = home.join("big");
+            std::fs::create_dir(&ctx).unwrap();
+            std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
+            let t0 = Instant::now();
+            noise(&ctx.join("big"), 2048);
+            let (kernel, init) = (kernel(), guest_init());
+            let env: [(&str, &OsStr); 3] = [
+                ("SHARDS_HOME", home.as_os_str()),
+                ("SHARDS_KERNEL", kernel.as_os_str()),
+                ("SHARDS_INIT", init.as_os_str()),
+            ];
+            let built = run_shards_env(
+                &[],
+                &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
+                &env,
+                Duration::from_secs(600),
+            );
+            reading.store(true, Ordering::SeqCst);
+            let ran = run_shards_env(
+                &[],
+                &["run", "--pull", "never", "--rm", "big:1", "fs", "open:r:/big"],
+                &env,
+                Duration::from_secs(60),
+            );
+            done.store(true, Ordering::SeqCst);
+            format!(
+                "its build {:?}, its run {:?}, in {:?}",
+                built.status,
+                ran.status,
+                t0.elapsed()
+            )
+        });
+        let as_read = s.spawn(|| {
+            while !reading.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            std::thread::sleep(Duration::from_secs(5));
+            let t0 = Instant::now();
+            for &(_, _, vm) in &killed {
+                common::kill_now(i32::try_from(vm).unwrap_or(0));
+            }
+            let mut ended: Vec<f64> = Vec::new();
+            for &(_, _, vm) in &killed {
+                while common::alive(i32::try_from(vm).unwrap_or(0)) && t0.elapsed() < Duration::from_secs(60)
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                ended.push(t0.elapsed().as_secs_f64() * 1e3);
+            }
+            for (name, mut run, _) in killed {
+                let _ = exit(&mut run);
+                let _ = shards_in(&home, &["rm", "-f", &name]);
+            }
+            *ends.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ended;
+            std::thread::scope(|s| {
+                let stopping: Vec<_> = idle
+                    .into_iter()
+                    .map(|(name, run)| {
+                        let stop_one = &stop_one;
+                        s.spawn(move || stop_one(&name, run))
+                    })
+                    .collect();
+                stopping
+                    .into_iter()
+                    .fold((Vec::new(), Vec::new()), |(mut took, mut lost), t| {
+                        let (ms, gave_up) = t.join().unwrap();
+                        took.push(ms);
+                        lost.extend(gave_up);
+                        (took, lost)
+                    })
+            })
+        });
+        let beside = stops(&|_| !done.load(Ordering::SeqCst));
+        (beside, as_read.join().unwrap(), load.join().unwrap())
+    });
+    let quantile = |sorted: &[f64], q: f64| {
+        let rank = ((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
+        sorted[rank - 1]
+    };
+    eprintln!("M419 the load: {load}");
+    let mut ends = ends
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ends.sort_by(f64::total_cmp);
+    if !ends.is_empty() {
+        eprintln!(
+            "M419 VM processes killed as its image is read, each's end after the kill (the last in turn): n {} p50 {:.1} p90 {:.1} p99 {:.1} max {:.1} ms",
+            ends.len(),
+            quantile(&ends, 0.5),
+            quantile(&ends, 0.9),
+            quantile(&ends, 0.99),
+            quantile(&ends, 1.0)
+        );
+    }
+    for (label, (mut took, lost)) in [
+        ("alone", alone),
+        ("beside the build", beside),
+        ("idle, stopped as its image is read", as_read),
+    ] {
+        took.sort_by(f64::total_cmp);
+        if took.is_empty() {
+            eprintln!("M419 {label}: no stops");
+            continue;
+        }
+        eprintln!(
+            "M419 {label}: stops n {} p50 {:.1} p90 {:.1} p99 {:.1} max {:.1} ms, {} of them heard no end",
+            took.len(),
+            quantile(&took, 0.5),
+            quantile(&took, 0.9),
+            quantile(&took, 0.99),
+            quantile(&took, 1.0),
+            lost.len()
+        );
+        for l in lost {
+            eprintln!("M419 {label}: {l}");
+        }
+    }
 }
 
 /// What a run's workload frees goes back to the host (D151): half a gigabyte touched, then

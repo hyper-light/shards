@@ -14,8 +14,8 @@ use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FlushViewOfFile, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
     MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
-    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, UnmapViewOfFile2,
-    VirtualAlloc, VirtualAlloc2, VirtualFree, VirtualProtect,
+    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, UnmapViewOfFile,
+    UnmapViewOfFile2, VirtualAlloc, VirtualAlloc2, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -1090,19 +1090,12 @@ pub unsafe fn all_untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::R
     Ok(None)
 }
 
-/// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): asked
-/// only for a working set's written pages, which a restore on Windows does not record yet
-/// (vm::WORKING_SETS, D196).
-pub fn populate_writable(_ptr: *mut u8, _len: usize) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "pages are not faulted in ahead on Windows: its restores record no working set yet",
-    ))
-}
-
 /// The host's fault-around held off over ranges (unix.rs `FaultAroundOff`), so that a
-/// working set recorded or mapped ahead holds what the guest touched alone: none on
-/// Windows, whose restores record no working set yet (vm::WORKING_SETS, D196).
+/// working set recorded or mapped ahead holds what the guest touched alone: none to hold on
+/// Windows, where a fault maps the page it touches alone, whether its file's pages are in
+/// the cache or read from disk with those around it, which go to the cache alone
+/// (windows_process.rs `mapped_pages_are_the_working_sets`,
+/// `a_fault_from_disk_maps_the_page_it_touches_alone`).
 #[derive(Debug)]
 pub struct FaultAroundOff;
 
@@ -1172,6 +1165,58 @@ pub fn sparse(file: &File) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// A view of a file held mapped, read-only ([`keep_cached`]), until it drops.
+#[derive(Debug)]
+pub struct Cached {
+    view: *mut core::ffi::c_void,
+}
+
+// SAFETY: the view is the process's, mapped once and unmapped once, by whichever thread
+// drops it; nothing reads through it.
+unsafe impl Send for Cached {}
+// SAFETY: as above: a shared `Cached` offers nothing.
+unsafe impl Sync for Cached {}
+
+impl Drop for Cached {
+    fn drop(&mut self) {
+        // SAFETY: the view `keep_cached` mapped, unmapped here alone.
+        unsafe { UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: self.view }) };
+    }
+}
+
+/// Keeps the pages processes map of `file` in the host's cache once they end: a read-only
+/// view of the whole of it, held mapped and never read. Windows drops a sparse file's pages
+/// from its cache once no process maps them, whoever holds the file open, where a dense
+/// file's stay: a restore's memory file is sparse ([`sparse`]), and each restore read its
+/// working set back from the disk. 1,000 random pages of a sparse file's data took 200 to
+/// 573 ms each time, and 1.6 to 2.1 with a view of it held (PM M421).
+pub fn keep_cached(file: &File) -> io::Result<Cached> {
+    use windows_sys::Win32::System::Memory::{FILE_MAP_READ, MapViewOfFile};
+    // SAFETY: a read-only section of the whole file, closed once its view holds it.
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            PAGE_READONLY,
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if section.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh view of the whole section, which only the `Cached` returned holds.
+    let view = unsafe { MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0) };
+    let failed = view.Value.is_null().then(io::Error::last_os_error);
+    // SAFETY: the section handle, which the view (if any) keeps alive by itself.
+    unsafe { CloseHandle(section) };
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(Cached { view: view.Value }),
+    }
 }
 
 /// Flushes file data and metadata to stable storage.
@@ -1563,5 +1608,47 @@ pub mod pipe_stream {
         let (server, mut vm) = pair(true);
         drop(server);
         assert!(vm.write_all(b"anyone").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cached {
+    use std::io::Write as _;
+
+    use windows_sys::Win32::System::Memory::{
+        MEM_FREE, MEM_MAPPED, MEMORY_BASIC_INFORMATION, PAGE_READONLY, VirtualQuery,
+    };
+
+    /// The region of this process's memory at `at`.
+    fn region(at: *const core::ffi::c_void) -> MEMORY_BASIC_INFORMATION {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: VirtualQuery writes at most the size given into `info`.
+        let got = unsafe { VirtualQuery(at, &raw mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) };
+        assert_ne!(got, 0, "{}", std::io::Error::last_os_error());
+        info
+    }
+
+    /// A file kept cached is a view of the whole of it, read-only, mapped until it drops: a
+    /// sparse file opened only for reading, as a held generation's memory is (PM M421).
+    #[test]
+    fn a_file_kept_cached_is_a_view_of_all_of_it_until_it_drops() {
+        let page = super::page_size().unwrap();
+        let dir = shards_testdir::TempDir::new("cached").unwrap();
+        let path = dir.join("memory");
+        let mut file = std::fs::File::create_new(&path).unwrap();
+        super::sparse(&file).unwrap();
+        file.write_all(&vec![7u8; page]).unwrap();
+        file.set_len(4 * page as u64).unwrap();
+        drop(file);
+        let file = std::fs::File::open(&path).unwrap();
+        let cached = super::keep_cached(&file).unwrap();
+        let at = cached.view.cast_const();
+        let info = region(at);
+        assert_eq!(
+            (info.Type, info.Protect, info.RegionSize),
+            (MEM_MAPPED, PAGE_READONLY, 4 * page)
+        );
+        drop(cached);
+        assert_eq!(region(at).State, MEM_FREE, "the view goes as it drops");
     }
 }

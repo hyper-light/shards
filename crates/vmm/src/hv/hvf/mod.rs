@@ -705,7 +705,10 @@ impl Vcpu {
             } => self.power.cpu_on(target, entry, context),
             psci::Call::AffinityInfo { target } => self.power.affinity_info(target),
             psci::Call::SystemOff => return Ok(Some(Exit::Shutdown)),
-            psci::Call::SystemReset => return Ok(Some(Exit::Reset)),
+            psci::Call::SystemReset => {
+                crate::warn!("the guest asked to be reset (PSCI SYSTEM_RESET)");
+                return Ok(Some(Exit::Reset));
+            }
         };
         self.sys.set_x(0, ret as u64)?;
         Ok(None)

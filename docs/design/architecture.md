@@ -882,7 +882,11 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   263,168 vnodes recycled 2,800 a second, a cold run after a build's worth of files had
   been looked at read its template's whole working set back from the disk a page at a time,
   and its guest its programs from its root filesystem: 7.9 to 11.0 s where a warm one took
-  0.2 to 0.6. Held, 0.46 to 0.96 s [PM M315].
+  0.2 to 0.6. Held, 0.46 to 0.96 s [PM M315]. On Windows a view of its memory is held
+  mapped too (`platform::keep_cached`): Windows drops a sparse file's pages from its cache
+  once no process maps them, held open or not, where a dense file's stay, and a memory file
+  is sparse; 1,000 pages of a sparse file's data took 200 to 573 ms each time, read from
+  the disk again, and 1.6 to 2.1 with a view of it held [PM M421].
 - **A run records the working set**: each guest page it touches until its command
   answers, or a while after the command starts, saved with the template as
   `working-set`. REAP found that restored copies of a serverless function's snapshot
@@ -4019,7 +4023,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3j)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3k)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -4108,10 +4112,10 @@ local administration is (../focal docs/cluster-admin.md).
   each source's metadata resolved there as a build there resolves it, its store and its
   network with the client's logins (`policy::Resolve`, whose requests and answers, image
   configs and attestation chains among them, have no encoding to cross yet).
-- From a Windows client, `shards copy vm` (refused) and Docker's CLI through a context:
-  shards serves neither on Windows itself yet, cp.rs's daemon passing descriptors and
-  the relay being the daemon's, which Windows runs none of.
 - Extended attributes in a build's copy beyond `security.capability`.
+- On a macOS machine, two names of a Linux client's context that differ in case alone:
+  APFS, case-insensitive as macOS formats it by default, keeps them as one file (part 3k
+  keeps them apart on Windows).
 - One connection for a context's commands, where each command, and each SSH agent
   connection a step makes, is a handshake of its own.
 - Credentials found only when the machine pulls. A run or create that may pull
@@ -4837,9 +4841,8 @@ where the machine sent the rest of the archive first.
 Where Docker's `ssh://` context starts `docker system dial-stdio` through a shell account
 for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
 each relayed connection opens a QUIC connection of its own, a handshake each, where one
-connection kept for the context, a stream each, would not (part 5 measures both); a Windows
-client, whose daemon serves no Engine API yet (D195; the parity plan's step 8), has no
-engine socket (Docker's `npipe://`).
+connection kept for the context, a stream each, would not (part 5 measures both). On
+Windows a context's engine is a named pipe (Docker's `npipe://`, part 3k).
 Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` through the
 socket; a microVM made through the context, listed there and not by the client's own engine;
 Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
@@ -4856,6 +4859,76 @@ on, the machine's or the client's; an enrolled key's join refused; the contexts 
 removed socket not bound again; the sockets kept as the daemon closes; the relays not hung
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
+
+**Part 3k, built: a Windows machine serves other machines' clients** (the platform parity
+audit's row 10). Since D195 a Windows host runs shards' daemon; its listener runs there now
+too, so that a laptop builds and runs on a Windows box with a GPU or 32 cores as on a Linux
+one. What serves a client there is the Unix machine's code, but where Windows has no
+descriptors to give, no pseudo-terminal and no file system of Linux's:
+- **A client's command gets its streams and grants as handles.** It is started through the
+  daemon's spawner with its stdio, its signals' pipe, a build's secrets, its SSH agents'
+  pipes and a `--cidfile`'s pipe each given by number (shards_ipc `spawn`, its grants pipe
+  named by `SHARDS_GIVEN`). The daemon's own `SHARDS_GIVEN`, which its environment passes to
+  its children, came first and was the one taken, so every such command found none of its
+  grants: a child's environment now holds its own alone. Its signals' pipe is past every
+  number given it (`signal_descriptor`), where a constant 4 was a build's second secret's.
+- **Its terminal is a pseudoconsole** (ConPTY), sized and resized as the client's terminal
+  is. One made with no flags draws its screen whole as it starts (a clear, home, and an
+  erased line a row), which, relayed, cleared the client's screen as each command started;
+  made with `PSEUDOCONSOLE_INHERIT_CURSOR`, it asks where its cursor is instead (`ESC[6n`)
+  and waits for an answer (CreatePseudoConsole's documentation), which the daemon gives it
+  at once, its last row's first column, and keeps from the client (`Shown`). A build's
+  progress follows a resize as docker/cli's MonitorTtySize follows one on Windows, its
+  terminal's size asked every quarter second (cli/command/container/tty.go).
+- **A build's context copy is a Linux tree on NTFS**, as D197's shares keep a guest's
+  files, as WSL keeps Linux's (crates/ntfs, `shards_archive::apply_layer_lx`): each name as
+  Linux names it, the characters no NTFS name holds escaped into the Private Use Area; a
+  mode, owner and device in WSL's `$LX` attributes; a symlink, FIFO or device WSL's reparse
+  point, which an unelevated process makes; each directory case-sensitive; an extended
+  attribute an EA of its own; each name opened relative to its directory's handle,
+  following no reparse point, so that no entry of a layer reaches past the copy, and one
+  beneath a symlink is refused, as no client's walk sends one. The copy is marked a Linux
+  tree, and the build's walk of it (shards-build's `host::Tree`), and the manifest the
+  client compares with, read it as fsutil reads a Linux host's: its names, modes, links,
+  devices, inodes and attributes the client's. A tree of the Windows host's own is read as
+  fsutil reads one there, though WSL kept some of its files' metadata, as Docker's builds
+  of it are. Kept as NTFS keeps its own files, a Linux or macOS client's context went to
+  its build with every file 0755, its symlinks only where the machine's user may make one,
+  and two names differing in case alone one file; and a time NTFS keeps to 100 ns, where
+  a Linux or macOS client's is to the nanosecond, is the client's where it is the client's
+  cut to 100 ns (`same_time`), as a copy whose times were never the client's went whole
+  again at each build.
+- **A build's output to a directory comes as its archive**: the client asks for a
+  `type=local` output as `type=tar` and unpacks the archive into its directory, so that the
+  output's files never land on the machine's disk, where NTFS would have kept their modes,
+  links and owners as its own (part 3f's frames, unchanged).
+- **An agent's directory is read as a build reads its context** (shards-build's walk, here
+  and there alike), so that an agent built through a context, of the client's files copied
+  to its machine, is the one the client builds of them: a Linux client's modes, symlinks and
+  hard links its own; and an agent built on Windows has fsutil's modes, 0755 and 0555
+  read-only, as a build of the same files has, where its files were 0644 and 0444, none of
+  its scripts executable, and std read none of a Linux tree's symlinks ("Unsupported reparse
+  point type", tests/context.rs's artifact test on windows-2025 at 2d53e206).
+- **And a Windows client** copies through a context (`copy vm`, driven here step by step as
+  on Unix, cli/cp.rs), and its daemon serves each context's engine at a named pipe, which
+  the file at the context's socket path names and `inspect context` gives as
+  `npipe:////./pipe/…`: a thread of each context's takes its clients and hands them to the
+  daemon, as WaitForMultipleObjects waits on 64 handles at most and a home joins as many
+  contexts as it is told.
+
+Tested in `tests/context.rs`, whole, on CI's windows-2022 and windows-2025, where the client
+and the machine are the runner's, a Windows client's own context its case (budget-e2e
+41273324343 at 7452404e, the copy a Linux tree: 19 of 19 on each, `SHARDS_REQUIRE_VMS=1`;
+before it, 41242328368 at ca024da3 and 41246900473 at 4c5fa52c), and on jupiter (Windows 11
+Pro 10.0.26200; 19 of 19 at 341450a4's Rust, its engine's part through Docker's 29.9.1
+client, the test built by windows-binaries.yml at jupiter's paths). A Linux client's tree on a
+Windows machine is tested by `crates/archive/tests/lx.rs` (a layer of modes, symlinks of
+0777 and 0755, a hard link, a FIFO, a device, case-distinct names and `a:b` applied and read
+back, its whiteouts, and what reaches past the tree refused: all 8 copies of 41273319640 on
+windows-2025), `synced::tests::a_linux_clients_tree_is_its_own_in_a_windows_copy` (the
+manifest and a build's load of such a copy the client's) and
+`agent::tests::an_agents_files_are_read_as_a_build_reads_its_context` (the binary's own
+tests on both runners, 41262337649 at 41c3560d).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -6542,6 +6615,149 @@ destinations the guest's, Linux's.
 `a_windows_hosts_binds_are_its_drives` the binds on Windows; containers.rs, compose.rs and
 engine.rs bind host directories on jupiter and CI's Windows runners (D197's slice 3).
 
+### D202. A GPU on Windows: Venus in the GPU's VM process, its driver reached from a desktop of its own (built)
+
+The parity plan's step 11, after D201: a run on an x86_64 Windows host is given its host's
+GPU as a Mac's and a Linux host's are (`--gpus`, a CDI device of the render node, a build
+step's `RUN --device`), Vulkan in its guest through Venus, rendered by the host's own
+driver. What D144 and D201 built stands: the device, the window after RAM, `--gpus`'s
+reading, the render node's mode, templates of their own (D150), and the `hyperv+gpu`
+kernel. What a Windows host makes otherwise:
+
+- **The renderer is the krunkit fork**, as on macOS, its Venus in the GPU's VM process:
+  virglrenderer 1.3.0's contexts are served by its render server, over Unix sockets it
+  forks or threads behind, which its Windows build does not have. scripts/gpu-libs builds
+  the fork with clang-cl and shards' patch (resources/gpu/venus-windows.patch): the POSIX
+  names its sources use are given the UCRT's, its ISO names where the UCRT deprecates the
+  POSIX ones; Vulkan's loader is opened from System32 at its first call, not linked, so
+  that a host without one is told so as a run asks for a GPU; and a blob is mapped by its
+  pointer, as on macOS.
+- **A blob's pages are the renderer's** (PM M383). WHP maps a driver's mapping of its
+  host-visible memory into a partition, AMD's twelve host-visible types every one; but the
+  driver frees that memory as the guest frees it, its blob or not, and the stage 2 follows
+  the host's view (M341), so a guest mapping a blob freed could reach what took its place.
+  Every allocation a guest may map is made of pages the renderer allocates and its device
+  imports (VK_EXT_external_memory_host), held by the memory and by its blob and freed by
+  the last of them; the device-local types, which no device imports host memory into
+  (M383: the host-visible types not device-local import, 0xaaaa), are shown the guest as
+  device-local alone, and the window is as long as the heaps of the types it may map. A
+  blob is mapped whole, its pages the renderer's committed, writable memory, and one said
+  to be larger than they are is refused.
+- **The window is the partition's own**: each blob mapped at its place by WHvMapGpaRange,
+  readable and writable, never executable, and unmapped as the guest lets it go, as
+  Hypervisor.framework's stage 2 maps macOS's; a map's p50 34.0 to 37.6 µs (M383).
+- **Confined as every VM process is, but for Win32k** (PM M385). The GPU's VM process
+  keeps its AppContainer of its own, its Job and every other mitigation (D141). A Windows
+  GPU driver is reached through Win32k: the Vulkan loader finds its drivers through gdi32's
+  D3DKMT calls and DXGI, and gdi32 and user32 initialize in no process whose Win32k calls
+  are disabled, nor in an AppContainer not granted the window station and desktop it runs
+  on, with or without the mitigation (a process connects to its window station and
+  desktop as it first calls user32 or gdi32: Microsoft's "Process Connection to a Window
+  Station"). So Win32k's calls are allowed it, and it is made on a window station and a
+  desktop of its own (`shards_ipc::Spawn::graphics`), granted to its AppContainer alone
+  besides their maker, where gdi32 and user32 initialize. There it sends no window message
+  to its user's desktop ("Window messages can be sent only between processes that are on
+  the same desktop", Microsoft's "Desktops"), as Chromium's sandbox puts its targets on a
+  desktop of their own for (chromium/src docs/design/sandbox.md, "The alternate desktop"),
+  and its clipboard and atom table are its window station's, not its user's ("A window
+  station contains a clipboard, an atom table, and one or more desktop objects",
+  Microsoft's "Window Stations"). Only a process that makes one loads user32, which makes
+  them; making them costs a GPU VM's start about 0.4 ms (p50; p99 1.1 ms, M385).
+- **Tested** (tests/gpu.rs on jupiter: AMD Ryzen AI Max+ 395 and its Radeon 8060S, AMD's
+  driver 25.20.32.06, Windows 11 10.0.26200): passes, 3 runs of 3 on the Windows daemon's
+  branch with this merged, 48 to 52 s each. A run given `--gpus all` finds
+  `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`; a build's steps given the render
+  node by a CDI device find it as root and as user 1000, as do a run given it by CDI name
+  and a run of user 1000; and the GPU's runs restore templates of their own (D150). The
+  renderer's own test passes there. The GPU's VM process is spawned so by the Windows
+  daemon's spawner (`shards_ipc`, the parity plan's step 2), and lands with it: tested on
+  step 2's branch with this one merged; and again on gpu-windows at e39a9218, with the
+  Windows daemon, its pools and working sets as they landed (196.6 s, the test built by
+  windows-binaries.yml at jupiter's paths, as kiln's guard there holds builds). CI's
+  Windows runners, which have no GPU, build, lint and test the renderer, and skip what
+  needs one.
+- **Vulkan programs** (PM M386): llama.cpp's matrix multiplications in a guest on
+  jupiter's Radeon 8060S get its CPU's results case for case, but for the 18 shapes of
+  llama.cpp's integer dot product path that RADV gives NaN on Linux too (M384), which with
+  it off match as well; TinyLlama's pp512 at 1,529 tokens/s (p50).
+- **Not yet:** an arm64 Windows host (WHP's arm64 backend is the parity plan's step 10),
+  Windows hosts of NVIDIA's and Intel's GPUs, none being here, and a GPU's VM process
+  started from a user's interactive session, measured in session 0 alone (M385).
+
+### D201. A GPU on Linux: Venus over its host's own Vulkan driver, in the GPU's VM process (built)
+
+The parity plan's step 11 (docs/audit/2026-10-27_platform-parity.md, row 6), after D144: a
+run on a Linux host is given its host's GPUs as a Mac's is given its own (`--gpus`, a CDI
+device of the render node, a build step's `RUN --device`), Vulkan in its guest through
+Venus, rendered by the host's own driver, NVIDIA's or Mesa's. What D144 built stands: the
+device (`devices::virtio::gpu`), the window after RAM, `--gpus`'s reading, the render
+node's mode, templates of their own (D150). What a Linux host makes otherwise:
+
+- **The renderer is virglrenderer 1.3.0** (scripts/gpu-libs, pinned by digest), not the
+  krunkit fork macOS renders with: its Venus is the upstream one guests' Mesa is written
+  against. Its Venus contexts are served by its render server alone (meson.build,
+  `with_render_server = with_venus`); the GPU's VM process runs the server as a thread of
+  its own, given one end of a socket pair as its client's connection, the renderer the
+  other (`get_server_fd`), and each context the server makes is a thread of it
+  (`render-server-worker=thread`): nothing is forked or exec'd, and what the server logs is
+  the VM process's (gpu/render_log.c, in syslog's place). Each context's fences are waited
+  for on a thread of its own and said from there (VIRGL_RENDERER_THREAD_SYNC and
+  ASYNC_FENCE_CB), as macOS's are.
+- **Vulkan is the host's**, its loader opened by its soname (libvulkan.so.1) as the
+  renderer starts: nothing of it is linked, a host without one is told so as a run asks for
+  a GPU, and the window's length is every GPU's host-visible heaps as Vulkan says them (on
+  the GPU desktop, NVIDIA's 100 GiB and RADV's besides).
+- **The GPU's VM process links glibc, dynamically**, where every other helper is static
+  musl (PM M281): a host's GPU driver is a library of its C library, which a static program
+  cannot load. build.rs builds it for the `-linux-gnu` targets where SHARDS_GPU_LIBS names
+  the renderer's libraries (`gpu_target`), and CI and releases build them there, as on
+  Apple silicon. A musl build carries none yet.
+- **A blob is held by its descriptor** (PM M381). Venus exports host-visible memory as a
+  dma-buf where the driver can, as both NVIDIA's and Mesa's can, and the renderer exports
+  each mappable blob as it is made and keeps the descriptor: a dma-buf maps at any address
+  the process chooses, is the driver's memory, and keeps its pages once the driver frees it
+  while the descriptor or a mapping lives, what D144 held on macOS by remapping. A blob
+  exported as an opaque descriptor, which no mmap takes, is refused, as is one said to be
+  larger than its memory's pages.
+- **The window on KVM is one memslot**, over a range the VM process reserves for it
+  (gpu/window.rs), as a share's DAX window is (D189): a blob is mapped into it at the place
+  its guest chose by mmap(MAP_FIXED) of its descriptor, and unmapped by reserving its range
+  again; KVM's stage 2 follows the host's mapping through its MMU notifiers, a dma-buf's
+  PFN-mapped pages (NVIDIA's, M381) among it. No memslot is made or removed for a blob, and
+  a blob's place and length are whole host pages (`blob_alignment`).
+- **Confined to what its driver needs** (PM M382), as NVIDIA's and Mesa's were measured to
+  reach: Landlock lets the GPU's VM process read the loader's manifests and the libraries
+  they name, the system's libraries and the drivers' data, sysfs, /proc/driver and four of
+  /proc's files, and read, write and control the GPUs' device nodes (render nodes,
+  NVIDIA's control, GPU, modesetting and unified memory nodes, udmabuf); its seccomp filter
+  allows the GPU drivers' ioctls by their types (NVIDIA's 'F' and 'm', DRM's 'd'), which a
+  rule matches by the request's bits 8 to 15 (`Rule::masked`), seven syscalls more, two
+  fcntl commands, fallocate's mode 0 and getsockopt's SO_TYPE, and fails symlink as its
+  host does (NVIDIA's /dev/char links) and sched_setaffinity with EPERM (RADV's, which
+  renders on, M384). Its drivers' shader caches stay off: it writes nothing of its host's.
+- **Vulkan programs** (PM M384): llama.cpp's matrix multiplications in a guest get its
+  CPU's results case for case, on NVIDIA's GPU and on RADV's, but for 18 of 1,684 shapes on
+  RADV that are NaN in llama.cpp's integer dot product path alone (with it off, every case
+  matches), as on Windows' AMD driver (M386).
+- **The kernels:** the `gpu` variant for x86_64 guests as for arm64's, and `hyperv+gpu`,
+  a Windows host's guest given a GPU, of kernel-6.18.48-64a9427a8997, whose release built
+  every kernel before it byte for byte again and the x86_64 `gpu` kernel byte for byte as
+  the GPU desktop's pinned builder did; scripts/build-kernel.sh takes variants joined by
+  `+`.
+- **Tested** (tests/gpu.rs, on the GPU desktop's NVIDIA GeForce RTX 5060 Ti and Radeon
+  610M, NVIDIA 615.78.08, CachyOS on Linux 7.2.9): passes, 5 runs of 5 of the build that
+  adds D202, 19 to 71 s each, the host busy with other work (load average up to 119).
+  A run given `--gpus all` finds `Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti)` and
+  `Virtio-GPU Venus (AMD Ryzen 9 9950X3D2 16-Core Processor (RADV RAPHAEL_MENDOCINO))`
+  through Debian trixie's Mesa 25.0.7, a build's steps given the render node by a CDI
+  device find it as root and as user 1000, so do a run given it by CDI name and a run of
+  user 1000, and the GPU's runs restore templates of their own (D150). It skips where a
+  host has no GPU's device node, as CI's Linux runners, which build, lint and test the
+  renderer.
+- **Not yet:** an arm64 Linux host with a GPU is built and linted for and untested, none
+  being here; and arm64 KVM maps a PFN-mapped page as device memory unless its mapping
+  allows it otherwise (VM_ALLOW_ANY_UNCACHED), which a discrete GPU's dma-buf does not say.
+
 ### D199. A run's log sent to macOS's own log: `oslog`, and syslog's local default there (built)
 
 `--log-driver oslog` is served on macOS, the journal's counterpart there (D166, D198): a
@@ -6908,14 +7124,44 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   µs of that, and from there to the guest's next store after its snapshot point took 79 to 95
   ms, and 3.4 ms with the whole of RAM populated at stage 2 beforehand (a populate that itself
   took 74 to 79 ms). The same at 1 GiB: what a guest touches, not what it has.
-- **Not yet on WHP**: working sets (`vm::WORKING_SETS`), so a restore takes each page into
-  stage 2 as its guest first touches it (M345: 6.4 µs a page read and 8.3 µs a page written
-  at p50 on jupiter, where a populate maps a 2 MiB range at 0.4 to 0.7 µs a page, M341):
-  what a working set recorded and populated ahead takes off a restore's path, with the
-  daemon's templates and warm pools (D25, D26), which wait for the daemon on Windows (D195,
-  the parity plan's step 4). Its recording is WHP's to find: no access bit is read back at
-  stage 2, and a confined VM process may not ask its memory file's allocated ranges (an
-  FSCTL, D141).
+- **Working sets** (`vm::WORKING_SETS`, the platform parity audit's row 11). Without one a
+  restore takes each page into stage 2 as its guest first touches it (M345: 6.4 µs a page
+  read and 8.3 µs a page written at p50 on jupiter, where a populate maps a 2 MiB range at
+  0.4 to 0.7 µs a page, M341). WHP reads back no access bit at stage 2, and a confined VM
+  process may not ask its memory file's allocated ranges (an FSCTL, D141); what the VM
+  process's host maps of its guest's memory is what it touched, as on KVM (`vm::mapped`):
+  its own working set, which QueryWorkingSetEx reads it (`platform::mapped_pages`), a page
+  there valid and shareable its file's, read, and one valid and private a copy its guest
+  wrote. A fault maps the page it touches alone, whether its file's pages are in the cache
+  or read in around it from disk, which go to the cache alone, so no fault-around is held
+  off (`platform::FaultAroundOff` holds nothing; windows_process.rs
+  `mapped_pages_are_the_working_sets`, `a_fault_from_disk_maps_the_page_it_touches_alone`).
+  As KVM's, the first warm restore of a template records it (`vm::RESTORES_RECORD`), for the
+  daemon (D25, D26), and `shards restore` of a generation without one hands what it records
+  to the CLI that started it, which keeps it beside the generation as the VM ends, on a
+  thread of its own (`working_set::keep`): the confined VM writes none of its snapshot's
+  files (D30), and the CLI, which waits for its VM as a child, needs no writer process, as
+  Linux's, which becomes its VM, does. A restore of a generation that has one maps it ahead
+  before its guest runs, every run of its pages populated at stage 2 in two calls
+  (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate; `hv::Vcpu::pre_fault_runs`): the pages
+  its guest wrote for writing, which copies each one its copy-on-write view of the snapshot
+  still shares with the file in the host's kernel, as the guest's first write would, and
+  the rest for reading. What a populate costs is its pages': read from the cache, 2.5 µs a
+  page on jupiter and 4.7 on CI's windows-2025, its generation held (M421); read from the
+  disk, 65 to 87 µs a page on jupiter and 50 to 78 on CI's, as Windows drops a sparse
+  file's pages from its cache once no process maps them, held open or not, and a memory
+  file is sparse: so a held generation keeps a view of its memory mapped (D25,
+  `platform::keep_cached`; M415's 50 to 78 had been put down to CI's WHP running nested,
+  M308). With it mapped ahead against without, held, a cold restore ran its guest again
+  15.1 ms after its process started at p50 against 17.5 on jupiter (17.0 against 22.4 at
+  p99) and 20.4 against 36.0 on CI's, a warm one 2.49 against 6.79 on jupiter; not held,
+  59.0 against 108.9 there (M415, M421). On jupiter, 512
+  pages populated for writing in one call took 3.68 ms at p50 (n=20), where copying them from
+  the VM process, each page's first word written as it holds it (Windows has no call that
+  faults a range in writable from user mode, PrefetchVirtualMemory reading one in), took 2.58
+  and populating them for reading after it 1.33 in one call or 2.33 a call each (hv::whp
+  `a_write_populate_copies_a_views_pages_in_the_kernel`, which checks each copy holds the
+  file's bytes and no other page is mapped): one call does both, for about what the two cost.
 
 **Tested.** Unit: the states' round trips and damage, and a state naming any other register
 refused (`hv::whp::state`); a restored IOAPIC going on as the saved one; a generation staged by
@@ -6932,6 +7178,16 @@ commit of what is not staged, giving the directory up, and removing what is neve
 tests/snapshot.rs, every test, the storms of busy machines among them, which run on Windows
 now, and the unwritable directory by an access list there; tests/restore.rs, cold restores of
 one snapshot side by side and a held (warm) restore whose guest runs nothing until released.
+Working sets (the platform parity audit's row 11): unit, `platform::windows_process`
+`mapped_pages_are_the_working_sets`, a working set read back exact, the pages touched and no
+other, and `a_fault_from_disk_maps_the_page_it_touches_alone`, and `hv::whp`
+`a_write_populate_copies_a_views_pages_in_the_kernel`; on real WHP guests, snapshot.rs
+`a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded` and images.rs
+`repeat_runs_restore_a_template_of_the_image`, a template's working set recorded by its first
+warm restore and mapped ahead by the next: each on CI's windows-2025 (41176475317 at
+54f7c0fb), which fails rather than skips a VM test it cannot run; and the restore bench's
+arms with and without, held and not, n=100 each, on jupiter and CI's windows-2025 (M415,
+M421); `platform::windows` `a_file_kept_cached_is_a_view_of_all_of_it_until_it_drops`.
 
 ### D195. The daemon and its client on Windows: request slots of named pipes (built)
 
@@ -10429,7 +10685,7 @@ builder memory as its build needs it; runs now have it too.
   probe, was not there yet as init mounted it, and its runs failed every time (M217).
 - **No deadline:** the wait ends when the kernel says probing is done; a mount that fails
   again says why. Where the first mount succeeds, it is the one call it always was.
-- **Verified:** `an_image_of_gigabytes_boots` (a 2 GiB root of random bytes); 200 of 200
+- **Verified:** gigabytes.rs `an_image_of_gigabytes_boots` (a 2 GiB root of random bytes); 200 of 200
   cold boots of 108 MB and 2.1 GB roots (M217). Mutation-checked: without the retry, the
   test fails 3 of 3 with ENOENT.
 
@@ -10579,7 +10835,8 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
   a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
 - **To build:** Linux's VFIO (R2). A build's `RUN` steps: D145; a run's `--device` by
-  CDI name: D146; a GPU's templates: D150.
+  CDI name: D146; a GPU's templates: D150; Linux's hosts, through Venus on their own
+  drivers: D201.
 
 ### D143. `RUN` on Windows hosts: the builder
 
@@ -10764,6 +11021,9 @@ network process (D142) and its builder (D143) follow.
   root, quiet took 0.50 s of 2.14 on windows-2022, 0.50 of 1.49 on windows-2025, and on an
   M5 Max's HVF 27.9 ms of 65.2 (n=20 each, interleaved). What it says stays in its ring
   buffer, which `dmesg` reads; a VM whose console is shown (`run --kernel`) boots as told.
+  The VM process keeps the last page of it, and says its lines with a reset, which a panic
+  writes there whole (`console_verbose`), its reason and call trace in 858 bytes of 6.18's
+  (M417); each reset says too which it was, as a triple fault writes nothing.
 - **Its CPUs brought up one at a time.** Its kernel is told `cpuhp.parallel=0`: brought up
   in parallel past the host's CPUs, each AP started spins in its turn while the next waits
   for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s
@@ -10808,8 +11068,8 @@ network process (D142) and its builder (D143) follow.
   loses the peer all it had not read, as a reset (M358).
 - **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
   every other host.
-- **Snapshots** came after (D196); templates and warm pools wait for the daemon on Windows
-  (D195).
+- **Snapshots** came after (D196), with templates and warm pools once the daemon ran on
+  Windows (D195), and working sets after them (D196).
 - **Recorded differences** from a KVM guest's machine: its clock is Hyper-V's reference TSC
   page where KVM's is kvm-clock; its APICs are xAPIC alone, offering neither x2APIC nor
   TSC-deadline (M198).
@@ -11611,8 +11871,8 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     GitHub Actions, Google's workload identity (the metadata server, or Application Default
     Credentials: a service account's key, an impersonated account, federation from a file
     or URL), Google impersonation (IAM's generateIdToken), SPIFFE's Workload API (gRPC on
-    its socket, over the frontend's HTTP/2 client, D113). `--oidc-provider` names one,
-    `--oidc-disable-ambient-providers` none.
+    its socket, or on Windows its named pipe, over the frontend's HTTP/2 client, D113).
+    `--oidc-provider` names one, `--oidc-disable-ambient-providers` none.
   - Else it signs in (`--fulcio-auth-flow`, cosign's flows): in a browser on a terminal
     (PKCE; the code brought back to a listener on this host, or typed in), by a device
     code without one, or by client credentials. Each token is checked as go-oidc checks it:
@@ -11643,11 +11903,21 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     answer it closed and says "http: read on closed response body" (seen in the oracle).
   - GitHub's token endpoint refusing is said; cosign decodes the refusal as a token.
   - `SPIFFE_ENDPOINT_SOCKET` is read as the SPIFFE spec writes it, `unix://PATH`, too.
+  - SPIFFE's Workload API is reached on Windows, by its named pipe: SPIRE's agent's,
+    `\\.\pipe\spire-agent\public\api` (spire v1.15.5's DefaultNamedPipeName), or the one
+    `SPIFFE_ENDPOINT_SOCKET` names, `npipe:NAME` as go-spiffe reads it there or the pipe's
+    path. cosign dials `unix://` and its socket's path alone (pkg/providers/spiffe), which
+    go-spiffe v2.7.0 refuses on Windows, dialling `npipe:` and `tcp:` there
+    (workloadapi/addr_windows.go): no cosign on Windows reaches a Workload API. Its pipe is
+    opened as go-winio v0.6.2 dials one for go-spiffe, anonymous to its server
+    (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), and waited for where each instance is in
+    use; whether it is there is asked without connecting (WaitNamedPipeW), as an instance
+    a connection takes is one the agent's workloads wait for.
   - Messages go to stderr, which shards keeps for people (oauthflow prints some to stdout).
   - `-h` is help on `shards sign` and every action of `shards agent|harness|mcp`.
 - **Not taken**: Google federation from AWS or from an executable (its file and URL sources
-  are taken), and SPIFFE's Workload API on Windows (a named pipe). A signer there gives the
-  token itself with `--identity-token`; no demand for either has been seen.
+  are taken). A signer there gives the token itself with `--identity-token`; no demand for
+  it has been seen.
 - **Tested**:
   - Against a local Sigstore (PM M184): shards' signatures and cosign's, of each signing
     config (Rekor v2 with a timestamp authority, Rekor v1 with one and without), each
@@ -11668,6 +11938,12 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
   - Unit tests of each part: the signing config, Fulcio, Rekor, the timestamp request,
     OIDC (JWS by each algorithm, claims, PKCE, the authorization URL), the flows' listener
     and token answers, the providers' sources.
+  - A JWT-SVID asked of a Workload API that answers as a gRPC server does, on a Unix
+    socket and, on Windows, on a named pipe of this machine as SPIRE's agent serves one,
+    found there without a connection taken (spiffe.rs
+    `a_jwt_svid_is_asked_of_the_workload_api_on_its_socket` and `..._on_its_named_pipe`,
+    the latter on CI's windows-2022 and windows-2025, CI 41284231177 at 6b17d663); the
+    pipe's names as go-spiffe reads them.
 
 ### D125. A run's microVM has every CPU of its host unless it is limited
 

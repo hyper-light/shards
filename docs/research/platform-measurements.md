@@ -7504,6 +7504,10 @@ revision before comparing a changed API/implementation.
   but its slowest round trip 105 to 115 ms at every count, each the 100 ms the probe
   bounds a wait by: the event did not come, where the port had the socket ready. On
   windows-2022 it stalled so often that the job's 20 minutes ran out on its first count.
+  Since 2026-11-01 the probe ends that way's count once its waits come to 10 s, the event
+  late or lost, and says so: beside 100 sockets on windows-2025 its rounds outlasted the
+  job's 15 minutes three times (CI 40961442817, 40964375764, 41281977635), and beside none
+  on windows-2022 (41284231274), its waits ending late, not timed out.
   The completion port alone was slowest at 8.1 ms (10,000 idle, windows-2025).
 
   | doorbell | windows-2022 | windows-2025 |
@@ -16216,6 +16220,266 @@ revision before comparing a changed API/implementation.
   to a time. `a_run_whose_ports_are_closed_holds_them_no_longer` (daemon.rs) holds the
   daemon to it, a missing arm caught.
 
+### M381. Whether a Linux host maps a GPU's host-visible memory where it chooses, by the descriptor Venus exports (D201)
+
+- **Question.** Venus's renderer on Linux exports each blob of host-visible memory as a
+  descriptor, a dma-buf where the driver exports one and an opaque one where it does not
+  (virglrenderer 1.3.0, vkr_device_memory.c). A KVM window that is one memslot (D189's
+  shape) maps each blob by its descriptor at the place its guest chose. Does each driver's
+  descriptor map at an address of the process's choosing, is that mapping the driver's
+  memory, and does it hold the memory once the driver frees it, as D144's remap held a
+  blob's pages on macOS?
+- **Method.** `docs/research/measurements/gpu-linux/dmabuf-map.c`: for each GPU and each
+  memory type the host can map, 1 MiB allocated with each export (VkExportMemoryAllocateInfo,
+  dma-buf, then opaque), the descriptor taken (vkGetMemoryFdKHR), mapped MAP_SHARED |
+  MAP_FIXED into a reserved PROT_NONE range, written there, read through vkMapMemory, the
+  memory freed (vkFreeMemory) and the mapping read again. One pass, each mmap timed once.
+  The GPU desktop: AMD Ryzen 9 9950X3D2, an NVIDIA GeForce RTX 5060 Ti (NVIDIA 615.78.08,
+  open kernel modules) and the CPU's Radeon 610M (RADV, Mesa 26.2.4), CachyOS, Linux
+  7.2.9-2-cachyos, Vulkan loader 1.4.363; 2026-10-29.
+- **Results.**
+  - NVIDIA: each of its three host-visible types (heap 1's HOST_VISIBLE|HOST_COHERENT and
+    +CACHED, heap 0's DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT) exports a dma-buf of the
+    allocation's size, 1 MiB, which maps at the address given in 8.1, 7.8 and 67.1 µs,
+    shows the bytes written through it to vkMapMemory, and keeps them after vkFreeMemory.
+    Its opaque descriptors map nowhere: mmap refuses them (EINVAL), and lseek finds no size.
+  - RADV: each of its ten host-visible types maps both ways, in 0.7 to 3.9 µs, coherent,
+    kept after free.
+  - NVIDIA's open modules map a dma-buf with remap_pfn_range (kernel-open/nvidia/
+    nv-dmabuf.c, nv_dma_buf_mmap at 615.78.08), so the mapping is VM_PFNMAP, which KVM's
+    stage 2 maps through hva_to_pfn_remapped.
+- **Reading.** A dma-buf is what a GPU window on Linux maps a blob by: placed where the
+  guest put it, the driver's memory, held by the descriptor and every mapping of it after
+  the driver lets it go. An opaque descriptor cannot be mapped, so a blob exported as one is
+  refused; both drivers here export dma-bufs, which Venus prefers.
+
+### M382. What a GPU's VM process reaches of its Linux host, its driver running in it (D201)
+
+- **Question.** The GPU's VM process runs Venus's renderer, and so the host's Vulkan loader
+  and GPU drivers, in itself (D144's design, D201). A VM process reaches nothing of its host
+  but what its Landlock rules and seccomp filter allow (D30, PM M52). What do the loader and
+  the drivers open, and which syscalls and ioctls do they and the renderer make, that a
+  VM process's rules refuse?
+- **Method.** The GPU desktop of M381, 2026-10-29. (1) `docs/research/measurements/
+  gpu-linux/accesses.sh`: vulkaninfo and dmabuf-map under an empty environment, as a VM
+  process has one (it is given SHARDS_LOG and SHARDS_TIMING alone): the libraries loaded
+  (LD_DEBUG=files), the manifests read (VK_LOADER_DEBUG), and every other path opened, stat'd,
+  listed or linked (openlog.c, preloaded). (2) tests/gpu.rs, rounds of it, the GPU's VM
+  process confined, each round's refusals allowed in the next: from the second on with
+  `refusals.patch`, under which the filter's SIGSYS handler says each refused syscall and
+  returns ENOSYS rather than ending the process, so that one round names them all
+  (`refusals.sh`); last, a round allowing of the drivers' ioctls only those of the type
+  found refused, to see the others' (NVIDIA's and DRM's) used.
+- **Results.**
+  - Opened: about 70 libraries, every one from /usr/lib; the manifests of
+    /usr/share/vulkan/icd.d (nvidia_icd.json, radeon_icd.json) and implicit_layer.d
+    (nvidia_layers.json, Mesa's device select and anti-lag layers), /usr/local/share/vulkan,
+    /etc/xdg/vulkan and /etc/vulkan searched; NVIDIA's application profiles
+    (/usr/share/nvidia, /etc/nvidia), libdrm's names (/usr/share/libdrm/amdgpu.ids),
+    Mesa's options (/usr/share/drirc.d, /etc/drirc), EGL's and GLVND's vendor files; sysfs,
+    each GPU's PCI device (220 reads), /sys/dev/char, /sys/module/nvidia*/initstate, every
+    CPU's capacity, topology and caches, /sys/devices/system/memory/block_size_bytes;
+    procfs, /proc/self's stat, maps, cmdline, comm and exe, /proc/stat, meminfo, cpuinfo,
+    filesystems, /proc/driver/nvidia/params; read, written and controlled, /dev/nvidiactl,
+    /dev/nvidia0, /dev/nvidia-modeset and the render nodes /dev/dri/renderD128 and 129, and
+    RADV's /dev/dri/card0. Written: Mesa's shader caches in ~/.cache, found through the
+    password file in want of HOME. Linked: NVIDIA's /dev/char/195:0, 254 and 255 to
+    ../nvidia0, nvidia-modeset and nvidiactl, which failed on the host too, not being root.
+  - Refused, by round: (1) Landlock refused libvulkan.so.1 before the filter was reached.
+    (2) With the loader's, libraries', drivers' data, sysfs, procfs and devices' paths
+    allowed: sched_get_priority_max (SCHED_RR), the first, ending the process. (3) With
+    refusals.patch: sched_get_priority_max and _min, 4 each; ioctl of type 'm'
+    (nvidia-modeset's NVKMS_IOCTL_CMD, 0xc0106d00), 4; getsockopt(SOL_SOCKET, SO_TYPE), 4,
+    the render server's and its client's check of their socket; getsockname, 2
+    (libGLX_nvidia); symlink, 20 (the /dev/char links above); getresuid, 2; statfs, 4;
+    memfd_create, 2 (flags 0x13); the render server, refused getsockopt, quit ("no valid
+    client fd specified"). (4) fcntl F_ADD_SEALS, getresgid, fallocate (mode 0), 1 to 2
+    each. (5) fcntl F_GET_SEALS, 1, whose answer the renderer's check of a shared memory
+    blob's seals failed on. (6) None: every GPU run of tests/gpu.rs passed. (7) Of the
+    drivers' ioctls only 'm' allowed: NVIDIA's of type 'F' (0xc04846d2) and DRM's
+    DRM_IOCTL_VERSION (type 'd'), the first each driver makes, refused, and neither driver
+    found its GPU.
+- **Reading.** A GPU's VM process needs, beyond a VM process's: reading the system's
+  libraries and the drivers' data and manifests, sysfs, /proc/driver and four of /proc's
+  files; the GPUs' device nodes; ioctls of types 'F', 'm' and 'd'; seven syscalls whatever
+  their arguments, getsockopt's SO_TYPE, fallocate's mode 0 and fcntl's F_ADD_SEALS and
+  F_GET_SEALS; and symlink failed as its host fails it. It needs to write nothing of the
+  host's: the drivers' caches, refused, are done without.
+
+### M383. Whether WHP maps a GPU's host-visible memory into a partition, as the driver maps it (D201)
+
+- **Question.** On macOS the renderer hands the VMM the address its driver mapped a blob
+  at, which Hypervisor.framework maps into the guest (D144). Does WHP take a Windows GPU
+  driver's mapping of its host-visible memory (vkMapMemory) the same way, and does the
+  guest see the host's and the GPU's writes through it, and the host the guest's? Or must
+  Venus on Windows give the driver memory of its own (VK_EXT_external_memory_host)?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m383.rs`: m341's guest, one vCPU
+  in long mode loading and storing at the host's word. For each memory type of the GPU's
+  the host can map: 2 MiB allocated and mapped (vkMapMemory), WHvMapGpaRange of the
+  mapping at 1 GiB in the guest (read and write), the host's store loaded by the guest, the
+  guest's store read by the host, a vkCmdFillBuffer of a buffer bound to it loaded by the
+  guest; then 100 maps and unmaps of it timed. Then 2 MiB of the probe's own (VirtualAlloc)
+  imported as Vulkan memory (VkImportMemoryHostPointerInfoEXT), the same. jupiter: AMD
+  Ryzen AI Max+ 395 and its Radeon 8060S (AMD's driver 25.20.32.06, LLPC, Vulkan 1.4.329;
+  display driver 32.0.22032.6002), Windows 11 10.0.26200; 2026-10-29.
+- **Results.**
+  - WHP takes the driver's mapping of each of the twelve host-visible types (types 1 to 3,
+    5 to 7, 9 to 11 and 13 to 15: host-visible over system memory and over the
+    device-local heap, cached, coherent and AMD's device-coherent among them), the first
+    map 47.4 to 196.3 µs.
+  - Each way, through each: the guest loads the host's store, the host reads the guest's,
+    and the guest loads the GPU's fill (0xa5c35a3ca5c35a3c), with no memory exit.
+  - Maps, n=100 each type: p50 34.0 to 37.6 µs, p90 39.0 to 71.0, p99 102.7 to 277.9,
+    max 131.4 to 301.3. Unmaps: p50 21.4 to 22.1 µs, p90 21.7 to 36.6, p99 22.2 to 41.2,
+    max 24.5 to 99.1.
+  - The probe's own memory imports into the eight host-visible types that are not
+    device-local (type bits 0xaaaa), and behaves alike: the GPU's fill reaches its pages,
+    which WHP maps (map p50 36.2 µs).
+- **Reading.** Venus on Windows can be macOS's design: the renderer maps a blob in its
+  process and the VMM maps that address into the guest's window. What macOS's remap held,
+  a freed blob's pages kept from the driver's next allocation, needs its own answer on
+  Windows, as the stage 2 follows the host's view there (M341): memory of the renderer's own
+  imported into the driver holds its pages whatever the driver frees, for the types it
+  imports into; the device-local ones it does not.
+
+### M384. Vulkan programs in a guest given a Linux host's GPUs, against its CPU (D201)
+
+- **Question.** With a Linux host's GPUs given a microVM through Venus (D201), do a guest's
+  Vulkan compute programs get the results its CPU gets, on each GPU, and how fast do they
+  run?
+- **Method.** `docs/research/measurements/gpu-linux/compute.sh`: E6's image (M218:
+  llama.cpp v0.6.0's Vulkan backend and TinyLlama 1.1B Q4_0; `Dockerfile` here, 8 compiler
+  jobs where E6's has one a CPU), built by Docker on the desktop and loaded (`shards load`)
+  after shards' builder was killed for memory compiling it there with 32 (the builder is
+  held small on that host, D133, D188); in a guest given both GPUs (`--gpus all`, 8 GiB):
+  `vulkaninfo --summary`; test-backend-ops `test -o MUL_MAT` on each device, each of its
+  1,684 cases against its CPU backend, then `perf -o MUL_MAT` (218 cases); llama-bench of
+  TinyLlama on each device alone (GGML_VK_VISIBLE_DEVICES), pp512 and tg128, 5 runs each.
+  The GPU desktop: CachyOS, Linux 7.2.9, AMD Ryzen 9 9950X3D2 and its Radeon 610M (RADV,
+  Mesa 26.2.4), NVIDIA GeForce RTX 5060 Ti (615.78.08); the guest's Mesa 25.0.7 (Debian
+  trixie); shards as of the commit that adds this entry, its GPU's VM process refusing
+  sched_setaffinity (below); 2026-10-29, the host busy with other work throughout (load
+  average 11.7 to 330).
+- **Results.**
+  - The guest finds both: `Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti)` and `Virtio-GPU
+    Venus (AMD Ryzen 9 9950X3D2 16-Core Processor (RADV RAPHAEL_MENDOCINO))`, driver venus.
+  - NVIDIA's: 1,683 of 1,684 cases match the CPU's; the one that does not is the CPU's NaN
+    (q4_1, 3000 by 512 by 3: the GPU's -5.347, the CPU's NaN, of random q4_1 data), every
+    GPU result a number. An earlier run passed 1,684 of 1,684.
+  - RADV's: 1,666 of 1,684. The 18 others are NaN where the CPU's are numbers, all of one
+    family: quantized A (q4_0, q4_1, q5_0, q5_1, q8_0) by f32 B of 9, 13 and 16 columns,
+    100 by 96 (and 40 by 32 for q4_0); an earlier run failed 17 of the same 18. With
+    llama.cpp's integer dot product off (GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1), RADV's
+    match the CPU's in every case, 1,684 of 1,684: the NaNs are that path's alone, on AMD's
+    GPU, which Windows' AMD driver gives too, case for case (M386). llama.cpp's own tracker
+    has that path giving NaN on AMD's GPU in other cases: on a Radeon 8060S under RADV
+    (Mesa 26.0.8, Linux 7.0), Q4_K and Q5_K at large magnitudes, "The cause is MMVQ (src1
+    quantized to q8_1)" and "With GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1 all of these cases
+    pass" (ggml-org/llama.cpp#30544, closed for #30861 and #30656). Whether RADV gives this
+    run's 18 without Venus is unmeasured: the same llama.cpp built over Arch Linux (its Mesa the
+    desktop's release) and run in a container given RADV's render node was refused on the
+    desktop by this session's permission classifier, as it builds code from GitHub there.
+  - llama-bench, n=5 each, milliseconds a run (p50, p90 = p99 = max) and tokens/s:
+
+    | Device | Test | p50 ms | max ms | p50 t/s | min t/s |
+    |---|---|---|---|---|---|
+    | NVIDIA | pp512 | 133.52 | 141.74 | 3,834.7 | 3,612.3 |
+    | NVIDIA | tg128 | 392.52 | 447.59 | 326.1 | 286.0 |
+    | RADV | pp512 | 1,421.88 | 1,448.02 | 360.1 | 353.6 |
+    | RADV | tg128 | 2,879.33 | 2,992.32 | 44.5 | 42.8 |
+
+  - Matrix multiplication, 4096 by 14336 by 512: NVIDIA's f16 18.08 TFLOPS and q4_0 18.70;
+    RADV's 420 and 960 GFLOPS. By one column, NVIDIA's q4_0 3.07 TFLOPS (38.3 µs a run).
+  - The first run, before the GPU's VM process's filter answered it, met RADV's
+    sched_setaffinity (x86_64's 203) from the renderer's ring thread (`vkr-ring-1`), 32
+    times a run, said on the run's stderr by M382's measurement handler, which goes on
+    where the filter's own ends the process. RADV renders on where it is refused: the
+    filter now refuses it with EPERM, unsaid (confine.rs), and this run met no refusal.
+- **Reading.** A guest's Vulkan compute runs on either of a Linux host's GPUs through
+  Venus and gets the CPU's results in every case but the 18 of llama.cpp's integer dot
+  product path on AMD's GPUs, which Mesa's RADV and AMD's own Windows driver give alike and
+  which the path's absence clears; that RADV gives them natively too is unmeasured, and
+  waits for the user's leave to build llama.cpp on the desktop. Speed against the host's
+  own is unmeasured on Linux; on macOS it matched (M218).
+
+### M385. What a GPU's VM process needs of Windows to reach its driver, in its AppContainer (D202)
+
+- **Question.** A Windows VM process runs in an AppContainer of its own with Win32k's
+  calls disabled among its mitigations (D141). The GPU's VM process runs its host's Vulkan
+  driver. Does the driver come up there; if not, what least change lets it; and what does
+  that cost each GPU VM's start?
+- **Method.** `docs/research/measurements/gpu-windows/`: `confinement.patch` over the build
+  that adds D202's confinement: switches the daemon reads to start a GPU's VM process with
+  Win32k's calls disabled (SHARDS_M385_WIN32K_DISABLED), without its window station and
+  desktop (SHARDS_M385_NO_STATION), or outside an AppContainer
+  (SHARDS_M385_NO_APP_CONTAINER); the Vulkan loader's log (VK_LOADER_DEBUG=all) and, as the
+  renderer starts, a probe of gdi32's, user32's and dxgi's loads, D3DKMTEnumAdapters2's
+  count and CreateDXGIFactory1's result; and n window stations and desktops made and
+  closed, timed (SHARDS_M385_STATIONS). `variants.sh`: each variant a daemon of its own and
+  one GPU run of vulkaninfo (the image tests/gpu.rs builds). jupiter: AMD Ryzen AI Max+ 395
+  and its Radeon 8060S (AMD's driver 25.20.32.06), Windows 11 10.0.26200, its kiln runner a
+  service in session 0, elevated; 2026-10-29.
+- **Results.**
+
+  | The GPU's VM process | gdi32, user32 | D3DKMT's adapters | DXGI factory | The guest's GPU |
+  |---|---|---|---|---|
+  | its AppContainer, a window station and desktop of its own, Win32k allowed (D202) | loaded | 34 | S_OK | Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics) |
+  | the same, Win32k disabled | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none: "Found no drivers!" |
+  | its AppContainer on its spawner's desktop, Win32k allowed | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | the same, Win32k disabled (D141's VM process) | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | no AppContainer, Win32k disabled | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | no AppContainer, Win32k allowed | loaded | 34 | S_OK | as the first |
+
+  - The loader's log where it found none: "Failed to create dxgi factory for ICD registry
+    verification", then "vkCreateInstance: Found no drivers!"; it reads no driver's
+    manifest from the adapters, whose D3DKMT calls are gdi32's.
+  - A window station and desktop made, granted to an AppContainer and closed: n=200, p50
+    405 µs, p90 588 µs, p99 1.12 ms, max 29.8 ms; again, p50 439 µs, p90 615 µs, p99
+    979 µs, max 28.3 ms.
+- **Reading.** Both of D141's VM process's walls stop a GPU's driver, each alone: with
+  Win32k's calls disabled, gdi32 and user32 fail as they load; in an AppContainer on its
+  spawner's window station and desktop, which do not grant it, they fail as they connect
+  to them, Win32k allowed or not. A window station and desktop of its own, granted to it,
+  and Win32k's calls are enough: the driver comes up in the AppContainer, as it does
+  outside one. Making them costs a GPU VM's start about 0.4 ms. Measured in session 0, a
+  service's, as the runner is; a user's interactive session is unmeasured.
+
+### M386. Vulkan programs in a guest given a Windows host's GPU, against its CPU (D202)
+
+- **Question.** M384's, of a Windows host: on its GPU through Venus (D202), do a guest's
+  Vulkan compute programs get its CPU's results, and how fast do they run?
+- **Method.** M384's `compute.sh` on jupiter, from Git Bash (`MSYS2_ARG_CONV_EXCL`, which
+  leaves the guest's paths to it), of the same image, built there by Docker Desktop and
+  loaded (`shards load`): shards' builder, whose memory stayed at the 2 GiB it booted with,
+  was killed for it compiling llama.cpp with 8 jobs (told to the parity plan's step 7). The
+  guest given the GPU (`--gpus all`, 8 GiB), its Mesa 25.0.7. jupiter: AMD Ryzen AI Max+
+  395 and its Radeon 8060S (AMD's driver 25.20.32.06), Windows 11 10.0.26200; shards built
+  from the Windows daemon's branch with D202 merged; 2026-10-29. Then the matrix cases again
+  with llama.cpp's integer dot product off (GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1).
+- **Results.**
+  - The guest finds `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`, driver venus,
+    Vulkan 1.2 (the krunkit fork's Venus), and Mesa's llvmpipe; ggml sees 105,388 MB of
+    unified device memory.
+  - 1,666 of 1,684 cases match the CPU's. The other 18 are NaN, the same 18 as RADV's
+    through Venus on Linux (M384), case for case. With the integer dot product off, 1,684
+    of 1,684.
+  - llama-bench, n=5 each, milliseconds a run (p50, p90 = p99 = max) and tokens/s:
+
+    | Test | p50 ms | max ms | p50 t/s | min t/s |
+    |---|---|---|---|---|
+    | pp512 | 334.80 | 353.65 | 1,529.3 | 1,447.8 |
+    | tg128 | 1,752.81 | 1,766.56 | 73.0 | 72.5 |
+
+  - Matrix multiplication, 4096 by 14336 by 512: f16 3.36 TFLOPS, q4_0 4.01; by one
+    column, q4_0 832 GFLOPS (141 µs a run).
+- **Reading.** A guest's Vulkan compute runs on a Windows host's GPU through Venus and
+  gets its CPU's results in every case but the 18 of llama.cpp's integer dot product path,
+  which RADV's gives alike on Linux and which the path's absence clears, as llama.cpp's
+  tracker has that path give NaN on a Radeon 8060S under RADV in other cases (M384,
+  ggml-org/llama.cpp#30544). Whether AMD's Windows driver gives them natively, and its
+  speed natively, are unmeasured: llama.cpp's Windows build needs the Vulkan SDK, which
+  jupiter lacks.
+
 ### M391. What a microVM past its budget gives back, on Linux, Windows and macOS (D151, D188)
 
 - **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`
@@ -16523,3 +16787,376 @@ revision before comparing a changed API/implementation.
   windows on by default. A reservation inaccessible (PAGE_NOACCESS, as
   `platform::reserve_withheld` makes one) answered as one readable and writable did, in
   every step above.
+
+### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
+
+- **Question.** What does a working set mapped ahead buy a Windows restore, as Linux's and
+  macOS's restores have one (D29)? And how should a WHP restore make the copies of the pages
+  its guest wrote, and map the rest: copies made from the VM process or WHP's populate for
+  writing, a call a run of pages or one for them all?
+- **Method.** `benches/restore.rs --working-set both`: each restore with the working set the
+  first restore recorded mapped ahead, and without it, the arms interleaved on one snapshot,
+  n=100 each, 1 vCPU, 256 MiB. The VM logs at info what mapping ahead took (rows
+  `cold_copy_ahead` and `cold_map_ahead`, its time and its runs of consecutive pages), on
+  CI's windows-2025 (whp-restore.yml). And `hv::whp`
+  `a_write_populate_copies_a_views_pages_in_the_kernel` on jupiter (AMD Ryzen AI Max+ 395,
+  Windows 11 26200), 20 runs on
+  2026-10-30: a 16 MiB copy-on-write view of a file mapped as a partition's RAM; 512 single
+  pages populated for writing in one call and 512 for reading in one call; then 512 more for
+  reading, a call each, and 512 copied from the process, a page's first word written as it
+  holds it.
+- **Found, copies from the process and a call a run.**
+  - 1b4cc6be (CI 41152847498, AMD EPYC 7763, Windows 10.0.26100, a working set of 991 pages,
+    322 of them written), with it against without, p50 / p90 / p99 / max:
+    - warm_request: 8.3 / 8.4 / 8.4 / 8.4 ms against 121.2 / 133.2 / 169.0 / 204.0.
+    - cold_restore: 88.7 / 95.7 / 102.8 / 103.9 against 133.3 / 144.8 / 165.1 / 184.8.
+    - cold_spawn_exit: 141.1 / 150.0 / 156.5 / 167.5 against 283.6 / 295.4 / 314.5 / 322.3.
+  - Its setup, 15f4ea19 (CI 41167805556 and 41167803615, Intel Xeon Platinum 8573C, working
+    sets of 1011 and 999 pages): cold_entry, from the VM process's start to its first vCPU's
+    entry, was 69.3 and 48.3 ms at p50 against 11.6 and 11.2 without. Of it, the copies took
+    26.4 ms over 202 runs and 18.0 over 195, and the populate 31.2 ms over 507 runs and 19.1
+    over 501.
+- **Found, each way on jupiter** (n=20, 512 pages each, ms, p50 / p90 / p99 / max):
+  - Populated for writing in one call: 3.68 / 4.36 / 4.87 / 4.87.
+  - For reading in one call: 1.33 / 1.59 / 1.80 / 1.80.
+  - For reading, a call each: 2.33 / 2.61 / 2.65 / 2.65.
+  - Copied from the process: 2.58 / 3.05 / 3.12 / 3.12.
+  - Every page populated for writing was a private copy holding the file's bytes, every one
+    for reading the file's own, no other page was mapped, and the file was as it was.
+  - So one write populate costs what a copy and a populate after it did (3.95 ms at p50 with
+    the populate in one call, 4.78 a call each). A call's own cost: 1.96 µs, 1.00 ms more over
+    511 more calls.
+  - A single run before, beside two builds of the bench and the tests, measured 6.3 ms
+    written and 12.1 copied; no run of the 20 came near either.
+- **Found, two calls** (54f7c0fb, CI 41176481995 and 41176486907, AMD EPYC 7763, Windows
+  10.0.26100.33650, working sets of 999 and 959 pages, 325 and 308 written), with it against
+  without, p50 / p90 / p99 / max:
+  - cold_restore: 84.6 / 91.1 / 96.8 / 100.2 ms against 129.7 / 137.6 / 147.5 / 161.6; and
+    78.1 / 83.0 / 104.9 / 106.8 against 114.4 / 126.4 / 177.8 / 204.2.
+  - cold_spawn_exit: 141.2 / 147.3 / 156.0 / 169.7 against 281.0 / 289.9 / 302.0 / 309.6; and
+    134.4 / 140.8 / 162.6 / 164.2 against 277.0 / 286.4 / 327.2 / 357.3.
+  - warm_request: 7.96 / 7.98 / 8.01 / 8.02 against 117.4 / 125.4 / 162.1 / 165.1; and 12.26 /
+    12.28 / 12.32 / 12.49 against 101.7 / 113.5 / 136.2 / 234.7.
+  - cold_entry: 76.7 and 66.3 ms at p50 against 12.6 and 12.5 without. The two calls took
+    64.2 and 53.8 ms, of which the written pages' took 25.3 and 21.5: 50 to 58 µs a page read
+    and 70 to 78 written.
+  - Against 1b4cc6be's on the same CPU, about the same. On CI's runners, VMs whose WHP runs
+    nested (M308), a populate's cost is its pages', not its calls'. (Its pages' were the
+    disk's: each restore read its working set from the disk, its memory file sparse and
+    mapped by no process between restores, M421; held, the populate took 4.53 ms at p50.)
+- **Found, on jupiter** (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200.9711; binaries
+  built by windows-binaries.yml at jupiter's paths, as kiln's headroom guard holds its
+  builds, M418; no sample frozen across, the guard's budget 0.07 to 0.52 cores; the host's
+  CPUs 36 to 52% busy with its own load at 271f399b, 12 to 28% at ebff6cc6, where the held
+  and unheld runs ran one after the other, M421), with it against without, p50 / p90 / p99
+  / max, ms:
+  - 271f399b, nothing held, two runs (991 to 1,014 pages, 321 to 342 written): cold_restore
+    86.6 / 229.2 / 695.3 / 897.5 against 135.3 / 329.8 / 900.8 / 1005.7, and 82.9 / 123.7 /
+    821.3 / 945.4 against 132.7 / 171.9 / 240.2 / 328.6; cold_spawn_exit 175.9 / 357.7 /
+    883.4 / 1034.3 against 319.0 / 698.2 / 1400.5 / 2013.4, and 167.2 / 214.5 / 1037.5 /
+    1085.0 against 301.5 / 338.4 / 470.8 / 505.1; the populate 65.8 and 66.2 at p50, up to
+    928: the disk's (M421).
+  - ebff6cc6, the snapshot held as the daemon holds a template (1,051 pages, 386 written):
+    cold_restore 15.1 / 16.4 / 17.0 / 17.2 against 17.5 / 21.0 / 22.4 / 23.0;
+    cold_spawn_exit 69.4 / 75.4 / 83.5 / 152.8 against 91.6 / 101.3 / 121.8 / 137.3;
+    warm_request 2.49 / 2.52 / 2.54 / 2.69 against 6.79 / 10.51 / 10.58 / 10.63; the
+    populate 2.64 / 3.03 / 3.46 / 3.60 over 558 runs, the written pages' 1.70 of it.
+- **Decided.** A Windows restore records its working set and maps it ahead by default, as
+  Linux's and macOS's do: a cold restore 1.5 times as fast, its start to exit twice as fast,
+  a warm one 8 to 15 times as fast, for 54 to 64 ms more of cold setup on CI. It maps ahead in
+  two calls, written pages for writing and the rest for reading: one mechanism where there
+  were two (Windows' `populate_writable` is gone), at what the copies and the calls cost.
+
+### M416. A budget's give-back with no answer, and a budget past what a microVM gives back (D188, D151)
+
+- **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` failed
+  on CI's x86_64 Linux in 3 of the 6 runs of win-pools from 4b6e135f to 15f4ea19 (CI
+  40961442989, 41004323062, 41167803629). Why, each time?
+- **Method.** The daemon's log each failing job printed, and mm/memcontrol.c (Linux 6.19):
+  memory.high's throttle and `memory.reclaim`. Then the test on Fedora (Intel Core
+  i9-14900HX, 32 CPUs, Linux 6.19.10, its other users' work at a load of 15 to 33), 2026-10-30,
+  in four batches as the daemon and the test changed.
+- **Found, CI.**
+  - 41167803629: with its budget set a quarter GiB short of the 824 MiB its microVM held, its
+    give-back had no answer within the daemon's 10 s (`TAKE_TIMEOUT`) and was ended. The
+    daemon's word said its budget was short by 26 MiB and 0 MiB given back, as its microVM held
+    514 MiB, and a moment later 454 MiB with room again: it had given back 310 MiB and more,
+    its answer lost.
+  - 41004323062 and 40961442989: its host's own pressure had it give back 365 and 479 MiB of
+    what it read before its budget came, so a budget a quarter GiB short of the 429 and 289 MiB
+    it then held was short of what it held with nothing to give back. It gave back 127 and 7
+    MiB, stayed short by 151 and 247 MiB, held within the least room a run goes on in, and its
+    read of a GiB after took 26.6 s for its first file of 1 MiB, past the test's minute.
+  - Past memory.high, the host sleeps each of a cgroup's processes as it returns to user mode
+    (a vCPU before each entry into its guest), overage² seconds for each page charged to it
+    and at most 2 s (`mem_cgroup_handle_over_high`, `calculate_high_delay`): 0.2 s a page at
+    45% past it. A kill ends a guest's `memory.reclaim` (`memory_reclaim`, at a pending signal).
+- **Decided.** Where a give-back its budget asked for has no answer, the budget's word says
+  what its host holds less of the microVM, counted as the word counts what it holds
+  (`budget.rs`, `held_now`): "past 0 warm VMs ended and N MiB its host holds less of it as it
+  gave back what it held cold, with no answer". The deadline stays. A group's give-backs are
+  asked in turn (groups.rs), and with no deadline one that never answered would keep the rest
+  waiting, as a pass that waited on each in turn once did (M308). The test raises a budget
+  that leaves its microVM short past all it held cold before its read of a GiB, and reads
+  once the daemon's last word of the budget is no shortage: the daemon says a budget has room
+  again once, and a microVM that went on giving back past its answer may have had it said
+  before the raise.
+- **Found, Fedora.** Every user slice there is watched by systemd-oomd, which ends one held
+  past 80% of memory pressure for 20 s (`/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf`).
+  - With no deadline anywhere and the test's first raise, which waited for a word said before
+    it: 6 runs of 8 passed. The 2 failures were the test's wait.
+  - With no deadline on the budget's give-back nor the host's pressure's: 3 of 7 passed. oomd
+    ended 3 microVMs in their give-back, and in 1 the gigabyte touched and freed first was not
+    back within a minute.
+  - With the deadline and the word above: 0 of 4. No budget word came within a minute.
+  - With init reclaiming before it forks a give-back's child: 0 of 2. Still no answer in 10 s,
+    and oomd ended both. That change was not kept.
+  - So, under that load, a microVM a quarter GiB past its budget answered nothing for a
+    minute, whatever the daemon did. Its VM process's own threads are slept as they allocate,
+    as M391 found its balloon thread.
+  - Open: what of the path from the daemon to a guest's give-back, and of the give-back
+    itself, allocates under a budget.
+- **Found, short with nothing given back** (f0880522, CI 41292358322, x86_64 Linux with
+  glibc, the test's try 1, its guest's kernel counting what it read as the test asks): the
+  budget's first word counted the slice holding 818 MiB; its host's own pressure (140 ms
+  stalled in 2 s) then had the microVM give back 513 MiB it held cold of its files; the
+  budget set a quarter GiB short of 818 found it short by 256 MiB with none left to give
+  back, the 512 MiB its guest read still counted inactive (Inactive(file) 524,268 kB as the
+  budget came). Its host still counted them: memory.current, which caps what the budget
+  counts held, falls as its guest reports the pages free, each 2 s (Linux 6.18
+  mm/page_reporting.c, PAGE_REPORTING_DELAY), and the daemon tells a microVM held short its
+  room again each window. So the test's race of its host's pressure taking first, which it
+  already met as a budget within reach, is met as a budget short too where its host took
+  first between the word that counted and the budget (containers.rs, `host_took`).
+
+### M417. What a guest's kernel writes to a console told to be quiet, as it panics
+
+- **Question.** A microVM or a builder whose guest resets said only "guest requested a reset":
+  its console is no one's (`--no-console`, every microVM and builder the daemon runs), so
+  what its kernel wrote there of why went nowhere (CI 41240176793's x86_64 Linux, build.rs
+  `a_builders_memory_is_plugged_as_its_build_needs_it`). How much does a kernel write there
+  as it panics, told to be quiet as `--no-console` tells it (`vm::kernel_cmdline`), for the
+  VM process to keep what says why?
+- **Method.** The M5 Max (macOS 26.4.1, Hypervisor.framework), 2026-10-31: shards' pinned
+  kernel (6.18.48, arm64, `Image-6.18.48-aarch64-e39058b2b627`) booted with no root, `shards
+  run --kernel … --memory 256 --cmdline "console=ttyS0 panic=-1 quiet"`, its console's
+  bytes counted from the VM process's stdout; and again without `quiet`.
+- **Found.** Quiet, 1,129 bytes in all: the errors before its panic (the root device it
+  could not open, the file systems it knows), then 858 bytes from `Kernel panic - not
+  syncing: VFS: Unable to mount root fs on unknown-block(0,0)` to its reset (the panic's
+  line, its CPU, the hardware's name, a call trace of 11 frames, the kernel's offset, its
+  CPU features, its memory limit). Not quiet, 14,232 bytes, its whole boot. A panic's own
+  lines reach a quiet console whole, as the kernel makes its console verbose before it says
+  why it panics (kernel/panic.c, `console_verbose()` before `pr_emerg("Kernel panic - not
+  syncing: …")`).
+- **Decided.** The VM process keeps the last page its guest's console wrote (4 KiB,
+  devices::serial `said`), which holds this panic and its errors with room for a longer
+  call trace, and says its whole lines with the reset of a guest whose console no one read,
+  each other character a terminal acts on escaped; each reset says which it was as it
+  comes (a triple fault, a hypervisor's reset or crash event, PSCI's SYSTEM_RESET, WHP's
+  unrecoverable exception, the keyboard controller's reset Linux reboots by), as a triple
+  fault writes nothing. boot.rs `a_reset_with_no_console_says_its_guests_panic` holds it so.
+
+### M418. How long kiln's headroom guard freezes a run on jupiter
+
+- **Question.** The restore bench's runs on jupiter (M415's arms with and without the working
+  set, D196) sat suspended for hours: a bench build started 2026-10-31 at 14:05 PDT timed
+  out unbuilt by 18:45, its compilers' threads `Wait/Suspended` whenever looked at. kiln's
+  headroom guard on jupiter (`kiln.exe headroom-guard`) suspends the processes of kiln's
+  runs while its "kiln server" probe answers past its second (`kiln.log`'s `headroom
+  event=… CPU cut to … cores`), and holds them to a learned budget between
+  (`headroom/learned.json`, `cpu_knee`: unsafe at 0.0148 cores, a budget of 0.008 to
+  0.031). How long is a run frozen at a time, and how long does it run between, so that a
+  measurement taken under it can tell a sample it froze across from one it did not?
+- **Method.** `docs/research/measurements/kiln-guard/ticks.ps1`, as a kiln run on jupiter
+  (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200) beside the bench's build, 2026-11-01
+  05:00:38 to 05:03:40 UTC: a thread sleeping a millisecond at a time (Thread.Sleep, the
+  system's default timer resolution) for three minutes, each gap between its wakings
+  counted.
+- **Found.** Of 181.7 s, 177.8 s frozen: 258 wakings, at p50 15.44 ms and p90 15.78 ms
+  apart (the timer's 15.6 ms resolution), one gap of 51 ms, and 8 freezes, of 1,471 ms, then
+  29,059 ms and six of 24,260 to 24,971 ms, about every 25 s, the run running half a second
+  or less between them. They do not follow the guard's log: it said its probe was out past
+  its second at 05:00:57, 05:01:52, 05:02:47 and 05:03:35, back to calm 8 to 18 s after
+  each, some cutting kiln's CPU to 0.0 or 0.1 cores, but the freeze from 05:01:11 ran 24.6 s
+  through the calm from 05:01:10 to 05:01:52, and each began about 25 s after the one before
+  whatever the log said. So the log does not say when a run is frozen, and no freeze was
+  shorter than 1.4 s, where a running sleeper's longest gap was 51 ms.
+- **Decided.** A benchmark's process watches for its own freezes: a ticker thread sleeping
+  a millisecond at a time records each gap between its ticks past 250 ms, above every gap
+  it ran through here and below every freeze, and a sample taken across one is taken again,
+  counted in the report (`frozen_retaken`; support `unfrozen`); the restore bench takes each
+  of its samples so, its working set set aside again with a sample that runs without one.
+  On a host no guard freezes, none is taken again. Its waits, for a child's readiness and
+  end and for a working set kept, count only the time its process could run, the wall's less
+  each freeze its ticker saw and the one it has not yet ticked past (support
+  `runnable_since`): a process ran 0.2 to 0.6 s between freezes of 25 s (above), so a
+  child given a minute of the wall's had 1.8 s at most to run, where on a host no guard
+  froze it had the minute.
+
+
+### M419. Stops beside a gigabyte build (D27's stop, D195's daemon on Windows)
+
+- **Question.** Windows CI gave up on stops, its daemon saying "no end heard 2s after its
+  microVM was killed: its VM process runs on", each time as `an_image_of_gigabytes_boots`
+  ran beside them (9fdbed51's exec test on windows-2025, twice; the cp test on
+  windows-2022 at 3b1e42af, CI 41277401058). A stop of a `sleep`, which ignores SIGTERM as a
+  container's first process does, waits its 10 s of grace, sends SIGKILL and waits 10 s
+  more (`KILL_WAIT`, moby daemon/kill.go's), then kills the VM process and waits 2 s
+  (`LAST_WAIT`). How often does a stop give up beside that build, and does its VM process
+  end late or never, its pages resident or trimmed?
+- **Method.** containers.rs `stops_beside_a_gigabyte_build` (ignored;
+  docs/research/measurements/stop-under-io/run.sh, and on CI's Windows runners budget-e2e's
+  `windows:containers ignored:stops_beside_a_gigabyte_build`): four threads each start a
+  run of `sleep` and stop it, 10 times each with nothing beside them, then for as long as
+  that test's build goes on beside them, its 2 GiB file written, built into an image and
+  read by a run; and eight runs idle from before the build, as the suite's are beside it,
+  are stopped together 5 s into that read, where each give-up on CI came some 6 s before
+  the test ended. Each way's stops as n, p50, p90, p99 and max (nearest rank); each that
+  heard no end with what it said, its VM process's CPU time and resident memory as it gave
+  up, and how long the process outlived it.
+- **Found, the M5 Max** (Apple M5 Max, macOS 26.4.1, 6b17d663 and the test, 2 rounds alone):
+  alone, n 8, p50 10,026.1 ms, max 10,048.9; beside the build (270 s), n 100, p50 10,086.3,
+  p90 10,406.2, p99 10,877.3, max 10,885.3; none gave up.
+- **Found, CI's Windows runners** (ade1ed09, budget-e2e 41288094847; the four threads
+  alone): windows-2025 (windows-2025-vs2026), alone n 40, p50 10,031.7 ms, p99 10,072.6, max
+  10,072.6; beside the build (125.9 s) n 23, p50 10,043.4, p90 10,090.4, max 10,650.6.
+  windows-2022, alone n 40, p50 10,025.7, max 10,094.0; beside the build (107.4 s) n 26, p50
+  10,035.1, p90 10,611.8, max 10,847.0. None gave up: a run just started stops beside the
+  build as it does alone. So the measurement now stops runs idle from before the build
+  too (Method).
+- **Found, with the idle runs** (f3760b80, budget-e2e 41292368066): windows-2022, alone n
+  40, p50 10,023.2 ms, max 10,079.2; beside the build (119.4 s) n 24, p50 10,027.0, p90
+  10,349.5, max 19,383.1; idle, stopped as its image is read, n 8, p50 10,292.9, max
+  10,317.8. windows-2025, alone n 40, p50 10,028.6, max 10,083.8; beside n 24, p50 10,058.9,
+  p90 10,217.8, max 14,809.3; idle n 8, p50 10,190.7, max 10,239.5. None gave up, but
+  beside the build a stop's SIGKILL took up to 9.4 s to be heard (19.4 s, less its 10 s of
+  grace), against `KILL_WAIT`'s 10: a guest stalled near the wait whose end is the VM's
+  kill. How long a VM process takes to end once killed there, `LAST_WAIT`'s 2 s, the
+  measurement now times too: eight more runs' VM processes killed outright 5 s into the
+  read, each's end after the kill.
+- **Found, killed outright** (8bdb04f2, budget-e2e 41295804483, windows-2025): the eight VM
+  processes killed 5 s into the read ended within 1.4 ms of their kills, the last of them;
+  a VM process idle beside the build ends at once. So a stop that gave up, its VM process
+  running on 2 s after its kill, killed one the host held up, and its guest's SIGKILL took
+  up to 9.4 s beside the build: the stalls are the host's, beside its disk's gigabytes.
+  dev's CI at de631b49 (41291108866, windows-2025) failed two runs not ready in 60 s, their
+  VMs idle 20 s with every thread waiting and 11.9 GiB of memory free, again as
+  an_image_of_gigabytes_boots read its image: the same tree had passed (41284231177).
+- **Decided.** an_image_of_gigabytes_boots runs alone, in a test binary of its own
+  (tests/gigabytes.rs): cargo runs a crate's test binaries one after another, so no test
+  waits on a host whose disk it fills. A stop or a start held up by its host's disk as long
+  as Docker's waits (KILL_WAIT, LAST_WAIT, READY_TIMEOUT) still fails as Docker's does.
+
+### M420. CI's native tests' steps at their limits again (M245)
+
+- **Question.** dev's CI at beb04a58 (41311980102) ran out of x86_64 Linux's tests' step's
+  41 minutes, the limit M245 set a third above the slowest it measured (30.2), as seven more
+  of the runs before it had. Were their runners slow or their tests hung, and what limits do
+  the native jobs' steps need now?
+- **Method.** GitHub's records of the last 79 CI runs (2026-10-27 15:05 to 2026-11-01 13:35
+  UTC, runs 40527550618 to 41311980102; `docs/research/measurements/ci-limits/runs.txt`),
+  through `ci-limits/limits.py`: each native job's steps' starts and ends, a job's time its
+  steps' (GitHub recorded one macOS job's end, 41284231177's, an hour past its last step's);
+  and x86_64 Linux's logs, each tests' step split at cargo's `Finished` line into building
+  the tests and running them, and for each step that ran out, the binary it was in, how long
+  since the suite last moved, and what the rest of the suite took from that binary's start
+  in the runs that ran through.
+- **Found** (minutes; n, p50, p90, p99, max of the steps that ran through):
+
+  | job | tests' step | ran out | other steps' max |
+  |---|---|---|---|
+  | x86_64-unknown-linux-gnu | 54, 35.6, 40.2, 40.8, 40.8 | 8 | 13.0 |
+  | aarch64-unknown-linux-gnu | 66, 15.0, 16.1, 16.5, 16.5 | 0 | 7.3 |
+  | aarch64-apple-darwin | 61, 24.8, 27.9, 28.8, 28.8 | 0 | 11.3 |
+  | x86_64-pc-windows-msvc (windows-2025) | 57, 58.1, 75.7, 90.9, 90.9 | 2 | 16.1 |
+  | x86_64-pc-windows-msvc (windows-2022) | 44, 62.1, 66.9, 80.4, 80.4 | 2 | 15.0 |
+
+  - x86_64 Linux's step has grown 8.7 minutes at p50 since M245's 26.9, two weeks before.
+    Building its tests took 14.5 at p50 and 16.4 at most, running them 22.0 and 24.7.
+  - Four of the eight that ran out were slow runners in the suite's last binaries, at most
+    1.6 minutes since the suite last moved: 41311980102 (dev) in tests/image.rs, 41291076590
+    (gpu), 41167803629 and 40614692136 (win-pools) in the last tests/oracle.rs, whose rest took
+    0.3 to 0.5 in the runs that ran through: steps of 41.5 to 41.7.
+  - The other four, all of 2026-10-27, stopped far from the end, 7.8 to 22.6 minutes of the
+    suite left by those runs' times: 40527550618 in tests/daemon.rs, 40537861914 and 40571636357 in
+    tests/containers.rs (a test running 3.2 and 4.9 minutes since the suite last moved), and
+    40544371607 in tests/build.rs (`run_caches_are_shared_among_concurrent_builds`, 23.8).
+  - Windows' four that ran out were one tree's: 23b2841a's, on both runners of win-pools'
+    run 40631138814 and win-pools-stage's 40631141474.
+- **Decided.** Each limit a third above the slowest measured, as M245 set them: the tests'
+  step 56 minutes (41.7 slowest, x86_64 Linux's), and the job 74, those 56 and a third above
+  its other steps' slowest (13.0); on Windows, whose runs now say how long the slowest take,
+  the tests' step 122 (90.9 slowest, windows-2025's) where it had 120, and the job 144, those
+  122 and a third above its other steps' slowest (16.1), where it had 150.
+- **Found, the first run under them** (271f399b, CI 41329747161): x86_64 Linux's tests' step
+  took 41.8 minutes, past the 41 it had, and windows-2025's 74.6 and windows-2022's 44.9;
+  every job passed. A third above 41.8 is still 56.
+
+### M421. A sparse file's pages, dropped from Windows' cache once no process maps them (D196, D25)
+
+- **Question.** jupiter's restore bench (M415's arms, n=100, 1 vCPU, 256 MiB, at 271f399b)
+  restored at 82.9 to 86.6 ms at p50 with the working set mapped ahead and 132.7 to 135.3
+  without it, where M345 had 69.8 without: its populate took 65.8 to 66.2 ms at p50 for 991
+  to 1,014 pages, and up to 928 ms, where jupiter's own populate of 512 pages written
+  took 3.68 ms (M415). The host read 11,000 to 20,000 pages a second from its disk for most
+  of the 103 s the second run took, in 800 to 1,350 reads a second (2,185 to 8,264 pages for
+  a few seconds of it), and about 10 before and after it (`\Memory\Pages Input/sec`,
+  `\Memory\Page Reads/sec`): a restore's pages came from the disk, not the cache. Why
+  does a restore's memory file not stay cached, from one restore to the next?
+- **Method.** On jupiter (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200.9711),
+  2026-11-01, `docs/research/measurements/windows-mapped-cache/run.sh`: a 256 MiB file
+  written past the cache (write.ps1: FILE_FLAG_NO_BUFFERING), dense, then sparse with its
+  first half a hole (`fsutil sparse setrange`, FSCTL_SET_ZERO_DATA); 1,000 random pages of
+  its data, and of its hole, touched through a copy-on-write view (touch.ps1), as a WHP
+  restore maps its memory file (vmm `platform::map_file_views`), by three processes one
+  after another: with nothing holding the file, with another process holding it open (as
+  `snapshot::hold` held a template's files), holding a read-only view of it, and holding a
+  view whose pages it had read (hold.ps1). And a real snapshot's memory file (the resume
+  guest's, 256 MiB, sparse in 21 allocated ranges), touched so before and after each of five
+  `shards restore`s of it, each restore's populate as it logs it.
+- **Found** (ms for 1,000 pages, each process's):
+
+  | file, pages | nothing held | handle held | view held | view held, read |
+  |---|---|---|---|---|
+  | dense, data | 263.1, 1.8, 2.2 | 192.8, 1.9, 2.2 | 199.3, 2.2, 1.9 | 2.2, 1.6, 1.8 |
+  | sparse, data | 384.0, 573.1, 412.1 | 247.9, 213.6, 199.6 | 236.8, 1.9, 2.1 | 1.6, 1.6, 1.6 |
+  | sparse, hole | 12.8, 14.2, 15.0 | 12.7, 14.6, 11.4 | 13.5, 2.0, 1.4 | 1.6, 1.6, 1.7 |
+
+  - A dense file's pages stay cached once the process that mapped them ends: the first
+    process read them from the disk, the next found them in 1.8 to 2.2 ms. A sparse file's
+    are dropped, its data's and its hole's alike, held open by another process or not:
+    each process read its data from the disk again. A view of it mapped anywhere keeps
+    them, read by its holder or not.
+  - The snapshot's memory file: 52.6 to 78.6 ms for its 1,000 pages before and after each
+    restore, never cached; each restore's populate 65.1 to 86.8 ms for its 1,000 working-set
+    pages (529 runs), its 326 written ones' 26.3 to 40.3 (192 runs): 65 to 87 µs a page on
+    jupiter, whose WHP runs on the hardware, where M415 put CI's 50 to 78 down to its WHP's
+    running nested (M308).
+- **Found, the restore bench held** (ebff6cc6's Rust, n=100 each arm, 1 vCPU, 256 MiB, ms,
+  p50 / p99; `--held yes`, the snapshot held from its first restore on, as the daemon holds
+  a template, against `--held no`):
+  - jupiter (2026-11-01 18:58 UTC, one run after the other, the host's CPUs 12 to 28% busy,
+    working sets of 1,051 and 1,119 pages): a cold restore
+    with the working set 15.1 / 17.0 held against 59.0 / 74.3 not, without it 17.5 / 22.4
+    against 108.9 / 152.2; a cold start to exit 69.4 / 83.5 against 114.1 / 129.1; the
+    populate 2.64 / 3.46 against 44.6 / 60.7, 2.5 µs a page, M415's single calls' 2.6 a
+    page read and 7.2 written. The
+    host read 2,341 pages a second from its disk on average as the held run ran, 25,014 as
+    the other did.
+  - CI's windows-2025 (whp-restore 41337030127 at 757013d, AMD EPYC 9V45, Windows Server
+    10.0.26100.33650, 969 and 967 pages): a cold restore with the working set 20.4 / 23.1
+    held against 40.6 / 45.5, without it 36.0 / 52.9 against 62.7 / 70.9; the populate 4.53
+    / 4.87 against 30.3 / 34.5.
+  - A warm request (release to the guest's marker) took 2.49 / 2.54 held and 2.86 / 2.95
+    not on jupiter, 9.13 / 9.20 and 2.68 / 2.74 on CI; at 271f399b, unheld, jupiter's two
+    runs took 5.20 / 6.86 and 0.27 / 0.62: runs of one build 0.27 to 9.13 apart at p50,
+    held or not. KVM's differ so too, run to run: 0.66, 0.67, 0.78, 2.52 and 2.54 at p50 in
+    CI's restore bench of five runs (41229596566 to 41321132233, n=30, AMD EPYC 7763). What
+    a guest runs between its release and its marker is not yet measured.
+- **Decided.** A generation held between restores keeps a view of its memory mapped on
+  Windows (`platform::keep_cached`, read-only, of the whole file, never read; in
+  `snapshot::Held`, which the daemon keeps of each template it restores, D25), and the
+  memory file stays sparse, taking the disk its guest used (M345). The restore bench holds
+  its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
+  `shards restore` finds it.

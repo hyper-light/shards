@@ -918,8 +918,7 @@ pub fn ask(
 /// Asks the daemon whose home is this process's working directory for `command`, with
 /// `fds`, and takes its answer whole, as [`ask`] does: what a daemon asks of itself (a
 /// context's steps, daemon/remote.rs), which starts no daemon where its own has closed.
-// The daemon's, Unix's alone as yet (D195).
-#[cfg_attr(not(unix), allow(dead_code))]
+// The daemon's, for a context's copy step (D180).
 pub fn ask_here(command: &Command, fds: &[Stream<'_>]) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
     use shards_ipc::slots;
     for _ in 0..RESTARTS {
@@ -1561,6 +1560,57 @@ unsafe extern "system" fn on_console_event(event: u32) -> windows_sys::core::BOO
         end_by(sig);
     }
     1
+}
+
+/// A command a Windows daemon started for another machine's client (D180): the pipe its
+/// daemon gave it ([`crate::context::SIGNAL_FD`]), whose client's signals it reads on a
+/// thread of its own, each as a Unix command's comes by kill(2): on its run's connection,
+/// where it forwards them ([`forward`]), and otherwise, or where it has none yet, ending it
+/// as the signal would (HUP, INT, QUIT, TERM); the pipe's end is its client's hang-up,
+/// SIGHUP. Taken first thing in main, and the variable let go, so that nothing this process
+/// starts takes it too.
+#[cfg(windows)]
+pub(crate) fn take_signal_pipe() {
+    let Some(n) = std::env::var(crate::context::SIGNAL_FD)
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+    else {
+        return;
+    };
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(crate::context::SIGNAL_FD) };
+    let Ok(Some(handle)) = shards_ipc::given_fd(n) else {
+        return;
+    };
+    let mut pipe = std::fs::File::from(handle);
+    let _ = std::thread::Builder::new()
+        .name("client-signals".into())
+        .spawn(move || {
+            let mut word = [0u8; 4];
+            loop {
+                let (linux, ended) = match pipe.read_exact(&mut word) {
+                    Ok(()) => (u32::from_le_bytes(word), false),
+                    Err(_) => (u32::try_from(shards_ipc::signal::SIGHUP).unwrap_or(1), true),
+                };
+                let sig = Sig::try_from(linux).unwrap_or(0);
+                let ends = [
+                    shards_ipc::signal::SIGHUP,
+                    shards_ipc::signal::SIGINT,
+                    shards_ipc::signal::SIGQUIT,
+                    shards_ipc::signal::SIGTERM,
+                ]
+                .contains(&sig);
+                let handed = CONSOLE_CURRENT
+                    .get()
+                    .is_some_and(|current| hand(current, linux, ends.then_some(sig), false));
+                if !handed && ends {
+                    end_by(sig);
+                }
+                if ended {
+                    return;
+                }
+            }
+        });
 }
 
 /// Windows' [`forward`]: with `proxies`, the console's events go to [`on_console_event`];

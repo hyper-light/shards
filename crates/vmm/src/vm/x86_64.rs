@@ -346,6 +346,8 @@ struct Assembled {
     pci: Option<acpi::PciBridge>,
     /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
     share_window_mib: u64,
+    /// The GPU's window's length, where it has a GPU (D201).
+    gpu_window: Option<u64>,
 }
 
 /// Where the memory to plug starts (D133): above 4 GiB, at the first GiB boundary after
@@ -372,6 +374,9 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
     Ok((ram, ranges))
 }
 
+/// `gpu`, whether it has a GPU, and its window's length: as its renderer offers, where
+/// `Some(0)`, a boot's; that long, a restore's, where its renderer offers at least as much
+/// (D150, D201).
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
@@ -380,9 +385,6 @@ fn assemble(
     gpu: Option<u64>,
     pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
-    if gpu.is_some() {
-        return Err("a GPU is given on macOS hosts alone so far (D144)".into());
-    }
     let ram = config
         .memory_mib
         .checked_mul(MIB)
@@ -399,6 +401,15 @@ fn assemble(
     let (regions, end) = super::pmem_regions(config, first)?;
     // Its writable layer after them (D190).
     let (layer, end) = super::layer_layout(hosts.layer, end)?;
+    // A GPU's window after it, at a GiB boundary, as long as the renderer says (D201).
+    let gpu = gpu.map(|saw| super::gpu_layout(saw, end)).transpose()?;
+    let end = match &gpu {
+        Some((_, r)) => r
+            .base
+            .checked_add(r.len)
+            .ok_or("the GPU's window overflows the address space")?,
+        None => end,
+    };
     // The PCI bus's 64-bit window past all of that, as long as its 64-bit BARs need (D154).
     let mem64 = match pci.mem64()? {
         Some((len, align)) => Some((
@@ -466,6 +477,10 @@ fn assemble(
         Some((translation, device, endpoints)) => (Some(translation), Some(device), endpoints),
         None => (None, None, Vec::new()),
     };
+    let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
+    let gpu = gpu
+        .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
+        .transpose()?;
     let devices = super::virtio_devices(
         config,
         &regions,
@@ -473,8 +488,8 @@ fn assemble(
         &windows,
         Some(&vm),
         hosts,
-        hotplug
-            .into_iter()
+        gpu.into_iter()
+            .chain(hotplug)
             .chain(reporting)
             .chain(
                 swap.clone()
@@ -600,6 +615,7 @@ fn assemble(
         virtio,
         pci,
         share_window_mib,
+        gpu_window,
     })
 }
 
@@ -675,8 +691,10 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     })?;
     super::huge_pages_when_init_runs(&a.control, &memory);
     debug!("kernel and initrd copied");
-    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
+    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps,
+    // and its GPU's window's (D150).
     config.share_window_mib = a.share_window_mib;
+    config.gpu = a.gpu_window;
     let told = super::kernel_cmdline(cfg);
     let mut cmdline = match &a.pci {
         Some(_) => format!("{told} {MACHINE_CMDLINE}"),
@@ -754,6 +772,8 @@ pub fn restore(
     // gone (mm/userfaultfd.c, `userfaultfd_clear_vma`: `uffd_wp_range`; PM M312), and a
     // working set mapped ahead with it held off for its mapping alone was faulted in again.
     let around = platform::FaultAroundOff::over(&mapped::host_ranges(&memory, &a.bus.pmem));
+    // WHP's populate copies the written pages itself, in the host's kernel ([`pre_fault`]).
+    #[cfg(not(hv = "whp"))]
     if let Err(e) = mapped::copy_written(&memory, &working_set) {
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }
@@ -776,12 +796,54 @@ pub fn restore(
     })
 }
 
-/// Maps every page of `working_set` into the stage-2 tables; how many it mapped. A page
-/// that cannot be mapped ahead is only a fault later: every run it can
+/// [`pre_fault`] on WHP: every run of `working_set` in one call, the rest's for reading, then
+/// its written pages' for writing, which makes their copies in the host's kernel: no copy
+/// made from the VM process and no call a run, for about what the copies and the calls cost
+/// (PM M415); the copies' said as `mapped::copy_written` says them on the other backends. A page that cannot be mapped
+/// ahead is only a fault later, so a call that fails is made again a run at a time
 /// ([`mapped::every_run`]).
-fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
+#[cfg(hv = "whp")]
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
+    let mut ahead = 0;
+    let mut count = 0;
+    for write in [false, true] {
+        let t0 = crate::log::uptime_us();
+        let runs = mapped::runs(working_set.iter().filter(|t| t.written == write).map(|t| t.gpa));
+        let made = runs.len();
+        count += made;
+        let mut done = 0;
+        if vcpu.pre_fault_runs(&runs, write).is_ok() {
+            done = runs.iter().map(|(_, len)| (len / PAGE) as usize).sum();
+        } else {
+            let every = mapped::every_run(runs, |gpa, len| {
+                vcpu.pre_fault_runs(&[(gpa, len)], write)
+                    .map(|()| done += (len / PAGE) as usize)
+                    .map_err(|e| e.to_string())
+            });
+            if let Err(e) = every {
+                warn!("mapping the working set ahead {e}: the guest faults those pages in");
+            }
+        }
+        ahead += done;
+        if write && done > 0 {
+            info!(
+                "copied {done} written working-set pages ahead, in {made} runs, in {} us",
+                crate::log::uptime_us().saturating_sub(t0)
+            );
+        }
+    }
+    (ahead, count)
+}
+
+/// Maps every page of `working_set` into the stage-2 tables; how many it mapped, and in how
+/// many runs of consecutive pages. A page that cannot be mapped ahead is only a fault later:
+/// every run it can ([`mapped::every_run`]).
+#[cfg(not(hv = "whp"))]
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
     let (mut ahead, mut unable) = (0, false);
-    let done = mapped::every_run(mapped::runs(working_set.iter().map(|t| t.gpa)), |gpa, len| {
+    let runs = mapped::runs(working_set.iter().map(|t| t.gpa));
+    let count = runs.len();
+    let done = mapped::every_run(runs, |gpa, len| {
         if unable {
             return Ok(());
         }
@@ -798,7 +860,7 @@ fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
     if let Err(e) = done {
         warn!("mapping the working set ahead {e}: the guest faults those pages in");
     }
-    ahead
+    (ahead, count)
 }
 
 /// Stage-2 pages, as working sets record them: the host's pages.
@@ -884,9 +946,10 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                 // After the state, which sets the paging mode KVM maps for.
                 if !working_set.is_empty() {
                     let t0 = crate::log::uptime_us();
-                    set_up.prefetched = pre_fault(&vcpu, &working_set);
+                    let (prefetched, runs) = pre_fault(&vcpu, &working_set);
+                    set_up.prefetched = prefetched;
                     info!(
-                        "mapped {} of {} working-set pages ahead in {} us",
+                        "mapped {} of {} working-set pages ahead, in {runs} runs, in {} us",
                         set_up.prefetched,
                         working_set.len(),
                         crate::log::uptime_us().saturating_sub(t0)

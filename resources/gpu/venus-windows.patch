@@ -1,0 +1,1010 @@
+The krunkit fork of virglrenderer (0.10.4e-krunkit), its in-process Venus built for Windows
+with clang-cl (shards' D202; scripts/gpu-libs applies it): the POSIX names it uses given
+their UCRT twins (src/shards_win32.h, src/shards_compat), Vulkan's loader opened from
+System32 rather than linked (src/shards_vulkan_win32.c: the loader's entry points the
+renderer's objects leave undefined), blobs mapped by their pointers as on macOS, and every
+allocation a guest may map made of pages the renderer allocates and its device imports
+(VK_EXT_external_memory_host), which a blob holds until it goes.
+
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/meson.build src/virglrenderer-0.10.4e-krunkit/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -169,6 +169,10 @@
+     conf_data.set('HAVE_@0@'.format(f.to_upper()), 1)
+   endif
+ endforeach
++# The UCRT's timespec_get is an inline function of time.h, which a link test alone misses.
++if with_host_windows and cc.has_function('timespec_get', prefix : '#include <time.h>')
++  conf_data.set('HAVE_TIMESPEC_GET', 1)
++endif
+ 
+ if host_machine.endian() == 'little'
+   conf_data.set('UTIL_ARCH_LITTLE_ENDIAN', 1)
+@@ -277,8 +281,10 @@
+       gbm_dep = dependency('gbm')
+    endif
+ 
+-   add_project_link_arguments('-lMoltenVK', language : 'c')
+-   add_project_arguments('-I/opt/homebrew/opt/molten-vk/libexec/include', language : 'c')
++   if host_machine.system() == 'darwin'
++      add_project_link_arguments('-lMoltenVK', language : 'c')
++      add_project_arguments('-I/opt/homebrew/opt/molten-vk/libexec/include', language : 'c')
++   endif
+ 
+    conf_data.set('ENABLE_VENUS', 1)
+ 
+@@ -326,7 +332,13 @@
+                output : 'config.h',
+                configuration : conf_data)
+ 
+-add_project_arguments('-imacros', meson.current_build_dir() / 'config.h', language : 'c')
++if cc.get_argument_syntax() == 'msvc'
++   add_project_arguments('/FI' + (meson.current_build_dir() / 'config.h'), language : 'c')
++   add_project_arguments('/FI' + (meson.current_source_dir() / 'src' / 'shards_win32.h'), language : 'c')
++   add_project_arguments('-I' + (meson.current_source_dir() / 'src' / 'shards_compat'), language : 'c')
++else
++   add_project_arguments('-imacros', meson.current_build_dir() / 'config.h', language : 'c')
++endif
+ add_project_arguments('-DHAVE_CONFIG_H=1', language : 'c')
+ 
+ inc_configuration = include_directories(['.', 'src'])
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/meson.build src/virglrenderer-0.10.4e-krunkit/src/meson.build
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -232,7 +232,7 @@
+ endif
+ 
+ if with_host_windows
+-  virgl_sources += ['mman_win32.c']
++  virgl_sources += ['mman_win32.c', 'shards_win32.c', 'shards_vulkan_win32.c']
+ endif
+ 
+ libvirgl = static_library(
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/shards_compat/unistd.h src/virglrenderer-0.10.4e-krunkit/src/shards_compat/unistd.h
+--- a/src/shards_compat/unistd.h
++++ b/src/shards_compat/unistd.h
+@@ -0,0 +1,10 @@
++/*
++ * The POSIX names virglrenderer's sources include unistd.h for, on Windows (shards, D202):
++ * its CRT's own.
++ */
++#ifndef SHARDS_COMPAT_UNISTD_H
++#define SHARDS_COMPAT_UNISTD_H
++#include <io.h>
++#include <process.h>
++#include <stdlib.h>
++#endif
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/shards_vulkan_win32.c src/virglrenderer-0.10.4e-krunkit/src/shards_vulkan_win32.c
+--- a/src/shards_vulkan_win32.c
++++ b/src/shards_vulkan_win32.c
+@@ -0,0 +1,335 @@
++/*
++ * The Vulkan loader's entry points Venus calls directly, on Windows (shards, D202): each
++ * forwarded to the host's loader, vulkan-1.dll from System32, opened once, at the first
++ * call, with every entry point found then, as virglrenderer opens libvulkan on Linux
++ * (vulkan-dload). Nothing links the loader, so the GPU's VM process starts where none is
++ * installed, and says so (crates/vmm, virgl.rs).
++ */
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++#include "venus-protocol/vulkan.h"
++
++static struct {
++   PFN_vkAllocateMemory AllocateMemory;
++   PFN_vkCreateDevice CreateDevice;
++   PFN_vkCreateInstance CreateInstance;
++   PFN_vkDestroyDevice DestroyDevice;
++   PFN_vkDestroyInstance DestroyInstance;
++   PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties;
++   PFN_vkEnumerateInstanceVersion EnumerateInstanceVersion;
++   PFN_vkEnumeratePhysicalDeviceGroups EnumeratePhysicalDeviceGroups;
++   PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices;
++   PFN_vkFreeMemory FreeMemory;
++   PFN_vkGetDeviceProcAddr GetDeviceProcAddr;
++   PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
++   PFN_vkGetPhysicalDeviceExternalBufferProperties GetPhysicalDeviceExternalBufferProperties;
++   PFN_vkGetPhysicalDeviceExternalFenceProperties GetPhysicalDeviceExternalFenceProperties;
++   PFN_vkGetPhysicalDeviceExternalSemaphoreProperties GetPhysicalDeviceExternalSemaphoreProperties;
++   PFN_vkGetPhysicalDeviceFeatures GetPhysicalDeviceFeatures;
++   PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2;
++   PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties;
++   PFN_vkGetPhysicalDeviceFormatProperties2 GetPhysicalDeviceFormatProperties2;
++   PFN_vkGetPhysicalDeviceImageFormatProperties GetPhysicalDeviceImageFormatProperties;
++   PFN_vkGetPhysicalDeviceImageFormatProperties2 GetPhysicalDeviceImageFormatProperties2;
++   PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
++   PFN_vkGetPhysicalDeviceMemoryProperties2 GetPhysicalDeviceMemoryProperties2;
++   PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties;
++   PFN_vkGetPhysicalDeviceProperties2 GetPhysicalDeviceProperties2;
++   PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties;
++   PFN_vkGetPhysicalDeviceQueueFamilyProperties2 GetPhysicalDeviceQueueFamilyProperties2;
++   PFN_vkGetPhysicalDeviceSparseImageFormatProperties GetPhysicalDeviceSparseImageFormatProperties;
++   PFN_vkGetPhysicalDeviceSparseImageFormatProperties2 GetPhysicalDeviceSparseImageFormatProperties2;
++   PFN_vkMapMemory MapMemory;
++   PFN_vkUnmapMemory UnmapMemory;
++} shards_vk;
++
++static BOOL CALLBACK
++shards_vulkan_open(PINIT_ONCE once, PVOID param, PVOID *context)
++{
++   (void)once;
++   (void)param;
++   (void)context;
++   HMODULE loader = LoadLibraryExW(L"vulkan-1.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
++   if (!loader)
++      return TRUE;
++   shards_vk.AllocateMemory = (PFN_vkAllocateMemory)(void (*)(void))GetProcAddress(loader, "vkAllocateMemory");
++   shards_vk.CreateDevice = (PFN_vkCreateDevice)(void (*)(void))GetProcAddress(loader, "vkCreateDevice");
++   shards_vk.CreateInstance = (PFN_vkCreateInstance)(void (*)(void))GetProcAddress(loader, "vkCreateInstance");
++   shards_vk.DestroyDevice = (PFN_vkDestroyDevice)(void (*)(void))GetProcAddress(loader, "vkDestroyDevice");
++   shards_vk.DestroyInstance = (PFN_vkDestroyInstance)(void (*)(void))GetProcAddress(loader, "vkDestroyInstance");
++   shards_vk.EnumerateDeviceExtensionProperties = (PFN_vkEnumerateDeviceExtensionProperties)(void (*)(void))GetProcAddress(loader, "vkEnumerateDeviceExtensionProperties");
++   shards_vk.EnumerateInstanceVersion = (PFN_vkEnumerateInstanceVersion)(void (*)(void))GetProcAddress(loader, "vkEnumerateInstanceVersion");
++   shards_vk.EnumeratePhysicalDeviceGroups = (PFN_vkEnumeratePhysicalDeviceGroups)(void (*)(void))GetProcAddress(loader, "vkEnumeratePhysicalDeviceGroups");
++   shards_vk.EnumeratePhysicalDevices = (PFN_vkEnumeratePhysicalDevices)(void (*)(void))GetProcAddress(loader, "vkEnumeratePhysicalDevices");
++   shards_vk.FreeMemory = (PFN_vkFreeMemory)(void (*)(void))GetProcAddress(loader, "vkFreeMemory");
++   shards_vk.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)(void (*)(void))GetProcAddress(loader, "vkGetDeviceProcAddr");
++   shards_vk.GetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void (*)(void))GetProcAddress(loader, "vkGetInstanceProcAddr");
++   shards_vk.GetPhysicalDeviceExternalBufferProperties = (PFN_vkGetPhysicalDeviceExternalBufferProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceExternalBufferProperties");
++   shards_vk.GetPhysicalDeviceExternalFenceProperties = (PFN_vkGetPhysicalDeviceExternalFenceProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceExternalFenceProperties");
++   shards_vk.GetPhysicalDeviceExternalSemaphoreProperties = (PFN_vkGetPhysicalDeviceExternalSemaphoreProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceExternalSemaphoreProperties");
++   shards_vk.GetPhysicalDeviceFeatures = (PFN_vkGetPhysicalDeviceFeatures)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceFeatures");
++   shards_vk.GetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceFeatures2");
++   shards_vk.GetPhysicalDeviceFormatProperties = (PFN_vkGetPhysicalDeviceFormatProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceFormatProperties");
++   shards_vk.GetPhysicalDeviceFormatProperties2 = (PFN_vkGetPhysicalDeviceFormatProperties2)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceFormatProperties2");
++   shards_vk.GetPhysicalDeviceImageFormatProperties = (PFN_vkGetPhysicalDeviceImageFormatProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceImageFormatProperties");
++   shards_vk.GetPhysicalDeviceImageFormatProperties2 = (PFN_vkGetPhysicalDeviceImageFormatProperties2)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceImageFormatProperties2");
++   shards_vk.GetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceMemoryProperties");
++   shards_vk.GetPhysicalDeviceMemoryProperties2 = (PFN_vkGetPhysicalDeviceMemoryProperties2)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceMemoryProperties2");
++   shards_vk.GetPhysicalDeviceProperties = (PFN_vkGetPhysicalDeviceProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceProperties");
++   shards_vk.GetPhysicalDeviceProperties2 = (PFN_vkGetPhysicalDeviceProperties2)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceProperties2");
++   shards_vk.GetPhysicalDeviceQueueFamilyProperties = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceQueueFamilyProperties");
++   shards_vk.GetPhysicalDeviceQueueFamilyProperties2 = (PFN_vkGetPhysicalDeviceQueueFamilyProperties2)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceQueueFamilyProperties2");
++   shards_vk.GetPhysicalDeviceSparseImageFormatProperties = (PFN_vkGetPhysicalDeviceSparseImageFormatProperties)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceSparseImageFormatProperties");
++   shards_vk.GetPhysicalDeviceSparseImageFormatProperties2 = (PFN_vkGetPhysicalDeviceSparseImageFormatProperties2)(void (*)(void))GetProcAddress(loader, "vkGetPhysicalDeviceSparseImageFormatProperties2");
++   shards_vk.MapMemory = (PFN_vkMapMemory)(void (*)(void))GetProcAddress(loader, "vkMapMemory");
++   shards_vk.UnmapMemory = (PFN_vkUnmapMemory)(void (*)(void))GetProcAddress(loader, "vkUnmapMemory");
++   return TRUE;
++}
++
++/* The entry points, found once; each null where the host has no loader, or its loader
++ * none of that name. */
++static void
++shards_vulkan(void)
++{
++   static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
++   InitOnceExecuteOnce(&once, shards_vulkan_open, NULL, NULL);
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory)
++{
++   shards_vulkan();
++   return shards_vk.AllocateMemory ? shards_vk.AllocateMemory(device, pAllocateInfo, pAllocator, pMemory) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice)
++{
++   shards_vulkan();
++   return shards_vk.CreateDevice ? shards_vk.CreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance)
++{
++   shards_vulkan();
++   return shards_vk.CreateInstance ? shards_vk.CreateInstance(pCreateInfo, pAllocator, pInstance) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator)
++{
++   shards_vulkan();
++   if (shards_vk.DestroyDevice)
++      shards_vk.DestroyDevice(device, pAllocator);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator)
++{
++   shards_vulkan();
++   if (shards_vk.DestroyInstance)
++      shards_vk.DestroyInstance(instance, pAllocator);
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
++{
++   shards_vulkan();
++   return shards_vk.EnumerateDeviceExtensionProperties ? shards_vk.EnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkEnumerateInstanceVersion(uint32_t* pApiVersion)
++{
++   shards_vulkan();
++   return shards_vk.EnumerateInstanceVersion ? shards_vk.EnumerateInstanceVersion(pApiVersion) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkEnumeratePhysicalDeviceGroups(VkInstance instance, uint32_t* pPhysicalDeviceGroupCount, VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties)
++{
++   shards_vulkan();
++   return shards_vk.EnumeratePhysicalDeviceGroups ? shards_vk.EnumeratePhysicalDeviceGroups(instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices)
++{
++   shards_vulkan();
++   return shards_vk.EnumeratePhysicalDevices ? shards_vk.EnumeratePhysicalDevices(instance, pPhysicalDeviceCount, pPhysicalDevices) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkFreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* pAllocator)
++{
++   shards_vulkan();
++   if (shards_vk.FreeMemory)
++      shards_vk.FreeMemory(device, memory, pAllocator);
++}
++
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vkGetDeviceProcAddr(VkDevice device, const char* pName)
++{
++   shards_vulkan();
++   return shards_vk.GetDeviceProcAddr ? shards_vk.GetDeviceProcAddr(device, pName) : NULL;
++}
++
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vkGetInstanceProcAddr(VkInstance instance, const char* pName)
++{
++   shards_vulkan();
++   return shards_vk.GetInstanceProcAddr ? shards_vk.GetInstanceProcAddr(instance, pName) : NULL;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceExternalBufferProperties(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo* pExternalBufferInfo, VkExternalBufferProperties* pExternalBufferProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceExternalBufferProperties)
++      shards_vk.GetPhysicalDeviceExternalBufferProperties(physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceExternalFenceProperties(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalFenceInfo* pExternalFenceInfo, VkExternalFenceProperties* pExternalFenceProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceExternalFenceProperties)
++      shards_vk.GetPhysicalDeviceExternalFenceProperties(physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceExternalSemaphoreProperties(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalSemaphoreInfo* pExternalSemaphoreInfo, VkExternalSemaphoreProperties* pExternalSemaphoreProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceExternalSemaphoreProperties)
++      shards_vk.GetPhysicalDeviceExternalSemaphoreProperties(physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceFeatures)
++      shards_vk.GetPhysicalDeviceFeatures(physicalDevice, pFeatures);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2* pFeatures)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceFeatures2)
++      shards_vk.GetPhysicalDeviceFeatures2(physicalDevice, pFeatures);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties* pFormatProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceFormatProperties)
++      shards_vk.GetPhysicalDeviceFormatProperties(physicalDevice, format, pFormatProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties2* pFormatProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceFormatProperties2)
++      shards_vk.GetPhysicalDeviceFormatProperties2(physicalDevice, format, pFormatProperties);
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkGetPhysicalDeviceImageFormatProperties(VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, VkImageFormatProperties* pImageFormatProperties)
++{
++   shards_vulkan();
++   return shards_vk.GetPhysicalDeviceImageFormatProperties ? shards_vk.GetPhysicalDeviceImageFormatProperties(physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkGetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceImageFormatInfo2* pImageFormatInfo, VkImageFormatProperties2* pImageFormatProperties)
++{
++   shards_vulkan();
++   return shards_vk.GetPhysicalDeviceImageFormatProperties2 ? shards_vk.GetPhysicalDeviceImageFormatProperties2(physicalDevice, pImageFormatInfo, pImageFormatProperties) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceMemoryProperties)
++      shards_vk.GetPhysicalDeviceMemoryProperties(physicalDevice, pMemoryProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties2* pMemoryProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceMemoryProperties2)
++      shards_vk.GetPhysicalDeviceMemoryProperties2(physicalDevice, pMemoryProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceProperties)
++      shards_vk.GetPhysicalDeviceProperties(physicalDevice, pProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2* pProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceProperties2)
++      shards_vk.GetPhysicalDeviceProperties2(physicalDevice, pProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties* pQueueFamilyProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceQueueFamilyProperties)
++      shards_vk.GetPhysicalDeviceQueueFamilyProperties(physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties2* pQueueFamilyProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceQueueFamilyProperties2)
++      shards_vk.GetPhysicalDeviceQueueFamilyProperties2(physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceSparseImageFormatProperties(VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageTiling tiling, uint32_t* pPropertyCount, VkSparseImageFormatProperties* pProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceSparseImageFormatProperties)
++      shards_vk.GetPhysicalDeviceSparseImageFormatProperties(physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkGetPhysicalDeviceSparseImageFormatProperties2(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSparseImageFormatInfo2* pFormatInfo, uint32_t* pPropertyCount, VkSparseImageFormatProperties2* pProperties)
++{
++   shards_vulkan();
++   if (shards_vk.GetPhysicalDeviceSparseImageFormatProperties2)
++      shards_vk.GetPhysicalDeviceSparseImageFormatProperties2(physicalDevice, pFormatInfo, pPropertyCount, pProperties);
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++vkMapMemory(VkDevice device, VkDeviceMemory memory, VkDeviceSize offset, VkDeviceSize size, VkMemoryMapFlags flags, void** ppData)
++{
++   shards_vulkan();
++   return shards_vk.MapMemory ? shards_vk.MapMemory(device, memory, offset, size, flags, ppData) : VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vkUnmapMemory(VkDevice device, VkDeviceMemory memory)
++{
++   shards_vulkan();
++   if (shards_vk.UnmapMemory)
++      shards_vk.UnmapMemory(device, memory);
++}
++#endif
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/shards_win32.c src/virglrenderer-0.10.4e-krunkit/src/shards_win32.c
+--- a/src/shards_win32.c
++++ b/src/shards_win32.c
+@@ -0,0 +1,42 @@
++/*
++ * shards_win32.h's functions (shards, D202).
++ */
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++#include "shards_win32.h"
++
++int shards_clock_gettime(int clock, struct timespec *ts)
++{
++   if (clock == CLOCK_REALTIME)
++      return timespec_get(ts, TIME_UTC) == TIME_UTC ? 0 : -1;
++   /* The counter's frequency, fixed at boot (QueryPerformanceFrequency's documentation). */
++   LARGE_INTEGER frequency, now;
++   if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&now))
++      return -1;
++   ts->tv_sec = (time_t)(now.QuadPart / frequency.QuadPart);
++   ts->tv_nsec = (long)((now.QuadPart % frequency.QuadPart) * 1000000000LL / frequency.QuadPart);
++   return 0;
++}
++
++int shards_nanosleep(const struct timespec *req, struct timespec *rem)
++{
++   if (rem) {
++      rem->tv_sec = 0;
++      rem->tv_nsec = 0;
++   }
++   HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
++   if (!timer) {
++      Sleep((DWORD)(req->tv_sec * 1000 + req->tv_nsec / 1000000));
++      return 0;
++   }
++   /* Relative, in 100 ns units. */
++   LARGE_INTEGER due;
++   due.QuadPart = -((LONGLONG)req->tv_sec * 10000000LL + req->tv_nsec / 100);
++   if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE))
++      WaitForSingleObject(timer, INFINITE);
++   CloseHandle(timer);
++   return 0;
++}
++#endif
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/shards_win32.h src/virglrenderer-0.10.4e-krunkit/src/shards_win32.h
+--- a/src/shards_win32.h
++++ b/src/shards_win32.h
+@@ -0,0 +1,44 @@
++/*
++ * The POSIX names virglrenderer's in-process Venus uses, on Windows (shards, D202):
++ * included before every source of its build there (meson.build), as its config.h is.
++ */
++#ifndef SHARDS_WIN32_H
++#define SHARDS_WIN32_H
++#ifdef _WIN32
++#include <basetsd.h>
++#include <io.h>
++#include <process.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++typedef SSIZE_T ssize_t;
++#define strtok_r strtok_s
++
++/* The UCRT's ISO names for the POSIX functions the sources call, whose POSIX names it
++ * deprecates: function-like, after the CRT's own declarations, which keep theirs. */
++#define close(fd) _close(fd)
++#define read(fd, buf, n) _read(fd, buf, n)
++#define write(fd, buf, n) _write(fd, buf, n)
++#define lseek(fd, offset, whence) _lseek(fd, offset, whence)
++#define strdup(s) _strdup(s)
++#define getpid() _getpid()
++#define dup(fd) _dup(fd)
++
++#ifndef CLOCK_REALTIME
++#define CLOCK_REALTIME 0
++#endif
++#ifndef CLOCK_MONOTONIC
++#define CLOCK_MONOTONIC 1
++#endif
++
++/* clock_gettime: CLOCK_MONOTONIC by the performance counter; CLOCK_REALTIME as
++ * timespec_get(TIME_UTC) says it, the clock C11's cnd_timedwait reads (threads_win32.h). */
++int shards_clock_gettime(int clock, struct timespec *ts);
++/* nanosleep by a high-resolution waitable timer, which wakes within the period asked rather
++ * than at the system timer's next tick (15.6 ms by default). */
++int shards_nanosleep(const struct timespec *req, struct timespec *rem);
++#define clock_gettime shards_clock_gettime
++#define nanosleep shards_nanosleep
++#endif
++#endif
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_context.c src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_context.c
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -5,11 +5,16 @@
+ 
+ #include "vkr_context.h"
+ 
++#ifdef _WIN32
++#include "mman_win32.h"
++#else
+ #include <sys/mman.h>
++#endif
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
+ #include "util/anon_file.h"
++#include "util/u_atomic.h"
+ #include "venus-protocol/vn_protocol_renderer_dispatches.h"
+ 
+ #define XXH_INLINE_ALL
+@@ -177,6 +182,7 @@
+       munmap(res->u.data, res->size);
+    else if (res->u.fd >= 0)
+       close(res->u.fd);
++   vkr_host_pages_unref(res->host_pages);
+    free(res);
+ }
+ 
+@@ -221,6 +227,7 @@
+    res->res_id = res_id;
+    res->fd_type = fd_type;
+    res->size = blob_size;
++   res->host_pages = NULL;
+ 
+    /* fd and mmap_ptr cannot be valid at the same time, but allowed to be -1 and NULL */
+    assert(fd < 0 || !mmap_ptr);
+@@ -237,7 +244,7 @@
+    return true;
+ }
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+ static bool
+ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
+                                      uint32_t res_id,
+@@ -339,6 +346,15 @@
+       close(blob.u.fd);
+       return false;
+    }
++
++#ifdef _WIN32
++   /* The blob holds the pages its memory was imported from, whoever goes first (D202). */
++   if (mem->host_pages) {
++      struct vkr_resource *res = vkr_context_get_resource(ctx, res_id);
++      p_atomic_inc(&mem->host_pages->refs);
++      res->host_pages = mem->host_pages;
++   }
++#endif
+ 
+    *out_blob = blob;
+ 
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_context.h src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_context.h
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -30,6 +30,9 @@
+    } u;
+ 
+    size_t size;
++
++   /* The pages a blob of imported memory is of, which it holds (Windows, D202). */
++   struct vkr_host_pages *host_pages;
+ };
+ 
+ enum vkr_context_validate_level {
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_device.c src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_device.c
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -90,6 +90,9 @@
+    ext_count += physical_dev->KHR_external_memory_fd;
+    ext_count += physical_dev->EXT_external_memory_dma_buf;
+    ext_count += physical_dev->KHR_external_fence_fd;
++#ifdef _WIN32
++   ext_count += physical_dev->EXT_external_memory_host;
++#endif
+    if (ext_count > args->pCreateInfo->enabledExtensionCount) {
+       exts = malloc(sizeof(*exts) * ext_count);
+       if (!exts) {
+@@ -106,6 +109,10 @@
+          exts[ext_count++] = "VK_EXT_external_memory_dma_buf";
+       if (physical_dev->KHR_external_fence_fd)
+          exts[ext_count++] = "VK_KHR_external_fence_fd";
++#ifdef _WIN32
++      if (physical_dev->EXT_external_memory_host)
++         exts[ext_count++] = "VK_EXT_external_memory_host";
++#endif
+ 
+       ((VkDeviceCreateInfo *)args->pCreateInfo)->ppEnabledExtensionNames = exts;
+       ((VkDeviceCreateInfo *)args->pCreateInfo)->enabledExtensionCount = ext_count;
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_device_memory.c src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -10,6 +10,61 @@
+ #include "vkr_device_memory_gen.h"
+ #include "vkr_physical_device.h"
+ 
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++#include "util/u_atomic.h"
++
++void
++vkr_host_pages_unref(struct vkr_host_pages *pages)
++{
++   if (pages && p_atomic_dec_zero(&pages->refs)) {
++      VirtualFree(pages->ptr, 0, MEM_RELEASE);
++      free(pages);
++   }
++}
++
++/* `size` bytes of pages of this process's own at an alignment `dev` imports them at, for
++ * an allocation of memory type `type_index`; none where the device imports none into it.
++ */
++static struct vkr_host_pages *
++vkr_host_pages_create(struct vkr_device *dev, uint32_t type_index, VkDeviceSize size)
++{
++   PFN_vkGetMemoryHostPointerPropertiesEXT get_props =
++      (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(
++         dev->base.handle.device, "vkGetMemoryHostPointerPropertiesEXT");
++   if (!get_props)
++      return NULL;
++   struct vkr_host_pages *pages = calloc(1, sizeof(*pages));
++   if (!pages)
++      return NULL;
++   /* VirtualAlloc places each allocation at its allocation granularity, 64 KiB, which
++    * no device's import alignment exceeds that shards has seen (PM M383).
++    */
++   pages->ptr = VirtualAlloc(NULL, (SIZE_T)size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
++   pages->refs = 1;
++   VkMemoryHostPointerPropertiesEXT props = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
++   };
++   if (!pages->ptr ||
++       get_props(dev->base.handle.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++                 pages->ptr, &props) != VK_SUCCESS ||
++       !(props.memoryTypeBits & (1u << type_index))) {
++      if (pages->ptr)
++         VirtualFree(pages->ptr, 0, MEM_RELEASE);
++      free(pages);
++      return NULL;
++   }
++   return pages;
++}
++#else
++void
++vkr_host_pages_unref(UNUSED struct vkr_host_pages *pages)
++{
++}
++#endif
++
+ static bool
+ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
+                                    const VkImportMemoryResourceInfoMESA *res_info,
+@@ -242,14 +297,46 @@
+          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
+    }
+ 
++#ifdef _WIN32
++   /* A mappable allocation is of pages of the renderer's own, which outlive the driver's
++    * free of the memory while a blob of them does (vkr_physical_device.c, D202).
++    */
++   struct vkr_host_pages *host_pages = NULL;
++   VkImportMemoryHostPointerInfoEXT host_import;
++   if ((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !res_info &&
++       physical_dev->EXT_external_memory_host) {
++      const VkDeviceSize alignment = MAX2(physical_dev->min_imported_host_pointer_alignment, 1);
++      const VkDeviceSize size = align64(alloc_info->allocationSize, (unsigned)alignment);
++      host_pages = vkr_host_pages_create(dev, mem_type_index, size);
++      if (!host_pages) {
++         args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++         return;
++      }
++      host_import = (VkImportMemoryHostPointerInfoEXT){
++         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
++         .pNext = alloc_info->pNext,
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++         .pHostPointer = host_pages->ptr,
++      };
++      alloc_info->pNext = &host_import;
++      alloc_info->allocationSize = size;
++   }
++#endif
++
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
+    if (!mem) {
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+       if (gbm_bo)
+          vkr_gbm_bo_destroy(gbm_bo);
++#ifdef _WIN32
++      vkr_host_pages_unref(host_pages);
++#endif
+       return;
+    }
++#ifdef _WIN32
++   mem->host_pages = host_pages;
++#endif
+ 
+    mem->device = dev;
+    mem->property_flags = property_flags;
+@@ -267,14 +354,17 @@
+    if (!mem)
+       return;
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__)
+    if (mem->exported) {
+       vkUnmapMemory(mem->device->base.handle.device, mem->base.handle.device_memory);
+    }
+ #endif
+ 
++   /* The driver lets go of the pages it imported; a blob of them keeps them (D202). */
++   struct vkr_host_pages *host_pages = mem->host_pages;
+    vkr_device_memory_release(mem);
+    vkr_device_memory_destroy_and_remove(dispatch->data, args);
++   vkr_host_pages_unref(host_pages);
+ }
+ 
+ static void
+@@ -433,13 +523,22 @@
+       vulkan_info.allocation_size = mem->allocation_size;
+       vulkan_info.memory_type_index = mem->memory_type_index;
+    } else {
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+       void *ptr;
++#ifdef _WIN32
++      /* The pages the memory was imported from, whose blob holds them (D202). */
++      if (!mem->host_pages) {
++         vkr_log("mem is not of pages a blob holds");
++         return false;
++      }
++      ptr = mem->host_pages->ptr;
++#else
+       if (vkMapMemory(mem->device->base.handle.device, mem->base.handle.device_memory,
+                       0, mem->allocation_size, 0, &ptr) != VK_SUCCESS) {
+          vkr_log("vkMapMemory failed");
+          return false;
+       }
++#endif
+ 
+       fd_type = VIRGL_RESOURCE_OPAQUE_HANDLE;
+       handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_device_memory.h src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_device_memory.h
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -10,6 +10,17 @@
+ 
+ struct gbm_bo;
+ 
++/* Pages of the renderer's own a device imported (Windows, shards' D202): held by the
++ * memory and by the blob made of it, and freed by whichever goes last.
++ */
++struct vkr_host_pages {
++   void *ptr;
++   int refs;
++};
++
++void
++vkr_host_pages_unref(struct vkr_host_pages *pages);
++
+ struct vkr_device_memory {
+    struct vkr_object base;
+ 
+@@ -24,6 +35,8 @@
+    uint32_t memory_type_index;
+ 
+    bool exported;
++
++   struct vkr_host_pages *host_pages;
+ };
+ VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemory)
+ 
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_physical_device.c src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_physical_device.c
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -193,6 +193,37 @@
+    if (!physical_dev->is_dma_buf_fd_export_supported &&
+        !physical_dev->is_opaque_fd_export_supported)
+       physical_dev->gbm_device = vkr_physical_device_get_gbm_device();
++
++#ifdef _WIN32
++   /* shards (D202): the window maps a blob at the address its pages are, which must keep
++    * them however the guest frees the memory they are of, its device included. So every
++    * allocation the guest may map is of pages the renderer allocates and the device
++    * imports (VK_EXT_external_memory_host), and a type no device imports host memory
++    * into, a device-local one, is the guest's device-local alone.
++    */
++   if (physical_dev->EXT_external_memory_host) {
++      VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_props = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT,
++      };
++      VkPhysicalDeviceProperties2 props2 = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
++         .pNext = &host_props,
++      };
++      vkGetPhysicalDeviceProperties2(handle, &props2);
++      physical_dev->min_imported_host_pointer_alignment =
++         host_props.minImportedHostPointerAlignment;
++   }
++   const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
++                                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++   for (uint32_t i = 0; i < physical_dev->memory_properties.memoryTypeCount; i++) {
++      VkMemoryPropertyFlags *flags =
++         &physical_dev->memory_properties.memoryTypes[i].propertyFlags;
++      if (!physical_dev->EXT_external_memory_host ||
++          (*flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
++         *flags &= ~host;
++   }
++#endif
+ }
+ 
+ static void
+@@ -227,6 +258,8 @@
+          physical_dev->EXT_external_memory_dma_buf = true;
+       else if (!strcmp(props->extensionName, "VK_KHR_external_fence_fd"))
+          physical_dev->KHR_external_fence_fd = true;
++      else if (!strcmp(props->extensionName, "VK_EXT_external_memory_host"))
++         physical_dev->EXT_external_memory_host = true;
+ 
+       const uint32_t spec_ver = vkr_extension_get_spec_version(props->extensionName);
+       if (spec_ver) {
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_physical_device.h src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_physical_device.h
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -27,6 +27,12 @@
+    bool KHR_external_fence_fd;
+    bool KHR_external_semaphore_fd;
+ 
++   /* Memory of the renderer's own, which a device imports (Windows, shards' D202): every
++    * allocation its guest may map is of it.
++    */
++   bool EXT_external_memory_host;
++   VkDeviceSize min_imported_host_pointer_alignment;
++
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    VkPhysicalDeviceIDProperties id_properties;
+    bool is_dma_buf_fd_export_supported;
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_renderer.c src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_renderer.c
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -192,7 +192,7 @@
+    if (!vkr_context_create_resource(ctx, res_id, blob_id, blob_size, blob_flags, &blob))
+       return false;
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+    assert(blob.type == VIRGL_RESOURCE_OPAQUE_HANDLE);
+    *out_map_ptr = blob.map_ptr;
+ #else
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/venus/vkr_ring.c src/virglrenderer-0.10.4e-krunkit/src/venus/vkr_ring.c
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -5,6 +5,11 @@
+ 
+ #include "vkr_ring.h"
+ 
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#endif
++
+ #include <stdio.h>
+ #include <time.h>
+ 
+@@ -197,7 +202,7 @@
+       .tv_sec = us / 1000000,
+       .tv_nsec = (us % 1000000) * 1000,
+    };
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+    nanosleep(&ts, NULL);
+ #else
+    clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+@@ -320,7 +325,12 @@
+ vkr_ring_stop(struct vkr_ring *ring)
+ {
+    mtx_lock(&ring->mutex);
++#ifdef _WIN32
++   /* A thread's handles compare unequal; its ID is its own (threads_win32.h). */
++   if (GetThreadId((HANDLE)ring->thread) == GetCurrentThreadId()) {
++#else
+    if (thrd_equal(ring->thread, thrd_current())) {
++#endif
+       mtx_unlock(&ring->mutex);
+       return false;
+    }
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/virgl_context.h src/virglrenderer-0.10.4e-krunkit/src/virgl_context.h
+--- a/src/virgl_context.h
++++ b/src/virgl_context.h
+@@ -45,7 +45,7 @@
+    } u;
+ 
+    uint32_t map_info;
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+    uint64_t map_ptr;
+ #endif
+ 
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/virgl_resource.c src/virglrenderer-0.10.4e-krunkit/src/virgl_resource.c
+--- a/src/virgl_resource.c
++++ b/src/virgl_resource.c
+@@ -258,7 +258,7 @@
+       if (!ctx)
+          return VIRGL_RESOURCE_FD_INVALID;
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+       return VIRGL_RESOURCE_OPAQUE_HANDLE;
+ #else
+       return ctx->export_opaque_handle(ctx, res, fd);
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/virgl_resource.h src/virglrenderer-0.10.4e-krunkit/src/virgl_resource.h
+--- a/src/virgl_resource.h
++++ b/src/virgl_resource.h
+@@ -97,7 +97,7 @@
+    int iov_count;
+ 
+    uint32_t map_info;
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+    uint64_t map_ptr;
+ #endif
+ 
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/virglrenderer.c src/virglrenderer-0.10.4e-krunkit/src/virglrenderer.c
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -1174,7 +1174,7 @@
+       res = virgl_resource_create_from_opaque_handle(ctx, args->res_handle, blob.u.opaque_handle);
+       if (!res)
+          return -ENOMEM;
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+       res->map_ptr = blob.map_ptr;
+ #endif
+    } else if (blob.type != VIRGL_RESOURCE_FD_INVALID) {
+@@ -1296,7 +1296,7 @@
+    return 0;
+ }
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+ int virgl_renderer_resource_get_map_ptr(uint32_t res_handle, uint64_t *map_ptr)
+ {
+    TRACE_FUNC();
+@@ -1328,7 +1328,7 @@
+       *fd_type = VIRGL_RENDERER_BLOB_FD_TYPE_SHM;
+       break;
+    case VIRGL_RESOURCE_OPAQUE_HANDLE:
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+       *fd_type = VIRGL_RENDERER_BLOB_FD_TYPE_APPLE;
+       break;
+ #endif
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/virglrenderer.h src/virglrenderer-0.10.4e-krunkit/src/virglrenderer.h
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -406,14 +406,14 @@
+ #define VIRGL_RENDERER_MAP_CACHE_WC        0x03
+ 
+ VIRGL_EXPORT int virgl_renderer_resource_get_map_info(uint32_t res_handle, uint32_t *map_info);
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+ VIRGL_EXPORT int virgl_renderer_resource_get_map_ptr(uint32_t res_handle, uint64_t *map_ptr);
+ #endif
+ 
+ #define VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF        0x0001
+ #define VIRGL_RENDERER_BLOB_FD_TYPE_OPAQUE        0x0002
+ #define VIRGL_RENDERER_BLOB_FD_TYPE_SHM           0x0003
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(_WIN32)
+ #define VIRGL_RENDERER_BLOB_FD_TYPE_APPLE         0x0004
+ #endif
+ 
+diff --color -ruN pristine/virglrenderer-0.10.4e-krunkit/src/vrend_blitter.c src/virglrenderer-0.10.4e-krunkit/src/vrend_blitter.c
+--- a/src/vrend_blitter.c
++++ b/src/vrend_blitter.c
+@@ -109,8 +109,13 @@
+ };
+ #pragma pack(pop)
+ 
++/* MSVC's ABI packs no bitfields of different types together, which makes the key longer
++ * than 64 bits; the GL renderer it is of runs on no Windows host of shards' (Venus alone,
++ * VIRGL_RENDERER_NO_VIRGL). */
++#ifndef _WIN32
+ static_assert(sizeof(struct blit_prog_key) <= sizeof(uint64_t),
+               "struct blit_prog_key needs to fit into a hashtable64 key");
++#endif
+ 
+ static inline uint64_t
+ prog_key_to_uint64( struct blit_prog_key prog_key )

@@ -298,7 +298,7 @@ pub struct Boot<'a> {
     /// The build's proxy (D110): where there is one, the builder's network reaches it
     /// alone.
     pub proxy: Option<&'a super::proxy::Proxy>,
-    /// Whether it has this Mac's GPU, for steps given its render node (D145).
+    /// Whether it has a GPU, for steps given its render node (D145).
     pub gpu: bool,
     /// The emulators its steps' platforms need (D179): the emulator image's root
     /// filesystem, one more pmem device after the bases, and the OCI architectures it
@@ -638,7 +638,14 @@ fn launch(
 ) -> Result<Launched, String> {
     use std::os::windows::io::{AsHandle as _, OwnedHandle};
     let (ready, side) = crate::netproc::prepare(policy, mac, bridge)?;
-    let vm_binary = crate::helpers::vm()?;
+    // A GPU's builder is the GPU's VM process, which runs its host's GPU driver (D144,
+    // D202).
+    let gpu = args.iter().any(|a| *a == "--gpu");
+    let vm_binary = if gpu {
+        crate::helpers::vm_gpu()?
+    } else {
+        crate::helpers::vm()?
+    };
     let container = crate::helpers::containers().and_then(|records| {
         shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("the builder's AppContainer: {e}"))
     })?;
@@ -680,6 +687,7 @@ fn launch(
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,
         group: None,
+        graphics: gpu,
     })
     .map_err(|e| format!("starting the builder: {e}"))?;
     // Ended with the suspended VM, a Job's, where its network process does not start.

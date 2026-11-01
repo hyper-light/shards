@@ -290,11 +290,3 @@ fn ctrl_c_interrupts_and_the_detach_keys_leave_it_running() {
         assert_eq!(removed.status, Some(0), "{}", removed.stderr);
     }
 }
-
-/// The shell a Windows terminal runs its client in ([`common::terminal::shell_if_asked`]):
-/// nothing where no test started this binary as one.
-#[cfg(windows)]
-#[test]
-fn console_shell() {
-    common::terminal::shell_if_asked();
-}

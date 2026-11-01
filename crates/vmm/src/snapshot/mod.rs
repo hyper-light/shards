@@ -215,11 +215,15 @@ pub struct Pinned {
 /// holds open gives up its vnode, and the pages its host had cached of it with them, to the
 /// next file its host looks at once the host's vnode table is full; a Mac's of 128 GiB held
 /// 263,168, recycling thousands a second, and a restore then read its whole working set
-/// back from the disk a page at a time, and its guest its programs (PM M315).
+/// back from the disk a page at a time, and its guest its programs (PM M315). And its
+/// memory kept cached (`platform::keep_cached`): Windows drops a sparse file's pages once
+/// no process maps them, held open or not, and each restore there read its working set
+/// back from the disk (PM M421).
 #[derive(Debug)]
 pub struct Held {
     generation: String,
     _files: Vec<File>,
+    _cached: platform::Cached,
 }
 
 impl Held {
@@ -245,10 +249,13 @@ pub fn hold(dir: &Path) -> Result<Held, String> {
             files.push(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
         }
     }
+    let cached = platform::keep_cached(&pinned.memory)
+        .map_err(|e| format!("{}: {e}", pinned.path.join(MEMORY).display()))?;
     files.push(pinned.memory);
     Ok(Held {
         generation: pinned.name,
         _files: files,
+        _cached: cached,
     })
 }
 

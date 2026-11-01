@@ -14,7 +14,9 @@ workspace = true
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+# A client's context its Windows machine keeps as a Linux tree (`apply_layer_lx`, D180).
+shards-ntfs = { path = "../ntfs" }
+windows-sys = { workspace = true, features = ["Wdk_Storage_FileSystem"] }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

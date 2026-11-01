@@ -1392,6 +1392,19 @@ pub fn sparse(_file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// What keeps a file's pages in the host's cache once the processes that map them end
+/// ([`keep_cached`]): nothing here.
+#[derive(Debug)]
+pub struct Cached;
+
+/// Keeps the pages processes map of `file` in the host's cache once they end: nothing to
+/// do, as Linux's page cache keeps a file's pages once no process maps them, and macOS's
+/// while its vnode is held, the file held open (PM M315), where Windows drops a sparse
+/// file's (windows.rs must map it).
+pub fn keep_cached(_file: &File) -> io::Result<Cached> {
+    Ok(Cached)
+}
+
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
 /// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)). A filesystem without
 /// `F_FULLFSYNC` gets `fsync` instead, as SQLite falls back (`full_fsync`, os_unix.c):

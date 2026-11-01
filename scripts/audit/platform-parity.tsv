@@ -1,0 +1,440 @@
+# Platform parity twins (platform-parity.py): FILE, KIND NAME, TWIN FILE, TWIN KIND NAME, what they do.
+crates/ipc/src/lib.rs	mod spawner	crates/ipc/src/lib.rs	mod windows	what starts the daemon's children: Unix's spawner process (D158), Windows' spawn_confined and spawn
+crates/ipc/src/lib.rs	use spawner	crates/ipc/src/lib.rs	use windows	the spawner's names, each host's
+crates/ipc/src/lib.rs	mod unix	crates/ipc/src/lib.rs	mod pipe	the transport of shards' messages: Unix sockets, Windows' pipes
+crates/ipc/src/lib.rs	mod unix	crates/ipc/src/lib.rs	mod windows	each host's processes and handles handed on
+crates/ipc/src/lib.rs	use unix	crates/ipc/src/lib.rs	use pipe	the transport's names, each host's
+crates/ipc/src/lib.rs	mod pipe	crates/ipc/src/lib.rs	mod unix	the transport of shards' messages: Windows' pipes, Unix sockets
+crates/ipc/src/lib.rs	use pipe	crates/ipc/src/lib.rs	use unix	the transport's names, each host's
+crates/ipc/src/lib.rs	mod windows	crates/ipc/src/lib.rs	mod unix	each host's processes and handles handed on
+crates/ipc/src/lib.rs	use windows	crates/ipc/src/lib.rs	use unix	their names, each host's
+crates/ipc/src/lib.rs	type Stream	crates/ipc/src/pipe.rs	struct Stream	what carries shards' messages: a Unix socket, a Windows pipe's end
+crates/ipc/src/lib.rs	trait AsFd	crates/ipc/src/lib.rs	use std	a descriptor's borrow: std's on Unix, a handle's under Unix's name on Windows
+crates/ipc/src/lib.rs	impl impl<T: std::os::windows::io::AsHandle + ?Sized> AsFd for T 	crates/ipc/src/lib.rs	use std	AsFd for every handle, as std has it for every descriptor
+crates/ipc/src/lib.rs	trait AsRawFd	crates/ipc/src/lib.rs	use std	a descriptor's raw value: std's on Unix, a handle's on Windows
+crates/ipc/src/lib.rs	impl impl<T: std::os::windows::io::AsRawHandle + ?Sized> AsRawFd 	crates/ipc/src/lib.rs	use std	AsRawFd for every handle, as std has it for every descriptor
+crates/ipc/src/lib.rs	use libc	crates/ipc/src/lib.rs	const SIGKILL	the signals a child ends by: libc's on Unix, their numbers on Windows
+crates/ipc/src/lib.rs	const SIGHUP	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGINT	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGQUIT	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGKILL	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGTERM	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGCONT	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	const SIGSTOP	crates/ipc/src/lib.rs	use libc	the signal by its Unix number, libc's on Unix
+crates/ipc/src/lib.rs	fn fd	crates/ipc/src/lib.rs	fn event	what a wait on a latch wakes on: a pipe's read end on Unix, an event on Windows
+crates/ipc/src/lib.rs	fn event	crates/ipc/src/lib.rs	fn fd	what a wait on a latch wakes on: an event on Windows, a pipe's read end on Unix
+crates/ipc/src/slots.rs	mod fifo	crates/ipc/src/slots.rs	mod named	the daemon's request slots (D185): FIFOs in the home on Unix, named pipes on Windows
+crates/ipc/src/slots.rs	use fifo	crates/ipc/src/slots.rs	use named	the slots' names, each host's
+crates/ipc/src/slots.rs	mod named	crates/ipc/src/slots.rs	mod fifo	the daemon's request slots (D185): named pipes on Windows, FIFOs on Unix
+crates/ipc/src/slots.rs	use named	crates/ipc/src/slots.rs	use fifo	the slots' names, each host's
+crates/ipc/src/slots/fifo.rs	struct ListWatch	crates/ipc/src/slots/fifo.rs	fn record	a slot list's records waited for: a kqueue on macOS, which also says the list's going and its daemon's exit; poll(2) elsewhere (M253)
+crates/ipc/src/slots/fifo.rs	fn watch	crates/ipc/src/slots/fifo.rs	fn record	the kqueue macOS waits on a list by; poll(2) elsewhere
+crates/vmm/src/platform/unix.rs	fn populate_writable	crates/vmm/src/hv/hvf/mod.rs	fn prefetch [macos]	a restore's written pages copied ahead: Linux's madvise on KVM's mapped working set; HVF's vCPU touches its working set, written pages written
+crates/vmm/src/platform/unix.rs	fn populate_writable	crates/vmm/src/hv/whp/mod.rs	fn pre_fault_runs [windows]	a restore's written pages copied ahead on Windows: populated for writing at stage 2 (WHvAdviseGpaRange, WHvMemoryAccessWrite), which copies each in the host's kernel, one call for what a copy from the VM process and a populate after it did (PM M415)
+crates/vmm/src/platform/unix.rs	fn mapped_pages	crates/vmm/src/platform/windows_process.rs	fn mapped_pages	what a restore's host maps of guest memory, its working set: /proc/self/pagemap, QueryWorkingSetEx
+crates/vmm/src/platform/unix.rs	fn mapped_pages	crates/vmm/src/hv/hvf/mod.rs	struct Watch [macos]	a working set recorded: HVF's stage 2 taken away and given back page by page
+crates/vmm/src/platform/unix.rs	struct FaultAroundOff	-	none: macos,windows	Linux's page cache maps around a fault; Hypervisor.framework maps a guest's stage 2 a page at a time as it is touched (PM M5); on Windows a fault maps the page it touches alone, its file's pages in the cache or read in around it from disk (windows_process.rs mapped_pages_are_the_working_sets, a_fault_from_disk_maps_the_page_it_touches_alone), so its FaultAroundOff holds nothing
+crates/vmm/src/platform/unix.rs	impl FaultAroundOff	-	none: macos,windows	as FaultAroundOff
+crates/vmm/src/platform/unix.rs	mod uffd	-	none: macos,windows	userfaultfd, FaultAroundOff's: as FaultAroundOff
+crates/vmm/src/platform/unix.rs	fn pids_max	crates/vmm/src/platform/unix.rs	fn sysctl_count	the tasks a user may have: cgroups' pids.max on Linux, kern.maxprocperuid on macOS
+crates/vmm/src/platform/unix.rs	fn pids_max	crates/vmm/src/platform/windows_process.rs	fn user_processes	the tasks a user may have: Windows' job and system limits
+crates/vmm/src/platform/unix.rs	fn fewer	crates/vmm/src/platform/unix.rs	fn sysctl_count	pids_max's: the fewer of two limits, as a cgroup and its parents give them
+crates/vmm/src/platform/unix.rs	fn fewer	crates/vmm/src/platform/windows_process.rs	fn user_processes	as pids_max
+crates/vmm/src/platform/unix.rs	fn count	crates/vmm/src/platform/unix.rs	fn sysctl_count	a count the kernel keeps: a /proc or cgroup file on Linux, a sysctl on macOS
+crates/vmm/src/platform/unix.rs	fn count	crates/vmm/src/platform/windows_process.rs	fn thread_limit	the kernel's counts, Windows' as its own calls give them
+crates/vmm/src/platform/unix.rs	fn sysctl_count	crates/vmm/src/platform/unix.rs	fn count	a count the kernel keeps: a sysctl on macOS, a /proc or cgroup file on Linux
+crates/vmm/src/platform/unix.rs	fn sysctl_count	crates/vmm/src/platform/windows_process.rs	fn thread_limit	the kernel's counts, Windows' as its own calls give them
+crates/vmm/src/platform/unix.rs	fn change	crates/vmm/src/platform/unix.rs	mod notify	a file watched: macOS' kqueue, Linux's one inotify instance (PM M257)
+crates/vmm/src/platform/unix.rs	fn change	crates/vmm/src/platform/windows_watch.rs	struct FileWatch	a file watched: Windows' directory changes and oplocks
+crates/vmm/src/platform/unix.rs	fn register	crates/vmm/src/platform/unix.rs	mod notify	as change
+crates/vmm/src/platform/unix.rs	fn register	crates/vmm/src/platform/windows_watch.rs	struct FileWatch	as change
+crates/vmm/src/platform/unix.rs	mod notify	crates/vmm/src/platform/unix.rs	fn register	a file watched: Linux's one inotify instance, macOS' kqueue
+crates/vmm/src/platform/unix.rs	mod notify	crates/vmm/src/platform/windows_watch.rs	struct FileWatch	a file watched: Windows' directory changes and oplocks
+crates/vmm/src/platform/unix.rs	impl Drop	-	none: macos	a Linux watch lets its shared inotify instance's watches go as it drops; macOS' kqueue and the files it watches close with it, as their OwnedFd and File do
+crates/vmm/src/platform/unix.rs	fn task_events	-	none: linux,windows	the counters HVF's prefetch says what its working set's page-ins took by (hv::hvf, Vcpu::prefetch); KVM's working set is mapped by its host (vm::mapped) and WHP's by its populate (hv::whp, Vcpu::pre_fault_runs), each timed by its restore's log (D196, PM M415)
+crates/vmm/src/platform/unix.rs	fn watch_writes	crates/shards/src/daemon/groups.rs	fn hold_groups [macos,windows]	a budget written, heard: Linux's cgroup files (memory.high, memory.max, memory.events) watched for writes; the groups macOS and Windows keep in the home, read again every pressure window (D183)
+crates/vmm/src/platform/unix.rs	fn watch_writes	-	none: macos,windows	its other use, a DAX window's file cut short under KVM's mapping (daemon/cuts.rs): Hypervisor.framework takes a cut as a fault the VMM fills (PM M271), and NTFS refuses to cut a file while a section of it exists (PM M412)
+crates/vmm/src/platform/unix.rs	fn unwatch_writes	crates/shards/src/daemon/groups.rs	fn hold_groups [macos,windows]	as watch_writes
+crates/vmm/src/platform/unix.rs	fn unwatch_writes	-	none: macos,windows	as watch_writes
+crates/vmm/src/platform/granted.rs	use std	crates/vmm/src/platform/granted.rs	type Bound	a descriptor's names, Unix's; Windows' bound sockets are its own type
+crates/vmm/src/platform/granted.rs	fn input_file_id	crates/vmm/src/platform/granted.rs	fn input_metadata [linux,macos]	which file a granted path is: Windows' volume serial and file index; a Unix file's device and inode, in its metadata
+crates/vmm/src/platform/granted.rs	fn opened_path	crates/vmm/src/platform/granted.rs	fn grant_input [windows]	a granted file's real path: F_GETPATH on macOS, /proc/self/fd on Linux; on Windows its spawner says it, as an AppContainer may not ask where a handle is (PM M203)
+crates/vmm/src/platform/pressure.rs	const STALL_US	crates/vmm/src/platform/pressure.rs	mod dispatch [macos]	the host's memory pressure heard (D188): Linux's PSI trigger, macOS' dispatch source
+crates/vmm/src/platform/pressure.rs	const STALL_US	crates/vmm/src/platform/pressure.rs	impl MemoryPressure [windows]	Windows' low memory notification
+crates/vmm/src/platform/pressure.rs	const AVERAGE_PERCENT	crates/vmm/src/platform/pressure.rs	const REPEAT [macos,windows]	a pressure said again while it lasts: Linux's ten-second average where no trigger arms, macOS' and Windows' every two seconds
+crates/vmm/src/platform/pressure.rs	const AVERAGE_EVERY	crates/vmm/src/platform/pressure.rs	const REPEAT [macos,windows]	as AVERAGE_PERCENT
+crates/vmm/src/platform/pressure.rs	fn arm	crates/vmm/src/platform/pressure.rs	mod dispatch [macos]	a pressure watch armed: a PSI trigger on Linux, a dispatch source on macOS
+crates/vmm/src/platform/pressure.rs	fn arm	crates/vmm/src/platform/pressure.rs	impl MemoryPressure [windows]	Windows' low memory notification
+crates/vmm/src/platform/pressure.rs	fn average	crates/vmm/src/platform/pressure.rs	const REPEAT [macos,windows]	Linux's ten-second average, read where no trigger arms; macOS' and Windows' notifications said again every two seconds
+crates/vmm/src/platform/pressure.rs	mod dispatch	crates/vmm/src/platform/pressure.rs	fn arm [linux]	the host's memory pressure heard (D188): macOS' dispatch source, Linux's PSI trigger
+crates/vmm/src/platform/pressure.rs	mod dispatch	crates/vmm/src/platform/pressure.rs	impl MemoryPressure [windows]	Windows' low memory notification
+crates/vmm/src/vm/aarch64.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	a host's PCI function passed through (D154): Linux's VFIO and its irqfds; macOS and Windows refuse it with their OS's own limit (PM M356)
+crates/vmm/src/vm/aarch64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/aarch64.rs	impl crate	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	IrqfdRoute's Route: as route
+crates/vmm/src/vm/x86_64.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as aarch64.rs's route
+crates/vmm/src/vm/x86_64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/x86_64.rs	impl crate	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/mod.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
+crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	crates/vmm/src/devices/pci/mod.rs	mod vfio [linux]	the refusal of macOS and Windows, with their OS's own limit (D154, PM M356); Linux's VFIO
+crates/vmm/src/devices/pci/mod.rs	mod vfio	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	Linux's VFIO; macOS' and Windows' refusal, with their OS's own limit (D154, PM M356)
+crates/vmm/src/devices/virtio/vsock/mod.rs	fn iovecs	crates/vmm/src/devices/virtio/vsock/mod.rs	fn runs	a packet's spans as a socket writes them: iovecs on Unix, (pointer, length) runs on Windows
+crates/vmm/src/devices/virtio/vsock/mod.rs	fn runs	crates/vmm/src/devices/virtio/vsock/mod.rs	fn iovecs	as iovecs
+crates/vmm/src/devices/virtio/vsock/mod.rs	fn nonblocking_pipe	crates/vmm/src/devices/virtio/vsock/mod.rs	struct Waker	the worker's waker: a self-pipe on Unix, a WSA event on Windows
+crates/vmm/src/devices/virtio/vsock/mod.rs	impl Drop	-	none: linux,macos	Windows' waker's event closed as it drops; a Unix self-pipe's OwnedFds close as theirs do
+crates/vmm/src/devices/virtio/vsock/mod.rs	impl Send	-	none: linux,macos	Windows' waker, a raw event handle, said Send; a Unix waker's OwnedFds are
+crates/vmm/src/devices/virtio/vsock/mod.rs	impl Sync	-	none: linux,macos	as Send
+crates/vmm/src/devices/virtio/vsock/conn.rs	impl Drop	-	none: linux,macos	Windows loses what a peer had not read of a socket its process's exit closes, and keeps it where the socket was shut down and closed first; a Unix close keeps it as it is (PM M199)
+crates/vmm/src/devices/virtio/vsock/conn.rs	fn linger	-	none: linux,macos	Windows' close discards a peer's unread data where the closer held some of the peer's unread, or where the peer writes after; a Unix close does not (PM M358)
+crates/vmm/src/devices/virtio/vsock/conn.rs	fn drained	-	none: linux,macos	as linger
+crates/vmm/src/devices/virtio/vsock/poll.rs	fn millis	crates/vmm/src/devices/virtio/vsock/poll.rs	impl Poller [macos,windows]	a wait's timeout as each host's poll takes it: epoll's milliseconds, kqueue's timespec, WSAPoll's milliseconds
+crates/vmm/src/devices/virtio/vsock/poll.rs	const NO_INTEREST	-	none: linux,windows	kqueue's change of no interest, a deletion; epoll and WSAPoll delete by their own calls
+crates/vmm/src/devices/virtio/vsock/poll.rs	impl Drop	-	none: linux,macos	Windows' poller's event closed as it drops; epoll's and kqueue's descriptors close as their OwnedFds do
+crates/vmm/src/devices/virtio/net.rs	fn drain	-	none: windows	a Unix doorbell pipe's bytes taken; a Windows event resets as its wait takes it
+crates/vmm/src/devices/virtio/fs/host.rs	mod linux_host	crates/vmm/src/devices/virtio/fs/host.rs	use libc [linux,macos]	the share server's names for its host's flags, modes and kinds: Linux's own on Windows (D197), libc's on Unix
+crates/vmm/src/devices/virtio/fs/host.rs	impl From	crates/vmm/src/devices/virtio/fs/ntfs.rs	fn stat [windows]	a file's status as the share server answers it: from a Unix stat(2), from NT's file information on Windows
+crates/vmm/src/devices/virtio/fs/mod.rs	mod ntfs	crates/vmm/src/devices/virtio/fs/server.rs	mod calls [linux,macos]	the share server's calls of its host's file system (D197): NT's on Windows, Unix's (server_unix.rs)
+crates/vmm/src/devices/virtio/fs/server.rs	const ENAMETOOLONG	-	none: macos,windows	one of Linux's openat2(2) refusals that mean the server walks the path instead; macOS has no openat2 and walks, and Windows opens beneath its root through NT calls (ntfs.rs)
+crates/vmm/src/devices/virtio/fs/server_unix.rs	const META_FLAGS	crates/vmm/src/devices/virtio/fs/server_windows.rs	const META_FLAGS	how a node is opened for its metadata, never followed: each host's flags
+crates/shards/src/grant_answer.rs	fn bookmark	crates/shards/src/grant_answer.rs	fn handed [windows]	a directory granted: macOS' bookmark for another process to resolve; Windows' handle put in the VM's process
+crates/shards/src/grant_answer.rs	fn bookmark	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	enum Answer	crates/shards/src/grant_answer.rs	enum Handed [windows]	what is granted for a path: a file, a bookmark, nothing, or a socket bound there; on Windows a handle, a staging directory or a socket
+crates/shards/src/grant_answer.rs	enum Answer	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn beneath	crates/shards/src/grant_answer.rs	fn handed [windows]	which of a template's files a path names, granted as the template's own; Windows hands each file's handle
+crates/shards/src/grant_answer.rs	fn beneath	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn names	crates/shards/src/grant_answer.rs	fn handed [windows]	as beneath
+crates/shards/src/grant_answer.rs	fn names	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn answer	crates/shards/src/grant_answer.rs	fn handed [windows]	what a path is granted as, each host's
+crates/shards/src/grant_answer.rs	fn answer	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn listen	crates/shards/src/grant_answer.rs	fn bound [windows]	a vsock socket bound for the VM, an earlier VM's left one replaced: Unix's descriptor, Windows' AF_UNIX listener
+crates/shards/src/grant_answer.rs	fn listen	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn bind	crates/shards/src/grant_answer.rs	fn bound [windows]	as listen
+crates/shards/src/grant_answer.rs	fn bind	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn dial	crates/shards/src/grant_answer.rs	fn dial_for [windows]	a vsock host port dialled for the VM beside the path it was granted
+crates/shards/src/grant_answer.rs	fn dial	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn serve_waiting	crates/shards/src/grant_answer.rs	fn serve [windows]	the VM's asks answered, a caller watching for a VM gone quiet: macOS', and Windows' serve
+crates/shards/src/grant_answer.rs	fn serve_waiting	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn broker	crates/shards/src/cli/mod.rs	fn vm [windows]	the broker of shards run --kernel and shards restore: macOS' shards grants process; on Windows the CLI serves the grants itself as it runs the VM (cli/mod.rs vm)
+crates/shards/src/grant_answer.rs	fn broker	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	trait Recipient	crates/shards/src/grant_answer.rs	fn broker [macos]	the process a broker puts handles and sockets in: the VM it started; macOS' broker grants by descriptors and bookmarks
+crates/shards/src/grant_answer.rs	trait Recipient	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	impl Recipient	crates/shards/src/grant_answer.rs	fn broker [macos]	as Recipient
+crates/shards/src/grant_answer.rs	impl Recipient	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	enum Handed	crates/shards/src/grant_answer.rs	enum Answer [macos]	what is granted for a path, each host's
+crates/shards/src/grant_answer.rs	enum Handed	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn handed	crates/shards/src/grant_answer.rs	fn bookmark [macos]	a directory granted: Windows' handle, macOS' bookmark
+crates/shards/src/grant_answer.rs	fn handed	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn bound	crates/shards/src/grant_answer.rs	fn listen [macos]	a vsock socket bound for the VM: Windows' AF_UNIX listener, Unix's descriptor
+crates/shards/src/grant_answer.rs	fn bound	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn dial_for	crates/shards/src/grant_answer.rs	fn dial [macos]	a vsock host port dialled for the VM
+crates/shards/src/grant_answer.rs	fn dial_for	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn serve	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn stage	-	none: linux,macos	the snapshots an AppContainer cannot write and the file ranges it cannot ask for (it makes no FSCTL), staged and read by its spawner (D141, D196); macOS' VM writes its snapshots itself in the directories its bookmarks grant (D30), and Linux's opens its own files under Landlock
+crates/shards/src/grant_answer.rs	fn ranges	-	none: linux,macos	the snapshots an AppContainer cannot write and the file ranges it cannot ask for (it makes no FSCTL), staged and read by its spawner (D141, D196); macOS' VM writes its snapshots itself in the directories its bookmarks grant (D30), and Linux's opens its own files under Landlock
+crates/shards/src/grant_answer.rs	fn reply	-	none: linux,macos	the snapshots an AppContainer cannot write and the file ranges it cannot ask for (it makes no FSCTL), staged and read by its spawner (D141, D196); macOS' VM writes its snapshots itself in the directories its bookmarks grant (D30), and Linux's opens its own files under Landlock
+crates/shards/src/grant.rs	struct Link	crates/shards/src/grant_ask.rs	fn obtain [macos]	the link a VM asks its spawner over: a Unix socket on macOS, two pipes on Windows, one each way
+crates/shards/src/grant.rs	struct Link	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	mod cf	crates/shards/src/grant_ask.rs	fn handed_file [windows]	a granted directory resolved: macOS' bookmark, by CoreFoundation; Windows' handle, handed with its path
+crates/shards/src/grant_ask.rs	mod cf	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn resolve	crates/shards/src/grant_ask.rs	fn handed_file [windows]	as cf
+crates/shards/src/grant_ask.rs	fn resolve	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn sandboxed	crates/ipc/src/windows.rs	fn in_app_container [windows]	whether this process is the confined VM: in App Sandbox on macOS, in an AppContainer on Windows
+crates/shards/src/grant_ask.rs	fn sandboxed	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn obtain	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn dial	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn handed_file	crates/shards/src/grant_ask.rs	fn resolve [macos]	a granted file taken: Windows' handle with its path, macOS' descriptor or bookmark
+crates/shards/src/grant_ask.rs	fn handed_file	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_ask.rs	fn stage	-	none: linux,macos	the VM side of what its spawner stages and reads for an AppContainer (D141, D196); macOS' VM writes its snapshots itself, and Linux's opens its own files
+crates/shards/src/grant_ask.rs	fn ranges	-	none: linux,macos	the VM side of what its spawner stages and reads for an AppContainer (D141, D196); macOS' VM writes its snapshots itself, and Linux's opens its own files
+crates/shards/src/grant_ask.rs	fn commit	-	none: linux,macos	the VM side of what its spawner stages and reads for an AppContainer (D141, D196); macOS' VM writes its snapshots itself, and Linux's opens its own files
+crates/shards/src/context.rs	fn steer_console	crates/shards/src/context.rs	fn steer_signals [linux,macos]	a command run through a context steered from the client's terminal: Windows' console's events and size; Unix's signals and SIGWINCH
+crates/shards/src/context.rs	static SIZED	crates/shards/src/context.rs	fn steer_signals [linux,macos]	the console's size, sent as it changes, Windows having no SIGWINCH; Unix's taken at SIGWINCH
+crates/shards/src/context.rs	fn send_size	crates/shards/src/context.rs	fn steer_signals [linux,macos]	as SIZED
+crates/shards/src/context.rs	fn console_signal	crates/shards/src/context.rs	fn steer_signals [linux,macos]	a console's events as the signals Docker's proxy sends: ^C and ^Break SIGINT, its closing SIGTERM; Unix's own signals
+crates/shards/src/context.rs	fn steer_signals	crates/shards/src/context.rs	fn steer_console [windows]	a command run through a context steered from the client's terminal: Unix's signals; Windows' console's
+crates/build/src/host.rs	fn xattrs	-	none: windows	a file's extended attributes, which fsutil loads on Unix alone (stat_unix.go loadXattr; stat_windows.go sends none)
+crates/build/src/host.rs	fn sized	-	none: windows	a file's extended attributes, which fsutil loads on Unix alone (stat_unix.go loadXattr; stat_windows.go sends none)
+crates/build/src/host.rs	fn list	-	none: windows	a file's extended attributes, which fsutil loads on Unix alone (stat_unix.go loadXattr; stat_windows.go sends none)
+crates/build/src/host.rs	fn get	-	none: windows	a file's extended attributes, which fsutil loads on Unix alone (stat_unix.go loadXattr; stat_windows.go sends none)
+crates/build/src/host.rs	const F_SETSIG	crates/build/src/host.rs	fn settle [macos]	a file read for a build waited past its writers: Linux's lease and its clock's tick; macOS keeps leases for Apple's own processes, and takes the file as it was
+crates/build/src/host.rs	const F_SETSIG	crates/build/src/host.rs	fn settle [windows]	Windows: no one writes a file it has open (open's share mode)
+crates/build/src/host.rs	fn lease	crates/build/src/host.rs	fn settle [macos]	a file read for a build waited past its writers: Linux's lease and its clock's tick; macOS keeps leases for Apple's own processes, and takes the file as it was
+crates/build/src/host.rs	fn lease	crates/build/src/host.rs	fn settle [windows]	Windows: no one writes a file it has open (open's share mode)
+crates/build/src/host.rs	fn barrier	crates/build/src/host.rs	fn settle [macos]	a file read for a build waited past its writers: Linux's lease and its clock's tick; macOS keeps leases for Apple's own processes, and takes the file as it was
+crates/build/src/host.rs	fn barrier	crates/build/src/host.rs	fn settle [windows]	Windows: no one writes a file it has open (open's share mode)
+crates/build/src/host.rs	fn coarse_now	crates/build/src/host.rs	fn settle [macos]	a file read for a build waited past its writers: Linux's lease and its clock's tick; macOS keeps leases for Apple's own processes, and takes the file as it was
+crates/build/src/host.rs	fn coarse_now	crates/build/src/host.rs	fn settle [windows]	Windows: no one writes a file it has open (open's share mode)
+crates/build/src/host.rs	fn nanos	crates/build/src/host.rs	fn settle [macos]	a file read for a build waited past its writers: Linux's lease and its clock's tick; macOS keeps leases for Apple's own processes, and takes the file as it was
+crates/build/src/host.rs	fn nanos	crates/build/src/host.rs	fn settle [windows]	Windows: no one writes a file it has open (open's share mode)
+crates/build/src/host.rs	fn grain	crates/build/src/host.rs	fn settle [macos]	a file read for a build waited past its writers: Linux's lease and its clock's tick; macOS keeps leases for Apple's own processes, and takes the file as it was
+crates/build/src/host.rs	fn grain	crates/build/src/host.rs	fn settle [windows]	Windows: no one writes a file it has open (open's share mode)
+crates/build/src/host.rs	fn unseen_until	crates/build/src/host.rs	fn settle [macos]	a file read for a build waited past its writers: Linux's lease and its clock's tick; macOS keeps leases for Apple's own processes, and takes the file as it was
+crates/build/src/host.rs	fn unseen_until	crates/build/src/host.rs	fn settle [windows]	Windows: no one writes a file it has open (open's share mode)
+crates/build/src/host.rs	fn identity	crates/build/src/host.rs	fn unchanged [windows]	a file's identity, size and times, compared after its read on Unix; on Windows no one could write it meanwhile
+crates/build/src/host.rs	fn cloned	crates/build/src/host.rs	fn clone_file [linux,windows]	a file staged for a build: an APFS clone on macOS; a reflink where Linux's file system makes one, else a copy; a copy on Windows
+crates/build/src/host.rs	fn remove_clone	crates/build/src/host.rs	fn clone_file [linux,windows]	a file staged for a build: an APFS clone on macOS; a reflink where Linux's file system makes one, else a copy; a copy on Windows
+crates/shards/src/netproc.rs	type Control	crates/shards/src/netproc.rs	struct Control [windows]	a network process's control socket (D31): a Unix socket on Unix, an AF_UNIX socket with its process's ID on Windows (PM M203, M213)
+crates/shards/src/netproc.rs	struct Control	crates/shards/src/netproc.rs	type Control [linux,macos]	as Control, Unix's
+crates/shards/src/netproc.rs	impl Control	crates/shards/src/netproc.rs	type Control [linux,macos]	as Control, Unix's
+crates/shards/src/netproc.rs	impl std	crates/shards/src/netproc.rs	type Control [linux,macos]	as Control, Unix's
+crates/shards/src/netproc.rs	const VM_FDS	crates/shards/src/netproc.rs	fn prepare [windows]	where a VM process takes its side of the network ring: descriptors by number on Unix; on Windows handles put in its process and named to it
+crates/shards/src/netproc.rs	const VM_RELEASE_FD	crates/shards/src/netproc.rs	fn prepare [windows]	where a VM process takes its side of the network ring: descriptors by number on Unix; on Windows handles put in its process and named to it
+crates/shards/src/netproc.rs	fn serve_dials	-	none: linux	Linux's network process dials and binds on its host itself, its seccomp filter allowing it; macOS' App Sandbox and Windows' AppContainer keep theirs from their host's own addresses (D142)
+crates/shards/src/netproc.rs	struct Ready	crates/shards/src/netproc.rs	fn start [linux,macos]	a network process started for a VM: on Windows made ready before the VM process exists and started once it does, as a doorbell's peer cannot hang up there (D142); on Unix started as the VM is
+crates/shards/src/netproc.rs	fn prepare	crates/shards/src/netproc.rs	fn start [linux,macos]	as Ready
+crates/shards/src/netproc.rs	fn host_tcp	crates/shards/src/netproc.rs	fn serve_dials [macos]	the dials and binds a confined network process cannot make on its host itself, made for it by its daemon: Windows' and macOS'
+crates/shards/src/netproc.rs	fn host_tcp	-	none: linux	Linux's network process dials and binds on its host itself, its seccomp filter allowing it; macOS' App Sandbox and Windows' AppContainer keep theirs from their host's own addresses (D142)
+crates/shards/src/netproc.rs	fn host_udp	crates/shards/src/netproc.rs	fn serve_dials [macos]	the dials and binds a confined network process cannot make on its host itself, made for it by its daemon: Windows' and macOS'
+crates/shards/src/netproc.rs	fn host_udp	-	none: linux	Linux's network process dials and binds on its host itself, its seccomp filter allowing it; macOS' App Sandbox and Windows' AppContainer keep theirs from their host's own addresses (D142)
+crates/shards/src/netproc.rs	fn dialed	crates/shards/src/netproc.rs	fn serve_dials [macos]	the dials and binds a confined network process cannot make on its host itself, made for it by its daemon: Windows' and macOS'
+crates/shards/src/netproc.rs	fn dialed	-	none: linux	Linux's network process dials and binds on its host itself, its seccomp filter allowing it; macOS' App Sandbox and Windows' AppContainer keep theirs from their host's own addresses (D142)
+crates/shards/src/netproc.rs	fn not_the_hosts	crates/shards/src/netproc.rs	fn serve_dials [macos]	the dials and binds a confined network process cannot make on its host itself, made for it by its daemon: Windows' and macOS'
+crates/shards/src/netproc.rs	fn not_the_hosts	-	none: linux	Linux's network process dials and binds on its host itself, its seccomp filter allowing it; macOS' App Sandbox and Windows' AppContainer keep theirs from their host's own addresses (D142)
+crates/shards/src/vm_run.rs	fn sealing	-	none: windows	the snapshot directory a VM gives up once its snapshot is committed (Linux's Landlock; macOS holds it moved instead); an AppContainer VM never holds one, its spawner staging and committing its snapshots (D141, D196)
+crates/shards/src/vm_run.rs	static GRANTS	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	fn grants	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	fn ask	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	fn dial_through_spawner	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	static GIVEN	crates/shards/src/warm.rs	fn inherited_socket [linux,macos]	what a spawner gives a VM process: handles put in it on Windows, named to it; descriptors it inherits on Unix
+crates/shards/src/vm_run.rs	fn take_given	crates/shards/src/warm.rs	fn inherited_socket [linux,macos]	what a spawner gives a VM process: handles put in it on Windows, named to it; descriptors it inherits on Unix
+crates/shards/src/vm_run.rs	struct SpawnerStages	-	none: linux,macos	an AppContainer VM's snapshots staged by its spawner (D141, D196); a Unix VM writes its own, in the directories it was let write
+crates/shards/src/vm_run.rs	impl shards_vmm	-	none: linux,macos	an AppContainer VM's snapshots staged by its spawner (D141, D196); a Unix VM writes its own, in the directories it was let write
+crates/shards/src/warm.rs	fn from_fd	crates/shards/src/vm_run.rs	fn take_given [windows]	what a spawner gives a VM process: descriptors it inherits on Unix; handles put in it on Windows, named to it
+crates/shards/src/warm.rs	fn daemon_socket	crates/shards/src/vm_run.rs	fn take_given [windows]	what a spawner gives a VM process: descriptors it inherits on Unix; handles put in it on Windows, named to it
+crates/shards/src/warm.rs	fn inherited_socket	crates/shards/src/vm_run.rs	fn take_given [windows]	what a spawner gives a VM process: descriptors it inherits on Unix; handles put in it on Windows, named to it
+crates/shards/src/warm.rs	fn shared	crates/shards/src/warm.rs	fn share_ends [windows]	a run's shares' streams: taken from its share process on Unix; sent by the daemon after the run's request on Windows (D197)
+crates/shards/src/warm.rs	fn share_ends	crates/shards/src/warm.rs	fn shared [linux,macos]	as shared
+crates/shards/src/warm.rs	struct Watching	-	none: macos,windows	x86 KVM spins on a guest's access past a file's end, which the daemon's watch of its DAX windows' files answers (PM M273); HVF ends the run, which the window answers, and NTFS refuses to cut a file while a section of it exists (PM M412)
+crates/shards/src/warm.rs	impl shards_vmm	-	none: macos,windows	x86 KVM spins on a guest's access past a file's end, which the daemon's watch of its DAX windows' files answers (PM M273); HVF ends the run, which the window answers, and NTFS refuses to cut a file while a section of it exists (PM M412)
+crates/shards/src/warm.rs	fn watch_windows	-	none: macos,windows	x86 KVM spins on a guest's access past a file's end, which the daemon's watch of its DAX windows' files answers (PM M273); HVF ends the run, which the window answers, and NTFS refuses to cut a file while a section of it exists (PM M412)
+crates/shards/src/warm.rs	fn relay_engine	crates/shards/src/warm.rs	fn serve_engine [linux,macos]	a guest's connection to its run's engine (D181): relayed onto a pipe its daemon gave on Windows, where a VM gives its daemon no handle; handed whole to the daemon on Unix
+crates/shards/src/warm.rs	fn pass	crates/shards/src/warm.rs	fn serve_engine [linux,macos]	a guest's connection to its run's engine (D181): relayed onto a pipe its daemon gave on Windows, where a VM gives its daemon no handle; handed whole to the daemon on Unix
+crates/shards/src/warm.rs	fn close_input	-	none: linux,macos	a standard input closed under a read of it: Windows' CloseHandle waits for a synchronous read, which is cancelled first; a Unix close does not wait
+crates/shards/src/cli/client.rs	struct Flushed	crates/shards/src/cli/client.rs	fn own_stdio [linux,macos]	the client's own standard output, each write shown at once: a prompt with no newline flushed through Windows' std handle; Unix writes a copy of its descriptor unbuffered
+crates/shards/src/cli/client.rs	impl impl<W: Write> Write for Flushed<W> {	crates/shards/src/cli/client.rs	fn own_stdio [linux,macos]	as Flushed
+crates/shards/src/cli/client.rs	fn unread	-	none: windows	a daemon from before the request slots (D185), reached through its socket, ran on Unix alone: Windows' daemon came with the slots (D195)
+crates/shards/src/cli/client.rs	fn stop_socket	-	none: windows	a daemon from before the request slots (D185), reached through its socket, ran on Unix alone: Windows' daemon came with the slots (D195)
+crates/shards/src/cli/client.rs	fn command_stdin	-	none: windows	a daemon from before the request slots (D185), reached through its socket, ran on Unix alone: Windows' daemon came with the slots (D195)
+crates/shards/src/cli/client.rs	fn take_signals	crates/shards/src/cli/client.rs	fn console_signal [windows]	the client's signals a run's command takes: Unix's, SIGWINCH among them; Windows' console events, as Docker's CLI reads them
+crates/shards/src/cli/client.rs	static CONSOLE_CURRENT	crates/shards/src/cli/client.rs	fn take_signals [linux,macos]	as take_signals
+crates/shards/src/cli/client.rs	fn console_signal	crates/shards/src/cli/client.rs	fn take_signals [linux,macos]	as take_signals
+crates/shards/src/cli/listing.rs	fn windows_local	crates/shards/src/cli/listing.rs	fn local [linux,macos]	the local zone a listing's times are in, as Go's time.Local has it: the C library's, which reads TZ, on Unix; the dynamic zone's rules on Windows
+crates/shards/src/cli/mod.rs	mod zones	crates/shards/src/cli/listing.rs	fn local [linux,macos]	Go's abbreviations of Windows' zones; a Unix zone's file carries its own
+crates/shards/src/cli/mod.rs	const MOLTENVK_LOG_LEVEL	-	none: windows	MoltenVK's log level, macOS' Vulkan, set where a VM process with a GPU is exec'd in this process's place (Unix's instead); Windows' renders through no MoltenVK
+crates/shards/src/cli/mod.rs	fn vm	crates/shards/src/cli/mod.rs	fn vm [linux]	shards run --kernel and shards restore become the VM process: Linux's with its working set's writer, macOS' with its broker, Windows' serving its grants
+crates/shards/src/cli/mod.rs	fn working_set_writer	-	none: macos	a restore's working set written for a VM that may write no file (D30): Linux's shardsd working-set, Windows' a thread of the CLI, which waits for its VM; on macOS the broker the VM asks takes it (grant_answer.rs)
+crates/shards/src/cli/mod.rs	const WORKING_SET	-	none: linux,macos	the name a Windows VM is handed its working set's pipe by; a Unix VM is given the descriptor's number
+crates/shards/src/working_set.rs	fn keeper	crates/shards/src/working_set.rs	fn keep [windows]	Linux's writer, a process of its own that the CLI starts before it becomes the VM; on Windows the CLI, which waits for its VM, keeps it on a thread
+crates/shards/src/working_set.rs	fn keeper	-	none: macos	HVF records the working set of the run that saves a template, not a restore's (vm::RESTORES_RECORD, PM M30)
+crates/shards/src/cli/mod.rs	type ServedPipe	crates/shards/src/cli/mod.rs	fn vm [linux,macos]	the pipes a VM is handed by name in its grants on Windows (a share another server serves, a warm VM's link), where Unix passes descriptors by number (--slates-fs-fd, --warm FD)
+crates/shards/src/cli/mod.rs	fn served_pipes	crates/shards/src/cli/mod.rs	fn vm [linux,macos]	the pipes a VM is handed by name in its grants on Windows (a share another server serves, a warm VM's link), where Unix passes descriptors by number (--slates-fs-fd, --warm FD)
+crates/shards/src/cli/mod.rs	const WARM	crates/shards/src/cli/mod.rs	fn vm [linux,macos]	the pipes a VM is handed by name in its grants on Windows (a share another server serves, a warm VM's link), where Unix passes descriptors by number (--slates-fs-fd, --warm FD)
+crates/shards/src/cli/mod.rs	fn served_pipe	crates/shards/src/cli/mod.rs	fn vm [linux,macos]	the pipes a VM is handed by name in its grants on Windows (a share another server serves, a warm VM's link), where Unix passes descriptors by number (--slates-fs-fd, --warm FD)
+crates/shards/src/cli/save.rs	const ENDS	crates/shards/src/cli/save.rs	static ENDED_TEMP [windows]	a save that leaves nothing behind when the client is ended: Unix's ending signals blocked while it writes; Windows' console event removes its temporary file first
+crates/shards/src/cli/save.rs	fn block_ends	crates/shards/src/cli/save.rs	static ENDED_TEMP [windows]	a save that leaves nothing behind when the client is ended: Unix's ending signals blocked while it writes; Windows' console event removes its temporary file first
+crates/shards/src/cli/save.rs	fn unblock	crates/shards/src/cli/save.rs	static ENDED_TEMP [windows]	a save that leaves nothing behind when the client is ended: Unix's ending signals blocked while it writes; Windows' console event removes its temporary file first
+crates/shards/src/cli/save.rs	static ENDED_TEMP	crates/shards/src/cli/save.rs	fn block_ends [linux,macos]	as ENDS
+crates/shards/src/cli/terminal.rs	fn console_in	-	none: linux,macos	the console handle a standard stream is on, which Windows asks for; a Unix terminal is its descriptor
+crates/shards/src/cli/terminal.rs	fn console	-	none: linux,macos	the console handle a standard stream is on, which Windows asks for; a Unix terminal is its descriptor
+crates/shards/src/cli/terminal.rs	fn is_console	-	none: linux,macos	whether a stream is a console, by its console mode; std's IsTerminal (isatty(3)) answers on Unix
+crates/shards/src/cli/terminal.rs	fn raw_mode	crates/shards/src/cli/terminal.rs	fn make_raw [linux,macos]	a terminal made raw: a console's modes on Windows, termios on Unix
+crates/shards/src/cli/terminal.rs	fn shows_whole_buffer	-	none: linux,macos	a console that shows its whole buffer, whose height is not its window's; a Unix terminal's rows are its window's
+crates/shards/src/cli/terminal.rs	struct ConsoleInput	-	none: linux,macos	a console's keys read as a terminal's bytes, ^Z and ^C among them, its resizes heard: Windows' console records; a Unix terminal gives its bytes as they are, SIGWINCH its resizes
+crates/shards/src/cli/terminal.rs	impl impl<F: FnMut()> std::fmt::Debug for ConsoleInput<F> {	-	none: linux,macos	a console's keys read as a terminal's bytes, ^Z and ^C among them, its resizes heard: Windows' console records; a Unix terminal gives its bytes as they are, SIGWINCH its resizes
+crates/shards/src/cli/terminal.rs	impl unsafe impl<F: FnMut() + Send> Send for ConsoleInput<F> {}	-	none: linux,macos	a console's keys read as a terminal's bytes, ^Z and ^C among them, its resizes heard: Windows' console records; a Unix terminal gives its bytes as they are, SIGWINCH its resizes
+crates/shards/src/cli/terminal.rs	impl impl<F: FnMut()> ConsoleInput<F> {	-	none: linux,macos	a console's keys read as a terminal's bytes, ^Z and ^C among them, its resizes heard: Windows' console records; a Unix terminal gives its bytes as they are, SIGWINCH its resizes
+crates/shards/src/cli/terminal.rs	impl impl<F: FnMut()> io::Read for ConsoleInput<F> {	-	none: linux,macos	a console's keys read as a terminal's bytes, ^Z and ^C among them, its resizes heard: Windows' console records; a Unix terminal gives its bytes as they are, SIGWINCH its resizes
+crates/shards/src/cli/terminal.rs	fn field	crates/shards/src/cli/terminal.rs	fn size [windows]	a terminal's size: TIOCGWINSZ's fields on Unix, a console's window on Windows
+crates/shards/src/cli/terms.rs	const MAX_COLORS	crates/shards/src/cli/terms.rs	fn colors [windows]	the colours a terminal type has, from its terminfo entry on Unix; Windows keeps no terminfo database, its console's type said by a context's client
+crates/shards/src/cli/terms.rs	fn search	crates/shards/src/cli/terms.rs	fn colors [windows]	the colours a terminal type has, from its terminfo entry on Unix; Windows keeps no terminfo database, its console's type said by a context's client
+crates/shards/src/cli/terms.rs	fn entry	crates/shards/src/cli/terms.rs	fn colors [windows]	the colours a terminal type has, from its terminfo entry on Unix; Windows keeps no terminfo database, its console's type said by a context's client
+crates/shards/src/cli/terms.rs	fn max_colors	crates/shards/src/cli/terms.rs	fn colors [windows]	the colours a terminal type has, from its terminfo entry on Unix; Windows keeps no terminfo database, its console's type said by a context's client
+crates/net/src/lib.rs	mod confine	crates/apple/src/lib.rs	mod sandbox [macos]	the network process confined (D31): Landlock on Linux; App Sandbox from its entitlements on macOS, which sandbox says it is in
+crates/net/src/lib.rs	mod confine	crates/ipc/src/windows.rs	fn spawn_confined [windows]	an AppContainer holding the network's capabilities alone on Windows (PM M204)
+crates/net/src/lib.rs	mod dial	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/lib.rs	const UDP_WAITING	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/lib.rs	const DIALER	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/lib.rs	fn udp_dialed	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/lib.rs	fn dial	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/lib.rs	fn on_dialer	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/lib.rs	fn dialed	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/lib.rs	fn wait_on_dialer	crates/net/src/tcp.rs	static DIALER [linux,macos]	what a confined network process cannot dial itself, dialled by its spawner: on Windows the host's own addresses, its loopback and a build's proxy, by the event loop's dialer (dial.rs, D142); on macOS a build's proxy's socket, over a link (D31), Linux's dialling its own
+crates/net/src/tcp.rs	fn dialed	crates/net/src/tcp.rs	static DIALER [linux,macos]	as lib.rs's dial: a connection its spawner dialled, on Windows
+crates/net/src/tcp.rs	static DIALER	crates/net/src/lib.rs	mod dial [windows]	what App Sandbox keeps a network process from, a build's proxy's socket, dialled by its spawner over a link (macOS, D31); Windows' dialer is the event loop's
+crates/net/src/tcp.rs	fn set_dialer	crates/net/src/lib.rs	mod dial [windows]	what App Sandbox keeps a network process from, a build's proxy's socket, dialled by its spawner over a link (macOS, D31); Windows' dialer is the event loop's
+crates/net/src/tcp.rs	fn dial	crates/net/src/lib.rs	mod dial [windows]	what App Sandbox keeps a network process from, a build's proxy's socket, dialled by its spawner over a link (macOS, D31); Windows' dialer is the event loop's
+crates/net/src/bridge.rs	fn host_addresses	-	none: linux,macos	the host's own addresses, which an AppContainer reaches none of, nor the loopback (PM M204), so a network process's flows to them are its spawner's to dial (D142); a Unix network process reaches them itself
+crates/net/src/bridge.rs	fn dump_routes	crates/net/src/bridge.rs	fn on_link_routes [macos,windows]	the host's on-link routes, which a network's subnet must not overlap: a netlink dump on Linux, a routing socket's on macOS, GetIpForwardTable2 on Windows
+crates/net/src/pktinfo.rs	fn enable	crates/net/src/pktinfo.rs	mod windows [windows]	a datagram's destination address, taken and set (IP_PKTINFO): Unix's recvmsg and sendmsg, Winsock's WSARecvMsg and WSASendMsg
+crates/net/src/pktinfo.rs	const CONTROL	crates/net/src/pktinfo.rs	mod windows [windows]	a datagram's destination address, taken and set (IP_PKTINFO): Unix's recvmsg and sendmsg, Winsock's WSARecvMsg and WSASendMsg
+crates/net/src/pktinfo.rs	fn recv	crates/net/src/pktinfo.rs	mod windows [windows]	a datagram's destination address, taken and set (IP_PKTINFO): Unix's recvmsg and sendmsg, Winsock's WSARecvMsg and WSASendMsg
+crates/net/src/pktinfo.rs	fn send	crates/net/src/pktinfo.rs	mod windows [windows]	a datagram's destination address, taken and set (IP_PKTINFO): Unix's recvmsg and sendmsg, Winsock's WSARecvMsg and WSASendMsg
+crates/net/src/pktinfo.rs	fn sockaddr	crates/net/src/pktinfo.rs	mod windows [windows]	a datagram's destination address, taken and set (IP_PKTINFO): Unix's recvmsg and sendmsg, Winsock's WSARecvMsg and WSASendMsg
+crates/net/src/pktinfo.rs	fn sockaddr_of	crates/net/src/pktinfo.rs	mod windows [windows]	a datagram's destination address, taken and set (IP_PKTINFO): Unix's recvmsg and sendmsg, Winsock's WSARecvMsg and WSASendMsg
+crates/net/src/pktinfo.rs	mod windows	crates/net/src/pktinfo.rs	fn recv [linux,macos]	as recv
+crates/net/src/poll.rs	const AT_ONCE	crates/net/src/poll.rs	mod windows [windows]	the network process's event loop: poll(2) on Unix, WSAPoll and events on Windows
+crates/net/src/poll.rs	struct Poller	crates/net/src/poll.rs	mod windows [windows]	the network process's event loop: poll(2) on Unix, WSAPoll and events on Windows
+crates/net/src/poll.rs	impl Poller	crates/net/src/poll.rs	mod windows [windows]	the network process's event loop: poll(2) on Unix, WSAPoll and events on Windows
+crates/net/src/poll.rs	mod windows	crates/net/src/poll.rs	struct Poller [linux,macos]	as Poller
+crates/net/src/sys.rs	impl impl<T: std::os::fd::AsRawFd> AsRawSock for T {	crates/net/src/sys.rs	impl AsRawSock [windows]	a socket's raw value as the poller takes it: a descriptor on Unix, a SOCKET on Windows
+crates/net/src/sys.rs	impl AsRawSock	crates/net/src/sys.rs	impl impl<T: std::os::fd::AsRawFd> AsRawSock for T { [linux,macos]	as AsRawSock
+crates/net/src/sys.rs	fn connect_tcp_to_itself	-	none: linux,macos	a connection to the host's own address from that address, which the dialer makes for an AppContainer on Windows (D142); a Unix network process connects to the host itself
+crates/net/src/sys.rs	fn connect_tcp_from	-	none: linux,macos	a connection to the host's own address from that address, which the dialer makes for an AppContainer on Windows (D142); a Unix network process connects to the host itself
+crates/net/src/sys.rs	fn winsock_addr	crates/net/src/sys.rs	fn sockaddr_in [linux,macos]	an address as the OS takes it: Winsock's SOCKADDR_INET, Unix's sockaddr_in and sockaddr_in6
+crates/net/src/sys.rs	fn sockaddr_in	crates/net/src/sys.rs	fn winsock_addr [windows]	as winsock_addr
+crates/net/src/sys.rs	fn sockaddr_in6	crates/net/src/sys.rs	fn winsock_addr [windows]	as winsock_addr
+crates/apple/src/lib.rs	mod bookmark	crates/shards/src/grant_answer.rs	fn handed [windows]	a directory granted the confined VM: macOS' bookmark; Windows' handle put in its process
+crates/apple/src/lib.rs	mod bookmark	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/apple/src/lib.rs	mod sandbox	crates/ipc/src/windows.rs	fn in_app_container [windows]	whether this process is confined: in App Sandbox on macOS, in an AppContainer on Windows
+crates/apple/src/lib.rs	mod sandbox	-	none: linux	a Linux process's confinement is its own Landlock layers and seccomp filter, which it set itself (confine.rs)
+crates/apple/src/lib.rs	mod frameworks	-	none: linux,windows	Apple's frameworks bound when first called, as linking them costs every launch 1.1 ms (PM M113); Linux's and Windows' calls are their C library's and system DLLs'
+crates/apple/src/lib.rs	mod trust	crates/registry/src/tls.rs	use rustls_platform_verifier [linux,windows]	a server's certificate chain evaluated by the system: macOS' Security, bound when first called, as rustls-platform-verifier evaluates it (PM M113); Linux's and Windows' through rustls-platform-verifier itself
+crates/registry/src/lib.rs	mod apple	crates/registry/src/tls.rs	use rustls_platform_verifier [linux,windows]	as apple's trust: the registry's verifier, each host's
+crates/registry/src/http.rs	fn send_from	crates/registry/src/http.rs	fn sending [macos,windows]	a pushed blob's bytes sent from its file: sendfile(2) on Linux; read and written elsewhere, sending's own loop
+crates/netring/src/lib.rs	type RawWait	crates/netring/src/lib.rs	enum RawWait [windows]	what a ring's side waits on: a descriptor on Unix; an event or a socket on Windows
+crates/netring/src/lib.rs	enum RawWait	crates/netring/src/lib.rs	type RawWait [linux,macos]	as RawWait
+crates/netring/src/lib.rs	type Bell	crates/netring/src/lib.rs	enum Bell [windows]	a ring's doorbell: a pipe's end on Unix; an event, or a socket pair's end for a side that waits on a completion port, on Windows (PM M213)
+crates/netring/src/lib.rs	enum Bell	crates/netring/src/lib.rs	type Bell [linux,macos]	as Bell
+crates/netring/src/lib.rs	impl Bell	crates/netring/src/lib.rs	type Bell [linux,macos]	as Bell
+crates/netring/src/lib.rs	fn socket_doorbell	crates/netring/src/lib.rs	type Bell [linux,macos]	as Bell
+crates/netring/src/lib.rs	fn fd	crates/netring/src/lib.rs	fn handle [windows]	the ring's memory as its peer is handed it: a descriptor on Unix, a handle on Windows
+crates/netring/src/lib.rs	fn handle	crates/netring/src/lib.rs	fn fd [linux,macos]	as fd
+crates/shards/src/containers.rs	fn gone_marked	crates/shards/src/containers.rs	fn set_aside [linux,macos]	a removed container set aside so no crash brings it back: renamed aside on Unix; on Windows marked, as NTFS renames no directory a handle beneath is open in, and deleted where it is
+crates/shards/src/daemon.rs	fn fd	crates/shards/src/daemon.rs	fn event [windows]	what the daemon's listener waits on: a pipe's read end on Unix, an event on Windows
+crates/shards/src/daemon.rs	fn event	crates/shards/src/daemon.rs	fn fd [linux,macos]	as fd
+crates/shards/src/google.rs	fn windows_product_name	crates/shards/src/google.rs	fn system_suggests_gce [linux,macos]	whether the machine says it is Google's (systemInfoSuggestsGCE): Windows' SystemProductName, Linux's DMI product name; macOS never runs on Google's machines
+crates/shards/src/helpers.rs	fn containers	-	none: linux,macos	where the AppContainer profiles of this user's microVMs are recorded, so that one whose shards ended without deleting it is deleted by the next (D141); Unix's confinement leaves no profile
+crates/shards/src/oidc.rs	fn run	crates/shards/src/oidc.rs	fn open_browser [windows]	a browser opened at a sign-in's URL: xdg-open or open on Unix, the shell's handler on Windows
+crates/shards/src/share.rs	fn hand_over	crates/shards/src/share.rs	fn share [windows]	a share's streams handed to its VM: by SCM_RIGHTS from the share process on Unix; on Windows sent by the daemon after the run's request (D197)
+crates/shards/src/share.rs	fn is	-	none: windows	a Unix share process's inherited descriptors checked for their type; Windows' handles are named to it as it is made (D197)
+crates/shards/src/frontend/check.rs	fn xattrs	-	none: macos,windows	the frontend's isolation checks run in BuildKit's exec step, in the build's Linux microVM (D113): the guest's
+crates/shards/src/daemon/budget.rs	fn fired	crates/shards/src/daemon/groups.rs	fn hold_groups [macos,windows]	a budget written, heard: Linux's cgroup files watched (inotify); the groups macOS and Windows keep in the home, read again every pressure window (D183)
+crates/shards/src/daemon/groups.rs	impl impl<D: Disk> Daemon<D> {	crates/shards/src/daemon/budget.rs	fn cgroup_of_parent [linux]	a group's microVMs held together (D183): Windows' job object; Linux's cgroup
+crates/shards/src/daemon/groups.rs	impl impl<D: Disk> Daemon<D> {	crates/shards/src/daemon/groups.rs	fn hold_groups [macos]	the group macOS keeps in the home, held to its budgets by give-backs (D183 slice 3)
+crates/shards/src/daemon/hostnet.rs	fn errno	crates/shards/src/daemon/hostnet.rs	fn winsock_errno [windows]	the last socket error, Linux's numbers: the C library's errno on Unix, Winsock's mapped on Windows
+crates/shards/src/daemon/hostnet.rs	fn winsock_errno	crates/shards/src/daemon/hostnet.rs	fn errno [linux,macos]	as errno
+crates/shards/src/daemon/hostnet.rs	fn bound_port	-	none: windows	a bound socket's port read from its raw descriptor (getsockname(2)); Windows' host sockets are std's, whose local_addr gives it
+crates/shards/src/daemon/layers.rs	fn copied	crates/build/src/host.rs	fn clone_file [linux,macos]	a restore's writable layer made from its generation's: cloned where the file system clones (APFS, a Linux reflink); copied on Windows, which makes no clone yet
+crates/shards/src/daemon/ship/sockets.rs	impl Datagrams	-	none: windows	the host's own syslog's local socket (srslog's unixSyslog), which Windows keeps none of
+crates/shards/src/daemon/ship/stream.rs	fn unix	-	none: windows	the host's own syslog's local socket (srslog's unixSyslog), which Windows keeps none of
+crates/shards/src/daemon/ship/syslog.rs	const LOCAL	-	none: windows	the host's own syslog's local sockets, tried in turn (srslog's logPaths), which Windows keeps none of
+crates/shards/src/daemon/ship/sockets.rs	struct Retransmitted	-	none: linux,macos	Windows' SIO_TCP_INFO counts the bytes sent again in 32 bits, which wrap; Linux's and macOS' TCP_INFO count them in 64
+crates/shards/src/daemon/ship/sockets.rs	impl Retransmitted	-	none: linux,macos	Windows' SIO_TCP_INFO counts the bytes sent again in 32 bits, which wrap; Linux's and macOS' TCP_INFO count them in 64
+crates/shards/src/build/give.rs	static WRITTEN	-	none: macos,windows	a build's cgroup budgets watched as they are written (Linux's cgroup v2); a build with no budget file to watch is held to its budget by its host's pressure alone (D188)
+crates/shards/src/build/give.rs	fn written	-	none: macos,windows	a build's cgroup budgets watched as they are written (Linux's cgroup v2); a build with no budget file to watch is held to its budget by its host's pressure alone (D188)
+crates/shards/src/build/give.rs	fn watch_budgets	-	none: macos,windows	a build's cgroup budgets watched as they are written (Linux's cgroup v2); a build with no budget file to watch is held to its budget by its host's pressure alone (D188)
+crates/shards/src/build/ssh.rs	fn pipe	crates/shards/src/build/ssh.rs	fn agent_stream [linux,macos]	a connection to a build's SSH agent: its AF_UNIX socket's on Unix; on Windows OpenSSH's named pipe's, as BuildKit dials it, or an AF_UNIX socket's
+crates/archive/src/sys/mod.rs	mod unix	crates/archive/src/sys/mod.rs	mod windows	the host calls an archive unpacks and packs by, as moby/go-archive makes them: Unix's, Windows'
+crates/archive/src/sys/mod.rs	mod windows	crates/archive/src/sys/mod.rs	mod unix	as unix
+crates/cmdline/src/buildflags.rs	mod windows_agent	-	none: linux,macos	what names an SSH agent on Windows: OpenSSH's named pipe, BuildKit's isWindowsPipePath; a Unix agent is SSH_AUTH_SOCK's socket
+crates/testdir/src/lib.rs	fn raise_descriptor_limit	-	none: windows	a test process's soft descriptor limit raised to its hard limit; Windows holds every process to its own handle limit alike (vmm windows_process.rs)
+crates/testdir/src/lib.rs	fn per_process_most	-	none: linux,windows	macOS' kern.maxfilesperproc, past which setrlimit(2) refuses a soft limit; Linux's hard limit is its own most
+crates/shards/src/confine.rs	fn landlock	crates/apple/src/lib.rs	mod sandbox [macos]	the VM process confined to what it was given (D30): Landlock on Linux; App Sandbox from its entitlements on macOS
+crates/shards/src/confine.rs	fn landlock	crates/ipc/src/windows.rs	fn spawn_confined [windows]	an AppContainer on Windows (D141)
+crates/shards/src/daemon.rs	mod cuts	-	none: macos,windows	a DAX window's file cut short under KVM's mapping, watched and answered: Hypervisor.framework takes a cut as a fault the VMM fills (PM M271), and NTFS refuses to cut a file while a section of it exists (PM M412)
+crates/shards/src/daemon/ship.rs	mod journald	crates/shards/src/daemon/ship.rs	mod oslog [macos]	the host's own log a run's output is shipped to: Linux's systemd journal, macOS' unified log, Windows' Event Tracing, each refused elsewhere with its host named (logging.rs kept)
+crates/shards/src/daemon/ship.rs	mod journald	crates/shards/src/daemon/ship.rs	mod etwlogs [windows]	as journald
+crates/shards/src/daemon/ship.rs	mod oslog	crates/shards/src/daemon/ship.rs	mod journald [linux]	as journald
+crates/shards/src/daemon/ship.rs	mod oslog	crates/shards/src/daemon/ship.rs	mod etwlogs [windows]	as journald
+crates/shards/src/daemon/ship.rs	mod etwlogs	crates/shards/src/daemon/ship.rs	mod journald [linux]	as journald
+crates/shards/src/daemon/ship.rs	mod etwlogs	crates/shards/src/daemon/ship.rs	mod oslog [macos]	as journald
+crates/shards/src/context.rs	const SIGNAL_FD	-	none: linux,macos	a client's command's signals and hang-up through a pipe its Windows daemon gave it, as Windows sends a process no signal; a Unix daemon sends them by kill(2)
+crates/shards/src/context.rs	fn signal_descriptor	-	none: linux,macos	as SIGNAL_FD: the number its pipe is given at, past every other a command is given
+crates/shards/src/synced.rs	fn given_secrets	-	none: linux,macos	a Windows build reads a secret its daemon gave it at a number from that handle; a Unix build reads the descriptor's path (/dev/fd/N) as any file's
+crates/shards/src/cli/client.rs	fn take_signal_pipe	-	none: linux,macos	a Windows client's command takes its signals from its daemon's pipe (context::SIGNAL_FD); a Unix command takes them as any process does
+crates/shards/src/daemon/relay.rs	impl Default	-	none: linux,macos	Relays' Default, which Unix derives (cfg_attr(unix, derive(Default))); Windows' channel of clients taken has none to derive
+crates/shards/src/daemon/relay.rs	type Taken	crates/shards/src/daemon/relay.rs	fn relay_polled	a context's engine clients taken: on Windows by a thread per context's pipe (WaitForMultipleObjects waits on 64 handles at most), on Unix by the daemon's poll(2) of the listeners
+crates/shards/src/daemon/relay.rs	struct Came	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
+crates/shards/src/daemon/relay.rs	struct Taker	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
+crates/shards/src/daemon/relay.rs	impl Taker	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
+crates/shards/src/daemon/relay.rs	impl Drop	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken: the Windows taker's stop
+crates/shards/src/daemon/relay.rs	fn fds	crates/shards/src/daemon/relay.rs	struct Taker	as Taken: the listeners the Unix daemon polls
+crates/shards/src/daemon/relay.rs	fn relay_polled	crates/shards/src/daemon/relay.rs	struct Taker	as Taken
+crates/shards/src/daemon/remote.rs	struct Console	crates/shards/src/daemon/remote.rs	fn open_pty	a client's command's or build's terminal: a pseudoconsole (ConPTY) on Windows, a pseudo-terminal on Unix
+crates/shards/src/daemon/remote.rs	type Held	crates/shards/src/daemon/remote.rs	fn open_pty	as Console
+crates/shards/src/daemon/remote.rs	impl Console	crates/shards/src/daemon/remote.rs	fn open_pty	as Console
+crates/shards/src/daemon/remote.rs	fn open_pty	crates/shards/src/daemon/remote.rs	struct Console	as Console
+crates/shards/src/daemon/remote.rs	fn resizer	crates/shards/src/daemon/remote.rs	struct Console	as Console: its resize (TIOCSWINSZ; ResizePseudoConsole)
+crates/shards/src/daemon/remote.rs	struct Kept	crates/shards/src/daemon/remote.rs	struct Console	as Console: what it shows kept until read (XNU's last close; a pseudoconsole closed once its command ends, its reader then reading what it held)
+crates/shards/src/daemon/remote.rs	impl Kept	crates/shards/src/daemon/remote.rs	struct Console	as Kept
+crates/shards/src/daemon/remote.rs	fn unread	crates/shards/src/daemon/remote.rs	struct Console	as Kept
+crates/shards/src/daemon/remote.rs	struct Controller	crates/shards/src/daemon/remote.rs	struct Console	as Kept: the terminal's reader
+crates/shards/src/daemon/remote.rs	impl Read	crates/shards/src/daemon/remote.rs	struct Console	as Controller
+crates/shards/src/daemon/remote.rs	fn kept_terminal	crates/shards/src/daemon/remote.rs	struct Console	as Kept
+crates/archive/src/lib.rs	mod lx	crates/archive/src/layer.rs	fn apply_layer [linux,macos]	a client's context's copy on its machine (D180): on Windows a Linux tree kept on NTFS as WSL keeps one (apply_layer_lx); on Unix the host's own files hold a Linux tree's modes, owners, links and devices (apply_layer)
+crates/build/src/host.rs	mod lx	crates/build/src/host.rs	fn lstat [linux,macos]	a Linux tree's files read as fsutil reads a Linux host's: on Windows a tree kept as WSL keeps one (Tree, shards_ntfs); on Unix its host's own lstat
+crates/vmm/src/devices/virtio/gpu/mod.rs	mod window	crates/vmm/src/vm/mod.rs	fn gpu_window [macos,windows]	the window a GPU's blobs are mapped into: KVM's a range of this process reserved, one memslot over it, each blob mapped by its descriptor (D201); Hypervisor.framework's stage 2 and WHP's partition each map a blob at its place by its address (D144, D202)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_get_map_ptr	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_export_blob	a mappable blob's host memory reached: its address in this process, from the krunkit fork's renderer on macOS and Windows (D144, D202); the descriptor virglrenderer 1.3.0's render server exports it as, on Linux (D201)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_export_blob	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn virgl_renderer_resource_get_map_ptr	as virgl_renderer_resource_get_map_ptr
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const FD_DMABUF	-	none: macos,windows	the descriptors a Linux render server exports a blob as (virglrenderer.h); macOS' and Windows' renderer gives a blob's address (virgl_renderer_resource_get_map_ptr)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const FD_SHM	-	none: macos,windows	as FD_DMABUF
+crates/vmm/src/devices/virtio/gpu/virgl.rs	struct ContextArgs	-	none: macos,windows	what virglrenderer 1.3.0's render server says to a context's process (server/render_context.h), Linux's alone: the krunkit fork has no render server, its Venus served in this process on macOS and Windows (D144, D202)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn render_server	-	none: macos,windows	as ContextArgs
+crates/vmm/src/devices/virtio/gpu/virgl.rs	struct BasicInfo	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	a blob's host memory held as long as its blob: on macOS its pages remapped into a range of this process's (mach_vm_region, mach_vm_remap), on Linux the descriptor it was exported as, on Windows the pages the renderer allocated for it (D202)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const VM_REGION_BASIC_INFO_64	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	as BasicInfo
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const VM_FLAGS_ANYWHERE	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	as BasicInfo
+crates/vmm/src/devices/virtio/gpu/virgl.rs	const VM_INHERIT_NONE	crates/vmm/src/devices/virtio/gpu/virgl.rs	struct Held	as BasicInfo
+crates/vmm/src/devices/virtio/gpu/virgl.rs	struct ExtensionProperties	-	none: linux,macos	Windows asks its device whether it imports host memory (VK_EXT_external_memory_host), as every page a guest may map there is the renderer's (D202, PM M383); macOS holds a blob's own pages remapped and Linux the descriptor it was exported as (struct Held)
+crates/vmm/src/devices/virtio/gpu/virgl.rs	type EnumerateDeviceExtensionProperties	-	none: linux,macos	as ExtensionProperties
+crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	crates/vmm/src/devices/virtio/gpu/virgl.rs	impl Vulkan [windows]	Vulkan's entry points: MoltenVK's, linked, on macOS; the host's loader's on Linux (libvulkan.so.1) and on Windows (System32's vulkan-1.dll), opened as the renderer opens it
+crates/vmm/src/devices/virtio/gpu/virgl.rs	impl Vulkan	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	as fn open
+crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	-	none: macos	the GPU's VM process is signed with every VM process's App Sandbox entitlements and no other (build.rs, resources/vm.entitlements), the sandbox giving it Metal as any sandboxed app's (D144)
+crates/shards/src/confine.rs	const GPU_SYSCALLS	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn gpu_paths	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn library_paths	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/daemon.rs	mod groups	-	none: linux	the groups shards keeps for --cgroup-parent where a host has no cgroups its user's own tools make and cap (D183, slice 3); on Linux a run's processes are born in a slice of the user's service manager, whose cgroup the kernel holds to its budgets (D183, slice 1)
+crates/shards/src/daemon/groups.rs	const CPU_BUDGET	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	struct Member	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	struct Woke	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	struct Groups	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/daemon/groups.rs	fn held_cpu	-	none: linux	as daemon.rs's mod groups
+crates/shards/src/main.rs	mod grant	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/main.rs	mod grant_answer	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/grant_answer.rs	fn newest	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	fn granted	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/vm_run.rs	fn granted_template	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/vm-process/src/main.rs	mod grant	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/vm-process/src/main.rs	mod grant_ask	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/cli/mod.rs	fn recording_restore	-	none: macos	the restores that record their working set (vm::RESTORES_RECORD): Hypervisor.framework's is recorded by the run that saves its template, as recording slows a command sixfold there (PM M30)
+crates/net/src/bridge.rs	fn routes_of	crates/net/src/bridge.rs	fn on_link_routes [macos,windows]	the host's on-link routes read: a netlink dump's on Linux, a route sysctl's on macOS (dumped_routes), GetIpForwardTable2's on Windows
+crates/net/src/bridge.rs	fn dumped_routes	crates/net/src/bridge.rs	fn on_link_routes [linux,windows]	as routes_of
+crates/archive/src/error.rs	fn platform_errno	-	none: windows	Go's texts of each Unix's own errnos (x/sys zerrors_linux.go, zerrors_darwin.go), which go_errno reads on Unix; Windows' errors are said in Windows' own words, which errno_text keeps of Rust's
+crates/archive/src/sys/unix.rs	fn fd_path	crates/archive/src/sys/unix.rs	fn set_xattr_in [linux]	a name beneath a directory's descriptor reached by its path: F_GETPATH's on macOS; on Linux /proc/self/fd's (set_xattr_in, chmod_fallback)
+crates/ipc/src/unix.rs	static PREVIOUS	-	none: macos,windows	the actions Linux's fault signals had before take_rest caught them, to forward those another process sends (FAULTS); XNU tells no fault signal's sender, which the Docker CLI on macOS takes as a fault too (FAULTS), and Windows has no signals
+crates/vmm/src/platform/pressure.rs	const REPEAT	crates/vmm/src/platform/pressure.rs	const AVERAGE_PERCENT	a pressure said again while it lasts: macOS' and Windows' notifications every two seconds, Linux's ten-second average where no trigger arms
+crates/shards/src/spiffe.rs	fn pipe_of	-	none: linux,macos	a Unix Workload API's endpoint is its socket's path or the spec's unix:// URI, which endpoint reads as it is
+crates/shards/src/daemon.rs	impl Send	-	none: linux,macos	Named's value: a Windows handle's is a pointer, which Rust would not send; a Unix descriptor's, an int, is Send and Sync as it is
+crates/shards/src/daemon.rs	impl Sync	-	none: linux,macos	as Send
+crates/shards/src/daemon.rs	fn group_of	crates/shards/src/daemon/groups.rs	fn group_job [windows]	where a microVM under --cgroup-parent is made (D183): on Linux by a spawner placed in the user's manager's slice, on macOS by the daemon's own as groups.rs holds the group; on Windows in the group's job besides
+crates/shards/src/daemon.rs	const GRANT_STALL	crates/shards/src/daemon.rs	const READY_STALL	how long a starting VM may go silent before what its process did is told: macOS's first grant request, Windows' word that it is ready, each host's open p99 stall
+crates/shards/src/daemon.rs	const GRANT_STALL	-	none: linux	a diagnostic of a stall seen on macOS and Windows alone (a VM asking nothing, or never ready, its whole wait); Linux's VM process asks for nothing to start
+crates/shards/src/daemon.rs	const READY_STALL	crates/shards/src/daemon.rs	const GRANT_STALL	as GRANT_STALL
+crates/shards/src/daemon.rs	const READY_STALL	-	none: linux	as GRANT_STALL
+crates/shards/src/daemon.rs	fn grant	crates/shards/src/daemon.rs	fn start [windows]	what a starting VM asks to reach, answered: macOS's by grant, the VM sampled where it asks nothing for GRANT_STALL; Windows' by grant_answer's serve on a thread start makes
+crates/shards/src/daemon.rs	fn grant	-	none: linux	Linux's VM process opens its own files, held to them by Landlock and seccomp (confine.rs); it is granted nothing
+crates/shards/src/main.rs	mod working_set	-	none: macos	the restores that record their working set (vm::RESTORES_RECORD): Hypervisor.framework's is recorded by the run that saves its template, as recording slows a command sixfold there (PM M30)
+crates/shards/src/daemon/record.rs	fn await_unwritten	-	none: linux,macos	a Unix directory goes with its last name whatever a writer holds; Windows leaves a file being written where it is (Removal::set_aside), so a removal waits for its record's write
+crates/shards/src/daemon/ship.rs	fn wait_ready	crates/shards/src/daemon/ship.rs	impl Waits [windows]	a driver's streams and file watch waited on together: poll(2) on Unix; on Windows shards_ipc's await_any of the streams and the watch's event
+crates/shards/src/daemon/ship.rs	fn stopped_within	crates/shards/src/daemon/ship.rs	fn readable [windows]	a driver's wait cut short as the daemon stops: poll(2) of the stop's socket on Unix; on Windows await_any of it and a socket's event (WSAEventSelect)
+crates/net/src/poll.rs	fn interrupted_or	-	none: windows	poll(2)'s and kevent's EINTR, a signal's interruption, waited out again; Windows has no signals, and its poller waits on its completion port (ProcessSocketNotifications)
+crates/vmm/src/platform/mod.rs	mod unix	crates/vmm/src/platform/mod.rs	mod windows	the host's own services behind platform's one API: Unix's, Windows' (with windows_files, windows_process and windows_watch)
+crates/vmm/src/platform/mod.rs	mod windows	crates/vmm/src/platform/mod.rs	mod unix	as mod unix
+crates/vmm/src/platform/mod.rs	mod windows_files	crates/vmm/src/platform/mod.rs	mod unix	files beneath a directory, versions and sparse files: unix.rs's on Unix
+crates/vmm/src/platform/mod.rs	mod windows_process	crates/vmm/src/platform/mod.rs	mod unix	a process's memory, descriptors and limits: unix.rs's on Unix
+crates/vmm/src/platform/mod.rs	mod windows_watch	crates/vmm/src/platform/mod.rs	mod unix	FileWatch: unix.rs's inotify and kqueue on Unix
+crates/vmm/src/platform/mod.rs	type RawSocket	crates/vmm/src/platform/mod.rs	use shards_afunix [windows]	a socket as the vsock device's poller names it: a descriptor on Unix, shards_afunix's SOCKET on Windows
+crates/vmm/src/platform/mod.rs	mod macos_thread	-	none: linux,windows	the vCPU threads' real-time policy and its governor, measured on macOS alone (PM M8, M10, M317); other hosts run vCPUs as they are until a policy is measured there (prioritize_vcpu_thread), Windows' governor thread at TIME_CRITICAL (PM M294)
+crates/vmm/src/devices/virtio/fs/mod.rs	fn descriptor_for	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
+crates/vmm/src/devices/virtio/fs/mod.rs	const TYPE_RECORD_WORDS	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
+crates/vmm/src/devices/virtio/fs/mod.rs	enum Made	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
+crates/vmm/src/devices/virtio/fs/mod.rs	fn made_of	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
+crates/vmm/src/devices/virtio/fs/mod.rs	fn type_name	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
+crates/vmm/src/devices/virtio/fs/mod.rs	fn descriptor_ask_from	crates/vmm/src/devices/virtio/fs/mod.rs	fn descriptor_ask [linux,macos]	a DAX window's ask of its file: node, flag and range on Unix; on Windows the asking process and its end of the stream besides (PM M343)
+crates/vmm/src/devices/virtio/fs/server_unix.rs	fn openat2_beneath	-	none: macos,windows	Linux's open beneath a directory in one call (openat2, RESOLVE_BENEATH), where open_beneath walks a path a name at a time, as on macOS; Windows' server opens beneath its share by NT's relative opens (ntfs)
+crates/vmm/src/devices/virtio/fs/server_unix.rs	struct DirStream	crates/vmm/src/devices/virtio/fs/server_windows.rs	struct DirStream [windows]	a directory a guest reads, kept between its requests: getdents64's descriptor on Linux, a DIR on macOS, and on Windows its entries, read whole as it opens
+crates/vmm/src/devices/virtio/fs/server_unix.rs	impl DirStream	crates/vmm/src/devices/virtio/fs/server_windows.rs	impl DirStream [windows]	as struct DirStream
+crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Drop	-	none: linux,windows	macOS' DirStream is a DIR stream, closed as it drops (closedir); Linux's descriptor and Windows' handle close themselves
+crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Send	-	none: linux,windows	macOS' DIR pointer said Send, used by one thread at a time under the server's lock; Linux's descriptor and Windows' handle are Send
+crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	crates/ipc/src/windows.rs	struct Station [windows]	what a GPU's VM process is given beyond a VM process's, for its host's driver: on Linux the drivers' ioctls, syscalls and files past seccomp and Landlock (D201, PM M382); on Windows Win32k's calls and a window station and desktop of its own, granted to its AppContainer, which are all its driver needs to come up there (D202, PM M385)
+crates/shards/src/confine.rs	const GPU_SYSCALLS	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn gpu_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	fn library_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES

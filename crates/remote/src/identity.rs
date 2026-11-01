@@ -62,11 +62,8 @@ impl Identity {
         let made = Identity::generate()?;
         let new = path.with_extension(format!("new-{}", std::process::id()));
         let at = |e: io::Error| Error::new(format!("{}: {e}", new.display()));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&new).map_err(at)?;
+        // Its user's alone wherever the home is (shards_ipc::create_private).
+        let mut file = shards_ipc::create_private(&new).map_err(at)?;
         let written = file.write_all(&made.pkcs8).and_then(|()| file.sync_all());
         drop(file);
         let linked = written.and_then(|()| fs::hard_link(&new, path));

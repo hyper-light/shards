@@ -50,6 +50,11 @@ const MSR_DCD: u8 = 1 << 7;
 
 /// Receive buffer: generous so pasted input isn't dropped while the guest drains it.
 const RX_CAPACITY: usize = 4096;
+/// What is kept of the console's output, its last bytes ([`Serial::said`]): a page. A
+/// kernel's panic and the errors before it wrote 1,129 bytes to a console told to be
+/// `quiet`, 858 of them from its panic's line to its reset (6.18 on arm64, a root it could
+/// not mount).
+const SAID: usize = 4096;
 
 struct State {
     ier: u8,
@@ -64,6 +69,8 @@ struct State {
     overrun: bool,
     rx: VecDeque<u8>,
     out: Box<dyn Write + Send>,
+    /// The console's last bytes, at most [`SAID`].
+    said: VecDeque<u8>,
     level: bool,
 }
 
@@ -93,10 +100,26 @@ impl Serial {
                 overrun: false,
                 rx: VecDeque::new(),
                 out,
+                said: VecDeque::new(),
                 level: false,
             }),
             irq,
         }
+    }
+
+    /// The whole lines of the last [`SAID`] bytes its guest wrote to the console: what it
+    /// said last, as a kernel writes why it panics there.
+    pub fn said(&self) -> Vec<u8> {
+        let s = lock(&self.state);
+        let mut said: Vec<u8> = s.said.iter().copied().collect();
+        if said.len() == SAID {
+            let cut = said
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(said.len(), |at| at + 1);
+            said.drain(..cut);
+        }
+        said
     }
 
     /// Queues host input for the guest. Bytes beyond the buffer set the overrun flag.
@@ -201,6 +224,10 @@ impl MmioDevice for Serial {
                 } else {
                     // Console output is best effort: a closed stdout must not stop the guest.
                     let _ = s.out.write_all(&[v]).and_then(|()| s.out.flush());
+                    if s.said.len() == SAID {
+                        s.said.pop_front();
+                    }
+                    s.said.push_back(v);
                 }
                 // Transmission is instantaneous, so THR is empty again at once.
                 s.thri_pending = true;
@@ -304,6 +331,33 @@ mod tests {
         let mut b = [0];
         s.read(off, &mut b);
         b[0]
+    }
+
+    /// What the console said last is kept, its last page in whole lines; what loops back
+    /// to the guest is not said.
+    #[test]
+    fn the_last_page_said_is_kept_in_whole_lines() {
+        let s = Serial::new(Box::new(std::io::sink()), Arc::new(Line::default()));
+        let say = |bytes: &[u8]| bytes.iter().for_each(|b| s.write(RBR_THR_DLL, &[*b]));
+        assert!(s.said().is_empty());
+        say(b"first\nsecond\n");
+        s.write(MCR, &[MCR_LOOP]);
+        say(b"looped");
+        s.write(MCR, &[MCR_OUT2]);
+        assert_eq!(s.said(), b"first\nsecond\n");
+        let line: Vec<u8> = [b'x'; 99].into_iter().chain(*b"\n").collect();
+        for _ in 0..SAID / line.len() + 2 {
+            say(&line);
+        }
+        say(b"panic");
+        let said = s.said();
+        assert!(
+            said.len() > SAID - line.len() && said.len() <= SAID,
+            "{}",
+            said.len()
+        );
+        assert!(said.starts_with(&line), "{:?}", &said[..8]);
+        assert!(said.ends_with(b"\npanic"));
     }
 
     #[test]

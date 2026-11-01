@@ -40,7 +40,6 @@ pub(super) const RENAME_NEEDS_NONE_BENEATH: bool = true;
 
 const EOPNOTSUPP: Errno = 95;
 const ENXIO: Errno = 6;
-const ERANGE: Errno = 34;
 
 /// `raw` borrowed for a call: the server passes its host's calls only handles it holds open
 /// for their length.
@@ -256,35 +255,6 @@ pub(super) fn fs_stats(fd: host::Raw) -> Result<FsStats, Errno> {
     })
 }
 
-/// The EA a guest's extended attribute `name` is kept in: its bytes as hexadecimal after
-/// `SH.`, as NTFS keeps an EA's name in upper case, ASCII, and at most 255 bytes long, where
-/// a guest's names are any bytes, case kept (so at most 126 bytes of one, ERANGE past it).
-/// Its value is the attribute's after a byte of 0 ([`KEPT`]), as NTFS keeps no EA of no
-/// value, where Linux keeps an attribute of one (overlayfs's `metacopy`).
-fn ea_name(name: &[u8]) -> Result<Vec<u8>, Errno> {
-    if name.len() > 126 {
-        return Err(ERANGE);
-    }
-    let mut out = b"SH.".to_vec();
-    for b in name {
-        out.extend(format!("{b:02X}").bytes());
-    }
-    Ok(out)
-}
-
-/// A guest's attribute name for an EA [`ea_name`] made: none for any other EA.
-fn ea_guest(ea: &[u8]) -> Option<Vec<u8>> {
-    let hex = ea.strip_prefix(b"SH.")?;
-    if !hex.len().is_multiple_of(2) {
-        return None;
-    }
-    hex.as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
-        .collect()
-}
-
 /// The owner's attribute (server.rs `Owner`'s JSON) as WSL's metadata holds it: its owner,
 /// group and mode (`$LXUID`, `$LXGID`, `$LXMOD`), a device's numbers (`$LXDEV`) where its
 /// kind is one the host keeps no node of; none where WSL keeps none.
@@ -310,16 +280,13 @@ pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, 
     if name.to_bytes() == OWNER_XATTR.as_bytes() {
         return owner_of(borrow(fd));
     }
-    let ea = ea_name(name.to_bytes())?;
+    let ea = ntfs::xattr_ea(name.to_bytes())?;
     let eas = ntfs::eas(borrow(fd))?;
     Ok(eas
         .into_iter()
         .find(|(n, _)| n.eq_ignore_ascii_case(&ea))
-        .map(|(_, v)| v.get(KEPT.len()..).unwrap_or_default().to_vec()))
+        .map(|(_, v)| v.get(ntfs::XATTR_KEPT.len()..).unwrap_or_default().to_vec()))
 }
-
-/// What a guest's attribute's value is kept after in its EA ([`ea_name`]).
-const KEPT: &[u8] = &[0];
 
 pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -> Result<(), Errno> {
     if name.to_bytes() == OWNER_XATTR.as_bytes() {
@@ -327,7 +294,7 @@ pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -
     }
     let able = able(fd, FILE_WRITE_EA)?;
     let h = able.handle();
-    let ea = ea_name(name.to_bytes())?;
+    let ea = ntfs::xattr_ea(name.to_bytes())?;
     if flags & (linux::XATTR_CREATE | linux::XATTR_REPLACE) != 0 {
         let had = ntfs::eas(h)?.iter().any(|(n, _)| n.eq_ignore_ascii_case(&ea));
         if flags & linux::XATTR_CREATE != 0 && had {
@@ -337,7 +304,7 @@ pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -
             return Err(ENODATA);
         }
     }
-    let mut kept = KEPT.to_vec();
+    let mut kept = ntfs::XATTR_KEPT.to_vec();
     kept.extend_from_slice(value);
     ntfs::set_eas(h, &[(&ea, &kept)])
 }
@@ -369,7 +336,7 @@ fn set_owner(fd: host::Raw, owner: &Owner) -> Result<(), Errno> {
 }
 
 pub(super) fn fremove_xattr(fd: host::Raw, name: &CStr) -> Result<(), Errno> {
-    let ea = ea_name(name.to_bytes())?;
+    let ea = ntfs::xattr_ea(name.to_bytes())?;
     let able = able(fd, FILE_WRITE_EA)?;
     let h = able.handle();
     if !ntfs::eas(h)?.iter().any(|(n, _)| n.eq_ignore_ascii_case(&ea)) {
@@ -382,7 +349,7 @@ pub(super) fn fremove_xattr(fd: host::Raw, name: &CStr) -> Result<(), Errno> {
 pub(super) fn list_xattr(fd: host::Raw) -> Result<Vec<u8>, Errno> {
     let mut out = Vec::new();
     for (ea, _) in ntfs::eas(borrow(fd))? {
-        if let Some(name) = ea_guest(&ea) {
+        if let Some(name) = ntfs::ea_xattr(&ea) {
             out.extend(name);
             out.push(0);
         }
@@ -396,7 +363,7 @@ pub(super) fn owner_xattr() -> Result<CString, Errno> {
 }
 
 /// The host's name of a guest's attribute `name`: its own, as each is kept apart by
-/// [`ea_name`]; the server's private names refused, as on Unix.
+/// [`ntfs::xattr_ea`]; the server's private names refused, as on Unix.
 pub(super) fn host_xattr(name: &CStr) -> Result<CString, Errno> {
     if name.to_bytes().starts_with(PRIVATE_XATTR) {
         return Err(EOPNOTSUPP);
@@ -625,16 +592,14 @@ pub(super) fn fallocate(fd: host::Raw, mode: u32, offset: u64, length: u64) -> R
 }
 
 /// A file in `dir` holding `bytes` that no name reaches (a restored server's ghost, D176):
-/// made under a name of its own, written, and its name removed as it is held.
+/// made under a name of its own, [`GHOST_PREFIX`]'s as Unix's are, which a daemon's start
+/// removes where a crash left one before its name went; written, and its name removed as
+/// it is held.
 pub(super) fn ghost(dir: host::Raw, bytes: &[u8]) -> Result<host::Owned, String> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    let name = format!(
-        ".shards-ghost-{}-{}",
-        std::process::id(),
-        COUNT.fetch_add(1, Ordering::Relaxed)
-    );
-    let name = cstring(&name).map_err(|e| format!("a ghost's name: errno {e}"))?;
+    let mut random = [0u8; 16];
+    crate::platform::fill_random(&mut random).map_err(|e| format!("a ghost's name: {e}"))?;
+    let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let name = cstring(&format!("{GHOST_PREFIX}{name}")).map_err(|e| format!("a ghost's name: errno {e}"))?;
     let made = open_at(dir, &name, host::O_CREAT | host::O_EXCL | host::O_RDWR, 0)
         .map_err(|e| format!("making a ghost: errno {e}"))?;
     let mut at = 0usize;
@@ -655,32 +620,9 @@ pub(super) fn ghost(dir: host::Raw, bytes: &[u8]) -> Result<host::Owned, String>
 mod tests {
     use super::*;
 
-    /// A guest's attribute names are EAs of names of their own, NTFS's upper-case ASCII,
-    /// every byte and its case kept and turned back as listed; one too long for an EA's
-    /// name refused (ERANGE); WSL's EAs and any other none of a guest's; the server's
-    /// private names refused the guest.
+    /// The server's private attribute names are refused its guest, any other its own.
     #[test]
-    fn a_guests_attribute_names_are_eas_of_their_own() {
-        for guest in [
-            &b"user.x"[..],
-            b"user.Mixed.Case",
-            b"trusted.overlay.opaque",
-            b"user.\xff?",
-        ] {
-            let ea = ea_name(guest).unwrap();
-            assert!(
-                ea.iter()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'.'),
-                "{ea:?}"
-            );
-            assert_eq!(ea_guest(&ea).as_deref(), Some(guest));
-        }
-        assert_ne!(ea_name(b"user.a").unwrap(), ea_name(b"user.A").unwrap());
-        assert_eq!(ea_name(&[b'a'; 126]).map(|e| e.len()), Ok(255));
-        assert_eq!(ea_name(&[b'a'; 127]), Err(ERANGE));
-        for theirs in [&b"$LXUID"[..], b"$LXMOD", b"SH.4", b"SH.ZZ", b"OTHER"] {
-            assert_eq!(ea_guest(theirs), None, "{theirs:?}");
-        }
+    fn a_guests_attribute_names_are_its_own() {
         assert_eq!(host_xattr(c"user.shards.x"), Err(EOPNOTSUPP));
         assert_eq!(host_xattr(c"user.x").unwrap().as_bytes(), b"user.x");
     }

@@ -80,8 +80,7 @@ mod reclaim;
 mod record;
 mod refill;
 mod relay;
-// Other machines' clients (D180): Unix's alone as yet.
-#[cfg(unix)]
+// Other machines' clients (D180).
 mod remote;
 mod restart;
 mod rmi;
@@ -1607,7 +1606,6 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     for c in containers.all() {
         snapshots::remove_unsaved(&containers.dir(&c.id), &mut |note| log(note));
     }
-    #[cfg(unix)]
     snapshots::remove_ghosts(&home.join(PRIVATE), &mut |note| log(note));
     let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
         .map_err(|e| format!("following runs: {e}"))?;
@@ -1619,15 +1617,9 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
     // Other machines' clients (D180), before it says it serves: an address it cannot bind
-    // is its starter's to hear. Unix's alone as yet: what they run here (their contexts,
-    // secrets and agents) is Unix's.
+    // is its starter's to hear.
     if let Some(at) = listen {
-        #[cfg(unix)]
         remote::listen(daemon.home.clone(), exe.clone(), at)?;
-        #[cfg(windows)]
-        return Err(format!(
-            "listening at {at}: other machines' clients are not served on Windows yet"
-        ));
     }
     // Its starter returns once it hears this: its slots are offered from now on.
     if let Some(mut ready) = ready {
@@ -2238,8 +2230,10 @@ impl<D: Disk> Daemon<D> {
 
     /// [`wait_for_work`](Self::wait_for_work) on Windows: its wake, its watches and the
     /// Engine API's listener are events, waited on together (WaitForMultipleObjects), each
-    /// looked at as the wait ends, as a wait names the first alone. Windows has no
-    /// contexts' engines yet (relay.rs), so `relays` is none.
+    /// looked at as the wait ends, as a wait names the first alone. The contexts' listeners
+    /// are their takers' to wait on, which wake it as each client comes (relay.rs), so that
+    /// a home of any number of contexts waits on these alone: WaitForMultipleObjects waits
+    /// on 64 at most.
     #[cfg(windows)]
     fn wait_for_work(
         &self,
@@ -6905,7 +6899,7 @@ impl<D: Disk> Daemon<D> {
             }
             Boot::Stored(guest) => guest,
         };
-        // A run given this Mac's GPU boots the pinned GPU kernel in the GPU's VM process
+        // A run given a GPU boots the pinned GPU kernel in the GPU's VM process
         // (D144), and restores a template of its own, saved before its guest made anything
         // of the GPU's, which its host driver would hold (D150).
         let gpu_guest = prepared.gpu.as_ref().map(|kernel| crate::guest::Guest {
@@ -7706,8 +7700,16 @@ impl<D: Disk> Daemon<D> {
             .collect();
         let err = io::stderr();
         let env = crate::netproc::child_env();
+        // A GPU's VM process is the GPU's build, which runs its host's GPU driver (D144,
+        // D202).
+        let gpu = args.iter().any(|a| *a == "--gpu");
+        let binary = if gpu {
+            crate::helpers::vm_gpu()?
+        } else {
+            self.vm.clone()
+        };
         let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
-            program: &self.vm,
+            program: &binary,
             args: &args,
             grants_at: 1,
             given: &given,
@@ -7719,8 +7721,9 @@ impl<D: Disk> Daemon<D> {
             container: Some(&container),
             holds: shards_ipc::Holds::Hypervisor,
             group: group.as_ref(),
+            graphics: gpu,
         })
-        .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+        .map_err(|e| format!("starting {}: {e}", binary.display()))?;
         // Shared with it already, and its handles duplicated into it.
         drop((given, sockets));
         // Its network process, given the VM's process to watch, before the VM runs: ended
@@ -7744,7 +7747,7 @@ impl<D: Disk> Daemon<D> {
             .into_handle();
         let mut child = suspended
             .resume()
-            .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+            .map_err(|e| format!("starting {}: {e}", binary.display()))?;
         // Its AppContainer's profile goes once it has, as its follower lets it go.
         child.hold(container);
         // What the daemon sends on its link goes to the VM: handles duplicated into it.
