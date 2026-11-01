@@ -16921,3 +16921,15 @@ revision before comparing a changed API/implementation.
   kill. How long a VM process takes to end once killed there, `LAST_WAIT`'s 2 s, the
   measurement now times too: eight more runs' VM processes killed outright 5 s into the
   read, each's end after the kill.
+- **Found, killed outright** (8bdb04f2, budget-e2e 41295804483, windows-2025): the eight VM
+  processes killed 5 s into the read ended within 1.4 ms of their kills, the last of them;
+  a VM process idle beside the build ends at once. So a stop that gave up, its VM process
+  running on 2 s after its kill, killed one the host held up, and its guest's SIGKILL took
+  up to 9.4 s beside the build: the stalls are the host's, beside its disk's gigabytes.
+  dev's CI at de631b49 (41291108866, windows-2025) failed two runs not ready in 60 s, their
+  VMs idle 20 s with every thread waiting and 11.9 GiB of memory free, again as
+  an_image_of_gigabytes_boots read its image: the same tree had passed (41284231177).
+- **Decided.** an_image_of_gigabytes_boots runs alone, in a test binary of its own
+  (tests/gigabytes.rs): cargo runs a crate's test binaries one after another, so no test
+  waits on a host whose disk it fills. A stop or a start held up by its host's disk as long
+  as Docker's waits (KILL_WAIT, LAST_WAIT, READY_TIMEOUT) still fails as Docker's does.

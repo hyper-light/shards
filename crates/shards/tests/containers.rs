@@ -21,8 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, registry, run_shards_env, served,
-    served_counting, sha256_digest, test_index,
+    Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, noise, registry, run_shards_env,
+    served, served_counting, sha256_digest, test_index,
 };
 #[cfg(unix)]
 use common::{shards, shards_vm};
@@ -38,7 +38,7 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
 /// end shows what it said, its VM process's stacks and its daemon's
 /// ([`common::stacks_of`]), and how long its VM process outlived the stop, looked for every
 /// 100 ms for a minute: a VM process that ends late from one that never does. Windows CI
-/// gave up on stops as an_image_of_gigabytes_boots ran (9fdbed51's exec test on
+/// gave up on stops as gigabytes.rs's an_image_of_gigabytes_boots ran beside them (9fdbed51's exec test on
 /// windows-2025, the cp test on windows-2022 in 41277401058), their VM processes running
 /// on 2 s after their kill.
 fn stop_run(home: &Path, name: &str) {
@@ -13803,60 +13803,10 @@ fn cdi_devices_are_given_to_microvms() {
     let _ = provider.wait();
 }
 
-/// `mib` MiB of xorshift64's bytes at `path`, which no file system keeps as holes or shares.
-fn noise(path: &Path, mib: usize) {
-    use std::io::Write as _;
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
-    let mut x = 0x9e37_79b9_7f4a_7c15u64;
-    let mut block = vec![0u8; 1 << 20];
-    for _ in 0..mib {
-        for word in block.as_chunks_mut::<8>().0 {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            *word = x.to_le_bytes();
-        }
-        file.write_all(&block).unwrap();
-    }
-    file.flush().unwrap();
-}
-
-/// An image of gigabytes boots as a small one does. Its root is a pmem region, which
-/// libnvdimm probes asynchronously, longest for the largest; init waits for its node
-/// (init's pmem.rs), where a 2.1 GB image's runs found none and failed every time.
-#[test]
-fn an_image_of_gigabytes_boots() {
-    let Some((home, image)) = home("containers-big") else {
-        return;
-    };
-    let ctx = home.join("big");
-    std::fs::create_dir(&ctx).unwrap();
-    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
-    noise(&ctx.join("big"), 2048);
-    // Its build copies 2 GiB through the builder: past TIMEOUT on CI's x86_64 runners,
-    // where it stays a guard against a hang.
-    let (kernel, init) = (kernel(), guest_init());
-    let env: [(&str, &OsStr); 3] = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_KERNEL", kernel.as_os_str()),
-        ("SHARDS_INIT", init.as_os_str()),
-    ];
-    let built = run_shards_env(
-        &[],
-        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-        &env,
-        Duration::from_secs(600),
-    );
-    assert_eq!(built.status, Some(0), "{built}");
-    std::fs::remove_file(ctx.join("big")).unwrap();
-    let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
-    assert_eq!(ran.status, Some(0), "{ran}");
-}
-
 /// PM M419: stops beside a gigabyte build. Windows CI gave up on stops whose VM processes
-/// ran on 2 s after their kill as an_image_of_gigabytes_boots ran (9fdbed51's exec test on
-/// windows-2025, the cp test on windows-2022 in 41277401058). Four threads each start a run
-/// of `sleep` and stop it, `M419_ROUNDS` times each (10) with nothing beside them, then
+/// ran on 2 s after their kill as an_image_of_gigabytes_boots (gigabytes.rs, then this
+/// binary's) ran beside them: 9fdbed51's exec test on windows-2025, the cp test on
+/// windows-2022 in 41277401058. Four threads each start a run of `sleep` and stop it, `M419_ROUNDS` times each (10) with nothing beside them, then
 /// again for as long as that test's build goes on beside them: its 2 GiB file written,
 /// built into an image and read by a run; and eight runs idle from before the build are
 /// stopped together 5 s into that read. Each way's stops told as n, p50, p90, p99 and max
@@ -13988,7 +13938,12 @@ fn stops_beside_a_gigabyte_build() {
                 Duration::from_secs(600),
             );
             reading.store(true, Ordering::SeqCst);
-            let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
+            let ran = run_shards_env(
+                &[],
+                &["run", "--pull", "never", "--rm", "big:1", "fs", "open:r:/big"],
+                &env,
+                Duration::from_secs(60),
+            );
             done.store(true, Ordering::SeqCst);
             format!(
                 "its build {:?}, its run {:?}, in {:?}",
