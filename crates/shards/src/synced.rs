@@ -326,14 +326,24 @@ impl Seen {
     /// and time, its size being its filesystem's; a symlink by its target and time, its
     /// mode being its system's; anything else by its mode, size, time and link.
     fn same(&self, copy: &Seen) -> bool {
+        let time = same_time(self.mtime, copy.mtime);
         if self.mode & MODE_DIR != 0 {
-            return self.mode == copy.mode && self.mtime == copy.mtime;
+            return self.mode == copy.mode && time;
         }
         if self.mode & MODE_SYMLINK != 0 {
-            return copy.mode & MODE_SYMLINK != 0 && self.link == copy.link && self.mtime == copy.mtime;
+            return copy.mode & MODE_SYMLINK != 0 && self.link == copy.link && time;
         }
-        self == copy
+        self.mode == copy.mode && self.size == copy.size && self.link == copy.link && time
     }
+}
+
+/// Whether the client's time `here` is the copy's `there`: the same, or `here` to the 100 ns
+/// a Windows machine's NTFS keeps one to (an NT time's unit), where `there` is one it kept:
+/// a Linux or macOS client's are to the nanosecond, and a copy that kept them so went whole
+/// again at each build. A write the copy has not taken came after the build that took the
+/// file's write before it, later by far more than 100 ns.
+fn same_time(here: (i64, u32), there: (i64, u32)) -> bool {
+    here == there || (here.0 == there.0 && there.1.is_multiple_of(100) && here.1 / 100 == there.1 / 100)
 }
 
 /// What a copy holds, by each entry's path.
@@ -629,18 +639,31 @@ pub(crate) fn receive(
         secrets.push((id, read_secret(input, size)?));
     }
     std::fs::create_dir_all(context).map_err(|e| format!("{}: {e}", context.display()))?;
-    // A link's own time kept, as a tree's is ([`receive_tree`]): a build's context copied
-    // with none had its symlink's time its making's, and an artifact made of it differed
-    // from the one made of the client's (CI 41237707540, windows-2025).
-    let opts = shards_archive::UnpackOptions {
-        no_lchown: true,
-        best_effort_xattrs: true,
-        link_times: true,
-        ..shards_archive::UnpackOptions::default()
-    };
-    let sent = shards_archive::apply_layer(input, context, &opts)
-        .map_err(|e| format!("applying the context: {e}"))?;
+    let sent = apply(input, context).map_err(|e| format!("applying the context: {e}"))?;
     Ok((sent, secrets))
+}
+
+/// The layer `input` applied over the copy `context`, everything owned by the machine's
+/// user, each extended attribute kept as it can be. On Windows the copy is a Linux tree
+/// (shards_archive's `apply_layer_lx`): a client's modes, owners, links, devices and names
+/// that NTFS's own files keep none of are kept as WSL keeps them, and the build's walk of the
+/// copy reads them back as the client's; where NTFS kept them as its own, a Linux or macOS
+/// client's context went to its build with every file 0755, its symlinks made only where
+/// the machine's user may make one, and two names differing in case alone one file.
+fn apply(input: &mut dyn Read, context: &Path) -> Result<i64, shards_archive::Error> {
+    #[cfg(windows)]
+    {
+        shards_archive::apply_layer_lx(input, context)
+    }
+    #[cfg(not(windows))]
+    {
+        let opts = shards_archive::UnpackOptions {
+            no_lchown: true,
+            best_effort_xattrs: true,
+            ..shards_archive::UnpackOptions::default()
+        };
+        shards_archive::apply_layer(input, context, &opts)
+    }
 }
 
 /// A secret of `n` bytes from `input`, read into a buffer of that length, held as a secret
@@ -811,18 +834,119 @@ pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, 
         return Err("not a tree of a shards client's".into());
     }
     std::fs::create_dir_all(context).map_err(|e| format!("{}: {e}", context.display()))?;
-    let opts = shards_archive::UnpackOptions {
-        no_lchown: true,
-        best_effort_xattrs: true,
-        link_times: true,
-        ..shards_archive::UnpackOptions::default()
-    };
-    shards_archive::apply_layer(input, context, &opts).map_err(|e| format!("applying a tree: {e}"))
+    apply(input, context).map_err(|e| format!("applying a tree: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A time a Windows machine's NTFS kept, to 100 ns, is the client's time it was cut from,
+    /// and no other; a copy's time to the nanosecond is its own alone.
+    #[test]
+    fn a_time_ntfs_kept_is_the_clients_it_was_cut_from() {
+        let at = (1_700_000_000, 123_456_789);
+        assert!(same_time(at, at));
+        assert!(same_time(at, (1_700_000_000, 123_456_700)));
+        assert!(!same_time(at, (1_700_000_000, 123_456_800)));
+        assert!(!same_time(at, (1_700_000_001, 123_456_700)));
+        assert!(!same_time(at, (1_700_000_000, 123_456_780)));
+    }
+
+    /// Do: a Linux client's tree, as a layer of its own modes (0600, 0750, setuid), a symlink,
+    /// a hard link, two names differing in case alone and one NTFS holds no name with,
+    /// applied over a Windows machine's copy. Expect the copy's manifest, its walk as a
+    /// build walks a context, the client's: each mode, the link's target, both names and
+    /// `a:b`, the hard link one inode of two links; and a build's load of the copy each mode
+    /// the client's, where NTFS's own files would have gone as 0755.
+    #[cfg(windows)]
+    #[test]
+    fn a_linux_clients_tree_is_its_own_in_a_windows_copy() {
+        use shards_archive::tar::{
+            Format, Header, TYPE_DIR, TYPE_LINK, TYPE_REG, TYPE_SYMLINK, Time, Writer,
+        };
+        let entry = |typeflag: u8, name: &str, mode: i64, data: &'static [u8], link: &str| {
+            let h = Header {
+                typeflag,
+                name: name.as_bytes().to_vec(),
+                linkname: link.as_bytes().to_vec(),
+                mode,
+                size: i64::try_from(data.len()).unwrap(),
+                mtime: Time {
+                    sec: 1_700_000_000,
+                    nsec: 123_456_789,
+                },
+                format: Format::PAX,
+                ..Header::default()
+            };
+            (h, data)
+        };
+        let mut w = Writer::new(Vec::new());
+        for (h, data) in [
+            entry(TYPE_DIR, "bin", 0o750, b"", ""),
+            entry(TYPE_REG, "bin/run.sh", 0o755, b"#!/bin/sh\n", ""),
+            entry(TYPE_REG, "secret", 0o600, b"s", ""),
+            entry(TYPE_REG, "set", 0o4755, b"x", ""),
+            entry(TYPE_REG, "Make", 0o644, b"upper", ""),
+            entry(TYPE_REG, "make", 0o644, b"lower", ""),
+            entry(TYPE_REG, "a:b", 0o644, b"colon", ""),
+            entry(TYPE_SYMLINK, "link", 0o777, b"", "bin/run.sh"),
+            entry(TYPE_LINK, "again", 0o600, b"", "secret"),
+        ] {
+            w.write_header(&h).unwrap();
+            std::io::Write::write_all(&mut w, data).unwrap();
+        }
+        let layer = w.finish().unwrap();
+        let top = shards_testdir::TempDir::new("lx-copy").unwrap();
+        let top: &Path = top.as_ref();
+        let copy = top.join("context");
+        std::fs::create_dir(&copy).unwrap();
+        apply(&mut &layer[..], &copy).unwrap();
+
+        let manifest = manifest_of(&copy).unwrap();
+        let mode = |path: &str| {
+            manifest
+                .get(path.as_bytes())
+                .unwrap_or_else(|| panic!("no {path}: {manifest:?}"))
+                .mode
+        };
+        assert_eq!(mode("bin"), MODE_DIR | 0o750);
+        assert_eq!(mode("bin/run.sh"), 0o755);
+        assert_eq!(mode("secret"), 0o600);
+        assert_eq!(mode("again"), 0o600);
+        assert_eq!(mode("Make"), 0o644);
+        assert_eq!(mode("make"), 0o644);
+        assert_eq!(mode("a:b"), 0o644);
+        assert_eq!(mode("link") & MODE_SYMLINK, MODE_SYMLINK);
+        assert_eq!(manifest[b"link".as_slice()].link, b"bin/run.sh");
+        assert_eq!(manifest[b"secret".as_slice()].mtime, (1_700_000_000, 123_456_700));
+        let walked = shards_build::context::walk(&copy, &shards_build::context::Filters::default()).unwrap();
+        let again = walked.iter().find(|(p, _)| p == b"again").unwrap();
+        assert_eq!(again.1.link, b"secret", "the second name of one file is its link");
+
+        let stage = top.join("stage");
+        std::fs::create_dir(&stage).unwrap();
+        let mut sources = shards_build::data::Sources::default();
+        let fs = shards_build::context::load(
+            &copy,
+            &shards_build::context::Filters::default(),
+            &mut sources,
+            (0, 0),
+            &stage,
+        )
+        .unwrap();
+        for (path, perm) in [
+            ("/secret", 0o600),
+            ("/set", 0o4755),
+            ("/bin/run.sh", 0o755),
+            ("/bin", 0o750),
+            ("/make", 0o644),
+        ] {
+            let node = fs.node(fs.lstat(path.as_bytes()).unwrap()).unwrap();
+            assert_eq!(node.meta.mode, perm, "{path}");
+        }
+        assert_eq!(fs.readlink(b"/link").unwrap(), b"bin/run.sh");
+    }
 
     fn stat(mode: u32, size: u64, mtime: (i64, u32)) -> Stat {
         Stat {

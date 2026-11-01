@@ -30,6 +30,7 @@ shards-syscall-filter = { path = "../syscall-filter" }
 
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
+shards-ntfs = { path = "../ntfs" }
 windows-sys = { workspace = true, features = [
   "Wdk_Foundation",
   "Wdk_Storage_FileSystem",

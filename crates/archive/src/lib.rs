@@ -28,6 +28,8 @@
 mod error;
 mod gopath;
 mod layer;
+#[cfg(windows)]
+mod lx;
 mod pack;
 mod patterns;
 mod root;
@@ -41,6 +43,8 @@ pub mod tar;
 
 pub use error::{Error, Kind};
 pub use layer::apply_layer;
+#[cfg(windows)]
+pub use lx::apply_layer_lx;
 pub use pack::{Files, PackOptions, pack, pack_changes, pack_from};
 pub use sys::{FileKind, Stat};
 pub use unpack::{UnpackOptions, unpack, untar};

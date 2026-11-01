@@ -360,3 +360,5 @@ crates/shards/src/daemon/remote.rs	fn unread	crates/shards/src/daemon/remote.rs	
 crates/shards/src/daemon/remote.rs	struct Controller	crates/shards/src/daemon/remote.rs	struct Console	as Kept: the terminal's reader
 crates/shards/src/daemon/remote.rs	impl Read	crates/shards/src/daemon/remote.rs	struct Console	as Controller
 crates/shards/src/daemon/remote.rs	fn kept_terminal	crates/shards/src/daemon/remote.rs	struct Console	as Kept
+crates/archive/src/lib.rs	mod lx	crates/archive/src/layer.rs	fn apply_layer [linux,macos]	a client's context's copy on its machine (D180): on Windows a Linux tree kept on NTFS as WSL keeps one (apply_layer_lx); on Unix the host's own files hold a Linux tree's modes, owners, links and devices (apply_layer)
+crates/build/src/host.rs	mod lx	crates/build/src/host.rs	fn lstat [linux,macos]	a Linux tree's files read as fsutil reads a Linux host's: on Windows a tree kept as WSL keeps one (Tree, shards_ntfs); on Unix its host's own lstat

@@ -724,8 +724,6 @@ fn unpack_opts(o: &Value) -> UnpackOptions {
             })
             .unwrap_or_default(),
         whiteout: whiteout(o),
-        // go-archive's own: no link's times on Windows.
-        link_times: false,
     }
 }
 

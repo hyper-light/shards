@@ -1,0 +1,24 @@
+[package]
+name = "shards-ntfs"
+version = "0.1.0"
+description = "A Linux tree's files on NTFS, kept as WSL keeps them: D197's share server's and D180's context copies'"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
+  "Win32_System_Ioctl",
+  "Win32_System_SystemServices",
+  "Win32_System_WindowsProgramming",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+shards-testdir = { path = "../testdir" }
+
+[lints]
+workspace = true
