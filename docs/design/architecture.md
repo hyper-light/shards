@@ -7137,8 +7137,16 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate; `hv::Vcpu::pre_fault_runs`): the pages
   its guest wrote for writing, which copies each one its copy-on-write view of the snapshot
   still shares with the file in the host's kernel, as the guest's first write would, and
-  the rest for reading. What a populate costs is its pages': on CI's windows-2025, whose WHP
-  runs nested (M308), 50 to 58 µs a page read and 70 to 78 written (M415). On jupiter, 512
+  the rest for reading. What a populate costs is its pages': read from the cache, 2.5 µs a
+  page on jupiter and 4.7 on CI's windows-2025, its generation held (M421); read from the
+  disk, 65 to 87 µs a page on jupiter and 50 to 78 on CI's, as Windows drops a sparse
+  file's pages from its cache once no process maps them, held open or not, and a memory
+  file is sparse: so a held generation keeps a view of its memory mapped (D25,
+  `platform::keep_cached`; M415's 50 to 78 had been put down to CI's WHP running nested,
+  M308). With it mapped ahead against without, held, a cold restore ran its guest again
+  15.1 ms after its process started at p50 against 17.5 on jupiter (17.0 against 22.4 at
+  p99) and 20.4 against 36.0 on CI's, a warm one 2.49 against 6.79 on jupiter; not held,
+  59.0 against 108.9 there (M415, M421). On jupiter, 512
   pages populated for writing in one call took 3.68 ms at p50 (n=20), where copying them from
   the VM process, each page's first word written as it holds it (Windows has no call that
   faults a range in writable from user mode, PrefetchVirtualMemory reading one in), took 2.58
@@ -7169,7 +7177,8 @@ other, and `a_fault_from_disk_maps_the_page_it_touches_alone`, and `hv::whp`
 `repeat_runs_restore_a_template_of_the_image`, a template's working set recorded by its first
 warm restore and mapped ahead by the next: each on CI's windows-2025 (41176475317 at
 54f7c0fb), which fails rather than skips a VM test it cannot run; and the restore bench's
-arms with and without (M415).
+arms with and without, held and not, n=100 each, on jupiter and CI's windows-2025 (M415,
+M421); `platform::windows` `a_file_kept_cached_is_a_view_of_all_of_it_until_it_drops`.
 
 ### D195. The daemon and its client on Windows: request slots of named pipes (built)
 

@@ -57,7 +57,7 @@ stood alone unseen, each a host's own mechanism (platform-parity.tsv), one of th
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | closed: etwlogs on Windows (D198), and macOS's own log (D199) and etwlogs as journald's counterparts; journald is Linux's own | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
 | 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | closed: Windows (D180's part 3k) | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
-| 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
+| 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | closed: Windows (D196) | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
 | 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
 | 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | Windows, until gpu-windows lands: its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
 
@@ -194,3 +194,20 @@ Each lone item is confirmed or closed as its row is worked.
   client's tree on a Windows machine by archive's tests/lx.rs and synced's
   `a_linux_clients_tree_is_its_own_in_a_windows_copy` on both runners (budget-e2e
   41273319640 and 41262337649). platform-parity.py finds none of the row's items alone.
+- Row 11, a Windows restore's working set (D196): what its guest touched read back as its VM
+  process's own working set (QueryWorkingSetEx), a page its file's read and a private one a
+  copy its guest wrote, recorded by a template's first warm restore and by `shards restore`
+  through the CLI that started it; and mapped ahead by the next, before its guest runs, in two
+  calls of WHP's populate, its written pages for writing, which copies each in the host's
+  kernel, and the rest for reading; its memory kept cached by a view of it held where its
+  generation is held, as Windows drops a sparse file's pages once no process maps them (PM
+  M421). With it against without, a cold restore at p50 / p99: on jupiter, held as the
+  daemon holds a template, 15.1 / 17.0 ms against 17.5 / 22.4, and a warm one 2.49 / 2.54
+  against 6.79 / 10.58; on CI's windows-2025, held, 20.4 / 23.1 against 36.0 / 52.9 (PM
+  M415, M421, n=100 each). Tested with real VMs on CI's windows-2025 (41176475317 at
+  54f7c0fb, which fails rather than skips a VM test it cannot run): snapshot.rs's
+  `a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded` and images.rs's
+  `repeat_runs_restore_a_template_of_the_image`; the restore bench's arms with and without,
+  held and not, there and on jupiter; and windows_process.rs's and hv::whp's tests of what is
+  mapped, on CI's Windows runners, the populate's on jupiter too (M415). platform-parity.py
+  finds none of the row's items alone.

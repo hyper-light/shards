@@ -16763,7 +16763,26 @@ revision before comparing a changed API/implementation.
     64.2 and 53.8 ms, of which the written pages' took 25.3 and 21.5: 50 to 58 µs a page read
     and 70 to 78 written.
   - Against 1b4cc6be's on the same CPU, about the same. On CI's runners, VMs whose WHP runs
-    nested (M308), a populate's cost is its pages', not its calls'.
+    nested (M308), a populate's cost is its pages', not its calls'. (Its pages' were the
+    disk's: each restore read its working set from the disk, its memory file sparse and
+    mapped by no process between restores, M421; held, the populate took 4.53 ms at p50.)
+- **Found, on jupiter** (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200.9711; binaries
+  built by windows-binaries.yml at jupiter's paths, as kiln's headroom guard holds its
+  builds, M418; no sample frozen across, the guard's budget 0.07 to 0.52 cores; the host's
+  CPUs 36 to 52% busy with its own load at 271f399b, 12 to 28% at ebff6cc6, where the held
+  and unheld runs ran one after the other, M421), with it against without, p50 / p90 / p99
+  / max, ms:
+  - 271f399b, nothing held, two runs (991 to 1,014 pages, 321 to 342 written): cold_restore
+    86.6 / 229.2 / 695.3 / 897.5 against 135.3 / 329.8 / 900.8 / 1005.7, and 82.9 / 123.7 /
+    821.3 / 945.4 against 132.7 / 171.9 / 240.2 / 328.6; cold_spawn_exit 175.9 / 357.7 /
+    883.4 / 1034.3 against 319.0 / 698.2 / 1400.5 / 2013.4, and 167.2 / 214.5 / 1037.5 /
+    1085.0 against 301.5 / 338.4 / 470.8 / 505.1; the populate 65.8 and 66.2 at p50, up to
+    928: the disk's (M421).
+  - ebff6cc6, the snapshot held as the daemon holds a template (1,051 pages, 386 written):
+    cold_restore 15.1 / 16.4 / 17.0 / 17.2 against 17.5 / 21.0 / 22.4 / 23.0;
+    cold_spawn_exit 69.4 / 75.4 / 83.5 / 152.8 against 91.6 / 101.3 / 121.8 / 137.3;
+    warm_request 2.49 / 2.52 / 2.54 / 2.69 against 6.79 / 10.51 / 10.58 / 10.63; the
+    populate 2.64 / 3.03 / 3.46 / 3.60 over 558 runs, the written pages' 1.70 of it.
 - **Decided.** A Windows restore records its working set and maps it ahead by default, as
   Linux's and macOS's do: a cold restore 1.5 times as fast, its start to exit twice as fast,
   a warm one 8 to 15 times as fast, for 54 to 64 ms more of cold setup on CI. It maps ahead in
@@ -16992,6 +17011,9 @@ revision before comparing a changed API/implementation.
   its other steps' slowest (13.0); on Windows, whose runs now say how long the slowest take,
   the tests' step 122 (90.9 slowest, windows-2025's) where it had 120, and the job 144, those
   122 and a third above its other steps' slowest (16.1), where it had 150.
+- **Found, the first run under them** (271f399b, CI 41329747161): x86_64 Linux's tests' step
+  took 41.8 minutes, past the 41 it had, and windows-2025's 74.6 and windows-2022's 44.9;
+  every job passed. A third above 41.8 is still 56.
 
 ### M421. A sparse file's pages, dropped from Windows' cache once no process maps them (D196, D25)
 
@@ -17032,6 +17054,26 @@ revision before comparing a changed API/implementation.
     pages (529 runs), its 326 written ones' 26.3 to 40.3 (192 runs): 65 to 87 µs a page on
     jupiter, whose WHP runs on the hardware, where M415 put CI's 50 to 78 down to its WHP's
     running nested (M308).
+- **Found, the restore bench held** (ebff6cc6's Rust, n=100 each arm, 1 vCPU, 256 MiB, ms,
+  p50 / p99; `--held yes`, the snapshot held from its first restore on, as the daemon holds
+  a template, against `--held no`):
+  - jupiter (2026-11-01 18:58 UTC, one run after the other, the host's CPUs 12 to 28% busy,
+    working sets of 1,051 and 1,119 pages): a cold restore
+    with the working set 15.1 / 17.0 held against 59.0 / 74.3 not, without it 17.5 / 22.4
+    against 108.9 / 152.2; a cold start to exit 69.4 / 83.5 against 114.1 / 129.1; the
+    populate 2.64 / 3.46 against 44.6 / 60.7, 2.5 µs a page, as M415's single calls. The
+    host read 2,341 pages a second from its disk on average as the held run ran, 25,014 as
+    the other did.
+  - CI's windows-2025 (whp-restore 41337030127 at 757013d, AMD EPYC 9V45, Windows Server
+    10.0.26100.33650, 969 and 967 pages): a cold restore with the working set 20.4 / 23.1
+    held against 40.6 / 45.5, without it 36.0 / 52.9 against 62.7 / 70.9; the populate 4.53
+    / 4.87 against 30.3 / 34.5.
+  - A warm request (release to the guest's marker) took 2.49 / 2.54 held and 2.86 / 2.95
+    not on jupiter, 9.13 / 9.20 and 2.68 / 2.74 on CI; at 271f399b, unheld, jupiter's two
+    runs took 5.20 / 6.86 and 0.27 / 0.62: runs of one build 0.27 to 9.13 apart at p50,
+    held or not. KVM's differ so too, run to run: 0.66, 0.67, 0.78, 2.52 and 2.54 at p50 in
+    CI's restore bench of five runs (41229596566 to 41321132233, n=30, AMD EPYC 7763). What
+    a guest runs between its release and its marker is not yet measured.
 - **Decided.** A generation held between restores keeps a view of its memory mapped on
   Windows (`platform::keep_cached`, read-only, of the whole file, never read; in
   `snapshot::Held`, which the daemon keeps of each template it restores, D25), and the
