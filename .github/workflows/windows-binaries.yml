@@ -10,7 +10,7 @@ name: windows binaries
 # that target directory: shards, the init and the helpers build.rs made, and for the
 # benches the test guest (SHARDS_TEST_GUESTS, test-guests/ there). Built on windows-2022,
 # whose temp disk has room for a release build (78 GB free, windows-2025's 27). Runs when
-# the workflow changes, or when asked.
+# the workflow changes (`BUILD`, raised, builds a branch's head again), or when asked.
 on:
   push:
     paths:
@@ -34,6 +34,8 @@ env:
   TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
   WORKSPACE: ${{ github.event.inputs.workspace || 'C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-cli-6628f0fd9d' }}
   TARGET: ${{ github.event.inputs.target || 'C:\Users\corph\g121-db-pre' }}
+  # Raised to build again: the restore bench with its snapshot held (PM M421).
+  BUILD: 2
 
 jobs:
   build:

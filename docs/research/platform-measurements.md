@@ -16992,3 +16992,49 @@ revision before comparing a changed API/implementation.
   its other steps' slowest (13.0); on Windows, whose runs now say how long the slowest take,
   the tests' step 122 (90.9 slowest, windows-2025's) where it had 120, and the job 144, those
   122 and a third above its other steps' slowest (16.1), where it had 150.
+
+### M421. A sparse file's pages, dropped from Windows' cache once no process maps them (D196, D25)
+
+- **Question.** jupiter's restore bench (M415's arms, n=100, 1 vCPU, 256 MiB, at 271f399b)
+  restored at 82.9 to 86.6 ms at p50 with the working set mapped ahead and 132.7 to 135.3
+  without it, where M345 had 69.8 without: its populate took 65.8 to 66.2 ms at p50 for 991
+  to 1,014 pages, and up to 928 ms, where jupiter's own populate of 512 pages written
+  took 3.68 ms (M415). The host read 11,000 to 20,000 pages a second from its disk while it
+  ran, in 800 to 1,350 reads a second, and about 10 before and after it (`\Memory\Pages
+  Input/sec`, `\Memory\Page Reads/sec`): a restore's pages came from the disk, not the
+  cache. Why does a restore's memory file not stay cached, from one restore to the next?
+- **Method.** On jupiter (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200.9711),
+  2026-11-01, `docs/research/measurements/windows-mapped-cache/run.sh`: a 256 MiB file
+  written past the cache (write.ps1: FILE_FLAG_NO_BUFFERING), dense, then sparse with its
+  first half a hole (`fsutil sparse setrange`, FSCTL_SET_ZERO_DATA); 1,000 random pages of
+  its data, and of its hole, touched through a copy-on-write view (touch.ps1), as a WHP
+  restore maps its memory file (vmm `platform::map_file_views`), by three processes one
+  after another: with nothing holding the file, with another process holding it open (as
+  `snapshot::hold` held a template's files), holding a read-only view of it, and holding a
+  view whose pages it had read (hold.ps1). And a real snapshot's memory file (the resume
+  guest's, 256 MiB, sparse in 21 allocated ranges), touched so before and after each of five
+  `shards restore`s of it, each restore's populate as it logs it.
+- **Found** (ms for 1,000 pages, each process's):
+
+  | file, pages | nothing held | handle held | view held | view held, read |
+  |---|---|---|---|---|
+  | dense, data | 263.1, 1.8, 2.2 | 192.8, 1.9, 2.2 | 199.3, 2.2, 1.9 | 2.2, 1.6, 1.8 |
+  | sparse, data | 384.0, 573.1, 412.1 | 247.9, 213.6, 199.6 | 236.8, 1.9, 2.1 | 1.6, 1.6, 1.6 |
+  | sparse, hole | 12.8, 14.2, 15.0 | 12.7, 14.6, 11.4 | 13.5, 2.0, 1.4 | 1.6, 1.6, 1.7 |
+
+  - A dense file's pages stay cached once the process that mapped them ends: the first
+    process read them from the disk, the next found them in 1.8 to 2.2 ms. A sparse file's
+    are dropped, its data's and its hole's alike, held open by another process or not:
+    each process read its data from the disk again. A view of it mapped anywhere keeps
+    them, read by its holder or not.
+  - The snapshot's memory file: 52.6 to 78.6 ms for its 1,000 pages before and after each
+    restore, never cached; each restore's populate 65.1 to 86.8 ms for its 1,000 working-set
+    pages (529 runs), its 326 written ones' 26.3 to 40.3 (192 runs): 65 to 87 µs a page on
+    jupiter, whose WHP runs on the hardware, where M415 put CI's 50 to 78 down to its WHP's
+    running nested (M308).
+- **Decided.** A generation held between restores keeps a view of its memory mapped on
+  Windows (`platform::keep_cached`, read-only, of the whole file, never read; in
+  `snapshot::Held`, which the daemon keeps of each template it restores, D25), and the
+  memory file stays sparse, taking the disk its guest used (M345). The restore bench holds
+  its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
+  `shards restore` finds it.

@@ -22,7 +22,11 @@
 //! first touches it, its rows `_no_ws`; `both`, the two interleaved, each pair's order
 //! alternating.
 //!
-//! `cargo bench -p shards --bench restore [-- --runs N --cpus N --memory MIB --working-set with|without|both]`
+//! From then on the snapshot's files are held as the daemon holds a template's
+//! (`snapshot::hold`), which on Windows keeps its memory's pages cached (PM M421); `--held
+//! no` holds none, as a lone `shards restore` finds them.
+//!
+//! `cargo bench -p shards --bench restore [-- --runs N --cpus N --memory MIB --working-set with|without|both --held yes|no]`
 
 #![allow(
     clippy::unwrap_used,
@@ -52,6 +56,12 @@ fn main() {
         "without" => (false, true),
         "both" => (true, true),
         other => panic!("--working-set {other}: with, without or both"),
+    };
+    let holds = support::option("--held").unwrap_or_else(|| "yes".into());
+    let hold = match holds.as_str() {
+        "yes" => true,
+        "no" => false,
+        other => panic!("--held {other}: yes or no"),
     };
     if common::cannot_run_vms() {
         return;
@@ -97,6 +107,8 @@ fn main() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    let held =
+        hold.then(|| shards_vmm::snapshot::hold(Path::new(&snapshot)).expect("holding the snapshot's files"));
     for _ in 0..WARMUP {
         run(&cold_args, false);
         run(&warm_args, true);
@@ -131,6 +143,8 @@ fn main() {
         kept,
         "the working set put back"
     );
+    // Its files let go of first: Windows removes no file held open.
+    drop(held);
     let _ = std::fs::remove_dir_all(&dir);
     let (pages, written) = kept.unwrap_or((0, 0));
     let rows = |cold: &[support::Sample], warm: &[support::Sample], suffix: &str| {
@@ -173,6 +187,7 @@ fn main() {
             ("memory_mib", memory),
             ("kernel", common::kernel_artifact().name.to_string()),
             ("working_set", arms),
+            ("held", holds),
             ("working_set_pages", pages.to_string()),
             ("working_set_written", written.to_string()),
             ("frozen_retaken", retaken.to_string()),

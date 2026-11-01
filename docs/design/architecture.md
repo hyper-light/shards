@@ -882,7 +882,11 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   263,168 vnodes recycled 2,800 a second, a cold run after a build's worth of files had
   been looked at read its template's whole working set back from the disk a page at a time,
   and its guest its programs from its root filesystem: 7.9 to 11.0 s where a warm one took
-  0.2 to 0.6. Held, 0.46 to 0.96 s [PM M315].
+  0.2 to 0.6. Held, 0.46 to 0.96 s [PM M315]. On Windows a view of its memory is held
+  mapped too (`platform::keep_cached`): Windows drops a sparse file's pages from its cache
+  once no process maps them, held open or not, where a dense file's stay, and a memory file
+  is sparse; 1,000 pages of a sparse file's data took 200 to 573 ms each time, read from
+  the disk again, and 1.6 to 2.1 with a view of it held [PM M421].
 - **A run records the working set**: each guest page it touches until its command
   answers, or a while after the command starts, saved with the template as
   `working-set`. REAP found that restored copies of a serverless function's snapshot
