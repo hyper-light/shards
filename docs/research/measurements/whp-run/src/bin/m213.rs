@@ -18,7 +18,7 @@
 #![allow(non_upper_case_globals)]
 
 use std::io::Write as _;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Networking::WinSock::*;
@@ -358,7 +358,7 @@ fn beside(idle: usize, how: Waits) -> Result<Vec<f64>, String> {
                     }
                     let port = register(&served)?;
                     let mut entries = vec![OVERLAPPED_ENTRY::default(); 64];
-                    let (mut answered, mut empty, mut lost) = (0, 0u32, 0u32);
+                    let (mut answered, mut empty, mut lost, mut waited) = (0, 0u32, 0u32, Duration::ZERO);
                     while answered < ROUNDS {
                         // SAFETY: our event.
                         unsafe { WSAResetEvent(ev) };
@@ -398,18 +398,22 @@ fn beside(idle: usize, how: Waits) -> Result<Vec<f64>, String> {
                             return Err(format!("the port named nothing after {answered} round trips"));
                         }
                         let h = ev as HANDLE;
+                        let t = Instant::now();
                         // SAFETY: our event, as the handle it is.
                         if unsafe { WSAWaitForMultipleEvents(1, &raw const h, 0, 100, 0) } == WSA_WAIT_TIMEOUT {
                             // The event did not come where the port had the socket ready: a
-                            // wake lost, this way's finding. Lost a hundred times, 10 s of its
-                            // waits, it is told: beside 100 sockets on windows-2025 its rounds
-                            // outlasted the job's 15 minutes (CI 40961442817, 41281977635).
+                            // wake lost, this way's finding.
                             lost += 1;
-                            if lost >= 100 {
-                                return Err(format!(
-                                    "{lost} wakes lost in {answered} round trips: the event did not come, where the port named the socket"
-                                ));
-                            }
+                        }
+                        // Waits of 10 s in all, the event late or lost, end the count and are
+                        // told: beside 100 sockets on windows-2025 its rounds outlasted the
+                        // job's 15 minutes (CI 40961442817, 41281977635), and beside none on
+                        // windows-2022 (41284231274), its waits ending late, not timed out.
+                        waited += t.elapsed();
+                        if waited >= Duration::from_secs(10) {
+                            return Err(format!(
+                                "{answered} round trips in its waits' 10 s: {lost} of its waits timed out, the event late or lost where the port named the socket"
+                            ));
                         }
                     }
                     // SAFETY: our port and event.

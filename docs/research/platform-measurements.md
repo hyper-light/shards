@@ -7504,9 +7504,10 @@ revision before comparing a changed API/implementation.
   but its slowest round trip 105 to 115 ms at every count, each the 100 ms the probe
   bounds a wait by: the event did not come, where the port had the socket ready. On
   windows-2022 it stalled so often that the job's 20 minutes ran out on its first count.
-  Since 2026-11-01 the probe ends that way's count once a hundred of its wakes are lost,
-  10 s of its waits, and says so: beside 100 sockets on windows-2025 its rounds outlasted
-  the job's 15 minutes three times (CI 40961442817, 40964375764, 41281977635).
+  Since 2026-11-01 the probe ends that way's count once its waits come to 10 s, the event
+  late or lost, and says so: beside 100 sockets on windows-2025 its rounds outlasted the
+  job's 15 minutes three times (CI 40961442817, 40964375764, 41281977635), and beside none
+  on windows-2022 (41284231274), its waits ending late, not timed out.
   The completion port alone was slowest at 8.1 ms (10,000 idle, windows-2025).
 
   | doorbell | windows-2022 | windows-2025 |

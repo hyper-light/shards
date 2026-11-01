@@ -1,40 +1,35 @@
 diff --git a/crates/shards/src/build/give.rs b/crates/shards/src/build/give.rs
+index 77f52801..1c9f5f19 100644
 --- a/crates/shards/src/build/give.rs
 +++ b/crates/shards/src/build/give.rs
-@@ -13,7 +13,7 @@
- //! minute at most, as the daemon says its microVMs'. Windows watches no pressure yet (D188):
- //! there, its builders are asked nothing.
+@@ -19,7 +19,7 @@
+ //! says its microVMs'. On Windows its host's word is the system's low memory notification,
+ //! as the daemon's is (D188).
  
 -use std::io;
 +use std::io::{self, Write as _};
  use std::sync::OnceLock;
  use std::sync::mpsc;
- use std::time::{Duration, Instant};
-@@ -128,26 +128,41 @@
+ #[cfg(target_os = "linux")]
+@@ -292,10 +292,25 @@ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsa
  fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
      match g.answer(until) {
-         Ok(Some(Answer::Gave(freed, unplugging))) => {
+         Ok(Some(answer)) => {
 +            // builder-pressure: each answer, as long after its word as it came, one write.
-+            let _ = io::stderr().write_all(
-+                format!("builder-give answered_ms {} freed {freed} unplugging {unplugging}\n", since(until)).as_bytes(),
-+            );
-             unsaid.freed = unsaid.freed.saturating_add(freed);
-             unsaid.unplugging = unsaid.unplugging.saturating_add(unplugging);
-             unsaid.answered += 1;
-             true
-         }
-         Ok(Some(Answer::Held(within))) => {
-+            let within_said = within.map_or("none".to_string(), |w| w.to_string());
-+            let _ = io::stderr()
-+                .write_all(format!("builder-give held_ms {} within {within_said}\n", since(until)).as_bytes());
-             unsaid.held = within;
-             true
-         }
-         Ok(Some(Answer::Refused(why))) => {
-+            let _ = io::stderr()
-+                .write_all(format!("builder-give refused_ms {} why {}\n", since(until), why.replace(' ', "_")).as_bytes());
-             unsaid.refused += 1;
-             unsaid.why = Some(why);
++            let said = match &answer {
++                Answer::Gave(freed, unplugging) => {
++                    format!("builder-give answered_ms {} freed {freed} unplugging {unplugging}\n", since(until))
++                }
++                Answer::Held(within) => {
++                    let within_said = within.map_or("none".to_string(), |w| w.to_string());
++                    format!("builder-give held_ms {} within {within_said}\n", since(until))
++                }
++                Answer::Refused(why) => {
++                    format!("builder-give refused_ms {} why {}\n", since(until), why.replace(' ', "_"))
++                }
++            };
++            let _ = io::stderr().write_all(said.as_bytes());
+             count(unsaid, answer);
              true
          }
          Ok(None) => {
@@ -42,13 +37,15 @@ diff --git a/crates/shards/src/build/give.rs b/crates/shards/src/build/give.rs
              unsaid.unanswered += 1;
              true
          }
-         Err(_) => false,
+@@ -303,6 +318,11 @@ fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
      }
-+}
-+
+ }
+ 
 +/// builder-pressure: how long after its word an answer heard by `until` came, in ms.
 +fn since(until: Instant) -> u128 {
 +    PATIENCE.saturating_sub(until.saturating_duration_since(Instant::now())).as_millis()
- }
- 
- /// What builders gave back since it was last said: since when, how much of their files and
++}
++
+ /// A builder's answer counted in `unsaid`.
+ fn count(unsaid: &mut Unsaid, answer: Answer) {
+     match answer {
