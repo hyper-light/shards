@@ -11918,7 +11918,8 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     socket and, on Windows, on a named pipe of this machine as SPIRE's agent serves one,
     found there without a connection taken (spiffe.rs
     `a_jwt_svid_is_asked_of_the_workload_api_on_its_socket` and `..._on_its_named_pipe`,
-    the latter on CI's Windows runners); the pipe's names as go-spiffe reads them.
+    the latter on CI's windows-2022 and windows-2025, CI 41284231177 at 6b17d663); the
+    pipe's names as go-spiffe reads them.
 
 ### D125. A run's microVM has every CPU of its host unless it is limited
 

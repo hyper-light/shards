@@ -36,7 +36,11 @@ Since 2026-11-01 it reads a cfg's any(), all() and not() of `unix`, `windows` an
 any other as every host's: 25 items stood alone unseen, the groups shards keeps (D183), the
 grants' modules and SPIFFE's client among them. These, and the 20 the GPUs' work brought
 (D201, D202), are each a host's own mechanism with its twin, or with why the other hosts
-need none, but for rows 12 and 13's.
+need none, but for rows 12 and 13's. And it passes over a test's item to that item's end,
+where it read no more of a file past its first `#[cfg(test)]`: a test's `use` hid
+platform/mod.rs below its line 11, and daemon.rs below 622 of its 8,400. 31 more items
+stood alone unseen, each a host's own mechanism (platform-parity.tsv), one of them row
+11's: main.rs's `working_set`, which macOS needs not, its template's run recording.
 
 ## The gaps
 
@@ -54,7 +58,7 @@ need none, but for rows 12 and 13's.
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
 | 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | Windows | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
 | 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
-| 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | Windows | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
+| 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
 | 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | Windows, until gpu-windows lands: its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
@@ -137,3 +141,12 @@ Each lone item is confirmed or closed as its row is worked.
   `a_runs_memory_freed_goes_back_to_the_host` passing there too; and what a volume's reads
   hold, through D197's FUSE server over NTFS, at its group's budget, its microVMs from 764
   to 768 MiB to 272 (`a_microvm_under_a_group_is_held_to_its_budget`).
+- Row 12, keyless signing's SPIFFE provider on Windows (D126): SPIFFE's Workload API
+  reached by its named pipe, SPIRE's agent's (`\\.\pipe\spire-agent\public\api`) or the
+  one `SPIFFE_ENDPOINT_SOCKET` names (`npipe:NAME`, as go-spiffe reads it there, or the
+  pipe's path), opened anonymous to its server as go-winio dials one, and found there
+  without a connection taken; cosign v3.1.3 reaches none there. Tested on CI's
+  windows-2022 and windows-2025 (CI 41284231177 at 6b17d663): spiffe.rs's
+  `a_jwt_svid_is_asked_of_the_workload_api_on_its_named_pipe` and
+  `a_named_pipe_is_named_as_go_spiffe_names_it`, beside its socket's twin on Linux and
+  macOS. platform-parity.py finds none of the row's items alone.

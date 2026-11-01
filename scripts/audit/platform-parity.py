@@ -75,11 +75,26 @@ def items(path):
     """Each item of `path` outside its tests, at any depth: its line, its cfg (None where it
     has none whose hosts [`hosts`] are known), its kind and its name."""
     lines = open(path, errors="replace").read().split("\n")
-    out, in_test = [], False
+    # A test's item (`#[cfg(test)]`, `#[cfg(all(test, ...))]`) is passed over to its end: its
+    # line's `;`, or its block's closing brace at its own indentation, as rustfmt writes it.
+    out, skip_to, block_end = [], -1, None
     for i, line in enumerate(lines):
-        if re.match(r'^\s*#\[cfg\(test\)\]', line) or re.match(r'^\s*#\[cfg\(all\(test', line):
-            in_test = True
-        if in_test:
+        if block_end is not None:
+            if line == block_end:
+                block_end = None
+            continue
+        if i <= skip_to:
+            continue
+        if re.match(r'^\s*#\[cfg\((all\()?test\b', line):
+            k = i + 1
+            while k < len(lines) and (lines[k].strip().startswith(("#[", "//")) or not lines[k].strip()):
+                k += 1
+            while k < len(lines) and not lines[k].rstrip().endswith(("{", ";")):
+                k += 1
+            if k < len(lines) and lines[k].rstrip().endswith("{") and not lines[k].rstrip().endswith("{}"):
+                item = lines[k]
+                block_end = item[: len(item) - len(item.lstrip())] + "}"
+            skip_to = k
             continue
         m = ITEM.match(line)
         if not m:
