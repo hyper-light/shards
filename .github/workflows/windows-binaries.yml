@@ -10,9 +10,11 @@ name: windows binaries
 # that target directory: shards, the init and the helpers build.rs made, and for the
 # benches the test guest (SHARDS_TEST_GUESTS, test-guests/ there). Built on windows-2022,
 # whose temp disk has room for a release build (78 GB free, windows-2025's 27). Runs when
-# the workflow changes (`BUILD`, raised, builds a branch's head again), or when asked.
+# the workflow changes on a working branch (`BUILD`, raised, builds its head again; the
+# branches work lands on build none), or when asked.
 on:
   push:
+    branches-ignore: [main, dev, gpu]
     paths:
       - .github/workflows/windows-binaries.yml
   workflow_dispatch:

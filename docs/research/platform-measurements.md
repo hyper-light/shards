@@ -16402,6 +16402,84 @@ revision before comparing a changed API/implementation.
   waits for the user's leave to build llama.cpp on the desktop. Speed against the host's
   own is unmeasured on Linux; on macOS it matched (M218).
 
+### M385. What a GPU's VM process needs of Windows to reach its driver, in its AppContainer (D202)
+
+- **Question.** A Windows VM process runs in an AppContainer of its own with Win32k's
+  calls disabled among its mitigations (D141). The GPU's VM process runs its host's Vulkan
+  driver. Does the driver come up there; if not, what least change lets it; and what does
+  that cost each GPU VM's start?
+- **Method.** `docs/research/measurements/gpu-windows/`: `confinement.patch` over the build
+  that adds D202's confinement: switches the daemon reads to start a GPU's VM process with
+  Win32k's calls disabled (SHARDS_M385_WIN32K_DISABLED), without its window station and
+  desktop (SHARDS_M385_NO_STATION), or outside an AppContainer
+  (SHARDS_M385_NO_APP_CONTAINER); the Vulkan loader's log (VK_LOADER_DEBUG=all) and, as the
+  renderer starts, a probe of gdi32's, user32's and dxgi's loads, D3DKMTEnumAdapters2's
+  count and CreateDXGIFactory1's result; and n window stations and desktops made and
+  closed, timed (SHARDS_M385_STATIONS). `variants.sh`: each variant a daemon of its own and
+  one GPU run of vulkaninfo (the image tests/gpu.rs builds). jupiter: AMD Ryzen AI Max+ 395
+  and its Radeon 8060S (AMD's driver 25.20.32.06), Windows 11 10.0.26200, its kiln runner a
+  service in session 0, elevated; 2026-10-29.
+- **Results.**
+
+  | The GPU's VM process | gdi32, user32 | D3DKMT's adapters | DXGI factory | The guest's GPU |
+  |---|---|---|---|---|
+  | its AppContainer, a window station and desktop of its own, Win32k allowed (D202) | loaded | 34 | S_OK | Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics) |
+  | the same, Win32k disabled | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none: "Found no drivers!" |
+  | its AppContainer on its spawner's desktop, Win32k allowed | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | the same, Win32k disabled (D141's VM process) | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | no AppContainer, Win32k disabled | ERROR_DLL_INIT_FAILED | none | E_UNEXPECTED | none |
+  | no AppContainer, Win32k allowed | loaded | 34 | S_OK | as the first |
+
+  - The loader's log where it found none: "Failed to create dxgi factory for ICD registry
+    verification", then "vkCreateInstance: Found no drivers!"; it reads no driver's
+    manifest from the adapters, whose D3DKMT calls are gdi32's.
+  - A window station and desktop made, granted to an AppContainer and closed: n=200, p50
+    405 µs, p90 588 µs, p99 1.12 ms, max 29.8 ms; again, p50 439 µs, p90 615 µs, p99
+    979 µs, max 28.3 ms.
+- **Reading.** Both of D141's VM process's walls stop a GPU's driver, each alone: with
+  Win32k's calls disabled, gdi32 and user32 fail as they load; in an AppContainer on its
+  spawner's window station and desktop, which do not grant it, they fail as they connect
+  to them, Win32k allowed or not. A window station and desktop of its own, granted to it,
+  and Win32k's calls are enough: the driver comes up in the AppContainer, as it does
+  outside one. Making them costs a GPU VM's start about 0.4 ms. Measured in session 0, a
+  service's, as the runner is; a user's interactive session is unmeasured.
+
+### M386. Vulkan programs in a guest given a Windows host's GPU, against its CPU (D202)
+
+- **Question.** M384's, of a Windows host: on its GPU through Venus (D202), do a guest's
+  Vulkan compute programs get its CPU's results, and how fast do they run?
+- **Method.** M384's `compute.sh` on jupiter, from Git Bash (`MSYS2_ARG_CONV_EXCL`, which
+  leaves the guest's paths to it), of the same image, built there by Docker Desktop and
+  loaded (`shards load`): shards' builder, whose memory stayed at the 2 GiB it booted with,
+  was killed for it compiling llama.cpp with 8 jobs (told to the parity plan's step 7). The
+  guest given the GPU (`--gpus all`, 8 GiB), its Mesa 25.0.7. jupiter: AMD Ryzen AI Max+
+  395 and its Radeon 8060S (AMD's driver 25.20.32.06), Windows 11 10.0.26200; shards built
+  from the Windows daemon's branch with D202 merged; 2026-10-29. Then the matrix cases again
+  with llama.cpp's integer dot product off (GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1).
+- **Results.**
+  - The guest finds `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`, driver venus,
+    Vulkan 1.2 (the krunkit fork's Venus), and Mesa's llvmpipe; ggml sees 105,388 MB of
+    unified device memory.
+  - 1,666 of 1,684 cases match the CPU's. The other 18 are NaN, the same 18 as RADV's
+    through Venus on Linux (M384), case for case. With the integer dot product off, 1,684
+    of 1,684.
+  - llama-bench, n=5 each, milliseconds a run (p50, p90 = p99 = max) and tokens/s:
+
+    | Test | p50 ms | max ms | p50 t/s | min t/s |
+    |---|---|---|---|---|
+    | pp512 | 334.80 | 353.65 | 1,529.3 | 1,447.8 |
+    | tg128 | 1,752.81 | 1,766.56 | 73.0 | 72.5 |
+
+  - Matrix multiplication, 4096 by 14336 by 512: f16 3.36 TFLOPS, q4_0 4.01; by one
+    column, q4_0 832 GFLOPS (141 µs a run).
+- **Reading.** A guest's Vulkan compute runs on a Windows host's GPU through Venus and
+  gets its CPU's results in every case but the 18 of llama.cpp's integer dot product path,
+  which RADV's gives alike on Linux and which the path's absence clears, as llama.cpp's
+  tracker has that path give NaN on a Radeon 8060S under RADV in other cases (M384,
+  ggml-org/llama.cpp#30544). Whether AMD's Windows driver gives them natively, and its
+  speed natively, are unmeasured: llama.cpp's Windows build needs the Vulkan SDK, which
+  jupiter lacks.
+
 ### M391. What a microVM past its budget gives back, on Linux, Windows and macOS (D151, D188)
 
 - **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`

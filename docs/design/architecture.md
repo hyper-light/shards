@@ -6662,18 +6662,27 @@ kernel. What a Windows host makes otherwise:
   and its clipboard and atom table are its window station's, not its user's ("A window
   station contains a clipboard, an atom table, and one or more desktop objects",
   Microsoft's "Window Stations"). Only a process that makes one loads user32, which makes
-  them.
+  them; making them costs a GPU VM's start about 0.4 ms (p50; p99 1.1 ms, M385).
 - **Tested** (tests/gpu.rs on jupiter: AMD Ryzen AI Max+ 395 and its Radeon 8060S, AMD's
-  driver 25.20.32.06, Windows 11 10.0.26200): passes. A run given `--gpus all` finds
+  driver 25.20.32.06, Windows 11 10.0.26200): passes, 3 runs of 3 on the Windows daemon's
+  branch with this merged, 48 to 52 s each. A run given `--gpus all` finds
   `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`; a build's steps given the render
   node by a CDI device find it as root and as user 1000, as do a run given it by CDI name
   and a run of user 1000; and the GPU's runs restore templates of their own (D150). The
   renderer's own test passes there. The GPU's VM process is spawned so by the Windows
   daemon's spawner (`shards_ipc`, the parity plan's step 2), and lands with it: tested on
-  step 2's branch with this one merged. CI's Windows runners, which have no GPU, build,
-  lint and test the renderer, and skip what needs one.
+  step 2's branch with this one merged; and again on gpu-windows at e39a9218, with the
+  Windows daemon, its pools and working sets as they landed (196.6 s, the test built by
+  windows-binaries.yml at jupiter's paths, as kiln's guard there holds builds). CI's
+  Windows runners, which have no GPU, build, lint and test the renderer, and skip what
+  needs one.
+- **Vulkan programs** (PM M386): llama.cpp's matrix multiplications in a guest on
+  jupiter's Radeon 8060S get its CPU's results case for case, but for the 18 shapes of
+  llama.cpp's integer dot product path that RADV gives NaN on Linux too (M384), which with
+  it off match as well; TinyLlama's pp512 at 1,529 tokens/s (p50).
 - **Not yet:** an arm64 Windows host (WHP's arm64 backend is the parity plan's step 10),
-  and Windows hosts of NVIDIA's and Intel's GPUs, none being here.
+  Windows hosts of NVIDIA's and Intel's GPUs, none being here, and a GPU's VM process
+  started from a user's interactive session, measured in session 0 alone (M385).
 
 ### D201. A GPU on Linux: Venus over its host's own Vulkan driver, in the GPU's VM process (built)
 
