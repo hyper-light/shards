@@ -484,38 +484,15 @@ fn assemble(
     // Its writable layer after them (D190).
     let (layer, top) = super::layer_layout(hosts.layer, top)?;
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
-    // says (D144): on macOS alone so far.
-    #[cfg(not(hv = "hvf"))]
+    // says (D144, D201).
+    #[cfg(not(any(hv = "hvf", hv = "kvm")))]
     if gpu.is_some() {
-        return Err("a GPU is given on macOS hosts alone so far (D144)".into());
+        return Err("a GPU is given on macOS and Linux hosts alone so far (D144, D201)".into());
     }
-    #[cfg(not(hv = "hvf"))]
+    #[cfg(not(any(hv = "hvf", hv = "kvm")))]
     let gpu: Option<((), crate::devices::virtio::ShmRegion)> = None;
-    #[cfg(hv = "hvf")]
-    let gpu = match gpu {
-        None => None,
-        Some(saw) => {
-            let (renderer, offers) = super::gpu_renderer()?;
-            let offers = offers
-                .checked_next_multiple_of(PAGE)
-                .ok_or("the GPU's window overflows the address space")?;
-            if offers < saw {
-                return Err(format!(
-                    "this host's GPU offers {offers} bytes of memory the host can map, where the snapshot's guest saw {saw}"
-                ));
-            }
-            let len = if saw == 0 { offers } else { saw };
-            let at = top
-                .checked_next_multiple_of(GIB)
-                .ok_or("the GPU's window overflows the address space")?;
-            let region = crate::devices::virtio::ShmRegion {
-                id: crate::devices::virtio::gpu::HOST_VISIBLE,
-                base: at,
-                len,
-            };
-            Some((renderer, region))
-        }
-    };
+    #[cfg(any(hv = "hvf", hv = "kvm"))]
+    let gpu = gpu.map(|saw| super::gpu_layout(saw, top)).transpose()?;
     let top = match &gpu {
         Some((_, r)) => r
             .base
@@ -645,21 +622,12 @@ fn assemble(
     debug!("GIC created");
 
     let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
-    #[cfg(not(hv = "hvf"))]
+    #[cfg(not(any(hv = "hvf", hv = "kvm")))]
     let gpu: Option<Box<dyn crate::devices::virtio::VirtioDevice>> = None;
-    #[cfg(hv = "hvf")]
-    let gpu = match gpu {
-        None => None,
-        Some((renderer, region)) => {
-            // The largest request read: no legitimate command outsizes the memory it comes
-            // from.
-            let max = usize::try_from(ram).map_err(|_| format!("{ram} bytes of guest memory"))?;
-            let served =
-                crate::devices::virtio::gpu::Served::new(renderer, Box::new(vm.window()), region, PAGE, max);
-            Some(Box::new(crate::devices::virtio::gpu::Gpu::new(Box::new(served)))
-                as Box<dyn crate::devices::virtio::VirtioDevice>)
-        }
-    };
+    #[cfg(any(hv = "hvf", hv = "kvm"))]
+    let gpu = gpu
+        .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
+        .transpose()?;
     // The IOMMU of the PCI functions behind it, last of the virtio devices (D154): no MSI
     // window bypassed, as Linux has the IOMMU map the GICv2m frame's doorbell.
     let (iommu, iommu_device, behind) = match msi.and_then(|_| super::iommu_of(pci, None)) {

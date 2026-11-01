@@ -13,8 +13,9 @@
 # (PM M341, src/bin/m341.rs); a section handed to a confined VM process by a process that did
 # not spawn it (PM M343, src/bin/m343.rs); what a partition's snapshot rests on: its vCPU's state,
 # its time held and set, and a restore's RAM a copy-on-write view of a sparse file (PM M345,
-# src/bin/m345.rs); and what a rename over a file the snapshot store replaces meets (PM M345,
-# src/bin/m345_rename.rs).
+# src/bin/m345.rs); what a rename over a file the snapshot store replaces meets (PM M345,
+# src/bin/m345_rename.rs); and a GPU's host-visible memory mapped into a partition, the
+# driver's mapping and memory imported into Vulkan (PM M383, src/bin/m383.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"
