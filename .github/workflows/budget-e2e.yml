@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, lib-windows:PACKAGE for a library's own on Windows (name all: the package's every test), or windows:BINARY for a test binary of crates/shards on each Windows runner (windows:bin, the binary's own tests)
+        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, lib-windows:PACKAGE for a library's own on Windows (the name all for the package's every test), or windows:BINARY for a test binary of crates/shards on each Windows runner (windows:bin, the binary's own tests)
         default: daemon
       name:
         description: its exact name; all, the whole binary; on Windows, ignored:NAME runs the ignored test NAME, a measurement
