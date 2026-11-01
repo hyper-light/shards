@@ -232,6 +232,13 @@ impl MmioDevice for Control {
 
     fn pause(&self) {}
 
+    /// Memory of a DAX window's head the host commits as its guest first touches it (D189,
+    /// PM M413): given, and the access runs again.
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        gpa.zip(self.window_heads.get())
+            .is_some_and(|(gpa, heads)| heads.memory_fault(gpa))
+    }
+
     fn resume(&self) -> std::result::Result<(), String> {
         Ok(())
     }

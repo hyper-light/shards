@@ -80,8 +80,7 @@ mod reclaim;
 mod record;
 mod refill;
 mod relay;
-// Other machines' clients (D180): Unix's alone as yet.
-#[cfg(unix)]
+// Other machines' clients (D180).
 mod remote;
 mod restart;
 mod rmi;
@@ -1607,7 +1606,6 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     for c in containers.all() {
         snapshots::remove_unsaved(&containers.dir(&c.id), &mut |note| log(note));
     }
-    #[cfg(unix)]
     snapshots::remove_ghosts(&home.join(PRIVATE), &mut |note| log(note));
     let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
         .map_err(|e| format!("following runs: {e}"))?;
@@ -1619,15 +1617,9 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
     // Other machines' clients (D180), before it says it serves: an address it cannot bind
-    // is its starter's to hear. Unix's alone as yet: what they run here (their contexts,
-    // secrets and agents) is Unix's.
+    // is its starter's to hear.
     if let Some(at) = listen {
-        #[cfg(unix)]
         remote::listen(daemon.home.clone(), exe.clone(), at)?;
-        #[cfg(windows)]
-        return Err(format!(
-            "listening at {at}: other machines' clients are not served on Windows yet"
-        ));
     }
     // Its starter returns once it hears this: its slots are offered from now on.
     if let Some(mut ready) = ready {
@@ -2238,8 +2230,10 @@ impl<D: Disk> Daemon<D> {
 
     /// [`wait_for_work`](Self::wait_for_work) on Windows: its wake, its watches and the
     /// Engine API's listener are events, waited on together (WaitForMultipleObjects), each
-    /// looked at as the wait ends, as a wait names the first alone. Windows has no
-    /// contexts' engines yet (relay.rs), so `relays` is none.
+    /// looked at as the wait ends, as a wait names the first alone. The contexts' listeners
+    /// are their takers' to wait on, which wake it as each client comes (relay.rs), so that
+    /// a home of any number of contexts waits on these alone: WaitForMultipleObjects waits
+    /// on 64 at most.
     #[cfg(windows)]
     fn wait_for_work(
         &self,
@@ -4597,10 +4591,11 @@ impl<D: Disk> Daemon<D> {
             waiter.hear(code);
         }
         drop(registry);
-        if let Some(removal) = removal
-            && self.set_aside(&removal).is_ok()
-        {
-            let _ = self.complete(&removal);
+        if let Some(removal) = removal {
+            if self.set_aside(&removal).is_ok() {
+                let _ = self.complete(&removal);
+            }
+            self.removal_settled();
         }
         said
     }
@@ -4608,7 +4603,9 @@ impl<D: Disk> Daemon<D> {
     /// The end of container `id`'s run, as `end` records it, kept at once: in sight, or
     /// in its reservation, whose record then holds it. A `--rm` container is taken out of
     /// sight, for [`set_aside`](Self::set_aside) and [`complete`](Self::complete) to
-    /// remove; any other's record is written on the recorder's thread. Waits on no write:
+    /// remove, counted until its caller queues or completes it
+    /// ([`removal_taken`](Self::removal_taken)); any other's record is written on the
+    /// recorder's thread. Waits on no write:
     /// the followers' loop ends every run, and one waiting there holds up every other
     /// run's messages, by 81 ms at a loaded host's p90 (PM M96). Failures go to the log.
     fn end_container(
@@ -4632,6 +4629,9 @@ impl<D: Disk> Daemon<D> {
             .is_some_and(|c| c.auto_remove && c.saved.is_none())
         {
             let removal = registry.take_out(id);
+            if removal.is_some() {
+                self.removal_taken();
+            }
             // One still arriving is so no more.
             self.arrived.notify_all();
             return removal;
@@ -6038,6 +6038,29 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// Where run `id`'s end went unheard, for a stop that gave up on it: whether its VM
+    /// process has ended, and whether its end was taken from its messages, or they are
+    /// being taken (its inbox held), so that its log tells a VM that outlived its kill from
+    /// an end the daemon did not take.
+    pub(super) fn unheard(&self, id: &str) -> String {
+        let runs = lock(&self.runs);
+        let Some(RunState::Tracked(t)) = runs.get(id) else {
+            return "its run is followed no more".into();
+        };
+        let vm = if t.vm.has_ended() {
+            "its VM process has ended"
+        } else {
+            "its VM process runs on"
+        };
+        let taken = match t.inbox.try_lock() {
+            Ok(inbox) if inbox.ended => "its end taken",
+            Ok(_) => "nothing of its end taken",
+            Err(std::sync::TryLockError::WouldBlock) => "its messages being taken",
+            Err(std::sync::TryLockError::Poisoned(_)) => "its messages' lock poisoned",
+        };
+        format!("{vm}, {taken}")
+    }
+
     /// Stops serving: ends its offers, ends the runs in progress, and exits once they
     /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
     /// build, whose own daemon then takes the home).
@@ -6815,9 +6838,8 @@ impl<D: Disk> Daemon<D> {
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
             // And each share's DAX window, where the daemon gives one (D189), as its join
             // share's, every range of all of them within the host's mappings where it limits
-            // them. None on Windows yet (D197): a section of a host file reaches none of it
-            // past its end, where a window's ranges are 2 MiB each (window_whp.rs).
-            cfg.share_window_mib = if cfg!(windows) { 0 } else { self.share_window_mib };
+            // them: on Windows of the files its share process gives (D197's slice 4).
+            cfg.share_window_mib = self.share_window_mib;
             if let Some(limit) = self.max_map_count {
                 let windows = u64::try_from(cfg.shares.len())
                     .unwrap_or(u64::MAX)
@@ -12589,6 +12611,45 @@ mod tests {
                 completing.join().unwrap().unwrap();
             });
             assert!(lock(&t.daemon.containers).name_taken("racer").is_none());
+            assert!(!t.home.join("containers").join(&id).exists());
+        });
+    }
+
+    /// A shutdown waits for the removal of a `--rm` container its run's end has taken out
+    /// and not yet queued, whose `destroy` is then kept: one that found nothing pending
+    /// between the two left the next daemon no `destroy` to read (windows-2025, CI
+    /// 40961442989, events_outlive_their_daemon).
+    #[test]
+    fn a_shutdown_waits_for_a_removal_taken_out_and_not_yet_queued() {
+        let t = Test::new("taken-out");
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let id = t.reserve_with("taken", None, true);
+            t.daemon.await_arrival(&id);
+            let removal = {
+                let mut registry = lock(&t.daemon.containers);
+                t.daemon
+                    .end_container(&mut registry, &id, |c| c.exit_code = Some(3))
+            };
+            let removal = removal.expect("a --rm container is taken out as its run ends");
+            std::thread::scope(|scope| {
+                let waiting = scope.spawn(|| t.daemon.await_removals());
+                std::thread::sleep(Duration::from_millis(50));
+                let early = waiting.is_finished();
+                t.daemon.complete_soon(removal);
+                waiting.join().unwrap();
+                assert!(!early, "the shutdown went on before the removal was queued");
+            });
+            let journal: String = std::fs::read_dir(t.home.join("events"))
+                .unwrap()
+                .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+                .collect();
+            assert!(
+                journal
+                    .lines()
+                    .any(|l| l.contains("\"Action\":\"destroy\"") && l.contains(&id)),
+                "{journal}"
+            );
             assert!(!t.home.join("containers").join(&id).exists());
         });
     }

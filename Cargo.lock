@@ -1235,6 +1235,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
+ "shards-ntfs",
  "shards-testdir",
  "windows-sys 0.61.2",
 ]
@@ -1251,8 +1252,10 @@ dependencies = [
  "shards-abi",
  "shards-agentfile",
  "shards-image",
+ "shards-ntfs",
  "shards-testdir",
  "unicode-normalization",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1410,6 +1413,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-ntfs"
+version = "0.1.0"
+dependencies = [
+ "shards-testdir",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "shards-registry"
 version = "0.1.0"
 dependencies = [
@@ -1454,6 +1465,7 @@ dependencies = [
  "bytes",
  "hyper-quic",
  "sha2",
+ "shards-ipc",
  "shards-testdir",
 ]
 
@@ -1564,6 +1576,7 @@ dependencies = [
  "shards-afunix",
  "shards-ipc",
  "shards-netring",
+ "shards-ntfs",
  "shards-syscall-filter",
  "shards-testdir",
  "windows-sys 0.61.2",

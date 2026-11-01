@@ -329,6 +329,12 @@ impl Handle {
         self.serial.enqueue_input(bytes);
     }
 
+    /// The whole lines of the last page its guest wrote to its console, whoever read it:
+    /// a kernel's panic says there why it resets its machine (`panic=-1`).
+    pub fn console_said(&self) -> Vec<u8> {
+        self.serial.said()
+    }
+
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
     pub fn recording(&self) -> bool {
         lock(&self.shared.recording).is_some()

@@ -7504,6 +7504,10 @@ revision before comparing a changed API/implementation.
   but its slowest round trip 105 to 115 ms at every count, each the 100 ms the probe
   bounds a wait by: the event did not come, where the port had the socket ready. On
   windows-2022 it stalled so often that the job's 20 minutes ran out on its first count.
+  Since 2026-11-01 the probe ends that way's count once its waits come to 10 s, the event
+  late or lost, and says so: beside 100 sockets on windows-2025 its rounds outlasted the
+  job's 15 minutes three times (CI 40961442817, 40964375764, 41281977635), and beside none
+  on windows-2022 (41284231274), its waits ending late, not timed out.
   The completion port alone was slowest at 8.1 ms (10,000 idle, windows-2025).
 
   | doorbell | windows-2022 | windows-2025 |
@@ -16216,74 +16220,6 @@ revision before comparing a changed API/implementation.
   to a time. `a_run_whose_ports_are_closed_holds_them_no_longer` (daemon.rs) holds the
   daemon to it, a missing arm caught.
 
-### M391. What a microVM past its budget gives back, on Linux, Windows and macOS (D151, D188)
-
-- **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`
-  failed on CI's x86_64 Linux (CI 40862958912) and on Fedora, 4 runs of 4 at d1deefd9:
-  its slice's `MemoryHigh` set a quarter GiB below what its microVM held, the give-back had
-  no answer, and the daemon said nothing of the budget for the rest of the run. Where does
-  the give-back stop? And on Windows, where a group shards keeps holds a run to its budget
-  (D183's slice 3) and no host directory is shared into a microVM yet (the platform parity
-  plan's step 6), does a run give back what it holds cold, and its VM process hold that much
-  less?
-- **Method.** Fedora (Intel Core i9-14900HX, 32 CPUs, Linux 6.19), 2026-10-29: the test
-  four times beside a sampler, each second, of the slice's `memory.current`, `memory.high`,
-  `memory.events` and `memory.stat`, and of each thread of its VM process, its wait channel,
-  state and fault counts (/proc). jupiter (AMD Ryzen AI Max+ 395, Windows 11 26200) and the
-  M5 Max (macOS 26.4.1): containers.rs
-  `what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, a joiner reading
-  512 MiB of its image's files, which a joiner reads through its guest's page cache
-  (D119), then its group's `memory.high` written a quarter GiB short of its VM process's
-  footprint; the guest's /proc/meminfo, and the joiner's cgroup's `memory.stat`, read after
-  the read.
-- **Found, Linux.** Once the budget was set, the slice held 704 MB against its 424 MiB for
-  the rest of the run, its `memory.events` `high` from 68 to 612, its anon and the VM
-  process's RssAnon unmoved. The virtio-balloon thread was in `__mem_cgroup_handle_over_high`
-  at every sample for 57 s, a minor fault every 2 s and no CPU tick; every vCPU halted, the
-  exec and vsock threads waiting on a futex. The device answers a report under guest
-  memory's lock (`memory::Access`), which every device's queue takes (queue.rs), and it
-  asked of each range whether the host held any of its pages by opening /proc/self/pagemap
-  and reading 8 bytes a page into a buffer made for it: memory taken while its slice was
-  past `memory.high`, so the kernel slept the thread 2 s at each return to user mode
-  (mm/memcontrol.c, `mem_cgroup_handle_over_high`, `MEMCG_MAX_HIGH_DELAY_JIFFIES`) with
-  the lock held. Every device waited on it, the give-back's exec never reached the guest,
-  and nothing came back: 4 runs of 4 failed.
-- **With the fix** (`platform::all_untouched`: pagemap opened once, a page of entries read
-  at a time into the stack, ending at the first page the host holds; the device joins its
-  ranges before it takes the lock): 4 runs of 4 passed. The slice was within its budget
-  10.0, 13.3 and 37.6 s after it was set in three; in the fourth the daemon said what it gave
-  back and the test ended 19 s after the budget, before the sampler saw it within. Its vCPUs
-  were still slept, one to four at a time, while the guest touched fresh memory for the
-  give-back's exec: the cost of a slice past its budget with no swap.
-- **Then, 3 runs of 19 failed otherwise.** Each give-back's exec ran past the daemon's 10 s
-  (`TAKE_TIMEOUT`) and was ended as its guest finished giving back, the slice within its
-  budget by then, so its answer was lost; the daemon, finding the microVM within its
-  budget, said nothing of the budget it had just met, its log's first-held line asking
-  that the microVM never have been told one or have given something back: the test waited
-  60 s for a word. The budget's word is now said after any give-back it asked for,
-  whatever that counted (`budget.rs`, `tell_room_now`): 12 runs of 12 passed, the slice
-  within its budget 1.7 to 25.2 s after it was set.
-- **Found, Windows and macOS.** A guest kept 130 to 132 MiB of the 512 MiB read in 4 of 10
-  first reads on jupiter and 368 to 375 MiB in 6: its own kernel reclaimed the rest as it
-  read (`pgsteal_direct` 99,185 to 99,218 pages, or 37,240 to 38,280, in the joiner's
-  cgroup, whose `memory.high` and `memory.max` were `max`, no global reclaim): the run's
-  hold, the memory plugged so far, which the read outran (D148). The test reads the file
-  again into what it has plugged by then: held after 1 or 2 reads in 4 runs of 4. Then, on
-  jupiter, its VM process held 642 to 651 MiB, 255 to 256 idle, and 261 to 266 MiB once the
-  group's word came (333 once, within its budget of 390); on the M5 Max 1,028 to 1,038 MiB,
-  253 idle, then 265 to 275, its guest keeping 384 to 386 MiB of the read after one (n = 2).
-  A joiner's read is given back at a group's budget on both, no host directory needed;
-  `RECLAIM` counted 107 to 130 MiB of it, the rest taken back as init held the run within
-  the room it was told (D188), once all of it.
-- **At its host's word** (`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, the
-  daemon told through `SHARDS_PRESSURE`, n = 10). After one read a joiner's guest held 128 to
-  188 MiB of it on jupiter and 128 to 130 on Fedora, 142 to 382 on the M5 Max: a reader's
-  page cache outgrows the run's hold only as its grower plugs more, and the grower plugs
-  only where it finds the run at or past its hold (`plug.rs`, `grow`), which the kernel's
-  reclaim of the cache keeps it from (D148). The microVM gave back all of it, and its VM
-  process was back to within 4.0 MiB of what it held idle 1.11 to 1.21 s after the word on
-  jupiter (n = 3), within 5.4 MiB 1.61 to 1.66 s after it on Fedora (n = 4), and within
-  14.5 MiB 1.90 to 2.03 s after it on the M5 Max (n = 3).
 ### M381. Whether a Linux host maps a GPU's host-visible memory where it chooses, by the descriptor Venus exports (D201)
 
 - **Question.** Venus's renderer on Linux exports each blob of host-visible memory as a
@@ -16543,3 +16479,513 @@ revision before comparing a changed API/implementation.
   ggml-org/llama.cpp#30544). Whether AMD's Windows driver gives them natively, and its
   speed natively, are unmeasured: llama.cpp's Windows build needs the Vulkan SDK, which
   jupiter lacks.
+
+### M391. What a microVM past its budget gives back, on Linux, Windows and macOS (D151, D188)
+
+- **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`
+  failed on CI's x86_64 Linux (CI 40862958912) and on Fedora, 4 runs of 4 at d1deefd9:
+  its slice's `MemoryHigh` set a quarter GiB below what its microVM held, the give-back had
+  no answer, and the daemon said nothing of the budget for the rest of the run. Where does
+  the give-back stop? And on Windows, where a group shards keeps holds a run to its budget
+  (D183's slice 3) and no host directory is shared into a microVM yet (the platform parity
+  plan's step 6), does a run give back what it holds cold, and its VM process hold that much
+  less?
+- **Method.** Fedora (Intel Core i9-14900HX, 32 CPUs, Linux 6.19), 2026-10-29: the test
+  four times beside a sampler, each second, of the slice's `memory.current`, `memory.high`,
+  `memory.events` and `memory.stat`, and of each thread of its VM process, its wait channel,
+  state and fault counts (/proc). jupiter (AMD Ryzen AI Max+ 395, Windows 11 26200) and the
+  M5 Max (macOS 26.4.1): containers.rs
+  `what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, a joiner reading
+  512 MiB of its image's files, which a joiner reads through its guest's page cache
+  (D119), then its group's `memory.high` written a quarter GiB short of its VM process's
+  footprint; the guest's /proc/meminfo, and the joiner's cgroup's `memory.stat`, read after
+  the read.
+- **Found, Linux.** Once the budget was set, the slice held 704 MB against its 424 MiB for
+  the rest of the run, its `memory.events` `high` from 68 to 612, its anon and the VM
+  process's RssAnon unmoved. The virtio-balloon thread was in `__mem_cgroup_handle_over_high`
+  at every sample for 57 s, a minor fault every 2 s and no CPU tick; every vCPU halted, the
+  exec and vsock threads waiting on a futex. The device answers a report under guest
+  memory's lock (`memory::Access`), which every device's queue takes (queue.rs), and it
+  asked of each range whether the host held any of its pages by opening /proc/self/pagemap
+  and reading 8 bytes a page into a buffer made for it: memory taken while its slice was
+  past `memory.high`, so the kernel slept the thread 2 s at each return to user mode
+  (mm/memcontrol.c, `mem_cgroup_handle_over_high`, `MEMCG_MAX_HIGH_DELAY_JIFFIES`) with
+  the lock held. Every device waited on it, the give-back's exec never reached the guest,
+  and nothing came back: 4 runs of 4 failed.
+- **With the fix** (`platform::all_untouched`: pagemap opened once, a page of entries read
+  at a time into the stack, ending at the first page the host holds; the device joins its
+  ranges before it takes the lock): 4 runs of 4 passed. The slice was within its budget
+  10.0, 13.3 and 37.6 s after it was set in three; in the fourth the daemon said what it gave
+  back and the test ended 19 s after the budget, before the sampler saw it within. Its vCPUs
+  were still slept, one to four at a time, while the guest touched fresh memory for the
+  give-back's exec: the cost of a slice past its budget with no swap.
+- **Then, 3 runs of 19 failed otherwise.** Each give-back's exec ran past the daemon's 10 s
+  (`TAKE_TIMEOUT`) and was ended as its guest finished giving back, the slice within its
+  budget by then, so its answer was lost; the daemon, finding the microVM within its
+  budget, said nothing of the budget it had just met, its log's first-held line asking
+  that the microVM never have been told one or have given something back: the test waited
+  60 s for a word. The budget's word is now said after any give-back it asked for,
+  whatever that counted (`budget.rs`, `tell_room_now`): 12 runs of 12 passed, the slice
+  within its budget 1.7 to 25.2 s after it was set.
+- **Found, Windows and macOS.** A guest kept 130 to 132 MiB of the 512 MiB read in 4 of 10
+  first reads on jupiter and 368 to 375 MiB in 6: its own kernel reclaimed the rest as it
+  read (`pgsteal_direct` 99,185 to 99,218 pages, or 37,240 to 38,280, in the joiner's
+  cgroup, whose `memory.high` and `memory.max` were `max`, no global reclaim): the run's
+  hold, the memory plugged so far, which the read outran (D148). Read again into what it has
+  plugged by then, it was held after 1 or 2 reads in 4 runs of 4 on jupiter, but CI's
+  windows-2025 kept 141 MiB after four (budget-e2e 40933671162): its grower plugs for what
+  its runs touch, never for what they read. The test now has its provider touch and free a
+  gigabyte first (testguest `alloc-free`), which leaves its microVM plugged and its hold
+  raised, and waits for what was freed to be given back (D151) before it measures idle: on
+  the M5 Max its guest then kept all 516 MiB of one read, its VM process 1,471 MiB against
+  253 idle and 287 once it gave back (2 of 2), and on jupiter it passed in a whole suite's
+  run. Before that, on
+  jupiter, its VM process held 642 to 651 MiB, 255 to 256 idle, and 261 to 266 MiB once the
+  group's word came (333 once, within its budget of 390); on the M5 Max 1,028 to 1,038 MiB,
+  253 idle, then 265 to 275, its guest keeping 384 to 386 MiB of the read after one (n = 2).
+  A joiner's read is given back at a group's budget on both, no host directory needed;
+  `RECLAIM` counted 107 to 130 MiB of it, the rest taken back as init held the run within
+  the room it was told (D188), once all of it.
+- **At its host's word** (`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, the
+  daemon told through `SHARDS_PRESSURE`, n = 10). After one read a joiner's guest held 128 to
+  188 MiB of it on jupiter and 128 to 130 on Fedora, 142 to 382 on the M5 Max: a reader's
+  page cache outgrows the run's hold only as its grower plugs more, and the grower plugs
+  only where it finds the run at or past its hold (`plug.rs`, `grow`), which the kernel's
+  reclaim of the cache keeps it from (D148); jupiter's kept 107 MiB of four reads once, under a
+  whole suite's load. Grown first, as the group's test is, the guest held all of one read and
+  gave back 514 MiB, its VM process half of that lighter 108 to 117 ms after the word on
+  jupiter (3 of 3) and 167 to 190 ms after it on the M5 Max (2 of 2). Once in 6 on Fedora it
+  gave back none of its files, asking only to unplug 896 MiB: a give-back takes the run's
+  inactive file pages alone (`reclaim_cold`), and the test, whose idle was measured as its
+  guest still gave back what it had touched, read the file a second time, which makes its
+  pages active. Measured idle once it gives back no more, and read once, its guest's pages
+  were inactive (527 MiB of 529 cached) and all 514 MiB given back: Fedora 4 of 4 with the
+  meminfo shown and 4 of 4 after (50 ms), jupiter 2 of 2 (110 to 165 ms), the M5 Max 2 of 2
+  (122 to 158 ms). Before, the microVM
+  gave back all it held, and its VM process was back to within 4.0 MiB of what it held idle
+  1.11 to 1.21 s after the word on jupiter (n = 3), within 5.4 MiB 1.61 to 1.66 s after it on
+  Fedora (n = 4), and within
+  14.5 MiB 1.90 to 2.03 s after it on the M5 Max (n = 3).
+
+### M392. A builder's guest out of memory short of the hold that wakes its grower (D133)
+
+- **Question.** g121-5e's build of docs/research/measurements/gpu-linux's Dockerfile (llama.cpp,
+  `cmake --build -j 8`, M384) was ended for its memory in its builder on jupiter, twice, with
+  about 2 GiB plugged of the 64 GiB it may have; `SHARDS_BUILD_MEMORY=16384` changed nothing,
+  and the GPU desktop's 32 jobs were ended too. Why did its builder plug no more?
+- **Method.** jupiter (AMD Ryzen AI Max+ 395, 32 CPUs, Windows 11 26200), 2026-10-29, win-pools
+  cf9484c8: the Dockerfile without its model's download, in a home of its own, its builder of
+  32 vCPUs. The grower made to say (for this alone) each ask and how its memory came, and
+  every 500 ms the build cgroup's `memory.current`, `memory.high` and `memory.events` and
+  the guest's free memory (sysinfo, less what it may still plug, D149); the kernel's report
+  of each process it ended, which the step's runner relays. Then the same with the fix;
+  Fedora (Intel Core i9-14900HX, 32 CPUs, KVM) with 32 jobs.
+- **Found.** Plugging kept up: 512 MiB came in 48 to 60 ms, its first block in 25 to 32,
+  and 1 GiB in 79 to 99 ms. After its second ask the builder had 2,010 MiB, the build held
+  at 1,829.5 MiB; it then grew at up to 458 MiB/s, and at 14.20 s held 1,804 MiB with 31 MiB
+  free; at 14.27 s the kernel ended a cc1plus, out of memory across the guest
+  (`constraint=CONSTRAINT_NONE`), and two more in 7 s, and the step failed. Its
+  `memory.events` `high` stayed at 34: the build never reached its hold, the one thing that
+  wakes its grower (`plug.rs`, `grow`), and no third ask came. What the build was not charged
+  for had grown from 85 MiB as the hold was set to 175 MiB: 98 MiB of free pages on its
+  CPUs' own lists (`free_pcp` 24,973 pages), which are not in MemFree and which no cgroup is
+  charged for, beside 72 MiB of slab; its 1,062 MiB of shmem, the build's packages as a
+  layer, nothing reclaims. With 4 GiB plugged the lists held 213 MiB as it ran out (54,571
+  pages). 4 runs of 4 failed this way, g121-5e's 2 and these 2.
+- **Why.** The kernel lets each CPU's list grow as that CPU frees, up to its share of an
+  eighth of its zone (mm/page_alloc.c, `zone_set_pageset_high_and_batch`,
+  `MIN_PERCPU_PAGELIST_HIGH_FRACTION`, `nr_pcp_high`, Linux 6.7 on, the pinned 6.18.48's
+  the same), and a compiler's process that ends leaves what it freed on the list of the CPU
+  it ended on, which with 8 jobs on 32 vCPUs then idles. The hold kept back 64 MiB and the
+  next plug's page structures, 95 MiB here, and nothing for the lists.
+- **With the fix** (the reserve keeps an eighth of what the guest has for its CPUs' lists):
+  2 runs of 2 passed, the step in 276 and 323 s, its grower asking at 1,540 to 1,572 MiB
+  with 243 to 305 MiB free and at 3,179 to 3,206 MiB with 548 to 595 free, to 8 GiB; 2 GiB
+  came in 183 to 207 ms, 4 GiB in 520 to 559 ms. On Fedora with 32 jobs: passed (1 of 1),
+  where without it 1 of 2 was ended (glslc, out of memory at 54 s).
+- **The test** (build.rs and build_windows.rs `a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`,
+  testguest's `alloc-par`: a quarter as many jobs as vCPUs holding 3 GiB in all, each 8 MiB
+  held a job of its own touching 16 MiB, freeing them and ending). Jobs alone did not find
+  it: the M5 Max's (18 vCPUs) and jupiter's lists held 310 to 354 MiB at most, and the
+  builder without the fix passed 9 runs of 9 on the M5 Max and 3 of 3 on jupiter, its build
+  reaching its hold as fast as it grew. Over a gigabyte nothing reclaims, as the llama.cpp
+  build's packages are, written first to a tmpfs of the step's own (as a layer of the
+  step before, it found the same, and wrote a gigabyte to the image store): without the
+  fix 3 runs of 3 failed on the M5 Max and 3 of 3 on jupiter, each out of memory; with it
+  3 of 3 passed on each, the lists holding 328 to 343 MiB at most on the M5 Max and 481 to
+  546 on jupiter (8 jobs), and 416 to 502 MiB on Fedora over the layer (3 of 3). init's
+  `a_build_reaches_its_hold_with_memory_free_whatever_its_cpus_keep` holds the reserve to
+  the llama.cpp run's numbers; it and `a_hold_counts_out_what_goes_as_it_is_unplugged`
+  fail without the fix.
+- **Consequence.** D133: the reserve beside a build's hold keeps the ceiling of its CPUs'
+  lists of free pages, an eighth of what the guest has, so that the build reaches its hold,
+  and wakes its grower, with that much still free. A run's hold (D148) is D133's and keeps
+  it too.
+
+### M393. A microVM's budget short of what it holds idle, under systemd-oomd (D188)
+
+- **Question.** containers.rs `a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end`
+  failed on Fedora 9 runs of 9, with M392's reserve and without it, where CI's ubuntu-24.04
+  passed it in all 11 runs at hand: twice "the command's microVM stopped before the command
+  ended", the daemon's ROOM and RECLAIM execs unanswered in 10 s, and otherwise its read past
+  300 s. Why?
+- **Method.** Fedora (Intel Core i9-14900HX, 32 CPUs, Linux 6.19, its systemd-oomd as
+  installed), 2026-10-29: the test once beside a sampler, every 250 ms, of its slice's
+  `memory.current`, `memory.high`, `memory.events`, `memory.pressure` and `memory.stat` and of
+  its user manager's `memory.pressure`; `journalctl --user`, `oomctl`, `findmnt /tmp`.
+- **Found.** From its start the microVM's slice held 391 MiB against its budget of 384: 258
+  MiB anonymous and 118 to 126 MiB of shared memory, all of it mapped (`anon`, `shmem`,
+  `file_mapped`), which nothing reclaims with no swap: the files its VM process maps from
+  its home, which the tests keep in /tmp, a tmpfs on Fedora, and a microVM of 32 vCPUs, sized
+  by them (M183). Its file pages stayed at 0 to 2 MiB: the window's file never came, and the
+  read made no headway. `memory.events` `high` rose about 700 a second for 156 s, the slice's
+  memory pressure (`some` avg10) to 82% and its user manager's to 28%, until systemd-oomd,
+  which watches the user's manager (`oomctl`: Memory Pressure Limit 80%, 20 s), ended its
+  scope: "shards-1906140-0.scope: systemd-oomd killed 4 process(es) in this unit". On CI's
+  4-CPU runners, whose /tmp is a disk's, the same budget was past what the microVM held.
+  The FUSE budget test met the same before and takes its budget from what its microVM holds;
+  this one took 384 MiB.
+- **Then, its budget from what it holds idle** (its slice's `memory.current` once it answers,
+  128 MiB past it, short of the 512 MiB file): 3 runs of 3 failed still, oomd ending each 77
+  to 81 s in. The read took its slice 127 MiB past its budget, "holds 276 MiB its host may
+  take back": its volume's file is the test's, in /tmp too, a tmpfs's, whose pages are the
+  file itself, shared memory no reclaim takes without swap, and charged to the slice as its
+  guest's reads faulted them in. A budget short of such a file is never met.
+- **On a disk's directory** (TMPDIR a directory on Fedora's btrfs): 3 runs of 3 passed, in 47
+  to 76 s, no scope ended. The test now says SKIP where its volume's directory is a tmpfs
+  (statfs(2), TMPFS_MAGIC), as its budget's give-back is of files a disk keeps, and takes its
+  budget from what its microVM holds idle.
+- **The FUSE give-back test too** (`a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`,
+  TMPDIR on a disk): systemd-oomd ended it in 1 run of 2 on Fedora, whose every user slice
+  oomd watches (80% for 20 s): "memory pressure for .../shardsbudget2237959.slice being
+  95.75% > 80.00% for > 20s with reclaim activity". Its microVM, booted small, kept a
+  quarter GiB of the half GiB it read (D148: its grower plugs for what its runs touch, not
+  for what they read), so that its budget, a quarter GiB short of what it held, 296 MiB, was
+  short of the 307 MiB a microVM of 32 vCPUs holds with nothing left to give back: it gave
+  back 112 MiB in 3 s and stayed 135 MiB past its budget for 35 s. With the slice's oomd
+  watch off, two runs kept 328 and 870 MiB of the read and met budgets of 379 and 924 MiB in
+  seconds, their guests' free memory whole blocks the guest reported (buddyinfo). Grown
+  first, a GiB touched and freed, its guest kept all of the read: 4 runs of 4 passed with
+  oomd watching, in 61 to 75 s. CI's read of a MiB in 26.6 s, after its runner's own word
+  had it give back 479 MiB and ask to unplug 512 (CI 40961442989), did not come back on
+  Fedora with the same word written to its daemon (`SHARDS_PRESSURE`): 473 to 486 MiB given
+  back, 512 asked to unplug, the files read again in 0.87 to 0.92 s.
+- **Consequence.** A microVM whose budget is short of what nothing may reclaim, its anonymous
+  memory, a tmpfs's files it maps, is held throttled for as long as it runs, and where
+  systemd-oomd watches the user's manager, as Fedora's does, it is ended 20 s on. The daemon
+  says the budget short ("its microVM's budget is short by"), then "VM ... ended before its
+  command did", and not who ended it.
+
+### M411. An open of a name being removed on NTFS, refused as access denied
+
+- **Question.** containers.rs `a_logs_history_is_what_its_user_set` failed once on jupiter
+  in a full run of the suite (2026-10-29, at 265f5cde), its `logs` right after its run
+  refused: "its log: Access is denied. (os error 5)", where alone it passed 8 runs of 8. A
+  log's oldest segment goes as the daemon makes a new one (segments.rs `new_segment`),
+  removed with POSIX semantics (`platform::unlink_in`, FileDispositionInfoEx), and a reader
+  lists a segment and opens it. Does such an open see the name as gone, as on Unix?
+- **What Windows says.** "When FILE_DISPOSITION_POSIX_SEMANTICS is set, the link is removed
+  from the visible namespace as soon as the POSIX delete handle has been closed"
+  (FILE_DISPOSITION_INFORMATION_EX, Microsoft Learn): not as the delete is asked.
+- **Method.** windows_files.rs `a_name_being_removed_is_not_found`: one thread makes and
+  removes a file 20,000 times (`append_new_in`, `unlink_in`) while another opens it
+  (`open_in`) until it is done, counting opens that opened, found nothing, or were refused.
+  jupiter (Windows 11 26200, 32 CPUs), at 652aae3b and with each fix below, 3 to 5 runs
+  each; the refusals' NTSTATUS read through a probe of `nt_error` on jupiter alone.
+- **Numbers.** At 652aae3b: 10,718, 12,293 and 20,569 opens refused "Access is denied" of
+  about 230,000 a run, beside 37,109 to 39,187 opened. With STATUS_DELETE_PENDING (an open
+  between the delete asked and its handle closed) read as not found: 5, 7 and 8 refused, and
+  the probe found each of those left (3, 9 and 6 in three more runs) STATUS_FILE_DELETED
+  (0xC0000123, an open as the file goes); RtlNtStatusToDosError makes both
+  ERROR_ACCESS_DENIED. With both read as not found, as the share server's errno already
+  reads them (ENOENT): none refused in 5 runs of 5, and the platform's tests 29/29.
+- **Decided.** `nt_open` answers an open (FILE_OPEN) of a name being removed as not found
+  (ERROR_FILE_NOT_FOUND), as unlink(2) leaves none: the log reader then takes the segment as
+  gone, as it does one removed between its listing and its open.
+
+### M412. A DAX window's range of a host file's own section on Windows (D197's slice 4, D189)
+
+- **Question.** A share another server serves maps sections that reach past every range it
+  answers for (M343); a section of a file itself reaches no further than the file, where a
+  window's range is 2 MiB (FUSE_DAX_SZ). Before shards' own server answers a mapping with
+  one: can a range's placeholder take a view of a file that ends within it, what do the view
+  and the file then say of each other, and what does a mapped section keep the server from
+  doing for its guest?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m412.rs` (`cargo run --release
+  --bin m412`), on jupiter (Windows 11 26200), 2026-10-29: a file of 1 MiB and 100 bytes, a
+  section of it as long as it (CreateFileMappingW, sizes 0), a 2 MiB placeholder
+  (VirtualAlloc2, MEM_RESERVE_PLACEHOLDER) split and filled (MapViewOfFile3,
+  MEM_REPLACE_PLACEHOLDER), another handle of the file to write and read through, and each
+  operation's answer; 2 runs, alike.
+- **Found.**
+  - A placeholder splits at a page that is no multiple of the allocation granularity
+    (1,052,672 bytes, 1028 KiB): ok.
+  - A view asked as long as that split, a page past the section's bytes, is refused,
+    "Access is denied"; asked as long as the file, 1,048,676 bytes, it fills the
+    page-rounded placeholder. Committed memory takes the placeholder's rest.
+  - The view reads the file, and zeros past its end in its last page. A store there reaches
+    the file only if the file then grows over it (0xAB read back after a growth).
+  - A view and the file's cached reads and writes through another handle see each other: a
+    WriteFile's byte read through the view, a store through the view read by ReadFile.
+  - Cut short while a view is mapped: refused, ERROR_USER_MAPPED_FILE (1224, "The requested
+    operation cannot be performed on a file with a user-mapped section open"); likewise with
+    the section's handle held and no view; with neither, cut. Grown while a view is mapped:
+    grown.
+  - With a view mapped and its section's handle closed: a hole punched
+    (FSCTL_SET_ZERO_DATA), the file renamed, and removed with POSIX semantics, its name gone
+    at once and the view reading on.
+  - A section to write of a handle opened to read alone: refused, access denied; to read
+    alone: made.
+- **So, for slice 4**: a range's view is as long as the file's bytes in it, the rest of the
+  range left to the guest's next access; the VMM keeps views alone, no section's handle; and
+  a guest's cut of a file it maps needs its microVM's views of that file let go first.
+
+### M413. A DAX window's head on WHP, committed as its guest touches it (D189, D197's slice 4)
+
+- **Question.** containers.rs `a_groups_job_holds_its_microvms_to_its_memory_max` failed 2
+  runs of 2 on jupiter once shards' own shares had DAX windows on Windows, as long as the
+  host's memory by default (D189), and passed 2 of 2 with `SHARDS_SHARE_WINDOW_MIB=0`: its
+  run within a 1 GiB group's budget ended before its VM was ready, status 125. A window's
+  head, the guest's page structures for it, is a 64th of its length and more
+  (`head::window_head_len`), memory of the VM's own (`Head::new`), which Windows committed
+  whole as it reserved it (`platform::reserve_ram`): about 2 GiB for jupiter's window,
+  charged at once, past the group's job, where Unix gives its pages as the guest touches
+  them, 32 KiB of a 2 MiB block as it first maps a range (kernel patch 0011). Can a head be
+  committed as its guest touches it, under WHP?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m341.rs`, its question 7
+  (`commit_as_touched`), `cargo run --release --bin m341`, on jupiter (Windows 11 26200),
+  2026-10-29, 3 runs: a 2 MiB reservation (VirtualAlloc, MEM_RESERVE alone) mapped at stage
+  2 (WHvMapGpaRange) at once, and the guest's loads and stores there before and after its
+  64 KiB blocks are committed (VirtualAlloc, MEM_COMMIT), decommitted (MEM_DECOMMIT) and
+  committed again.
+- **Found**, alike in every run:
+  - The stage-2 map over memory only reserved is taken.
+  - The guest's load there exits to the VMM, a memory access at its address, until the
+    host commits its block; then it reads the host's store, with no further call.
+  - The block after those committed still exits. The guest's store lands in the host's
+    memory.
+  - Decommitted, a block's load exits again; committed again, it reads zeros.
+  - Committing a 64 KiB block: n=16 p50=0.70 p90=1.90 p99=4.90 max=4.90 µs; p50=1.20
+    p90=3.30 p99=5.90 max=5.90; p50=0.80 p90=1.50 p99=5.70 max=5.70. A load's round trip
+    through its exit: 23.4 to 49.9 µs, where a committed load's took 17.0 to 24.2.
+  - CI's runners answered alike, every step, the reservation readable and writable or
+    inaccessible (whp run 40961442817 at 4b6e135f): windows-2022, a block's commit n=16
+    p50=0.80 p90=1.10 p99=5.30 max=5.30 and p50=0.90 p90=1.20 p99=4.20 max=4.20 µs, a load
+    through its exit 54.1 to 68.2 µs; windows-2025, p50=1.20 p90=1.60 p99=7.40 max=7.40 and
+    p50=1.20 p90=1.40 p99=6.90 max=6.90, a load through its exit 95.1 to 147.2 µs.
+- **Decided.** Where the host charges memory as it is reserved
+  (`platform::CHARGED_AS_RESERVED`, Windows), a head is reserved alone and each of its 2
+  MiB blocks committed as its guest first touches one (`Head::commit_at`, through the
+  control device's memory fault, `WindowHeads::memory_fault`): the block a save keeps or
+  skips whole, and the page structures of 64 of the window's ranges, so that a head costs
+  what its guest maps, as on Unix. A save reads its committed blocks alone, a restore
+  commits only the blocks it reads back, and a map-back gives a zero block back
+  uncommitted (`a_heads_blocks_are_committed_as_its_guest_touches_them`). A writable
+  layer's head (D190) stays committed whole: its VM writes it before its guest does
+  (`Layer::boot`), and none of its faults would be answered. With window heads so,
+  `a_groups_job_holds_its_microvms_to_its_memory_max` passed 3 runs of 3 on jupiter, the
+  windows on by default. A reservation inaccessible (PAGE_NOACCESS, as
+  `platform::reserve_withheld` makes one) answered as one readable and writable did, in
+  every step above.
+
+### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
+
+- **Question.** What does a working set mapped ahead buy a Windows restore, as Linux's and
+  macOS's restores have one (D29)? And how should a WHP restore make the copies of the pages
+  its guest wrote, and map the rest: copies made from the VM process or WHP's populate for
+  writing, a call a run of pages or one for them all?
+- **Method.** `benches/restore.rs --working-set both`: each restore with the working set the
+  first restore recorded mapped ahead, and without it, the arms interleaved on one snapshot,
+  n=100 each, 1 vCPU, 256 MiB. The VM logs at info what mapping ahead took (rows
+  `cold_copy_ahead` and `cold_map_ahead`, its time and its runs of consecutive pages), on
+  CI's windows-2025 (whp-restore.yml). And `hv::whp`
+  `a_write_populate_copies_a_views_pages_in_the_kernel` on jupiter (AMD Ryzen AI Max+ 395,
+  Windows 11 26200), 20 runs on
+  2026-10-30: a 16 MiB copy-on-write view of a file mapped as a partition's RAM; 512 single
+  pages populated for writing in one call and 512 for reading in one call; then 512 more for
+  reading, a call each, and 512 copied from the process, a page's first word written as it
+  holds it.
+- **Found, copies from the process and a call a run.**
+  - 1b4cc6be (CI 41152847498, AMD EPYC 7763, Windows 10.0.26100, a working set of 991 pages,
+    322 of them written), with it against without, p50 / p90 / p99 / max:
+    - warm_request: 8.3 / 8.4 / 8.4 / 8.4 ms against 121.2 / 133.2 / 169.0 / 204.0.
+    - cold_restore: 88.7 / 95.7 / 102.8 / 103.9 against 133.3 / 144.8 / 165.1 / 184.8.
+    - cold_spawn_exit: 141.1 / 150.0 / 156.5 / 167.5 against 283.6 / 295.4 / 314.5 / 322.3.
+  - Its setup, 15f4ea19 (CI 41167805556 and 41167803615, Intel Xeon Platinum 8573C, working
+    sets of 1011 and 999 pages): cold_entry, from the VM process's start to its first vCPU's
+    entry, was 69.3 and 48.3 ms at p50 against 11.6 and 11.2 without. Of it, the copies took
+    26.4 ms over 202 runs and 18.0 over 195, and the populate 31.2 ms over 507 runs and 19.1
+    over 501.
+- **Found, each way on jupiter** (n=20, 512 pages each, ms, p50 / p90 / p99 / max):
+  - Populated for writing in one call: 3.68 / 4.36 / 4.87 / 4.87.
+  - For reading in one call: 1.33 / 1.59 / 1.80 / 1.80.
+  - For reading, a call each: 2.33 / 2.61 / 2.65 / 2.65.
+  - Copied from the process: 2.58 / 3.05 / 3.12 / 3.12.
+  - Every page populated for writing was a private copy holding the file's bytes, every one
+    for reading the file's own, no other page was mapped, and the file was as it was.
+  - So one write populate costs what a copy and a populate after it did (3.95 ms at p50 with
+    the populate in one call, 4.78 a call each). A call's own cost: 1.96 µs, 1.00 ms more over
+    511 more calls.
+  - A single run before, beside two builds of the bench and the tests, measured 6.3 ms
+    written and 12.1 copied; no run of the 20 came near either.
+- **Found, two calls** (54f7c0fb, CI 41176481995 and 41176486907, AMD EPYC 7763, Windows
+  10.0.26100.33650, working sets of 999 and 959 pages, 325 and 308 written), with it against
+  without, p50 / p90 / p99 / max:
+  - cold_restore: 84.6 / 91.1 / 96.8 / 100.2 ms against 129.7 / 137.6 / 147.5 / 161.6; and
+    78.1 / 83.0 / 104.9 / 106.8 against 114.4 / 126.4 / 177.8 / 204.2.
+  - cold_spawn_exit: 141.2 / 147.3 / 156.0 / 169.7 against 281.0 / 289.9 / 302.0 / 309.6; and
+    134.4 / 140.8 / 162.6 / 164.2 against 277.0 / 286.4 / 327.2 / 357.3.
+  - warm_request: 7.96 / 7.98 / 8.01 / 8.02 against 117.4 / 125.4 / 162.1 / 165.1; and 12.26 /
+    12.28 / 12.32 / 12.49 against 101.7 / 113.5 / 136.2 / 234.7.
+  - cold_entry: 76.7 and 66.3 ms at p50 against 12.6 and 12.5 without. The two calls took
+    64.2 and 53.8 ms, of which the written pages' took 25.3 and 21.5: 50 to 58 µs a page read
+    and 70 to 78 written.
+  - Against 1b4cc6be's on the same CPU, about the same. On CI's runners, VMs whose WHP runs
+    nested (M308), a populate's cost is its pages', not its calls'.
+- **Decided.** A Windows restore records its working set and maps it ahead by default, as
+  Linux's and macOS's do: a cold restore 1.5 times as fast, its start to exit twice as fast,
+  a warm one 8 to 15 times as fast, for 54 to 64 ms more of cold setup on CI. It maps ahead in
+  two calls, written pages for writing and the rest for reading: one mechanism where there
+  were two (Windows' `populate_writable` is gone), at what the copies and the calls cost.
+
+### M416. A budget's give-back with no answer, and a budget past what a microVM gives back (D188, D151)
+
+- **Question.** containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` failed
+  on CI's x86_64 Linux in 3 of the 6 runs of win-pools from 4b6e135f to 15f4ea19 (CI
+  40961442989, 41004323062, 41167803629). Why, each time?
+- **Method.** The daemon's log each failing job printed, and mm/memcontrol.c (Linux 6.19):
+  memory.high's throttle and `memory.reclaim`. Then the test on Fedora (Intel Core
+  i9-14900HX, 32 CPUs, Linux 6.19.10, its other users' work at a load of 15 to 33), 2026-10-30,
+  in four batches as the daemon and the test changed.
+- **Found, CI.**
+  - 41167803629: with its budget set a quarter GiB short of the 824 MiB its microVM held, its
+    give-back had no answer within the daemon's 10 s (`TAKE_TIMEOUT`) and was ended. The
+    daemon's word said its budget was short by 26 MiB and 0 MiB given back, as its microVM held
+    514 MiB, and a moment later 454 MiB with room again: it had given back 310 MiB and more,
+    its answer lost.
+  - 41004323062 and 40961442989: its host's own pressure had it give back 365 and 479 MiB of
+    what it read before its budget came, so a budget a quarter GiB short of the 429 and 289 MiB
+    it then held was short of what it held with nothing to give back. It gave back 127 and 7
+    MiB, stayed short by 151 and 247 MiB, held within the least room a run goes on in, and its
+    read of a GiB after took 26.6 s for its first file of 1 MiB, past the test's minute.
+  - Past memory.high, the host sleeps each of a cgroup's processes as it returns to user mode
+    (a vCPU before each entry into its guest), overage² seconds for each page charged to it
+    and at most 2 s (`mem_cgroup_handle_over_high`, `calculate_high_delay`): 0.2 s a page at
+    45% past it. A kill ends a guest's `memory.reclaim` (`memory_reclaim`, at a pending signal).
+- **Decided.** Where a give-back its budget asked for has no answer, the budget's word says
+  what its host holds less of the microVM, counted as the word counts what it holds
+  (`budget.rs`, `held_now`): "past 0 warm VMs ended and N MiB its host holds less of it as it
+  gave back what it held cold, with no answer". The deadline stays. A group's give-backs are
+  asked in turn (groups.rs), and with no deadline one that never answered would keep the rest
+  waiting, as a pass that waited on each in turn once did (M308). The test raises a budget
+  that leaves its microVM short past all it held cold before its read of a GiB, and reads
+  once the daemon's last word of the budget is no shortage: the daemon says a budget has room
+  again once, and a microVM that went on giving back past its answer may have had it said
+  before the raise.
+- **Found, Fedora.** Every user slice there is watched by systemd-oomd, which ends one held
+  past 80% of memory pressure for 20 s (`/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf`).
+  - With no deadline anywhere and the test's first raise, which waited for a word said before
+    it: 6 runs of 8 passed. The 2 failures were the test's wait.
+  - With no deadline on the budget's give-back nor the host's pressure's: 3 of 7 passed. oomd
+    ended 3 microVMs in their give-back, and in 1 the gigabyte touched and freed first was not
+    back within a minute.
+  - With the deadline and the word above: 0 of 4. No budget word came within a minute.
+  - With init reclaiming before it forks a give-back's child: 0 of 2. Still no answer in 10 s,
+    and oomd ended both. That change was not kept.
+  - So, under that load, a microVM a quarter GiB past its budget answered nothing for a
+    minute, whatever the daemon did. Its VM process's own threads are slept as they allocate,
+    as M391 found its balloon thread.
+  - Open: what of the path from the daemon to a guest's give-back, and of the give-back
+    itself, allocates under a budget.
+
+### M417. What a guest's kernel writes to a console told to be quiet, as it panics
+
+- **Question.** A microVM or a builder whose guest resets said only "guest requested a reset":
+  its console is no one's (`--no-console`, every microVM and builder the daemon runs), so
+  what its kernel wrote there of why went nowhere (CI 41240176793's x86_64 Linux, build.rs
+  `a_builders_memory_is_plugged_as_its_build_needs_it`). How much does a kernel write there
+  as it panics, told to be quiet as `--no-console` tells it (`vm::kernel_cmdline`), for the
+  VM process to keep what says why?
+- **Method.** The M5 Max (macOS 26.4.1, Hypervisor.framework), 2026-10-31: shards' pinned
+  kernel (6.18.48, arm64, `Image-6.18.48-aarch64-e39058b2b627`) booted with no root, `shards
+  run --kernel … --memory 256 --cmdline "console=ttyS0 panic=-1 quiet"`, its console's
+  bytes counted from the VM process's stdout; and again without `quiet`.
+- **Found.** Quiet, 1,129 bytes in all: the errors before its panic (the root device it
+  could not open, the file systems it knows), then 858 bytes from `Kernel panic - not
+  syncing: VFS: Unable to mount root fs on unknown-block(0,0)` to its reset (the panic's
+  line, its CPU, the hardware's name, a call trace of 11 frames, the kernel's offset, its
+  CPU features, its memory limit). Not quiet, 14,232 bytes, its whole boot. A panic's own
+  lines reach a quiet console whole, as the kernel makes its console verbose before it says
+  why it panics (kernel/panic.c, `console_verbose()` before `pr_emerg("Kernel panic - not
+  syncing: …")`).
+- **Decided.** The VM process keeps the last page its guest's console wrote (4 KiB,
+  devices::serial `said`), which holds this panic and its errors with room for a longer
+  call trace, and says its whole lines with the reset of a guest whose console no one read,
+  each other character a terminal acts on escaped; each reset says which it was as it
+  comes (a triple fault, a hypervisor's reset or crash event, PSCI's SYSTEM_RESET, WHP's
+  unrecoverable exception, the keyboard controller's reset Linux reboots by), as a triple
+  fault writes nothing. boot.rs `a_reset_with_no_console_says_its_guests_panic` holds it so.
+
+### M418. How long kiln's headroom guard freezes a run on jupiter
+
+- **Question.** The restore bench's runs on jupiter (M415's arms with and without the working
+  set, D196) sat suspended for hours: a bench build started 2026-10-31 at 14:05 PDT timed
+  out unbuilt by 18:45, its compilers' threads `Wait/Suspended` whenever looked at. kiln's
+  headroom guard on jupiter (`kiln.exe headroom-guard`) suspends the processes of kiln's
+  runs while its "kiln server" probe answers past its second (`kiln.log`'s `headroom
+  event=… CPU cut to … cores`), and holds them to a learned budget between
+  (`headroom/learned.json`, `cpu_knee`: unsafe at 0.0148 cores, a budget of 0.008 to
+  0.031). How long is a run frozen at a time, and how long does it run between, so that a
+  measurement taken under it can tell a sample it froze across from one it did not?
+- **Method.** `docs/research/measurements/kiln-guard/ticks.ps1`, as a kiln run on jupiter
+  (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200) beside the bench's build, 2026-11-01
+  05:00:38 to 05:03:40 UTC: a thread sleeping a millisecond at a time (Thread.Sleep, the
+  system's default timer resolution) for three minutes, each gap between its wakings
+  counted.
+- **Found.** Of 181.7 s, 177.8 s frozen: 258 wakings, at p50 15.44 ms and p90 15.78 ms
+  apart (the timer's 15.6 ms resolution), one gap of 51 ms, and 8 freezes, of 1,471 ms, then
+  29,059 ms and six of 24,260 to 24,971 ms, about every 25 s, the run running half a second
+  or less between them. They do not follow the guard's log: it said its probe was out past
+  its second at 05:00:57, 05:01:52, 05:02:47 and 05:03:35, back to calm 8 to 18 s after
+  each, some cutting kiln's CPU to 0.0 or 0.1 cores, but the freeze from 05:01:11 ran 24.6 s
+  through the calm from 05:01:10 to 05:01:52, and each began about 25 s after the one before
+  whatever the log said. So the log does not say when a run is frozen, and no freeze was
+  shorter than 1.4 s, where a running sleeper's longest gap was 51 ms.
+- **Decided.** A benchmark's process watches for its own freezes: a ticker thread sleeping
+  a millisecond at a time records each gap between its ticks past 250 ms, above every gap
+  it ran through here and below every freeze, and a sample taken across one is taken again,
+  counted in the report (`frozen_retaken`; support `unfrozen`); the restore bench takes each
+  of its samples so, its working set set aside again with a sample that runs without one.
+  On a host no guard freezes, none is taken again.
+
+
+### M419. Stops beside a gigabyte build (D27's stop, D195's daemon on Windows)
+
+- **Question.** Windows CI gave up on stops, its daemon saying "no end heard 2s after its
+  microVM was killed: its VM process runs on", each time as `an_image_of_gigabytes_boots`
+  ran beside them (9fdbed51's exec test on windows-2025, twice; the cp test on
+  windows-2022 at 3b1e42af, CI 41277401058). A stop of a `sleep`, which ignores SIGTERM as a
+  container's first process does, waits its 10 s of grace, sends SIGKILL and waits 10 s
+  more (`KILL_WAIT`, moby daemon/kill.go's), then kills the VM process and waits 2 s
+  (`LAST_WAIT`). How often does a stop give up beside that build, and does its VM process
+  end late or never, its pages resident or trimmed?
+- **Method.** containers.rs `stops_beside_a_gigabyte_build` (ignored;
+  docs/research/measurements/stop-under-io/run.sh, and on CI's Windows runners budget-e2e's
+  `windows:containers ignored:stops_beside_a_gigabyte_build`): four threads each start a
+  run of `sleep` and stop it, 10 times each with nothing beside them, then for as long as
+  that test's build goes on beside them, its 2 GiB file written, built into an image and
+  read by a run; and eight runs idle from before the build, as the suite's are beside it,
+  are stopped together 5 s into that read, where each give-up on CI came some 6 s before
+  the test ended. Each way's stops as n, p50, p90, p99 and max (nearest rank); each that
+  heard no end with what it said, its VM process's CPU time and resident memory as it gave
+  up, and how long the process outlived it.
+- **Found, the M5 Max** (Apple M5 Max, macOS 26.4.1, 6b17d663 and the test, 2 rounds alone):
+  alone, n 8, p50 10,026.1 ms, max 10,048.9; beside the build (270 s), n 100, p50 10,086.3,
+  p90 10,406.2, p99 10,877.3, max 10,885.3; none gave up.
+- **Found, CI's Windows runners** (ade1ed09, budget-e2e 41288094847; the four threads
+  alone): windows-2025 (windows-2025-vs2026), alone n 40, p50 10,031.7 ms, p99 10,072.6, max
+  10,072.6; beside the build (125.9 s) n 23, p50 10,043.4, p90 10,090.4, max 10,650.6.
+  windows-2022, alone n 40, p50 10,025.7, max 10,094.0; beside the build (107.4 s) n 26, p50
+  10,035.1, p90 10,611.8, max 10,847.0. None gave up: a run just started stops beside the
+  build as it does alone. So the measurement now stops runs idle from before the build
+  too (Method).

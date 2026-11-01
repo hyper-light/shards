@@ -57,6 +57,38 @@ fn boots_to_root_mount_without_a_root_device() {
     );
 }
 
+/// A guest whose console no one reads says, as it resets, what its kernel wrote there last:
+/// the VM process reports its panic with its reset.
+#[test]
+fn a_reset_with_no_console_says_its_guests_panic() {
+    if cannot_run_vms() {
+        return;
+    }
+    let r = vm_run(
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--memory",
+            "256",
+            "--no-console",
+            "--cmdline",
+            "console=ttyS0 panic=-1",
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(r.status, Some(EXIT_RESET), "{r}");
+    assert!(
+        r.stderr
+            .contains("guest requested a reset, its console's last lines:\n"),
+        "{r}"
+    );
+    assert!(
+        r.stderr
+            .contains("Kernel panic - not syncing: VFS: Unable to mount root fs"),
+        "{r}"
+    );
+}
+
 /// A DAX window's page structures are its head's, not its guest's memory, and its linear
 /// map is in blocks (D189, shards' kernel patches 0008 and 0010, PM M300): a guest with a
 /// 4 GiB window has as much memory free as one with none, but for the spread of boots,

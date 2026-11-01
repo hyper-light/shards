@@ -19,7 +19,11 @@
 //!   range just mapped costs beside its next one and beside a load from its RAM;
 //! - what the same replace costs with the stage-2 mapping left standing, views swapped
 //!   under it, and with the range populated at stage 2 after each swap (WHvAdviseGpaRange);
-//! - whether a window may be mapped at stage 2 over its placeholders, before any view.
+//! - whether a window may be mapped at stage 2 over its placeholders, before any view;
+//! - whether memory only reserved may be mapped at stage 2 and committed as its guest first
+//!   touches it, a block at a time, as a DAX window's head is to be (PM M413, D197's slice
+//!   4): the guest's load there exiting until the host commits its block, then reading it
+//!   with no further call; and what a block decommitted again does.
 
 // Windows' constants, matched by their own names.
 #![allow(non_upper_case_globals)]
@@ -32,7 +36,7 @@ use whp_run::{Aligned, Api, bind, check, reg64, segment, summary};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Hypervisor::*;
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEM_COMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
+    CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
     MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
     MapViewOfFile3, PAGE_NOACCESS, PAGE_READWRITE, UnmapViewOfFile, UnmapViewOfFile2, VirtualAlloc,
     VirtualAlloc2, VirtualFree,
@@ -656,6 +660,73 @@ fn map_over_placeholder(
     Ok(())
 }
 
+/// Question 7 (PM M413): memory only reserved (VirtualAlloc, MEM_RESERVE), mapped at stage
+/// 2 at once, its blocks committed as the guest first touches them, as a DAX window's head
+/// is to be: what the guest's loads meet before and after a block is committed, what its
+/// store there makes, a block decommitted again, and what committing a block costs.
+fn commit_as_touched(guest: &mut Guest<'_>, api: &Api, protect: u32, at: u64) -> Result<(), String> {
+    const BLOCK: usize = 64 << 10;
+    println!("reserved as {protect:#x}:");
+    // SAFETY: a fresh reservation of a range of this process's, released below.
+    let host = unsafe { VirtualAlloc(std::ptr::null(), RANGE, MEM_RESERVE, protect) }.cast::<u8>();
+    if host.is_null() {
+        return Err(last_error("VirtualAlloc reserve"));
+    }
+    const AT: u64 = 0;
+    let at_gpa = at + AT;
+    // SAFETY: the reservation above, kept until it is unmapped below.
+    let mapped = check("WHvMapGpaRange over reserved memory", unsafe {
+        (api.map)(
+            guest.partition,
+            host.cast(),
+            at_gpa,
+            RANGE as u64,
+            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute,
+        )
+    });
+    println!("stage-2 map over reserved memory: {mapped:?}");
+    if mapped.is_ok() {
+        let seen = guest.load(at_gpa)?;
+        print_load("reserved, uncommitted", &seen, &[], 0);
+        let mut commits = Vec::new();
+        for block in 0..16 {
+            let t = Instant::now();
+            // SAFETY: a block of the reservation above, committed.
+            let made = unsafe { VirtualAlloc(host.add(block * BLOCK).cast(), BLOCK, MEM_COMMIT, PAGE_READWRITE) };
+            commits.push(t.elapsed());
+            if made.is_null() {
+                return Err(last_error("VirtualAlloc commit"));
+            }
+        }
+        println!("commit a 64 KiB block: {}", summary(&mut commits));
+        // SAFETY: an 8-aligned offset within the committed blocks.
+        unsafe { std::ptr::write_volatile(host.cast::<u64>(), 0x5151_5151_5151_5151) };
+        let seen = guest.load(at_gpa)?;
+        print_load("committed, the host's store", &seen, &[], 0x5151_5151_5151_5151);
+        let seen = guest.load(at_gpa + 16 * BLOCK as u64)?;
+        print_load("the block after them, uncommitted", &seen, &[], 0);
+        let stored = guest.ask(STORE, at_gpa + 8, 0x7272_7272_7272_7272)?;
+        // SAFETY: as above.
+        let landed = unsafe { std::ptr::read_volatile(host.add(8).cast::<u64>()) };
+        println!("the guest's store: faults={} the host reads {landed:#x}", stored.faults);
+        // SAFETY: the first block, decommitted.
+        let freed = unsafe { VirtualFree(host.cast(), BLOCK, MEM_DECOMMIT) };
+        println!("first block decommitted: {}", if freed == 0 { last_error("VirtualFree") } else { "ok".into() });
+        let seen = guest.load(at_gpa)?;
+        print_load("decommitted", &seen, &[], 0);
+        // SAFETY: as above, committed again.
+        let made = unsafe { VirtualAlloc(host.cast(), BLOCK, MEM_COMMIT, PAGE_READWRITE) };
+        println!("committed again: {}", if made.is_null() { last_error("VirtualAlloc") } else { "ok".into() });
+        let seen = guest.load(at_gpa)?;
+        print_load("committed again", &seen, &[], 0);
+        // SAFETY: the mapping made above.
+        let _ = unsafe { (api.unmap)(guest.partition, at_gpa, RANGE as u64) };
+    }
+    // SAFETY: the reservation above, which nothing maps any more.
+    unsafe { VirtualFree(host.cast(), 0, MEM_RELEASE) };
+    Ok(())
+}
+
 fn partition(api: &Api) -> Result<(WHV_PARTITION_HANDLE, *mut u8), String> {
     let mut partition: WHV_PARTITION_HANDLE = 0;
     // SAFETY: each call on the partition this function makes, and memory it allocates.
@@ -810,6 +881,13 @@ fn probe(api: &Api, guest: &mut Guest<'_>) -> Result<(), String> {
         }
     }
     map_over_placeholder(guest, &window, &a, &b)?;
+    // Past the window, within the guest's own 1 GiB page there; reserved readable and
+    // writable, and inaccessible, as memory to plug is (platform::reserve_withheld).
+    for (protect, at) in [(PAGE_READWRITE, 64), (PAGE_NOACCESS, 66)] {
+        if let Err(e) = commit_as_touched(guest, api, protect, WINDOW + at * RANGE as u64) {
+            println!("commit as touched stopped: {e}");
+        }
+    }
     let beside = guest.load(Window::gpa(1))?;
     print_load("the range beside, after every replace", &beside, &[&a, &b, &c], 0);
     Ok(())

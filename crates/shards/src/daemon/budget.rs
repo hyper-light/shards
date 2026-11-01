@@ -694,6 +694,16 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// What the cgroup `level`, which holds a budget, holds that its host may take back from
+    /// its processes alone, as its budget's word says it ([`Holding::held`]): none where it
+    /// has no budget.
+    fn held_now(&self, level: &Path) -> Option<u64> {
+        let h = held_at(level)?;
+        let mapped = mapped_under(level);
+        let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
+        Some(h.held(files.saturating_add(self.budgets.evicted(&mapped))))
+    }
+
     /// Tells microVM `pid` the room its budget leaves it now, through one of its runs
     /// (init's `ROOM`), which holds its run within it. Where the budget is short, the warm
     /// VMs it holds go first, which are speculation; then the microVM gives back what it
@@ -717,7 +727,7 @@ impl<D: Disk> Daemon<D> {
             .map_or((None, false), |h| (h.told, h.short));
         let evicted = &mut |mapped: &Mapped| self.budgets.evicted(mapped);
         let mut room = room(&dir, Path::new(ROOT), evicted);
-        let (mut ended, mut gave, mut asked) = (0, None, false);
+        let (mut ended, mut gave, mut asked, mut less) = (0, None, false, 0);
         if let Some((r, level)) = room.clone()
             && r < 0
         {
@@ -728,6 +738,7 @@ impl<D: Disk> Daemon<D> {
             if room.as_ref().is_some_and(|(r, _)| *r < 0) && lock(self.watching_giving()).insert(vm.clone()) {
                 asked = true;
                 let before = resident_file(pid);
+                let held_before = room.as_ref().and_then(|(_, level)| self.held_now(level));
                 gave = self.give_back_of(&id);
                 lock(self.watching_giving()).remove(&vm);
                 // Said with its budget's word below, its own: not its host's shortage,
@@ -736,6 +747,16 @@ impl<D: Disk> Daemon<D> {
                     self.budgets.gave_back(pid, before, g.freed);
                 }
                 room = self::room(&dir, Path::new(ROOT), evicted);
+                // With no answer, what it gave back as its host counts it: what it holds
+                // less. One slowed by its host past the deadline went on giving back as its
+                // exec was ended, and its word said it gave back nothing as what it held fell
+                // from 824 MiB to 514 (CI 41167803629).
+                if gave.is_none() {
+                    let held_after = room.as_ref().and_then(|(_, level)| self.held_now(level));
+                    less = held_before
+                        .zip(held_after)
+                        .map_or(0, |(b, a)| b.saturating_sub(a));
+                }
             }
         }
         if room.is_none() && had.is_none() {
@@ -811,10 +832,17 @@ impl<D: Disk> Daemon<D> {
         // it ended, what it gave back of what it held cold and what it asked to unplug, a
         // MiB or more of either.
         let (freed, unplugging) = gave.map_or((0, 0), |g| (g.freed >> 20, g.unplugging >> 20));
-        let did = ended > 0 || freed > 0 || unplugging > 0;
-        let done = format!(
-            ", past {ended} warm VMs ended and {freed} MiB it gave back of what it held cold of its files, asking to unplug {unplugging} MiB"
-        );
+        let less = less >> 20;
+        let did = ended > 0 || freed > 0 || unplugging > 0 || less > 0;
+        let done = if gave.is_none() && less > 0 {
+            format!(
+                ", past {ended} warm VMs ended and {less} MiB its host holds less of it as it gave back what it held cold, with no answer"
+            )
+        } else {
+            format!(
+                ", past {ended} warm VMs ended and {freed} MiB it gave back of what it held cold of its files, asking to unplug {unplugging} MiB"
+            )
+        };
         let done_if = || if did { done.as_str() } else { "" };
         match (had, told) {
             // As it is first held, and as it is held within it again by what it did or asked.

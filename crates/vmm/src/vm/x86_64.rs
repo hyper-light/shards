@@ -772,6 +772,8 @@ pub fn restore(
     // gone (mm/userfaultfd.c, `userfaultfd_clear_vma`: `uffd_wp_range`; PM M312), and a
     // working set mapped ahead with it held off for its mapping alone was faulted in again.
     let around = platform::FaultAroundOff::over(&mapped::host_ranges(&memory, &a.bus.pmem));
+    // WHP's populate copies the written pages itself, in the host's kernel ([`pre_fault`]).
+    #[cfg(not(hv = "whp"))]
     if let Err(e) = mapped::copy_written(&memory, &working_set) {
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }
@@ -794,12 +796,54 @@ pub fn restore(
     })
 }
 
-/// Maps every page of `working_set` into the stage-2 tables; how many it mapped. A page
-/// that cannot be mapped ahead is only a fault later: every run it can
+/// [`pre_fault`] on WHP: every run of `working_set` in one call, the rest's for reading, then
+/// its written pages' for writing, which makes their copies in the host's kernel: no copy
+/// made from the VM process and no call a run, for about what the copies and the calls cost
+/// (PM M415); the copies' said as `mapped::copy_written` says them on the other backends. A page that cannot be mapped
+/// ahead is only a fault later, so a call that fails is made again a run at a time
 /// ([`mapped::every_run`]).
-fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
+#[cfg(hv = "whp")]
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
+    let mut ahead = 0;
+    let mut count = 0;
+    for write in [false, true] {
+        let t0 = crate::log::uptime_us();
+        let runs = mapped::runs(working_set.iter().filter(|t| t.written == write).map(|t| t.gpa));
+        let made = runs.len();
+        count += made;
+        let mut done = 0;
+        if vcpu.pre_fault_runs(&runs, write).is_ok() {
+            done = runs.iter().map(|(_, len)| (len / PAGE) as usize).sum();
+        } else {
+            let every = mapped::every_run(runs, |gpa, len| {
+                vcpu.pre_fault_runs(&[(gpa, len)], write)
+                    .map(|()| done += (len / PAGE) as usize)
+                    .map_err(|e| e.to_string())
+            });
+            if let Err(e) = every {
+                warn!("mapping the working set ahead {e}: the guest faults those pages in");
+            }
+        }
+        ahead += done;
+        if write && done > 0 {
+            info!(
+                "copied {done} written working-set pages ahead, in {made} runs, in {} us",
+                crate::log::uptime_us().saturating_sub(t0)
+            );
+        }
+    }
+    (ahead, count)
+}
+
+/// Maps every page of `working_set` into the stage-2 tables; how many it mapped, and in how
+/// many runs of consecutive pages. A page that cannot be mapped ahead is only a fault later:
+/// every run it can ([`mapped::every_run`]).
+#[cfg(not(hv = "whp"))]
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
     let (mut ahead, mut unable) = (0, false);
-    let done = mapped::every_run(mapped::runs(working_set.iter().map(|t| t.gpa)), |gpa, len| {
+    let runs = mapped::runs(working_set.iter().map(|t| t.gpa));
+    let count = runs.len();
+    let done = mapped::every_run(runs, |gpa, len| {
         if unable {
             return Ok(());
         }
@@ -816,7 +860,7 @@ fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
     if let Err(e) = done {
         warn!("mapping the working set ahead {e}: the guest faults those pages in");
     }
-    ahead
+    (ahead, count)
 }
 
 /// Stage-2 pages, as working sets record them: the host's pages.
@@ -902,9 +946,10 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                 // After the state, which sets the paging mode KVM maps for.
                 if !working_set.is_empty() {
                     let t0 = crate::log::uptime_us();
-                    set_up.prefetched = pre_fault(&vcpu, &working_set);
+                    let (prefetched, runs) = pre_fault(&vcpu, &working_set);
+                    set_up.prefetched = prefetched;
                     info!(
-                        "mapped {} of {} working-set pages ahead in {} us",
+                        "mapped {} of {} working-set pages ahead, in {runs} runs, in {} us",
                         set_up.prefetched,
                         working_set.len(),
                         crate::log::uptime_us().saturating_sub(t0)

@@ -382,10 +382,19 @@ fn run(fd: &mut sys::VcpuFd, io: &dyn Io) -> Result<Exit> {
             }
             sys::RunExit::MmioRead { addr, data } => io.mmio_read(addr, data),
             sys::RunExit::MmioWrite { addr, data } => io.mmio_write(addr, data),
-            // An x86 triple fault: the guest crashed.
-            sys::RunExit::Shutdown => return Ok(Exit::Reset),
+            // An x86 triple fault: the guest crashed. Each reset says which it was, as a
+            // crash's console says nothing.
+            sys::RunExit::Shutdown => {
+                crate::warn!("the guest triple-faulted (KVM_EXIT_SHUTDOWN)");
+                return Ok(Exit::Reset);
+            }
             sys::RunExit::SystemEvent(sys::SYSTEM_EVENT_SHUTDOWN) => return Ok(Exit::Shutdown),
-            sys::RunExit::SystemEvent(sys::SYSTEM_EVENT_RESET | sys::SYSTEM_EVENT_CRASH) => {
+            sys::RunExit::SystemEvent(sys::SYSTEM_EVENT_RESET) => {
+                crate::warn!("the guest asked to be reset (KVM_SYSTEM_EVENT_RESET)");
+                return Ok(Exit::Reset);
+            }
+            sys::RunExit::SystemEvent(sys::SYSTEM_EVENT_CRASH) => {
+                crate::warn!("the guest crashed (KVM_SYSTEM_EVENT_CRASH)");
                 return Ok(Exit::Reset);
             }
             sys::RunExit::SystemEvent(t) => {

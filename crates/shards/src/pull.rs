@@ -242,6 +242,15 @@ pub(crate) fn publish(
         return;
     }
     let Some(socket) = crate::local_store::engine(&env) else {
+        // Said where its client named a store that is not there, which a publish that
+        // makes nothing would leave unsaid.
+        if let Some(host) = env("DOCKER_HOST").filter(|h| !h.is_empty()) {
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards daemon {}: {reference}: not published: DOCKER_HOST {host} names no socket here",
+                std::process::id()
+            );
+        }
         return;
     };
     let platform = match config.variant.as_deref() {

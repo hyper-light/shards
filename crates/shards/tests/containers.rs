@@ -3,8 +3,7 @@
 //! `docker` has them. Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT, so no snapshots
 //! are needed; the image comes from a loopback registry (tests/common, `served`), and its
 //! entrypoint is the test guest. Tests of what Windows serves with a later step of the
-//! platform parity plan say so (`later_on_windows`), or are Unix's until then where they
-//! reach Unix's own interfaces, each naming its step.
+//! platform parity plan are Unix's until then, each naming its step.
 
 #![allow(
     clippy::panic,
@@ -33,6 +32,37 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     shards_in_within(home, args, TIMEOUT)
+}
+
+/// Stops run `name` of `home`, as a test that needs it stopped does. A stop that hears no
+/// end shows what it said, its VM process's stacks and its daemon's
+/// ([`common::stacks_of`]), and how long its VM process outlived the stop, looked for every
+/// 100 ms for a minute: a VM process that ends late from one that never does. Windows CI
+/// gave up on stops as an_image_of_gigabytes_boots ran (9fdbed51's exec test on
+/// windows-2025, the cp test on windows-2022 in 41277401058), their VM processes running
+/// on 2 s after their kill.
+fn stop_run(home: &Path, name: &str) {
+    let vm = shards_in(home, &["inspect", "-f", "{{.State.Pid}}", name]);
+    let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
+    let stopped = shards_in(home, &["stop", name]);
+    if stopped.status == Some(0) {
+        return;
+    }
+    let gave_up = Instant::now();
+    let stacks = common::stacks_of(&[("its VM process", vm)], Some(home));
+    let outlived = (vm != 0).then(|| {
+        while gave_up.elapsed() < Duration::from_secs(60) {
+            if !common::alive(i32::try_from(vm).unwrap_or(0)) {
+                return format!("had ended {:?} after the stop gave up", gave_up.elapsed());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        "ran on a minute after the stop gave up".to_string()
+    });
+    panic!(
+        "{stopped}{stacks}\n--- its VM process {vm}: {}",
+        outlived.unwrap_or_else(|| "not found".into())
+    );
 }
 
 /// [`shards_in`] with a timeout of its own, for a run whose work is heavier than a start:
@@ -819,7 +849,7 @@ fn a_joiner_under_init_has_a_reaper_of_its_own() {
     let top = shards(&["top", "joiner", "-o", "pid,args"]);
     assert_eq!(top.stdout.lines().count(), 3, "{top}");
     let stopping = Instant::now();
-    assert_eq!(shards(&["stop", "joiner"]).status, Some(0));
+    stop_run(&home, "joiner");
     assert!(
         stopping.elapsed() < Duration::from_secs(5),
         "{:?}",
@@ -1694,10 +1724,10 @@ fn a_microvms_io_is_paced_at_its_limits() {
 /// reads, and what the host writes it reads, in ranges it maps to read and to write; a
 /// file grown past its end, by either, it reads whole; and one the host cuts short under
 /// its mapping leaves it zeros where the host has no page, never an end to its microVM,
-/// and the file once the host writes there again; whole pages it writes where its host
-/// holds none of them, the host and the guest read (as FUSE_WRITEs, patch 0009).
-// Host directories and their DAX windows on Windows come with the platform parity plan's step 6.
-#[cfg(unix)]
+/// and the file once the host writes there again, where Windows refuses the host its cut
+/// as it refuses any program's of a file a view of which is mapped (PM M412); whole pages
+/// it writes where its host holds none of them, the host and the guest read (as
+/// FUSE_WRITEs, patch 0009).
 #[test]
 fn a_volumes_large_files_go_through_its_dax_window() {
     if cannot_run_vms() {
@@ -1769,9 +1799,8 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .open(dir.join("big"))
         .unwrap();
     for at in [3 << 20, (5 << 20) + 1] {
-        use std::os::unix::fs::FileExt as _;
         let byte = big[at].wrapping_add(2);
-        file.write_all_at(&[byte], at as u64).unwrap();
+        common::write_at(&file, &[byte], at as u64);
         assert_eq!(
             exec(&["fs", &format!("peek:/v/big:{at}")]),
             format!("peek /v/big {at} {byte}\n")
@@ -1799,12 +1828,11 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // The host's, which the guest reads once it asks the file's size again (VALID_S).
     let at = end + 40_000;
     {
-        use std::os::unix::fs::FileExt as _;
         let odd_file = std::fs::OpenOptions::new()
             .write(true)
             .open(dir.join("odd"))
             .unwrap();
-        odd_file.write_all_at(&[9], at as u64).unwrap();
+        common::write_at(&odd_file, &[9], at as u64);
     }
     let deadline = Instant::now() + TIMEOUT;
     loop {
@@ -1830,30 +1858,36 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .write(true)
         .open(dir.join("odd"))
         .unwrap();
-    odd_file.set_len(1 << 20).unwrap();
-    let cut = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
-    assert!(
-        cut.stdout == "peek /v/odd 3145728 0\n"
-            || (cut.status == Some(1) && cut.stderr.contains("failed to fill whole buffer")),
-        "{cut}"
-    );
-    {
-        use std::os::unix::fs::FileExt as _;
-        odd_file.write_all_at(&[5], 3 << 20).unwrap();
-    }
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
-        if r.stdout == "peek /v/odd 3145728 5\n" {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline
-                && (r.stdout == "peek /v/odd 3145728 0\n"
-                    || r.stderr.contains("failed to fill whole buffer")),
-            "{r}"
+    if cfg!(windows) {
+        let refused = odd_file.set_len(1 << 20).unwrap_err();
+        assert_eq!(
+            refused.raw_os_error(),
+            Some(1224),
+            "ERROR_USER_MAPPED_FILE: {refused}"
         );
-        std::thread::sleep(Duration::from_millis(100));
+    } else {
+        odd_file.set_len(1 << 20).unwrap();
+        let cut = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
+        assert!(
+            cut.stdout == "peek /v/odd 3145728 0\n"
+                || (cut.status == Some(1) && cut.stderr.contains("failed to fill whole buffer")),
+            "{cut}"
+        );
+        common::write_at(&odd_file, &[5], 3 << 20);
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
+            if r.stdout == "peek /v/odd 3145728 5\n" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline
+                    && (r.stdout == "peek /v/odd 3145728 0\n"
+                        || r.stderr.contains("failed to fill whole buffer")),
+                "{r}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     // Cut short by the host while a process holds it open, read whole: with nothing asked
     // about the file between, the holder's read past the new end goes through the mapping
@@ -1884,15 +1918,22 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         assert!(Instant::now() < deadline, "the holder never read the file");
         std::thread::sleep(Duration::from_millis(10));
     }
-    std::fs::OpenOptions::new()
+    let cut = std::fs::OpenOptions::new()
         .write(true)
         .open(dir.join("held"))
         .unwrap()
-        .set_len(1 << 20)
-        .unwrap();
+        .set_len(1 << 20);
+    // Refused on Windows, its window mapping it, which the holder reads on (PM M412).
+    let past = if cfg!(windows) {
+        assert_eq!(cut.unwrap_err().raw_os_error(), Some(1224));
+        odd[3 << 20]
+    } else {
+        cut.unwrap();
+        0
+    };
     std::fs::write(dir.join("held-go"), b"").unwrap();
     let held = holder.join().unwrap();
-    assert_eq!(held.stdout, "hold /v/held 3145728 0\n", "{held}");
+    assert_eq!(held.stdout, format!("hold /v/held 3145728 {past}\n"), "{held}");
     // Whole pages written by the guest where its host holds none of the file (D189, patch
     // 0009): on Linux the host lets go of the file's pages first, and the guest's kernel
     // writes them as a FUSE_WRITE, by its window's record; elsewhere through the window.
@@ -1974,20 +2015,35 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         std::thread::sleep(Duration::from_millis(10));
     }
     {
-        use std::os::unix::fs::FileExt as _;
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(dir.join("mapped"))
             .unwrap();
-        file.write_all_at(b"x", 9 << 20).unwrap();
+        common::write_at(&file, b"x", 9 << 20);
     }
     std::fs::write(dir.join("mapped-go"), b"").unwrap();
     let mapped = mapper.join().unwrap();
-    assert_eq!(
-        mapped.stdout,
-        format!("map2m /v/mapped {}\n", (9 << 20) + 1),
-        "{mapped}"
-    );
+    // Where the guest saw the size it had before, what the host holds of the file then, the
+    // size the guest's file system asked of the share's server afresh as it looked (its
+    // stderr), and the byte past that size read again two seconds on, opened afresh: three
+    // times on CI's windows-2022 (793abaeb, 1415ad8f, d3d996b7) the guest saw 9 MiB, and at
+    // d3d996b7 read the new byte 2 s on.
+    if mapped.stdout != format!("map2m /v/mapped {}\n", (9 << 20) + 1) {
+        let host = std::fs::metadata(dir.join("mapped")).map(|m| m.len());
+        std::thread::sleep(Duration::from_secs(2));
+        let again = shards(&[
+            "exec",
+            "dax2m",
+            "/bin/testguest",
+            "fs",
+            &format!("peek:/v/mapped:{}", 9 << 20),
+        ]);
+        panic!(
+            "the guest saw {:?} ({}): its host holds {host:?} bytes, and the byte at 9 MiB read 2 s on: {again}",
+            mapped.stdout.trim(),
+            mapped.stderr.trim()
+        );
+    }
     let log = shards(&["exec", "dax2m", "/bin/testguest", "fs", "kmsg:fs/dax.c"]);
     assert_eq!(log.status, Some(0), "{log}");
     assert!(log.stdout.ends_with("kmsg fs/dax.c 0\n"), "{log}");
@@ -1998,8 +2054,6 @@ fn a_volumes_large_files_go_through_its_dax_window() {
 /// (D189): a file of that size its guest maps, as statx says, and one a byte short it reads
 /// through FUSE; each it reads whole as the host wrote it, what it writes in place the host
 /// reads, and what the host writes in place it reads.
-// Host directories and their DAX windows on Windows come with the platform parity plan's step 6.
-#[cfg(unix)]
 #[test]
 fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
     if cannot_run_vms() {
@@ -2056,12 +2110,11 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
         // Its first written in place by the host: the guest reads it.
         let byte = file[0].wrapping_add(2);
         {
-            use std::os::unix::fs::FileExt as _;
             let host = std::fs::OpenOptions::new()
                 .write(true)
                 .open(dir.join(name))
                 .unwrap();
-            host.write_all_at(&[byte], 0).unwrap();
+            common::write_at(&host, &[byte], 0);
         }
         assert_eq!(
             exec(&["fs", &format!("peek:{path}:0")]),
@@ -2077,9 +2130,6 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
 /// `SHARDS_SHARE_WINDOW_MIB` is 0; and through one where it gives one, on any host.
 #[test]
 fn a_volumes_large_files_go_through_a_dax_window_by_default() {
-    if common::later_on_windows(6, "volumes' DAX windows") {
-        return;
-    }
     if cannot_run_vms() {
         return;
     }
@@ -2151,9 +2201,6 @@ fn host_is_a_virtual_machine_on_amd() -> bool {
 /// volume has none.
 #[test]
 fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
-    if common::later_on_windows(6, "volumes' DAX windows") {
-        return;
-    }
     if cannot_run_vms() {
         return;
     }
@@ -2210,9 +2257,6 @@ fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
 /// bytes missing.
 #[test]
 fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
-    if common::later_on_windows(6, "volumes' DAX windows") {
-        return;
-    }
     if cannot_run_vms() {
         return;
     }
@@ -2647,6 +2691,25 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             .and_then(|t| t.trim().parse().ok())
             .unwrap_or(0)
     };
+    // Its microVM grown first, as the joiner tests grow theirs: its grower plugs for what
+    // its runs touch, not for what they read (D148), and one booted small kept a quarter
+    // GiB of the half GiB read on Fedora, where a quarter GiB short of what it then held was
+    // short of what a microVM of 32 vCPUs holds with nothing to give back, about 307 MiB:
+    // it gave back all it could, stayed past its budget, and systemd-oomd, which watches
+    // each of Fedora's user slices, ended it 20 s on (PM M393). What it touched and freed
+    // given back (D151) before it reads.
+    let booted = current();
+    let grown = shards(&["exec", "budget", "/bin/testguest", "alloc-free", "1024", "0"]);
+    assert_eq!(grown.status, Some(0), "{grown}");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while current() >= booted + (128 << 20) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{booted} bytes held booted, {} after touching and freeing a GiB",
+            current()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // Half of them read with no budget, held in its guest's page cache; then a budget past
     // what the slice holds, whose first word says what the daemon counts it holding (what
     // its host may take back from its processes alone: not the page cache no process maps,
@@ -2680,6 +2743,20 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         set(&(current() + (1 << 30)).to_string());
         let counted = first(before, &["held within its budget", "budget is short by"]);
         let held = mib_after(&counted, "MiB, holds ");
+        // What its guest's kernel counts of the read as its budget comes, said if nothing is
+        // given back: a give-back takes inactive file pages alone, and CI's x86_64 Linux at
+        // 05e9cc57 (41273348014) gave back none, short by 42 MiB, its daemon having asked no
+        // give-back at its host's word, as its slice went from 1025 MiB counted to 813.
+        let counted = shards(&[
+            "exec",
+            "budget",
+            "/bin/testguest",
+            "meminfo",
+            "MemFree",
+            "Cached",
+            "Active(file)",
+            "Inactive(file)",
+        ]);
         let before = said().len();
         set(&(held.saturating_sub(256) << 20).to_string());
         let word = first(before, &["held within its budget", "budget is short by"]);
@@ -2689,13 +2766,46 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         tries += 1;
         assert!(
             tries < 5 && word.contains("held within its budget"),
-            "nothing given back said, try {tries}: {word}\n{}",
+            "nothing given back said, try {tries}: {word}\nits guest's kernel counting as its budget came:\n{}\n{}",
+            counted.stdout,
             said()
         );
         let unset = said().len();
         set("infinity");
         first(unset, &["held to no budget"]);
     };
+    // Short of its budget still past all it held cold, its host sleeps each page its guest
+    // touches afresh (memory.high, no swap): where its host's own pressure had it give
+    // back first, a quarter GiB short of what it then held was short of what it holds with
+    // nothing to give back, and its read of a GiB ran past a minute, 26 s its first file
+    // (CI 41004323062, 40961442989). Its budget is raised to give it room first, and read
+    // once the daemon's last word of it is no shortage: it says a budget has room again
+    // once, which its microVM giving back on past its answer may have had it say already.
+    if gave.contains("budget is short by") {
+        let holds = mib_after(&gave, "MiB, holds ");
+        set(&((holds + 128) << 20).to_string());
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let log = said();
+            let words = [
+                "held within its budget",
+                "budget is short by",
+                "budget has room again",
+            ];
+            let last = log
+                .lines()
+                .rfind(|l| words.iter().any(|w| l.contains(w)))
+                .unwrap_or_default();
+            if !last.contains("budget is short by") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "short still, its budget raised:\n{log}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     read(&files);
     // Held within the room its budget leaves, or, short of it, within the least room a run
     // goes on in: its host's taking back its template's pages as the budget was set counts
@@ -2706,8 +2816,12 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         said()
     );
     // What it asked to unplug of the memory it had plugged to hold them, said with what it
-    // gave back of its files.
-    let _said = mib_after(&gave, "asking to unplug ");
+    // gave back of its files, where its give-back answered; where none came in time, what
+    // its host holds less of it, which the word then says in its place (PM M416): CI
+    // 41255435995's x86_64 Linux said 213 MiB, with no answer.
+    if !gave.contains("with no answer") {
+        let _said = mib_after(&gave, "asking to unplug ");
+    }
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
@@ -2943,9 +3057,8 @@ fn a_groups_cpu_held_each_second() {
 /// commit together stays under it: a run under a group of 1 GiB that allocates 2 GiB has
 /// its guest's memory refused past it, its command never holding it all, where a run that
 /// allocates as much under no group, and one that allocates within the group's room, run to
-/// their ends. The macOS test below holds its group by give-backs from a host directory's
-/// files, which Windows shares with the platform parity plan's step 6; the test after it,
-/// by give-backs of what a joiner read of its image, on both.
+/// their ends. The tests below hold a group to its `memory.high` by give-backs, of a host
+/// directory's files and of what a joiner read of its image, on macOS and Windows.
 #[test]
 fn a_groups_job_holds_its_microvms_to_its_memory_max() {
     if !cfg!(windows) {
@@ -2988,16 +3101,18 @@ fn a_groups_job_holds_its_microvms_to_its_memory_max() {
     assert!(!past.stdout.contains("allocated 2048"), "{past}");
 }
 
-/// A microVM under a group shards keeps (D183, slice 3), on macOS, whose host has no group
-/// of processes a user's tools make and cap: made with the group's directory of the home,
-/// its budget files `max`, the group's `memory.current` its VM processes' footprints; with
-/// its `memory.high` written short of what it holds, told so and asked to give back what it
-/// holds cold, its group within its budget again; and a microVM of the group that holds
-/// past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's OOM
-/// killer kills within it.
+/// A microVM under a group shards keeps (D183, slice 3), on macOS and Windows, whose hosts
+/// have no group of processes a user's tools make and cap: made with the group's directory
+/// of the home, its budget files `max`, the group's `memory.current` its VM processes'
+/// footprints; with its `memory.high` written short of what it holds, what it read of a
+/// host directory through FUSE (D197 on Windows), told so and asked to give back what it
+/// holds cold, its group within its budget again; and, on macOS, a microVM of the group that
+/// holds past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's
+/// OOM killer kills within it. On Windows the group's job holds its VM processes to its
+/// `memory.max` by what they commit (`a_groups_job_holds_its_microvms_to_its_memory_max`).
 #[test]
 fn a_microvm_under_a_group_is_held_to_its_budget() {
-    if !cfg!(target_os = "macos") || cannot_run_vms() {
+    if !cfg!(any(target_os = "macos", windows)) || cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -3067,28 +3182,29 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
     until("its group was not said short of its budget", &|| {
         said().contains("group agents: its microVMs hold") && said().contains("past its budget")
     });
-    until("nothing given back said", &|| {
-        said().contains("its microVMs gave back")
-    });
+    // Its guest's own kernel takes back as much of its files as it is short as it is told its
+    // room, before its give-back counts what it reclaims, which may then be nothing (D188).
     until("its group was not within its budget again", &|| {
         said().contains("within its budget of") && current() <= high
     });
-    // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it past,
-    // with nothing to give back.
-    std::fs::write(group.join("memory.high"), "max\n").unwrap();
-    std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
-    let args = run_args(
-        &image,
-        &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
-        &["alloc-hold", "768", "600"],
-    );
-    let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
-    assert_eq!(hog.status, Some(0), "{hog}");
-    let waited = shards(&["wait", "hog"]);
-    assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
-    let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
-    assert_eq!(oom.stdout.trim(), "true", "{oom}");
-    assert!(said().contains("past its memory.max"), "{}", said());
+    if cfg!(target_os = "macos") {
+        // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it
+        // past, with nothing to give back.
+        std::fs::write(group.join("memory.high"), "max\n").unwrap();
+        std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
+        let args = run_args(
+            &image,
+            &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
+            &["alloc-hold", "768", "600"],
+        );
+        let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(hog.status, Some(0), "{hog}");
+        let waited = shards(&["wait", "hog"]);
+        assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
+        let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
+        assert_eq!(oom.stdout.trim(), "true", "{oom}");
+        assert!(said().contains("past its memory.max"), "{}", said());
+    }
     // The other runs on: what it held it gave back, and held no more.
     let ps = shards(&["ps", "-q", "--filter", "name=held"]);
     assert_eq!(ps.stdout.lines().count(), 1, "{ps}");
@@ -3108,9 +3224,8 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
 /// D188; D183, slice 3): a joiner's root is its image's EROFS over its microVM's join disk,
 /// read through its guest's page cache, where its provider's root and every run's writable
 /// layer are their host's files mapped into the guest (DAX, D190) and hold none of it. So a
-/// microVM whose joiner read 512 MiB of its image holds them cold, on a host that shares
-/// no directory into a microVM yet as on any other (Windows', with the platform parity
-/// plan's step 6). With its group's `memory.high` written a quarter GiB short of what its VM
+/// microVM whose joiner read 512 MiB of its image holds them cold, with no host directory
+/// shared into it. With its group's `memory.high` written a quarter GiB short of what its VM
 /// process holds, the microVM is told its room and asked to give back what it holds cold
 /// (`ROOM`, `RECLAIM`, over its run's cgroup and its joiners' within it), gives back what
 /// its joiner read, and its VM process holds that much less, its group within its budget
@@ -3172,6 +3287,19 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
     };
     // What its VM process holds idle, as the daemon writes it each pressure window.
     until("its group's memory.current never written", &|| current() > 0);
+    // Its microVM grown first, as a run's is as its workload touches memory (D148): its
+    // grower plugs for what its runs touch, not for what they read, whose page cache its
+    // kernel takes back at its hold first, so that a microVM booted small kept its joiner's
+    // read within what it booted with, 131 to 378 MiB of the 512 on WHP and 141 after four
+    // reads on CI's windows-2025 (PM M391). Touched and freed, its memory stays plugged and
+    // its hold raised, and what was freed is given back as its guest reports it (D151)
+    // before it is measured idle, so that no give-back below counts it.
+    let booted = current();
+    let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
+    assert_eq!(grown.status, Some(0), "{grown}");
+    until("what its provider touched and freed was not given back", &|| {
+        current() < booted + (128 << 20)
+    });
     let idle = current();
     // What its guest has and holds of files, as its kernel counts them.
     let guest = || {
@@ -3188,11 +3316,8 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
         .trim()
         .replace('\n', ", ")
     };
-    // Its guest holds what its joiner read: past 512 MiB in its VM process's footprint. A
-    // run is held at the memory it has plugged, its grower plugging more as it reaches it
-    // (D148), and a read faster than the plugging is reclaimed in part by its guest's own
-    // kernel: on WHP 131 to 378 MiB of the 512 stayed after one read (PM M391). The file is
-    // read again into what it has plugged by then, a few times at most.
+    // Its guest holds what its joiner read: past 512 MiB in its VM process's footprint,
+    // read again a few times at most where its guest's kernel took some of it back.
     let mut reads = 0;
     let after_read = loop {
         let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
@@ -3376,20 +3501,55 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     let held = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let log = home.join("daemon.log");
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
-    let idle = held();
-    // Its guest holds what its joiner read, a quarter of it or more, read again into what it
-    // has plugged where a read outran its plugging (D148, PM M391), a few times at most.
-    let mut reads = 0;
-    while held() <= idle + (128 << 20) {
+    // Its microVM grown first, as the group's test grows its own: a run's grower plugs for
+    // what its runs touch, not for what they read (D148), and jupiter's guest kept 107 MiB of
+    // four reads (PM M391). What it touched and freed given back (D151) before it is idle.
+    let booted = held();
+    let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
+    assert_eq!(grown.status, Some(0), "{grown}");
+    // Idle once it holds what it booted with, near enough, and has stopped giving back: a
+    // second read of a file its guest's kernel finds the first's still holding makes its
+    // pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`), and
+    // an idle measured as it went on giving back had the file read twice and gave back
+    // nothing of it on Fedora, once in 6.
+    let deadline = Instant::now() + TIMEOUT;
+    let mut last = held();
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let now = held();
+        if now < booted + (128 << 20) && now.abs_diff(last) < 4 << 20 {
+            break;
+        }
         assert!(
-            reads < 4,
-            "{idle} bytes held idle, {} after {reads} reads",
-            held()
+            Instant::now() < deadline,
+            "{booted} bytes held booted, {now} after touching and freeing a GiB"
         );
-        let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
-        assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
-        reads += 1;
+        last = now;
     }
+    let idle = held();
+    // Its guest holds what its joiner read, read once.
+    let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
+    assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
+    let reads = 1;
+    assert!(
+        held() > idle + (128 << 20),
+        "{idle} bytes held idle, {} after its read",
+        held()
+    );
+    // What its guest's kernel counts of the read as the word comes, said if nothing is
+    // given back: a give-back takes inactive file pages alone, and twice in CI's x86_64
+    // Linux runs (1cdaef68's musl, 54f7c0fb's gnu) one gave back none of them, asking only
+    // to unplug 896 MiB, with no count of where the read was.
+    let counted = shards(&[
+        "exec",
+        "prov",
+        "/bin/testguest",
+        "meminfo",
+        "MemFree",
+        "Cached",
+        "Active(file)",
+        "Inactive(file)",
+    ]);
     let before = held();
     let word = Instant::now();
     told.say();
@@ -3405,7 +3565,12 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         assert!(Instant::now() < deadline, "nothing given back said:\n{}", said());
         std::thread::sleep(Duration::from_millis(50));
     };
-    assert!(gave > 0, "nothing given back:\n{}", said());
+    assert!(
+        gave > 0,
+        "nothing given back, its guest's kernel counting as the word came:\n{}\n{}",
+        counted.stdout,
+        said()
+    );
     // Its VM process holds that much less, or half of it, once its guest has given it back:
     // what it reported free, and what its device unplugs as it was asked to, after the
     // give-back's answer (D148, D151).
@@ -3472,6 +3637,25 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
     ];
     let shards = |args: &[&str], within: Duration| run_shards_env(&[], args, &env, within);
     let vol = TempDir::new("budget-dax-vol");
+    // A tmpfs's file is memory nothing reclaims without swap, its pages the file itself:
+    // read through the window under a budget short of it, its microVM is never within it,
+    // throttled until it ends (Fedora's /tmp, PM M393). Its budget gives back files a disk
+    // keeps, as its volume's are where its temporary directory is a disk's (CI's).
+    let c = std::ffi::CString::new(vol.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: a zeroed statfs is a valid out-parameter, which statfs(2) fills, of a
+    // NUL-terminated path.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::statfs(c.as_ptr(), &mut fs) }, 0);
+    // Its type a word of the platform's own signedness and size.
+    const TMPFS_MAGIC: i128 = 0x0102_1994;
+    if i128::from(fs.f_type) == TMPFS_MAGIC {
+        eprintln!(
+            "SKIP: {} is a tmpfs, whose files are memory no reclaim takes without swap: a budget short of one is never met (PM M393)",
+            vol.display()
+        );
+        return;
+    }
     std::fs::File::create(vol.join("big"))
         .unwrap()
         .set_len(512 << 20)
@@ -3496,29 +3680,38 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let started = shards(&args, TIMEOUT);
     assert_eq!(started.status, Some(0), "{started}");
-    let set = Command::new("systemctl")
-        .args(["--user", "set-property", "--runtime", &slice])
-        .args(["MemoryHigh=384M", "MemorySwapMax=0"])
-        .output()
-        .unwrap();
-    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
     let dax = shards(
         &["exec", "budget", "/bin/testguest", "fs", "dax:/vol/big"],
         TIMEOUT,
     );
     assert_eq!(dax.stdout, "dax /vol/big yes\n", "{dax}");
+    // SAFETY: getuid(2) takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let cgroup = format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}");
+    // Its budget from what its microVM holds idle, not a size: past it by a quarter of the
+    // file, short of the file. One of 384 MiB was short of what a microVM of Fedora's 32
+    // CPUs held from its start, 258 MiB anonymous and 124 of shared memory, which nothing
+    // reclaims: it stayed past its budget throughout, read nothing, and systemd-oomd ended
+    // it, its user's manager past 80% memory pressure for 20 s (PM M393).
+    let idle: u64 = std::fs::read_to_string(format!("{cgroup}/memory.current"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let set = Command::new("systemctl")
+        .args(["--user", "set-property", "--runtime", &slice])
+        .arg(format!("MemoryHigh={}", idle + (128 << 20)))
+        .arg("MemorySwapMax=0")
+        .output()
+        .unwrap();
+    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
     let read = shards(
         &["exec", "budget", "/bin/testguest", "read", "/vol/big"],
         Duration::from_secs(300),
     );
     assert_eq!(read.status, Some(0), "{read}");
     assert!(read.stdout.starts_with("read /vol/big 536870912 "), "{read}");
-    // SAFETY: getuid(2) takes nothing and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let events = std::fs::read_to_string(format!(
-        "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}/memory.events"
-    ))
-    .unwrap();
+    let events = std::fs::read_to_string(format!("{cgroup}/memory.events")).unwrap();
     let high: u64 = events
         .lines()
         .find_map(|l| l.strip_prefix("high "))
@@ -3658,7 +3851,7 @@ fn top_lists_a_microvms_processes() {
     let paused = shards(&["top", "listed"]);
     assert!(paused.stderr.contains("is paused"), "{paused}");
     assert_eq!(shards(&["unpause", "listed"]).status, Some(0));
-    assert_eq!(shards(&["stop", "listed"]).status, Some(0));
+    stop_run(&home, "listed");
     exit(&mut sleeper);
     let ended = shards(&["top", "listed"]);
     assert!(ended.stderr.ends_with("is not running\n"), "{ended}");
@@ -3699,7 +3892,7 @@ fn diff_shows_what_a_microvm_changed() {
         ),
         "{diff}"
     );
-    assert_eq!(shards(&["stop", "changed"]).status, Some(0));
+    stop_run(&home, "changed");
     exit(&mut sleeper);
     // Stopped, its changes are still there to show (visit.rs).
     let ended = shards(&["diff", "changed"]);
@@ -3915,7 +4108,7 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
         "{listed}"
     );
     assert_eq!(tar.len() % 512, 0);
-    assert_eq!(shards(&["stop", "exported"]).status, Some(0));
+    stop_run(&home, "exported");
     exit(&mut sleeper);
     // Stopped, its files are still there to export (visit.rs).
     let ended = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
@@ -4006,7 +4199,7 @@ fn cp_copies_files_into_and_out_of_a_microvm() {
         no_dir.stderr.starts_with("invalid output path: directory "),
         "{no_dir}"
     );
-    assert_eq!(shards(&["stop", "copier"]).status, Some(0));
+    stop_run(&home, "copier");
     exit(&mut sleeper);
     // Stopped, its files are still there to copy (visit.rs).
     let ended = shards(&["cp", "copier:/in", home.join("cp-stopped").to_str().unwrap()]);
@@ -6748,7 +6941,7 @@ fn logs_keep_what_a_container_wrote() {
         .spawn()
         .unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(shards_in(&home, &["stop", "follow"]).status, Some(0));
+    stop_run(&home, "follow");
     assert_eq!(exit(&mut sleeper), Some(128 + 15));
     let followed = follower.wait_with_output().unwrap();
     assert_eq!(followed.status.code(), Some(0));
@@ -8967,8 +9160,7 @@ fn exec_runs_commands_in_a_running_microvm() {
         1,
         "invalid detach keys (ctrl-P): Unknown character: 'ctrl-P'\n",
     );
-    let stopped = shards_in(&home, &["stop", "ex"]);
-    assert_eq!(stopped.status, Some(0), "{stopped}");
+    stop_run(&home, "ex");
     let _ = exit(&mut run);
     refused(
         &["ex", "/bin/testguest", "report"],
@@ -9450,7 +9642,7 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
         made.iter().any(|(_, args)| args.contains("shards-vm")),
         "the spawner's children: {made:?}"
     );
-    assert_eq!(shards_in(&home, &["stop", "asleep"]).status, Some(0));
+    stop_run(&home, "asleep");
     exit(&mut asleep);
 }
 
@@ -11694,21 +11886,29 @@ fn a_run_past_its_pids_limit_says_so() {
         &["burn", "8", "100"],
     );
     assert!(joined.stdout.contains("of 8 threads"), "{joined}");
-    let until = (now() + 1).to_string();
-    let events = shards_in(
-        &home,
-        &[
-            "events",
-            "--since",
-            &since,
-            "--until",
-            &until,
-            "--filter",
-            "event=pids-limit",
-            "--format",
-            r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
-        ],
-    );
+    // Its microVM's word of the limit reached comes on its own, maybe after its command's
+    // end on a loaded host: the home's events read again until it is there (D187).
+    let deadline = Instant::now() + TIMEOUT;
+    let events = loop {
+        let until = (now() + 1).to_string();
+        let events = shards_in(
+            &home,
+            &[
+                "events",
+                "--since",
+                &since,
+                "--until",
+                &until,
+                "--filter",
+                "event=pids-limit",
+                "--format",
+                r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
+            ],
+        );
+        if !events.stdout.is_empty() || Instant::now() >= deadline {
+            break events;
+        }
+    };
     assert_eq!(events.stdout, "joined 4\n", "{events}");
     let removed = shards_in(&home, &["rm", "-f", "provider"]);
     assert_eq!(removed.status, Some(0), "{removed}");
@@ -12791,7 +12991,7 @@ fn attach_joins_a_running_microvm() {
         assert_eq!(line, "again\n");
     }
     // Both end with the command, with its status: SIGTERM's.
-    assert_eq!(shards(&["stop", "echo"]).status, Some(0));
+    stop_run(&home, "echo");
     assert_eq!(exit(&mut first), Some(143));
     assert_eq!(exit(&mut second), Some(143));
     drop(second_in);
@@ -13651,6 +13851,195 @@ fn an_image_of_gigabytes_boots() {
     std::fs::remove_file(ctx.join("big")).unwrap();
     let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
     assert_eq!(ran.status, Some(0), "{ran}");
+}
+
+/// PM M419: stops beside a gigabyte build. Windows CI gave up on stops whose VM processes
+/// ran on 2 s after their kill as an_image_of_gigabytes_boots ran (9fdbed51's exec test on
+/// windows-2025, the cp test on windows-2022 in 41277401058). Four threads each start a run
+/// of `sleep` and stop it, `M419_ROUNDS` times each (10) with nothing beside them, then
+/// again for as long as that test's build goes on beside them: its 2 GiB file written,
+/// built into an image and read by a run; and eight runs idle from before the build are
+/// stopped together 5 s into that read. Each way's stops told as n, p50, p90, p99 and max
+/// (nearest rank), and each that heard no end with what it said, its VM process's CPU time
+/// and resident memory as it gave up, and how long the process outlived it.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/stop-under-io/run.sh"]
+fn stops_beside_a_gigabyte_build() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some((home, image)) = home("containers-m419") else {
+        return;
+    };
+    let rounds: usize = std::env::var("M419_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    // Run `name`'s stop, `run` its client: its time in ms, and where it heard no end, what
+    // it said, its VM process's CPU time and resident memory as it gave up, and how long the
+    // process outlived it.
+    let stop_one = |name: &str, mut run: Child| -> (f64, Option<String>) {
+        let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", name]);
+        let vm: u32 = vm.stdout.trim().parse().unwrap_or(0);
+        let t0 = Instant::now();
+        let stopped = shards_in(&home, &["stop", name]);
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        let mut lost = None;
+        if stopped.status != Some(0) {
+            let usage = shards_vmm::platform::process_usage(vm).map_or_else(
+                |e| format!("unread ({e})"),
+                |u| {
+                    format!(
+                        "{:.2} s of CPU, {} MiB resident",
+                        u.cpu_ns as f64 / 1e9,
+                        u.resident >> 20
+                    )
+                },
+            );
+            let gave_up = Instant::now();
+            let mut outlived = "ran on a minute after".to_string();
+            while gave_up.elapsed() < Duration::from_secs(60) {
+                if !common::alive(i32::try_from(vm).unwrap_or(0)) {
+                    outlived = format!("had ended {:?} after", gave_up.elapsed());
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            lost = Some(format!(
+                "{name}: its stop {ms:.0} ms ({}); its VM process {vm} as it gave up: {usage}; {outlived}",
+                stopped.stderr.trim()
+            ));
+            let _ = run.kill();
+        }
+        let _ = exit(&mut run);
+        let _ = shards_in(&home, &["rm", "-f", name]);
+        (ms, lost)
+    };
+    // Four threads each starting runs of `sleep` and stopping them while `more` says so of
+    // their next: their stops' times, and what each that heard no end found.
+    let stops = |more: &(dyn Fn(usize) -> bool + Sync)| -> (Vec<f64>, Vec<String>) {
+        std::thread::scope(|s| {
+            let threads: Vec<_> = (0..4)
+                .map(|t| {
+                    let (stop_one, home, image) = (&stop_one, &home, &image);
+                    s.spawn(move || {
+                        let (mut took, mut lost) = (Vec::new(), Vec::new());
+                        let mut i = 0;
+                        while more(i) {
+                            let name = format!("m419-{t}-{i}");
+                            let run = start(home, image, &["--name", &name], &["sleep"]);
+                            let (ms, gave_up) = stop_one(&name, run);
+                            took.push(ms);
+                            lost.extend(gave_up);
+                            i += 1;
+                        }
+                        (took, lost)
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .fold((Vec::new(), Vec::new()), |(mut took, mut lost), t| {
+                    let (t_took, t_lost) = t.join().unwrap();
+                    took.extend(t_took);
+                    lost.extend(t_lost);
+                    (took, lost)
+                })
+        })
+    };
+    let alone = stops(&|i| i < rounds);
+    // Eight runs idle from before the load, as the suite's runs are beside it, stopped
+    // together 5 s into the run that reads the build's image: where the three stops on
+    // Windows CI gave up, each some 6 s before an_image_of_gigabytes_boots ended.
+    let idle: Vec<(String, Child)> = (0..8)
+        .map(|i| {
+            let name = format!("m419-idle-{i}");
+            let run = start(&home, &image, &["--name", &name], &["sleep"]);
+            (name, run)
+        })
+        .collect();
+    let (done, reading) = (AtomicBool::new(false), AtomicBool::new(false));
+    let (beside, as_read, load) = std::thread::scope(|s| {
+        let load = s.spawn(|| {
+            let ctx = home.join("big");
+            std::fs::create_dir(&ctx).unwrap();
+            std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
+            let t0 = Instant::now();
+            noise(&ctx.join("big"), 2048);
+            let (kernel, init) = (kernel(), guest_init());
+            let env: [(&str, &OsStr); 3] = [
+                ("SHARDS_HOME", home.as_os_str()),
+                ("SHARDS_KERNEL", kernel.as_os_str()),
+                ("SHARDS_INIT", init.as_os_str()),
+            ];
+            let built = run_shards_env(
+                &[],
+                &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
+                &env,
+                Duration::from_secs(600),
+            );
+            reading.store(true, Ordering::SeqCst);
+            let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
+            done.store(true, Ordering::SeqCst);
+            format!(
+                "its build {:?}, its run {:?}, in {:?}",
+                built.status,
+                ran.status,
+                t0.elapsed()
+            )
+        });
+        let as_read = s.spawn(|| {
+            while !reading.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            std::thread::sleep(Duration::from_secs(5));
+            std::thread::scope(|s| {
+                let stopping: Vec<_> = idle
+                    .into_iter()
+                    .map(|(name, run)| {
+                        let stop_one = &stop_one;
+                        s.spawn(move || stop_one(&name, run))
+                    })
+                    .collect();
+                stopping
+                    .into_iter()
+                    .fold((Vec::new(), Vec::new()), |(mut took, mut lost), t| {
+                        let (ms, gave_up) = t.join().unwrap();
+                        took.push(ms);
+                        lost.extend(gave_up);
+                        (took, lost)
+                    })
+            })
+        });
+        let beside = stops(&|_| !done.load(Ordering::SeqCst));
+        (beside, as_read.join().unwrap(), load.join().unwrap())
+    });
+    let quantile = |sorted: &[f64], q: f64| {
+        let rank = ((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
+        sorted[rank - 1]
+    };
+    eprintln!("M419 the load: {load}");
+    for (label, (mut took, lost)) in [
+        ("alone", alone),
+        ("beside the build", beside),
+        ("idle, stopped as its image is read", as_read),
+    ] {
+        took.sort_by(f64::total_cmp);
+        if took.is_empty() {
+            eprintln!("M419 {label}: no stops");
+            continue;
+        }
+        eprintln!(
+            "M419 {label}: stops n {} p50 {:.1} p90 {:.1} p99 {:.1} max {:.1} ms, {} of them heard no end",
+            took.len(),
+            quantile(&took, 0.5),
+            quantile(&took, 0.9),
+            quantile(&took, 0.99),
+            quantile(&took, 1.0),
+            lost.len()
+        );
+        for l in lost {
+            eprintln!("M419 {label}: {l}");
+        }
+    }
 }
 
 /// What a run's workload frees goes back to the host (D151): half a gigabyte touched, then

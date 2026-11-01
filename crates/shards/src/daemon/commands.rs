@@ -1932,7 +1932,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             // not take: its own SIGKILL again, on its own connection.
                             let socket = match lock(&self.runs).get(&e.id) {
                                 Some(RunState::Tracked(t)) if t.joined.is_none() => {
-                                    let _ = t.vm.kill(shards_ipc::signal::SIGKILL);
+                                    if let Err(err) = t.vm.kill(shards_ipc::signal::SIGKILL) {
+                                        super::log(format!("container {}: killing its microVM: {err}", e.id));
+                                    }
                                     None
                                 }
                                 Some(RunState::Tracked(t)) => Some(t.socket.clone()),
@@ -1952,6 +1954,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let _ = gone.told.set_nonblocking(true);
                             let mut byte = [0u8; 1];
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
+                            if !ended {
+                                super::log(format!(
+                                    "container {}: no end heard {LAST_WAIT:?} after its microVM was killed: {}",
+                                    gone.id,
+                                    self.unheard(&gone.id)
+                                ));
+                            }
                             done(gone.index, ended, if ended { How::Vm } else { How::Lost });
                             continue;
                         }

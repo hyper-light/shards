@@ -20,6 +20,28 @@ The guest's crates, `init`, `testguest` and `server` (the in-VM server), are Lin
 nature: each runs inside a microVM's Linux guest, on every host. Their `target_os = "linux"`
 items are not gaps.
 
+Since 2026-10-30 the script checks each host, Linux, macOS and Windows, where it checked
+Unix against Windows; leaves out imports, which do no work of their own, and the guest's
+crates; and stands an item with its twin, the item that does its part on the hosts it
+misses under a name of its own, or with why those hosts need none, from
+`scripts/audit/platform-parity.tsv`, whose every twin it checks is there. It exits 1 while
+any item stands alone. Of the 404 items its first run found, 352 stand with their twins; the
+52 left are rows 10 and 11's. Two more were fixed as found: `shards search`'s page and the
+styled failures of `search` and `login` on a Windows colour terminal, which gates of "the
+daemon, Unix's alone" had kept off, and the ghost files a crash left in a Windows home
+(D176, D197), which no daemon start removed there.
+
+Since 2026-11-01 it reads a cfg's any(), all() and not() of `unix`, `windows` and
+`target_os`, `test` holding on no host, where it read nine forms alone and took an item of
+any other as every host's: 25 items stood alone unseen, the groups shards keeps (D183), the
+grants' modules and SPIFFE's client among them. These, and the 20 the GPUs' work brought
+(D201, D202), are each a host's own mechanism with its twin, or with why the other hosts
+need none, but for rows 12 and 13's. And it passes over a test's item to that item's end,
+where it read no more of a file past its first `#[cfg(test)]`: a test's `use` hid
+platform/mod.rs below its line 11, and daemon.rs below 622 of its 8,400. 31 more items
+stood alone unseen, each a host's own mechanism (platform-parity.tsv), one of them row
+11's: main.rs's `working_set`, which macOS needs not, its template's run recording.
+
 ## The gaps
 
 | # | What | Hosts without it | Evidence |
@@ -34,6 +56,10 @@ items are not gaps.
 | 7 | `--cgroup-parent` (D183) | macOS (refused: "no host resource group a process can be placed in"), Windows (refused until D183's slice 3, a job object) | D183 "Refused before anything starts" |
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | journald on macOS and Windows; etwlogs nowhere yet | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
+| 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | Windows | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
+| 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
+| 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
+| 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | Windows, until gpu-windows lands: its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
 (29), `vm_run.rs` (18), `context.rs` (14) and `cli/*` items are the daemon's and its client's
@@ -60,6 +86,11 @@ Each lone item is confirmed or closed as its row is worked.
    itself, held to their budgets by D188's give-backs.
 9. Row 8, `etwlogs` on Windows, and journald's counterparts on macOS and Windows.
 10. Row 9, a function passed through where a host allows one.
+11. Row 10, a Windows machine serving other machines' clients through a context.
+12. Row 11, working sets on Windows: a restore's pages recorded and mapped ahead.
+13. Row 12, the SPIFFE Workload API reached on Windows by its named pipe, as SPIRE's agent
+    serves it there.
+14. Row 13, with gpu-windows, after win-pools lands.
 
 ## Closed
 
@@ -75,6 +106,24 @@ Each lone item is confirmed or closed as its row is worked.
   KVM (D154), tested by the snapshot tests themselves on arm64 Linux in a guest with EL2
   on an M3 or later Mac (boot.rs, `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`),
   where all 78 passed (PM M346).
+- Row 3, host directories shared into a microVM on Windows and their DAX windows (the
+  plan's step 6): the share process's FUSE server over NTFS, a guest's files kept there as
+  WSL keeps them (D197's slices 1 and 2); the share process and the daemon's shares on
+  Windows, each share's stream a pipe, and a Windows host's bind sources its drives' paths
+  (slice 3, D207); and shards' own shares' DAX windows on WHP, each range a view of the
+  share process's section of its file, as long as the file's bytes there and zeros past
+  them, followed as the file grows and let go of before its guest cuts it, the window's
+  head committed as its guest first touches each 2 MiB block (slice 4, PM M412, M413).
+  Tested with real VMs on CI's windows-2022 and windows-2025 runners and on jupiter:
+  containers.rs's volume, bind and DAX tests (`run_mounts_binds_volumes_and_tmpfs`,
+  `a_volumes_data_outlives_the_microvm_that_wrote_it`,
+  `a_volumes_large_files_go_through_its_dax_window`, `..._by_default`,
+  `a_volumes_files_are_mapped_from_dax_smallest_bytes`,
+  `a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range` among them),
+  saved.rs's `a_saved_microvm_reads_on_through_its_dax_window` and
+  `a_saved_microvm_writes_on_through_its_volume`, engine.rs and compose.rs: CI 40916747277
+  at 652aae3b for slice 3, and 40961442989 at 4b6e135f and 41004323062 at 1cdaef68 for
+  slice 4; on jupiter containers.rs 141 of 141, engine.rs 27, compose.rs 3, saved.rs 13.
 - Row 4, memory given back on Windows (the plan's step 7): free page reporting under WHP, a
   cold boot's RAM decommitted and committed again (PM M371), a restore's given back through
   views of its template's data and memory of its own between them (M375, M378); the
@@ -89,5 +138,15 @@ Each lone item is confirmed or closed as its row is worked.
   (`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, on every host), and a
   builder's 253 MiB of a 256 MiB file at its build's word, its VM process from 352,088 KiB
   to 96,220 (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`), with
-  `a_runs_memory_freed_goes_back_to_the_host` passing there too. What a volume's reads hold
-  is given back the same way once row 3 shares host directories on Windows.
+  `a_runs_memory_freed_goes_back_to_the_host` passing there too; and what a volume's reads
+  hold, through D197's FUSE server over NTFS, at its group's budget, its microVMs from 764
+  to 768 MiB to 272 (`a_microvm_under_a_group_is_held_to_its_budget`).
+- Row 12, keyless signing's SPIFFE provider on Windows (D126): SPIFFE's Workload API
+  reached by its named pipe, SPIRE's agent's (`\\.\pipe\spire-agent\public\api`) or the
+  one `SPIFFE_ENDPOINT_SOCKET` names (`npipe:NAME`, as go-spiffe reads it there, or the
+  pipe's path), opened anonymous to its server as go-winio dials one, and found there
+  without a connection taken; cosign v3.1.3 reaches none there. Tested on CI's
+  windows-2022 and windows-2025 (CI 41284231177 at 6b17d663): spiffe.rs's
+  `a_jwt_svid_is_asked_of_the_workload_api_on_its_named_pipe` and
+  `a_named_pipe_is_named_as_go_spiffe_names_it`, beside its socket's twin on Linux and
+  macOS. platform-parity.py finds none of the row's items alone.

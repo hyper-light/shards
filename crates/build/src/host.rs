@@ -82,12 +82,9 @@ pub fn path(root: &Path, rel: &[u8]) -> std::path::PathBuf {
     p
 }
 
-/// `os.Lstat` and fsutil's mkstat.
-#[cfg(unix)]
-pub fn lstat(p: &Path) -> io::Result<Stat> {
-    use std::os::unix::fs::MetadataExt;
-    let m = fs::symlink_metadata(p)?;
-    let st = m.mode();
+/// fsutil's mode (Go's FileMode bits) of a Linux `st_mode`, and whether it is a socket:
+/// archive/tar cannot hold one, so fsutil sends it as what it then is, a file.
+fn go_mode(st: u32) -> (u32, bool) {
     let mut mode = st & 0o777;
     mode |= match st & 0o170_000 {
         0o040_000 => fm::DIR,
@@ -107,9 +104,16 @@ pub fn lstat(p: &Path) -> io::Result<Stat> {
     if st & 0o1000 != 0 {
         mode |= fm::STICKY;
     }
-    // archive/tar cannot hold a socket, so fsutil sends it as what it then is: a file.
-    let socket = mode & fm::SOCKET != 0;
-    mode &= !fm::SOCKET;
+    (mode & !fm::SOCKET, mode & fm::SOCKET != 0)
+}
+
+/// `os.Lstat` and fsutil's mkstat.
+#[cfg(unix)]
+pub fn lstat(p: &Path) -> io::Result<Stat> {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::symlink_metadata(p)?;
+    let st = m.mode();
+    let (mode, socket) = go_mode(st);
     let dir = mode & fm::DIR != 0;
     let rdev = m.rdev();
     let device = st & 0o170_000 == 0o060_000 || st & 0o170_000 == 0o020_000;
@@ -321,6 +325,9 @@ pub struct Stage {
     len: u64,
     next: u64,
     buf: Vec<u8>,
+    /// Whether its files are a Linux tree's on NTFS ([`Stage::of_tree`]).
+    #[cfg(windows)]
+    linux: bool,
 }
 
 impl Stage {
@@ -336,7 +343,34 @@ impl Stage {
             len: 0,
             next: 0,
             buf: Vec::new(),
+            #[cfg(windows)]
+            linux: false,
         })
+    }
+
+    /// Has the stage take its files' modes as `tree` keeps them: a Linux tree's as WSL's
+    /// metadata does ([`Tree`]).
+    pub fn of_tree(&mut self, tree: &Tree) {
+        #[cfg(windows)]
+        {
+            self.linux = tree.linux;
+        }
+        #[cfg(not(windows))]
+        let _ = tree;
+    }
+
+    /// The snapshot of the regular file `f` that `meta` describes.
+    fn snapshot(&self, f: &fs::File, meta: &fs::Metadata) -> io::Result<Snapshot> {
+        #[cfg(windows)]
+        if self.linux {
+            return Ok(Snapshot {
+                mode: lx::mode_of(f)?,
+                size: meta.len(),
+                mtime: since_epoch(meta),
+            });
+        }
+        let _ = f;
+        Ok(snapshot(meta))
     }
 
     /// The pack's path, to read it from.
@@ -398,7 +432,7 @@ impl Stage {
             }
             Taken::Pack(self.pack_read()?)
         };
-        Ok((snapshot(meta), taken))
+        Ok((self.snapshot(&f, meta)?, taken))
     }
 
     /// Reads the regular file `src` in place into the pack: one version only if
@@ -414,7 +448,7 @@ impl Stage {
             return Err(Self::changed(src));
         }
         let taken = Taken::Pack(self.pack_read()?);
-        Ok((snapshot(&meta), taken, Seen(Before { meta })))
+        Ok((self.snapshot(&f, &meta)?, taken, Seen(Before { meta })))
     }
 
     /// Whether `src` is still what [`Stage::read`] saw: the same file, of its size, mtime
@@ -810,6 +844,185 @@ pub fn clone_file(f: &fs::File, dst: &Path) -> io::Result<bool> {
 #[cfg(windows)]
 pub fn clone_file(_: &fs::File, _: &Path) -> io::Result<bool> {
     Ok(false)
+}
+
+/// A tree a walk reads ([`crate::context`]): the host's own files, as fsutil reads them, or
+/// on Windows a Linux tree kept on NTFS as WSL keeps one, whole, by shards
+/// (`shards_ntfs::LINUX_TREE`, shards-archive's `apply_layer_lx`: the copy a Windows machine
+/// keeps of a client's context, D180), read as fsutil reads a Linux host's: its names, modes,
+/// links, devices, links' counts and extended attributes Linux's. A tree of the host's own is
+/// read as fsutil reads it on Windows, though WSL kept some of its files' metadata, as
+/// Docker's builds of it are.
+#[derive(Debug, Clone)]
+pub struct Tree {
+    root: PathBuf,
+    /// Whether it is a Linux tree on NTFS.
+    #[cfg(windows)]
+    linux: bool,
+}
+
+impl Tree {
+    /// The tree at `root`: on Windows a Linux tree where it is marked one, its root then
+    /// taken as its verbatim path, which Windows normalizes no name of.
+    pub fn at(root: &Path) -> Tree {
+        #[cfg(windows)]
+        if lx::is_tree(root)
+            && let Ok(verbatim) = fs::canonicalize(root)
+        {
+            return Tree {
+                root: verbatim,
+                linux: true,
+            };
+        }
+        Tree {
+            root: root.to_path_buf(),
+            #[cfg(windows)]
+            linux: false,
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// A path below the root from its slash-separated relative name.
+    pub fn path(&self, rel: &[u8]) -> PathBuf {
+        #[cfg(windows)]
+        if self.linux {
+            return lx::path(&self.root, rel);
+        }
+        path(&self.root, rel)
+    }
+
+    /// [`lstat`] of the relative name `rel`.
+    pub fn lstat(&self, rel: &[u8]) -> io::Result<Stat> {
+        #[cfg(windows)]
+        if self.linux {
+            return lx::lstat(&self.path(rel));
+        }
+        lstat(&self.path(rel))
+    }
+
+    /// [`read_dir`] of the relative name `rel`, the root's where it is empty.
+    pub fn read_dir(&self, rel: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+        #[cfg(windows)]
+        if self.linux {
+            return lx::read_dir(&self.path(rel));
+        }
+        read_dir(&self.path(rel))
+    }
+}
+
+/// A Linux tree on NTFS ([`Tree`]), read through shards-ntfs.
+#[cfg(windows)]
+mod lx {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsHandle as _;
+
+    use shards_ntfs as ntfs;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    use super::*;
+
+    /// `p` itself, a link not followed, opened to read it, its attributes, EAs and reparse
+    /// point.
+    fn open(p: &Path) -> io::Result<fs::File> {
+        fs::OpenOptions::new()
+            .access_mode(FILE_GENERIC_READ)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(p)
+    }
+
+    /// Whether `root` is a Linux tree's root.
+    pub(super) fn is_tree(root: &Path) -> bool {
+        open(root).is_ok_and(|f| ntfs::is_linux_tree(f.as_handle()).unwrap_or(false))
+    }
+
+    /// The path below `root` of the slash-separated Linux name `rel`, each name as NTFS
+    /// keeps it ([`ntfs::nt_name`]); one NTFS keeps none of (not UTF-8) as itself, which
+    /// names nothing there.
+    pub(super) fn path(root: &Path, rel: &[u8]) -> PathBuf {
+        let mut wide: Vec<u16> = root.as_os_str().encode_wide().collect();
+        for part in rel.split(|&c| c == b'/').filter(|p| !p.is_empty()) {
+            wide.push(u16::from(b'\\'));
+            match ntfs::nt_name(part) {
+                Ok(name) => wide.extend(name),
+                Err(_) => wide.extend(String::from_utf8_lossy(part).encode_utf16()),
+            }
+        }
+        PathBuf::from(OsString::from_wide(&wide))
+    }
+
+    /// fsutil's mkstat of what `p` is on Linux: its kind, mode and device's numbers WSL's
+    /// metadata, a symlink's target its LX reparse point's, its file's ID and links' count
+    /// its inode, its extended attributes those kept as EAs (`com.apple.*` aside).
+    pub(super) fn lstat(p: &Path) -> io::Result<Stat> {
+        let f = open(p)?;
+        let h = f.as_handle();
+        let st = ntfs::stat(h).map_err(ntfs::io_error)?;
+        let (mode, socket) = go_mode(st.mode);
+        let dir = mode & fm::DIR != 0;
+        let link = if mode & fm::SYMLINK != 0 {
+            ntfs::readlink(h).map_err(ntfs::io_error)?
+        } else {
+            Vec::new()
+        };
+        let device = matches!(st.mode & 0o170_000, 0o060_000 | 0o020_000);
+        let rdev = st.rdev;
+        let xattrs = ntfs::eas(h)
+            .map_err(ntfs::io_error)?
+            .into_iter()
+            .filter_map(|(ea, value)| {
+                let name = ntfs::ea_xattr(&ea)?;
+                let value = value.strip_prefix(ntfs::XATTR_KEPT)?.to_vec();
+                (!name.starts_with(b"com.apple.")).then_some((name, value))
+            })
+            .collect();
+        Ok(Stat {
+            mode,
+            size: if dir { 0 } else { st.size },
+            mtime: (i64::try_from(st.mtime.0).unwrap_or(i64::MAX), st.mtime.1),
+            inode: (!dir).then_some((st.ino, u64::from(st.nlink))),
+            // fsutil's major and minor, Linux's encoding.
+            devmajor: if device {
+                u32::try_from((rdev >> 8) & 0xfff).unwrap_or(0)
+            } else {
+                0
+            },
+            devminor: if device {
+                u32::try_from((rdev & 0xff) | ((rdev >> 12) & 0xf_ff00)).unwrap_or(0)
+            } else {
+                0
+            },
+            link,
+            xattrs,
+            socket,
+        })
+    }
+
+    /// The Linux names in the directory `dir`, sorted, as `os.ReadDir` gives them.
+    pub(super) fn read_dir(dir: &Path) -> io::Result<Vec<Vec<u8>>> {
+        let mut names = Vec::new();
+        for e in fs::read_dir(dir)? {
+            let wide: Vec<u16> = e?.file_name().encode_wide().collect();
+            names.push(ntfs::guest_name(&wide));
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    /// Go's FileMode permission and set-ID bits of the open regular file `f`, as WSL's
+    /// metadata keeps them.
+    pub(super) fn mode_of(f: &fs::File) -> io::Result<u32> {
+        let st = ntfs::stat(f.as_handle()).map_err(ntfs::io_error)?;
+        Ok(go_mode(st.mode & 0o7777).0)
+    }
 }
 
 /// `filepath.EvalSymlinks`, as fsutil.NewFS resolves the context's directory.

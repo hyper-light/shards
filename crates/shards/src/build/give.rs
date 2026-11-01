@@ -204,6 +204,7 @@ fn budget_written(
     now: Instant,
     room: &dyn Fn() -> Option<i64>,
 ) -> Option<String> {
+    unsaid.budgeted = true;
     let left = room();
     if left.is_some_and(|r| r < 0) {
         return pass(held, unsaid, until, now, room);
@@ -337,6 +338,11 @@ struct Unsaid {
     why: Option<String>,
     /// Whether what it holds came past its pass's patience ([`late`]).
     late: bool,
+    /// Whether a budget over the build was written since it was last said: what its builders
+    /// give back under it is said at once, where a word of its host's pressure alone, said
+    /// a moment before the budget came, held it back a minute, past the build's end (CI
+    /// 40925092313).
+    budgeted: bool,
     said: Option<Instant>,
 }
 
@@ -346,6 +352,7 @@ impl Unsaid {
     /// after.
     fn say(&mut self, now: Instant) -> Option<String> {
         if !self.late
+            && !self.budgeted
             && self
                 .said
                 .is_some_and(|at| now.saturating_duration_since(at) < SAY_EVERY)
@@ -611,6 +618,65 @@ mod tests {
         assert_eq!(read_room(&end), b"", "no budget");
         assert!(!was_asked(&end));
         assert_eq!(held.len(), 1);
+    }
+
+    /// What builders give back under a budget written as the build goes is said at once,
+    /// whatever was said a moment before: a word of its host's pressure heard before a test
+    /// set its budget said what little was given back then, and the give-back under the
+    /// budget went unsaid for the minute after, past the build's end (CI 40925092313's
+    /// a_build_held_short_of_memory_has_its_builder_give_back).
+    #[test]
+    fn what_is_given_back_under_a_budget_written_is_said_at_once() {
+        let read_room = |end: &UnixStream| {
+            let mut h = [0u8; run::HEADER];
+            (&*end).read_exact(&mut h).unwrap();
+            let (kind, len) = run::parse_header(h).unwrap();
+            assert_eq!(kind, build::kind::ROOM);
+            let mut room = vec![0u8; len as usize];
+            (&*end).read_exact(&mut room).unwrap();
+        };
+        let answer_held = |end: &UnixStream, within: &str| {
+            let len = u32::try_from(within.len()).unwrap();
+            (&*end).write_all(&run::header(build::kind::HELD, len)).unwrap();
+            (&*end).write_all(within.as_bytes()).unwrap();
+        };
+        let (one, end) = builder();
+        let mut held = vec![one];
+        let mut unsaid = Unsaid::default();
+        let t0 = Instant::now();
+        // Its host's word, no budget yet: what little was given back, said.
+        gave(&end, &format!("{} 0", MIB / 2));
+        let said = pass(&mut held, &mut unsaid, soon(), t0, &|| None).unwrap();
+        assert!(was_asked(&end));
+        assert!(
+            said.contains("gave back 0 MiB") && !said.contains("held within"),
+            "{said}"
+        );
+        // A budget written a second on, leaving room: its share told, nothing said.
+        let roomy = i64::try_from(64 * MIB).unwrap();
+        answer_held(&end, "67108864");
+        let after = t0 + Duration::from_secs(1);
+        assert_eq!(
+            budget_written(&mut held, &mut unsaid, soon(), after, &|| Some(roomy)),
+            None
+        );
+        read_room(&end);
+        // Its host's next word, under it: what was given back said at once, with its room.
+        gave(&end, &format!("{} 0", 100 * MIB));
+        answer_held(&end, "67108864");
+        let after = t0 + Duration::from_secs(2);
+        let said = pass(&mut held, &mut unsaid, soon(), after, &|| Some(roomy)).unwrap();
+        assert!(was_asked(&end));
+        read_room(&end);
+        assert!(said.contains("gave back 100 MiB"), "{said}");
+        assert!(said.contains("held within 64 MiB past what they use"), "{said}");
+        // And the minute holds again after it.
+        gave(&end, &format!("{} 0", MIB));
+        answer_held(&end, "67108864");
+        let after = t0 + Duration::from_secs(3);
+        assert_eq!(pass(&mut held, &mut unsaid, soon(), after, &|| Some(roomy)), None);
+        assert!(was_asked(&end));
+        read_room(&end);
     }
 
     /// A builder whose give-back has no answer in time is told no room at that word, and its

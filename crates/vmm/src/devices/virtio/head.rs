@@ -50,6 +50,12 @@ pub struct Head {
     saved: std::sync::Mutex<Option<Saved>>,
     /// The snapshot's copy, where the head was restored from one.
     _file: Option<File>,
+    /// Which of its blocks the host has committed, where it commits each as its guest first
+    /// touches it ([`commit_at`](Self::commit_at)): on a host that charges memory as it is
+    /// reserved (`platform::CHARGED_AS_RESERVED`), where a head reserved whole took a 64th
+    /// of each window's length at its VM's start, past a group's budget (PM M413). None
+    /// where the OS gives its pages as they are touched.
+    committed: Option<Box<[AtomicBool]>>,
 }
 
 // SAFETY: the head's memory is owned by this value; the guest writes it, through the
@@ -78,30 +84,114 @@ impl Head {
     /// `len` bytes of the VM's own memory, whole [`HEAD_BLOCK`]s, zeros until its guest
     /// writes them: a boot's.
     pub fn new(len: usize) -> Result<Head, String> {
+        Head::made(len, false)
+    }
+
+    /// [`Head::new`], its blocks committed as its guest first touches them where the host
+    /// charges memory as it is reserved (`platform::CHARGED_AS_RESERVED`): a DAX window's,
+    /// whose faults its VM answers ([`WindowHeads::memory_fault`]), and which nothing of the
+    /// VM's own writes first.
+    pub fn as_touched(len: usize) -> Result<Head, String> {
+        Head::made(len, platform::CHARGED_AS_RESERVED)
+    }
+
+    fn made(len: usize, as_touched: bool) -> Result<Head, String> {
         if len == 0 || !len.is_multiple_of(HEAD_BLOCK) {
             return Err(format!("a head of {len} bytes: whole {} MiB", HEAD_BLOCK >> 20));
         }
-        let host = platform::reserve_ram(len).map_err(|e| e.to_string())?;
+        let (host, committed) = if as_touched {
+            (platform::reserve_withheld(len), Some(unfiled(len / HEAD_BLOCK)))
+        } else {
+            (platform::reserve_ram(len), None)
+        };
         Ok(Head {
-            host,
+            host: host.map_err(|e| e.to_string())?,
             len,
             filed: unfiled(len / HEAD_BLOCK),
             saved: std::sync::Mutex::new(None),
             _file: None,
+            committed,
         })
+    }
+
+    /// Commits the block of its that holds byte `offset`, where its blocks are committed as
+    /// its guest first touches them, and says whether it is committed now, by this call or
+    /// another's: an access to it runs again. False where it commits none so, or past it.
+    pub fn commit_at(&self, offset: usize) -> bool {
+        let Some(flag) = self.committed.as_ref().and_then(|c| c.get(offset / HEAD_BLOCK)) else {
+            return false;
+        };
+        if flag.load(Ordering::Acquire) {
+            return true;
+        }
+        // SAFETY: a whole block of this head's own reservation, which its guest's access is
+        // waiting on; committing one committed already changes nothing.
+        let granted = unsafe { platform::grant(self.host.add(offset / HEAD_BLOCK * HEAD_BLOCK), HEAD_BLOCK) };
+        match granted {
+            Ok(()) => {
+                flag.store(true, Ordering::Release);
+                true
+            }
+            Err(e) => {
+                crate::warn!("a DAX window's head: committing a block its guest touched: {e}");
+                false
+            }
+        }
+    }
+
+    /// Gives blocks `from..to` of its own memory back, zeros as they are next touched: where
+    /// its blocks are committed as they are touched, decommitted, to be committed again so.
+    ///
+    /// # Safety
+    /// Nothing touches those blocks meanwhile.
+    unsafe fn give_back(&self, from: usize, to: usize) -> std::io::Result<()> {
+        // SAFETY: whole blocks of the head (the caller's contract).
+        let (at, len) = (
+            unsafe { self.host.add(from * HEAD_BLOCK) },
+            (to - from) * HEAD_BLOCK,
+        );
+        let Some(committed) = &self.committed else {
+            // SAFETY: as above.
+            return unsafe { platform::discard(at, len) };
+        };
+        // SAFETY: as above.
+        unsafe { platform::withhold(at, len) }?;
+        for flag in committed.get(from..to).unwrap_or_default() {
+            flag.store(false, Ordering::Release);
+        }
+        Ok(())
     }
 
     /// A head of `len` bytes as a snapshot kept it in `kept` ([`save`](Self::save)): each
     /// 2 MiB block mapped privately from the copy where the head had it, fresh memory where
     /// it had zeros.
     pub fn restore(kept: File, len: usize) -> Result<Head, String> {
+        Head::restored(kept, len, false)
+    }
+
+    /// [`Head::restore`], its blocks of zeros committed as its guest first touches them, as
+    /// [`Head::as_touched`]'s are.
+    pub fn restore_as_touched(kept: File, len: usize) -> Result<Head, String> {
+        Head::restored(kept, len, platform::CHARGED_AS_RESERVED)
+    }
+
+    fn restored(kept: File, len: usize, as_touched: bool) -> Result<Head, String> {
         let at = |e: std::io::Error| e.to_string();
         if len == 0 || !len.is_multiple_of(HEAD_BLOCK) {
             return Err(format!("a head of {len} bytes: whole {} MiB", HEAD_BLOCK >> 20));
         }
         let blocks = len / HEAD_BLOCK;
         let index = read_head_index(&kept, blocks)?;
-        let host = platform::reserve(len).map_err(at)?;
+        // Reserved alone, each block the copy keeps committed and read, its zero blocks
+        // committed as its guest touches them.
+        let (host, committed) = if as_touched {
+            (
+                platform::reserve_withheld(len).map_err(at)?,
+                Some(unfiled(blocks)),
+            )
+        } else {
+            (platform::reserve(len).map_err(at)?, None)
+        };
         // Held from here, so that a failure releases the reservation.
         let mut head = Head {
             host,
@@ -109,12 +199,23 @@ impl Head {
             filed: unfiled(blocks),
             saved: std::sync::Mutex::new(None),
             _file: None,
+            committed,
         };
         for ((i, kept_at), filed) in index.iter().enumerate().zip(head.filed.iter()) {
             let Some(n) = kept_at else {
                 continue;
             };
             let offset = kept_block_at(*n, blocks)?;
+            if let Some(flag) = head.committed.as_ref().and_then(|c| c.get(i)) {
+                // SAFETY: a whole block of the reservation, which nothing references yet.
+                unsafe { platform::grant(host.add(i * HEAD_BLOCK), HEAD_BLOCK) }.map_err(at)?;
+                flag.store(true, Ordering::Release);
+                // SAFETY: the block just committed, which nothing references yet.
+                let block =
+                    unsafe { std::slice::from_raw_parts_mut(host.as_ptr().add(i * HEAD_BLOCK), HEAD_BLOCK) };
+                platform::read_exact_at(&kept, block, offset).map_err(at)?;
+                continue;
+            }
             // SAFETY: a whole block of the reservation, which nothing references yet.
             match unsafe { platform::map_file_private(&kept, offset, HEAD_BLOCK, host.add(i * HEAD_BLOCK)) } {
                 Ok(()) => filed.store(true, Ordering::Release),
@@ -174,6 +275,17 @@ impl Head {
     /// Which of its blocks are its own memory none of whose pages its guest touched, where
     /// the OS can say ([`save`](Self::save)).
     fn untouched(&self) -> std::io::Result<Option<Vec<bool>>> {
+        // A block never committed its guest never touched; and one never committed may not
+        // be read, which no memory backs.
+        if let Some(committed) = &self.committed {
+            return Ok(Some(
+                committed
+                    .iter()
+                    .zip(self.filed.iter())
+                    .map(|(c, filed)| !c.load(Ordering::Acquire) && !filed.load(Ordering::Acquire))
+                    .collect(),
+            ));
+        }
         let page = platform::page_size()?;
         let Some(per) = HEAD_BLOCK
             .checked_div(page)
@@ -285,7 +397,7 @@ impl Head {
         let discard = |from: usize, to: usize| {
             // SAFETY: whole blocks of the head, which nothing touches meanwhile (the
             // caller's contract).
-            unsafe { platform::discard(self.host.add(from * HEAD_BLOCK), (to - from) * HEAD_BLOCK) }
+            unsafe { self.give_back(from, to) }
         };
         let mut zeros = None;
         for ((i, kept_at), filed) in index.iter().enumerate().zip(self.filed.iter()) {
@@ -317,6 +429,11 @@ impl Head {
                 // Zeros where its guest wrote them over a copy's block: fresh memory, as a
                 // discard would bring the copy's bytes back (madvise(2), MADV_DONTNEED of
                 // a private file mapping).
+                None if self.committed.is_some() => {
+                    did.fresh += 1;
+                    // SAFETY: as above.
+                    unsafe { self.give_back(i, i + 1) }.map(|()| filed.store(false, Ordering::Release))
+                }
                 None => {
                     did.fresh += 1;
                     // SAFETY: as above.
@@ -428,6 +545,19 @@ impl WindowHeads {
     /// Writes them into `file`, as a paused machine's guest left them ([`Head::save`]).
     pub fn save(&self, file: &File) -> std::io::Result<()> {
         self.head.save(file)
+    }
+
+    /// A guest's access to memory the host had none at, at `gpa`: in a head whose blocks the
+    /// host commits as they are first touched, its block committed ([`Head::commit_at`]),
+    /// and the access may run again. False elsewhere.
+    pub fn memory_fault(&self, gpa: u64) -> bool {
+        self.at.iter().enumerate().any(|(i, &start)| {
+            gpa.checked_sub(start)
+                .and_then(|off| usize::try_from(off).ok())
+                .filter(|&off| off < self.each)
+                .and_then(|off| i.checked_mul(self.each)?.checked_add(off))
+                .is_some_and(|offset| self.head.commit_at(offset))
+        })
     }
 
     /// Whether its guest has lost one ([`remap`](Self::remap)), so that its machine cannot
@@ -764,6 +894,16 @@ mod tests {
 
     const MIB: u64 = 1 << 20;
 
+    /// `len` bytes of `head` from `at` touched as its guest first touches them: committed
+    /// where the host commits a head as it is touched (Windows), as a guest's access there
+    /// is ([`Head::commit_at`]); as they are elsewhere.
+    fn touched(head: &Head, at: usize, len: usize) {
+        for block in (at / HEAD_BLOCK)..(at + len).div_ceil(HEAD_BLOCK) {
+            let committed = head.commit_at(block * HEAD_BLOCK);
+            assert_eq!(committed, head.committed.is_some(), "block {block}");
+        }
+    }
+
     fn file(dir: &std::path::Path, name: &str) -> File {
         File::options()
             .read(true)
@@ -896,6 +1036,8 @@ mod tests {
             let heads = WindowHeads::new(Head::new(2 * each).unwrap(), vec![a, b], each).unwrap();
             let host = heads.mappings().next().unwrap().1;
             // Both written, so that the map-back changes both.
+            touched(&heads.head, 0, 64);
+            touched(&heads.head, each, each);
             // SAFETY: within the head, which `heads` holds.
             unsafe {
                 host.write_bytes(0x20, 64);
@@ -962,6 +1104,7 @@ mod tests {
         let heads = WindowHeads::new(Head::new(3 * each).unwrap(), at.clone(), each).unwrap();
         let host = heads.mappings().next().unwrap().1;
         // The second block of the second window's head, as a guest's kernel writes one.
+        touched(&heads.head, each + HEAD_BLOCK, 64);
         // SAFETY: within the head, which `heads` holds.
         unsafe { host.add(each + HEAD_BLOCK).write_bytes(0x40, 64) };
         let kept = file(&dir, "heads");
@@ -980,6 +1123,68 @@ mod tests {
         assert_eq!(unsafe { *host.add(each + HEAD_BLOCK) }, 0x40);
     }
 
+    /// A head's blocks committed as its guest first touches them, where the host charges
+    /// memory as it is reserved (Windows, PM M413): none at first; a fault in a window's
+    /// head commits the block that holds it, and no other; a save reads the committed
+    /// blocks alone, and a restore commits only those it reads back; a block its guest
+    /// zeroed, mapped back, is given back uncommitted, and committed again as it is touched.
+    #[cfg(windows)]
+    #[test]
+    fn a_heads_blocks_are_committed_as_its_guest_touches_them() {
+        let dir = shards_testdir::TempDir::new("head-lazy").unwrap();
+        let each = 2 * HEAD_BLOCK;
+        let (a, b) = (1u64 << 32, 1u64 << 33);
+        let heads = WindowHeads::new(Head::as_touched(2 * each).unwrap(), vec![a, b], each).unwrap();
+        let committed = |h: &Head| {
+            h.committed
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.load(Ordering::Acquire))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(committed(&heads.head), [false; 4]);
+        assert!(!heads.memory_fault(a - 1) && !heads.memory_fault(b + each as u64));
+        // The second block of the second window's head.
+        assert!(heads.memory_fault(b + HEAD_BLOCK as u64 + 100));
+        assert_eq!(committed(&heads.head), [false, false, false, true]);
+        assert!(
+            heads.memory_fault(b + HEAD_BLOCK as u64 + 200),
+            "committed: run again"
+        );
+        let host = heads.head.host().as_ptr();
+        // SAFETY: within the block just committed.
+        unsafe { host.add(3 * HEAD_BLOCK + 100).write_bytes(0x40, 64) };
+        let kept = file(&dir, "heads");
+        heads.save(&kept).unwrap();
+        assert_eq!(read_head_index(&kept, 4).unwrap(), [None, None, None, Some(0)]);
+        let restored = Head::restore_as_touched(kept.try_clone().unwrap(), 4 * HEAD_BLOCK).unwrap();
+        assert_eq!(committed(&restored), [false, false, false, true]);
+        // SAFETY: within the block the restore committed and read.
+        let byte = unsafe { *restored.host().as_ptr().add(3 * HEAD_BLOCK + 100) };
+        assert_eq!(byte, 0x40);
+        // Its kept block zeroed by its guest, saved, and mapped back: given back.
+        touched(&restored, 3 * HEAD_BLOCK, HEAD_BLOCK);
+        // SAFETY: within the committed block.
+        unsafe {
+            restored
+                .host()
+                .as_ptr()
+                .add(3 * HEAD_BLOCK)
+                .write_bytes(0, HEAD_BLOCK)
+        };
+        let zeros = file(&dir, "zeros");
+        restored.save(&zeros).unwrap();
+        assert_eq!(read_head_index(&zeros, 4).unwrap(), [None; 4]);
+        // SAFETY: nothing else touches the head, which no hypervisor maps.
+        unsafe { restored.map_back(&zeros) }.unwrap();
+        assert_eq!(committed(&restored), [false; 4]);
+        touched(&restored, 3 * HEAD_BLOCK, 1);
+        // SAFETY: within the block committed again.
+        let byte = unsafe { *restored.host().as_ptr().add(3 * HEAD_BLOCK + 100) };
+        assert_eq!(byte, 0);
+    }
+
     /// A head mapped back gives back the pages of its blocks of zeros, a run of them in one
     /// call, those before a kept block and those after the last (D189).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -989,6 +1194,9 @@ mod tests {
         let len = 5 * HEAD_BLOCK;
         let head = Head::new(len).unwrap();
         let host = head.host().as_ptr();
+        for i in [1, 2, 3, 4] {
+            touched(&head, i * HEAD_BLOCK, HEAD_BLOCK);
+        }
         // SAFETY: within the head, which `head` holds.
         unsafe {
             for i in [1, 3, 4] {
@@ -1057,6 +1265,7 @@ mod tests {
         let (blocks, len) = (4, 4 * HEAD_BLOCK);
         let head = Head::new(len).unwrap();
         let host = head.host().as_ptr();
+        touched(&head, HEAD_BLOCK, 64);
         // SAFETY: within the head, which `head` holds.
         unsafe { host.add(HEAD_BLOCK).write_bytes(0x40, 64) };
         let kept = file(&dir, "head");
@@ -1096,6 +1305,7 @@ mod tests {
         let (blocks, len) = (3, 3 * HEAD_BLOCK);
         let booted = Head::new(len).unwrap();
         let block = |head: &Head, i: usize| head.host().as_ptr().wrapping_add(i * HEAD_BLOCK);
+        touched(&booted, HEAD_BLOCK, HEAD_BLOCK);
         // SAFETY: within the head, which `booted` holds.
         unsafe { block(&booted, 1).write_bytes(0x40, HEAD_BLOCK) };
         let first = file(&dir, "first");

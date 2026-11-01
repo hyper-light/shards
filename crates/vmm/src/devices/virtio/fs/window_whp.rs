@@ -1,16 +1,20 @@
 //! A share's DAX window (D189) on Windows: virtio-fs's cache, the range of the guest's
 //! physical address space that its virtiofs maps a file's ranges into (fs/fuse/dax.c, 2 MiB
-//! each), each a view of the section that the share's server answers the range's ask with:
-//! slates' daemon, which did not spawn this process and duplicates each section into it
-//! (PM M343). Shards' own shares have no server on Windows yet, so only a share another
-//! server serves (D38) has a window here.
+//! each), each a view of a section of the file the share's server answers the range's ask
+//! with: one slates' daemon makes, which did not spawn this process and duplicates each
+//! section into it (PM M343), or one the window makes of the file shards' own share process
+//! gives it (D197's slice 4).
 //!
 //! The window is host address space reserved as placeholders, one a range (VirtualAlloc2,
 //! MEM_RESERVE_PLACEHOLDER, split at each range). A view replaces a range's placeholder
 //! (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER); committed zeros do where its server's section
 //! cannot be had, a restore's, as on the other hosts; and either is freed back to its
 //! placeholder (UnmapViewOfFile2 or VirtualFree, MEM_PRESERVE_PLACEHOLDER). A view fills its
-//! placeholder exactly, so a mapping of several ranges is a view a range.
+//! placeholder exactly, so a mapping of several ranges is a view a range; and a range a
+//! file ends within is its placeholder split at the page that holds the file's end, a view
+//! as long as the file's bytes there and committed zeros after it ([`Part`]), coalesced
+//! again as it is freed (PM M412: a placeholder splits at any page, and a view asked past
+//! its section's bytes is refused).
 //!
 //! WHP's stage 2 follows the host's view (PM M341): a range freed under a standing stage-2
 //! mapping exits the guest's access to it to the VMM, at its address, and a view placed
@@ -21,12 +25,16 @@
 //! "standing" against "remap"). A range never placed is not mapped at stage 2: a 64 GiB
 //! window's 32,768 ranges would cost its boot as many maps, 33.5 µs each at p50 there.
 //!
-//! What the Unix window follows of a host file (its size, a cut under the guest, a fault
-//! past its end) has nothing to follow here. A range is a view of the server's section,
-//! which reaches past every range the server answers an ask for (it refuses an ask past
-//! it), whose pages the server commits before it answers, zeros past the file's end. So
-//! [`Window::reconcile`] and [`Window::cut`] change nothing, and a fault in a mapped range
-//! is only a vCPU's access while another thread replaced the range, run again once.
+//! A slates server's section reaches past every range it answers an ask for (it refuses an
+//! ask past it), its pages committed before it answers, zeros past the file's end: nothing
+//! of it is followed, and a fault in its range is only a vCPU's access while another thread
+//! replaced the range, run again once. A section of a file reaches no further than the
+//! file, so a share's own file is followed as the Unix window follows one: before the guest
+//! is told anything of its size, its ranges are made what it is then
+//! ([`Window::reconcile`]), its views as long as its bytes there, zeros past them. No other
+//! process cuts it short while a view of it is mapped: NTFS refuses to (PM M412,
+//! ERROR_USER_MAPPED_FILE), and its guest's own cut finds it let go of first
+//! ([`Window::evict`]), each vCPU that reaches it meanwhile waiting until it is made again.
 //!
 //! Its held record (kernel patch 0009) says every page of a range mapped to be written
 //! held: the server's section is memory committed before its answer, so no page of it is
@@ -40,16 +48,18 @@ pub const SHARED_NEEDS_WRITE: bool = false;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
+use windows_sys::Win32::Storage::FileSystem::GetFileSizeEx;
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE, MEM_REPLACE_PLACEHOLDER, MEM_RESERVE,
-    MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY,
-    PAGE_READWRITE, UnmapViewOfFile2, VirtualAlloc, VirtualAlloc2, VirtualFree,
+    CreateFileMappingW, MEM_COMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE, MEM_REPLACE_PLACEHOLDER,
+    MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile3, PAGE_NOACCESS,
+    PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile2, VirtualAlloc, VirtualAlloc2, VirtualFree,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+use windows_sys::Win32::System::SystemServices::MEM_COALESCE_PLACEHOLDERS;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 use super::proto;
@@ -87,14 +97,54 @@ struct Entry {
     /// Whether committed zeros stand in for its server's section ([`Window::map_zeros`]);
     /// else each of its ranges is a view of it.
     zeros: bool,
+    /// Where it maps a share's own file: how many of its bytes the file's views hold, the
+    /// file's bytes in it as the window last looked, zeros after them. None where a
+    /// server's section fills every range.
+    file_to: Option<u64>,
+    /// Its views let go of before its guest cuts its file short ([`Window::evict`]), its
+    /// ranges placeholders until they are made what the file is again.
+    evicted: bool,
 }
 
-/// A window's mappings, by window offset; how many of them map each node; and which of
-/// its ranges are mapped at stage 2, standing, one bit a range.
+/// What a range of a mapping is made of: a view of `n` bytes of its file's section, the
+/// whole range's or fewer, committed zeros after them; or zeros alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    View(u64),
+    Zeros,
+}
+
+/// What range `i` of `e`'s ranges is made of.
+fn part(e: &Entry, i: u64) -> Part {
+    match e.file_to {
+        _ if e.zeros => Part::Zeros,
+        None => Part::View(RANGE),
+        Some(to) => part_to(to, i),
+    }
+}
+
+/// What range `i` of a mapping whose file's views hold `to` of its bytes is made of.
+fn part_to(to: u64, i: u64) -> Part {
+    match to.saturating_sub(i.saturating_mul(RANGE)).min(RANGE) {
+        0 => Part::Zeros,
+        n => Part::View(n),
+    }
+}
+
+/// A node the window maps: how many of its mappings do, and its file, where its share's own
+/// server gave it, of which the window makes its sections and reads its size.
+#[derive(Default)]
+struct Node {
+    count: usize,
+    file: Option<OwnedHandle>,
+}
+
+/// A window's mappings, by window offset; the nodes they map; and which of its ranges are
+/// mapped at stage 2, standing, one bit a range.
 #[derive(Default)]
 struct Table {
     ranges: BTreeMap<u64, Entry>,
-    nodes: BTreeMap<u64, usize>,
+    nodes: BTreeMap<u64, Node>,
     standing: Vec<u64>,
 }
 
@@ -110,20 +160,42 @@ impl Table {
             .collect()
     }
 
-    fn insert(&mut self, moffset: u64, entry: Entry) {
-        *self.nodes.entry(entry.mapped.node).or_default() += 1;
+    /// Keeps `entry` at `moffset`, and its node's `file` where the node has none yet.
+    fn insert(&mut self, moffset: u64, entry: Entry, file: Option<OwnedHandle>) {
+        let node = self.nodes.entry(entry.mapped.node).or_default();
+        node.count += 1;
+        if node.file.is_none() {
+            node.file = file;
+        }
         self.ranges.insert(moffset, entry);
     }
 
     fn remove(&mut self, moffset: u64) -> Option<Entry> {
         let e = self.ranges.remove(&moffset)?;
-        if let Some(count) = self.nodes.get_mut(&e.mapped.node) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
+        if let Some(node) = self.nodes.get_mut(&e.mapped.node) {
+            node.count = node.count.saturating_sub(1);
+            if node.count == 0 {
                 self.nodes.remove(&e.mapped.node);
             }
         }
         Some(e)
+    }
+
+    /// The window offsets of node `node`'s mappings.
+    fn of(&self, node: u64) -> Vec<u64> {
+        self.ranges
+            .iter()
+            .filter(|(_, e)| e.mapped.node == node)
+            .map(|(at, _)| *at)
+            .collect()
+    }
+
+    /// Whether the mapping that holds window offset `at` was let go of for a cut.
+    fn evicted_at(&self, at: u64) -> bool {
+        self.ranges
+            .range(..=at)
+            .next_back()
+            .is_some_and(|(start, e)| at < start.saturating_add(e.mapped.len) && e.evicted)
     }
 
     fn is_standing(&self, range: u64) -> bool {
@@ -200,9 +272,14 @@ pub struct Window {
     /// Its changes to what its ranges hold, counted: a fault that came while one was under
     /// way is run again once it is done ([`Window::memory_fault`]).
     changes: AtomicU64,
+    /// Told as a mapping its guest's cut let go of is made again: each vCPU that reached it
+    /// meanwhile waits on it ([`Window::evict`]).
+    restored: Condvar,
     /// What a section's view must begin at a multiple of: the system's allocation
     /// granularity (GetSystemInfo), 64 KiB on every Windows shards runs on.
     granularity: u64,
+    /// The host's page (GetSystemInfo): where a range a file ends within is split.
+    page: u64,
 }
 
 impl std::fmt::Debug for Window {
@@ -244,6 +321,12 @@ impl Window {
         // SAFETY: GetSystemInfo fills the struct it is given.
         unsafe { GetSystemInfo(&mut info) };
         let granularity = u64::from(info.dwAllocationGranularity);
+        let page = u64::from(info.dwPageSize);
+        if page == 0 || !RANGE.is_multiple_of(page) {
+            return Err(format!(
+                "a host page of {page} bytes, which no 2 MiB range is a multiple of"
+            ));
+        }
         if granularity == 0 || !RANGE.is_multiple_of(granularity) {
             return Err(format!(
                 "an allocation granularity of {granularity} bytes, which no 2 MiB range is a multiple of"
@@ -325,7 +408,9 @@ impl Window {
                 ..Table::default()
             }),
             changes: AtomicU64::new(0),
+            restored: Condvar::new(),
             granularity,
+            page,
         })
     }
 
@@ -395,30 +480,148 @@ impl Window {
         }
     }
 
-    /// Frees range `range` back to its placeholder: its view, or its zeros where `zeros`.
-    fn free(&self, range: u64, zeros: bool) {
-        let at = self.range_at(range);
-        // SAFETY: a view or zeros this window placed in its own range, which it replaces
-        // with the range's placeholder again: the guest's access there exits, as stage 2
-        // follows the host's view (M341).
-        let freed = unsafe {
-            if zeros {
-                VirtualFree(at.cast(), RANGE as usize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)
-            } else {
-                UnmapViewOfFile2(
-                    GetCurrentProcess(),
-                    MEMORY_MAPPED_VIEW_ADDRESS { Value: at.cast() },
-                    MEM_PRESERVE_PLACEHOLDER,
-                )
-            }
+    /// Where a range a file's `n` bytes are a view of is split: the page after them, none
+    /// where they reach its last page and the view fills it whole.
+    fn split_at(&self, n: u64) -> Option<u64> {
+        let head = n.checked_next_multiple_of(self.page)?;
+        (head < RANGE).then_some(head)
+    }
+
+    /// Unmaps a view this window placed at `at`, its placeholder there again: whether it did.
+    fn unmap_view(at: *mut u8) -> bool {
+        // SAFETY: a view this window placed in its own range, replaced with its placeholder
+        // again: the guest's access there exits, as stage 2 follows the host's view (M341).
+        let unmapped = unsafe {
+            UnmapViewOfFile2(
+                GetCurrentProcess(),
+                MEMORY_MAPPED_VIEW_ADDRESS { Value: at.cast() },
+                MEM_PRESERVE_PLACEHOLDER,
+            )
         };
-        if freed == 0 {
+        unmapped != 0
+    }
+
+    /// Frees `len` bytes of zeros this window committed at `at` to their placeholder.
+    fn release_zeros(at: *mut u8, len: u64) -> bool {
+        // SAFETY: zeros this window committed in its own range, of exactly `len` bytes,
+        // replaced with their placeholder again.
+        let freed = unsafe { VirtualFree(at.cast(), len as usize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) };
+        freed != 0
+    }
+
+    /// Makes range `range`'s two placeholders, split at the page after a view, one again.
+    fn coalesce(&self, range: u64) -> bool {
+        let at = self.range_at(range);
+        // SAFETY: the two placeholders of this window's own range, which together are it.
+        let made = unsafe { VirtualFree(at.cast(), RANGE as usize, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS) };
+        made != 0
+    }
+
+    /// Frees range `range` back to its placeholder, one again: its view, its zeros, or a
+    /// split range's view and zeros, coalesced (`part`).
+    fn free(&self, range: u64, part: Part) {
+        let at = self.range_at(range);
+        let freed = match part {
+            Part::Zeros => Self::release_zeros(at, RANGE),
+            Part::View(n) => match self.split_at(n) {
+                None => Self::unmap_view(at),
+                Some(head) => {
+                    Self::unmap_view(at)
+                        && Self::release_zeros(at.wrapping_add(head as usize), RANGE - head)
+                        && self.coalesce(range)
+                }
+            },
+        };
+        if !freed {
             crate::debug!(
                 "virtio-fs: freeing a DAX range at {:#x}: {}",
                 self.gpa.saturating_add(range.saturating_mul(RANGE)),
                 std::io::Error::last_os_error()
             );
         }
+    }
+
+    /// Makes range `range` `part` of a mapping, writable by the guest only if `writable`: a
+    /// view of `section` from `foffset`, of the whole range, or of its file's `n` bytes in
+    /// a placeholder split after the page that holds them, zeros committed in the rest; or
+    /// zeros alone. Whether it did: where it did not, the range is its placeholder again.
+    fn place(
+        &self,
+        range: u64,
+        section: Option<&OwnedHandle>,
+        foffset: u64,
+        part: Part,
+        writable: bool,
+    ) -> bool {
+        let at = self.range_at(range);
+        let zeros = |at: *mut u8, len: u64| {
+            // SAFETY: committed zeros replace a placeholder of this window's own, at its
+            // base and of its size.
+            let made = unsafe {
+                VirtualAlloc2(
+                    GetCurrentProcess(),
+                    at.cast(),
+                    len as usize,
+                    MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+                    protection(writable),
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            made == at.cast()
+        };
+        let view = |section: &OwnedHandle, len: u64| {
+            // SAFETY: a view of `len` bytes of the section from `foffset` replaces the
+            // range's placeholder, which its pages fill (checked by its caller: the whole
+            // range, or the placeholder split after the page that holds them).
+            let made = unsafe {
+                MapViewOfFile3(
+                    section.as_raw_handle(),
+                    GetCurrentProcess(),
+                    at.cast(),
+                    foffset,
+                    len as usize,
+                    MEM_REPLACE_PLACEHOLDER,
+                    protection(writable),
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            made.Value == at.cast()
+        };
+        let placed = match (part, section) {
+            (Part::Zeros, _) => zeros(at, RANGE),
+            (Part::View(_), None) => false,
+            (Part::View(n), Some(section)) => match self.split_at(n) {
+                None => view(section, n),
+                Some(head) => {
+                    // SAFETY: the range's placeholder, split after `head` bytes.
+                    let split = unsafe {
+                        VirtualFree(at.cast(), head as usize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)
+                    } != 0;
+                    if !split {
+                        false
+                    } else if !view(section, n) {
+                        self.coalesce(range);
+                        false
+                    } else if !zeros(at.wrapping_add(head as usize), RANGE - head) {
+                        Self::unmap_view(at);
+                        self.coalesce(range);
+                        false
+                    } else {
+                        true
+                    }
+                }
+            },
+        };
+        if !placed {
+            crate::debug!(
+                "virtio-fs: placing a DAX range at {:#x}: {}",
+                self.gpa.saturating_add(range.saturating_mul(RANGE)),
+                std::io::Error::last_os_error()
+            );
+        }
+        placed
     }
 
     /// Maps each of `count` ranges from `first` at stage 2 that is not mapped there yet, and
@@ -440,15 +643,17 @@ impl Window {
         Ok(())
     }
 
-    /// Maps `len` bytes of `section` from `foffset` at window offset `moffset`, writable by
-    /// the guest only if `writable`, replacing what was there: a FUSE_SETUPMAPPING's. Its
-    /// bytes, which its microVM's I/O limits charge the mapping (D178): the whole of it, as
-    /// where a file ends within a server's section is the server's to know. An errno where
-    /// the range lies outside the window, in other than whole ranges, begins its section
-    /// where no view can, or the host refuses the view.
+    /// Maps `len` bytes of node `node`'s file from `foffset` at window offset `moffset`,
+    /// writable by the guest only if `writable`, replacing what was there: a
+    /// FUSE_SETUPMAPPING's, of what its server gave, a section of its own or the file
+    /// itself, of which the window makes a section as long as the file. Its bytes, which its
+    /// microVM's I/O limits charge the mapping (D178): the file's in it, and the whole of it
+    /// where a server's section holds it, where the file ends being that server's to know.
+    /// An errno where the range lies outside the window, in other than whole ranges, begins
+    /// its file where no view can, or the host refuses the view.
     pub fn map(
         &self,
-        section: OwnedHandle,
+        object: OwnedHandle,
         node: u64,
         foffset: u64,
         moffset: u64,
@@ -459,37 +664,36 @@ impl Window {
         if !foffset.is_multiple_of(self.granularity) || foffset.checked_add(len).is_none() {
             return Err(proto::EINVAL);
         }
+        let (section, file, file_to) = match super::made_of(object.as_raw_handle()) {
+            Some(super::Made::Section) => (Some(object), None, None),
+            Some(super::Made::File) => {
+                let size = file_size(&object).ok_or(proto::EIO)?;
+                let to = len.min(size.saturating_sub(foffset));
+                let section = match to {
+                    0 => None,
+                    _ => Some(section_of(&object, writable).ok_or(proto::EIO)?),
+                };
+                (section, Some(object), Some(to))
+            }
+            None => return Err(proto::EIO),
+        };
+        let parts = |i: u64| file_to.map_or(Part::View(RANGE), |to| part_to(to, i));
         let mut table = self.lock();
         self.forget(&mut table, moffset, len);
         for i in 0..count {
-            let at = self.range_at(first + i);
-            // SAFETY: the range's placeholder, of exactly RANGE bytes at `at`, replaced by a
-            // view of the section within it (checked: no overflow above).
-            let view = unsafe {
-                MapViewOfFile3(
-                    section.as_raw_handle(),
-                    GetCurrentProcess(),
-                    at.cast(),
-                    foffset + i * RANGE,
-                    RANGE as usize,
-                    MEM_REPLACE_PLACEHOLDER,
-                    protection(writable),
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            if view.Value != at.cast() {
-                crate::debug!(
-                    "virtio-fs: placing a DAX range at {:#x}: {}",
-                    self.gpa.saturating_add(moffset),
-                    std::io::Error::last_os_error()
-                );
-                (first..first + i).for_each(|range| self.free(range, false));
+            if !self.place(
+                first + i,
+                section.as_ref(),
+                foffset + i * RANGE,
+                parts(i),
+                writable,
+            ) {
+                (0..i).for_each(|j| self.free(first + j, parts(j)));
                 return Err(proto::EIO);
             }
         }
         if let Err(errno) = self.stand(&mut table, first, count) {
-            (first..first + count).for_each(|range| self.free(range, false));
+            (0..count).for_each(|j| self.free(first + j, parts(j)));
             return Err(errno);
         }
         table.insert(
@@ -502,11 +706,14 @@ impl Window {
                     writable,
                 },
                 zeros: false,
+                file_to,
+                evicted: false,
             },
+            file,
         );
         self.record_held(moffset, len, writable);
         self.changes.fetch_add(1, Ordering::AcqRel);
-        Ok(len)
+        Ok(file_to.unwrap_or(len))
     }
 
     /// Zeros over `len` bytes at window offset `moffset`, which the guest holds as node
@@ -525,31 +732,13 @@ impl Window {
         let mut table = self.lock();
         self.forget(&mut table, moffset, len);
         for i in 0..count {
-            let at = self.range_at(first + i);
-            // SAFETY: committed zeros replace the range's placeholder, at its base and size.
-            let zeros = unsafe {
-                VirtualAlloc2(
-                    GetCurrentProcess(),
-                    at.cast(),
-                    RANGE as usize,
-                    MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
-                    protection(writable),
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            if zeros != at.cast() {
-                crate::debug!(
-                    "virtio-fs: zeros for a DAX range at {:#x}: {}",
-                    self.gpa.saturating_add(moffset),
-                    std::io::Error::last_os_error()
-                );
-                (first..first + i).for_each(|range| self.free(range, true));
+            if !self.place(first + i, None, 0, Part::Zeros, writable) {
+                (0..i).for_each(|j| self.free(first + j, Part::Zeros));
                 return Err(proto::EIO);
             }
         }
         if let Err(errno) = self.stand(&mut table, first, count) {
-            (first..first + count).for_each(|range| self.free(range, true));
+            (0..count).for_each(|j| self.free(first + j, Part::Zeros));
             return Err(errno);
         }
         table.insert(
@@ -562,7 +751,10 @@ impl Window {
                     writable,
                 },
                 zeros: true,
+                file_to: None,
+                evicted: false,
             },
+            None,
         );
         self.record_held(moffset, len, false);
         self.changes.fetch_add(1, Ordering::AcqRel);
@@ -581,16 +773,18 @@ impl Window {
 
     /// Frees, and forgets, every mapping that meets `len` bytes at `moffset`, each whole:
     /// one a new mapping overlaps in part leaves nothing of it reachable (Linux maps whole
-    /// 2 MiB ranges, which never overlap; a guest of another kind may). Stage 2 stands.
+    /// 2 MiB ranges, which never overlap; a guest of another kind may). Stage 2 stands. One
+    /// let go of for a cut is its placeholders already.
     fn forget(&self, table: &mut Table, moffset: u64, len: u64) {
         for (at, n) in table.meeting(moffset, len) {
-            if let Some(e) = table.remove(at) {
-                for range in at / RANGE..(at.saturating_add(n)) / RANGE {
-                    self.free(range, e.zeros);
+            if let Some(e) = table.remove(at).filter(|e| !e.evicted) {
+                for i in 0..n / RANGE {
+                    self.free(at / RANGE + i, part(&e, i));
                 }
             }
             self.record_held(at, n, false);
         }
+        self.restored.notify_all();
     }
 
     /// Records again which pages its host holds of the ranges that map node `node`'s file
@@ -598,14 +792,117 @@ impl Window {
     /// held from its mapping on (the server's section is memory), and a write leaves it so.
     pub fn rerecord(&self, _node: u64, _offset: u64, _len: u64) {}
 
-    /// Makes the ranges of the files of `nodes` what each file is now: nothing changes, as a
-    /// range is a view of its server's section, which reaches past every range asked of it,
-    /// zeros past the file's end.
-    pub fn reconcile(&self, _nodes: &[u64]) {}
+    /// Makes the ranges of the files of `nodes` what each file is now, where the window
+    /// made them of a share's own file: called before the guest is told anything of their
+    /// sizes, by the reply to a request that may tell it, so that what it may read of a
+    /// file grown is the file's, and what one cut short has no more, zeros; and a mapping
+    /// let go of for its guest's cut is made again, its waiting vCPUs told. A server's
+    /// section, which reaches past every range asked of it, changes not.
+    pub fn reconcile(&self, nodes: &[u64]) {
+        let mut table = self.lock();
+        let mut changed = false;
+        for &node in nodes {
+            let size = table
+                .nodes
+                .get(&node)
+                .and_then(|n| n.file.as_ref())
+                .and_then(file_size);
+            for at in table.of(node) {
+                let Some(e) = table.ranges.get(&at) else {
+                    continue;
+                };
+                let (
+                    Some(was),
+                    Mapped {
+                        len,
+                        foffset,
+                        writable,
+                        ..
+                    },
+                ) = (e.file_to, e.mapped)
+                else {
+                    continue;
+                };
+                // A file whose size cannot be read is left as it was, but one let go of,
+                // which is made zeros, as past its end.
+                let to = size.map_or(0, |size| len.min(size.saturating_sub(foffset)));
+                if !e.evicted && (size.is_none() || to == was) {
+                    continue;
+                }
+                let (first, evicted) = (at / RANGE, e.evicted);
+                if !evicted {
+                    (0..len / RANGE).for_each(|i| self.free(first + i, part_to(was, i)));
+                }
+                let section = table
+                    .nodes
+                    .get(&node)
+                    .and_then(|n| n.file.as_ref())
+                    .filter(|_| to > 0)
+                    .and_then(|f| section_of(f, writable));
+                let to = if section.is_some() { to } else { 0 };
+                let mut zeros = false;
+                for i in 0..len / RANGE {
+                    if !self.place(
+                        first + i,
+                        section.as_ref(),
+                        foffset + i * RANGE,
+                        part_to(to, i),
+                        writable,
+                    ) {
+                        // What a placement that failed leaves is its placeholder: the mapping
+                        // zeros, as past its file's end.
+                        (0..i).for_each(|j| self.free(first + j, part_to(to, j)));
+                        (0..len / RANGE).for_each(|j| {
+                            let _ = self.place(first + j, None, 0, Part::Zeros, writable);
+                        });
+                        zeros = true;
+                        break;
+                    }
+                }
+                if let Some(e) = table.ranges.get_mut(&at) {
+                    (e.file_to, e.zeros, e.evicted) = (Some(to), zeros, false);
+                }
+                changed = true;
+            }
+        }
+        drop(table);
+        if changed {
+            self.changes.fetch_add(1, Ordering::AcqRel);
+            self.restored.notify_all();
+        }
+    }
 
-    /// Another process cut node `node`'s file short: as [`Window::reconcile`], nothing to
-    /// change.
-    pub fn cut(&self, _node: u64) {}
+    /// Another process cut node `node`'s file short: its ranges made what it is now, as
+    /// [`Window::reconcile`] makes them; on NTFS none does while a view of it is mapped.
+    pub fn cut(&self, node: u64) {
+        self.reconcile(&[node]);
+    }
+
+    /// Lets go of node `node`'s views before its guest cuts its file short, which NTFS
+    /// refuses while a view of it is mapped (PM M412): each range of its file's mappings its
+    /// placeholder again, until [`Window::reconcile`] makes it what the file is then; a vCPU
+    /// that reaches one meanwhile waits ([`Window::memory_fault`]).
+    pub fn evict(&self, node: u64) {
+        let mut table = self.lock();
+        let mut changed = false;
+        for at in table.of(node) {
+            let Some(e) = table.ranges.get_mut(&at) else {
+                continue;
+            };
+            if e.evicted || e.zeros || e.file_to.is_none() {
+                continue;
+            }
+            for i in 0..e.mapped.len / RANGE {
+                self.free(at / RANGE + i, part(e, i));
+            }
+            e.evicted = true;
+            changed = true;
+        }
+        drop(table);
+        if changed {
+            self.changes.fetch_add(1, Ordering::AcqRel);
+        }
+    }
 
     /// A guest's access to memory the host could not give, at `gpa`, which WHP's memory
     /// access exit names: in a mapped range, only a vCPU's access while another thread
@@ -621,6 +918,15 @@ impl Window {
             return false;
         };
         let table = self.lock();
+        // A mapping let go of for its guest's cut: run again once it is made again.
+        if table.evicted_at(at) {
+            drop(
+                self.restored
+                    .wait_while(table, |t| t.evicted_at(at))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            return true;
+        }
         let held = table
             .ranges
             .range(..=at)
@@ -658,6 +964,33 @@ impl Window {
     }
 }
 
+/// `file`'s size as Windows has it now: none where it cannot be read.
+fn file_size(file: &OwnedHandle) -> Option<u64> {
+    let mut size = 0i64;
+    // SAFETY: a file's handle the window holds, its size read into a local.
+    let read = unsafe { GetFileSizeEx(file.as_raw_handle(), &mut size) };
+    (read != 0).then(|| u64::try_from(size).ok()).flatten()
+}
+
+/// A section of `file` as long as it is now, to write too where `writable`: none where
+/// Windows makes none (a file of no bytes, or one opened to read alone asked to write).
+fn section_of(file: &OwnedHandle, writable: bool) -> Option<OwnedHandle> {
+    // SAFETY: a file's handle the window holds; an unnamed section as long as the file
+    // (its sizes 0).
+    let made = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            protection(writable),
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    // SAFETY: the section just made, owned from here on.
+    (!made.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(made) })
+}
+
 impl Drop for Window {
     /// Frees every range's view or zeros, and unmaps every standing range at stage 2, before
     /// the placeholders are released: stage 2 must not map address space this process has
@@ -680,7 +1013,6 @@ mod tests {
     //! The window over real pagefile-backed sections, as slates' daemon makes them (PM M343),
     //! with a stage 2 that records what it is told: what a WHP guest reaches through it is
     //! M341's, and the guest test in tests/slates_fs.rs.
-    use std::os::windows::io::FromRawHandle as _;
     use std::sync::Arc;
 
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -805,6 +1137,86 @@ mod tests {
     /// through the other; stage 2 told to map each of the two ranges once, writable; and a
     /// mapping of another section over them to be its bytes with stage 2 told nothing more,
     /// as it follows the host's view (M341).
+    /// A share's own file (D197's slice 4): its ranges its bytes, a range it ends within a
+    /// view as long as them and zeros after, each way between the guest and the file; grown,
+    /// its new bytes the guest's once the window follows it; refused a cut while a view of
+    /// it is mapped (PM M412), and let go of first, a vCPU that faults on it meanwhile
+    /// waiting until it is made what the file is, zeros past its new end; unmapped, its
+    /// ranges whole placeholders again, which a server's section of a whole range fills.
+    #[test]
+    fn a_files_ranges_are_its_bytes_then_zeros_and_follow_it() {
+        const SIZE: u64 = MIB + 100;
+        let dir = shards_testdir::TempDir::new("whp-file").unwrap();
+        let path = dir.join("f");
+        let bytes: Vec<u8> = (0..SIZE as usize).map(pattern).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let open = || {
+            OwnedHandle::from(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap(),
+            )
+        };
+        let told = Arc::new(Told::default());
+        let w = window(&told, 8 * MIB);
+        assert_eq!(w.map(open(), 9, 0, 0, 4 * MIB, true), Ok(SIZE));
+        for at in (0..SIZE).step_by(4096).chain([SIZE - 1]) {
+            assert_eq!(read(&w, at), pattern(at as usize), "{at:#x}");
+        }
+        for at in [SIZE, SIZE + 4096, 2 * MIB - 1, 2 * MIB, 4 * MIB - 1] {
+            assert_eq!(read(&w, at), 0, "zeros past its end, {at:#x}");
+        }
+        write(&w, 10, 0xa5);
+        assert_eq!(
+            std::fs::read(&path).unwrap()[10],
+            0xa5,
+            "the guest's store is the file's"
+        );
+        // Grown past its range: the guest's once the window follows it.
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        std::os::windows::fs::FileExt::seek_write(&file, &[0x5a; 300], 2 * MIB).unwrap();
+        // Past the page that held its end, which its view held whole already.
+        std::os::windows::fs::FileExt::seek_write(&file, &[0x33; 8192], MIB + 4096).unwrap();
+        assert_eq!(read(&w, MIB + 8192), 0, "not yet followed");
+        w.reconcile(&[9]);
+        assert_eq!((read(&w, MIB + 8192), read(&w, 2 * MIB + 299)), (0x33, 0x5a));
+        assert_eq!(read(&w, 2 * MIB + 300), 0);
+        assert_eq!(read(&w, 3 * MIB), 0);
+        // Cut short: refused while a view of it is mapped; let go of first, it is cut, and a
+        // vCPU that reached it meanwhile runs again once it is made what the file is.
+        assert!(
+            file.set_len(4096).is_err(),
+            "NTFS cuts no file a view of which is mapped"
+        );
+        w.evict(9);
+        std::thread::scope(|scope| {
+            let (done, ran) = std::sync::mpsc::channel();
+            let w = &w;
+            scope.spawn(move || done.send(w.memory_fault(Some(GPA + 8192))).unwrap());
+            assert!(
+                ran.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+                "waits while its mapping is let go of"
+            );
+            file.set_len(4096).unwrap();
+            w.reconcile(&[9]);
+            assert!(ran.recv().unwrap(), "run again");
+        });
+        assert_eq!(
+            (read(&w, 4095), read(&w, 4096), read(&w, 2 * MIB)),
+            (pattern(4095), 0, 0)
+        );
+        assert_eq!(told.0.lock().unwrap().len(), 2, "stage 2 stands throughout");
+        // Unmapped: whole placeholders again, the file let go of.
+        w.unmap(0, 4 * MIB).unwrap();
+        assert!(!w.maps(9));
+        file.set_len(0).unwrap();
+        let whole = Section::new((2 * MIB) as usize, |_| 0x77);
+        assert_eq!(w.map(whole.give(), 7, 0, 0, 2 * MIB, false), Ok(2 * MIB));
+        assert_eq!(read(&w, 2 * MIB - 1), 0x77);
+    }
+
     #[test]
     fn a_range_is_its_sections_bytes_each_way_and_stage_2_is_told_once() {
         let told = Arc::new(Told::default());

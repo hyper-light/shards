@@ -92,6 +92,7 @@ const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
   --resume: DIR is a run's snapshot, its command running already: take its run's stdio,
             log and swap from the daemon at descriptor FD, then resume it.
+  On Windows each FD is the name its spawner gave the VM that pipe or socket by.
   --backing: a file the snapshot restores against, read-only with :ro: given, a snapshot
              naming any other is refused, its state being what the VM saving it wrote.
   --gpu: restore in the GPU's VM process, which a snapshot of a VM with a GPU needs.
@@ -517,9 +518,10 @@ struct Restore {
     workload: Options,
     /// `--warm FD` (Windows: `--warm NAME`): the daemon's link ([`LinkArg`]).
     warm: Option<LinkArg>,
-    /// `--working-set FD`: where the working set this restore records goes, for its spawner
-    /// to keep (D30).
-    working_set_to: Option<i32>,
+    /// `--working-set FD` (Windows: `--working-set NAME`, the name its spawner handed the
+    /// pipe by): where the working set this restore records goes, for its spawner to keep
+    /// (D30).
+    working_set_to: Option<LinkArg>,
     /// `--resume FD`, in place of `--warm FD`: the snapshot is a run's, whose command goes
     /// on (D176).
     resume: bool,
@@ -560,11 +562,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             // Which generation's layer that file is a clone of.
             "--layer-cloned" => layer_cloned = Some(text(value("--layer-cloned")?)?),
             "--working-set" => {
-                let fd = text(value("--working-set")?)?;
-                working_set_to = Some(
-                    fd.parse::<i32>()
-                        .map_err(|_| format!("--working-set: {fd:?} is not a descriptor"))?,
-                );
+                working_set_to = Some(link_arg("--working-set", text(value("--working-set")?)?)?)
             }
             "--warm" => warm = Some(link_arg("--warm", text(value("--warm")?)?)?),
             // A run's snapshot (D176): served as a warm VM's run is, its command running
@@ -1060,15 +1058,17 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
 }
 
 /// Where a restore's recorded working set goes (`--working-set FD`): its spawner's
-/// descriptor, which it writes the generation's name to, a newline, then the working set
-/// as the daemon takes one (`snapshot::encode_working_set`), and closes; nothing where it
-/// recorded none, its generation having one already. Its spawner keeps it beside that
-/// generation (`vm::accept_working_set`): no VM writes its snapshot (D30).
+/// descriptor (on Windows its pipe, handed by name), which it writes the generation's name
+/// to, a newline, then the working set as the daemon takes one
+/// (`snapshot::encode_working_set`), and closes; nothing where it recorded none, its
+/// generation having one already. Its spawner keeps it beside that generation
+/// (`vm::accept_working_set`): no VM writes its snapshot (D30).
 struct WorkingSetTo(std::fs::File);
 
 impl WorkingSetTo {
+    /// The pipe its spawner left it at descriptor `fd`.
     #[cfg(unix)]
-    fn new(fd: i32) -> Result<WorkingSetTo, String> {
+    fn new(fd: LinkArg) -> Result<WorkingSetTo, String> {
         use std::os::fd::FromRawFd as _;
         // SAFETY: fcntl(2) asks whether the descriptor is open.
         if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
@@ -1083,12 +1083,14 @@ impl WorkingSetTo {
         Ok(WorkingSetTo(unsafe { std::fs::File::from_raw_fd(fd) }))
     }
 
-    /// No restore records its working set where descriptors are not inherited by number.
-    #[cfg(not(unix))]
-    fn new(fd: i32) -> Result<WorkingSetTo, String> {
-        Err(format!(
-            "--working-set {fd}: a descriptor this platform does not pass"
-        ))
+    /// The pipe its spawner handed it by `name`, as `--warm`'s is: the CLI's, which keeps
+    /// the working set as the VM ends.
+    #[cfg(windows)]
+    fn new(name: LinkArg) -> Result<WorkingSetTo, String> {
+        Ok(WorkingSetTo(std::fs::File::from(take_given(
+            "--working-set",
+            &name,
+        )?)))
     }
 
     /// Hands what `handle` records once `after` has passed since its vCPUs started, or the
@@ -2568,13 +2570,55 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
         }
         ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
         ExitReason::Reset => {
-            report("guest requested a reset");
+            let said = if console == Console::Discard {
+                last_said(&handle.console_said())
+            } else {
+                String::new()
+            };
+            report(format!("guest requested a reset{said}"));
             ExitCode::from(3)
         }
         ExitReason::Error(e) => {
             report(e);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What a guest whose console no one read wrote to it last, `said`, as a kernel writes there
+/// why it panics (`panic=-1` resets it): its lines, each other character a terminal acts on
+/// written as its escape, so that what a guest wrote moves no terminal it is shown on.
+/// Nothing where it wrote nothing.
+fn last_said(said: &[u8]) -> String {
+    let mut text = String::new();
+    for c in String::from_utf8_lossy(said).chars() {
+        match c {
+            '\r' => {}
+            '\n' | '\t' => text.push(c),
+            c if c.is_control() => text.extend(c.escape_default()),
+            c => text.push(c),
+        }
+    }
+    match text.trim_start_matches('\n').trim_end() {
+        "" => String::new(),
+        said => format!(", its console's last lines:\n{said}"),
+    }
+}
+
+#[cfg(test)]
+mod said {
+    use super::last_said;
+
+    /// A guest's last words are its lines as it wrote them, their carriage returns gone and
+    /// each other character a terminal acts on escaped; nothing where it said nothing.
+    #[test]
+    fn a_guests_last_words_move_no_terminal() {
+        assert_eq!(last_said(b""), "");
+        assert_eq!(last_said(b"\r\n \r\n"), "");
+        assert_eq!(
+            last_said(b"\r\n[    0.44] Kernel panic - not syncing: VFS\r\n\x1b[2J\x1b]0;mine\x07\tyes\r\n"),
+            ", its console's last lines:\n[    0.44] Kernel panic - not syncing: VFS\n\\u{1b}[2J\\u{1b}]0;mine\\u{7}\tyes"
+        );
     }
 }
 

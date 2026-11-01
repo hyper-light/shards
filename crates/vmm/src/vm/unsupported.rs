@@ -120,6 +120,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn console_said(&self) -> Vec<u8> {
+        match self.0 {}
+    }
+
     pub fn wait_for_snapshot(&self) {
         match self.0 {}
     }

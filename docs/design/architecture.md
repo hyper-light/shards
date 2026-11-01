@@ -2811,7 +2811,8 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       held (patch 0009). The ask is the Unix one plus the VM's pid (le32) and its stream
       handle's value (le64), 38 bytes. The server duplicates the section only into a process
       holding the share's own stream, and answers with its value. The device adopts a value
-      only if NtQueryObject's type is "Section", and leaves any other alone.
+      only if NtQueryObject's type is "Section", or "File", which shards' own share process
+      gives (D197's slice 4), and leaves any other alone.
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
@@ -4018,7 +4019,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3j)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3k)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -4107,10 +4108,10 @@ local administration is (../focal docs/cluster-admin.md).
   each source's metadata resolved there as a build there resolves it, its store and its
   network with the client's logins (`policy::Resolve`, whose requests and answers, image
   configs and attestation chains among them, have no encoding to cross yet).
-- From a Windows client, `shards copy vm` (refused) and Docker's CLI through a context:
-  shards serves neither on Windows itself yet, cp.rs's daemon passing descriptors and
-  the relay being the daemon's, which Windows runs none of.
 - Extended attributes in a build's copy beyond `security.capability`.
+- On a macOS machine, two names of a Linux client's context that differ in case alone:
+  APFS, case-insensitive as macOS formats it by default, keeps them as one file (part 3k
+  keeps them apart on Windows).
 - One connection for a context's commands, where each command, and each SSH agent
   connection a step makes, is a handshake of its own.
 - Credentials found only when the machine pulls. A run or create that may pull
@@ -4836,9 +4837,8 @@ where the machine sent the rest of the archive first.
 Where Docker's `ssh://` context starts `docker system dial-stdio` through a shell account
 for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
 each relayed connection opens a QUIC connection of its own, a handshake each, where one
-connection kept for the context, a stream each, would not (part 5 measures both); a Windows
-client, whose daemon serves no Engine API yet (D195; the parity plan's step 8), has no
-engine socket (Docker's `npipe://`).
+connection kept for the context, a stream each, would not (part 5 measures both). On
+Windows a context's engine is a named pipe (Docker's `npipe://`, part 3k).
 Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` through the
 socket; a microVM made through the context, listed there and not by the client's own engine;
 Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
@@ -4855,6 +4855,74 @@ on, the machine's or the client's; an enrolled key's join refused; the contexts 
 removed socket not bound again; the sockets kept as the daemon closes; the relays not hung
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
+
+**Part 3k, built: a Windows machine serves other machines' clients** (the platform parity
+audit's row 10). Since D195 a Windows host runs shards' daemon; its listener runs there now
+too, so that a laptop builds and runs on a Windows box with a GPU or 32 cores as on a Linux
+one. What serves a client there is the Unix machine's code, but where Windows has no
+descriptors to give, no pseudo-terminal and no file system of Linux's:
+- **A client's command gets its streams and grants as handles.** It is started through the
+  daemon's spawner with its stdio, its signals' pipe, a build's secrets, its SSH agents'
+  pipes and a `--cidfile`'s pipe each given by number (shards_ipc `spawn`, its grants pipe
+  named by `SHARDS_GIVEN`). The daemon's own `SHARDS_GIVEN`, which its environment passes to
+  its children, came first and was the one taken, so every such command found none of its
+  grants: a child's environment now holds its own alone. Its signals' pipe is past every
+  number given it (`signal_descriptor`), where a constant 4 was a build's second secret's.
+- **Its terminal is a pseudoconsole** (ConPTY), sized and resized as the client's terminal
+  is. One made with no flags draws its screen whole as it starts (a clear, home, and an
+  erased line a row), which, relayed, cleared the client's screen as each command started;
+  made with `PSEUDOCONSOLE_INHERIT_CURSOR`, it asks where its cursor is instead (`ESC[6n`)
+  and waits for an answer (CreatePseudoConsole's documentation), which the daemon gives it
+  at once, its last row's first column, and keeps from the client (`Shown`). A build's
+  progress follows a resize as docker/cli's MonitorTtySize follows one on Windows, its
+  terminal's size asked every quarter second (cli/command/container/tty.go).
+- **A build's context copy is a Linux tree on NTFS**, as D197's shares keep a guest's
+  files, as WSL keeps Linux's (crates/ntfs, `shards_archive::apply_layer_lx`): each name as
+  Linux names it, the characters no NTFS name holds escaped into the Private Use Area; a
+  mode, owner and device in WSL's `$LX` attributes; a symlink, FIFO or device WSL's reparse
+  point, which an unelevated process makes; each directory case-sensitive; an extended
+  attribute an EA of its own; each name opened relative to its directory's handle,
+  following no reparse point, so that no entry of a layer reaches past the copy, and one
+  beneath a symlink is refused, as no client's walk sends one. The copy is marked a Linux
+  tree, and the build's walk of it (shards-build's `host::Tree`), and the manifest the
+  client compares with, read it as fsutil reads a Linux host's: its names, modes, links,
+  devices, inodes and attributes the client's. A tree of the Windows host's own is read as
+  fsutil reads one there, though WSL kept some of its files' metadata, as Docker's builds
+  of it are. Kept as NTFS keeps its own files, a Linux or macOS client's context went to
+  its build with every file 0755, its symlinks only where the machine's user may make one,
+  and two names differing in case alone one file; and a time NTFS keeps to 100 ns, where
+  a Linux or macOS client's is to the nanosecond, is the client's where it is the client's
+  cut to 100 ns (`same_time`), as a copy whose times were never the client's went whole
+  again at each build.
+- **A build's output to a directory comes as its archive**: the client asks for a
+  `type=local` output as `type=tar` and unpacks the archive into its directory, so that the
+  output's files never land on the machine's disk, where NTFS would have kept their modes,
+  links and owners as its own (part 3f's frames, unchanged).
+- **An agent's directory is read as a build reads its context** (shards-build's walk, here
+  and there alike), so that an agent built through a context, of the client's files copied
+  to its machine, is the one the client builds of them: a Linux client's modes, symlinks and
+  hard links its own; and an agent built on Windows has fsutil's modes, 0755 and 0555
+  read-only, as a build of the same files has, where its files were 0644 and 0444, none of
+  its scripts executable, and std read none of a Linux tree's symlinks ("Unsupported reparse
+  point type", tests/context.rs's artifact test on windows-2025 at 2d53e206).
+- **And a Windows client** copies through a context (`copy vm`, driven here step by step as
+  on Unix, cli/cp.rs), and its daemon serves each context's engine at a named pipe, which
+  the file at the context's socket path names and `inspect context` gives as
+  `npipe:////./pipe/…`: a thread of each context's takes its clients and hands them to the
+  daemon, as WaitForMultipleObjects waits on 64 handles at most and a home joins as many
+  contexts as it is told.
+
+Tested in `tests/context.rs`, whole, on CI's windows-2022 and windows-2025, where the client
+and the machine are the runner's, a Windows client's own context its case (budget-e2e
+41273324343 at 7452404e, the copy a Linux tree: 19 of 19 on each, `SHARDS_REQUIRE_VMS=1`;
+before it, 41242328368 at ca024da3 and 41246900473 at 4c5fa52c). A Linux client's tree on a
+Windows machine is tested by `crates/archive/tests/lx.rs` (a layer of modes, symlinks of
+0777 and 0755, a hard link, a FIFO, a device, case-distinct names and `a:b` applied and read
+back, its whiteouts, and what reaches past the tree refused: all 8 copies of 41273319640 on
+windows-2025), `synced::tests::a_linux_clients_tree_is_its_own_in_a_windows_copy` (the
+manifest and a build's load of such a copy the client's) and
+`agent::tests::an_agents_files_are_read_as_a_build_reads_its_context` (the binary's own
+tests on both runners, 41262337649 at 41c3560d).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -6091,10 +6159,11 @@ they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVM
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
 alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). On macOS and Windows,
 which have no group of processes a user's tools cap, a group shards keeps (D183's slice 3):
-`a_microvm_under_a_group_is_held_to_its_budget` on macOS, a share's files given back;
-and on both, `what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, 512
-MiB of a joiner's image read through its guest's page cache (D119; no host directory, which
-Windows shares with the platform parity plan's step 6), its group's `memory.high` written a
+`a_microvm_under_a_group_is_held_to_its_budget`, a share's files given back, on Windows
+through D197's FUSE server over NTFS (its microVMs from 764 to 768 MiB to 272 on jupiter,
+within a budget 451 to 492 MiB short); and
+`what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, 512 MiB of a
+joiner's image read through its guest's page cache (D119), its group's `memory.high` written a
 quarter GiB short of its VM process: told its room and asked to give back, the microVM
 gives back what its joiner read, its VM process from 642 to 651 MiB to 261 to 266 on
 jupiter's WHP and from 1,028 to 1,038 to 265 to 275 on the M5 Max, idle 253 to 256 (PM
@@ -6540,197 +6609,6 @@ destinations the guest's, Linux's.
 `a_windows_hosts_binds_are_its_drives` the binds on Windows; containers.rs, compose.rs and
 engine.rs bind host directories on jupiter and CI's Windows runners (D197's slice 3).
 
-### D199. A run's log sent to macOS's own log: `oslog`, and syslog's local default there (built)
-
-`--log-driver oslog` is served on macOS, the journal's counterpart there (D166, D198): a
-run's lines go to macOS's unified log, which `log show` and Console read. Docker has no
-driver of macOS's, whose engine runs in a Linux VM there. Sent as every driver's are, from
-shards' store, by the daemon's shipper (D163).
-
-- **Through os_log, in the daemon.** macOS keeps nothing sent to syslogd's socket,
-  `/var/run/syslog`, at any level, while its syslog(3) and os_log reach the unified log
-  (PM M374). So a line is an entry the daemon writes with os_log_with_type, through a shim
-  of its macros that only a C compiler expands (daemon/ship/oslog.c, libSystem's, no launch
-  cost). Its message is public: what a run wrote is no secret of shards' to redact.
-- **Found as journald's are.** Its subsystem is `shards` and its category the run's tag
-  (its short ID unless `tag` says), as journald's SYSLOG_IDENTIFIER is: `log show
-  --predicate 'subsystem == "shards" AND category == "web"'`. stdout's lines are of the
-  default type and stderr's of the error type, as journald's priorities 6 and 3.
-- **Whole lines, in parts os_log keeps.** os_log keeps a line whole up to 1,015 bytes, and
-  of a longer one its first 1,015 bytes and `<…>` (M374). A longer line goes in parts of at
-  most 1,015 bytes, each cut at a character's boundary, none of it lost. Bytes that are no
-  UTF-8, and a NUL, are U+FFFD.
-- **syslog's local default, there.** `--log-driver syslog` with no `syslog-address` sends
-  to the host's own syslog, which on macOS is its unified log: there it is sent as oslog's,
-  the run's tag its category. Sent to syslogd's socket, as before, every line went nowhere.
-- **Its options** are every driver's (tag, labels, env, mode, the local copy's).
-- **macOS's.** Elsewhere it is refused as its run is made, in shards' words: the unified
-  log is macOS's own.
-
-Tested on real microVMs on macOS (`a_runs_log_is_sent_to_macos_own_log_as_its_options_say`):
-`log show` has a run's line on each stream with its type, a 3,000-byte line in parts of
-1,015, 1,015 and 970 bytes, and syslog's local default's lines alike. Elsewhere it tests the
-refusal. A unit test holds the parts to os_log's bound and to characters' boundaries.
-
-### D198. A run's log sent to Event Tracing for Windows: `etwlogs` (built)
-
-`--log-driver etwlogs` is served on Windows, the journal's counterpart there (D166): a run's
-lines go to the host's own event tracing, as Docker's Windows driver sends them. Sent as
-every driver's are, from shards' store, by the daemon's shipper (D163).
-
-- **Docker's provider and words.** Each line, and each 16 KiB part of a longer one, is an
-  event of moby's provider, `{a3693192-9ed6-46d2-a981-f8226c8363bd}`, written by
-  EventWriteString at level 0 and keyword 0, its string moby's createLogMessage's:
-  `container_name: NAME, image_name: IMAGE, container_id: ID, image_id: IMAGE_ID, source:
-  STREAM, log: LINE` (daemon/logger/etwlogs/etwlogs_windows.go). A session listening for
-  the provider has each, `logman start -ets NAME -p {a3693192-...}` and tracerpt among
-  them, as for Docker's.
-- **Registered once.** The daemon registers the provider with the first run that asks for
-  it and keeps it for its life, as moby keeps one registration while any of its loggers
-  lives; one that fails is asked for again by the next run.
-- **Delivered as written.** An event is ETW's once written: a session that listens has it,
-  and none that does not, for every sender alike. Its options are every driver's (tag,
-  labels, env, mode, the local copy's); moby's reads none of its own.
-- **Where Docker is wrong, shards is not.** A line holding a NUL fails Go's
-  UTF16FromString, and moby's driver loses it; shards writes it, the NUL U+FFFD, as its bytes
-  that are no UTF-8 are.
-- **Windows'.** Elsewhere it is refused as its run is made, in shards' words: Event
-  Tracing for Windows is Windows' own.
-
-Tested on real microVMs on Windows (`a_runs_log_is_sent_to_etw_as_its_options_say`): a
-real-time ETW session of the test's own, its provider enabled, has a run's line on each
-stream, word for word, and `logs` reads the run's own copy; an ETW session is an
-administrator's or Performance Log Users', and a host whose user is neither says SKIP.
-Elsewhere it tests the refusal. A unit test holds each event's words to moby's.
-
-### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (slices 1 to 3 built)
-
-**Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,
-docs/audit/2026-10-27_platform-parity.md's host directories on Windows): a microVM's volumes
-and binds reach it as virtio-fs shares (D38), whose device, FUSE wire and WHP DAX window
-(D189, `fs/window_whp.rs`) Windows builds, but whose server (`fs/server.rs`), share process
-and budgets are Unix's, so a run with `-v` or `--mount` is refused there.
-
-**What a Linux guest's files need of NTFS, measured (PM M362, CI's windows-2022 and
-windows-2025, as the runner's account and as a standard user, unelevated): every call below
-did as asked.**
-
-- **One server, its host behind a layer.** `fs/server.rs` answers FUSE requests in Linux's
-  terms on every host; each call it makes of its host's file system is a function of its
-  own (`host::Stat`, the `*_at` calls), Unix's the libc calls it makes now, Windows' the
-  NT calls below. Its tests run on both.
-- **Nothing past the share.** Each operation is relative to a handle of the shared tree, its
-  name one component: NtCreateFile with that directory as its RootDirectory and
-  FILE_OPEN_REPARSE_POINT, so a final reparse point is never followed, as `O_NOFOLLOW`
-  holds Unix's server.
-- **Owners, modes and device numbers** in WSL's extended attributes, `$LXUID`, `$LXGID`,
-  `$LXMOD` and `$LXDEV` ("File Permissions for WSL", Microsoft Learn), set and read
-  unelevated (M362), where Unix's server keeps them in Docker Desktop's
-  `com.docker.grpcfuse.ownership` xattr: a file WSL made reads as WSL made it, and a file
-  with none is root's, as Unix's.
-- **Every other kind as WSL makes it.** Regular files and directories are NTFS's; a
-  symlink, a FIFO, a character or block device and a Unix socket are reparse points of the
-  LX tags, a symlink's buffer as MS-FSCC 2.1.2.7 lays it out, never an NTFS symlink, which
-  "Developer Mode must first be enabled on the machine" to make unelevated
-  (CreateSymbolicLinkW, Microsoft Learn).
-- **Removal and rename as Linux's**: an open file's name gone at once
-  (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS), a rename over a file held open
-  (FILE_RENAME_FLAG_POSIX_SEMANTICS), the holder reading what it held.
-- **Names**: a directory the guest makes is case-sensitive (FileCaseSensitiveInformation),
-  as WSL makes its own; a host directory keeps the flag its user gave it.
-- **Inodes**: a file's ID (FileIdInfo), whose upper 8 bytes NTFS left unused (M362).
-- **Its stream to the VM** a duplex named pipe, as a served share's on Windows (D38,
-  `--slates-fs-handle`, PM M340).
-
-**Built (slice 2): the server on Windows, `fs/server_windows.rs` over `fs/ntfs.rs`, held to
-Unix's by the server's own tests, which run on every host** (66 on jupiter and Fedora, 65
-on macOS, each Unix step given a Windows twin of its property: a junction where a symlink is
-planted, the read-only attribute where a mode is taken away, WSL's device files where
-/dev's are), and mutation-checked on jupiter (25 mutants of the Windows layer, each one
-line, all caught but one equivalent). What the tests found, decided:
-
-- **NT checks a handle's access, Unix its file's**: a Unix descriptor opened to read changes
-  its file's attributes; an NT handle changes nothing it was not opened to. Each change
-  goes through a handle that may make it (`able`: the one given, else another of its
-  file's, a relative open of no name, as ReOpenFile makes one).
-- **A guest's other attributes** are EAs named `SH.` and their name's bytes in hexadecimal
-  (an EA's name is upper-case ASCII of 255 bytes at most, a guest's any bytes of either
-  case), each value after a byte of 0: NTFS keeps no EA of no value, where Linux keeps an
-  attribute of one (overlayfs's `metacopy`; `an_attribute_of_no_value_is_kept`).
-- **A node Unix's server keeps as an empty file beside its kind** (a device an
-  unprivileged host cannot make, RENAME_WHITEOUT's whiteout) is on NTFS the device it is,
-  WSL's; a device's metadata is read and written as any file's, its reparse point reaching
-  no driver (`DEVICE_OPENS_DRIVER`), and no descriptor is kept against a mode
-  (`MODES_REFUSE_OPENS`), which refuses no NT open.
-- **NTFS renames no directory a handle beneath is open in**, POSIX semantics or not, nor does
-  MoveFileEx (EACCES; ntfs.rs `a_directory_a_handle_beneath_is_open_in_is_renamed_by_none`):
-  before a guest's rename of a directory the server lets go of the descriptors it holds
-  beneath it, a cache each opened again along its path (audit V09), so that the guest's
-  rename is Linux's. The host's own rename of such a directory is refused as NTFS refuses
-  it beside any program holding a file there; once the server has let go, it is made, and
-  the guest's nodes there are stale, as Unix's.
-- **Nothing is resolved beneath a reparse point opened as itself**: NT answers
-  STATUS_REPARSE_POINT_NOT_RESOLVED (0xC0000280, measured on jupiter), which the server
-  hears as ELOOP, a path through a planted junction stale (ESTALE), as Unix's through a
-  symlink.
-- **A host's junctions and NTFS symlinks are symlinks to the guest**, as a host's symlinks
-  are on Unix, where they were empty directories: a relative symlink's target as it is, an
-  absolute one's or a junction's on the link's own volume the path to it from the link's
-  directory (MS-FSCC 2.1.2.4, 2.1.2.5), so that pnpm's node_modules, junctions within a
-  project, lead in the guest where they lead on the host.
-- **A handle opened to append writes at its file's end as the host has it**, whatever offset
-  the guest's kernel names, on every host: WriteFile's end-of-file offset on Windows, and
-  write(2) through the O_APPEND descriptor on Unix, where macOS's pwrite(2) writes at the
-  offset named and clobbered what the host appended (`Zbc` for Linux's `abcZ`, measured
-  2026-10-29; Linux's pwrite(2) appends, its BUGS section);
-  `an_appending_handle_writes_at_its_files_end_as_the_host_has_it`.
-- O_SYNC and O_DSYNC open to write through (FILE_WRITE_THROUGH); O_RDONLY with O_TRUNC
-  truncates, as Linux's open(2); SEEK_DATA and SEEK_HOLE take a file to be all data, as
-  POSIX lets an implementation.
-
-**Built (slice 3): the share process and the daemon's shares on Windows**, a run's `-v` and
-`--mount` reading and writing host directories there: containers.rs, compose.rs, engine.rs
-and saved.rs on jupiter and CI's Windows runners, none skipped for this step but those of
-shards' own shares' DAX windows (slice 4). What it took, decided:
-
-- **The share process starts in its microVM's group's job with none of a confined child's
-  mitigations** (`shards_ipc::spawn_in_job`): under `Spawn`'s no-Win32k and no-FSCTL
-  policies the shards binary failed its DLL initialisation (STATUS_DLL_INIT_FAILED,
-  0xC0000142, on jupiter), and its server sets reparse points, which are FSCTLs.
-- **Each share's stream is a byte-mode duplex pipe the daemon makes**
-  (`shards_ipc::byte_pair`): its server end given to the share process by number, its
-  client end sent to the VM after the run's request, `MAX_FDS` a message (`SHARE_ENDS`),
-  as Unix's share process hands its own: a stream given to a process on Windows hands no
-  handle on, its holder having no handle of the process it would send one to. A run of
-  five shares sent in its request alone had been refused, past `MAX_FDS`.
-- **A container's share processes end with its removal**, each ended and waited for as
-  the removal completes, its runs over (`end_shares`): NTFS renames no directory a handle
-  beneath is open in, and a volume removed just after the last container that mounted it
-  had been refused (HTTP 500), a `run --rm`'s anonymous volume left behind.
-- **RENAME_EXCHANGE**, which overlayfs asks of a volume to remove a directory
-  (ovl_cleanup_and_whiteout exchanges it with a whiteout), and of which NTFS has none:
-  three renames, each over nothing, the first to a name of the server's own beside the
-  first file, undone where one fails, the directories beneath both let go first
-  (`an_exchange_swaps_two_names`). The server answers its guest one request at a time, so
-  its guest sees none of it half done; another program of the host's may, as it may any
-  rename on Windows not made at once.
-- **A file with no mode of WSL's is 0755 to the guest, 0555 read-only**: Windows has no
-  bit to say a file is not executable. WSL shows such a file with its Windows user's
-  effective rights, "the same value for user, group, and other" ("File Permissions for
-  WSL", Microsoft Learn); Docker Desktop "sets permissions on shared volumes to a default
-  value of 0777 ... not configurable" (Docker Desktop's troubleshooting topics); BuildKit's
-  fsutil sends a Windows file to a build as 0755 (shards-build's `host.rs`). shards takes
-  the build's: a Linux program or script in a project runs from its bind, and its files
-  stay their owner's to write, root's in the guest, as a Unix host's are.
-- **No DAX window for shards' own shares on Windows until slice 4**: a section of a file
-  reaches nothing past its end, where a window's ranges are 2 MiB each; DESCRIPTOR is
-  refused (EOPNOTSUPP), and FUSE's reads and writes serve each file.
-- **A host's bind sources are its drives' paths** (D207).
-
-**Slices.** 1 (built): the server's host calls behind functions of their own, `mod calls`,
-Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own tests on
-Windows. 3 (built): the share process and the daemon's shares on Windows, and the volume
-and bind tests on its CI runners. 4: shards' own shares' DAX windows on Windows.
 ### D202. A GPU on Windows: Venus in the GPU's VM process, its driver reached from a desktop of its own (built)
 
 The parity plan's step 11, after D201: a run on an x86_64 Windows host is given its host's
@@ -6871,6 +6749,236 @@ node's mode, templates of their own (D150). What a Linux host makes otherwise:
   being here; and arm64 KVM maps a PFN-mapped page as device memory unless its mapping
   allows it otherwise (VM_ALLOW_ANY_UNCACHED), which a discrete GPU's dma-buf does not say.
 
+### D199. A run's log sent to macOS's own log: `oslog`, and syslog's local default there (built)
+
+`--log-driver oslog` is served on macOS, the journal's counterpart there (D166, D198): a
+run's lines go to macOS's unified log, which `log show` and Console read. Docker has no
+driver of macOS's, whose engine runs in a Linux VM there. Sent as every driver's are, from
+shards' store, by the daemon's shipper (D163).
+
+- **Through os_log, in the daemon.** macOS keeps nothing sent to syslogd's socket,
+  `/var/run/syslog`, at any level, while its syslog(3) and os_log reach the unified log
+  (PM M374). So a line is an entry the daemon writes with os_log_with_type, through a shim
+  of its macros that only a C compiler expands (daemon/ship/oslog.c, libSystem's, no launch
+  cost). Its message is public: what a run wrote is no secret of shards' to redact.
+- **Found as journald's are.** Its subsystem is `shards` and its category the run's tag
+  (its short ID unless `tag` says), as journald's SYSLOG_IDENTIFIER is: `log show
+  --predicate 'subsystem == "shards" AND category == "web"'`. stdout's lines are of the
+  default type and stderr's of the error type, as journald's priorities 6 and 3.
+- **Whole lines, in parts os_log keeps.** os_log keeps a line whole up to 1,015 bytes, and
+  of a longer one its first 1,015 bytes and `<…>` (M374). A longer line goes in parts of at
+  most 1,015 bytes, each cut at a character's boundary, none of it lost. Bytes that are no
+  UTF-8, and a NUL, are U+FFFD.
+- **syslog's local default, there.** `--log-driver syslog` with no `syslog-address` sends
+  to the host's own syslog, which on macOS is its unified log: there it is sent as oslog's,
+  the run's tag its category. Sent to syslogd's socket, as before, every line went nowhere.
+- **Its options** are every driver's (tag, labels, env, mode, the local copy's).
+- **macOS's.** Elsewhere it is refused as its run is made, in shards' words: the unified
+  log is macOS's own.
+
+Tested on real microVMs on macOS (`a_runs_log_is_sent_to_macos_own_log_as_its_options_say`):
+`log show` has a run's line on each stream with its type, a 3,000-byte line in parts of
+1,015, 1,015 and 970 bytes, and syslog's local default's lines alike. Elsewhere it tests the
+refusal. A unit test holds the parts to os_log's bound and to characters' boundaries.
+
+### D198. A run's log sent to Event Tracing for Windows: `etwlogs` (built)
+
+`--log-driver etwlogs` is served on Windows, the journal's counterpart there (D166): a run's
+lines go to the host's own event tracing, as Docker's Windows driver sends them. Sent as
+every driver's are, from shards' store, by the daemon's shipper (D163).
+
+- **Docker's provider and words.** Each line, and each 16 KiB part of a longer one, is an
+  event of moby's provider, `{a3693192-9ed6-46d2-a981-f8226c8363bd}`, written by
+  EventWriteString at level 0 and keyword 0, its string moby's createLogMessage's:
+  `container_name: NAME, image_name: IMAGE, container_id: ID, image_id: IMAGE_ID, source:
+  STREAM, log: LINE` (daemon/logger/etwlogs/etwlogs_windows.go). A session listening for
+  the provider has each, `logman start -ets NAME -p {a3693192-...}` and tracerpt among
+  them, as for Docker's.
+- **Registered once.** The daemon registers the provider with the first run that asks for
+  it and keeps it for its life, as moby keeps one registration while any of its loggers
+  lives; one that fails is asked for again by the next run.
+- **Delivered as written.** An event is ETW's once written: a session that listens has it,
+  and none that does not, for every sender alike. Its options are every driver's (tag,
+  labels, env, mode, the local copy's); moby's reads none of its own.
+- **Where Docker is wrong, shards is not.** A line holding a NUL fails Go's
+  UTF16FromString, and moby's driver loses it; shards writes it, the NUL U+FFFD, as its bytes
+  that are no UTF-8 are.
+- **Windows'.** Elsewhere it is refused as its run is made, in shards' words: Event
+  Tracing for Windows is Windows' own.
+
+Tested on real microVMs on Windows (`a_runs_log_is_sent_to_etw_as_its_options_say`): a
+real-time ETW session of the test's own, its provider enabled, has a run's line on each
+stream, word for word, and `logs` reads the run's own copy; an ETW session is an
+administrator's or Performance Log Users', and a host whose user is neither says SKIP.
+Elsewhere it tests the refusal. A unit test holds each event's words to moby's.
+
+### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (built)
+
+**Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,
+docs/audit/2026-10-27_platform-parity.md's host directories on Windows): a microVM's volumes
+and binds reach it as virtio-fs shares (D38), whose device, FUSE wire and WHP DAX window
+(D189, `fs/window_whp.rs`) Windows builds, but whose server (`fs/server.rs`), share process
+and budgets are Unix's, so a run with `-v` or `--mount` is refused there.
+
+**What a Linux guest's files need of NTFS, measured (PM M362, CI's windows-2022 and
+windows-2025, as the runner's account and as a standard user, unelevated): every call below
+did as asked.**
+
+- **One server, its host behind a layer.** `fs/server.rs` answers FUSE requests in Linux's
+  terms on every host; each call it makes of its host's file system is a function of its
+  own (`host::Stat`, the `*_at` calls), Unix's the libc calls it makes now, Windows' the
+  NT calls below. Its tests run on both.
+- **Nothing past the share.** Each operation is relative to a handle of the shared tree, its
+  name one component: NtCreateFile with that directory as its RootDirectory and
+  FILE_OPEN_REPARSE_POINT, so a final reparse point is never followed, as `O_NOFOLLOW`
+  holds Unix's server.
+- **Owners, modes and device numbers** in WSL's extended attributes, `$LXUID`, `$LXGID`,
+  `$LXMOD` and `$LXDEV` ("File Permissions for WSL", Microsoft Learn), set and read
+  unelevated (M362), where Unix's server keeps them in Docker Desktop's
+  `com.docker.grpcfuse.ownership` xattr: a file WSL made reads as WSL made it, and a file
+  with none is root's, as Unix's.
+- **Every other kind as WSL makes it.** Regular files and directories are NTFS's; a
+  symlink, a FIFO, a character or block device and a Unix socket are reparse points of the
+  LX tags, a symlink's buffer as MS-FSCC 2.1.2.7 lays it out, never an NTFS symlink, which
+  "Developer Mode must first be enabled on the machine" to make unelevated
+  (CreateSymbolicLinkW, Microsoft Learn).
+- **Removal and rename as Linux's**: an open file's name gone at once
+  (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS), a rename over a file held open
+  (FILE_RENAME_FLAG_POSIX_SEMANTICS), the holder reading what it held.
+- **Names**: a directory the guest makes is case-sensitive (FileCaseSensitiveInformation),
+  as WSL makes its own; a host directory keeps the flag its user gave it.
+- **Inodes**: a file's ID (FileIdInfo), whose upper 8 bytes NTFS left unused (M362).
+- **Its stream to the VM** a duplex named pipe, as a served share's on Windows (D38,
+  `--slates-fs-handle`, PM M340).
+
+**Built (slice 2): the server on Windows, `fs/server_windows.rs` over `fs/ntfs.rs`, held to
+Unix's by the server's own tests, which run on every host** (66 on jupiter and Fedora, 65
+on macOS, each Unix step given a Windows twin of its property: a junction where a symlink is
+planted, the read-only attribute where a mode is taken away, WSL's device files where
+/dev's are), and mutation-checked on jupiter (25 mutants of the Windows layer, each one
+line, all caught but one equivalent). What the tests found, decided:
+
+- **NT checks a handle's access, Unix its file's**: a Unix descriptor opened to read changes
+  its file's attributes; an NT handle changes nothing it was not opened to. Each change
+  goes through a handle that may make it (`able`: the one given, else another of its
+  file's, a relative open of no name, as ReOpenFile makes one).
+- **A guest's other attributes** are EAs named `SH.` and their name's bytes in hexadecimal
+  (an EA's name is upper-case ASCII of 255 bytes at most, a guest's any bytes of either
+  case), each value after a byte of 0: NTFS keeps no EA of no value, where Linux keeps an
+  attribute of one (overlayfs's `metacopy`; `an_attribute_of_no_value_is_kept`).
+- **A node Unix's server keeps as an empty file beside its kind** (a device an
+  unprivileged host cannot make, RENAME_WHITEOUT's whiteout) is on NTFS the device it is,
+  WSL's; a device's metadata is read and written as any file's, its reparse point reaching
+  no driver (`DEVICE_OPENS_DRIVER`), and no descriptor is kept against a mode
+  (`MODES_REFUSE_OPENS`), which refuses no NT open.
+- **NTFS renames no directory a handle beneath is open in**, POSIX semantics or not, nor does
+  MoveFileEx (EACCES; ntfs.rs `a_directory_a_handle_beneath_is_open_in_is_renamed_by_none`):
+  before a guest's rename of a directory the server lets go of the descriptors it holds
+  beneath it, a cache each opened again along its path (audit V09), so that the guest's
+  rename is Linux's. The host's own rename of such a directory is refused as NTFS refuses
+  it beside any program holding a file there; once the server has let go, it is made, and
+  the guest's nodes there are stale, as Unix's.
+- **Nothing is resolved beneath a reparse point opened as itself**: NT answers
+  STATUS_REPARSE_POINT_NOT_RESOLVED (0xC0000280, measured on jupiter), which the server
+  hears as ELOOP, a path through a planted junction stale (ESTALE), as Unix's through a
+  symlink.
+- **A host's junctions and NTFS symlinks are symlinks to the guest**, as a host's symlinks
+  are on Unix, where they were empty directories: a relative symlink's target as it is, an
+  absolute one's or a junction's on the link's own volume the path to it from the link's
+  directory (MS-FSCC 2.1.2.4, 2.1.2.5), so that pnpm's node_modules, junctions within a
+  project, lead in the guest where they lead on the host.
+- **A handle opened to append writes at its file's end as the host has it**, whatever offset
+  the guest's kernel names, on every host: WriteFile's end-of-file offset on Windows, and
+  write(2) through the O_APPEND descriptor on Unix, where macOS's pwrite(2) writes at the
+  offset named and clobbered what the host appended (`Zbc` for Linux's `abcZ`, measured
+  2026-10-29; Linux's pwrite(2) appends, its BUGS section);
+  `an_appending_handle_writes_at_its_files_end_as_the_host_has_it`.
+- O_SYNC and O_DSYNC open to write through (FILE_WRITE_THROUGH); O_RDONLY with O_TRUNC
+  truncates, as Linux's open(2); SEEK_DATA and SEEK_HOLE take a file to be all data, as
+  POSIX lets an implementation.
+
+**Built (slice 3): the share process and the daemon's shares on Windows**, a run's `-v` and
+`--mount` reading and writing host directories there: containers.rs, compose.rs, engine.rs
+and saved.rs on jupiter and CI's Windows runners, none skipped for this step but those of
+shards' own shares' DAX windows (slice 4). What it took, decided:
+
+- **The share process starts in its microVM's group's job with none of a confined child's
+  mitigations** (`shards_ipc::spawn_in_job`): under `Spawn`'s no-Win32k and no-FSCTL
+  policies the shards binary failed its DLL initialisation (STATUS_DLL_INIT_FAILED,
+  0xC0000142, on jupiter), and its server sets reparse points, which are FSCTLs.
+- **Each share's stream is a byte-mode duplex pipe the daemon makes**
+  (`shards_ipc::byte_pair`): its server end given to the share process by number, its
+  client end sent to the VM after the run's request, `MAX_FDS` a message (`SHARE_ENDS`),
+  as Unix's share process hands its own: a stream given to a process on Windows hands no
+  handle on, its holder having no handle of the process it would send one to. A run of
+  five shares sent in its request alone had been refused, past `MAX_FDS`.
+- **A container's share processes end with its removal**, each ended and waited for as
+  the removal completes, its runs over (`end_shares`): NTFS renames no directory a handle
+  beneath is open in, and a volume removed just after the last container that mounted it
+  had been refused (HTTP 500), a `run --rm`'s anonymous volume left behind.
+- **RENAME_EXCHANGE**, which overlayfs asks of a volume to remove a directory
+  (ovl_cleanup_and_whiteout exchanges it with a whiteout), and of which NTFS has none:
+  three renames, each over nothing, the first to a name of the server's own beside the
+  first file, undone where one fails, the directories beneath both let go first
+  (`an_exchange_swaps_two_names`). The server answers its guest one request at a time, so
+  its guest sees none of it half done; another program of the host's may, as it may any
+  rename on Windows not made at once.
+- **A file with no mode of WSL's is 0755 to the guest, 0555 read-only**: Windows has no
+  bit to say a file is not executable. WSL shows such a file with its Windows user's
+  effective rights, "the same value for user, group, and other" ("File Permissions for
+  WSL", Microsoft Learn); Docker Desktop "sets permissions on shared volumes to a default
+  value of 0777 ... not configurable" (Docker Desktop's troubleshooting topics); BuildKit's
+  fsutil sends a Windows file to a build as 0755 (shards-build's `host.rs`). shards takes
+  the build's: a Linux program or script in a project runs from its bind, and its files
+  stay their owner's to write, root's in the guest, as a Unix host's are.
+- **A host's bind sources are its drives' paths** (D207).
+
+**Built (slice 4): shards' own shares' DAX windows on Windows**, a volume's large files
+mapped from the host's page cache as on Unix (D189), held to every host's DAX tests
+(containers.rs's five and saved.rs's restore) on jupiter and CI's Windows runners. What it
+took, decided (PM M412):
+
+- **The share process gives the VM the file, not a section** (`fs/mod.rs`
+  `descriptor_for`). The ask names the VM process and its end of the stream there. The share
+  process duplicates that handle and holds it to be a client's end of its own pipe (one
+  name, FileNameInfo; its own end the server's, GetNamedPipeInfo), refusing the ask
+  otherwise (EPERM), then duplicates into the VM the node's file, opened as Unix's server
+  opens a mapping's. A section of a file reaches no further than the file, which grows
+  under the guest; with the file, the window makes its sections itself, each as long as the
+  file then, and reads its size, as the Unix window keeps a mapping's descriptor.
+- **A range the file ends within** is its placeholder split at the page after the file's
+  bytes there: a view as long as those bytes (a view asked a page past its section's bytes
+  is refused, M412), committed zeros after it, the two coalesced again as it is freed. The
+  guest reads the file's bytes, and zeros past its end, as on Unix.
+- **Followed as the Unix window follows a file**: before the guest hears a size,
+  `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
+  held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
+  each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
+  the file's size, an OPEN that truncates it) finds the file's views let go of first
+  (`evict`), each range its placeholder until the reply; then `reconcile` makes them what
+  the file is, cut or not. A vCPU that reaches one meanwhile waits, and runs its access
+  again once it is made. A host program's cut of a file a microVM maps is refused, as NTFS
+  refuses any program's cut of a mapped file; a hole punched, a rename and a removal are
+  not (M412), and containers.rs holds the host's cuts to that refusal on Windows.
+- **A window's head committed as its guest touches it.** A window's head, its guest's page
+  structures for it, is a 64th of its length and more (D189), memory of the VM's own,
+  which Windows committed whole as it reserved it: a window as long as the host's memory
+  took that at its VM's start, past a group's 1 GiB budget (PM M413). Where the host
+  charges memory as it is reserved (`platform::CHARGED_AS_RESERVED`), a window's head is
+  reserved alone and each of its 2 MiB blocks committed as its guest first touches one:
+  WHP takes a stage-2 map over memory only reserved, its guest's access exiting until the
+  block is committed (M413), and the control device answers that exit
+  (`WindowHeads::memory_fault`). So a head costs the page structures of the ranges its
+  guest maps, as on Unix. A save reads its committed blocks alone, a restore commits the
+  blocks it reads back, and a map-back gives a zero block back uncommitted. A writable
+  layer's head (D190) stays committed whole, its VM writing it first.
+
+**Slices.** 1 (built): the server's host calls behind functions of their own, `mod calls`,
+Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own tests on
+Windows. 3 (built): the share process and the daemon's shares on Windows, and the volume
+and bind tests on its CI runners. 4 (built): shards' own shares' DAX windows on Windows.
+
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
@@ -7007,14 +7115,36 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   µs of that, and from there to the guest's next store after its snapshot point took 79 to 95
   ms, and 3.4 ms with the whole of RAM populated at stage 2 beforehand (a populate that itself
   took 74 to 79 ms). The same at 1 GiB: what a guest touches, not what it has.
-- **Not yet on WHP**: working sets (`vm::WORKING_SETS`), so a restore takes each page into
-  stage 2 as its guest first touches it (M345: 6.4 µs a page read and 8.3 µs a page written
-  at p50 on jupiter, where a populate maps a 2 MiB range at 0.4 to 0.7 µs a page, M341):
-  what a working set recorded and populated ahead takes off a restore's path, with the
-  daemon's templates and warm pools (D25, D26), which wait for the daemon on Windows (D195,
-  the parity plan's step 4). Its recording is WHP's to find: no access bit is read back at
-  stage 2, and a confined VM process may not ask its memory file's allocated ranges (an
-  FSCTL, D141).
+- **Working sets** (`vm::WORKING_SETS`, the platform parity audit's row 11). Without one a
+  restore takes each page into stage 2 as its guest first touches it (M345: 6.4 µs a page
+  read and 8.3 µs a page written at p50 on jupiter, where a populate maps a 2 MiB range at
+  0.4 to 0.7 µs a page, M341). WHP reads back no access bit at stage 2, and a confined VM
+  process may not ask its memory file's allocated ranges (an FSCTL, D141); what the VM
+  process's host maps of its guest's memory is what it touched, as on KVM (`vm::mapped`):
+  its own working set, which QueryWorkingSetEx reads it (`platform::mapped_pages`), a page
+  there valid and shareable its file's, read, and one valid and private a copy its guest
+  wrote. A fault maps the page it touches alone, whether its file's pages are in the cache
+  or read in around it from disk, which go to the cache alone, so no fault-around is held
+  off (`platform::FaultAroundOff` holds nothing; windows_process.rs
+  `mapped_pages_are_the_working_sets`, `a_fault_from_disk_maps_the_page_it_touches_alone`).
+  As KVM's, the first warm restore of a template records it (`vm::RESTORES_RECORD`), for the
+  daemon (D25, D26), and `shards restore` of a generation without one hands what it records
+  to the CLI that started it, which keeps it beside the generation as the VM ends, on a
+  thread of its own (`working_set::keep`): the confined VM writes none of its snapshot's
+  files (D30), and the CLI, which waits for its VM as a child, needs no writer process, as
+  Linux's, which becomes its VM, does. A restore of a generation that has one maps it ahead
+  before its guest runs, every run of its pages populated at stage 2 in two calls
+  (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate; `hv::Vcpu::pre_fault_runs`): the pages
+  its guest wrote for writing, which copies each one its copy-on-write view of the snapshot
+  still shares with the file in the host's kernel, as the guest's first write would, and
+  the rest for reading. What a populate costs is its pages': on CI's windows-2025, whose WHP
+  runs nested (M308), 50 to 58 µs a page read and 70 to 78 written (M415). On jupiter, 512
+  pages populated for writing in one call took 3.68 ms at p50 (n=20), where copying them from
+  the VM process, each page's first word written as it holds it (Windows has no call that
+  faults a range in writable from user mode, PrefetchVirtualMemory reading one in), took 2.58
+  and populating them for reading after it 1.33 in one call or 2.33 a call each (hv::whp
+  `a_write_populate_copies_a_views_pages_in_the_kernel`, which checks each copy holds the
+  file's bytes and no other page is mapped): one call does both, for about what the two cost.
 
 **Tested.** Unit: the states' round trips and damage, and a state naming any other register
 refused (`hv::whp::state`); a restored IOAPIC going on as the saved one; a generation staged by
@@ -7031,6 +7161,15 @@ commit of what is not staged, giving the directory up, and removing what is neve
 tests/snapshot.rs, every test, the storms of busy machines among them, which run on Windows
 now, and the unwritable directory by an access list there; tests/restore.rs, cold restores of
 one snapshot side by side and a held (warm) restore whose guest runs nothing until released.
+Working sets (the platform parity audit's row 11): unit, `platform::windows_process`
+`mapped_pages_are_the_working_sets`, a working set read back exact, the pages touched and no
+other, and `a_fault_from_disk_maps_the_page_it_touches_alone`, and `hv::whp`
+`a_write_populate_copies_a_views_pages_in_the_kernel`; on real WHP guests, snapshot.rs
+`a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded` and images.rs
+`repeat_runs_restore_a_template_of_the_image`, a template's working set recorded by its first
+warm restore and mapped ahead by the next: each on CI's windows-2025 (41176475317 at
+54f7c0fb), which fails rather than skips a VM test it cannot run; and the restore bench's
+arms with and without (M415).
 
 ### D195. The daemon and its client on Windows: request slots of named pipes (built)
 
@@ -9186,14 +9325,22 @@ and the way every later one sends.
     - TLS's close_notify is sent;
     - its write side is shut;
     - what the receiver still sends is read and let go;
-    - the socket closes once all is acknowledged.
+    - the socket closes once all is acknowledged and the receiver has ended its side, as
+      Winsock's graceful shutdown closes ("Graceful Shutdown, Linger Options, and Socket
+      Closure", Microsoft Learn: the peer's FD_CLOSE before closesocket).
 
     A socket closed with bytes unread resets its connection, and what is not yet sent
     goes with it. TLS 1.3's session tickets are such bytes: no sender that only writes
     reads them. D163's first CI lost a run's last line this way, held back by Nagle's
     algorithm behind the line before it, on every x86_64 Linux run; the probe loses it in
     200 of 200 rounds on Linux and 90 of 200 on macOS. Docker's drivers close their
-    sockets this way.
+    sockets this way. Acknowledged is not read: a receiver's TCP acknowledges what its
+    program has yet to read, and a reset, which a close also sends where the receiver's
+    bytes come after it, takes on Windows all its receiver had not read. CI 40900902805's
+    windows-2025 lost a TLS stream's one line so, its receiver's session tickets come after
+    the sender's last read; `a_stream_ends_once_its_receiver_has_ended_its_side`, whose
+    receiver sends after the sender's end, read nothing 3 times of 3 on jupiter with the
+    close once acknowledged, and all of it 3 of 3 with the close at its end.
   - A receiver's TCP having a message is as far as TCP can say. fluentd's acks (D165)
     say its receiver has it.
 - **Messages as Docker's driver sends them** (logging/testdata/syslog.json). Its formats (srslog's Unix format, rfc3164, rfc5424,
@@ -10856,6 +11003,9 @@ network process (D142) and its builder (D143) follow.
   root, quiet took 0.50 s of 2.14 on windows-2022, 0.50 of 1.49 on windows-2025, and on an
   M5 Max's HVF 27.9 ms of 65.2 (n=20 each, interleaved). What it says stays in its ring
   buffer, which `dmesg` reads; a VM whose console is shown (`run --kernel`) boots as told.
+  The VM process keeps the last page of it, and says its lines with a reset, which a panic
+  writes there whole (`console_verbose`), its reason and call trace in 858 bytes of 6.18's
+  (M417); each reset says too which it was, as a triple fault writes nothing.
 - **Its CPUs brought up one at a time.** Its kernel is told `cpuhp.parallel=0`: brought up
   in parallel past the host's CPUs, each AP started spins in its turn while the next waits
   for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s
@@ -10900,8 +11050,8 @@ network process (D142) and its builder (D143) follow.
   loses the peer all it had not read, as a reset (M358).
 - **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
   every other host.
-- **Snapshots** came after (D196); templates and warm pools wait for the daemon on Windows
-  (D195).
+- **Snapshots** came after (D196), with templates and warm pools once the daemon ran on
+  Windows (D195), and working sets after them (D196).
 - **Recorded differences** from a KVM guest's machine: its clock is Hyper-V's reference TSC
   page where KVM's is kvm-clock; its APICs are xAPIC alone, offering neither x2APIC nor
   TSC-deadline (M198).
@@ -11331,8 +11481,13 @@ given the rest as its build needs it, up to what it may have.
   with all of it had, and a step past it is ended as one was then.
 - **The builder's init** holds the build, itself and every step (each in a cgroup of its
   own, so that each step's memory is counted and held apart), in one cgroup whose `memory.high` is what the
-  build holds and what is free, less the kernel's reserve: 64 MiB and the page structures
-  of the next memory plugged, a 64th of it. Past it the kernel slows the build's allocations
+  build holds and what is free, less the kernel's reserve: 64 MiB, the page structures of
+  the next memory plugged, a 64th of it, and the free pages its CPUs may keep on their own
+  lists, an eighth of what it has (the kernel's ceiling for them,
+  `MIN_PERCPU_PAGELIST_HIGH_FRACTION`), which are neither free to its readers nor charged
+  to the build: without them a build of 8 compilers on 32 vCPUs ran its guest out of memory
+  25 MiB short of its `memory.high`, so that its grower was never woken (2026-10-29, PM
+  M392). Past it the kernel slows the build's allocations
   and ends none, and says so in `memory.events`; a process of init's in the root cgroup,
   which nothing slows, wakes on it, asks for twice the memory the builder has, in whole
   memory blocks (so what is plugged ahead of the build is at most what it holds, and a build
@@ -11698,8 +11853,8 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     GitHub Actions, Google's workload identity (the metadata server, or Application Default
     Credentials: a service account's key, an impersonated account, federation from a file
     or URL), Google impersonation (IAM's generateIdToken), SPIFFE's Workload API (gRPC on
-    its socket, over the frontend's HTTP/2 client, D113). `--oidc-provider` names one,
-    `--oidc-disable-ambient-providers` none.
+    its socket, or on Windows its named pipe, over the frontend's HTTP/2 client, D113).
+    `--oidc-provider` names one, `--oidc-disable-ambient-providers` none.
   - Else it signs in (`--fulcio-auth-flow`, cosign's flows): in a browser on a terminal
     (PKCE; the code brought back to a listener on this host, or typed in), by a device
     code without one, or by client credentials. Each token is checked as go-oidc checks it:
@@ -11730,11 +11885,21 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     answer it closed and says "http: read on closed response body" (seen in the oracle).
   - GitHub's token endpoint refusing is said; cosign decodes the refusal as a token.
   - `SPIFFE_ENDPOINT_SOCKET` is read as the SPIFFE spec writes it, `unix://PATH`, too.
+  - SPIFFE's Workload API is reached on Windows, by its named pipe: SPIRE's agent's,
+    `\\.\pipe\spire-agent\public\api` (spire v1.15.5's DefaultNamedPipeName), or the one
+    `SPIFFE_ENDPOINT_SOCKET` names, `npipe:NAME` as go-spiffe reads it there or the pipe's
+    path. cosign dials `unix://` and its socket's path alone (pkg/providers/spiffe), which
+    go-spiffe v2.7.0 refuses on Windows, dialling `npipe:` and `tcp:` there
+    (workloadapi/addr_windows.go): no cosign on Windows reaches a Workload API. Its pipe is
+    opened as go-winio v0.6.2 dials one for go-spiffe, anonymous to its server
+    (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), and waited for where each instance is in
+    use; whether it is there is asked without connecting (WaitNamedPipeW), as an instance
+    a connection takes is one the agent's workloads wait for.
   - Messages go to stderr, which shards keeps for people (oauthflow prints some to stdout).
   - `-h` is help on `shards sign` and every action of `shards agent|harness|mcp`.
 - **Not taken**: Google federation from AWS or from an executable (its file and URL sources
-  are taken), and SPIFFE's Workload API on Windows (a named pipe). A signer there gives the
-  token itself with `--identity-token`; no demand for either has been seen.
+  are taken). A signer there gives the token itself with `--identity-token`; no demand for
+  it has been seen.
 - **Tested**:
   - Against a local Sigstore (PM M184): shards' signatures and cosign's, of each signing
     config (Rekor v2 with a timestamp authority, Rekor v1 with one and without), each
@@ -11755,6 +11920,12 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
   - Unit tests of each part: the signing config, Fulcio, Rekor, the timestamp request,
     OIDC (JWS by each algorithm, claims, PKCE, the authorization URL), the flows' listener
     and token answers, the providers' sources.
+  - A JWT-SVID asked of a Workload API that answers as a gRPC server does, on a Unix
+    socket and, on Windows, on a named pipe of this machine as SPIRE's agent serves one,
+    found there without a connection taken (spiffe.rs
+    `a_jwt_svid_is_asked_of_the_workload_api_on_its_socket` and `..._on_its_named_pipe`,
+    the latter on CI's windows-2022 and windows-2025, CI 41284231177 at 6b17d663); the
+    pipe's names as go-spiffe reads them.
 
 ### D125. A run's microVM has every CPU of its host unless it is limited
 

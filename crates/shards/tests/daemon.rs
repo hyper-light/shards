@@ -169,9 +169,11 @@ fn commands_with(needle: &str) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// Waits until `check` holds, for up to five seconds.
+/// Waits until `check` holds, as long as a run is given ([`TIMEOUT`]): a loaded 4-CPU
+/// runner, each look at its processes a PowerShell's on Windows, took a pool past 5 s to
+/// settle (CI 40908704180).
 fn eventually(what: &str, check: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TIMEOUT;
     while !check() {
         assert!(Instant::now() < deadline, "{what}");
         std::thread::sleep(Duration::from_millis(20));
@@ -994,7 +996,7 @@ fn interactive_stdin_ends_with_its_client() {
     // The warm VMs one of which serves the run, once the VMs of the runs before have
     // gone: the same for 300 ms.
     let mut waiting = processes_with(&templates);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TIMEOUT;
     let mut since = Instant::now();
     while waiting.is_empty() || since.elapsed() < Duration::from_millis(300) {
         assert!(Instant::now() < deadline, "the pool did not settle: {waiting:?}");
@@ -2903,7 +2905,8 @@ fn warm_vms_are_bounded_across_templates() {
         .iter()
         .max_by_key(|d| std::fs::metadata(d).unwrap().modified().unwrap())
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // As long as a run is given, as `eventually` waits.
+    let deadline = Instant::now() + TIMEOUT;
     while !(warm(newest) == 1 && warm(&templates) == 1) {
         assert!(
             Instant::now() < deadline,

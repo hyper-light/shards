@@ -66,13 +66,14 @@ pub const OUT_HEADER_BYTES: usize = 16;
 /// A Linux errno, as a reply carries it negated.
 pub(super) type Errno = i32;
 /// Linux's EIO, ENODEV and EINVAL (include/uapi/asm-generic/errno-base.h): the guest's numbers, whatever the host's,
-/// which the device answers itself with where it has no server's answer; and EOPNOTSUPP
-/// (asm-generic/errno.h), a share's answer on Windows to a mapping it has no window for.
+/// which the device answers itself with where it has no server's answer; and EPERM, a
+/// share's answer on Windows to a mapping asked by a process that holds no end of its
+/// stream.
 pub(super) const EIO: Errno = 5;
 pub(super) const ENODEV: Errno = 19;
 pub(super) const EINVAL: Errno = 22;
 #[cfg_attr(unix, allow(dead_code))]
-pub(super) const EOPNOTSUPP: Errno = 95;
+pub(super) const EPERM: Errno = 1;
 
 /// The answer to `req` where no directory is shared yet: ENODEV, or none for a request
 /// that takes no reply.

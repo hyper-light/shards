@@ -130,11 +130,9 @@ impl Invitation {
     pub fn write(&self, path: &Path) -> Result<(), Error> {
         let text = self.text();
         let at = |e: std::io::Error| Error::new(format!("{}: {e}", path.display()));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        match options.open(path) {
+        // Its user's alone wherever it is put (shards_ipc::create_private): on Windows a file
+        // inherits its directory's ACL, which may let others read it.
+        match shards_ipc::create_private(path) {
             Ok(mut file) => file
                 .write_all(text.as_bytes())
                 .and_then(|()| file.sync_all())

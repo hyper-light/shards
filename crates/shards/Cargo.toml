@@ -97,6 +97,7 @@ cc = "1.5"
 # holds a run pending (Ioctl's oplocks).
 windows-sys = { workspace = true, features = [
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Security_Isolation",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",

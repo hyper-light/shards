@@ -95,14 +95,19 @@ pub fn nested_hyperv(top: [u32; 4], info: u32) -> bool {
 }
 
 /// Whether a VM resumed from its snapshot records its working set, for restores to
-/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
-/// (vm::mapped). Not WHP's yet (D196).
-pub const WORKING_SETS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
+/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's and x86_64 WHP's from the pages its
+/// host maps (vm::mapped). Not arm64 WHP's yet, which takes no snapshot.
+pub const WORKING_SETS: bool = cfg!(any(
+    hv = "hvf",
+    hv = "kvm",
+    all(hv = "whp", target_arch = "x86_64")
+));
 /// Which run records it. HVF's: the one that saves the template, whose command recording
-/// slows sixfold (PM M30), on a run that boots anyway. KVM's: the first warm restore
-/// without one, for which recording costs nothing, and whose pages later restores touch,
-/// where the saving run's they barely do (PM M33).
-pub const RESTORES_RECORD: bool = cfg!(hv = "kvm");
+/// slows sixfold (PM M30), on a run that boots anyway. KVM's and WHP's: the first warm
+/// restore without one, for which recording costs nothing, its host's mapped pages read
+/// after (vm::mapped), and whose pages later restores touch, where the saving run's they
+/// barely do (PM M33).
+pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", all(hv = "whp", target_arch = "x86_64")));
 
 #[cfg(any(hv, test))]
 mod barrier;
@@ -653,8 +658,8 @@ fn window_heads(
         .checked_mul(windows.len())
         .ok_or_else(|| at(format!("{} heads of {each} bytes", windows.len())))?;
     let head = match kept {
-        Some(kept) => head::Head::restore(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
-        None => head::Head::new(len).inspect(|head| {
+        Some(kept) => head::Head::restore_as_touched(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
+        None => head::Head::as_touched(len).inspect(|head| {
             // On the host's base pages, as a restored head is: its guest writes a range's
             // page structures as it first maps the range (shards' kernel patch 0011), 32 KiB
             // of a 2 MiB block, which a huge page would hold whole (2 MiB for the one page

@@ -338,7 +338,7 @@ fn enabled(name: &str) -> bool {
                 && crate::google::workload_identity("garbage").is_ok()
         }
         "google-impersonate" => set("GOOGLE_SERVICE_ACCOUNT_NAME"),
-        "spiffe" => std::fs::metadata(crate::spiffe::socket()).is_ok(),
+        "spiffe" => crate::spiffe::reachable(),
         _ => false,
     }
 }

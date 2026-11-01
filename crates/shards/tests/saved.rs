@@ -578,9 +578,6 @@ fn a_saved_microvm_writes_on_through_its_volume() {
 /// with its mappings (D176): its restore maps each range again from its new share process
 /// before its guest runs, and the guest reads the file on through the window, a byte the
 /// host wrote while it was saved among it.
-// A share's DAX window: Unix's until the parity plan's step 6 maps those of shards' own
-// shares on Windows (D197's slice 4).
-#[cfg(unix)]
 #[test]
 fn a_saved_microvm_reads_on_through_its_dax_window() {
     if cannot_run_vms() || cannot_pool() {
@@ -624,12 +621,11 @@ fn a_saved_microvm_reads_on_through_its_dax_window() {
     let at = 3 << 20;
     big[at] = big[at].wrapping_add(1);
     {
-        use std::os::unix::fs::FileExt as _;
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(dir.join("big"))
             .unwrap();
-        file.write_all_at(&big[at..=at], at as u64).unwrap();
+        common::write_at(&file, &big[at..=at], at as u64);
     }
     let restored = shards(&["restore", "vm", "daxsave", "mapped"]);
     assert_eq!(restored.status, Some(0), "{restored}");

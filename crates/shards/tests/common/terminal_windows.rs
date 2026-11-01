@@ -30,8 +30,15 @@ pub struct Terminal {
     seen: String,
     /// The start of an escape sequence its last write left unfinished.
     pending: String,
+    /// What the console wrote, its escape sequences and all, its last [`RAW_KEPT`] bytes:
+    /// said as a test that holds it fails, where its text alone cannot say which lines a
+    /// pseudo console drew of its own.
+    raw: String,
     dir: super::TempDir,
 }
+
+/// How much of what a console wrote [`Terminal`] keeps to say as its test fails.
+const RAW_KEPT: usize = 16 << 10;
 
 /// A console's modes: its input's and its screen's (GetConsoleMode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,10 +127,10 @@ impl Terminal {
         assert_eq!(made, 0, "CreatePseudoConsole: {made:#x}");
         drop((its_input, its_output));
         // The shell: this binary's console_shell test, in the directory that says what it
-        // runs.
+        // runs: every test binary's, as each holds this module.
         let exe = std::env::current_exe().unwrap();
         let mut line: Vec<u16> = format!(
-            "\"{}\" --exact console_shell --nocapture --test-threads=1",
+            "\"{}\" common::terminal::console_shell --exact --ignored --nocapture --test-threads=1",
             exe.display()
         )
         .encode_utf16()
@@ -208,6 +215,7 @@ impl Terminal {
             shell: Child { process },
             seen: String::new(),
             pending: String::new(),
+            raw: String::new(),
             dir,
         }
     }
@@ -266,9 +274,17 @@ impl Terminal {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.shown.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(bytes) => {
+                    self.keep(&bytes);
                     let raw = std::mem::take(&mut self.pending) + &String::from_utf8_lossy(&bytes);
                     let (text, rest) = text_of(&raw);
                     self.seen.push_str(&text);
+                    // A run of carriage returns before a line feed, as a screen shows it: one.
+                    // A pseudoconsole that starts at its terminal's cursor on its last row
+                    // writes a scroll of its own, CR LF, after its command's CR (CI's
+                    // windows-2022 and windows-2025, PSEUDOCONSOLE_INHERIT_CURSOR).
+                    while let Some(at) = self.seen.find("\r\r\n") {
+                        self.seen.remove(at);
+                    }
                     self.pending = rest.to_string();
                 }
                 Err(_) => assert!(
@@ -277,6 +293,17 @@ impl Terminal {
                     self.seen
                 ),
             }
+        }
+    }
+
+    /// Keeps `bytes` of what the console wrote, its last [`RAW_KEPT`] bytes in all.
+    fn keep(&mut self, bytes: &[u8]) {
+        self.raw.push_str(&String::from_utf8_lossy(bytes));
+        if let Some(cut) = self.raw.len().checked_sub(RAW_KEPT) {
+            let at = (cut..self.raw.len())
+                .find(|&i| self.raw.is_char_boundary(i))
+                .unwrap_or(0);
+            self.raw.drain(..at);
         }
     }
 
@@ -320,7 +347,9 @@ impl Terminal {
         let deadline = Instant::now() + TIMEOUT;
         while self.shell.exited().is_none() {
             assert!(Instant::now() < deadline, "the shell did not exit");
-            while self.shown.try_recv().is_ok() {}
+            while let Ok(bytes) = self.shown.try_recv() {
+                self.keep(&bytes);
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
         (shown, status.trim().parse().unwrap(), restored)
@@ -329,11 +358,20 @@ impl Terminal {
 
 impl Drop for Terminal {
     /// The console closed, and with it what runs on it: its processes are told it has
-    /// gone (CTRL_CLOSE_EVENT), and the shell is ended outright.
+    /// gone (CTRL_CLOSE_EVENT), and the shell is ended outright. As its test fails, what
+    /// the console wrote is said first.
     fn drop(&mut self) {
         use std::os::windows::io::AsRawHandle as _;
         use windows_sys::Win32::System::Console::ClosePseudoConsole;
         use windows_sys::Win32::System::Threading::TerminateProcess;
+        if std::thread::panicking() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "--- what the console wrote, its last {} bytes:\n{:?}",
+                self.raw.len(),
+                self.raw
+            );
+        }
         if self.shell.exited().is_none() {
             // SAFETY: a process handle this test holds.
             unsafe { TerminateProcess(self.shell.process.as_raw_handle(), 1) };
@@ -372,12 +410,20 @@ pub fn cooked(m: &Modes) -> (bool, bool, bool) {
     )
 }
 
+/// The shell a Windows terminal runs its client in ([`shell_if_asked`]), run by name by a
+/// test that holds one ([`Terminal::run`]), in any test binary.
+#[test]
+#[ignore = "the shell of a terminal a test holds, which runs it"]
+fn console_shell() {
+    shell_if_asked();
+}
+
 /// The shell's part, where the test that holds a terminal started this binary as its
 /// shell, in a directory that says what to run ([`Terminal::run`]); elsewhere nothing. It
 /// writes the console's modes as they are before the client runs, as they change while it
 /// runs, and after it; says its status, `exit N`; and waits for a line, so that the console
 /// outlives the client, as a pty does a login shell's.
-pub fn shell_if_asked() {
+fn shell_if_asked() {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::System::Console::GetConsoleMode;
     let Ok(asked) = std::fs::read_to_string(ASKED) else {

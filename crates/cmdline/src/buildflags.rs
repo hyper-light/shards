@@ -699,10 +699,11 @@ pub fn ssh_agents<K>(
             if socket.is_some() {
                 return Err(wrap("only single socket allowed".into()));
             }
-            // getWindowsPipeDialer: a named pipe's path, never looked at; and an AF_UNIX
-            // socket's.
+            // getWindowsPipeDialer: a named pipe's path, never looked at; an AF_UNIX
+            // socket's; and a descriptor a daemon gave its build by number (`/dev/fd/N`,
+            // D180's machine side), which no file of Windows' names.
             #[cfg(windows)]
-            if windows_agent::is_pipe_path(p) || windows_agent::is_socket(p) {
+            if windows_agent::is_pipe_path(p) || windows_agent::is_socket(p) || windows_agent::is_given(p) {
                 socket = Some(std::path::PathBuf::from(p));
                 continue;
             }
@@ -750,6 +751,14 @@ mod windows_agent {
 
     /// IO_REPARSE_TAG_AF_UNIX (winnt.h): an AF_UNIX socket's file.
     const AF_UNIX_TAG: u32 = 0x8000_0023;
+
+    /// Whether `path` names what a daemon gave its build at a number (`/dev/fd/N`), as a
+    /// Unix build names an inherited descriptor: the build takes it as its daemon gave it
+    /// (shards_ipc::given_fd), and only a number its daemon gave it something at.
+    pub fn is_given(path: &str) -> bool {
+        path.strip_prefix("/dev/fd/")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    }
 
     /// Whether `path` names a named pipe (isWindowsPipePath): `\\HOST\pipe\NAME`, its
     /// slashes and backslashes alike, each separator one or more of them.

@@ -26,6 +26,7 @@ on:
       - "!.github/workflows/restore-faults.yml"
       - "!.github/workflows/windows-pipe.yml"
       - "!.github/workflows/windows-watch.yml"
+      - "!.github/workflows/whp-restore.yml"
   pull_request:
 
 permissions:

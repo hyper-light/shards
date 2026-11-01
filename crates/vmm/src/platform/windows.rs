@@ -149,6 +149,13 @@ pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether memory reserved for a guest is charged the host's commit as it is reserved, not as
+/// it is touched: on Windows memory committed is charged its whole length at once, where a
+/// host or its job may have too little (ERROR_COMMITMENT_LIMIT), so memory a guest touches
+/// little of is reserved alone ([`reserve_withheld`]) and committed as it is touched
+/// ([`grant`]), a stage-2 map over it exiting until then (PM M413).
+pub const CHARGED_AS_RESERVED: bool = true;
+
 /// Reserves `len` bytes of guest RAM of which the host gives nothing yet, each part
 /// [`grant`]ed as it is given out (memory to plug, D133): reserved alone (MEM_RESERVE), as
 /// [`withhold`] leaves a region. Reserved and committed first, as [`reserve`] does, it took
@@ -1083,19 +1090,12 @@ pub unsafe fn all_untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::R
     Ok(None)
 }
 
-/// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): asked
-/// only for a working set's written pages, which a restore on Windows does not record yet
-/// (vm::WORKING_SETS, D196).
-pub fn populate_writable(_ptr: *mut u8, _len: usize) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "pages are not faulted in ahead on Windows: its restores record no working set yet",
-    ))
-}
-
 /// The host's fault-around held off over ranges (unix.rs `FaultAroundOff`), so that a
-/// working set recorded or mapped ahead holds what the guest touched alone: none on
-/// Windows, whose restores record no working set yet (vm::WORKING_SETS, D196).
+/// working set recorded or mapped ahead holds what the guest touched alone: none to hold on
+/// Windows, where a fault maps the page it touches alone, whether its file's pages are in
+/// the cache or read from disk with those around it, which go to the cache alone
+/// (windows_process.rs `mapped_pages_are_the_working_sets`,
+/// `a_fault_from_disk_maps_the_page_it_touches_alone`).
 #[derive(Debug)]
 pub struct FaultAroundOff;
 
