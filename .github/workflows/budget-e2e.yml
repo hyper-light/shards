@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, lib-windows:PACKAGE for a library's own on Windows, or windows:BINARY for a test binary of crates/shards on each Windows runner (windows:bin, the binary's own tests)
+        description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, lib-windows:PACKAGE for a library's own on Windows (name all: the package's every test), or windows:BINARY for a test binary of crates/shards on each Windows runner (windows:bin, the binary's own tests)
         default: daemon
       name:
         description: its exact name; all, the whole binary; on Windows, ignored:NAME runs the ignored test NAME, a measurement
@@ -126,10 +126,19 @@ jobs:
           TIMES: ${{ github.event.inputs.times }}
         run: |
           package="${TEST#lib-windows:}"
-          cargo test --locked --profile test-release -p "$package" --lib --no-run
+          # all: the package's every test, its test binaries' too; else its library's test of
+          # that exact name.
+          if [ "$NAME" = all ]; then
+            targets=()
+            filter=()
+          else
+            targets=(--lib)
+            filter=("$NAME" -- --exact)
+          fi
+          cargo test --locked --profile test-release -p "$package" "${targets[@]}" --no-run
           failed=0
           for i in $(seq "$TIMES"); do
-            cargo test --locked --profile test-release -p "$package" --lib "$NAME" -- --exact \
+            cargo test --locked --profile test-release -p "$package" "${targets[@]}" "${filter[@]}" \
               || failed=$((failed + 1))
           done
           echo "== $NAME failed $failed of $TIMES"
