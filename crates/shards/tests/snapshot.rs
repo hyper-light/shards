@@ -260,23 +260,63 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
     );
 }
 
+/// A directory nothing may write in, as it was again once this goes: read-only on Unix
+/// (mode 0555); on Windows, writing in it denied to everyone (`icacls /deny`).
+struct Unwritable(PathBuf);
+
+impl Unwritable {
+    fn new(dir: &Path) -> Unwritable {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        #[cfg(windows)]
+        icacls(dir, &["/deny", "*S-1-1-0:(OI)(CI)(W)"]);
+        Unwritable(dir.to_path_buf())
+    }
+}
+
+impl Drop for Unwritable {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+        #[cfg(windows)]
+        icacls(&self.0, &["/remove:d", "*S-1-1-0"]);
+    }
+}
+
+/// Windows' own tool for a directory's access list.
+#[cfg(windows)]
+fn icacls(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("icacls")
+        .arg(dir)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "icacls {} {args:?}: {status}", dir.display());
+}
+
 /// A VM that resumes after its snapshot serves its run whatever becomes of the snapshot:
 /// one that cannot be written loses the template, not the run.
-#[cfg(unix)]
 #[test]
 fn a_snapshot_that_cannot_be_written_stops_no_resumed_run() {
-    use std::os::unix::fs::PermissionsExt as _;
     if cannot_run_vms() || cannot_snapshot() {
         return;
     }
     let s = Scratch::new("snapshot-unwritable");
     std::fs::create_dir_all(s.snapshot()).unwrap();
-    std::fs::set_permissions(s.snapshot(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let unwritable = Unwritable::new(&s.snapshot());
     let r = boot_and_snapshot(&s, "resume");
-    std::fs::set_permissions(s.snapshot(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    drop(unwritable);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("generation=0"), "{r}");
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+    assert!(!shards_vmm::snapshot::exists(&s.snapshot()), "{r}");
 }
 
 #[test]
@@ -333,8 +373,7 @@ fn restores_elsewhere_read_the_disks_the_snapshot_was_taken_with() {
 }
 
 /// Storms: machines busy in every way at once when they are snapshotted (audit A02). They
-/// stream through vsock, which the host reaches through Unix sockets.
-#[cfg(unix)]
+/// stream through vsock, which the host reaches through Unix sockets (AF_UNIX on Windows).
 mod storm {
     use std::io::Write as _;
     use std::path::{Path, PathBuf};

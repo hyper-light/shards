@@ -217,6 +217,20 @@ fn set_attr<T>(fd: RawFd, group: u32, attr: u64, value: &T) -> io::Result<()> {
     unsafe { ioctl(fd, KVM_SET_DEVICE_ATTR, (&raw const a) as libc::c_ulong) }.map(drop)
 }
 
+/// Reads attribute `attr` of `group` of the device or vCPU `fd`, of type `T`.
+fn get_attr<T: Default>(fd: RawFd, group: u32, attr: u64) -> io::Result<T> {
+    let mut value = T::default();
+    let a = kvm_device_attr {
+        group,
+        attr,
+        addr: (&raw mut value) as u64,
+        ..Default::default()
+    };
+    // SAFETY: a kvm_device_attr whose `addr` is a live `T`, which KVM writes.
+    unsafe { ioctl(fd, KVM_GET_DEVICE_ATTR, (&raw const a) as libc::c_ulong) }?;
+    Ok(value)
+}
+
 /// The system handle, `/dev/kvm`.
 #[derive(Debug)]
 pub struct Kvm(File);

@@ -8,7 +8,9 @@
 
 use std::io;
 use std::net::UdpSocket;
+#[cfg(unix)]
 use std::os::unix::net::{UnixDatagram, UnixStream};
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use super::stream::{self, Stream};
@@ -16,6 +18,7 @@ use super::{Driver, Message, Wait};
 use crate::logging::syslog::{Config, From, Local, To};
 
 /// The host's own syslog's sockets, tried in turn (srslog unixSyslog's logPaths).
+#[cfg(unix)]
 const LOCAL: [&str; 3] = ["/dev/log", "/var/run/syslog", "/var/run/log"];
 
 /// The largest message every syslog receiver over UDP takes (RFC 5426 §3.2: 480 octets
@@ -34,6 +37,7 @@ pub(super) struct Syslog {
 
 enum Datagrams {
     Udp(UdpSocket),
+    #[cfg(unix)]
     Unix(UnixDatagram),
 }
 
@@ -63,11 +67,27 @@ impl Syslog {
     fn open(&mut self) -> io::Result<()> {
         let datagrams = match &self.config.to {
             To::Udp(address) => Datagrams::Udp(super::sockets::udp(address)?),
+            #[cfg(unix)]
             To::Unixgram(path) => {
                 let s = UnixDatagram::unbound()?;
                 s.connect(path)?;
                 Datagrams::Unix(s)
             }
+            // Windows' AF_UNIX is SOCK_STREAM's alone, and it keeps no syslog of its own.
+            #[cfg(windows)]
+            To::Unixgram(path) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("{}: Windows has no unix datagram sockets", path.display()),
+                ));
+            }
+            #[cfg(windows)]
+            To::Local => {
+                return Err(io::Error::other(
+                    "no syslog here: Windows keeps none of its own; syslog-address names one",
+                ));
+            }
+            #[cfg(unix)]
             To::Local => {
                 for path in LOCAL {
                     if let Ok(s) = UnixDatagram::unbound().and_then(|s| s.connect(path).map(|()| s)) {
@@ -104,6 +124,7 @@ impl Syslog {
         }
         let sent = match &self.datagrams {
             Some(Datagrams::Udp(s)) => super::sockets::send_datagram(s, bytes),
+            #[cfg(unix)]
             Some(Datagrams::Unix(s)) => super::sockets::send_datagram(s, bytes),
             None => Err(io::Error::from(io::ErrorKind::NotConnected)),
         };

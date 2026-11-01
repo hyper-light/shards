@@ -30,6 +30,7 @@ use shards_erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 use crate::build::{cstr, layer_name, mount, os_err, umount};
 use crate::join::{
     LO_FLAGS_AUTOCLEAR, LO_FLAGS_READ_ONLY, LOOP_CTL_GET_FREE, LOOP_SET_FD, LOOP_SET_STATUS64, LoopInfo64,
+    direct_io,
 };
 use crate::tree::{OPAQUE, getxattr, xattrs};
 
@@ -375,6 +376,8 @@ fn loop_device(disk: &File, offset: u64, len: u64) -> io::Result<(String, File)>
         if unsafe { libc::ioctl(dev.as_raw_fd(), LOOP_SET_STATUS64 as _, &raw const info) } != 0 {
             return Err(os_err("a layer's range on its loop device"));
         }
+        // Read past the join disk's own cache (join.rs `direct_io`).
+        direct_io(&dev).map_err(|_| os_err("a layer's range read past the join disk's cache"))?;
         return Ok((path, dev));
     }
     Err(err("no loop device stayed free"))

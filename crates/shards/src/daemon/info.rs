@@ -542,6 +542,7 @@ fn os_name() -> Option<String> {
 }
 
 /// The host's name.
+#[cfg(unix)]
 pub(super) fn host_name() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: gethostname(2) writes at most the buffer's length.
@@ -550,6 +551,23 @@ pub(super) fn host_name() -> Option<String> {
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     std::str::from_utf8(buf.get(..end)?).ok().map(str::to_string)
+}
+
+/// The host's name: its DNS host name, as Go's `os.Hostname` reads it on Windows
+/// (GetComputerNameExW, ComputerNamePhysicalDnsHostname), which dockerd names its own by.
+#[cfg(windows)]
+pub(super) fn host_name() -> Option<String> {
+    use windows_sys::Win32::System::SystemInformation::{
+        ComputerNamePhysicalDnsHostname, GetComputerNameExW,
+    };
+    // Room for a whole DNS name (255 octets, RFC 1035 2.3.4) and its NUL.
+    let mut buf = [0u16; 256];
+    let mut len = u32::try_from(buf.len()).ok()?;
+    // SAFETY: GetComputerNameExW writes at most `len` units into `buf`, and its length back.
+    if unsafe { GetComputerNameExW(ComputerNamePhysicalDnsHostname, buf.as_mut_ptr(), &raw mut len) } == 0 {
+        return None;
+    }
+    String::from_utf16(buf.get(..usize::try_from(len).ok()?)?).ok()
 }
 
 #[cfg(test)]

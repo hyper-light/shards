@@ -211,6 +211,11 @@ fn serve() -> io::Result<()> {
     std::env::set_current_dir("/")?;
     let notes = match plug {
         Some(plug) => {
+            // What its host's budget leaves the build (D188), shared by the grower and the
+            // give-back's answerer this process forks, as a run's init shares it.
+            if let Err(e) = crate::plug::make_cap() {
+                let _ = writeln!(io::stderr(), "shards-init: {e}; its build is held to no budget");
+            }
             plug.raise_limits()?;
             // What it may still plug, reported where its kernel reports it (D149), as a
             // build on a host sees the host's memory: before its grower, which reads it.
@@ -226,6 +231,16 @@ fn serve() -> io::Result<()> {
     // network shares, as BuildKit's steps share its host's (D34).
     if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
         crate::net::configure(addr, prefix, gateway)?;
+    }
+    // Its host's asks for what it holds cold back (D188), on a connection of their own,
+    // dialed before the build's so that its host takes it before any step could dial
+    // its port, and answered by a process of init's outside the build's cgroup. A host
+    // that listens on none asks nothing.
+    if let Ok(give) = dial(build::GIVE_PORT, true) {
+        // What a give-back frees reported at once, so that its host has it back before the
+        // answer says so (D151).
+        crate::run::open_flush();
+        crate::plug::answer_give_backs(give)?;
     }
     let conn = dial(build::PORT, true)?;
     let mut b = Builder {

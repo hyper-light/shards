@@ -15,7 +15,8 @@
 //! object holding that one file's bytes, writes every change made through another path into it before the change
 //! returns, and writes the guest's stores back into the volume at its fsync. The guest stores through its map and syncs;
 //! the host reads the store through slates and rewrites the file through another attachment; the guest waits to see the
-//! host's change in its same map.
+//! host's change in its same map, then the host cuts the file and the guest waits for its tail to read zeros. Its
+//! red-check is a test of its own: the same guest booted with no window finds no DAX and fails its map check.
 //!
 //! The third test takes Shards' own route instead: slates mounts the volume on the host (`slates mount`, NFS over
 //! loopback on macOS), and a microVM under a Shards daemon gets that mount as an ordinary volume (`-v MOUNT:/v`) with
@@ -25,11 +26,16 @@
 //! unmounted before slates' anchor stops, whatever the test's outcome, since a daemon that dies under a live macOS NFS
 //! mount leaves the mount hung.
 //!
-//! Unix-only (fd-passing); a Windows microVM would be handed a HANDLE, which slates has no route for yet. It skips loudly
-//! (prints and passes) where the host cannot run VMs or `SLATES_BIN` is unset, as the other VM tests do.
+//! The first test runs on Windows too (WHP, D140): there the stream is a duplex named pipe, and `slates shards ID --
+//! shards run … --slates-fs-handle {handle}` starts the spawner holding the pipe's end as a handle, writing its value
+//! where `{handle}` stands (slates A-179, A-181); the spawner duplicates it into the confined VM process (D141, PM
+//! M203), whose device reads and writes this framing on it with overlapped I/O (PM M340). The DAX test runs there too,
+//! its stream handed so and its window WHP's (D189; slates A-180 answers its descriptor asks with sections), and so does
+//! its red-check. The mount
+//! test is Unix's: Windows has no `slates mount` a Shards daemon shares. Each test skips loudly (prints and passes)
+//! where the host cannot run VMs or `SLATES_BIN` is unset, as the other VM tests do.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![cfg(unix)]
 
 mod common;
 
@@ -38,10 +44,9 @@ use std::io::Write;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{
-    TempDir, as_tests_run, cannot_run_vms, guest_init, kernel, run_command, run_shards_env, served, shards,
-    test_guest,
-};
+#[cfg(unix)]
+use common::{TempDir, guest_init, run_shards_env, served};
+use common::{as_tests_run, cannot_run_vms, kernel, run_command, shards, test_guest};
 
 /// The host bounds the run; the guest's own waits are unbounded (it powers off on done).
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -63,6 +68,9 @@ const GUEST_STORE: &[u8] = b"stored by a shards guest through its DAX map\n";
 /// Where the host's change through another path lands, and what, as the testguest waits for it.
 const HOST_AT: usize = 1 << 20;
 const HOST_CHANGE: &[u8] = b"written by the host through slates while the guest held its map\n";
+/// Where the host cuts the file once the guest has seen its change, as the testguest expects it: past the change,
+/// inside the first range, at no page's end, so the rest of that page must read zeros in the guest's map.
+const CUT: usize = (3 << 19) + 100;
 /// The DAX window the share gets (D189), in MiB: room for the file's two ranges and to spare.
 const SHARE_WINDOW_MIB: &str = "64";
 
@@ -144,7 +152,11 @@ fn run_watching(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+    // A Windows process ends with an exit code, never a signal.
+    #[cfg(windows)]
+    let signal = None;
     common::Run {
         status: status.code(),
         signal,
@@ -256,9 +268,17 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
 
     let k = kernel().to_str().unwrap().to_owned();
     let init = test_guest().to_str().unwrap().to_owned();
+    // The stream's end reaches the spawner as descriptor 3 on Unix; on Windows as a handle, its value written where
+    // `{handle}` stands, since a handle's value is not the caller's to choose (slates A-181).
+    #[cfg(unix)]
+    let (hand, flag, end): (&[&str], _, _) = (&["--fd", "3"], "--slates-fs-fd", "3");
+    #[cfg(windows)]
+    let (hand, flag, end): (&[&str], _, _) = (&[], "--slates-fs-handle", "{handle}");
     let mut vm = Command::new(&bin);
     as_tests_run(&mut vm);
-    vm.args(["--instance", &instance, "shards", &id, "--fd", "3", "--"])
+    vm.args(["--instance", &instance, "shards", &id])
+        .args(hand)
+        .arg("--")
         .arg(shards())
         .args([
             "run",
@@ -266,15 +286,15 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
             &k,
             "--init",
             &init,
-            "--slates-fs-fd",
-            "3",
+            flag,
+            end,
             "--cmdline",
             "console=ttyS0 quiet panic=-1 shards_test=slates_fs",
         ]);
     let asked = vec![
         "slates shards".to_string(),
         id.clone(),
-        "-- shards run --slates-fs-fd 3".to_string(),
+        format!("-- shards run {flag} {end}"),
     ];
     let run = run_command(vm, &asked, TIMEOUT);
     assert_eq!(run.status, Some(0), "{run}");
@@ -291,12 +311,74 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
     );
 }
 
+/// Do: boot the DAX test's microVM, its guest and its file alike, with no DAX window (`--share-window` left off). Expect
+/// the guest to find `big` not DAX and say so (`SHARDS-TEST FAIL /mnt/big is not DAX`), and no `SHARDS-TEST PASS`:
+/// without the window its reads go through FUSE, so the DAX test's map is the window's doing and cannot pass vacuously.
+/// This is the DAX test's red-check, kept as a test of its own.
+#[test]
+fn without_a_dax_window_the_guest_finds_no_dax_and_its_map_check_fails() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let Some(bin) = std::env::var_os("SLATES_BIN") else {
+        eprintln!("SKIP: SLATES_BIN is not set (the built `slates` binary)");
+        return;
+    };
+    let big: Vec<u8> = (0..BIG_BYTES).map(|i| (i % 251) as u8).collect();
+    let (_anchor, instance, id) = volume(&bin, "shards-nodax", &[("big", big.as_slice())]);
+
+    let k = kernel().to_str().unwrap().to_owned();
+    let init = test_guest().to_str().unwrap().to_owned();
+    // The stream's end as the other tests hand it: descriptor 3 on Unix, a handle on Windows (slates A-181).
+    #[cfg(unix)]
+    let (hand, flag, end): (&[&str], _, _) = (&["--fd", "3"], "--slates-fs-fd", "3");
+    #[cfg(windows)]
+    let (hand, flag, end): (&[&str], _, _) = (&[], "--slates-fs-handle", "{handle}");
+    let mut vm = Command::new(&bin);
+    as_tests_run(&mut vm);
+    vm.args(["--instance", &instance, "shards", &id])
+        .args(hand)
+        .arg("--")
+        .arg(shards())
+        .args([
+            "run",
+            "--kernel",
+            &k,
+            "--init",
+            &init,
+            flag,
+            end,
+            "--cmdline",
+            "console=ttyS0 quiet panic=-1 shards_test=slates_fs_dax",
+        ]);
+    let asked = vec![
+        "slates shards".to_string(),
+        id.clone(),
+        format!("-- shards run {flag} {end} (no --share-window)"),
+    ];
+    let run = run_command(vm, &asked, TIMEOUT);
+    // The guest gives its verdict on the console and powers off either way, so the VM ends well; the verdict is the line.
+    assert_eq!(run.status, Some(0), "{run}");
+    assert!(
+        run.stdout.contains("SHARDS-TEST FAIL /mnt/big is not DAX"),
+        "a guest with no window must fail its map check, for want of DAX: {run}"
+    );
+    assert!(
+        !run.stdout.contains("SHARDS-TEST PASS"),
+        "a guest with no window must not pass: {run}"
+    );
+}
+
 /// Do: start slates' anchor, make a volume holding `big` (3 MiB), and boot a microVM whose `shards0` share is that volume
 /// with a DAX window; the guest mounts it `dax=inode`, finds `big` DAX, maps its first range, stores through the map and
 /// fsyncs. When it says so, the host reads `big` through slates and rewrites it through another attachment with the
 /// guest's store kept and other bytes changed. Expect slates' first read after the guest's word to hold the store (slates
 /// writes it back before the fsync returns; how long that read took is printed), the guest to see the host's change and
-/// its own store in its same map and print `SHARDS-TEST PASS`, and slates' read afterwards to hold both.
+/// its own store in its same map. When it says so, the host cuts `big` at [`CUT`]; expect the guest to read zeros over
+/// the rest of the page that holds the new end, its store and the change kept, and print `SHARDS-TEST PASS`, and
+/// slates' read afterwards to hold both and end at the cut. On Windows the
+/// stream is handed as a handle and the window is WHP's (slates A-180 answers its descriptor asks with confined sections).
 #[test]
 fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() {
     if cannot_run_vms() {
@@ -312,9 +394,16 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
 
     let k = kernel().to_str().unwrap().to_owned();
     let init = test_guest().to_str().unwrap().to_owned();
+    // The stream's end as the first test hands it: descriptor 3 on Unix, a handle on Windows (slates A-181).
+    #[cfg(unix)]
+    let (hand, flag, end): (&[&str], _, _) = (&["--fd", "3"], "--slates-fs-fd", "3");
+    #[cfg(windows)]
+    let (hand, flag, end): (&[&str], _, _) = (&[], "--slates-fs-handle", "{handle}");
     let mut vm = Command::new(&bin);
     as_tests_run(&mut vm);
-    vm.args(["--instance", &instance, "shards", &id, "--fd", "3", "--"])
+    vm.args(["--instance", &instance, "shards", &id])
+        .args(hand)
+        .arg("--")
         .arg(shards())
         .args([
             "run",
@@ -322,8 +411,8 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
             &k,
             "--init",
             &init,
-            "--slates-fs-fd",
-            "3",
+            flag,
+            end,
             "--share-window",
             SHARE_WINDOW_MIB,
             "--cmdline",
@@ -332,11 +421,17 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
     let asked = vec![
         "slates shards".to_string(),
         id.clone(),
-        "-- shards run --slates-fs-fd 3 --share-window".to_string(),
+        format!("-- shards run {flag} {end} --share-window"),
         SHARE_WINDOW_MIB.to_string(),
     ];
     let mut visible_after = None;
+    let mut changed: Option<Vec<u8>> = None;
     let run = run_watching(vm, &asked, TIMEOUT, |line| {
+        if line.contains("SLATES-DAX SEEN") {
+            let whole = changed.as_ref().expect("the guest saw the change the host made");
+            write(&bin, &instance, &id, "big", &whole[..CUT]);
+            return;
+        }
         if !line.contains("SLATES-DAX STORED") {
             return;
         }
@@ -349,9 +444,10 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
             GUEST_STORE,
             "the guest's store reached the volume by its fsync"
         );
-        let mut changed = read.stdout;
-        changed[HOST_AT..HOST_AT + HOST_CHANGE.len()].copy_from_slice(HOST_CHANGE);
-        write(&bin, &instance, &id, "big", &changed);
+        let mut whole = read.stdout;
+        whole[HOST_AT..HOST_AT + HOST_CHANGE.len()].copy_from_slice(HOST_CHANGE);
+        write(&bin, &instance, &id, "big", &whole);
+        changed = Some(whole);
     });
     assert_eq!(run.status, Some(0), "{run}");
     assert!(
@@ -373,26 +469,32 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
 
     let read = slates(&bin, &instance, &["read", &id, "big"], b"");
     assert!(read.status.success(), "slates read: {read:?}");
+    assert_eq!(read.stdout.len(), CUT, "the file ends at the cut");
     assert_eq!(&read.stdout[GUEST_AT..GUEST_AT + GUEST_STORE.len()], GUEST_STORE);
     assert_eq!(&read.stdout[HOST_AT..HOST_AT + HOST_CHANGE.len()], HOST_CHANGE);
 }
 
 /// The file a guest maps through Shards' own DAX window over a slates mount: 8 MiB, past the 1 MiB from which a volume's
 /// files go through its microVM's window (D189), byte `i` being `i mod 251`.
+#[cfg(unix)]
 const MOUNTED_BYTES: usize = 8 << 20;
 /// Where the host's change through another slates attachment lands in that file: inside its second 2 MiB range.
+#[cfg(unix)]
 const MOUNTED_AT: usize = 3 << 20;
 /// The name of the microVM the mount test runs under its Shards daemon.
+#[cfg(unix)]
 const MOUNTED_VM: &str = "slatesmount";
 
 /// A volume mounted on this host with `slates mount` at a directory, unmounted when dropped (asked until slates answers,
 /// then forced), so that slates' daemon never dies under a live mount: declared after the anchor, it is dropped before.
+#[cfg(unix)]
 struct Mounted<'a> {
     bin: &'a OsStr,
     instance: String,
     point: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl<'a> Mounted<'a> {
     fn new(bin: &'a OsStr, instance: &str, id: &str, point: &std::path::Path) -> Mounted<'a> {
         let at = point.to_str().unwrap();
@@ -405,6 +507,7 @@ impl<'a> Mounted<'a> {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Mounted<'_> {
     fn drop(&mut self) {
         let at = self.point.to_str().unwrap_or_default();
@@ -423,10 +526,12 @@ impl Drop for Mounted<'_> {
 }
 
 /// A microVM under a Shards daemon, removed when dropped: declared after the mount it shares, it is removed first.
+#[cfg(unix)]
 struct Removed<'a> {
     env: &'a [(&'a str, &'a OsStr)],
 }
 
+#[cfg(unix)]
 impl Drop for Removed<'_> {
     fn drop(&mut self) {
         let _ = run_shards_env(&[], &["rm", "-f", MOUNTED_VM], self.env, TIMEOUT);
@@ -440,6 +545,7 @@ impl Drop for Removed<'_> {
 /// Expect: the guest's kernel maps `big` into the window (`dax /v/big yes`) and reads it whole through it; and a fresh
 /// open and read in the guest shows the host's byte within `TIMEOUT`, since each open makes Shards' server open the host
 /// file, which revalidates it on the host side.
+#[cfg(unix)]
 #[test]
 fn a_microvm_maps_a_slates_mount_file_through_its_own_dax_window() {
     if cannot_run_vms() {

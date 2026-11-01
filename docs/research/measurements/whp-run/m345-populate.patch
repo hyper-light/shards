@@ -1,0 +1,48 @@
+diff --git a/crates/vmm/src/hv/whp/ffi.rs b/crates/vmm/src/hv/whp/ffi.rs
+index 7066050d..22db8daf 100644
+--- a/crates/vmm/src/hv/whp/ffi.rs
++++ b/crates/vmm/src/hv/whp/ffi.rs
+@@ -93,6 +93,7 @@ winhv! {
+     fn WHvResumePartitionTime(partition: WHV_PARTITION_HANDLE);
+     fn WHvMapGpaRange(partition: WHV_PARTITION_HANDLE, source: *const c_void, gpa: u64, size: u64, flags: WHV_MAP_GPA_RANGE_FLAGS);
+     fn WHvUnmapGpaRange(partition: WHV_PARTITION_HANDLE, gpa: u64, size: u64);
++    fn WHvAdviseGpaRange(partition: WHV_PARTITION_HANDLE, ranges: *const WHV_MEMORY_RANGE_ENTRY, count: u32, advice: WHV_ADVISE_GPA_RANGE_CODE, buffer: *const c_void, size: u32);
+     fn WHvCreateVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32, flags: u32);
+     fn WHvDeleteVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32);
+     fn WHvRunVirtualProcessor(partition: WHV_PARTITION_HANDLE, index: u32, exit: *mut c_void, size: u32);
+diff --git a/crates/vmm/src/hv/whp/mod.rs b/crates/vmm/src/hv/whp/mod.rs
+index e84fbcb5..b0958388 100644
+--- a/crates/vmm/src/hv/whp/mod.rs
++++ b/crates/vmm/src/hv/whp/mod.rs
+@@ -759,7 +759,30 @@ impl Vm {
+     /// `host..host+len` must stay mapped until the VM is destroyed.
+     pub unsafe fn map_ram(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+         // SAFETY: forwarded caller contract.
+-        unsafe { self.partition.map(host, gpa, len, RWX) }
++        unsafe { self.partition.map(host, gpa, len, RWX) }?;
++        // PM M345's experiment: the whole of RAM populated at stage 2, read, before any run.
++        let started = std::time::Instant::now();
++        let range = WHV_MEMORY_RANGE_ENTRY { GuestAddress: gpa, SizeInBytes: len as u64 };
++        let populate = WHV_ADVISE_GPA_RANGE_POPULATE {
++            Flags: WHV_ADVISE_GPA_RANGE_POPULATE_FLAGS { AsUINT32: 0 },
++            AccessType: WHvMemoryAccessRead,
++        };
++        // SAFETY: one range of the partition's, and an advice of its own type and size.
++        let hr = unsafe {
++            WHvAdviseGpaRange(
++                self.partition.0,
++                &raw const range,
++                1,
++                WHvAdviseGpaRangeCodePopulate,
++                (&raw const populate).cast(),
++                size_of::<WHV_ADVISE_GPA_RANGE_POPULATE>() as u32,
++            )
++        };
++        let _ = std::io::Write::write_all(
++            &mut std::io::stderr(),
++            format!("EXP populate {len} bytes: {hr:#x} in {:?}\n", started.elapsed()).as_bytes(),
++        );
++        Ok(())
+     }
+ 
+     /// What takes guest RAM from the guest and gives it back, from whichever thread gives

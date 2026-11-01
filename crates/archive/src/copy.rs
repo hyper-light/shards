@@ -84,6 +84,17 @@ pub(crate) fn preserve(os: Os, cleaned: &[u8], original: &[u8]) -> Vec<u8> {
     cleaned
 }
 
+/// filepath.ToSlash: a path with this platform's separators as Docker's API carries one,
+/// as the moby client sends each copy's path in a container (client/container_copy.go).
+pub fn to_slash(p: &Path) -> PathBuf {
+    path(&gopath::to_slash(NATIVE, &bytes(p)))
+}
+
+/// filepath.Dir: all of a path but its last element, cleaned, by this platform's rules.
+pub fn dir(p: &Path) -> PathBuf {
+    path(&gopath::dir(NATIVE, &bytes(p)))
+}
+
 /// SplitPathDirEntry: the directory and the entry in it, the path cleaned but a
 /// trailing `.` kept.
 pub fn split_path_dir_entry(p: &Path) -> (PathBuf, PathBuf) {

@@ -4,9 +4,9 @@
 //! pty. Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT; the image comes from a
 //! loopback registry (tests/common, `served`), and its entrypoint is the test guest, whose
 //! `tty` mode reports what the command sees. The client runs on a pty of the test's, which
-//! plays the user's terminal.
+//! plays the user's terminal; on Windows on a pseudo console of the test's, its shell this
+//! binary's `console_shell` (common/terminal_windows.rs).
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -267,7 +267,8 @@ fn ctrl_c_interrupts_and_the_detach_keys_leave_it_running() {
     term.wait_for("ready\r\n");
     term.type_in(&[3]);
     let (_, status, restored) = term.exit();
-    assert_eq!((status, restored), (128 + libc::SIGINT, true));
+    // SIGINT's number in the guest, Linux's: 2.
+    assert_eq!((status, restored), (128 + 2, true));
 
     // The detach keys end the client, which says nothing and exits 0, and the command
     // runs on; custom keys likewise.

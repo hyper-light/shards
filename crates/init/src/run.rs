@@ -48,11 +48,12 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 
 /// `page_reporting.flush` (resources/kernel/patches/0005), where the kernel has it: opened
 /// by a template's init before its root is the container's, whose sysfs is read-only, and
-/// kept for [`flush_page_reports`].
+/// by a builder's before it answers its host's asks to give back (D188); kept for
+/// [`flush_page_reports`].
 static FLUSH: std::sync::OnceLock<File> = std::sync::OnceLock::new();
 
 /// Opens [`FLUSH`] through a sysfs of init's own, mounted for the moment it takes.
-fn open_flush() {
+pub(crate) fn open_flush() {
     const AT: &str = "/flush";
     if std::fs::create_dir_all(AT).is_err() {
         return;
@@ -82,25 +83,36 @@ fn open_flush() {
 }
 
 /// Reclaims what `cgroup` holds cold of its files, at its host's memory pressure (D188):
-/// as much as its memory.stat counts inactive (`inactive_file`), of its file pages alone
-/// (`swappiness=0`, Linux 6.11; a kernel without the key takes the amount alone), its
-/// anonymous memory and tmpfs left to the host, which reclaims those as well as the guest
-/// would, where a clean file page the guest drops is one the host could only have swapped.
-/// Then what that freed is reported at once (D151), so that the host has it back before
-/// this answers. The bytes the cgroup holds less after.
-fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
-    let read = |file: &str| std::fs::read_to_string(format!("{cgroup}/{file}"));
-    let cold = read("memory.stat")?
+/// as much as its memory.stat counts inactive (`inactive_file`), as [`reclaim_files`]
+/// reclaims it. The bytes the cgroup holds less after.
+pub(crate) fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
+    let cold = std::fs::read_to_string(format!("{cgroup}/memory.stat"))?
         .lines()
         .find_map(|l| l.strip_prefix("inactive_file "))
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    let current = || -> io::Result<u64> { read("memory.current")?.trim().parse().map_err(io::Error::other) };
+    reclaim_files(cgroup, cold)
+}
+
+/// Reclaims `bytes` of what `cgroup` holds of its files, oldest first as its kernel ages
+/// them (`memory.reclaim`), of its file pages alone (`swappiness=0`, Linux 6.11; a kernel
+/// without the key takes the amount alone), its anonymous memory and tmpfs left to the host,
+/// which reclaims those as well as the guest would, where a clean file page the guest drops
+/// is one the host could only have swapped. Then what that freed is reported at once
+/// (D151), so that the host has it back before this answers. The bytes the cgroup holds
+/// less after.
+pub(crate) fn reclaim_files(cgroup: &str, bytes: u64) -> io::Result<u64> {
+    let current = || -> io::Result<u64> {
+        std::fs::read_to_string(format!("{cgroup}/memory.current"))?
+            .trim()
+            .parse()
+            .map_err(io::Error::other)
+    };
     let before = current()?;
-    if cold > 0 {
+    if bytes > 0 {
         let reclaim = format!("{cgroup}/memory.reclaim");
-        let asked = match std::fs::write(&reclaim, format!("{cold} swappiness=0")) {
-            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => std::fs::write(&reclaim, cold.to_string()),
+        let asked = match std::fs::write(&reclaim, format!("{bytes} swappiness=0")) {
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => std::fs::write(&reclaim, bytes.to_string()),
             asked => asked,
         };
         // Less than asked for is what there was to reclaim.
@@ -1881,8 +1893,18 @@ fn lo_up() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// SO_VM_SOCKETS_CONNECT_TIMEOUT, a timeval of longs on a 64-bit kernel (its `_OLD` value,
+/// include/uapi/linux/vm_sockets.h), which the libc crate does not have.
+const SO_VM_SOCKETS_CONNECT_TIMEOUT: libc::c_int = 6;
+
 /// Connects to a host port. Without blocking, the connection may still be in progress:
-/// the socket turns writable when it completes.
+/// the socket turns writable when it completes. Either way it waits for the host's answer
+/// however long the host takes. Linux gives a connection 2 s (VSOCK_DEFAULT_CONNECT_TIMEOUT)
+/// and then resets it, though its host may have answered already ("VIRTIO_VSOCK_OP_RST
+/// will follow", net/vmw_vsock/af_vsock.c, `vsock_connect`): a loaded host's VM process had
+/// taken such a connection for its run's, and the run found it gone as its guest powered
+/// off (PM M346). The host is the guest's only peer, and refuses at once a port nothing
+/// takes: giving up on it ends the run, and waiting never does worse.
 pub(crate) fn dial(port: u32, blocking: bool) -> io::Result<File> {
     let flags = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | if blocking { 0 } else { libc::SOCK_NONBLOCK };
     // SAFETY: socket(2) with constant arguments.
@@ -1892,6 +1914,30 @@ pub(crate) fn dial(port: u32, blocking: bool) -> io::Result<File> {
     }
     // SAFETY: a fresh descriptor nothing else owns.
     let sock = unsafe { File::from_raw_fd(fd) };
+    // 68 years, the most seconds a 32-bit count holds: within what the kernel takes
+    // (below MAX_SCHEDULE_TIMEOUT / HZ, some 10^15 s), and past any host's answer.
+    let never = libc::timeval {
+        tv_sec: i32::MAX.into(),
+        tv_usec: 0,
+    };
+    // SAFETY: setsockopt(2) of the socket, with a timeval of its size.
+    let set = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::AF_VSOCK,
+            SO_VM_SOCKETS_CONNECT_TIMEOUT,
+            (&raw const never).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if set != 0 {
+        // Its 2 s, then: the dial is still the run's.
+        let _ = writeln!(
+            io::stderr(),
+            "shards-init: the host's connection keeps Linux's 2 s: {}",
+            io::Error::last_os_error()
+        );
+    }
     // SAFETY: an all-zero sockaddr_vm is a valid value.
     let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
     addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
@@ -3337,9 +3383,11 @@ fn builtin(
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
+            // Its answer a line, whose end says it is whole: one its host took past its
+            // deadline is still what was given back (reclaim.rs `given`).
             run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
                 let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
-                write!(out, "{freed} {unplugging}")
+                writeln!(out, "{freed} {unplugging}")
             }),
             run::builtin::ROOM => args
                 .first()

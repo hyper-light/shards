@@ -271,11 +271,11 @@ fn raw_mode(was: u32) -> u32 {
 /// Puts stdin's console in raw mode ([`raw_mode`]), its keys the escape sequences a
 /// terminal sends where the console gives them (ENABLE_VIRTUAL_TERMINAL_INPUT, as moby/term
 /// asks for it where it is taken), and has stdout take escape sequences, which a terminal's
-/// command writes.
+/// command writes, and its line feeds as a terminal takes them.
 #[cfg(windows)]
 pub fn make_raw() -> io::Result<()> {
     use windows_sys::Win32::System::Console::{
-        ENABLE_VIRTUAL_TERMINAL_INPUT, GetConsoleMode, SetConsoleMode,
+        DISABLE_NEWLINE_AUTO_RETURN, ENABLE_VIRTUAL_TERMINAL_INPUT, GetConsoleMode, SetConsoleMode,
     };
     let input = console_in().ok_or_else(|| io::Error::other("stdin is not a console"))?;
     let mut was = 0;
@@ -297,6 +297,18 @@ pub fn make_raw() -> io::Result<()> {
         (unsafe { GetConsoleMode(h, &mut mode) } != 0).then_some(mode)
     });
     let _ = styles(1);
+    // A line feed alone moves down, as a terminal's does, with no carriage return of the
+    // console's: moby/term's raw output (SetRawTerminalOutput, DISABLE_NEWLINE_AUTO_RETURN),
+    // which a console without it refuses, passed over as moby/term passes it over.
+    if let Some(h) = console(1) {
+        let mut mode = 0;
+        // SAFETY: the console's own handle, its mode read into a local and set.
+        unsafe {
+            if GetConsoleMode(h, &mut mode) != 0 {
+                SetConsoleMode(h, mode | DISABLE_NEWLINE_AUTO_RETURN);
+            }
+        }
+    }
     *SAVED.lock().unwrap_or_else(PoisonError::into_inner) = Some((was, out));
     Ok(())
 }
@@ -339,6 +351,81 @@ fn console(fd: i32) -> Option<windows_sys::Win32::Foundation::HANDLE> {
             && GetConsoleMode(h, &mut mode) != 0)
             .then_some(h)
     }
+}
+
+/// The terminal's background colour, asked as Unix's [`background`] asks it (OSC 11, then
+/// DA1, which every terminal answers), of the console this process's stdin and stdout are:
+/// stdout taking escape sequences ([`styles`]), and stdin in virtual terminal input
+/// (ENABLE_VIRTUAL_TERMINAL_INPUT) for the answer, which comes as the console's input, as a
+/// terminal's keys do. `None` where they are no console, or it says nothing in `PATIENCE`;
+/// the console's input mode is given back as it was.
+#[cfg(windows)]
+pub fn background() -> Option<(u8, u8, u8)> {
+    use std::io::Write as _;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Console::{
+        ENABLE_VIRTUAL_TERMINAL_INPUT, GetConsoleMode, INPUT_RECORD, KEY_EVENT, ReadConsoleInputW,
+        SetConsoleMode,
+    };
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    const PATIENCE: std::time::Duration = std::time::Duration::from_millis(500);
+    let input = console_in()?;
+    if !styles(1) {
+        return None;
+    }
+    let mut was = 0;
+    // SAFETY: the console's own handle, its mode read into a local.
+    if unsafe { GetConsoleMode(input, &mut was) } == 0 {
+        return None;
+    }
+    // SAFETY: the console's own handle, its mode set; given back below.
+    if unsafe { SetConsoleMode(input, raw_mode(was) | ENABLE_VIRTUAL_TERMINAL_INPUT) } == 0 {
+        return None;
+    }
+    let mut heard = Vec::new();
+    let mut out = io::stdout();
+    let asked = out.write_all(b"\x1b]11;?\x1b\\\x1b[c").and_then(|()| out.flush());
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while asked.is_ok()
+        && let Some(left) = deadline.checked_duration_since(std::time::Instant::now())
+    {
+        let ms = u32::try_from(left.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: the console's input handle, waited on until input comes or `ms` pass.
+        if unsafe { WaitForSingleObject(input, ms) } != WAIT_OBJECT_0 {
+            break;
+        }
+        let mut records = [INPUT_RECORD::default(); 64];
+        let mut n = 0u32;
+        // SAFETY: the console's input handle, and a buffer of `records.len()` records for the
+        // call to fill, `n` of them filled.
+        if unsafe { ReadConsoleInputW(input, records.as_mut_ptr(), records.len() as u32, &mut n) } == 0 {
+            break;
+        }
+        for r in records.get(..n as usize).unwrap_or_default() {
+            if u32::from(r.EventType) != KEY_EVENT {
+                continue;
+            }
+            // SAFETY: a key event's record holds a KEY_EVENT_RECORD.
+            let key = unsafe { r.Event.KeyEvent };
+            // SAFETY: either view of the character is a u16's bits.
+            let unit = unsafe { key.uChar.UnicodeChar };
+            // An answer is ASCII.
+            if key.bKeyDown != 0
+                && let Ok(byte) = u8::try_from(unit)
+            {
+                heard.push(byte);
+            }
+        }
+        // DA1's answer, `ESC [ ? … c`, ends what there is to hear.
+        if let Some(at) = find(&heard, b"\x1b[?")
+            && heard.get(at..).is_some_and(|rest| rest.contains(&b'c'))
+        {
+            break;
+        }
+    }
+    // SAFETY: the console's own handle, its mode given back.
+    unsafe { SetConsoleMode(input, was) };
+    parse_background(&heard)
 }
 
 /// Whether this process's stdout (`fd` 1) or stderr (2) is a console that takes escape
@@ -541,14 +628,12 @@ fn field<T: TryFrom<i64> + Default>(v: i64) -> T {
 }
 
 /// Where `needle` starts in `hay`.
-#[cfg(unix)]
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// The colour in an answer to OSC 11: each channel of 1 to 4 hex digits, scaled to 8 bits
 /// (XParseColor's `rgb:` form).
-#[cfg(unix)]
 fn parse_background(heard: &[u8]) -> Option<(u8, u8, u8)> {
     let at = find(heard, b"]11;rgb:")? + 8;
     let rest = heard.get(at..)?;

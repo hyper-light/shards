@@ -159,6 +159,8 @@ pub fn config(opts: &BTreeMap<String, String>) -> Result<Config, String> {
 /// which is there. Where Go's URL parser would take a `unix://` address's first name for a
 /// host and drop it, this says so.
 fn address(given: &str) -> Result<To, String> {
+    // The host's own syslog; on macOS its unified log, its syslogd keeping nothing sent to
+    // its socket (PM M374, daemon/ship.rs).
     if given.is_empty() {
         return Ok(To::Local);
     }
@@ -171,6 +173,22 @@ fn address(given: &str) -> Result<To, String> {
             if !rest.starts_with('/') {
                 return Err(said("a socket's absolute path, after the scheme's three slashes"));
             }
+            // Windows' AF_UNIX is SOCK_STREAM's alone (its socket() refuses SOCK_DGRAM, as
+            // `windows_has_no_unix_datagram_sockets` holds it to): a run that asks for one is
+            // refused as it is made, not left to wait for a socket that cannot be.
+            #[cfg(windows)]
+            if scheme == "unixgram" {
+                return Err(said(
+                    "Windows has no unix datagram sockets: unix:///PATH takes a stream, udp://HOST[:PORT] datagrams",
+                ));
+            }
+            // On Windows a drive's path follows the third slash, as a file URL's does
+            // (RFC 8089): unix:///C:/logs/syslog.sock.
+            #[cfg(windows)]
+            let rest = rest
+                .strip_prefix('/')
+                .filter(|path| path.get(1..2) == Some(":"))
+                .unwrap_or(rest);
             let path = PathBuf::from(rest);
             std::fs::metadata(&path).map_err(|e| said(&e.to_string()))?;
             Ok(if scheme == "unix" {
@@ -375,6 +393,27 @@ impl Local {
         })
     }
 
+    /// `at`, nanoseconds since the epoch, in this host's time zone on Windows: its offset
+    /// that instant's, as Go's `time.Local` has it there (cli/listing.rs `local`), and its
+    /// fields by the proleptic Gregorian calendar, as localtime(3) breaks a time into them.
+    #[cfg(windows)]
+    pub fn of(at: u64) -> Option<Local> {
+        let t = i64::try_from(at / 1_000_000_000).ok()?;
+        let offset = crate::cli::listing::local(t).offset;
+        let local = i128::from(t).checked_add(i128::from(offset))?;
+        let (year, month, mday) = shards_cmdline::format::civil(local.div_euclid(86_400));
+        let secs = local.rem_euclid(86_400);
+        Some(Local {
+            year: i64::try_from(year).ok()?,
+            mon: usize::try_from(month.checked_sub(1)?).ok()?,
+            mday: i64::try_from(mday).ok()?,
+            hour: i64::try_from(secs / 3600).ok()?,
+            min: i64::try_from(secs / 60 % 60).ok()?,
+            sec: i64::try_from(secs % 60).ok()?,
+            offset,
+        })
+    }
+
     /// Go's `time.Stamp`: `Jan _2 15:04:05`.
     fn stamp(&self) -> String {
         format!(
@@ -418,6 +457,29 @@ impl Local {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A moment broken into this host's local fields is that moment: its fields, read back
+    /// by the proleptic Gregorian calendar, less its zone's offset, are its seconds since the
+    /// epoch; localtime(3)'s on Unix, the zone's offset and the calendar's on Windows.
+    #[test]
+    fn a_local_time_is_its_moment() {
+        // Howard Hinnant's days_from_civil.
+        let days = |y: i64, m: i64, d: i64| {
+            let y = if m <= 2 { y - 1 } else { y };
+            let era = y.div_euclid(400);
+            let yoe = y - era * 400;
+            let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+            let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+            era * 146_097 + doe - 719_468
+        };
+        for t in [0u64, 951_782_400, 1_709_164_800, 1_761_566_400, 4_102_444_799] {
+            let l = Local::of(t * 1_000_000_000).unwrap();
+            let mon = i64::try_from(l.mon).unwrap() + 1;
+            let read = days(l.year, mon, l.mday) * 86_400 + l.hour * 3_600 + l.min * 60 + l.sec;
+            assert_eq!(read - l.offset, i64::try_from(t).unwrap(), "{t}: {l:?}");
+            assert!((0..12).contains(&l.mon) && (1..=31).contains(&l.mday), "{l:?}");
+        }
+    }
 
     /// What Docker 29's syslog driver sent, and which of its options Docker took
     /// (scripts/logdrivers/generate).
@@ -520,17 +582,27 @@ mod tests {
         for socket in ["stream.sock", "gram.sock"] {
             std::fs::write(dir.join(socket), b"").unwrap();
         }
-        let deviations = [
+        let mut deviations = vec![
             // Go's parser takes `host` for the URL's host, and moby's driver its path.
             "syslog-address=unix://host{dir}/stream.sock",
             // shards sends a log only to a server whose certificate it verifies.
             "syslog-tls-skip-verify=true",
         ];
+        // Windows has no unix datagram sockets (`windows_has_no_unix_datagram_sockets`).
+        if cfg!(windows) {
+            deviations.push("syslog-address=unixgram://{dir}/gram.sock");
+        }
         let oracle = oracle();
         for case in oracle["options"].as_array().unwrap() {
             let option = case["option"].as_str().unwrap();
             let refused = !case["refused"].is_null();
-            let given = option.replace("{dir}", &dir.display().to_string());
+            // A URL's path: Windows' drive after the third slash, its separators forward.
+            let url_path = if cfg!(windows) {
+                format!("/{}", dir.display().to_string().replace('\\', "/"))
+            } else {
+                dir.display().to_string()
+            };
+            let given = option.replace("{dir}", &url_path);
             let run = shards_ipc::Run {
                 log_driver: "syslog".into(),
                 log_opts: vec![given.clone()],
@@ -551,6 +623,43 @@ mod tests {
                 if refused { "refused" } else { "took" }
             );
         }
+    }
+
+    /// Windows' socket() refuses a unix datagram socket, so a unixgram address is refused
+    /// as a run is made there, in shards' words.
+    #[cfg(windows)]
+    #[test]
+    fn windows_has_no_unix_datagram_sockets() {
+        use windows_sys::Win32::Networking::WinSock::{
+            AF_UNIX, INVALID_SOCKET, SOCK_DGRAM, WSA_FLAG_NO_HANDLE_INHERIT, WSASocketW, closesocket,
+        };
+        shards_vmm::platform::winsock().unwrap();
+        // SAFETY: a socket asked for, closed below if made.
+        let s = unsafe {
+            WSASocketW(
+                i32::from(AF_UNIX),
+                SOCK_DGRAM,
+                0,
+                std::ptr::null(),
+                0,
+                WSA_FLAG_NO_HANDLE_INHERIT,
+            )
+        };
+        if s != INVALID_SOCKET {
+            // SAFETY: the socket just made.
+            unsafe { closesocket(s) };
+        }
+        assert_eq!(s, INVALID_SOCKET, "Windows made a unix datagram socket");
+        let dir = shards_testdir::TempDir::new("gram").unwrap();
+        let path = dir.path().join("g");
+        std::fs::write(&path, b"").unwrap();
+        let given = format!("unixgram:///{}", path.display());
+        assert!(
+            address(&given).is_err_and(|e| e.contains("Windows has no unix datagram sockets")),
+            "{given}"
+        );
+        let given = format!("unix:///{}", path.display());
+        assert_eq!(address(&given), Ok(To::Unix(path)));
     }
 
     /// Addresses as moby reads them, its port 514 unless given; and the tag kept to its

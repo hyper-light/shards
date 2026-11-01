@@ -24,7 +24,11 @@
 //! - with `m207` (PM M207), whether a send waits while another thread waits to read the
 //!   same connection: a WSAPoll for its data, a blocking recv, or one of SO_RCVTIMEO, on the
 //!   socket or on a copy WSADuplicateSocketW made of it, the send through either; AF_UNIX
-//!   and loopback TCP, made without WSA_FLAG_OVERLAPPED and with it.
+//!   and loopback TCP, made without WSA_FLAG_OVERLAPPED and with it;
+//! - with `m358` (PM M358), what a peer reads of what a socket sent before it closed
+//!   holding some of the peer's data unread: shut down first or not, drained first, the
+//!   peer's data sent after the shutdown, the peer partly read, shut down both ways, with
+//!   SO_LINGER; and where the peer writes after the close. AF_UNIX and loopback TCP.
 
 use std::time::{Duration, Instant};
 
@@ -871,8 +875,121 @@ fn concurrent(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What M358's peer is sent before the close: a command's output and its exit status.
+const SENT: &[u8] = b"a command's output, then its exit status, sent before the close";
+
+/// M358: what a peer reads of what a socket sent before it closed, where the closer had
+/// left some of what the peer sent it unread, and where the peer writes after the close.
+/// The closer is the connecting end, as the vsock device's host side is for a guest's
+/// connection; the peer reads 50 ms after the case's last step, until end-of-stream or an
+/// error. AF_UNIX and loopback TCP.
+fn closes(dir: &std::path::Path) -> Result<(), String> {
+    let cases = [
+        "clean",
+        "unread",
+        "unread-not-shut",
+        "drained",
+        "written-after-the-close",
+        "unread-after-shutdown",
+        "partly-read",
+        "shut-both-ways",
+        "lingering",
+    ];
+    let mut n = 0;
+    for (transport, family) in [("unix", AF_UNIX), ("tcp", AF_INET)] {
+        for case in cases {
+            n += 1;
+            let (closer, peer) = pair_with(dir, n, family, 0)?;
+            let timeout: u32 = 2000;
+            // SAFETY: an option of its own size, on our socket.
+            unsafe { setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, (&raw const timeout).cast(), 4) };
+            let mut buf = [0u8; 4096];
+            let mut read = 0;
+            let mut late = String::new();
+            if !matches!(case, "clean" | "written-after-the-close" | "unread-after-shutdown") {
+                send_all(peer, b"stdin")?;
+            }
+            send_all(closer, SENT)?;
+            match case {
+                "drained" => {
+                    nonblocking(closer)?;
+                    let mut taken = 0;
+                    while let Ok(k @ 1..) = recv_some(closer, &mut buf) {
+                        taken += k;
+                    }
+                    late = format!(" (the closer took {taken} bytes first)");
+                }
+                "partly-read" => read += recv_some(peer, &mut buf[..10])?,
+                "lingering" => {
+                    let linger = LINGER {
+                        l_onoff: 1,
+                        l_linger: 5,
+                    };
+                    // SAFETY: an option of its own size, on our socket.
+                    unsafe {
+                        setsockopt(
+                            closer,
+                            SOL_SOCKET,
+                            SO_LINGER,
+                            (&raw const linger).cast(),
+                            std::mem::size_of::<LINGER>() as i32,
+                        )
+                    };
+                }
+                _ => {}
+            }
+            match case {
+                "unread-not-shut" => {}
+                // SAFETY: our socket.
+                "shut-both-ways" => unsafe {
+                    shutdown(closer, SD_BOTH);
+                },
+                "unread-after-shutdown" => {
+                    // SAFETY: our socket.
+                    unsafe { shutdown(closer, SD_SEND) };
+                    send_all(peer, b"stdin")?;
+                }
+                // SAFETY: our socket.
+                _ => unsafe {
+                    shutdown(closer, SD_SEND);
+                },
+            }
+            close(closer);
+            if case == "written-after-the-close" {
+                std::thread::sleep(Duration::from_millis(50));
+                late = format!(" (the peer's send after the close: {:?})", send_all(peer, b"stdin"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            let end = loop {
+                match recv_some(peer, &mut buf) {
+                    Ok(0) => break "end of stream".to_string(),
+                    Ok(k) => read += k,
+                    Err(e) => break e,
+                }
+            };
+            println!(
+                "m358 {transport} {case}: the peer read {read} of {} bytes, then {end}{late}",
+                SENT.len()
+            );
+            close(peer);
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("m358") {
+        let dir = std::env::temp_dir().join(format!("m358-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        if startup().is_ok()
+            && let Err(e) = closes(&dir)
+        {
+            println!("M358 failed: {e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("m207") {
         let dir = std::env::temp_dir().join(format!("m207-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);

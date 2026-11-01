@@ -1,0 +1,15 @@
+# PM M348: what a request costs through a slot of shards_ipc's, as its client sees it, and
+# what a slot costs its daemon, on every host (see run.sh). A workspace of its own.
+[package]
+name = "request-slots"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+shards-ipc = { path = "../../../../crates/ipc" }
+
+[profile.release]
+debug = false
+
+[workspace]

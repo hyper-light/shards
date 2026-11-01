@@ -194,7 +194,6 @@ impl<D: Disk> Daemon<D> {
         reply.out(&id);
         match made {
             Ok(pulled) => {
-                #[cfg(unix)]
                 if let (Some(n), Some(disk)) = (&named, &pulled.rootfs) {
                     crate::pull::publish(&self.home, n, &pulled.id, &pulled.config, disk, &|k| {
                         shards_ipc::env_value(&asker.registry_env, k)

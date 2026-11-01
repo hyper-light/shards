@@ -26,6 +26,14 @@ pub fn check_host() -> Result<(), String> {
     hv::check_host()
 }
 
+/// Whether a snapshot restores on this host: where this build's VMs take snapshots
+/// ([`SNAPSHOTS`](super::SNAPSHOTS)) and its hypervisor sets a vCPU's state back as a
+/// restore does, which a Windows may not (WHP's local APIC page on Windows Server 2022, PM
+/// M345), asked of it once a process.
+pub fn restores_here() -> bool {
+    super::SNAPSHOTS && hv::restores()
+}
+
 /// The most vCPUs one VM can have on this host.
 pub fn max_vcpus() -> Result<u32, String> {
     hv::max_vcpus().map_err(|e| e.to_string())
@@ -93,6 +101,48 @@ impl Handle {
             *governor = Some(made);
         }
         Ok(())
+    }
+
+    /// Holds its vCPUs by their group's CPU budget too (D183, slice 3), `group`, which
+    /// every microVM of the group charges: its own governor's thread, as long as the
+    /// machine runs. A machine is of one group, its run's, from its start.
+    pub fn hold_group(&self, group: super::group::GroupCpu) -> Result<(), String> {
+        let sh = &self.shared;
+        let mut governor = lock(&sh.group_governor);
+        if governor.is_some() {
+            return Err("this microVM is held by a group's budget already".into());
+        }
+        if sh.exiting() {
+            return Ok(());
+        }
+        let shared = sh.clone();
+        let made = std::thread::Builder::new()
+            .name("hold-group".into())
+            .spawn(move || shared.hold.govern_group(&group, &|| shared.kick_all()))
+            .map_err(|e| format!("starting its group's hold on its vCPUs: {e}"))?;
+        *governor = Some(made);
+        Ok(())
+    }
+
+    /// Pauses the machine where it is: every vCPU kicked out of its guest and held there,
+    /// whatever its run's CPU share (the hold of D191), until [`resume`](Self::resume), as
+    /// `pause` freezes a microVM. Returns once every vCPU is held: at once for vCPUs not
+    /// released yet, which go into their guest only through the hold.
+    pub fn pause(&self) -> Result<(), String> {
+        let sh = &self.shared;
+        let held = sh.hold.pause(sh.kickers.len(), &|| sh.kick_all(), &|| {
+            sh.released_at_us.get().is_none()
+        });
+        if held {
+            Ok(())
+        } else {
+            Err("the microVM has stopped".into())
+        }
+    }
+
+    /// A paused machine goes on, its vCPUs held no more but by their share.
+    pub fn resume(&self) {
+        self.shared.hold.resume();
     }
 
     /// Maps `file`, a run's swap, into the guest's swap window (D159), writable by the guest;
@@ -279,6 +329,12 @@ impl Handle {
         self.serial.enqueue_input(bytes);
     }
 
+    /// The whole lines of the last page its guest wrote to its console, whoever read it:
+    /// a kernel's panic says there why it resets its machine (`panic=-1`).
+    pub fn console_said(&self) -> Vec<u8> {
+        self.serial.said()
+    }
+
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
     pub fn recording(&self) -> bool {
         lock(&self.shared.recording).is_some()
@@ -355,6 +411,8 @@ struct Shared {
     /// thread, made as the first limit comes and joined as the machine is taken apart.
     hold: Hold,
     governor: Mutex<Option<JoinHandle<()>>>,
+    /// Its group's governor's thread (D183), made as its run's group comes.
+    group_governor: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// What a snapshot the host asks for reads of the machine (D176): its VM and devices by
@@ -414,6 +472,7 @@ impl Shared {
             saved: Condvar::new(),
             hold: Hold::new(vcpus as usize),
             governor: Mutex::new(None),
+            group_governor: Mutex::new(None),
         }
     }
 
@@ -558,6 +617,9 @@ impl Running {
             let _ = t.join();
         }
         if let Some(t) = lock(&self.shared.governor).take() {
+            let _ = t.join();
+        }
+        if let Some(t) = lock(&self.shared.group_governor).take() {
             let _ = t.join();
         }
         // A save the host asked for holds the VM and its devices until it is done.
@@ -727,10 +789,8 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         super::Hosts {
             vsock: cfg.vsock.as_ref(),
             net: cfg.net.as_ref(),
-            #[cfg(unix)]
             shares: &cfg.shares,
             join: cfg.join,
-            #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
             layer: layer.as_ref(),
@@ -828,6 +888,9 @@ fn launch(
         finish,
         start,
         config,
+        // What a restore's recorder read, which it took before the launch.
+        #[cfg(all(hv = "kvm", target_arch = "aarch64"))]
+            pmem: _,
     } = m;
     let vcpus = config.vcpus;
     // Each vCPU is moved its own part of the start, and the machine keeps the rest: none
@@ -932,7 +995,7 @@ fn launch(
             slowest.0,
             slowest.1
         );
-        let finished = machine::finish(&vm, &bus, &finish, rest.as_ref());
+        let finished = machine::finish(&vm, &bus, &finish, rest.as_mut());
         debug!(
             "the machine's start finished in {} us",
             crate::log::uptime_us().saturating_sub(finishing)
@@ -1254,6 +1317,8 @@ impl Cut<'_> {
         Ok(Some(Snapshot {
             config: self.config.clone(),
             plugged: self.memory.plugged_runs(),
+            // Its memory's save says them.
+            data: None,
             arch,
             devices: w.into_bytes(),
         }))
@@ -1317,6 +1382,7 @@ mod tests {
                 layer_mib: 0,
             },
             plugged: Vec::new(),
+            data: None,
             arch: Vec::new(),
             devices: Vec::new(),
         };

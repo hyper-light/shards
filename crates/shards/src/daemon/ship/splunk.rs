@@ -262,10 +262,10 @@ fn acked(answer: &[u8]) -> Vec<u64> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use shards_ipc::Stream as UnixStream;
     use std::collections::BTreeMap;
     use std::io::{BufRead as _, BufReader};
     use std::net::{TcpListener, TcpStream};
-    use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
 
     /// A request a fake HEC was sent.

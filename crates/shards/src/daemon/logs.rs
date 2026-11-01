@@ -11,12 +11,12 @@
 
 use std::fs::File;
 use std::io::{self, Write as _};
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use shards_vmm::platform;
 
 use super::packed::{SegmentLog, open_log};
+use crate::os::ReadAt as _;
 use crate::segments::log_segment;
 use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT};
 

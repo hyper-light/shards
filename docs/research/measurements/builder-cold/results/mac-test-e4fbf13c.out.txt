@@ -1,0 +1,101 @@
+host Mac.attlocal.net; macOS 26.4.1; kernel 25.4.0; arm64; Apple M5 Max; shards e727d549d; memory 131072 MiB; cpus 18
+builds rust,npm,apt; rounds 1; home /private/tmp/claude-501/builder-cold/test5-home; bases each Dockerfile's own
+host t=1793059170.628 round=1 build=rust pid=23961 footprint=102549040 resident=107397120
+guest t=1793059170.825 round=1 build=rust step=5 step_end=0 t_ms=165 current=782336 peak=782336 file=0 active_file=0 inactive_file=0 anon=0 shmem=0 swap=0 total=495157248 free=443551744 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+guest t=1793059171.707 round=1 build=rust step=5 step_end=0 t_ms=1165 current=10493952 peak=15699968 file=360448 active_file=94208 inactive_file=90112 anon=6602752 shmem=151552 swap=0 total=495157248 free=424673280 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059171.820 round=1 build=rust pid=23961 footprint=127649712 resident=172490752
+guest t=1793059172.746 round=1 build=rust step=5 step_end=0 t_ms=2169 current=97968128 peak=97968128 file=34955264 active_file=147456 inactive_file=81920 anon=47423488 shmem=34729984 swap=0 total=495157248 free=333430784 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059173.007 round=1 build=rust pid=23961 footprint=221628456 resident=269647872
+guest t=1793059173.706 round=1 build=rust step=5 step_end=0 t_ms=3169 current=710012928 peak=835674112 file=84455424 active_file=155648 inactive_file=49152 anon=612433920 shmem=84262912 swap=0 total=1032028160 free=226402304 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059174.160 round=1 build=rust pid=23961 footprint=1020922712 resident=1192050688
+guest t=1793059174.802 round=1 build=rust step=5 step_end=0 t_ms=4169 current=356020224 peak=835674112 file=126828544 active_file=155648 inactive_file=40960 anon=218763264 shmem=126636032 swap=0 total=1032028160 free=541237248 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=268435456
+host t=1793059175.308 round=1 build=rust pid=23961 footprint=1084574648 resident=1256734720
+guest t=1793059175.722 round=1 build=rust step=5 step_end=0 t_ms=5170 current=951050240 peak=1052930048 file=149225472 active_file=12288 inactive_file=53248 anon=787271680 shmem=149159936 swap=0 total=2105769984 free=948535296 boot=495157248 plugged=1610612736 asked=1610612736 most=68182605824 past_twice_used=134217728
+host t=1793059176.425 round=1 build=rust pid=23961 footprint=1390398608 resident=1562771456
+guest t=1793059176.791 round=1 build=rust step=5 step_end=0 t_ms=6170 current=505696256 peak=1052930048 file=174112768 active_file=20480 inactive_file=49152 anon=320417792 shmem=174047232 swap=0 total=2105769984 free=1364803584 boot=495157248 plugged=1610612736 asked=1610612736 most=68182605824 past_twice_used=1073741824
+host t=1793059177.573 round=1 build=rust pid=23961 footprint=1382845632 resident=1555382272
+guest t=1793059177.745 round=1 build=rust step=5 step_end=0 t_ms=7170 current=493662208 peak=1052930048 file=174112768 active_file=20480 inactive_file=49152 anon=397934592 shmem=174047232 swap=0 total=2105769984 free=1380241408 boot=495157248 plugged=1610612736 asked=1610612736 most=68182605824 past_twice_used=1073741824
+host t=1793059178.706 round=1 build=rust pid=23961 footprint=1583959640 resident=1756659712
+guest t=1793059178.762 round=1 build=rust step=5 step_end=0 t_ms=8170 current=416436224 peak=1052930048 file=406310912 active_file=94208 inactive_file=170500096 anon=135168 shmem=235663360 swap=0 total=2105769984 free=1430167552 boot=495157248 plugged=1610612736 asked=1610612736 most=68182605824 past_twice_used=1207959552
+guest t=1793059179.502 round=1 build=rust step=5 step_end=1 t_ms=8903 current=36864000 peak=1052930048 file=31072256 active_file=94208 inactive_file=45056 anon=61440 shmem=30879744 swap=0 total=2105769984 free=1828376576 boot=495157248 plugged=1610612736 asked=1610612736 most=68182605824 past_twice_used=1610612736
+guest t=1793059179.715 round=1 build=rust step=5 step_end=0 t_ms=9170 current=33931264 peak=1052930048 file=31072256 active_file=94208 inactive_file=45056 anon=57344 shmem=30879744 swap=0 total=2105769984 free=1833230336 boot=495157248 plugged=1610612736 asked=1610612736 most=68182605824 past_twice_used=1610612736
+host t=1793059179.827 round=1 build=rust pid=23961 footprint=1459457600 resident=1632174080
+build round=1 build=rust exit=0 s=23.7
+host t=1793059185.241 round=1 build=npm pid=24430 footprint=42698144 resident=47546368
+guest t=1793059185.877 round=1 build=npm step=8 step_end=0 t_ms=242 current=770048 peak=770048 file=0 active_file=0 inactive_file=0 anon=0 shmem=0 swap=0 total=495157248 free=452489216 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059186.406 round=1 build=npm pid=24430 footprint=211552080 resident=261177344
+guest t=1793059186.842 round=1 build=npm step=8 step_end=0 t_ms=1242 current=184545280 peak=184557568 file=46985216 active_file=1286144 inactive_file=73728 anon=121696256 shmem=45572096 swap=0 total=495157248 free=251682816 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059187.549 round=1 build=npm pid=24430 footprint=418039824 resident=467533824
+guest t=1793059187.842 round=1 build=npm step=8 step_end=0 t_ms=2242 current=365985792 peak=366178304 file=137433088 active_file=1306624 inactive_file=98304 anon=189321216 shmem=136019968 swap=0 total=495157248 free=65368064 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+guest t=1793059188.281 round=1 build=npm step=8 step_end=1 t_ms=2653 current=134160384 peak=375996416 file=115544064 active_file=1310720 inactive_file=102400 anon=294912 shmem=114130944 swap=0 total=495157248 free=289869824 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059188.680 round=1 build=npm pid=24430 footprint=507332816 resident=556924928
+guest t=1793059188.846 round=1 build=npm step=8 step_end=0 t_ms=3243 current=131760128 peak=375996416 file=115544064 active_file=1310720 inactive_file=102400 anon=290816 shmem=114130944 swap=0 total=495157248 free=292823040 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059189.819 round=1 build=npm pid=24430 footprint=507332816 resident=556924928
+guest t=1793059189.868 round=1 build=npm step=8 step_end=0 t_ms=4243 current=131760128 peak=375996416 file=115544064 active_file=1310720 inactive_file=102400 anon=290816 shmem=114130944 swap=0 total=495157248 free=293273600 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+guest t=1793059190.890 round=1 build=npm step=8 step_end=0 t_ms=5243 current=131760128 peak=375996416 file=115544064 active_file=1310720 inactive_file=102400 anon=290816 shmem=114130944 swap=0 total=495157248 free=294825984 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059190.978 round=1 build=npm pid=24430 footprint=392022224 resident=441614336
+build round=1 build=npm exit=0 s=11.1
+host t=1793059196.427 round=1 build=apt pid=24757 footprint=43025848 resident=47857664
+host t=1793059197.577 round=1 build=apt pid=24757 footprint=56313272 resident=61145088
+host t=1793059198.713 round=1 build=apt pid=24757 footprint=68928976 resident=73744384
+host t=1793059199.843 round=1 build=apt pid=24757 footprint=74089936 resident=78905344
+guest t=1793059200.965 round=1 build=apt step=5 step_end=0 t_ms=1761 current=770048 peak=770048 file=0 active_file=0 inactive_file=0 anon=0 shmem=0 swap=0 total=495157248 free=455884800 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059200.990 round=1 build=apt pid=24757 footprint=94062128 resident=100319232
+guest t=1793059201.029 round=1 build=apt step=6 step_end=1 t_ms=1798 current=1859584 peak=1986560 file=90112 active_file=49152 inactive_file=8192 anon=49152 shmem=0 swap=0 total=495157248 free=454987776 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+guest t=1793059201.972 round=1 build=apt step=6 step_end=0 t_ms=2761 current=27226112 peak=27238400 file=12447744 active_file=118784 inactive_file=77824 anon=11272192 shmem=12226560 swap=0 total=495157248 free=418480128 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059202.102 round=1 build=apt pid=24757 footprint=138233488 resident=155615232
+guest t=1793059202.967 round=1 build=apt step=6 step_end=0 t_ms=3761 current=128348160 peak=167546880 file=110157824 active_file=126976 inactive_file=65536 anon=14401536 shmem=109928448 swap=0 total=495157248 free=314073088 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059203.211 round=1 build=apt pid=24757 footprint=275597040 resident=293879808
+guest t=1793059203.963 round=1 build=apt step=6 step_end=0 t_ms=4761 current=141070336 peak=167546880 file=116269056 active_file=126976 inactive_file=69632 anon=20623360 shmem=116039680 swap=0 total=495157248 free=299659264 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059204.385 round=1 build=apt pid=24757 footprint=264275720 resident=282542080
+guest t=1793059204.951 round=1 build=apt step=6 step_end=0 t_ms=5762 current=159477760 peak=167546880 file=134692864 active_file=126976 inactive_file=69632 anon=20627456 shmem=134463488 swap=0 total=495157248 free=282624000 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059205.550 round=1 build=apt pid=24757 footprint=286705464 resident=304939008
+guest t=1793059205.985 round=1 build=apt step=6 step_end=0 t_ms=6762 current=193564672 peak=193585152 file=168554496 active_file=131072 inactive_file=65536 anon=20627456 shmem=168325120 swap=0 total=495157248 free=249040896 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059206.707 round=1 build=apt pid=24757 footprint=330942312 resident=349143040
+guest t=1793059206.963 round=1 build=apt step=6 step_end=0 t_ms=7762 current=217104384 peak=217157632 file=192192512 active_file=131072 inactive_file=65536 anon=20627456 shmem=191963136 swap=0 total=495157248 free=226631680 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059207.852 round=1 build=apt pid=24757 footprint=348096384 resident=366280704
+guest t=1793059208.038 round=1 build=apt step=6 step_end=0 t_ms=8763 current=235241472 peak=235266048 file=210173952 active_file=131072 inactive_file=65536 anon=20631552 shmem=209944576 swap=0 total=495157248 free=210743296 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+host t=1793059208.983 round=1 build=apt pid=24757 footprint=437225368 resident=464666624
+guest t=1793059209.001 round=1 build=apt step=6 step_end=0 t_ms=9763 current=281866240 peak=299065344 file=245841920 active_file=450560 inactive_file=73728 anon=23879680 shmem=245321728 swap=0 total=495157248 free=142204928 boot=495157248 plugged=0 asked=0 most=68182605824 past_twice_used=0
+guest t=1793059209.979 round=1 build=apt step=6 step_end=0 t_ms=10763 current=440266752 peak=440266752 file=357036032 active_file=204800 inactive_file=40960 anon=62820352 shmem=356790272 swap=0 total=1032028160 free=472756224 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059210.115 round=1 build=apt pid=24757 footprint=708216944 resident=735576064
+guest t=1793059210.954 round=1 build=apt step=6 step_end=0 t_ms=11763 current=596529152 peak=597643264 file=454230016 active_file=212992 inactive_file=32768 anon=120700928 shmem=453984256 swap=0 total=1032028160 free=320798720 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059211.244 round=1 build=apt pid=24757 footprint=872597736 resident=899874816
+guest t=1793059211.952 round=1 build=apt step=6 step_end=0 t_ms=12763 current=638492672 peak=652570624 file=570396672 active_file=249856 inactive_file=28672 anon=42405888 shmem=570118144 swap=0 total=1032028160 free=270036992 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059212.376 round=1 build=apt pid=24757 footprint=971917616 resident=999964672
+guest t=1793059212.956 round=1 build=apt step=6 step_end=0 t_ms=13763 current=677097472 peak=725827584 file=612454400 active_file=454656 inactive_file=61440 anon=35893248 shmem=611942400 swap=0 total=1032028160 free=232275968 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059213.496 round=1 build=apt pid=24757 footprint=1016285704 resident=1047281664
+guest t=1793059213.947 round=1 build=apt step=6 step_end=0 t_ms=14764 current=633245696 peak=752988160 file=614088704 active_file=483328 inactive_file=49152 anon=2187264 shmem=613556224 swap=0 total=1032028160 free=278315008 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059214.664 round=1 build=apt pid=24757 footprint=1017383432 resident=1048379392
+guest t=1793059214.954 round=1 build=apt step=6 step_end=0 t_ms=15764 current=633135104 peak=752988160 file=614088704 active_file=483328 inactive_file=49152 anon=2179072 shmem=613556224 swap=0 total=1032028160 free=281759744 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059215.838 round=1 build=apt pid=24757 footprint=975473160 resident=1006469120
+guest t=1793059215.962 round=1 build=apt step=6 step_end=0 t_ms=16764 current=633020416 peak=752988160 file=614088704 active_file=483328 inactive_file=49152 anon=2179072 shmem=613556224 swap=0 total=1032028160 free=282746880 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+guest t=1793059216.948 round=1 build=apt step=6 step_end=0 t_ms=17764 current=685854720 peak=752988160 file=665731072 active_file=483328 inactive_file=51691520 anon=2084864 shmem=613556224 swap=0 total=1032028160 free=231575552 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059217.007 round=1 build=apt pid=24757 footprint=1125698128 resident=1156661248
+guest t=1793059218.148 round=1 build=apt step=6 step_end=0 t_ms=18764 current=652570624 peak=779980800 file=635006976 active_file=0 inactive_file=21450752 anon=81920 shmem=613556224 swap=0 total=1032028160 free=270753792 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=0
+host t=1793059218.158 round=1 build=apt pid=24757 footprint=1245301544 resident=1276116992
+guest t=1793059218.211 round=1 build=apt step=6 step_end=1 t_ms=19015 current=420601856 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=77824 shmem=403607552 swap=0 total=1032028160 free=503758848 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+guest t=1793059218.968 round=1 build=apt step=6 step_end=0 t_ms=19765 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=512065536 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059219.343 round=1 build=apt pid=24757 footprint=853871304 resident=884752384
+guest t=1793059219.980 round=1 build=apt step=6 step_end=0 t_ms=20765 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=513097728 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059220.493 round=1 build=apt pid=24757 footprint=853871304 resident=884752384
+guest t=1793059220.969 round=1 build=apt step=6 step_end=0 t_ms=21765 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=516296704 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059221.622 round=1 build=apt pid=24757 footprint=853871304 resident=884752384
+guest t=1793059221.970 round=1 build=apt step=6 step_end=0 t_ms=22765 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=517210112 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059222.732 round=1 build=apt pid=24757 footprint=849677000 resident=880558080
+guest t=1793059223.000 round=1 build=apt step=6 step_end=0 t_ms=23765 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=520335360 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059223.851 round=1 build=apt pid=24757 footprint=849677000 resident=880558080
+guest t=1793059223.979 round=1 build=apt step=6 step_end=0 t_ms=24766 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=522530816 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059224.970 round=1 build=apt pid=24757 footprint=849677000 resident=880558080
+guest t=1793059224.999 round=1 build=apt step=6 step_end=0 t_ms=25766 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=524398592 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+guest t=1793059225.967 round=1 build=apt step=6 step_end=0 t_ms=26766 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=524701696 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059226.087 round=1 build=apt pid=24757 footprint=849677000 resident=880558080
+guest t=1793059227.020 round=1 build=apt step=6 step_end=0 t_ms=27766 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=526897152 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059227.214 round=1 build=apt pid=24757 footprint=843369136 resident=874266624
+guest t=1793059227.998 round=1 build=apt step=6 step_end=0 t_ms=28766 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=529379328 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059228.363 round=1 build=apt pid=24757 footprint=843369136 resident=874266624
+guest t=1793059229.178 round=1 build=apt step=6 step_end=0 t_ms=29767 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=530952192 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+host t=1793059229.517 round=1 build=apt pid=24757 footprint=843369136 resident=874266624
+guest t=1793059230.348 round=1 build=apt step=6 step_end=0 t_ms=30767 current=419799040 peak=779980800 file=403607552 active_file=0 inactive_file=0 anon=73728 shmem=403607552 swap=0 total=1032028160 free=532303872 boot=495157248 plugged=536870912 asked=536870912 most=68182605824 past_twice_used=134217728
+build round=1 build=apt exit=0 s=38.6
+done

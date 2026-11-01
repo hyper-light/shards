@@ -91,7 +91,6 @@ pub fn open_input(path: &Path, write: bool) -> io::Result<File> {
 /// The regular file `rel` names beneath `root`, for reading, as a snapshot's files are
 /// read (PM M165): the descriptor granted for its path, its spawner having opened it so
 /// (shards `grant_answer`), or else [`super::open_beneath`]'s.
-#[cfg(unix)]
 pub fn open_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
     let path = rel.iter().fold(root.to_path_buf(), |p, name| p.join(name));
     match given(&path, false)? {
@@ -105,11 +104,38 @@ pub fn open_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
     }
 }
 
+/// The regular file `rel` names beneath `root`, its newest version, for reading, as a
+/// snapshot's pointer and working set are read (platform `write_in`): the descriptor granted
+/// for its path, its spawner having opened the newest so (shards `grant_answer`), or else
+/// [`super::open_newest_beneath`]'s.
+pub fn open_newest_beneath_input(root: &Path, rel: &[&str]) -> io::Result<File> {
+    let path = rel.iter().fold(root.to_path_buf(), |p, name| p.join(name));
+    match given(&path, false)? {
+        Some(file) => {
+            if !file.metadata()?.file_type().is_file() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "not a regular file"));
+            }
+            Ok(file)
+        }
+        None => super::open_newest_beneath(root, rel),
+    }
+}
+
 /// `path`'s metadata: the granted descriptor's, or the file's at `path`.
 pub fn input_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
     match given(path, false)? {
         Some(file) => file.metadata(),
         None => std::fs::metadata(path),
+    }
+}
+
+/// Which file `path` is (windows.rs `file_id`): the granted handle's, or the file's at
+/// `path` opened for no access, as [`input_metadata`] asks of one not granted.
+#[cfg(windows)]
+pub fn input_file_id(path: &Path) -> io::Result<(u64, u64)> {
+    match given(path, false)? {
+        Some(file) => super::file_id(&file),
+        None => super::file_id(&super::open_for_metadata(path)?),
     }
 }
 
@@ -231,12 +257,91 @@ pub fn dial_unix(path: &Path) -> Option<io::Result<super::UnixStream>> {
     DIALER.get().map(|dial| dial(path))
 }
 
+/// What a generation keeps beside its machine's memory and state, which its spawner stages
+/// with them: its writable layer's head and file system (D190), its DAX windows' heads
+/// (D189).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Kept {
+    pub layer: bool,
+    pub window_heads: bool,
+}
+
+impl Kept {
+    /// As a `STAGE` carries it: a byte, 1 its layer, 2 its windows' heads.
+    pub fn bits(self) -> u8 {
+        u8::from(self.layer) | (u8::from(self.window_heads) << 1)
+    }
+
+    /// What a `STAGE`'s byte says, if it says nothing else.
+    pub fn from_bits(bits: u8) -> Option<Kept> {
+        (bits & !3 == 0).then_some(Kept {
+            layer: bits & 1 != 0,
+            window_heads: bits & 2 != 0,
+        })
+    }
+
+    /// How many files a generation of these is staged with: its memory and state, its
+    /// layer's head and file system, its windows' heads.
+    pub fn files(self) -> usize {
+        2 + 2 * usize::from(self.layer) + usize::from(self.window_heads)
+    }
+}
+
+/// What stages this process's snapshots where it writes in no directory of its own, an
+/// AppContainer's on Windows (D141): its spawner, which makes each generation in the
+/// directory it granted, hands this process the generation's files to fill, and makes it
+/// durable and the one in use on this process's word (D196).
+pub trait Stager: Send + Sync + std::fmt::Debug {
+    /// A new generation in `dir`: its name, then its files, empty and open for writing: its
+    /// memory and state, then what it keeps beside them (`kept`), in [`Kept::files`]'s
+    /// order.
+    fn stage(&self, dir: &Path, kept: Kept) -> io::Result<(String, Vec<File>)>;
+    /// The ranges of `file`, one of this process's, that hold data within its first `len`
+    /// bytes, as the spawner finds them, which may ask the file system where this process
+    /// may not (Windows' AppContainer, which makes no FSCTL, D141).
+    fn data_ranges(&self, file: &File, len: u64) -> io::Result<Vec<(u64, u64)>>;
+    /// Makes generation `name` of `dir`, filled, durable and the one in use.
+    fn commit(&self, dir: &Path, name: &str) -> io::Result<()>;
+}
+
+static STAGER: std::sync::OnceLock<Box<dyn Stager>> = std::sync::OnceLock::new();
+
+/// Has `stager` stage every snapshot this process writes from here on. Once.
+pub fn set_stager(stager: Box<dyn Stager>) -> Result<(), String> {
+    STAGER
+        .set(stager)
+        .map_err(|_| "a stager was set already".to_string())
+}
+
+/// The stager set ([`set_stager`]), if one is.
+pub fn stager() -> Option<&'static dyn Stager> {
+    STAGER.get().map(|s| &**s)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::io::{Read as _, Write as _};
 
     use super::*;
+
+    /// What a generation keeps goes in a `STAGE`'s byte and comes back as it was, with its
+    /// files counted; a byte that says anything else is refused.
+    #[test]
+    fn a_stages_byte_says_what_its_generation_keeps() {
+        for layer in [false, true] {
+            for window_heads in [false, true] {
+                let kept = Kept { layer, window_heads };
+                assert_eq!(Kept::from_bits(kept.bits()), Some(kept));
+                assert_eq!(
+                    kept.files(),
+                    2 + 2 * usize::from(layer) + usize::from(window_heads)
+                );
+            }
+        }
+        assert_eq!(Kept::from_bits(4), None);
+        assert_eq!(Kept::from_bits(0xff), None);
+    }
 
     /// `file` granted as `path`'s, as each host grants one: a descriptor that says what it
     /// was opened for, or a handle whose spawner says it (`writable`).

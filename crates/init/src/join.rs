@@ -343,6 +343,7 @@ pub fn kill_rest(id: u32) {
 // include/uapi/linux/loop.h and include/uapi/linux/major.h.
 pub(crate) const LOOP_SET_FD: libc::c_ulong = 0x4C00;
 pub(crate) const LOOP_SET_STATUS64: libc::c_ulong = 0x4C04;
+pub(crate) const LOOP_SET_DIRECT_IO: libc::c_ulong = 0x4C08;
 pub(crate) const LOOP_CTL_GET_FREE: libc::c_ulong = 0x4C82;
 pub(crate) const LO_FLAGS_READ_ONLY: u32 = 1;
 pub(crate) const LO_FLAGS_AUTOCLEAR: u32 = 4;
@@ -706,9 +707,26 @@ fn loop_device(disk: &str, offset: u64, len: u64) -> Result<(String, File), Stri
         if unsafe { libc::ioctl(dev.as_raw_fd(), LOOP_SET_STATUS64 as _, &raw const info) } != 0 {
             return Err(last("setting the joiner's range on its loop device"));
         }
+        direct_io(&dev).map_err(|e| format!("reading the joiner's range past the join disk's cache: {e}"))?;
         return Ok((path, dev));
     }
     Err("no loop device stayed free".into())
+}
+
+/// Has the loop device `dev` read its range straight from its disk (LOOP_SET_DIRECT_IO,
+/// Linux 4.4), not through the disk's page cache as well as its file system's: a held
+/// build's reread of a 512 MiB file through a cache layer's loop filled its builder's memory
+/// with the join disk's copy at the read's pace (Buffers, in no cgroup the build is held
+/// in), its host throttling it past its budget for 15 minutes (D188, CI's ubuntu-24.04,
+/// 2026-10-27). Every range starts on a mebibyte (virtio block.rs `RANGE_ALIGN`), which any
+/// block size divides, so the kernel's alignment checks (loop_update_dio) always pass.
+pub(crate) fn direct_io(dev: &File) -> io::Result<()> {
+    let on: libc::c_ulong = 1;
+    // SAFETY: ioctl(2) on a loop device, with an integer argument.
+    if unsafe { libc::ioctl(dev.as_raw_fd(), LOOP_SET_DIRECT_IO as _, on) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Builds joiner `join`'s root and namespaces in this process, a standby init forked in the

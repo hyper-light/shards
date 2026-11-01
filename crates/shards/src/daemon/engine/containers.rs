@@ -3,8 +3,8 @@
 
 use std::fs::File;
 use std::io::{self, PipeReader, PipeWriter, Read as _, Write as _};
-use std::os::fd::{AsFd as _, AsRawFd as _};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::AsRawFd as _;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -12,6 +12,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use shards_cmdline::flags::{self, Outcome};
 use shards_cmdline::term::{self, EscapeProxy};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 use shards_ipc::{Run, kind};
 
 use super::http::{self, Answer, MULTIPLEXED, RAW, Stream, frame};
@@ -136,6 +138,14 @@ pub(super) fn detach_keys(given: Option<&str>) -> Result<Vec<u8>, String> {
 
 /// Whether `client` has gone, or sent something more, which a client that waits sends
 /// none of: it is readable.
+#[cfg(windows)]
+fn hung_up(client: &UnixStream) -> bool {
+    client.readable()
+}
+
+/// Whether `client` has gone, or sent something more, which a client that waits sends
+/// none of: it is readable.
+#[cfg(unix)]
 fn hung_up(client: &UnixStream) -> bool {
     let mut polled = libc::pollfd {
         fd: client.as_raw_fd(),
@@ -245,7 +255,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         run: &Run,
     ) -> Result<RunAnswer, String> {
-        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        let null = File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let (said, said_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let conn = self.put_run(threads, run, [null.as_fd(), null.as_fd(), said_by.as_fd()])?;
         drop(said_by);
@@ -495,7 +505,7 @@ impl<D: Disk> Daemon<D> {
         let (out, out_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let (err, err_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let (stdin, stdin_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
-        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        let null = File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let mut run = Run {
             again: Some(id.to_string()),
             resume,
@@ -504,6 +514,8 @@ impl<D: Disk> Daemon<D> {
             ..Run::default()
         };
         self.as_client(&mut run)?;
+        // Registered before its run can end: its end waits for its output to reach them.
+        let relaying = self.relaying(id);
         let stdin_fd = if reads { stdin.as_fd() } else { null.as_fd() };
         let conn = self.put_run(threads, &run, [stdin_fd, out_by.as_fd(), err_by.as_fd()])?;
         drop((out_by, err_by, stdin));
@@ -557,20 +569,28 @@ impl<D: Disk> Daemon<D> {
             .spawn_scoped(threads, move || {
                 std::thread::scope(|s| {
                     let outputs = &outputs;
+                    let (copying, copies) = mpsc::channel::<()>();
                     // All its output is read, though every attach goes: its command writes
                     // on, and its log has it.
-                    let _ = std::thread::Builder::new()
-                        .name("engine-stdout".into())
-                        .spawn_scoped(s, move || outputs.copy(1, out, true));
-                    let _ = std::thread::Builder::new()
-                        .name("engine-stderr".into())
-                        .spawn_scoped(s, move || outputs.copy(2, err, true));
+                    for (stream, from, name) in [(1, out, "engine-stdout"), (2, err, "engine-stderr")] {
+                        let copying = copying.clone();
+                        let _ = std::thread::Builder::new()
+                            .name(name.into())
+                            .spawn_scoped(s, move || {
+                                outputs.copy(stream, from, true);
+                                drop(copying);
+                            });
+                    }
+                    drop(copying);
                     // Its end, which the VM says once the command has ended.
                     while let Ok(Some(m)) = shards_ipc::recv(&conn) {
                         if m.kind == kind::EXIT {
                             break;
                         }
                     }
+                    // Told once its attaches have what it wrote (`Relaying`).
+                    super::copied(&copies);
+                    drop(relaying);
                 });
                 outputs.end();
                 lock(&self.engine.terminals).remove(&ended);
@@ -903,6 +923,8 @@ impl<D: Disk> Daemon<D> {
             stdin: streams[0] && reads,
             daemon: self.identity,
         };
+        // Registered before it attaches: the run's end waits for its output to reach it.
+        let relaying = self.relaying(id);
         let Ok((ours, theirs)) = UnixStream::pair() else {
             return;
         };
@@ -930,13 +952,18 @@ impl<D: Disk> Daemon<D> {
         }
         std::thread::scope(|s| {
             let outputs = &outputs;
+            let (copying, copies) = mpsc::channel::<()>();
             // Its streams until it goes: then the VM's attach ends as their pipes close.
-            let _ = std::thread::Builder::new()
-                .name("engine-stdout".into())
-                .spawn_scoped(s, move || outputs.copy(1, out, false));
-            let _ = std::thread::Builder::new()
-                .name("engine-stderr".into())
-                .spawn_scoped(s, move || outputs.copy(2, err, false));
+            for (stream, from, name) in [(1, out, "engine-stdout"), (2, err, "engine-stderr")] {
+                let copying = copying.clone();
+                let _ = std::thread::Builder::new()
+                    .name(name.into())
+                    .spawn_scoped(s, move || {
+                        outputs.copy(stream, from, false);
+                        drop(copying);
+                    });
+            }
+            drop(copying);
             if request.stdin {
                 let _ = std::thread::Builder::new()
                     .name("engine-stdin".into())
@@ -951,6 +978,9 @@ impl<D: Disk> Daemon<D> {
                     break;
                 }
             }
+            // Its run's end told once it has what the run wrote (`Relaying`).
+            super::copied(&copies);
+            drop(relaying);
             outputs.end();
         });
         lock(&self.engine.terminals).remove(id);

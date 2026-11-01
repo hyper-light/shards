@@ -56,7 +56,7 @@ performance and resource usage.
 | D9 | Implement **both** virtio-mmio and virtio-pci (modern, per-queue MSI-X). Choose the default transport by measuring the restore path and runtime. | MMIO costs 2 exits per interrupt; PCI is needed for VFIO [VIO §2.4, R3]; GPU-free default VMs must stay pin-free [GPU R1] |
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
-| D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
+| D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). The guest's dials of the host wait for its answer however long it takes: Linux gives a connection 2 s and then resets it, though its host may have taken it already, and a loaded host's VM process had told its daemon its VM was ready on such a connection, whose run then found it gone as init powered off (2 runs of 13 rounds, PM M346). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`); dials: net/vmw_vsock/af_vsock.c `vsock_connect` (VSOCK_DEFAULT_CONNECT_TIMEOUT, 2·HZ; "VIRTIO_VSOCK_OP_RST will follow") and SO_VM_SOCKETS_CONNECT_TIMEOUT [PM M346] |
 | D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
 | D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
 | D115 | A run of an Agentfile's image gives its own command no reach into the image's agents and harnesses, whatever the CLI asks. The command is PID 1 of a PID namespace of its own, as a container's command is (under `--init` a reaper is, in docker-init's place), so it sees none of their processes; and the daemon, its init, and the build refuse — in Docker's words where Docker defines the flag, shards' otherwise — `--privileged`, the capabilities that would cross into a domain, `systempaths=unconfined`, a `net.*` sysctl where the domains' flows cross the command's network namespace, a uid or gid of the domains' or their servers', `--pid host`, `--network none` where the Agentfile grants egress, and `--volumes-from` or a named-volume mount that would take a scoped volume; Docker's default `CAP_NET_RAW`, withheld there, is said to be. | Docker's default capabilities include CAP_KILL [moby oci/caps/defaults.go]; a shared PID namespace lets the workload signal, `/proc/<pid>/root`- and ptrace-reach the domains [Linux 6.18 kernel/signal.c check_kill_permission, fs/proc, kernel/ptrace.c ptrace_may_access]; the kernel ends a PID namespace's processes with its init, which hears only the signals it handles [pid_namespaces(7)]; Docker 29.3.1's own answers [PM M145]; every check twice (D109): [[feedback-runtime-and-buildtime-checks]] |
@@ -188,7 +188,12 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     interrupt a Generic Event Device (`ACPI0013`) on GSI 23 whose `_EVT` notifies it, as
     Firecracker declares them; the 16 bytes are the first of the firmware area.
   - The E2E snapshot, template, pooled-run, vsock and pmem tests run on CI's x86_64
-    runners (KVM) as on the Mac.
+    runners (KVM) as on the Mac, and on arm64 Linux's KVM in a guest with EL2 on an M3 or
+    later Mac (D154).
+- **arm64 on KVM** (D154): every register KVM lists for each vCPU, its power state and a
+  pending SError; the GIC through its registers, as the writes that remake it; the counter
+  set once for the VM at the release; working sets recorded as on x86_64, and mapped ahead
+  by the prefetch program on vCPU 0.
 
 ### Platforms (D13)
 
@@ -199,10 +204,10 @@ the guest arch is always the host arch.
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
 | Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; snapshots with cold and warm restore; CI on both libcs |
-| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; no snapshots yet (D154) |
+| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; snapshots with cold and warm restore (D154) |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
-| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
+| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; snapshots with cold and warm restore (D196); the daemon and its client (D195) |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
@@ -1080,13 +1085,18 @@ for the exit status.
         as TCP estimates a round trip's, and its window that estimate's retransmission
         timeout, SRTT + 4·RTTVAR (RFC 6298 §2; its 1 s initial RTO until the first
         refill is timed): runs closer together than that may wait for a refill.
-      - A pool unclaimed for SHARDS_POOL_KEEP seconds (600) ends its ready VMs and keeps
-        none until its next run, which is served all the same: a fixed keep-alive, as
-        AWS keeps an idle function 10 minutes and Azure 20 (Shahrad et al., "Serverless
-        in the Wild", USENIX ATC 2020, §1). Their hybrid histogram policy, which sets
-        each application's keep-alive and pre-warming from its inter-arrival times, is
-        not taken: the thresholds that say when its histogram is representative are not
-        published, and no traces of agents' runs exist here to set them.
+      - A pool idle for SHARDS_POOL_KEEP seconds (600), none of its runs going and none
+        claimed or ended within them, ends its ready VMs and keeps none until its next
+        run, which is served all the same: a fixed keep-alive, as AWS and Azure keep a
+        function's resources 10 and 20 minutes "after a function execution" (Shahrad et
+        al., "Serverless in the Wild", USENIX ATC 2020, §1, §2), a keep-alive that "only
+        starts at the end of function executions" (§4). Counted from its claims alone, a
+        pool whose runs outlasted it kept nothing for the next: a loaded host's runs took
+        28 to 31 s, past a test's keep-alive of 15 s (PM M346). Their hybrid histogram
+        policy, which sets each application's keep-alive and pre-warming from its
+        inter-arrival times, is not taken: the thresholds that say when its histogram is
+        representative are not published, and no traces of agents' runs exist here to set
+        them.
     - **What nothing needs is collected** (`Store::collect`, daemon.rs
       `collect_garbage`), at the daemon's start and once a pull, by a run or by `shards
       pull`, has moved a reference (it leaves `images/collect-due`, whose coming the
@@ -1475,7 +1485,12 @@ removes it; `--rm` removes it once it ends.
       instance's, which one thread reads, each watch woken through an eventfd of its
       own: a user may have 128 instances, and a KDE Plasma desktop with a few apps
       open held 101 of them (PM M257); with an instance each, the followers past the
-      rest failed. Where no watch can be made, a follower reads again every 250 ms.
+      rest failed. On Windows a watch hears names through ReadDirectoryChangesW, and its
+      log's appends through a read oplock held on a handle of its own, which each append
+      through the VM's handle breaks. ReadDirectoryChangesW said none of 20 appends by a
+      writer holding its file open within 5 s each; each such append broke the oplock 8.7 µs
+      on at p50, 21.8 at p99 (PM M344). One completion port and one thread serve every watch
+      of a process. Where no watch can be made, a follower reads again every 250 ms.
     - **A log keeps only its newest output**: at most its user's history (`shards
       configure disk --log-history`, 1 GiB by default, D186), in equal segments of at
       most 20 MiB, two at least, the oldest removed as the next begins; the daemon's
@@ -2151,12 +2166,16 @@ stack inside the VMM, is superseded by it.
     time. SCTP is refused: the stack does not carry it. A taken port fails the start in
     the words scripts read from Docker: its allocator's for a container's port,
     bindTCPOrUDP's for another program's.
-  - *A run's ports are free when its end is told.* The network process says it has the
-    sockets, and the daemon's copies close (M24 holds them until then); as the run ends,
-    the VM has the network process close them, and waits for it to say so, before it tells
-    the daemon and the client (`kind::UNPUBLISH`), so that `run --rm -p N …` followed by
-    any bind of N succeeds, as scripts that bind the port next expect. Only runs that
-    publish pay that round trip.
+  - *A run's ports are free when its end is told.* As the run ends, the VM has the network
+    process close them, and waits for it to say so (`kind::UNPUBLISH`); then it tells the
+    daemon (`kind::PORTS_FREE`), which closes its own copies of the sockets (M24 holds them
+    while they are in flight) and frees the ports, before the VM tells it and the client the
+    run is done, so that `run --rm -p N …` followed by any bind of N succeeds, as scripts
+    that bind the port next expect. Only runs that publish pay that round trip. The daemon
+    had freed them only as the network process went, which on Windows came 95 ms after the
+    run's end on jupiter and past 2 s on a busy CI runner, each next run of the port waiting
+    for it and a refusal for another program's hold of it as long (PM M380); a network
+    process that never says it closed them is still waited for, its grace and as long again.
   - *What a command sends before it exits goes out (2026-10-10).* A datagram a command
     sends just before it exits is in the device's TX queue when its exit reaches the VM,
     and the network process took a doorbell and a control message of one wake in order,
@@ -2660,7 +2679,11 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   pipe the daemon hands on, never through the daemon. Two of the CLI's faults are not
   kept: its progress line adds the running total to itself (`last += n`) where shards
   keeps what it drew, and a copy from stdin reports `0B` where shards counts what came.
-  A stopped microVM's files are copied as a running one's.
+  A stopped microVM's files are copied as a running one's. On Windows the copy rules are
+  Windows' (the client's paths' drives and separators), and a microVM's path goes to the
+  daemon with slashes, as the moby client sends one (`filepath.ToSlash`,
+  client/container_copy.go): sent as the rules left it, `/note`'s directory was `\`, a
+  file of that name in the microVM.
 - **Tests:** `start_runs_a_stopped_microvm_again_over_its_own_files` (files and
   deletions survive, `create`, `restart`, errors);
   `cp_copies_files_into_and_out_of_a_microvm`,
@@ -2756,6 +2779,40 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   (tests/slates_fs.rs, where `SLATES_BIN` names a slates binary): a guest mounts, reads and
   writes a slates volume, and one maps a slates file through its window, its fsynced
   stores in the volume at slates' first read and slates' write of the file in its map.
+  - **On Windows** (`shards run --kernel … --slates-fs-handle V`): the stream is a duplex
+    named pipe, since AF_UNIX makes no pair without a socket file and the pipe loses
+    nothing at its writer's exit (PM M340).
+    - **Handing it in.** V is a handle the spawner inherited from the server. It checks V
+      is a pipe it holds (GetFileType) and none of its standard handles, as Unix refuses
+      descriptors 0 to 2, refusing a value given twice. It clears V's inherit flag, since an
+      inherited handle stays inheritable and a spawn by std would hand it on. It gives V to
+      the VM through its grants as `slates-fs-<i>`, in order, and names it with
+      `--slates-fs`, as `--net`'s handles are given. No handle's value crosses as a flag.
+      `shards restore` takes none, as Unix's takes no `--slates-fs-fd`.
+    - **The VM.** It takes each pipe from its grants by name, once, beside no `--warm` or
+      `--shares`, as on Unix. Its device reads and writes the pipe as it does the socket,
+      blocking, one request at a time. Every call is an overlapped one waited for at once
+      (`platform::PipeStream`), so the VM need not know how its server opened the end, nor
+      in which mode: a message longer than a read comes in pieces, ERROR_MORE_DATA taken as
+      the bytes that fitted. A read past the server's going is the end, as the socket's is.
+    - **What the device builds on.** The FUSE wire it needs is `fs/proto.rs`, which every
+      host builds. `server.rs`, the share process and its budgets stay Unix's.
+    - **Its DAX window** (`fs/window_whp.rs`, D189). Each range the guest maps is a view of a
+      section its server duplicated into the VM process (PM M343), placed into the window's
+      placeholder for that range (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER), so a mapping of
+      several ranges is a view a range. A range is mapped at stage 2 as it is first placed
+      and left standing, since WHP's stage 2 follows the host's view (PM M341): a replace is
+      a free and a place, 82.1 µs at p50 on windows-2025 against 122.1 remapped. A range
+      never placed is not mapped, so a big window costs its boot no maps. Zeros stand in
+      where a restore's server cannot answer. The section reaches past every range asked of
+      it and is committed before the answer, so there is no file end to follow, and a fault
+      in a mapped range is only a vCPU racing a replace: WHP's memory-access exit asks the
+      window first and runs the access again once. A range mapped to be written is all
+      held (patch 0009). The ask is the Unix one plus the VM's pid (le32) and its stream
+      handle's value (le64), 38 bytes. The server duplicates the section only into a process
+      holding the share's own stream, and answers with its value. The device adopts a value
+      only if NtQueryObject's type is "Section", or "File", which shards' own share process
+      gives (D197's slice 4), and leaves any other alone.
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
@@ -3109,7 +3166,7 @@ stopped container under `-a` shows zeros, as Docker's does. Every container is s
 once, each on its own thread. The CPU's denominator is the host's clock between the
 samples, where docker/cli's is the system's CPU time from /proc/stat: inside a VM on a
 loaded host that does not keep time (one spinning vCPU read 329% and 2503%). A paused
-container's VM cannot answer; it shows the sample taken as it was paused, its CPU 0%,
+container's guest cannot answer; it shows the sample taken as it was paused, its CPU 0%,
 where dockerd reads a frozen cgroup's files from outside it. Before, `stats` showed the VM process's own CPU and
 resident memory and `--` for the rest. Memory is the guest's truth: the files a
 container writes are memory while its writable layer is in guest memory (D37's open
@@ -3962,7 +4019,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3j)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3k)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -4051,10 +4108,10 @@ local administration is (../focal docs/cluster-admin.md).
   each source's metadata resolved there as a build there resolves it, its store and its
   network with the client's logins (`policy::Resolve`, whose requests and answers, image
   configs and attestation chains among them, have no encoding to cross yet).
-- From a Windows client, `shards copy vm` (refused) and Docker's CLI through a context:
-  shards serves neither on Windows itself yet, cp.rs's daemon passing descriptors and
-  the relay being the daemon's, which Windows runs none of.
 - Extended attributes in a build's copy beyond `security.capability`.
+- On a macOS machine, two names of a Linux client's context that differ in case alone:
+  APFS, case-insensitive as macOS formats it by default, keeps them as one file (part 3k
+  keeps them apart on Windows).
 - One connection for a context's commands, where each command, and each SSH agent
   connection a step makes, is a handshake of its own.
 - Credentials found only when the machine pulls. A run or create that may pull
@@ -4257,9 +4314,9 @@ the command given no terminal of its own, the terminal not taken as its controll
 the client not raw, signals steering nothing, SIGWINCH sent as a signal with no resize, and
 a signal's Linux number taken for the daemon's system's.
 
-**Part 2b, built: a Windows client's console.** No daemon of shards' runs on Windows yet, so
-a context is how a Windows machine runs microVMs at all, and its console is its terminal as
-a Unix client's is:
+**Part 2b, built: a Windows client's console.** Until D195 brought shards' daemon to
+Windows, a context was how a Windows machine ran microVMs at all; its console is its
+terminal as a Unix client's is:
 - **Raw, so that keys reach the command there as a terminal's**: no echo, line editing or
   processed input, so ^C is a key the command's terminal there makes SIGINT of; no mouse
   events; insert and quick-edit mode, and keys as the escape sequences a terminal sends
@@ -4396,8 +4453,8 @@ takes it as its own CLI would, over its socket, the stream's pipes the step's de
 it). So the paths here are the client's, relative ones from its own directory, the
 archive passes through the stream once, staged nowhere, and what the copy says is what it
 says here (its sizes, Docker's errors). What steers a command steers no step: a signal
-ends the client, and a step there ends with its stream. A Windows client refuses `cp`
-until cli/cp.rs serves Windows' files.
+ends the client, and a step there ends with its stream. A Windows client copies as the
+Windows Docker CLI does (below).
 
 Tested in `tests/context.rs` (`a_microvms_files_are_copied_to_and_from_the_client`): a
 directory here into a running microVM there and back, as it was; a file into a directory
@@ -4780,8 +4837,8 @@ where the machine sent the rest of the archive first.
 Where Docker's `ssh://` context starts `docker system dial-stdio` through a shell account
 for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
 each relayed connection opens a QUIC connection of its own, a handshake each, where one
-connection kept for the context, a stream each, would not (part 5 measures both); a Windows
-client, with no daemon of shards' to relay, has no engine socket (Docker's `npipe://`).
+connection kept for the context, a stream each, would not (part 5 measures both). On
+Windows a context's engine is a named pipe (Docker's `npipe://`, part 3k).
 Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` through the
 socket; a microVM made through the context, listed there and not by the client's own engine;
 Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
@@ -4798,6 +4855,74 @@ on, the machine's or the client's; an enrolled key's join refused; the contexts 
 removed socket not bound again; the sockets kept as the daemon closes; the relays not hung
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
+
+**Part 3k, built: a Windows machine serves other machines' clients** (the platform parity
+audit's row 10). Since D195 a Windows host runs shards' daemon; its listener runs there now
+too, so that a laptop builds and runs on a Windows box with a GPU or 32 cores as on a Linux
+one. What serves a client there is the Unix machine's code, but where Windows has no
+descriptors to give, no pseudo-terminal and no file system of Linux's:
+- **A client's command gets its streams and grants as handles.** It is started through the
+  daemon's spawner with its stdio, its signals' pipe, a build's secrets, its SSH agents'
+  pipes and a `--cidfile`'s pipe each given by number (shards_ipc `spawn`, its grants pipe
+  named by `SHARDS_GIVEN`). The daemon's own `SHARDS_GIVEN`, which its environment passes to
+  its children, came first and was the one taken, so every such command found none of its
+  grants: a child's environment now holds its own alone. Its signals' pipe is past every
+  number given it (`signal_descriptor`), where a constant 4 was a build's second secret's.
+- **Its terminal is a pseudoconsole** (ConPTY), sized and resized as the client's terminal
+  is. One made with no flags draws its screen whole as it starts (a clear, home, and an
+  erased line a row), which, relayed, cleared the client's screen as each command started;
+  made with `PSEUDOCONSOLE_INHERIT_CURSOR`, it asks where its cursor is instead (`ESC[6n`)
+  and waits for an answer (CreatePseudoConsole's documentation), which the daemon gives it
+  at once, its last row's first column, and keeps from the client (`Shown`). A build's
+  progress follows a resize as docker/cli's MonitorTtySize follows one on Windows, its
+  terminal's size asked every quarter second (cli/command/container/tty.go).
+- **A build's context copy is a Linux tree on NTFS**, as D197's shares keep a guest's
+  files, as WSL keeps Linux's (crates/ntfs, `shards_archive::apply_layer_lx`): each name as
+  Linux names it, the characters no NTFS name holds escaped into the Private Use Area; a
+  mode, owner and device in WSL's `$LX` attributes; a symlink, FIFO or device WSL's reparse
+  point, which an unelevated process makes; each directory case-sensitive; an extended
+  attribute an EA of its own; each name opened relative to its directory's handle,
+  following no reparse point, so that no entry of a layer reaches past the copy, and one
+  beneath a symlink is refused, as no client's walk sends one. The copy is marked a Linux
+  tree, and the build's walk of it (shards-build's `host::Tree`), and the manifest the
+  client compares with, read it as fsutil reads a Linux host's: its names, modes, links,
+  devices, inodes and attributes the client's. A tree of the Windows host's own is read as
+  fsutil reads one there, though WSL kept some of its files' metadata, as Docker's builds
+  of it are. Kept as NTFS keeps its own files, a Linux or macOS client's context went to
+  its build with every file 0755, its symlinks only where the machine's user may make one,
+  and two names differing in case alone one file; and a time NTFS keeps to 100 ns, where
+  a Linux or macOS client's is to the nanosecond, is the client's where it is the client's
+  cut to 100 ns (`same_time`), as a copy whose times were never the client's went whole
+  again at each build.
+- **A build's output to a directory comes as its archive**: the client asks for a
+  `type=local` output as `type=tar` and unpacks the archive into its directory, so that the
+  output's files never land on the machine's disk, where NTFS would have kept their modes,
+  links and owners as its own (part 3f's frames, unchanged).
+- **An agent's directory is read as a build reads its context** (shards-build's walk, here
+  and there alike), so that an agent built through a context, of the client's files copied
+  to its machine, is the one the client builds of them: a Linux client's modes, symlinks and
+  hard links its own; and an agent built on Windows has fsutil's modes, 0755 and 0555
+  read-only, as a build of the same files has, where its files were 0644 and 0444, none of
+  its scripts executable, and std read none of a Linux tree's symlinks ("Unsupported reparse
+  point type", tests/context.rs's artifact test on windows-2025 at 2d53e206).
+- **And a Windows client** copies through a context (`copy vm`, driven here step by step as
+  on Unix, cli/cp.rs), and its daemon serves each context's engine at a named pipe, which
+  the file at the context's socket path names and `inspect context` gives as
+  `npipe:////./pipe/…`: a thread of each context's takes its clients and hands them to the
+  daemon, as WaitForMultipleObjects waits on 64 handles at most and a home joins as many
+  contexts as it is told.
+
+Tested in `tests/context.rs`, whole, on CI's windows-2022 and windows-2025, where the client
+and the machine are the runner's, a Windows client's own context its case (budget-e2e
+41273324343 at 7452404e, the copy a Linux tree: 19 of 19 on each, `SHARDS_REQUIRE_VMS=1`;
+before it, 41242328368 at ca024da3 and 41246900473 at 4c5fa52c). A Linux client's tree on a
+Windows machine is tested by `crates/archive/tests/lx.rs` (a layer of modes, symlinks of
+0777 and 0755, a hard link, a FIFO, a device, case-distinct names and `a:b` applied and read
+back, its whiteouts, and what reaches past the tree refused: all 8 copies of 41273319640 on
+windows-2025), `synced::tests::a_linux_clients_tree_is_its_own_in_a_windows_copy` (the
+manifest and a build's load of such a copy the client's) and
+`agent::tests::an_agents_files_are_read_as_a_build_reads_its_context` (the binary's own
+tests on both runners, 41262337649 at 41c3560d).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -4820,6 +4945,16 @@ there where the container is not removed.
   tmpfs over `/run` holds it) and before its root is made read-only (`--read-only` keeps
   it), mode 0666: whoever the command runs as or becomes reaches it, and no process but
   the run's own sees the path.
+- **On Windows**, where a VM's process gives its daemon no handle (D195: a child's end
+  takes handles only from its spawner), the VM asks for each connection whose token
+  holds (`ENGINE_CONN`, no handle), and the daemon makes a pair of pipes written in
+  messages (`Stream::plain_pair`): it serves one end as the connection, scoped to the
+  microVM as Unix's, and gives the VM the other, onto which the VM relays its guest's
+  connection each way on a thread of its own (warm.rs `relay_engine`), each side's end of
+  writes passed on: the pipe's message of no bytes one way, the socket's half-close the
+  other. A run with no engine of its own is answered with no pipe, and its connection
+  closed. Tested on jupiter: tests/engine.rs's own-engine tests and the docker CLI's
+  `--use-api-socket`.
 - **What it makes: joiners of its own microVM.** A container it creates there is a joiner
   of its microVM (D119): its own image, its own mount, PID, IPC and UTS namespaces and
   cgroup, its record, log and end; its network a namespace of its own on the microVM's
@@ -5225,7 +5360,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   or disconnected, with no grants built again; disconnected keeping its address; its last
   network taken; no way out through its next network.
 
-### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slice 1 built)
+### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1 and 3 built)
 
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
 
@@ -5264,8 +5399,8 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   parent's from its first page, and none of another parent's is taken.
 - **Refused before anything starts, each with why**: on Linux, a value that is no slice
   name (a path names a cgroup the user's manager owns, not the user), no user manager on
-  the user's bus, a slice the manager refuses (its own words); on macOS, which has no
-  host resource group a process can be placed in; on Windows, until slice 3.
+  the user's bus, a slice the manager refuses (its own words); on macOS and Windows, a name
+  no group shards keeps may have (slice 3).
 - **Shown as given**: inspect's `HostConfig.CgroupParent`.
 - **Past a container's cgroup parent.** Rootless with nothing to set up, from an ssh login
   as from a desktop session; the microVM's whole host footprint, guest memory, vCPUs and
@@ -5323,11 +5458,83 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   that sub-hierarchy, the daemon's own cgroup in it, and the parent's spawner be moved
   into a leaf of its own there once (a move, PM M248's cost, once per parent), its
   children born there as slice 1's are. Built once a host needs it.
+- **Slice 3, built on macOS and Windows: groups shards keeps, where its host has none a
+  user's tools cap.**
+  macOS has no group of processes a user may make and cap (its jetsam bands and
+  coalitions are the system's own), and Windows' job objects are made by programs, none
+  named by a tool of its user's. There `--cgroup-parent NAME` names a group shards keeps,
+  a directory of the home, `groups/NAME`, made with the first run under it: its name a
+  file's of letters, digits, `.`, `-` and `_` alone (daemon/groups.rs); its budgets
+  files in cgroup v2's own formats, as a Linux user writes a cgroup's (cgroup-v2.rst):
+  `memory.high` and `memory.max`, bytes with the kernel's binary suffixes or `max`
+  (mm/page_counter.c `page_counter_memparse`), and `cpu.max`, a quota and its period in
+  microseconds, the period 100000 where left out, each at least 1 ms, the period at most
+  1 s (kernel/sched/core.c `cpu_period_quota_parse`, `tg_set_cfs_bandwidth`). Each starts
+  `max`. The daemon watches the files and holds the group's microVMs to them as they
+  change:
+  - **macOS** (built): what the group holds is its microVMs' VM processes' footprints
+    (proc_pid_rusage's `ri_phys_footprint`), summed every pressure window while it has
+    microVMs, its files read again then, so that a budget written is heard within one.
+    Each microVM is told the room under the least of its budgets as D188 tells a slice's
+    (init's `ROOM`), and where the group is short each gives back what it holds cold,
+    then unplugs. Past `memory.max` with a pass that gave nothing back, the microVM of
+    the group that holds the most is stopped, its container marked OOM-killed, as a
+    cgroup's OOM killer takes its largest. Tested on real microVMs
+    (`a_microvm_under_a_group_is_held_to_its_budget`, M355): 1,254 MiB held under a
+    `memory.high` of 998 MiB, given back to 281; past a `memory.max` of 793 MiB, the
+    microVM that held 679 MiB of 960 stopped, 137 and OOM-killed, the other running on.
+    Mutation-checked: no give-back; no stop.
+  - **Windows** (built): every process of a microVM under NAME is made in a job object of
+    NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
+    group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
+    process in a job of its own may join a group's job only while that holds nothing (the
+    second was refused, M359), so a group's warm VMs are made in its job from their start,
+    its pool its own. `memory.max` is the job's memory limit (JOB_OBJECT_LIMIT_JOB_MEMORY,
+    which refuses its processes' commits past it: 512 MiB alone, and 160 MiB beside
+    another's 160, under 256, M359), set again as the file changes; `memory.high` the room
+    its microVMs are told, as on macOS, whose give-backs on Windows are the platform parity
+    plan's step 7. Tested on real microVMs on CI's windows-2022 and windows-2025
+    (`a_groups_job_holds_its_microvms_to_its_memory_max`, budget-e2e run 40624202863):
+    under a `memory.max` of 1 GiB, a run that allocates 2 GiB never holds it, where one
+    that allocates 2 GiB under no group, and one that allocates 128 MiB under it, run to
+    their ends. `cpu.max` is not the job's CPU rate (below).
+  - **CPU, on both** (built): a group's microVMs hold themselves to its `cpu.max`
+    together, as CFS bandwidth control holds a cgroup's threads
+    (Documentation/scheduler/sched-bwc.rst), where macOS has no mechanism to cap a group
+    of processes and Windows' job CPU rate holds no second: under a hard cap of one CPU,
+    a 30 s spin's mean was 1.04 CPUs, and single seconds ran up to 1.88 (windows-2025)
+    and 2.19 (windows-2022) (M361). The group's count is a file of its directory,
+    `.cpu-budget`, the daemon's, mapped shared by the daemon, which writes the budget as
+    the file says it (within a pressure window of a change), and by each of the group's
+    VM processes, handed it with its run (`RunHead::group`, after its swap); a joiner's
+    CPU is its microVM's. What it counts is the group's theoretical arrival time, the
+    generic cell rate algorithm's (ITU-T I.371): each VM process's second governor
+    (`vm::hold`, beside D191's own) reads its vCPU threads' CPU time as D191's does and
+    charges it, at the budget's rate, to that one word by compare-and-swap, on the host's
+    monotonic clock, one in every process (POSIX CLOCK_MONOTONIC; QueryPerformanceCounter,
+    "consistent ... even when measured on different threads or processes", Microsoft
+    Learn); while the group runs more than a period ahead of its rate, every microVM of
+    it holds its vCPUs out of its guest, by D191's kick, until it is within it. Over any
+    stretch the group uses at most its rate and a period's quota more, as a cgroup's
+    periodic quota allows, and over a long one its rate: nothing of a period wraps, and no
+    process waits on another. A budget of every CPU of the host's, or past what the word
+    holds (a host of more than 4,295 CPUs), holds nothing. Tested: `vm::group`'s own
+    (charges add up across mappings and threads, idle time no credit past a period),
+    `vm::hold`'s `machines_of_a_group_are_held_to_its_budget_together` (two machines of
+    two threads each under one CPU: 1.13 to 1.15 s of CPU in 1.14 to 1.15 s, three runs;
+    with the hold off, 4.52 s in 1.13) and `a_group_whose_budget_goes_holds_nothing`; the
+    groups' `cpu_budgets_read_as_the_kernel_reads_them`; and on real microVMs
+    `a_groups_microvms_are_held_to_its_cpu_max_together` (two microVMs of a group of one
+    CPU, four threads burning in each: on macOS 3.21 s of CPU in 3.02 s, with `max`
+    23.9 s; on jupiter's WHP 3.08 s in 3.08 s, with `max` 23.97 s in 3.04; mutation-checked,
+    the VM ignoring its group's budget, 23.85 s in 3.02 s, which fails it). Each second's
+    hold, M370: under one CPU, p99 1.07 CPUs a second on macOS and 1.12 on Windows.
+  - Shown as given (inspect's `HostConfig.CgroupParent`); the group's `memory.current`
+    file the daemon writes as it sums it, as a cgroup's says what it holds.
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
-  where no user's manager is (designed, above). 3: Windows, a job object the VM process
-  is made in, once the daemon runs there (README: not yet). 4: the microVM's own
-  engine's members (D181), a cgroup within the microVM, refused (501) until a need for it
-  inside a microVM is shown.
+  where no user's manager is (designed, above). 3: macOS and Windows, groups shards keeps
+  (built, above). 4: the microVM's own engine's members (D181), a cgroup within the
+  microVM, refused (501) until a need for it inside a microVM is shown.
 
 ### D184. A credential helper is asked at once and waited for only where its registry asks (built)
 
@@ -5701,7 +5908,15 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   budget is reached before the host says so. A kernel that arms none of its user's has
   the host's ten-second average read every ten seconds. On macOS, libdispatch's memory
   pressure source, said again every 2 s while the pressure stays raised, as a trigger is
-  while its stall goes on. The daemon has no other platform yet.
+  while its stall goes on. On Windows, the system's low memory notification
+  (CreateMemoryResourceNotification, `LowMemoryResourceNotification`), signalled while
+  its available memory is low (by default 32 MB of each 4 GB, 64 MB at most: its
+  documentation), said again every 2 s while it stays so, as macOS's is. On macOS and
+  Windows a group shards keeps holds microVMs to a budget (D183's slice 3), whose files
+  the daemon reads each pressure window. Where `SHARDS_PRESSURE` names a FIFO (on Windows,
+  a named pipe), each line written to it is the host's word in place of its kernel's, as
+  `SHARDS_BUILD_PRESSURE` tells a build: a test's, as no unprivileged process may raise
+  macOS's or Windows' pressure.
 - **Each time, every running microVM gives back what it holds cold of its files.** Its
   init (builtin `RECLAIM`) reclaims as much of its run's file pages as its memory.stat
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
@@ -5930,7 +6145,9 @@ through FUSE into its guest's page cache (a file of a window's range or more is 
 page cache, mapped into it: D189) gives back what it holds cold once a `MemoryHigh` of 384
 MiB short of it is set, idle as it is, the daemon's log saying what it gave back and that
 it holds it within its budget, in which it reads a gigabyte, in files of a MiB, to the
-end. tests/daemon.rs
+end; a give-back whose answer is lost to the daemon's 10 s, its guest giving back as it
+was ended, followed by the budget's word all the same (12 runs of 12 on Fedora, where 3 of
+19 had the daemon say nothing of the budget, PM M391). tests/daemon.rs
 `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
 under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
@@ -5940,9 +6157,25 @@ budget short of what the slice holds and its kernel's inactive buffer, by a mebi
 within the least room a run goes on in and reading within it too (where held at what
 they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
-alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). Not on macOS, which has
-no group of processes a budget holds. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs)
-holds the idle daemon's threads still.
+alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). On macOS and Windows,
+which have no group of processes a user's tools cap, a group shards keeps (D183's slice 3):
+`a_microvm_under_a_group_is_held_to_its_budget`, a share's files given back, on Windows
+through D197's FUSE server over NTFS (its microVMs from 764 to 768 MiB to 272 on jupiter,
+within a budget 451 to 492 MiB short); and
+`what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget`, 512 MiB of a
+joiner's image read through its guest's page cache (D119), its group's `memory.high` written a
+quarter GiB short of its VM process: told its room and asked to give back, the microVM
+gives back what its joiner read, its VM process from 642 to 651 MiB to 261 to 266 on
+jupiter's WHP and from 1,028 to 1,038 to 265 to 275 on the M5 Max, idle 253 to 256 (PM
+M391). At its host's word, on every host
+(`what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`, its daemon told through
+`SHARDS_PRESSURE`): what a joiner read, 128 to 382 MiB of it, given back, its VM process
+back to within 6 MiB of what it held idle 1.1 to 1.2 s after the word on jupiter and 1.6
+to 1.7 s on Fedora, and within 15 MiB 1.9 to 2.0 s after it on the M5 Max (PM M391). Unit (platform), Windows: each low memory
+signal a word, one that lasts said again every 2 s and none while memory is not low (an
+event standing in for the system's notification), and the system's own unsignalled while
+a gigabyte is available; each of 8 mutants caught on jupiter. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the
+idle daemon's threads still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
 and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB
@@ -5953,9 +6186,13 @@ none. Plugged memory stays the kernel's own (D133).
 is all anonymous memory, which its host cannot take back without swap, and a read under
 such a budget is throttled for as long as it runs (761 to 1,729 s a gigabyte, PM M318),
 where one restored from its template holds that template's clean pages beside as much
-anonymous memory, which its host may take back. Builders (D133) give back
-nothing at pressure: a build runs in `shards build`'s
-own process, not the daemon's. And they hold little a pass could take (PM M295): what a
+anonymous memory, which its host may take back. Builders (D133) give back at their build's
+word on their give-back port (`build::GIVE_PORT`, build/give.rs), a build running in `shards
+build`'s own process, not the daemon's; on Windows too since 2026-10-28, free page reporting
+(D151) theirs there as a run's: on jupiter's WHP a builder holding a step's 256 MiB file
+gave back 253 MiB of it, its VM process from 350,516 KiB to 96,168, and again at
+d1deefd9, from 352,088 KiB to 96,220
+(`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`). And they hold little a pass could take (PM M295): what a
 builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
 MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
 leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
@@ -6333,6 +6570,745 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D207. A Windows host's bind sources: its drives' paths (built)
+
+**Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
+it at every colon, and held a bind's source to start with `/`: on Windows `-v C:\src:/dst`
+was "invalid mode: /dst", `-v C:\src:/dst:ro` an invalid specification, and a `--mount` of
+`C:\src` (Compose's binds, its secrets and configs) not absolute. A Linux microVM on a
+Windows host is the case moby's parser for Linux containers on Windows reads (lcow_parser.go,
+beside windows_parser.go, moby docker-v29.8.1): its sources the host's, Windows', and its
+destinations the guest's, Linux's.
+
+**Decided** (`volumes.rs`, `Sources`):
+
+- **A source of the host's is a drive's absolute path**: `C:\src`, `C:/src` or `\\?\C:\src`
+  (lcow's rxHostDir), whose drive's colon ends no part of a `-v`. One from no drive's root
+  (`/src`, `\src`, `C:src`) is refused, saying what a host path is there; anything else is a
+  volume's name, as on Linux. A source of one letter before a destination (`c:/dst`) is a
+  volume's name, as lcow's expression matches it, and no volume's name is one letter
+  (`Store::valid`).
+- **A microVM's own paths are Linux's on every host**: the binds a microVM's own engine
+  makes (D181) name its files, not the host's.
+- **What lcow drops, kept**: case, of the source and the destination (lcow lowercases a whole
+  `-v`, windows_parser.go splitRawSpec, where a Linux destination tells case and so may an
+  NTFS directory, FILE_CS_FLAG_CASE_SENSITIVE_DIR); Linux's modes, `z`, `Z`, propagation,
+  `nocopy` and a consistency (lcow's rxMode takes `ro` and `rw` alone, and its validator
+  refuses any propagation); and a file bound alone (windows_parser.go: "source path must be
+  a directory"), shared through its directory as on Unix.
+- **A source cleaned as Go's filepath.Clean cleans one on Windows**, `\` between its names,
+  `.` dropped and `..` taken back to its drive's root at most, where lcow turns `/` into `\`
+  and drops one trailing `\`. The CLI makes a relative `-v` source absolute as docker/cli's
+  filepath.Abs does on its host (`.\data` from `C:\work` is `C:\work\data`), where it had
+  cleaned it as a path of slashes.
+- **Not served, as lcow serves neither**: a network share's path (`\\server\share`; lcow's
+  rxHostDir takes drives alone) and a named pipe ("Linux containers on Windows do not
+  support named pipe mounts").
+
+`volumes.rs`'s `a_windows_drives_paths_are_read` holds the reading on every host and
+`a_windows_hosts_binds_are_its_drives` the binds on Windows; containers.rs, compose.rs and
+engine.rs bind host directories on jupiter and CI's Windows runners (D197's slice 3).
+
+### D202. A GPU on Windows: Venus in the GPU's VM process, its driver reached from a desktop of its own (built)
+
+The parity plan's step 11, after D201: a run on an x86_64 Windows host is given its host's
+GPU as a Mac's and a Linux host's are (`--gpus`, a CDI device of the render node, a build
+step's `RUN --device`), Vulkan in its guest through Venus, rendered by the host's own
+driver. What D144 and D201 built stands: the device, the window after RAM, `--gpus`'s
+reading, the render node's mode, templates of their own (D150), and the `hyperv+gpu`
+kernel. What a Windows host makes otherwise:
+
+- **The renderer is the krunkit fork**, as on macOS, its Venus in the GPU's VM process:
+  virglrenderer 1.3.0's contexts are served by its render server, over Unix sockets it
+  forks or threads behind, which its Windows build does not have. scripts/gpu-libs builds
+  the fork with clang-cl and shards' patch (resources/gpu/venus-windows.patch): the POSIX
+  names its sources use are given the UCRT's, its ISO names where the UCRT deprecates the
+  POSIX ones; Vulkan's loader is opened from System32 at its first call, not linked, so
+  that a host without one is told so as a run asks for a GPU; and a blob is mapped by its
+  pointer, as on macOS.
+- **A blob's pages are the renderer's** (PM M383). WHP maps a driver's mapping of its
+  host-visible memory into a partition, AMD's twelve host-visible types every one; but the
+  driver frees that memory as the guest frees it, its blob or not, and the stage 2 follows
+  the host's view (M341), so a guest mapping a blob freed could reach what took its place.
+  Every allocation a guest may map is made of pages the renderer allocates and its device
+  imports (VK_EXT_external_memory_host), held by the memory and by its blob and freed by
+  the last of them; the device-local types, which no device imports host memory into
+  (M383: the host-visible types not device-local import, 0xaaaa), are shown the guest as
+  device-local alone, and the window is as long as the heaps of the types it may map. A
+  blob is mapped whole, its pages the renderer's committed, writable memory, and one said
+  to be larger than they are is refused.
+- **The window is the partition's own**: each blob mapped at its place by WHvMapGpaRange,
+  readable and writable, never executable, and unmapped as the guest lets it go, as
+  Hypervisor.framework's stage 2 maps macOS's; a map's p50 34.0 to 37.6 µs (M383).
+- **Confined as every VM process is, but for Win32k** (PM M385). The GPU's VM process
+  keeps its AppContainer of its own, its Job and every other mitigation (D141). A Windows
+  GPU driver is reached through Win32k: the Vulkan loader finds its drivers through gdi32's
+  D3DKMT calls and DXGI, and gdi32 and user32 initialize in no process whose Win32k calls
+  are disabled, nor in an AppContainer not granted the window station and desktop it runs
+  on, with or without the mitigation (a process connects to its window station and
+  desktop as it first calls user32 or gdi32: Microsoft's "Process Connection to a Window
+  Station"). So Win32k's calls are allowed it, and it is made on a window station and a
+  desktop of its own (`shards_ipc::Spawn::graphics`), granted to its AppContainer alone
+  besides their maker, where gdi32 and user32 initialize. There it sends no window message
+  to its user's desktop ("Window messages can be sent only between processes that are on
+  the same desktop", Microsoft's "Desktops"), as Chromium's sandbox puts its targets on a
+  desktop of their own for (chromium/src docs/design/sandbox.md, "The alternate desktop"),
+  and its clipboard and atom table are its window station's, not its user's ("A window
+  station contains a clipboard, an atom table, and one or more desktop objects",
+  Microsoft's "Window Stations"). Only a process that makes one loads user32, which makes
+  them.
+- **Tested** (tests/gpu.rs on jupiter: AMD Ryzen AI Max+ 395 and its Radeon 8060S, AMD's
+  driver 25.20.32.06, Windows 11 10.0.26200): passes. A run given `--gpus all` finds
+  `Virtio-GPU Venus (AMD Radeon(TM) 8060S Graphics)`; a build's steps given the render
+  node by a CDI device find it as root and as user 1000, as do a run given it by CDI name
+  and a run of user 1000; and the GPU's runs restore templates of their own (D150). The
+  renderer's own test passes there. The GPU's VM process is spawned so by the Windows
+  daemon's spawner (`shards_ipc`, the parity plan's step 2), and lands with it: tested on
+  step 2's branch with this one merged. CI's Windows runners, which have no GPU, build,
+  lint and test the renderer, and skip what needs one.
+- **Not yet:** an arm64 Windows host (WHP's arm64 backend is the parity plan's step 10),
+  and Windows hosts of NVIDIA's and Intel's GPUs, none being here.
+
+### D201. A GPU on Linux: Venus over its host's own Vulkan driver, in the GPU's VM process (built)
+
+The parity plan's step 11 (docs/audit/2026-10-27_platform-parity.md, row 6), after D144: a
+run on a Linux host is given its host's GPUs as a Mac's is given its own (`--gpus`, a CDI
+device of the render node, a build step's `RUN --device`), Vulkan in its guest through
+Venus, rendered by the host's own driver, NVIDIA's or Mesa's. What D144 built stands: the
+device (`devices::virtio::gpu`), the window after RAM, `--gpus`'s reading, the render
+node's mode, templates of their own (D150). What a Linux host makes otherwise:
+
+- **The renderer is virglrenderer 1.3.0** (scripts/gpu-libs, pinned by digest), not the
+  krunkit fork macOS renders with: its Venus is the upstream one guests' Mesa is written
+  against. Its Venus contexts are served by its render server alone (meson.build,
+  `with_render_server = with_venus`); the GPU's VM process runs the server as a thread of
+  its own, given one end of a socket pair as its client's connection, the renderer the
+  other (`get_server_fd`), and each context the server makes is a thread of it
+  (`render-server-worker=thread`): nothing is forked or exec'd, and what the server logs is
+  the VM process's (gpu/render_log.c, in syslog's place). Each context's fences are waited
+  for on a thread of its own and said from there (VIRGL_RENDERER_THREAD_SYNC and
+  ASYNC_FENCE_CB), as macOS's are.
+- **Vulkan is the host's**, its loader opened by its soname (libvulkan.so.1) as the
+  renderer starts: nothing of it is linked, a host without one is told so as a run asks for
+  a GPU, and the window's length is every GPU's host-visible heaps as Vulkan says them (on
+  the GPU desktop, NVIDIA's 100 GiB and RADV's besides).
+- **The GPU's VM process links glibc, dynamically**, where every other helper is static
+  musl (PM M281): a host's GPU driver is a library of its C library, which a static program
+  cannot load. build.rs builds it for the `-linux-gnu` targets where SHARDS_GPU_LIBS names
+  the renderer's libraries (`gpu_target`), and CI and releases build them there, as on
+  Apple silicon. A musl build carries none yet.
+- **A blob is held by its descriptor** (PM M381). Venus exports host-visible memory as a
+  dma-buf where the driver can, as both NVIDIA's and Mesa's can, and the renderer exports
+  each mappable blob as it is made and keeps the descriptor: a dma-buf maps at any address
+  the process chooses, is the driver's memory, and keeps its pages once the driver frees it
+  while the descriptor or a mapping lives, what D144 held on macOS by remapping. A blob
+  exported as an opaque descriptor, which no mmap takes, is refused, as is one said to be
+  larger than its memory's pages.
+- **The window on KVM is one memslot**, over a range the VM process reserves for it
+  (gpu/window.rs), as a share's DAX window is (D189): a blob is mapped into it at the place
+  its guest chose by mmap(MAP_FIXED) of its descriptor, and unmapped by reserving its range
+  again; KVM's stage 2 follows the host's mapping through its MMU notifiers, a dma-buf's
+  PFN-mapped pages (NVIDIA's, M381) among it. No memslot is made or removed for a blob, and
+  a blob's place and length are whole host pages (`blob_alignment`).
+- **Confined to what its driver needs** (PM M382), as NVIDIA's and Mesa's were measured to
+  reach: Landlock lets the GPU's VM process read the loader's manifests and the libraries
+  they name, the system's libraries and the drivers' data, sysfs, /proc/driver and four of
+  /proc's files, and read, write and control the GPUs' device nodes (render nodes,
+  NVIDIA's control, GPU, modesetting and unified memory nodes, udmabuf); its seccomp filter
+  allows the GPU drivers' ioctls by their types (NVIDIA's 'F' and 'm', DRM's 'd'), which a
+  rule matches by the request's bits 8 to 15 (`Rule::masked`), seven syscalls more, two
+  fcntl commands, fallocate's mode 0 and getsockopt's SO_TYPE, and fails symlink as its
+  host does (NVIDIA's /dev/char links) and sched_setaffinity with EPERM (RADV's, which
+  renders on, M384). Its drivers' shader caches stay off: it writes nothing of its host's.
+- **Vulkan programs** (PM M384): llama.cpp's matrix multiplications in a guest get its
+  CPU's results case for case, on NVIDIA's GPU and on RADV's, but for 18 of 1,684 shapes on
+  RADV that are NaN in llama.cpp's integer dot product path alone (with it off, every case
+  matches), as on Windows' AMD driver (M386).
+- **The kernels:** the `gpu` variant for x86_64 guests as for arm64's, and `hyperv+gpu`,
+  a Windows host's guest given a GPU, of kernel-6.18.48-64a9427a8997, whose release built
+  every kernel before it byte for byte again and the x86_64 `gpu` kernel byte for byte as
+  the GPU desktop's pinned builder did; scripts/build-kernel.sh takes variants joined by
+  `+`.
+- **Tested** (tests/gpu.rs, on the GPU desktop's NVIDIA GeForce RTX 5060 Ti and Radeon
+  610M, NVIDIA 615.78.08, CachyOS on Linux 7.2.9): passes, 5 runs of 5 of the build that
+  adds D202, 19 to 71 s each, the host busy with other work (load average up to 119).
+  A run given `--gpus all` finds `Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti)` and
+  `Virtio-GPU Venus (AMD Ryzen 9 9950X3D2 16-Core Processor (RADV RAPHAEL_MENDOCINO))`
+  through Debian trixie's Mesa 25.0.7, a build's steps given the render node by a CDI
+  device find it as root and as user 1000, so do a run given it by CDI name and a run of
+  user 1000, and the GPU's runs restore templates of their own (D150). It skips where a
+  host has no GPU's device node, as CI's Linux runners, which build, lint and test the
+  renderer.
+- **Not yet:** an arm64 Linux host with a GPU is built and linted for and untested, none
+  being here; and arm64 KVM maps a PFN-mapped page as device memory unless its mapping
+  allows it otherwise (VM_ALLOW_ANY_UNCACHED), which a discrete GPU's dma-buf does not say.
+
+### D199. A run's log sent to macOS's own log: `oslog`, and syslog's local default there (built)
+
+`--log-driver oslog` is served on macOS, the journal's counterpart there (D166, D198): a
+run's lines go to macOS's unified log, which `log show` and Console read. Docker has no
+driver of macOS's, whose engine runs in a Linux VM there. Sent as every driver's are, from
+shards' store, by the daemon's shipper (D163).
+
+- **Through os_log, in the daemon.** macOS keeps nothing sent to syslogd's socket,
+  `/var/run/syslog`, at any level, while its syslog(3) and os_log reach the unified log
+  (PM M374). So a line is an entry the daemon writes with os_log_with_type, through a shim
+  of its macros that only a C compiler expands (daemon/ship/oslog.c, libSystem's, no launch
+  cost). Its message is public: what a run wrote is no secret of shards' to redact.
+- **Found as journald's are.** Its subsystem is `shards` and its category the run's tag
+  (its short ID unless `tag` says), as journald's SYSLOG_IDENTIFIER is: `log show
+  --predicate 'subsystem == "shards" AND category == "web"'`. stdout's lines are of the
+  default type and stderr's of the error type, as journald's priorities 6 and 3.
+- **Whole lines, in parts os_log keeps.** os_log keeps a line whole up to 1,015 bytes, and
+  of a longer one its first 1,015 bytes and `<…>` (M374). A longer line goes in parts of at
+  most 1,015 bytes, each cut at a character's boundary, none of it lost. Bytes that are no
+  UTF-8, and a NUL, are U+FFFD.
+- **syslog's local default, there.** `--log-driver syslog` with no `syslog-address` sends
+  to the host's own syslog, which on macOS is its unified log: there it is sent as oslog's,
+  the run's tag its category. Sent to syslogd's socket, as before, every line went nowhere.
+- **Its options** are every driver's (tag, labels, env, mode, the local copy's).
+- **macOS's.** Elsewhere it is refused as its run is made, in shards' words: the unified
+  log is macOS's own.
+
+Tested on real microVMs on macOS (`a_runs_log_is_sent_to_macos_own_log_as_its_options_say`):
+`log show` has a run's line on each stream with its type, a 3,000-byte line in parts of
+1,015, 1,015 and 970 bytes, and syslog's local default's lines alike. Elsewhere it tests the
+refusal. A unit test holds the parts to os_log's bound and to characters' boundaries.
+
+### D198. A run's log sent to Event Tracing for Windows: `etwlogs` (built)
+
+`--log-driver etwlogs` is served on Windows, the journal's counterpart there (D166): a run's
+lines go to the host's own event tracing, as Docker's Windows driver sends them. Sent as
+every driver's are, from shards' store, by the daemon's shipper (D163).
+
+- **Docker's provider and words.** Each line, and each 16 KiB part of a longer one, is an
+  event of moby's provider, `{a3693192-9ed6-46d2-a981-f8226c8363bd}`, written by
+  EventWriteString at level 0 and keyword 0, its string moby's createLogMessage's:
+  `container_name: NAME, image_name: IMAGE, container_id: ID, image_id: IMAGE_ID, source:
+  STREAM, log: LINE` (daemon/logger/etwlogs/etwlogs_windows.go). A session listening for
+  the provider has each, `logman start -ets NAME -p {a3693192-...}` and tracerpt among
+  them, as for Docker's.
+- **Registered once.** The daemon registers the provider with the first run that asks for
+  it and keeps it for its life, as moby keeps one registration while any of its loggers
+  lives; one that fails is asked for again by the next run.
+- **Delivered as written.** An event is ETW's once written: a session that listens has it,
+  and none that does not, for every sender alike. Its options are every driver's (tag,
+  labels, env, mode, the local copy's); moby's reads none of its own.
+- **Where Docker is wrong, shards is not.** A line holding a NUL fails Go's
+  UTF16FromString, and moby's driver loses it; shards writes it, the NUL U+FFFD, as its bytes
+  that are no UTF-8 are.
+- **Windows'.** Elsewhere it is refused as its run is made, in shards' words: Event
+  Tracing for Windows is Windows' own.
+
+Tested on real microVMs on Windows (`a_runs_log_is_sent_to_etw_as_its_options_say`): a
+real-time ETW session of the test's own, its provider enabled, has a run's line on each
+stream, word for word, and `logs` reads the run's own copy; an ETW session is an
+administrator's or Performance Log Users', and a host whose user is neither says SKIP.
+Elsewhere it tests the refusal. A unit test holds each event's words to moby's.
+
+### D197. Host directories on Windows: a FUSE server over NTFS that keeps a Linux guest's files as WSL does (built)
+
+**Why.** Every feature on every host (the user, 2026-10-27; the platform parity plan's step 6,
+docs/audit/2026-10-27_platform-parity.md's host directories on Windows): a microVM's volumes
+and binds reach it as virtio-fs shares (D38), whose device, FUSE wire and WHP DAX window
+(D189, `fs/window_whp.rs`) Windows builds, but whose server (`fs/server.rs`), share process
+and budgets are Unix's, so a run with `-v` or `--mount` is refused there.
+
+**What a Linux guest's files need of NTFS, measured (PM M362, CI's windows-2022 and
+windows-2025, as the runner's account and as a standard user, unelevated): every call below
+did as asked.**
+
+- **One server, its host behind a layer.** `fs/server.rs` answers FUSE requests in Linux's
+  terms on every host; each call it makes of its host's file system is a function of its
+  own (`host::Stat`, the `*_at` calls), Unix's the libc calls it makes now, Windows' the
+  NT calls below. Its tests run on both.
+- **Nothing past the share.** Each operation is relative to a handle of the shared tree, its
+  name one component: NtCreateFile with that directory as its RootDirectory and
+  FILE_OPEN_REPARSE_POINT, so a final reparse point is never followed, as `O_NOFOLLOW`
+  holds Unix's server.
+- **Owners, modes and device numbers** in WSL's extended attributes, `$LXUID`, `$LXGID`,
+  `$LXMOD` and `$LXDEV` ("File Permissions for WSL", Microsoft Learn), set and read
+  unelevated (M362), where Unix's server keeps them in Docker Desktop's
+  `com.docker.grpcfuse.ownership` xattr: a file WSL made reads as WSL made it, and a file
+  with none is root's, as Unix's.
+- **Every other kind as WSL makes it.** Regular files and directories are NTFS's; a
+  symlink, a FIFO, a character or block device and a Unix socket are reparse points of the
+  LX tags, a symlink's buffer as MS-FSCC 2.1.2.7 lays it out, never an NTFS symlink, which
+  "Developer Mode must first be enabled on the machine" to make unelevated
+  (CreateSymbolicLinkW, Microsoft Learn).
+- **Removal and rename as Linux's**: an open file's name gone at once
+  (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS), a rename over a file held open
+  (FILE_RENAME_FLAG_POSIX_SEMANTICS), the holder reading what it held.
+- **Names**: a directory the guest makes is case-sensitive (FileCaseSensitiveInformation),
+  as WSL makes its own; a host directory keeps the flag its user gave it.
+- **Inodes**: a file's ID (FileIdInfo), whose upper 8 bytes NTFS left unused (M362).
+- **Its stream to the VM** a duplex named pipe, as a served share's on Windows (D38,
+  `--slates-fs-handle`, PM M340).
+
+**Built (slice 2): the server on Windows, `fs/server_windows.rs` over `fs/ntfs.rs`, held to
+Unix's by the server's own tests, which run on every host** (66 on jupiter and Fedora, 65
+on macOS, each Unix step given a Windows twin of its property: a junction where a symlink is
+planted, the read-only attribute where a mode is taken away, WSL's device files where
+/dev's are), and mutation-checked on jupiter (25 mutants of the Windows layer, each one
+line, all caught but one equivalent). What the tests found, decided:
+
+- **NT checks a handle's access, Unix its file's**: a Unix descriptor opened to read changes
+  its file's attributes; an NT handle changes nothing it was not opened to. Each change
+  goes through a handle that may make it (`able`: the one given, else another of its
+  file's, a relative open of no name, as ReOpenFile makes one).
+- **A guest's other attributes** are EAs named `SH.` and their name's bytes in hexadecimal
+  (an EA's name is upper-case ASCII of 255 bytes at most, a guest's any bytes of either
+  case), each value after a byte of 0: NTFS keeps no EA of no value, where Linux keeps an
+  attribute of one (overlayfs's `metacopy`; `an_attribute_of_no_value_is_kept`).
+- **A node Unix's server keeps as an empty file beside its kind** (a device an
+  unprivileged host cannot make, RENAME_WHITEOUT's whiteout) is on NTFS the device it is,
+  WSL's; a device's metadata is read and written as any file's, its reparse point reaching
+  no driver (`DEVICE_OPENS_DRIVER`), and no descriptor is kept against a mode
+  (`MODES_REFUSE_OPENS`), which refuses no NT open.
+- **NTFS renames no directory a handle beneath is open in**, POSIX semantics or not, nor does
+  MoveFileEx (EACCES; ntfs.rs `a_directory_a_handle_beneath_is_open_in_is_renamed_by_none`):
+  before a guest's rename of a directory the server lets go of the descriptors it holds
+  beneath it, a cache each opened again along its path (audit V09), so that the guest's
+  rename is Linux's. The host's own rename of such a directory is refused as NTFS refuses
+  it beside any program holding a file there; once the server has let go, it is made, and
+  the guest's nodes there are stale, as Unix's.
+- **Nothing is resolved beneath a reparse point opened as itself**: NT answers
+  STATUS_REPARSE_POINT_NOT_RESOLVED (0xC0000280, measured on jupiter), which the server
+  hears as ELOOP, a path through a planted junction stale (ESTALE), as Unix's through a
+  symlink.
+- **A host's junctions and NTFS symlinks are symlinks to the guest**, as a host's symlinks
+  are on Unix, where they were empty directories: a relative symlink's target as it is, an
+  absolute one's or a junction's on the link's own volume the path to it from the link's
+  directory (MS-FSCC 2.1.2.4, 2.1.2.5), so that pnpm's node_modules, junctions within a
+  project, lead in the guest where they lead on the host.
+- **A handle opened to append writes at its file's end as the host has it**, whatever offset
+  the guest's kernel names, on every host: WriteFile's end-of-file offset on Windows, and
+  write(2) through the O_APPEND descriptor on Unix, where macOS's pwrite(2) writes at the
+  offset named and clobbered what the host appended (`Zbc` for Linux's `abcZ`, measured
+  2026-10-29; Linux's pwrite(2) appends, its BUGS section);
+  `an_appending_handle_writes_at_its_files_end_as_the_host_has_it`.
+- O_SYNC and O_DSYNC open to write through (FILE_WRITE_THROUGH); O_RDONLY with O_TRUNC
+  truncates, as Linux's open(2); SEEK_DATA and SEEK_HOLE take a file to be all data, as
+  POSIX lets an implementation.
+
+**Built (slice 3): the share process and the daemon's shares on Windows**, a run's `-v` and
+`--mount` reading and writing host directories there: containers.rs, compose.rs, engine.rs
+and saved.rs on jupiter and CI's Windows runners, none skipped for this step but those of
+shards' own shares' DAX windows (slice 4). What it took, decided:
+
+- **The share process starts in its microVM's group's job with none of a confined child's
+  mitigations** (`shards_ipc::spawn_in_job`): under `Spawn`'s no-Win32k and no-FSCTL
+  policies the shards binary failed its DLL initialisation (STATUS_DLL_INIT_FAILED,
+  0xC0000142, on jupiter), and its server sets reparse points, which are FSCTLs.
+- **Each share's stream is a byte-mode duplex pipe the daemon makes**
+  (`shards_ipc::byte_pair`): its server end given to the share process by number, its
+  client end sent to the VM after the run's request, `MAX_FDS` a message (`SHARE_ENDS`),
+  as Unix's share process hands its own: a stream given to a process on Windows hands no
+  handle on, its holder having no handle of the process it would send one to. A run of
+  five shares sent in its request alone had been refused, past `MAX_FDS`.
+- **A container's share processes end with its removal**, each ended and waited for as
+  the removal completes, its runs over (`end_shares`): NTFS renames no directory a handle
+  beneath is open in, and a volume removed just after the last container that mounted it
+  had been refused (HTTP 500), a `run --rm`'s anonymous volume left behind.
+- **RENAME_EXCHANGE**, which overlayfs asks of a volume to remove a directory
+  (ovl_cleanup_and_whiteout exchanges it with a whiteout), and of which NTFS has none:
+  three renames, each over nothing, the first to a name of the server's own beside the
+  first file, undone where one fails, the directories beneath both let go first
+  (`an_exchange_swaps_two_names`). The server answers its guest one request at a time, so
+  its guest sees none of it half done; another program of the host's may, as it may any
+  rename on Windows not made at once.
+- **A file with no mode of WSL's is 0755 to the guest, 0555 read-only**: Windows has no
+  bit to say a file is not executable. WSL shows such a file with its Windows user's
+  effective rights, "the same value for user, group, and other" ("File Permissions for
+  WSL", Microsoft Learn); Docker Desktop "sets permissions on shared volumes to a default
+  value of 0777 ... not configurable" (Docker Desktop's troubleshooting topics); BuildKit's
+  fsutil sends a Windows file to a build as 0755 (shards-build's `host.rs`). shards takes
+  the build's: a Linux program or script in a project runs from its bind, and its files
+  stay their owner's to write, root's in the guest, as a Unix host's are.
+- **A host's bind sources are its drives' paths** (D207).
+
+**Built (slice 4): shards' own shares' DAX windows on Windows**, a volume's large files
+mapped from the host's page cache as on Unix (D189), held to every host's DAX tests
+(containers.rs's five and saved.rs's restore) on jupiter and CI's Windows runners. What it
+took, decided (PM M412):
+
+- **The share process gives the VM the file, not a section** (`fs/mod.rs`
+  `descriptor_for`). The ask names the VM process and its end of the stream there. The share
+  process duplicates that handle and holds it to be a client's end of its own pipe (one
+  name, FileNameInfo; its own end the server's, GetNamedPipeInfo), refusing the ask
+  otherwise (EPERM), then duplicates into the VM the node's file, opened as Unix's server
+  opens a mapping's. A section of a file reaches no further than the file, which grows
+  under the guest; with the file, the window makes its sections itself, each as long as the
+  file then, and reads its size, as the Unix window keeps a mapping's descriptor.
+- **A range the file ends within** is its placeholder split at the page after the file's
+  bytes there: a view as long as those bytes (a view asked a page past its section's bytes
+  is refused, M412), committed zeros after it, the two coalesced again as it is freed. The
+  guest reads the file's bytes, and zeros past its end, as on Unix.
+- **Followed as the Unix window follows a file**: before the guest hears a size,
+  `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
+  held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
+  each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
+  the file's size, an OPEN that truncates it) finds the file's views let go of first
+  (`evict`), each range its placeholder until the reply; then `reconcile` makes them what
+  the file is, cut or not. A vCPU that reaches one meanwhile waits, and runs its access
+  again once it is made. A host program's cut of a file a microVM maps is refused, as NTFS
+  refuses any program's cut of a mapped file; a hole punched, a rename and a removal are
+  not (M412), and containers.rs holds the host's cuts to that refusal on Windows.
+- **A window's head committed as its guest touches it.** A window's head, its guest's page
+  structures for it, is a 64th of its length and more (D189), memory of the VM's own,
+  which Windows committed whole as it reserved it: a window as long as the host's memory
+  took that at its VM's start, past a group's 1 GiB budget (PM M413). Where the host
+  charges memory as it is reserved (`platform::CHARGED_AS_RESERVED`), a window's head is
+  reserved alone and each of its 2 MiB blocks committed as its guest first touches one:
+  WHP takes a stage-2 map over memory only reserved, its guest's access exiting until the
+  block is committed (M413), and the control device answers that exit
+  (`WindowHeads::memory_fault`). So a head costs the page structures of the ranges its
+  guest maps, as on Unix. A save reads its committed blocks alone, a restore commits the
+  blocks it reads back, and a map-back gives a zero block back uncommitted. A writable
+  layer's head (D190) stays committed whole, its VM writing it first.
+
+**Slices.** 1 (built): the server's host calls behind functions of their own, `mod calls`,
+Unix's in `fs/server_unix.rs`. 2 (built): Windows' calls and the server's own tests on
+Windows. 3 (built): the share process and the daemon's shares on Windows, and the volume
+and bind tests on its CI runners. 4 (built): shards' own shares' DAX windows on Windows.
+
+### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
+
+**Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
+row 2a): a microVM on Windows took no snapshot (D140), so `run --kernel --snapshot-dir`, `shards
+restore` and everything built on them, templates (D25) and warm pools (D26), were Unix's alone.
+What WHP keeps of a partition, and what a restore may set back, measured first (PM M345, a
+probe on jupiter: a guest saved from one partition, restored into another, its memory a view of
+its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over WHP (virt_whp's
+`vp_state.rs`, `apic.rs` and `lib.rs`, at 429b72a9).
+
+- **Each vCPU's state** (`hv::whp::state`): its registers as WHP names them, 69 every host reads
+  (what it runs from, the MSRs a Linux guest writes, its APIC base, the VP assist page its
+  Hyper-V setup gives it, its pending interruption, interrupt state, pending event and activity:
+  an AP still held for its SIPI among it) and the optional ones its host reads (the variable
+  MTRRs MtrrCap counts, XSS, the CET registers, SPEC_CTRL, TSX_CTRL, TSC_ADJUST, UMWAIT_CONTROL,
+  XFD and XFD_ERR, the pending debug exception), asked once a process, each alone; its local
+  APIC's page and its XSAVE area by WHvGetVirtualProcessorState (InterruptControllerState2,
+  XsaveState), not the two functions it supersedes, which Microsoft's reference marks deprecated
+  ("WHvGetVirtualProcessorXsaveState", "WHvGetVirtualProcessorInterruptControllerState2"). A
+  restore sets the APIC base first, which the APIC page's mode follows, then the page, then the
+  XSAVE area, then every register (XCR0 after the area, OpenVMM's order); a state naming a
+  register no snapshot keeps is refused as it is read, as is one taken on another CPU (the
+  leaves of its vendor, family, features, XSAVE components and address sizes, as WHP gives a
+  guest: not its caches, which a hybrid host's cores describe apart, M258).
+- **The partition's time, held.** A partition's TSCs and reference time stand still while it is
+  suspended (WHvSuspendPartitionTime), and a partition never run keeps them where it was made
+  (M345). A save holds them once every vCPU is parked, reads each vCPU's TSC there, at one
+  instant, with the reference time and the Hyper-V MSRs the guest writes once for all its vCPUs
+  (its OS ID before its hypercall page, then its reference TSC page), and resumes them: no
+  vCPU's TSC comes back apart from another's by however far apart their captures were, and the
+  guest's clocks run through the save as a KVM guest's do. A restore holds them before it sets
+  them, and they stay held until a vCPU first runs (WHvSuspendPartitionTime's reference): the
+  guest's clocks go on from the snapshot whenever its vCPUs are released, a held restore's wait
+  (`--hold`) unseen, as KVM's restart their TSCs at the release. Its reference TSC page then
+  reads the saved reference time, run on (M345).
+- **The IOAPIC is the VMM's** (D140) and is saved with the partition: its registers and each
+  pin's line; a level-triggered entry keeps its remote IRR, which the restored local APIC's
+  EOI clears.
+- **Memory.** A snapshot's memory file is sparse (FSCTL_SET_SPARSE): NTFS keeps no hole it is
+  not told to, and writes the zeros of every page up to the last written (M345: a 2 MiB guest's
+  four pages took 192 KiB, NTFS allocating sparse files 64 KiB at a time). A restore's RAM is the
+  file's runs of data mapped copy-on-write (PAGE_WRITECOPY), a view each, and memory of its
+  own between them, zeros (D151), placed at the address its RAM was reserved at:
+  guest RAM is reserved as a placeholder that committed memory replaces at once
+  (`platform::reserve_ram`), which the restore frees back to its placeholder, splits into one
+  a part and replaces with each part's view or memory, leaving no moment in which another
+  thread could take the range. WHP maps any view
+  at stage 2 (copy-on-write, read-only, shared or of the pagefile, M345); the guest's stores
+  land in the view and never in the file, and every restore shares the file's pages in the
+  cache until it writes one. The file is made sparse as it is made, by whoever makes it: for a
+  confined VM its spawner, since the VM process may make no FSCTL (D141). So is a run's
+  swap kept by its save (D176), and every copy that skips zeros makes its file sparse
+  before it ends it at its length (`platform::copy_ranges`), or is refused where it may
+  not. Four saves of runs at once on windows-2025 took the 29.5 GB its temp disk had free
+  within 20 s and failed as it filled, its memory and page file steady (budget-e2e run
+  40627507997, its host sampled every 5 s); of a save's files only a run's swap was not
+  sparse, which NTFS takes whole as a copy sets its length (M349).
+- **Every VM's grants link kept, sealed, for its files' ranges** (M377). A copy reads only
+  the ranges that hold data, which a confined VM asks its spawner (`RANGES`). A run's VM,
+  given neither a snapshot to save nor a vsock path, let go of its link as it started, and
+  saved later read its whole layer, having none to ask: on NTFS a sparse file's holes read
+  through its handle while a writable view of it is mapped become allocated, so each save
+  of a 10 GiB layer took 10.6 GB of its host's disk while its files held 104 MB, and
+  saved.rs still ran windows-2025 out. Every VM now keeps the link and says `SEALED` once
+  granted what it starts with: its spawner refuses every grant after, as after a vsock
+  path's listen, and answers its ranges for its life (a save's copy then 1.5 MB, 107 MiB of
+  the disk). Held by `a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read`.
+- **One partition a process.** WHP maps no memory into a second partition of a process while
+  another lives (STATUS_VID_PARTITION_ALREADY_EXISTS, until the first is deleted, M345). A VM
+  process holds one; the partition that reads the host's vCPU limit is deleted before it.
+- **Windows Server 2022 restores none.** Its WHP (build 20348) sets no vCPU's APIC page back
+  through WHvSetVirtualProcessorState: the page as read is refused (ERROR_MORE_DATA), and its
+  first 1 or 2 KiB too (E_INVALIDARG), where builds 26100 (windows-2025) and 26200 (jupiter)
+  take it whole and in part (M345). The function it supersedes stays unused, deprecated as
+  Microsoft marks it, so a snapshot taken there restores nowhere there, and a restore says
+  why rather than an HRESULT alone; builds between 20348 and 26100 are unmeasured. Whether
+  a host restores is asked of its hypervisor once a process, only where it is asked, so that
+  no VM's start pays for it (`vm::restores_here`: the same page set back on a partition of
+  one, and only that refusal says no): a daemon there keeps no template or warm pool and
+  boots every run cold (D25, D26), and the tests of snapshots skip there, saying why.
+- **A confined VM writes its snapshot through its spawner.** An AppContainer writes in no
+  directory of its user's (D141), and a directory handle would give it every name in it: the
+  spawner makes the snapshot's directory the VM asks to write in, stages each generation there
+  on the VM's word (`kind::STAGE`), hands the VM the generation's files to fill, its memory
+  and state and what its machine keeps beside them, its writable layer's head and file
+  system (D190) and its DAX windows' heads (D189), as `STAGE`'s first byte asks
+  (`platform::Kept`), and makes it durable and the one in use on its next (`kind::COMMIT`),
+  as the daemon stages a run's save (D176), every file of the generation closed first: NTFS renames no
+  directory a file in which is open (ERROR_ACCESS_DENIED, M345), so the VM's handed files go
+  with its save, and a commit's own close before the rename that puts the generation in
+  place, on every host. Once a generation is committed the spawner gives the directory
+  up, as a Unix VM seals its own (vm_run.rs `seal`): a guest that took the VM's process over
+  later cannot have every later restore of the template restore what it wrote. One staged and
+  never committed goes with the VM. A template is saved by its image's first run, whose
+  machine has a layer: staged with its memory and state alone, it was refused, and a Windows
+  daemon's pools never filled (CI run 40602662393, 2026-10-27).
+- **A restore reads its template through its grants**, as on macOS: the pointer, then the files
+  of the generation it names (`granted_template`). A backing file's identity is its volume's
+  serial number and its file index, as a Unix file's device and inode are: a file of the same
+  bytes and times renamed over a disk is another (audit A18). An AppContainer may not even ask
+  a file's metadata by its path (M201), so on Windows a restore first reads which backing files
+  the snapshot's state names (`snapshot::backing_named`), has them granted, then reads the
+  generation, and refuses one whose backing files changed between, a snapshot saved again as
+  it was read. Its writable layer, where NTFS clones no file for it, it copies from the
+  generation's into the empty file it is given: the ranges that hold data alone, which its
+  spawner reads for it (`kind::RANGES`, FSCTL_QUERY_ALLOCATED_RANGES), as its save copied
+  them, each layer's file sparse.
+- **A rename over a file Windows will not yet let go of.** The store replaced its pointer and a
+  generation's working set by renaming a new file over the old (`write_in`, a POSIX rename,
+  M344). On jupiter Windows refused such renames (STATUS_ACCESS_DENIED): a single writer's once
+  in 8,000, and eight writers' at once in episodes of a minute and more, Restart Manager naming
+  no process holding the file (M345; Microsoft Defender's real-time protection was on, and
+  logged nothing); in those holds it refused too the link and the move that might have
+  stepped around one, while a rename of a file to a name no file had was never refused. So on
+  Windows no write replaces a file: `write_in` lands each as its name's next version
+  (`name.~N`, one past the highest listed, by a rename that replaces nothing; a writer that
+  finds its version's name taken lists again), flushes the directory, then removes the
+  versions before it, and a file at the name itself, where Windows lets them go. Versions
+  count from those listed, never from a clock, which may step back. Readers take the newest
+  (`platform::newest_in`): the store's pointer and working set, a template's record, and a
+  confined VM's, through its spawner, which opens the newest for the path it asks
+  (`grant::Access::ReadNewestIfThere`). The store's tidy removes the pointers a newer one
+  superseded, and with no pointer to read keeps every generation; the daemon's sweep of
+  templates takes every version of a record. Elsewhere `write_in` renames over the file, as
+  rename(2) does. In five passes of the probe's writers on jupiter, 30,000 writes, none was
+  refused (M345, 6). `point` writes the pointer by `write_in` on every host. A commit's rename
+  of its generation's directory was never refused (M345: 2,000 commits, alone and beside
+  churn).
+- **What a restore costs** (M345, `benches/restore.rs`, jupiter, 256 MiB, n=100): a cold
+  restore runs its guest again 69.8 ms after its process starts at p50, 84.8 at p99, a
+  `shards restore` start to exit 171 ms; a warm one 59.6 ms after its release at p50, 71.6 at
+  p99, its peak working set 10.1 MiB. Nearly all of it is the guest's first touches: a restore
+  is ready to run 9 to 10 ms after its process starts, its vCPU entering the guest within 34
+  µs of that, and from there to the guest's next store after its snapshot point took 79 to 95
+  ms, and 3.4 ms with the whole of RAM populated at stage 2 beforehand (a populate that itself
+  took 74 to 79 ms). The same at 1 GiB: what a guest touches, not what it has.
+- **Working sets** (`vm::WORKING_SETS`, the platform parity audit's row 11). Without one a
+  restore takes each page into stage 2 as its guest first touches it (M345: 6.4 µs a page
+  read and 8.3 µs a page written at p50 on jupiter, where a populate maps a 2 MiB range at
+  0.4 to 0.7 µs a page, M341). WHP reads back no access bit at stage 2, and a confined VM
+  process may not ask its memory file's allocated ranges (an FSCTL, D141); what the VM
+  process's host maps of its guest's memory is what it touched, as on KVM (`vm::mapped`):
+  its own working set, which QueryWorkingSetEx reads it (`platform::mapped_pages`), a page
+  there valid and shareable its file's, read, and one valid and private a copy its guest
+  wrote. A fault maps the page it touches alone, whether its file's pages are in the cache
+  or read in around it from disk, which go to the cache alone, so no fault-around is held
+  off (`platform::FaultAroundOff` holds nothing; windows_process.rs
+  `mapped_pages_are_the_working_sets`, `a_fault_from_disk_maps_the_page_it_touches_alone`).
+  As KVM's, the first warm restore of a template records it (`vm::RESTORES_RECORD`), for the
+  daemon (D25, D26), and `shards restore` of a generation without one hands what it records
+  to the CLI that started it, which keeps it beside the generation as the VM ends, on a
+  thread of its own (`working_set::keep`): the confined VM writes none of its snapshot's
+  files (D30), and the CLI, which waits for its VM as a child, needs no writer process, as
+  Linux's, which becomes its VM, does. A restore of a generation that has one maps it ahead
+  before its guest runs, every run of its pages populated at stage 2 in two calls
+  (WHvAdviseGpaRange, WHvAdviseGpaRangeCodePopulate; `hv::Vcpu::pre_fault_runs`): the pages
+  its guest wrote for writing, which copies each one its copy-on-write view of the snapshot
+  still shares with the file in the host's kernel, as the guest's first write would, and
+  the rest for reading. What a populate costs is its pages': on CI's windows-2025, whose WHP
+  runs nested (M308), 50 to 58 µs a page read and 70 to 78 written (M415). On jupiter, 512
+  pages populated for writing in one call took 3.68 ms at p50 (n=20), where copying them from
+  the VM process, each page's first word written as it holds it (Windows has no call that
+  faults a range in writable from user mode, PrefetchVirtualMemory reading one in), took 2.58
+  and populating them for reading after it 1.33 in one call or 2.33 a call each (hv::whp
+  `a_write_populate_copies_a_views_pages_in_the_kernel`, which checks each copy holds the
+  file's bytes and no other page is mapped): one call does both, for about what the two cost.
+
+**Tested.** Unit: the states' round trips and damage, and a state naming any other register
+refused (`hv::whp::state`); a restored IOAPIC going on as the saved one; a generation staged by
+its spawner reading back once committed, and the store's every on-disk test, which run on
+Windows now (`snapshot`), among them eight writers saving working sets into one generation at
+once, which on jupiter failed in 3 runs of 10 with no fallback, in 3 of 10 with one retry
+after a link, and in none of 25 with each refusal of another writer's file linked in turn; a
+write landing as a version beside one held open that shares no delete, eight writers' at once
+each landing whole, and a version one past the highest listed (`windows_files`); a spawner
+granting a pointer written twice as its newest version (`grant_answer`); on Windows, a spawner
+staging and committing a VM's snapshots over real pipes, refusing a stage elsewhere and a
+commit of what is not staged, giving the directory up, and removing what is never committed
+(`grant_answer`). On real WHP guests (jupiter and CI's windows-2025):
+tests/snapshot.rs, every test, the storms of busy machines among them, which run on Windows
+now, and the unwritable directory by an access list there; tests/restore.rs, cold restores of
+one snapshot side by side and a held (warm) restore whose guest runs nothing until released.
+Working sets (the platform parity audit's row 11): unit, `platform::windows_process`
+`mapped_pages_are_the_working_sets`, a working set read back exact, the pages touched and no
+other, and `a_fault_from_disk_maps_the_page_it_touches_alone`, and `hv::whp`
+`a_write_populate_copies_a_views_pages_in_the_kernel`; on real WHP guests, snapshot.rs
+`a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded` and images.rs
+`repeat_runs_restore_a_template_of_the_image`, a template's working set recorded by its first
+warm restore and mapped ahead by the next: each on CI's windows-2025 (41176475317 at
+54f7c0fb), which fails rather than skips a VM test it cannot run; and the restore bench's
+arms with and without (M415).
+
+### D195. The daemon and its client on Windows: request slots of named pipes (built)
+
+**Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
+row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
+containers, images, volumes and networks. D185's slots are FIFOs in the home, their
+streams handed by `SCM_RIGHTS`, its spawner a forked process: Windows has no FIFO in a
+filesystem and passes no descriptor over a socket, and a process there is made, not
+forked.
+
+**Decided and built.**
+- **Slots, named by files in the home** (`slots/named.rs`). Each list, without streams and
+  with, is a named pipe whose name the file `requests/free` or `requests/free-streams`
+  gives: a fresh random name each time the daemon makes its lists, the file written whole
+  before it is renamed into place, so that a client reads a whole name or none. Its DACL
+  grants the daemon's user alone, not an AppContainer of that user's (a VM process's) nor
+  another user, and it refuses remote clients. A slot is an instance of its list's pipe: a
+  client takes one by opening the name, which gives it an instance no client has opened,
+  and no other client can then open that one (PM M340). The daemon's first word on it is
+  its number; a slot with streams has three pipes more, `<list>-<N>.in`, `.out` and `.err`,
+  each its name's first and only instance, so that no other process holds one first. Then,
+  as on Unix, the client writes which streams it opened, what each descriptor its request
+  stands for is, and its request. No socket of shards' own is made.
+- **Liveness, each way**, as D185's: each side's end ends the other's reads after all it
+  wrote (M340). A list's name lives while the daemon holds an instance of its own, as a
+  Unix list has its daemon's reader. A client waits for a free slot in WaitNamedPipe, and
+  hears of its daemon's end at once, its wait ending as the last instance closes (M348);
+  it looks at the list's file again every quarter of a second, for a daemon that made its
+  lists again under another name. A slot no client opened is stopped by an event of its
+  own. Where the file names no pipe, or the pipe has no instance, the client starts the
+  daemon. One daemon a home: it takes `daemon.lock` by LockFileEx (std's `try_lock`).
+  A slot's `say` and `answer` being one instance, which its client hears end only once
+  every handle of the daemon's has closed, the daemon reads what the client says only
+  until its side has said all it will: a run whose microVM was killed left its client
+  waiting for ever before (M348). Likewise a run's VM gives up its client's stdio at the
+  run's end with its output first and without waiting on a read of its input, which an
+  interactive client's open stdin never ends (M348).
+- **Waits.** A read of no bytes on an overlapped pipe waits for what comes without taking
+  it (M348): the daemon's followers wait on its runs' streams, and on processes' ends and
+  events, through `pipe::Poller` (an I/O completion port, and a thread-pool wait on each
+  process and event), and clients through `await_any`, where Unix has poll(2) and kqueue(2).
+- **Handles where Unix passes descriptors.** A stream of `shards_ipc`'s carries handles:
+  the sender duplicates each into its receiver's process (DuplicateHandle), and their
+  values follow the message. A child's end takes them only from its spawner, its spawner
+  none from it. So the daemon hands a run's VM the client's connection and the slot's
+  streams as it does on Unix. A stream the daemon makes in pairs and gives one end of to a
+  VM gives that VM its handles from the other: a joiner's connection, its provider's VM's
+  (D119), whose run had reached the VM without them (M354). A VM's AppContainer opens no
+  file by name, NUL included, which Windows Server refused it where Windows 11 let it open
+  it (M351): the daemon opens NUL and gives it beside the VM's link, and the VM holds it
+  for every client's stdio it lets go of, an `exec -d`'s among them.
+- **A VM not ready says why** (M351). Its error closes its link as it returns, before the
+  VM has written it, so the daemon gives a VM whose link closed a second to end of itself
+  before it kills it, and says the status it ended with: its word of why reaches the
+  daemon's log whole.
+- **Cold boots held to the host's CPUs** (M357). Windows' daemon boots every run cold
+  until the parity plan's step 4, and Server 2022's always, as it restores nothing (M345).
+  Cold boots at once whose vCPUs pass the host's CPUs cost more than their work: eight of
+  4 vCPUs at once on a 4-CPU runner took 52 to 55 s each on windows-2022, where one took
+  1.6. On WHP the daemon holds the cold boots under way to their VMs' vCPUs of twice the
+  host's CPUs, the most runs a second on both CI runners; a VM of more boots alone, and a
+  restore takes no turn. Turns are taken in the order asked for (tickets, M357's hang: a
+  boot asked for first waited out its client's minute as later ones went).
+- **Not held across the host's daemons** (M376). Tried: a slot of the host's taken
+  beside a daemon's turn, named mutexes every daemon on the host shared, two on CI's
+  4-CPU runners. It tied each daemon to the slowest on its host: on windows-2025, where
+  a boot alone takes 0.5 s quiet, 7 of containers.rs's 132 tests failed with it, their
+  runs left Created as their boots waited on other tests' daemons' slots past their
+  clients' minute, and all 132 passed without it (CI 40782667644 with it, 40796215375
+  without it and with D196's sealed link besides, both quiet); on windows-2022 the one
+  test that failed without it failed with it too, its daemon's one boot behind the
+  others'. Each daemon
+  counts its own boots alone: what a boot costs while others boot beside it is to be cut
+  where it is spent (M376).
+- **Lines and streams.** A slot's line holds 64 KiB, what a Linux FIFO holds (pipe(7)), so
+  that what a client leaves untaken is what it leaves on Linux (D185, "What it said last");
+  a stream's pipe holds 1 MiB, which moved more than 64 KiB in M340.
+- **No spawner process** (D158). A Unix child is forked holding every descriptor its parent
+  holds, so the daemon's children come from a process made before it held any. A Windows
+  child is made by CreateProcess with the handles named for it alone
+  (PROC_THREAD_ATTRIBUTE_HANDLE_LIST) and inherits nothing else, so the daemon makes its
+  children itself. Having no console, it starts its confined VM processes detached: one
+  started with CREATE_NO_WINDOW alone failed as it started (STATUS_DLL_INIT_FAILED, M348).
+- **Another build's daemon steps aside**, `shards run daemon` serves and `shards stop daemon`
+  ends it, as on Unix (D185).
+- **Containers' directories** (M347). NTFS renames no directory while a file in it is open,
+  and a run's VM or a reader of its log may hold one, so a removal marks its container's
+  directory instead of renaming it: an empty file `.ID.removing` beside it, made durable by
+  the containers' directory's sync as the rename is; the next start deletes a marked
+  directory, then its mark. The directory is deleted where it is once no record of its
+  container is being written (a write under way lands in it, which Windows leaves in
+  place), and its mark only once that deletion is durable: removals completed together
+  share that sync. A directory's entries are made durable by FlushFileBuffers of a handle
+  to it that may write, in the VMM's platform and the image store, where Windows synced
+  nothing before.
+- **Files sized ahead are sparse** (M349). NTFS took every cluster of a file as it was
+  sized, so each run's 10 GiB writable layer (D190) took 10 GiB of its disk at once, and
+  eight runs filled jupiter's. A run's layer, its swap (D159) and a build's cache part
+  (D134) are made sparse before they are sized, as a Unix file is: a running microVM's
+  layer took 1.5 MiB.
+- **Smaller things a daemon on Windows needed** (M348): guest RAM to plug (D133) reserved
+  alone, its commit charge taken as each part is granted, since a host short of commit
+  refused it whole; the daemon leaves its home before removing what is left of it, since
+  Windows removes no directory a process stands in.
+
+**Measured** (M347, M348, jupiter). A request through a slot costs 143 to 149 µs at p50 and
+238 to 253 µs at p99, five times its two lines held open (28 µs), against 83 to 112 µs on
+macOS and 34 µs on Linux (M254). A slot takes its daemon 7 µs to make and remove, 28 µs
+with its streams, where macOS's FIFOs took 116 and 291 (M255): two are kept offered of each
+kind, as on Unix. A removal costs 0.9 to 1.4 ms at p50 with its two syncs, against macOS's
+4.3 (M46).
+
+**Tested.** The slots' cases are one set that Unix's FIFOs and Windows' named pipes both
+pass (`slots.rs`), beside each host's own (`fifo.rs`, `named.rs`, `pipe.rs`, `poll.rs`):
+`shards_ipc`'s tests pass on jupiter, 58 of 58. A mutation run changed one line at each of
+23 places of Windows' slots and pipes, among them a pipe's DACL granting Everyone and a
+stream's pipe made without FILE_FLAG_FIRST_PIPE_INSTANCE, which another process could then
+take first, and the tests caught every one: the last a client that read its list's name
+just before its daemon made its lists anew (`take_listed`). On jupiter, 2026-10-27, the
+daemon's and the containers' unit tests pass, 225 of 225, and tests/daemon.rs with real
+microVMs, 37 of 37, `an_idle_daemon_wakes_for_nothing` among them, each thread's cycles
+read there (QueryThreadCycleTime) where Linux reads its switches. Its eleven pool and
+template tests, which the parity plan's step 4 takes up, skip there (`cannot_pool`), and so
+do those of the other suites that reach a daemon's templates, warm pools and saves (images,
+run, saved, warm): its daemon boots every run cold until then, though WHP takes snapshots
+(D196). Those it leaves out on Windows are Unix's by nature (a terminal's job control,
+descriptor limits, systemd's slices) or a later step's (the Engine API's stream, step 8;
+FUSE under a budget, steps 6 and 7). Every command of the catalog was asked of a daemon
+there once and answered; `pause` said a microVM was not paused on Windows yet, until a
+pause became the VMM's own on every host (D191, step 2). On CI's Windows runners, nested in
+Azure VMs of 4 CPUs, tests/daemon.rs passes too with real microVMs, 37 of 37 on each, the
+same eleven skipping: on windows-2022 (Windows Server 2022, 10.0.20348) and windows-2025
+(Windows Server 2025, 10.0.26100) at 61a07442 (CI 40618994939), and windows-2025 at
+b7d8ee30 before (CI 40601221843). There it had first failed whole, every VM refused NUL
+(M351); then, on windows-2022, two tests whose cold boots ran beside others' waited past
+the daemon's 60 s, until cold boots waited their turn (M357). `shards_ipc`'s tests pass on
+both, their pipe's DACL read by SID (M354).
+
+**Not on Windows yet**, each refused with a message that says so, each a later step of the
+parity plan: a host's network (step 5); a host's directories as volumes and binds (step 6);
+memory given back under a budget (step 7); the Engine API, another machine's clients,
+`--use-api-socket` and what log drivers wait on a TCP connection for (step 8). Templates,
+warm pools and saves are served (step 4, on WHP's snapshots, D196), and published ports
+(step 5, D142).
+
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
 **Found.** A registry off loopback that speaks plain HTTP, a `registry:2` on another
@@ -6528,6 +7504,16 @@ the user told).
   a microVM of those CPUs alone could use, where the cpuset alone bounds only a workload
   that stays in its cgroup. It comes with the run (the `RUN` head's `cpus`), before the
   guest hears of the run, and `update` moves it (below).
+- **A pause is the same hold, whole** (`Handle::pause`, the daemon's `PAUSE`, 2026-10-28):
+  every vCPU kicked out of its guest and held there, whatever its share, until the microVM
+  goes on; the daemon answers `pause` once its VM says each is held. It replaced a stop of
+  the VM process (SIGSTOP), which Windows has no documented call for (NtSuspendProcess is
+  ntdll's, undocumented), where WHP's kick is WHvCancelRunVirtualProcessor, documented,
+  and holds for a run that has not begun (M198): one pause on every host. The VM process
+  goes on answering its daemon and serving its devices as its guest is frozen, and a
+  frozen microVM's VM process takes next to no CPU time, as
+  `pause_freezes_a_microvm_until_unpause_or_stop` reads it from the host. A save of a
+  paused microVM lets it go on for its guest to go quiet, as the stop's continue did.
 - **`update` moves them, both ways.** A running run's `--cpus`, quota, `--cpu-count` or
   `--cpuset-cpus` changed writes its cpuset and quota at once (`builtin::CGROUP`, D40), a
   raise giving it CPUs it had not; before, a raise past its microVM's vCPUs bound at them.
@@ -6593,8 +7579,15 @@ the guest keeps their metadata alone.
   (mm/sparse-vmemmap.c), so the head
   is two blocks more than a block a section, and the device starts at a section
   (`layer_head`). Init finds it by the address the control page gives (`control::LAYER`)
-  and mounts its ext4 `dax=always,noinit_itable` where it mounted the tmpfs. A machine
-  without one, a joiner's root among them (D119), keeps its tmpfs.
+  and mounts its ext4 `dax=always,noinit_itable,no_prefetch_block_bitmaps` where it
+  mounted the tmpfs. A machine without one, a joiner's root among them (D119), keeps its
+  tmpfs. `no_prefetch_block_bitmaps`: ext4lazyinit reads every group's block bitmap and
+  builds its buddy cache in the background after a mount (fs/ext4/super.c,
+  `ext4_run_li_request`), so that a first allocation does not wait on a disk, where a DAX
+  device's bitmap is memory; and as a template mounts its layer before its snapshot,
+  every restored guest did that work again, which in a nested arm64 guest under load
+  held a CPU 22 to 27 s (soft lockups in the logs of each of 5 failing rounds before, of
+  none of 6 after; PM M346). What it saves a warm VM's memory is unmeasured.
 - **Mounted in the template.** A mount took 0.4 to 0.65 ms at p50 and an overlay over it
   0.2 to 0.32 ms more on a guest that had mounted it before, 1 to 80 ms the first time (PM
   M277), where a run's whole start is 0.73 ms at p50 (M230): so the template mounts it
@@ -6807,8 +7800,9 @@ the guest keeps their metadata alone.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
-- Hosts whose microVMs take no snapshots yet (arm64 KVM, Windows: D140) boot every run, so
-  each run pays the head's probe and the layer's first mount: not measured there yet.
+- Hosts whose runs restore no template yet (Windows, whose daemon is yet to come: D195,
+  D196) boot every run, so each run pays the head's probe and the layer's first mount: not
+  measured there yet.
 - APFS fills a hole shorter than 16 MiB between written blocks of a sparse file (PM
   M277): a layer's file, as a swap file and a template's memory, takes more of a Mac's disk
   than it was written.
@@ -7134,7 +8128,7 @@ container's processes one by one and refuses what it cannot: a `docker run -t` t
 device files, files sent over Unix sockets, locks held unless told to, processes joined
 to anything outside the set it dumps (criu.org, "What cannot be checkpointed"). A
 microVM's state is its memory and its devices', which shards' VMM already saves and
-restores for templates (D25): HVF and x86_64 KVM, arm64 KVM and WHP not yet (D140). What
+restores for templates (D25): HVF and KVM, on x86_64 and arm64 (D154), and WHP (D196). What
 lies outside the microVM goes as with CRIU by default, and is said: connections to the
 world beyond it, exec sessions and attached clients.
 
@@ -7630,6 +8624,26 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   socket, whose group Docker's own post-install guide calls root-level, and no TCP
   listener. Remote use is shards' own, over QUIC (hyper-raft's `hyper-quic` and
   `hyper-tls`).
+- **On Windows, a named pipe** (`npipe`), as Docker's clients reach their engine there
+  (`DOCKER_HOST=npipe:////./pipe/NAME`): its name a fresh one each daemon makes, which the
+  home's `engine.pipe` names once it listens, as Unix's socket is renamed into place.
+  - Its DACL admits this user alone, and it refuses remote clients. Each client takes an
+    instance of its own, one always waiting, whose connect the daemon's loop waits on with
+    its others (`shards_ipc::Listener`). Its clients' streams carry bytes alone, no handle
+    either way.
+  - **Written in messages, as dockerd's is**: moby makes its pipe with `MessageMode:
+    true`, "so that CloseWrite() is supported" (daemon/listeners/listeners_windows.go).
+    go-winio, which Docker's clients dial with, ends a side's writes with a message of no
+    bytes, which reaches a reader only on a pipe written in messages
+    (`PipeConfig.MessageMode`): on a pipe in bytes `docker run -i`'s end of stdin would
+    never come.
+  - **Read in messages on shards' side**, a message at most each read. Read in bytes,
+    one read took a client's last bytes and its end together, and the end was lost (jupiter,
+    `a_listeners_clients_end_their_writes_and_read_on`): go-winio flushes before it writes
+    the end, waiting for its reader to have read all before it, and a flush that waits
+    cannot be cut short by a close from another thread. A wait for something to read (a
+    read of no bytes) that takes the end keeps it as the stream's end, which every read
+    after it reads.
 - **Isolation as shards' runs have it.** Each call is put to the daemon as shards' CLI
   puts the same thing (a run, an attach, an exec, a command), on a socket pair of the
   engine's, taken as any client's request is: each sandbox a microVM of its own, its
@@ -7656,6 +8670,17 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   registered before their heads are written, as clients start once they have them, so
   no first byte and no end goes unseen. A wait is for a microVM not running, its next
   end though it has yet to start, or its removal.
+- **Its output before its end.** A run's end (its container stopped, its waiters
+  answered, `die` logged) and an exec's `exec_die` wait for what the daemon relays of
+  their output to their attaches, up to 2 s from the end, as dockerd waits for its streams
+  before it stops a container or an exec (moby v28.5.1 daemon/monitor.go, `StreamConfig.Wait`
+  at lines 74 and 210; daemon/engine.rs `Relaying`). Without it a built service's one line
+  reached Compose's attach 25.6 ms after its `die`, and Compose v2.38.2, which stops
+  printing at the first exit it hears when it stops on one, dropped it (1 of 80 runs on
+  CI, PM M352). Tested by `a_runs_end_waits_for_the_relays_of_its_output`,
+  mutation-checked. An Engine API exec's events carry the ID its client was given:
+  `exec_create` as it is made, then `exec_start` and `exec_die` (moby daemon/exec.go),
+  where each had another, the daemon's own, before.
 - **An answer given before the body is read, never lost.** A call answered before its
   body is read whole (an upload its handler refuses, a build's context sent through a
   session; a call refused before it is routed, an API version not served; a body past
@@ -8278,8 +9303,13 @@ and the way every later one sends.
 - **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
   stream socket, a message counts as sent only once its receiver has it.
   - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
-    kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO. A unix socket's
-    bytes are in its receiver's buffer as they are written.
+    kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO, Windows'
+    SIO_TCP_INFO, whose BytesOut counts the bytes sent again too (PM M373): there the
+    bytes written less `BytesOut − BytesRetrans − BytesInFlight`, BytesRetrans's 32 bits
+    counted past their wraps, the FIN while FIN_WAIT_1, CLOSING or LAST_ACK. A unix
+    socket's bytes are in its receiver's buffer as they are written; on Windows an AF_UNIX
+    stream's (afunix), Windows having no AF_UNIX datagrams: a `unixgram` address is
+    refused there as its run is made, in shards' words.
   - The shipper keeps its place only as far as what is delivered. So a daemon that stops
     or dies costs sending again what was not yet delivered, and loses no line.
   - What a connection had not delivered when it ended (a reset, a receiver that
@@ -8289,14 +9319,22 @@ and the way every later one sends.
     - TLS's close_notify is sent;
     - its write side is shut;
     - what the receiver still sends is read and let go;
-    - the socket closes once all is acknowledged.
+    - the socket closes once all is acknowledged and the receiver has ended its side, as
+      Winsock's graceful shutdown closes ("Graceful Shutdown, Linger Options, and Socket
+      Closure", Microsoft Learn: the peer's FD_CLOSE before closesocket).
 
     A socket closed with bytes unread resets its connection, and what is not yet sent
     goes with it. TLS 1.3's session tickets are such bytes: no sender that only writes
     reads them. D163's first CI lost a run's last line this way, held back by Nagle's
     algorithm behind the line before it, on every x86_64 Linux run; the probe loses it in
     200 of 200 rounds on Linux and 90 of 200 on macOS. Docker's drivers close their
-    sockets this way.
+    sockets this way. Acknowledged is not read: a receiver's TCP acknowledges what its
+    program has yet to read, and a reset, which a close also sends where the receiver's
+    bytes come after it, takes on Windows all its receiver had not read. CI 40900902805's
+    windows-2025 lost a TLS stream's one line so, its receiver's session tickets come after
+    the sender's last read; `a_stream_ends_once_its_receiver_has_ended_its_side`, whose
+    receiver sends after the sender's end, read nothing 3 times of 3 on jupiter with the
+    close once acknowledged, and all of it 3 of 3 with the close at its end.
   - A receiver's TCP having a message is as far as TCP can say. fluentd's acks (D165)
     say its receiver has it.
 - **Messages as Docker's driver sends them** (logging/testdata/syslog.json). Its formats (srslog's Unix format, rfc3164, rfc5424,
@@ -8837,6 +9875,15 @@ one. So both, in that order.
   it lives: KVM forgets its groups as its descriptor closes (kvm_vfio_release). A machine
   given a function has no memory to plug, no balloon (its DMA mappings pinned; QEMU's
   `ram_block_discard_disable`) and no snapshot.
+- **Where no OS passes one through, refused with its OS's own limit** (the parity plan's
+  step 13, M356). macOS: Hypervisor.framework assigns no device to a VM, Virtualization's
+  passthrough is USB's alone, and a PCI function reaches a process only through a
+  DriverKit driver Apple entitles to it (`com.apple.developer.driverkit.transport.pci`).
+  Windows: a partition is given one only once its administrator dismounts it from the
+  host (Discrete Device Assignment; WHP's `WHvCreateVpciDevice`), which Microsoft supports
+  on Windows Server alone, not on Windows 10 or 11; Windows Server's, on a host with a
+  function to give, is not built. Each refusal says so (`vm::NO_PASSTHROUGH`), held by
+  `a_hosts_pci_function_is_refused_with_its_oss_own_limit`.
 - **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
   (VFIO_REGION_INFO_FLAG_MMAP: a memory BAR of a page or more, vfio_pci_probe_mmaps) is
   mapped into the VM process, and its pages, but for those of the MSI-X table and pending
@@ -9176,8 +10223,87 @@ one. So both, in that order.
   of the test image skipped 2,048 to 4,095, all at one PC, 64 to a page, about 40 µs
   each nested (shards' debug log). Not yet measured: what the skips cost on a bare-metal
   host whose CPU has neither; CI's arm64 Linux runners' runs never met one, and pass.
-- **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
-  through KVM's registers); more vCPUs than one redistributor region holds (123). For
+- **Snapshots on arm64 KVM** (the parity plan's step 9, 2026-10-26): a microVM on an arm64
+  Linux host is saved and restored, cold and from warm pools, and templates, their working
+  sets and pools serve its runs, as on x86_64's KVM and Hypervisor.framework.
+  - **A vCPU's state is every register KVM lists** (KVM_GET_REG_LIST, api.rst 4.84; each
+    by KVM_GET_ONE_REG, 4.68): the core registers, KVM's firmware pseudo-registers (PSCI's
+    version, the SMCCC workarounds, the hypercall bitmaps), the system registers, the
+    timers' among them, and the caches' geometry; with its power state (KVM_GET_MP_STATE,
+    PSCI's, which KVM's own PSCI keeps) and a virtual SError pending in it, which no
+    register shows (KVM_GET_VCPU_EVENTS). As Firecracker and QEMU keep one
+    (vmm/src/arch/aarch64/vcpu.rs, save_state; target/arm/kvm.c): what KVM lists is what
+    a user may read and write back (its get-reg-list self-test), and a register a later
+    KVM adds is in it unasked. A PSCI CPU_ON owed to a vCPU not yet run is finished before
+    any of its registers is read (arm.c, KVM_GET_ONE_REG: "We could owe a reset due to
+    PSCI"). Restored into a vCPU initialized with the same features, in KVM's order; a
+    register this KVM has not, or a value it refuses, fails the restore, as a snapshot of
+    another CPU or KVM should. HVF's state keeps its own encoding byte for byte
+    (`arch::aarch64::state::VcpuCodec`).
+  - **The counter, once, for the VM.** KVM keeps one offset of the guest's virtual counter
+    for a VM, which a write of KVM_REG_ARM_TIMER_CNT through any vCPU sets as of the write
+    (sys_regs.c, arch_timer_set_user; Linux 5.x set it on every vCPU at once,
+    update_vtimer_cntvoff): so the restore writes it once, through vCPU 0, as the vCPUs
+    are released (`hv::Counter`), where each vCPU writing its own, as under HVF, would
+    step a running vCPU's counter back by the next write's lag. The counter goes on from
+    the snapshot's; the physical counter stays the host's, as under HVF, and neither
+    counter is written with the rest of the registers.
+  - **The GIC through its registers** (KVM_DEV_ARM_VGIC_GRP_*, arm-vgic-v3.rst), kept as
+    the writes that make a new VM's GIC, initialized and with every vCPU, the one saved,
+    in QEMU's order (hw/intc/arm_gicv3_kvm.c, kvm_arm_gicv3_put): the distributor's
+    implementation revision first, as the document asks, and its control; each
+    redistributor's private interrupts; the SPIs', each interrupt's configuration before
+    its line's level and its routing and enable before its pending state; then each CPU
+    interface's, its active priority registers as many as its priority bits make. A
+    set-enable and a set-active register follow all-ones written to their clear twins, as
+    a new GIC's SGIs are enabled; the pending registers set the latched state themselves,
+    and the line levels (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO) the rest of a level interrupt's.
+    KVM takes every vCPU for each access, and fails one while any vCPU is in a call of its
+    own (EBUSY): the GIC is read once every vCPU has parked and written as the machine
+    finishes, its vCPUs' threads waiting. A machine with an ITS (a PCI bus) saves none.
+  - **Working sets as on x86_64's KVM** (`vm::mapped`): recorded from the pages the host
+    maps of the first warm restore, its fault-around held off; the pages it wrote copied
+    ahead at a restore. **Mapped ahead by a program on vCPU 0**: arm64's KVM has no
+    KVM_PRE_FAULT_MEMORY (x86's and s390's alone, virt/kvm/Kconfig, to Linux 7.2), so
+    vCPU 0 runs the prefetch program Hypervisor.framework's does
+    (`arch::aarch64::prefetch`). KVM runs no vCPU before the GIC is initialized
+    (vgic_v3_map_resources: EBUSY) nor makes one after (kvm_arch_vcpu_precreate), so it
+    runs as the machine finishes, from that thread, its own waiting; then vCPU 0's state
+    is restored again. KVM takes a guest's HVC for itself (SMCCC), so the program ends
+    with a write KVM returns as MMIO, which a run with `immediate_exit` then retires, as
+    KVM_RUN completes the last exit's access first (mmio.c, kvm_handle_mmio_return), lest
+    it advance the restored PC; its exception vectors end it the same way. Its memory slot
+    is read-only and deleted after, which unmaps it at stage 2 and flushes the VM's stage
+    1 translations with it.
+  - **A guest with virtualization of its own is shown the host's widest addresses**
+    (`--nested`, D132): Hypervisor.framework's guest is shown the PARange its memory map
+    needs (D10), and arm64's KVM sizes the VMs it runs by its CPU's PARange (kvm_ipa_limit),
+    so a nested guest's own microVMs had no room past their memory for a share's DAX
+    window or a run's swap window ("the guest's addresses leave none a 2 MiB range").
+  - **Tested on arm64 Linux by the snapshot tests themselves**, where no arm64 Linux host
+    of ours has KVM (CI's arm64 runners have no /dev/kvm): boot.rs's
+    `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` builds tests/snapshot.rs,
+    warm.rs, saved.rs and daemon.rs whole, and the snapshot tests of run.rs, vsock.rs,
+    pmem.rs and boot.rs, for arm64 Linux (static musl, `common::linux_tests`), and runs
+    them in a guest with EL2 on an M3 or later Mac, the `kvm` kernel's, as such a host runs
+    them, every VM test required (SHARDS_REQUIRE_VMS), one at a time: two of the daemon's
+    tests together, some 20 VMs of eight vCPUs on the guest's eight, its KVM nVHE, stalled
+    restored guests 20 to 31 s in 11 of 24 rounds (PM M346). The guest is a host as Linux
+    has one: the test guest's `e2e` mode, PID 1, mounts its pseudo-terminals, cgroups and
+    debugfs, brings its loopback up, holds the host's CA certificates, reaps every process
+    orphaned to it as an init does (a daemon that detached and ended was a zombie its test
+    took for alive), and ends what each binary left running before the next.
+    Found and fixed on the way: a Linux host without /dev/fd (made by an init or udev) had
+    no share start (`platform::open_descriptors` reads /proc/self/fd); the nested width
+    above; two daemon tests that needed a shell for `ulimit` and one `cp` now need neither;
+    a host with no CA certificates reached no registry over plain HTTP (registry `tls.rs`);
+    and, as loaded restored guests showed them, a guest's dial of its host that gave up
+    after Linux's 2 s though its host had answered (D12), a pool's keep-alive counted from
+    its claims, past which its runs went on (D26), and ext4's bitmap prefetch in every
+    restored guest (D190). A restored guest faults back in what it holds there at 0.9 ms a
+    fault: the swap test now waits for its rounds as long as its guest makes them or its VM
+    process faults pages in.
+- **Not yet:** more vCPUs than one redistributor region holds (123). For
   VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs on x86_64
   and the host's addresses (above); a VF whose PF is bound to vfio-pci, which VFIO gives
   only with the PF's VF token (vfio_pci_core_match_token_uuid); then `--gpus` on Linux.
@@ -9284,10 +10410,33 @@ container's memory freed is its host's at once.
   the report is answered, after which the guest may use the pages, zero-filled as first
   touched. Only the host's whole pages of guest RAM in a range are given back; one the
   host could not give back is kept, and said once.
+- **Nothing taken under the lock.** Every device's queue takes the same lock, so the
+  device takes no memory while it holds it: its ranges are joined before, and whether
+  the host holds any page of one is read from /proc/self/pagemap, opened once, a page of
+  entries at a time into the stack (`platform::all_untouched`). Asked by opening pagemap
+  and reading into a buffer made for each range, a microVM past its slice's `memory.high`
+  with no swap had its kernel stop the device 2 s at each return to user mode
+  (`mem_cgroup_handle_over_high`), the lock held: every other device waited on it, the
+  give-back's exec never reached the guest, and nothing came back for as long as the run
+  went on, 4 runs of 4 on Fedora; with it, 4 of 4 were back within their budget 10 to 38 s
+  after it was set (PM M391).
 - **Where.** Every run's microVM, last of its devices, so that no other device's window
-  moves; its templates with it (snapshot format 14). Builders on Linux and macOS: a
-  build's peak is not held to its end. Not over WHP yet, whose taking a part of guest
-  RAM away and back is unmeasured.
+  moves; its templates with it (snapshot format 14). Builders on every host: a build's
+  peak is not held to its end. On Windows a cold-booted microVM's RAM, private memory, is
+  given back as decommitted and committed again (PM M371: its private working set 64 MiB
+  less of 64), and a restored one's too. Windows gives back a copy-on-write view's written
+  pages only as the whole view is unmapped (M371: decommit refused,
+  ERROR_INVALID_PARAMETER; DiscardVirtualMemory and MEM_RESET refused,
+  ERROR_USER_MAPPED_FILE), so a restore maps from its template's file only the runs of
+  2 MiB blocks its state says hold data (snapshot format 27, `memory::DATA_BLOCK`, the
+  least a guest reports), a view each, and the stretches between them, zeros in the file,
+  as memory of the guest's own (`platform::map_file_views`). What its workload allocates
+  and frees comes from those, and goes back at its pages' grain; a run of data goes back
+  only whole, its view unmapped and mapped again from the file (M375: the guest then reads
+  the file's bytes), and a part of one is kept. A template of 280 MiB on the M5 Max held
+  data in 36 of its 140 blocks, in 2 runs: three parts to map (M378), where a view of every
+  block took 307.7 µs for 256 MiB at p50 (M372). A state of a format before 27 says no runs, and
+  its RAM is mapped from the file whole, one view.
 - **What the host holds none of is left alone.** A range none of whose pages the host
   holds (`platform::untouched`: never touched, or a restored guest's that is still its
   template's file's) is answered as it is, no stage 2 touched.
@@ -9338,7 +10487,12 @@ has 0006, and nothing reported where it has not; and
 kernel whose allocations did not wait. Mutation-checked: runs without the device hold 562
 MiB; a template saved without the flush has its restores report 212,992 KiB. What a pass
 does to readings and to growing runs is shown by `reporting-dip` and
-`run-plug/report-race.py` (PM M224).
+`run-plug/report-race.py` (PM M224). On Windows, jupiter's WHP:
+`a_runs_memory_freed_goes_back_to_the_host` on restores (PM M378), and a cold boot's freed
+memory in D188's give-back tests of runs and builders. In crates/vmm,
+`a_range_is_untouched_as_each_of_its_pages_is`: the device's question of what the host
+holds of a range, asked without taking memory, answered as `untouched` answers it page by
+page, past one read of entries too (PM M391).
 
 ### D150. A GPU's runs restore templates of their own
 
@@ -9657,7 +10811,8 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
   a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
 - **To build:** Linux's VFIO (R2). A build's `RUN` steps: D145; a run's `--device` by
-  CDI name: D146; a GPU's templates: D150.
+  CDI name: D146; a GPU's templates: D150; Linux's hosts, through Venus on their own
+  drivers: D201.
 
 ### D143. `RUN` on Windows hosts: the builder
 
@@ -9728,8 +10883,21 @@ on Windows as on Linux and macOS.
 - **Its VM's end** it learns as its doorbell's socket hangs up, as a pipe's does on Unix,
   and from the VM's process, a handle it may only wait on, which a thread-pool wait posts
   to its port once it ends. Its spawner gives it that handle before the VM runs (D143).
-- **No published ports yet**: those are the daemon's, which Windows has none of; a
-  builder publishes none.
+- **Published ports and peers** (the platform parity plan's step 5): bound by the daemon
+  as on Unix (D31) and handed to the network process on its control, an AF_UNIX socket it
+  waits on with its own, as its doorbell is. Each socket goes shared with that process
+  (WSADuplicateSocketW), its protocol info before the message's payload, where Unix passes
+  descriptors beside it (`shards_ipc::with_sockets`, `kind::hands_sockets`): a listener its
+  spawner bound and shared takes its spawner's connection, with or without capabilities
+  (M204). Each listener holds its address alone (SO_EXCLUSIVEADDRUSE): Windows lets a
+  process of the same user bind the port at one address over a listener at every address
+  and take what comes to it there, where Linux refuses that bind ("Using SO_REUSEADDR and
+  SO_EXCLUSIVEADDRUSE", Microsoft Learn: "All server applications must set
+  SO_EXCLUSIVEADDRUSE"); Windows' SO_REUSEADDR, which a Unix listener sets to bind over
+  connections left in TIME_WAIT, binds over a listener in use, and is not set. A run's
+  ports close as it ends on its VM's release, an AF_UNIX socket too, before its end is
+  told. A peer's link on a network (D46) is an AF_UNIX pair, an end shared with each
+  network process. A builder publishes none, and drops both.
 
 ### D141. The Windows VM process confined
 
@@ -9746,8 +10914,14 @@ was built on [PM M200-M203]:
   its spawner found it at (GetFinalPathNameByHandleW refuses an AppContainer [PM M203]);
   sockets by WSADuplicateSocketW, as Winsock documents, 6-10 µs more a dial than
   DuplicateHandle at p50 [PM M203]. The spawner of `shards run --kernel` answers in its own
-  process, since Windows has no exec: the VM is its child, which takes the console's Ctrl-C.
-  Nothing more is granted once its vsock path is, and without one the link closes.
+  process, since Windows has no exec: the VM is its child, which shares its console, one
+  with a window or one without, as a CI runner's is (counted by GetConsoleProcessList, where
+  GetConsoleWindow answers none for one without: its VM was made detached there, and heard
+  no interrupt), and gives the console's Ctrl+C and Ctrl+Break to its guest as SIGINT;
+  the spawner takes both and waits on, where ignoring Ctrl+C alone (a null handler) left a
+  process group's Ctrl+Break to end it (run.rs `signals_reach_the_command`, CI's
+  windows-2022 and windows-2025, 2026-10-28). Nothing more is granted once its vsock path
+  is, and without one the link closes.
 - **A Job and Windows' mitigations**, given as the process is made, suspended, its handles
   duplicated into it and their values told it through a pipe, its one inherited handle:
   none is made inheritable where another child could take it [PM M201]. Dynamic code it
@@ -9816,6 +10990,38 @@ network process (D142) and its builder (D143) follow.
 - **No doorbells.** A notification port's round trip was no shorter than an MMIO exit's
   (M198): virtio's notifications are exits.
 - **A kick is a cancel**, which a run about to start takes too (M198).
+- **A console nobody reads is told `quiet`** (vm `kernel_cmdline`, M376), on every host: a
+  VM whose console is discarded, every daemon's, boots its kernel writing it errors and
+  worse alone, unless its command line names a level. Each byte a kernel writes there is
+  an exit or two, and a boot writes some 18 KB: of a cold boot's kernel to its panic with no
+  root, quiet took 0.50 s of 2.14 on windows-2022, 0.50 of 1.49 on windows-2025, and on an
+  M5 Max's HVF 27.9 ms of 65.2 (n=20 each, interleaved). What it says stays in its ring
+  buffer, which `dmesg` reads; a VM whose console is shown (`run --kernel`) boots as told.
+  The VM process keeps the last page of it, and says its lines with a reset, which a panic
+  writes there whole (`console_verbose`), its reason and call trace in 858 bytes of 6.18's
+  (M417); each reset says too which it was, as a triple fault writes nothing.
+- **Its CPUs brought up one at a time.** Its kernel is told `cpuhp.parallel=0`: brought up
+  in parallel past the host's CPUs, each AP started spins in its turn while the next waits
+  for a host CPU, which Windows Server 2022's WHP gives no other vCPU, and 32 vCPUs took 39 s
+  where one at a time took 96 ms, never slower, at 4 vCPUs as at 240 (M353).
+- **Its CPUs past the first brought online by its init, on a nested Hyper-V**
+  (`vm::late_cpus_cmdline`, M379). Where the host's Hyper-V is nested in another's
+  partition, a Windows host that is itself a virtual machine (CPUID 0x40000004's bit 12,
+  Linux's HV_X64_HYPERV_NESTED), a guest of shards-init's of more than one vCPU boots its
+  kernel with its boot CPU alone (`maxcpus=1`), and init, told `shards_online`, brings the
+  rest online before anything runs. A boot's initcalls patch its kernel's text as they set
+  static calls and keys (the crypto and CRC libraries', SELinux's netfilter hooks) and
+  switch its clocksource by stop_machine, each waiting for every CPU online, and on CI's
+  runners, nested in Azure, a vCPU waited on had no host CPU while the one waiting spun:
+  eight guests of 4 vCPUs booting at once on windows-2022's 4 CPUs spent 75.7% of their
+  kernels' ticks so and took 46.20 s, with their boot CPUs alone at boot 5.37 s; on
+  windows-2025 11.61 s and 3.84 s; a guest alone 0.09 to 0.19 s slower. Bare metal, every
+  CPU at boot: on jupiter a guest of 32 vCPUs came up in 0.32 s alone and 0.68 to 1.16 s
+  eight at once, and its CPUs brought online after took it to 2.28 s and 3.89 to 4.24 s,
+  31 CPUs in 2.1 s. RCU's grace periods stay normal: expedited for the CPUs brought online,
+  they took longer eight at once on windows-2022, each an IPI to every CPU online. HVF and
+  KVM boot every CPU at boot (on the M5 Max a guest of 18 vCPUs came up in 0.11 s so, and
+  in 0.35 s with its CPUs brought online after; KVM unmeasured so).
 - **The guest kernel's `hyperv` variant** (resources/kernel/hyperv.config): Linux 6.18
   marks the TSC unstable on a Hyper-V that does not offer TSC invariance, as no runner did,
   and keeps time by Hyper-V's reference TSC page only with CONFIG_HYPERV (M197). No VMBus,
@@ -9832,10 +11038,14 @@ network process (D142) and its builder (D143) follow.
   connection (M207); its worker sleeps on WSAEventSelect's events and reads each socket's
   state with a WSAPoll that does not wait, as WSAPoll alone reports a peer's half-close as
   a hangup whatever is asked, which would wake a writer without end (M199). Its waker is an
-  event, not a socket pair.
+  event, not a socket pair. An ended connection's host socket is held, its writing shut
+  down, reading and dropping what comes, until its peer ends its side: an AF_UNIX socket
+  closed holding any of its peer's data unread, or written to by its peer after its close,
+  loses the peer all it had not read, as a reset (M358).
 - **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
   every other host.
-- **Not yet on WHP**: snapshots, and so templates and warm pools (`vm::SNAPSHOTS`).
+- **Snapshots** came after (D196), with templates and warm pools once the daemon ran on
+  Windows (D195), and working sets after them (D196).
 - **Recorded differences** from a KVM guest's machine: its clock is Hyper-V's reference TSC
   page where KVM's is kvm-clock; its APICs are xAPIC alone, offering neither x2APIC nor
   TSC-deadline (M198).
@@ -10159,7 +11369,13 @@ changes.
   the ranges given writable. Ranges are never given twice, so what the guest has cached
   of one is never another's.
 - **The guest** mounts each layer once, from a read-only loop device over its range
-  (LOOP_SET_FD and LOOP_SET_STATUS64, as a joiner's root is made), stacks a cache's layers
+  (LOOP_SET_FD and LOOP_SET_STATUS64, as a joiner's root is made), which reads the range
+  straight from the join disk (LOOP_SET_DIRECT_IO, Linux 4.4), not through the disk's page
+  cache as well as the layer's: read twice so, a build held 256 MiB short of what it held
+  kept the join disk's copy of its reread at the read's pace, in no cgroup its hold holds,
+  its host throttling it for 15 minutes; read once, its step took 27.7 s (PM M350). Every
+  range starts on a mebibyte (virtio `RANGE_ALIGN`), which the kernel's alignment for
+  direct reads takes whatever the disk's block size. It stacks a cache's layers
   with overlayfs under the step's upper directory, and after the step, whatever its
   status, writes an EROFS image of that directory into the cache's writable range, syncs
   it, and says its length (`MOUNT_END`, a `Kept`): the host lets the range go, trims the
@@ -10259,8 +11475,13 @@ given the rest as its build needs it, up to what it may have.
   with all of it had, and a step past it is ended as one was then.
 - **The builder's init** holds the build, itself and every step (each in a cgroup of its
   own, so that each step's memory is counted and held apart), in one cgroup whose `memory.high` is what the
-  build holds and what is free, less the kernel's reserve: 64 MiB and the page structures
-  of the next memory plugged, a 64th of it. Past it the kernel slows the build's allocations
+  build holds and what is free, less the kernel's reserve: 64 MiB, the page structures of
+  the next memory plugged, a 64th of it, and the free pages its CPUs may keep on their own
+  lists, an eighth of what it has (the kernel's ceiling for them,
+  `MIN_PERCPU_PAGELIST_HIGH_FRACTION`), which are neither free to its readers nor charged
+  to the build: without them a build of 8 compilers on 32 vCPUs ran its guest out of memory
+  25 MiB short of its `memory.high`, so that its grower was never woken (2026-10-29, PM
+  M392). Past it the kernel slows the build's allocations
   and ends none, and says so in `memory.events`; a process of init's in the root cgroup,
   which nothing slows, wakes on it, asks for twice the memory the builder has, in whole
   memory blocks (so what is plugged ahead of the build is at most what it holds, and a build
@@ -10626,8 +11847,8 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     GitHub Actions, Google's workload identity (the metadata server, or Application Default
     Credentials: a service account's key, an impersonated account, federation from a file
     or URL), Google impersonation (IAM's generateIdToken), SPIFFE's Workload API (gRPC on
-    its socket, over the frontend's HTTP/2 client, D113). `--oidc-provider` names one,
-    `--oidc-disable-ambient-providers` none.
+    its socket, or on Windows its named pipe, over the frontend's HTTP/2 client, D113).
+    `--oidc-provider` names one, `--oidc-disable-ambient-providers` none.
   - Else it signs in (`--fulcio-auth-flow`, cosign's flows): in a browser on a terminal
     (PKCE; the code brought back to a listener on this host, or typed in), by a device
     code without one, or by client credentials. Each token is checked as go-oidc checks it:
@@ -10658,11 +11879,21 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     answer it closed and says "http: read on closed response body" (seen in the oracle).
   - GitHub's token endpoint refusing is said; cosign decodes the refusal as a token.
   - `SPIFFE_ENDPOINT_SOCKET` is read as the SPIFFE spec writes it, `unix://PATH`, too.
+  - SPIFFE's Workload API is reached on Windows, by its named pipe: SPIRE's agent's,
+    `\\.\pipe\spire-agent\public\api` (spire v1.15.5's DefaultNamedPipeName), or the one
+    `SPIFFE_ENDPOINT_SOCKET` names, `npipe:NAME` as go-spiffe reads it there or the pipe's
+    path. cosign dials `unix://` and its socket's path alone (pkg/providers/spiffe), which
+    go-spiffe v2.7.0 refuses on Windows, dialling `npipe:` and `tcp:` there
+    (workloadapi/addr_windows.go): no cosign on Windows reaches a Workload API. Its pipe is
+    opened as go-winio v0.6.2 dials one for go-spiffe, anonymous to its server
+    (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), and waited for where each instance is in
+    use; whether it is there is asked without connecting (WaitNamedPipeW), as an instance
+    a connection takes is one the agent's workloads wait for.
   - Messages go to stderr, which shards keeps for people (oauthflow prints some to stdout).
   - `-h` is help on `shards sign` and every action of `shards agent|harness|mcp`.
 - **Not taken**: Google federation from AWS or from an executable (its file and URL sources
-  are taken), and SPIFFE's Workload API on Windows (a named pipe). A signer there gives the
-  token itself with `--identity-token`; no demand for either has been seen.
+  are taken). A signer there gives the token itself with `--identity-token`; no demand for
+  it has been seen.
 - **Tested**:
   - Against a local Sigstore (PM M184): shards' signatures and cosign's, of each signing
     config (Rekor v2 with a timestamp authority, Rekor v1 with one and without), each
@@ -10683,6 +11914,11 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
   - Unit tests of each part: the signing config, Fulcio, Rekor, the timestamp request,
     OIDC (JWS by each algorithm, claims, PKCE, the authorization URL), the flows' listener
     and token answers, the providers' sources.
+  - A JWT-SVID asked of a Workload API that answers as a gRPC server does, on a Unix
+    socket and, on Windows, on a named pipe of this machine as SPIRE's agent serves one,
+    found there without a connection taken (spiffe.rs
+    `a_jwt_svid_is_asked_of_the_workload_api_on_its_socket` and `..._on_its_named_pipe`,
+    the latter on CI's Windows runners); the pipe's names as go-spiffe reads them.
 
 ### D125. A run's microVM has every CPU of its host unless it is limited
 
@@ -11097,7 +12333,9 @@ the boundary is a container's, which is what the mode asks for.
   file as a range of the disk and raises its capacity; the guest's virtio_blk reads the
   new capacity on the config-change interrupt (Linux drivers/block/virtio_blk.c,
   virtblk_config_changed_work). Init maps the range with a loop device at its offset
-  (`CONFIG_BLK_DEV_LOOP`, in the guest kernel's base config) and mounts it as EROFS,
+  (`CONFIG_BLK_DEV_LOOP`, in the guest kernel's base config), which reads it past the disk's
+  page cache (LOOP_SET_DIRECT_IO: a builder's cache layers' copies there were held in no
+  cgroup a hold holds, PM M350), and mounts it as EROFS,
   under a tmpfs overlay as a run's root is. One disk serves every joiner a microVM has,
   each its own range: no count of slots to run out of.
 - **Its cost to every microVM, measured first** (PM M168): a restore with empty

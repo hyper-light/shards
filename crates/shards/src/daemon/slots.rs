@@ -6,14 +6,15 @@
 //! other's.
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::AsRawFd as _;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd, BorrowedFd, OwnedFd};
 use shards_ipc::kind;
 use shards_ipc::slots::{self, Asked, Frame, Requested, Requests, Session, Slot, Stopper, Waited};
 
@@ -220,7 +221,7 @@ impl<D: Disk> Daemon<D> {
                                 log(format!("offering slots again, after {:?}", since.elapsed()));
                             }
                         }
-                        Err(e) if matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) => {
+                        Err(e) if crate::os::out_of_descriptors(&e) => {
                             if starved_since.is_none() {
                                 log(format!(
                                     "offering a request's slot: {e}; clients wait until the daemon has room"
@@ -358,7 +359,7 @@ impl<D: Disk> Daemon<D> {
         // The rest of its request, whole within the time a socket's client had to send its
         // own, and no longer waited for once the daemon ends its clients.
         let request = |opened: slots::Opened| {
-            opened.request_within(Some(self.request_timeout), Some(self.requests_end.0.as_fd()))
+            opened.request_within(Some(self.request_timeout), Some(&self.requests_end))
         };
         // A daemon that has closed takes no more: its client asks the next.
         let Some(counted) = self.in_hand() else {
@@ -413,7 +414,7 @@ impl<D: Disk> Daemon<D> {
         // wmem_default, 8 KiB on macOS) would otherwise wait for ever on a reader yet to
         // come. Ended before it is sent, the request is none, and its count goes with it.
         counted.hand(threads, theirs);
-        let null = File::open("/dev/null")?;
+        let null = crate::os::null()?;
         // Where the daemon ended the connection before the request could go (its clients
         // ended as it steps aside, `end_clients`), what it said on it still reaches the
         // client: its RESTART, so that the client asks the next daemon rather than take
@@ -461,8 +462,16 @@ impl<D: Disk> Daemon<D> {
         if sent.is_ok() {
             living.passed();
         }
+        // On Windows `say` and `answer` are one pipe instance, whose client hears its end
+        // only once each handle of it here has closed: what the client says stops being
+        // read once all the daemon will say has been passed on, so that `say` closes with
+        // `answer`. A run whose VM was killed left its client waiting for ever before.
+        #[cfg(windows)]
+        let said_all = shards_ipc::Event::new()?;
         std::thread::scope(|inner| {
             let say = &say;
+            #[cfg(windows)]
+            let said_all = &said_all;
             // The client's messages, on to the daemon; its end, the connection's. None
             // where the request never went: the connection has ended there, and ended here
             // too before its last messages are read, XNU would drop them (soshutdown's
@@ -472,7 +481,14 @@ impl<D: Disk> Daemon<D> {
                     std::thread::Builder::new()
                         .name("slot-say".into())
                         .spawn_scoped(inner, move || {
-                            while let Ok(Some(f)) = slots::read_frame(say) {
+                            loop {
+                                #[cfg(unix)]
+                                let said = slots::read_frame(say);
+                                #[cfg(windows)]
+                                let said = slots::read_frame_until(say, said_all);
+                                let Ok(Some(f)) = said else {
+                                    break;
+                                };
                                 if shards_ipc::send(ours, f.kind, &f.payload, &[]).is_err() {
                                     break;
                                 }
@@ -506,6 +522,8 @@ impl<D: Disk> Daemon<D> {
             drop(streams.take());
             // The client's end of the session: its reads end.
             drop(answer);
+            #[cfg(windows)]
+            said_all.set();
             // All the daemon will say is the client's to read, there whether or not the
             // daemon is (a FIFO keeps what was written as its writer goes, pipe(7)): the
             // slot holds the daemon no longer, though the client's messages may still come
@@ -603,7 +621,7 @@ impl<'a, D: Disk> Living<'a, D> {
 
     /// Writes `kind` and `payload` to its client, waiting on that client meanwhile: a
     /// [`PIECE`] at a time, each a step on as its client takes it.
-    pub(super) fn answer(&self, to: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
+    pub(super) fn answer(&self, to: &slots::Line, kind: u8, payload: &[u8]) -> io::Result<()> {
         let message = slots::frame(kind, payload)?;
         let written = message.chunks(PIECE).try_for_each(|piece| {
             self.step(|live| live.writing = Some(Instant::now()));
@@ -727,8 +745,23 @@ fn sweep(requests: &Requests, offered: &mut HashMap<u64, Offered>) {
     }
 }
 
+/// Waits for the process whose handle `process` is to end: it is signaled then. Whatever
+/// stops the wait short, it is over.
+#[cfg(windows)]
+fn ended(process: &OwnedFd) {
+    use std::os::windows::io::AsRawHandle as _;
+    // SAFETY: a process handle this function is lent, waited for.
+    unsafe {
+        windows_sys::Win32::System::Threading::WaitForSingleObject(
+            process.as_raw_handle(),
+            windows_sys::Win32::System::Threading::INFINITE,
+        )
+    };
+}
+
 /// Waits for the process whose pidfd `pidfd` is to end: it polls readable then
 /// (pidfd_open(2)). Whatever stops the wait short, it is over.
+#[cfg(unix)]
 fn ended(pidfd: &OwnedFd) {
     let mut poll = libc::pollfd {
         fd: pidfd.as_raw_fd(),

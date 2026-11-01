@@ -17,7 +17,7 @@ use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
 use crate::containers::Disk;
 
 /// The cgroup v2 hierarchy's root, which holds nothing to a budget (cgroup-v2.rst).
-pub(super) const ROOT: &str = "/sys/fs/cgroup";
+pub(crate) const ROOT: &str = "/sys/fs/cgroup";
 
 /// What the budget over the cgroup `dir` leaves the microVMs made in it: of `dir` and each
 /// cgroup above it below `root` held to a budget (`memory.high` or `memory.max` short of
@@ -26,7 +26,7 @@ pub(super) const ROOT: &str = "/sys/fs/cgroup";
 /// counted in wherever they are charged, and those of them their host took back under it
 /// that `evicted` says of what they map now, by process ([`Budgets::evicted`]); and which
 /// cgroup that is. None where no cgroup it is in has a budget.
-pub(super) fn room(
+pub(crate) fn room(
     dir: &Path,
     root: &Path,
     evicted: &mut dyn FnMut(&Mapped) -> u64,
@@ -167,7 +167,7 @@ pub(super) fn held_at(dir: &Path) -> Option<Holding> {
 }
 
 /// What each process maps of files, by process ID ([`mapped_under`]).
-pub(super) type Mapped = [(u32, u64)];
+pub(crate) type Mapped = [(u32, u64)];
 
 /// The processes of cgroup `dir` and those below it, each with the bytes of files it maps,
 /// each page once among them (/proc/PID/smaps_rollup's `Pss_File`, which shares a page's
@@ -470,7 +470,7 @@ impl<D: Disk> Daemon<D> {
                     key.dir.display(),
                     level.display()
                 ));
-                let _ = warm.vm.kill(libc::SIGKILL);
+                let _ = warm.vm.kill(shards_ipc::signal::SIGKILL);
                 ended += 1;
             }
         }
@@ -694,6 +694,16 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// What the cgroup `level`, which holds a budget, holds that its host may take back from
+    /// its processes alone, as its budget's word says it ([`Holding::held`]): none where it
+    /// has no budget.
+    fn held_now(&self, level: &Path) -> Option<u64> {
+        let h = held_at(level)?;
+        let mapped = mapped_under(level);
+        let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
+        Some(h.held(files.saturating_add(self.budgets.evicted(&mapped))))
+    }
+
     /// Tells microVM `pid` the room its budget leaves it now, through one of its runs
     /// (init's `ROOM`), which holds its run within it. Where the budget is short, the warm
     /// VMs it holds go first, which are speculation; then the microVM gives back what it
@@ -701,7 +711,10 @@ impl<D: Disk> Daemon<D> {
     /// would at its host's pressure; and then it is told the room as the budget has it
     /// after: where it is short still, its run held within what it uses and the least room
     /// a run goes on in, which the next word to it raises once the budget has room again.
-    /// Nothing where it has no budget and was told of none.
+    /// What it is held within after a give-back its budget asked for is said, whatever the
+    /// give-back counted: one whose answer came too late, its guest having given back as
+    /// it was ended, left its microVM within a budget nothing said (PM M391). Nothing where
+    /// it has no budget and was told of none.
     fn tell_room_now(&self, pid: u32) {
         let Some(dir) = lock(&self.budgets.held).get(&pid).map(|h| h.dir.clone()) else {
             return;
@@ -714,7 +727,7 @@ impl<D: Disk> Daemon<D> {
             .map_or((None, false), |h| (h.told, h.short));
         let evicted = &mut |mapped: &Mapped| self.budgets.evicted(mapped);
         let mut room = room(&dir, Path::new(ROOT), evicted);
-        let (mut ended, mut gave) = (0, None);
+        let (mut ended, mut gave, mut asked, mut less) = (0, None, false, 0);
         if let Some((r, level)) = room.clone()
             && r < 0
         {
@@ -723,14 +736,27 @@ impl<D: Disk> Daemon<D> {
                 room = self::room(&dir, Path::new(ROOT), evicted);
             }
             if room.as_ref().is_some_and(|(r, _)| *r < 0) && lock(self.watching_giving()).insert(vm.clone()) {
+                asked = true;
                 let before = resident_file(pid);
+                let held_before = room.as_ref().and_then(|(_, level)| self.held_now(level));
                 gave = self.give_back_of(&id);
                 lock(self.watching_giving()).remove(&vm);
+                // Said with its budget's word below, its own: not its host's shortage,
+                // which says what its pressure had given back at most once a minute.
                 if let Some(g) = gave {
                     self.budgets.gave_back(pid, before, g.freed);
-                    self.gave(g);
                 }
                 room = self::room(&dir, Path::new(ROOT), evicted);
+                // With no answer, what it gave back as its host counts it: what it holds
+                // less. One slowed by its host past the deadline went on giving back as its
+                // exec was ended, and its word said it gave back nothing as what it held fell
+                // from 824 MiB to 514 (CI 41167803629).
+                if gave.is_none() {
+                    let held_after = room.as_ref().and_then(|(_, level)| self.held_now(level));
+                    less = held_before
+                        .zip(held_after)
+                        .map_or(0, |(b, a)| b.saturating_sub(a));
+                }
             }
         }
         if room.is_none() && had.is_none() {
@@ -802,23 +828,41 @@ impl<D: Disk> Daemon<D> {
             ),
             _ => String::new(),
         };
+        // What its budget falling short had it do first, said with its word: the warm VMs
+        // it ended, what it gave back of what it held cold and what it asked to unplug, a
+        // MiB or more of either.
+        let (freed, unplugging) = gave.map_or((0, 0), |g| (g.freed >> 20, g.unplugging >> 20));
+        let less = less >> 20;
+        let did = ended > 0 || freed > 0 || unplugging > 0 || less > 0;
+        let done = if gave.is_none() && less > 0 {
+            format!(
+                ", past {ended} warm VMs ended and {less} MiB its host holds less of it as it gave back what it held cold, with no answer"
+            )
+        } else {
+            format!(
+                ", past {ended} warm VMs ended and {freed} MiB it gave back of what it held cold of its files, asking to unplug {unplugging} MiB"
+            )
+        };
+        let done_if = || if did { done.as_str() } else { "" };
         match (had, told) {
-            (None, Some(r)) if r >= 0 => log(format!(
-                "container {id}: its microVM held within its budget, {} MiB of room{}{}",
+            // As it is first held, and as it is held within it again by what it did or asked.
+            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked) => log(format!(
+                "container {id}: its microVM held within its budget, {} MiB of room{}{}{}",
                 r >> 20,
+                done_if(),
                 least(r),
                 parts()
             )),
-            (_, Some(r)) if r < 0 && !was_short => log(format!(
-                "container {id}: its microVM's budget is short by {} MiB, past {ended} warm VMs ended and {} MiB it gave back{}{}",
+            (_, Some(r)) if r < 0 && (!was_short || did) => log(format!(
+                "container {id}: its microVM's budget is short by {} MiB{done}{}{}",
                 r.unsigned_abs() >> 20,
-                gave.map_or(0, |g| g.freed) >> 20,
                 least(r),
                 parts()
             )),
             (_, Some(r)) if r >= 0 && was_short => log(format!(
-                "container {id}: its microVM's budget has room again, {} MiB{}",
+                "container {id}: its microVM's budget has room again, {} MiB{}{}",
                 r >> 20,
+                done_if(),
                 parts()
             )),
             (Some(_), None) => log(format!("container {id}: its microVM held to no budget")),

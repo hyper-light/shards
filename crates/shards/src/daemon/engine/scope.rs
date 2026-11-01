@@ -328,7 +328,7 @@ fn confine(
     // own; a volume takes no driver options, the local driver's binding a host directory.
     let mut binds = Vec::new();
     for b in std::mem::take(&mut run.binds) {
-        let point = crate::volumes::parse_raw(&b, "").map_err(|e| Answer::error(400, e))?;
+        let point = crate::volumes::parse_raw_within(&b).map_err(|e| Answer::error(400, e))?;
         match own_bind(&point) {
             Some(Ok(bind)) => run.own_binds.push(bind),
             Some(Err(why)) => return Err(Answer::error(400, format!("-v {b}: {why}"))),
@@ -440,7 +440,7 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn route_scoped<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
-        conn: &std::os::unix::net::UnixStream,
+        conn: &shards_ipc::Stream,
         call: &Call<'_>,
         scope: &Scope,
     ) -> Done {
@@ -640,7 +640,7 @@ impl<D: Disk> Daemon<D> {
     fn scoped_pull<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
-        conn: &std::os::unix::net::UnixStream,
+        conn: &shards_ipc::Stream,
         call: &Call<'_>,
         scope: &Scope,
     ) -> Done {

@@ -96,11 +96,16 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     generation keeps beside it (D189).
 /// 26: and a record of which of its pages its host holds after it, which nothing keeps
 ///     (D189).
-const VERSION: u32 = 26;
+/// 27: and the runs of its memory file's RAM that hold data, which a restore maps from the
+///     file, the rest zeros (D151).
+const VERSION: u32 = 27;
 /// The oldest format this build reads too where the machine has no DAX windows: for such
-/// a machine each since says what this one says, so that a microVM saved by shards 0.6.0
-/// (24) restores (D176).
+/// a machine each since says what this one says, but for 27's runs of data, which a state
+/// before it holds none of (its restore maps its RAM from the file whole), so that a
+/// microVM saved by shards 0.6.0 (24) restores (D176).
 const VERSION_WITHOUT_WINDOWS: u32 = 24;
+/// The first format whose state says which runs of its RAM hold data.
+const VERSION_WITH_DATA: u32 = 27;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -110,6 +115,9 @@ const MAX_DISKS: usize = 64;
 /// The most runs of plugged memory a state holds: one for every other 2 MiB block of 1
 /// TiB to plug.
 const MAX_PLUGGED_RUNS: usize = 1 << 18;
+/// The most runs of data a state's RAM holds: one for every other block of 1 TiB of it
+/// ([`DATA_BLOCK`](crate::memory::DATA_BLOCK)).
+const MAX_DATA_RUNS: usize = 1 << 18;
 const MAX_PATH: usize = 4096;
 const MAX_NAME: usize = 64;
 /// How often a reader looks again at `current` for a generation a newer write removed
@@ -175,6 +183,12 @@ pub struct Snapshot {
     /// The memory a virtio-mem device had plugged, `(gpa, len)` run by run in the order of
     /// their addresses, whose bytes follow the RAM's in the memory file (D176).
     pub plugged: Vec<(u64, u64)>,
+    /// The runs of the memory file's RAM that hold data, `(offset, len)` in order, each of
+    /// whole [`DATA_BLOCK`](crate::memory::DATA_BLOCK)s but at a region's end
+    /// ([`GuestMemory::save`]): what a restore maps from the file, the rest zeros (D151).
+    /// None until its memory is saved, and in a state of a format before 27, whose RAM a
+    /// restore maps from the file whole.
+    pub data: Option<Vec<(u64, u64)>>,
     /// The architecture's machine state, as its machine module encodes it.
     pub arch: Vec<u8>,
     /// The device bus's state.
@@ -267,13 +281,17 @@ impl Identity {
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt as _;
+            // Which file it is, as a Unix file's device and inode say: a file of the same
+            // bytes and times renamed over it is another (audit A18).
+            let (dev, ino) = platform::input_file_id(path)?;
             // 100 ns intervals since 1601.
             let written = m.last_write_time();
             Ok(Identity {
+                dev,
+                ino,
                 size: m.len(),
                 mtime_s: i64::try_from(written / 10_000_000).unwrap_or(i64::MAX),
                 mtime_ns: u32::try_from(written % 10_000_000 * 100).unwrap_or(0),
-                ..Identity::default()
             })
         }
     }
@@ -412,6 +430,16 @@ fn path_from(bytes: &[u8]) -> codec::Result<PathBuf> {
 }
 
 fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec<u8>, String> {
+    encode_as(s, generation, identities, VERSION)
+}
+
+/// [`encode`] in format `version`, this one's or one before it that this build reads.
+fn encode_as(
+    s: &Snapshot,
+    generation: &str,
+    identities: &[Identity],
+    version: u32,
+) -> Result<Vec<u8>, String> {
     if s.config.nested {
         return Err(
             "a snapshot of a VM with virtualization of its own is refused: its EL2 state is not saved".into(),
@@ -431,7 +459,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
         .collect::<Result<Vec<_>, String>>()?;
     let mut w = Writer::default();
     MAGIC.iter().for_each(|&b| w.u8(b));
-    w.u32(VERSION);
+    w.u32(version);
     w.bytes(std::env::consts::ARCH.as_bytes());
     w.bytes(generation.as_bytes());
     w.u32(s.config.vcpus);
@@ -459,6 +487,13 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
         w.u64(*gpa);
         w.u64(*len);
     });
+    if version >= VERSION_WITH_DATA {
+        w.bool(s.data.is_some());
+        w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
+            w.u64(*at);
+            w.u64(*len);
+        });
+    }
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -547,6 +582,13 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let layer_mib = r.u64()?;
     // At most a run for every other block of the most a guest may plug.
     let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+    let data = if version >= VERSION_WITH_DATA {
+        let said = r.bool()?;
+        let runs = r.seq(MAX_DATA_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+        said.then_some(runs)
+    } else {
+        None
+    };
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -571,6 +613,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 layer_mib,
             },
             plugged,
+            data,
             arch: arch_state,
             devices,
         },
@@ -600,11 +643,11 @@ fn is_generation(name: &str) -> bool {
             .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
-/// The generation `dir`'s pointer names. A pointer is a name and a newline; no more of
-/// one is read.
+/// The generation `dir`'s pointer names, its newest version's (platform `write_in`). A
+/// pointer is a name and a newline; no more of one is read.
 fn current(dir: &Path) -> io::Result<String> {
     let mut bytes = Vec::new();
-    platform::open_beneath_input(dir, &[CURRENT])?
+    platform::open_newest_beneath_input(dir, &[CURRENT])?
         .take(MAX_NAME as u64 + 2)
         .read_to_end(&mut bytes)?;
     let name = std::str::from_utf8(&bytes)
@@ -615,13 +658,8 @@ fn current(dir: &Path) -> io::Result<String> {
     Ok(name.to_string())
 }
 
-/// Creates `path`, fills it, and syncs it: a name no other file had.
-fn create(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
-    platform::sync_durable(&create_unsynced(path, fill)?)
-}
-
-/// [`create`], but for its durable flush: its caller makes it durable later. Only its
-/// user's: a generation holds a guest's memory.
+/// Creates `path`, a name no other file had, and fills it; its caller makes it durable
+/// later. Only its user's: a generation holds a guest's memory.
 fn create_unsynced(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create_new(true);
@@ -632,17 +670,13 @@ fn create_unsynced(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> i
     Ok(file)
 }
 
-/// Points `dir` at the generation `name`: a new pointer, synced, renamed over the old one,
-/// and the directory synced.
+/// Points `dir` at the generation `name`: a new pointer, synced, renamed into place, and the
+/// directory synced ([`platform::write_in`]: over the old one, or on Windows, which in holds
+/// of a minute and more refused renames over a file it had lately been given, as its next
+/// version, PM M345). Its leftovers, `.current.…` and the versions Windows would not yet let
+/// go of, [`tidy`] removes.
 fn point(dir: &Path, name: &str) -> io::Result<()> {
-    let temp = dir.join(format!(".{CURRENT}.{name}.tmp"));
-    let pointed = create(&temp, |mut f| f.write_all(format!("{name}\n").as_bytes()))
-        .and_then(|()| fs::rename(&temp, dir.join(CURRENT)))
-        .and_then(|()| platform::sync_dir(dir));
-    if pointed.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    pointed
+    platform::write_in(&platform::open_dir(dir)?, CURRENT, format!("{name}\n").as_bytes())
 }
 
 /// Waits for, then holds, an exclusive lock on `file`, released when it is closed.
@@ -669,12 +703,12 @@ enum Step {
 /// needed, and makes it the one in use. Returns the generation's directory, held open:
 /// where a working set recorded from it goes, wherever it goes. The tests' way; a VM
 /// stages its snapshot and commits it apart (review 1.17).
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn write(dir: &Path, snap: &Snapshot, memory: &GuestMemory) -> Result<File, String> {
     write_with(dir, snap, memory, &mut |_| Ok(()))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn write_with(
     dir: &Path,
     snap: &Snapshot,
@@ -708,8 +742,12 @@ pub struct Staged {
     window_heads: Option<usize>,
     /// Whether its commit has run, which leaves nothing of it the staging's to remove.
     committed: bool,
-    /// Writers to one snapshot take turns, this one until its commit.
-    _lock: File,
+    /// Writers to one snapshot take turns, this one until its commit; none where its
+    /// spawner staged it, which holds the lock.
+    _lock: Option<File>,
+    /// Its spawner, where the generation is staged by it for this process, which commits
+    /// it ([`platform::Stager`], D196).
+    by: Option<&'static dyn platform::Stager>,
 }
 
 /// What a snapshot keeps beside a machine's memory: its writable layer (D190) and its DAX
@@ -728,7 +766,65 @@ pub fn stage(
     memory: &GuestMemory,
     beside: Beside<'_>,
 ) -> Result<Staged, String> {
-    stage_with(dir, snap, memory, beside, &mut |_| Ok(()))
+    match platform::stager() {
+        Some(by) => stage_by(by, dir, snap, memory, beside),
+        None => stage_with(dir, snap, memory, beside, &mut |_| Ok(())),
+    }
+}
+
+/// [`stage`] for a process that writes in no directory of its own: its spawner stages the
+/// generation in `dir` and hands it the generation's files, its memory and state and what
+/// the machine keeps `beside` them, which it fills as [`stage_with`] fills its own, and its
+/// commit has the spawner make durable and the one in use (D196).
+fn stage_by(
+    by: &'static dyn platform::Stager,
+    dir: &Path,
+    snap: &Snapshot,
+    memory: &GuestMemory,
+    beside: Beside<'_>,
+) -> Result<Staged, String> {
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
+    let kept = platform::Kept {
+        layer: beside.layer.is_some(),
+        window_heads: beside.window_heads.is_some(),
+    };
+    let (name, files) = by.stage(dir, kept).map_err(|e| at(&e))?;
+    if files.len() != kept.files() {
+        return Err(at(&format!(
+            "its spawner staged {} files of the {} it keeps",
+            files.len(),
+            kept.files()
+        )));
+    }
+    let file = |i: usize| {
+        files
+            .get(i)
+            .ok_or_else(|| at(&"a file its spawner did not stage"))
+    };
+    fill(&name, snap, memory, file(0)?, file(1)?).map_err(|e| at(&e))?;
+    let mut next = 2;
+    let mut layer_head = None;
+    if let Some(layer) = beside.layer {
+        layer.save(file(next)?, file(next + 1)?).map_err(|e| at(&e))?;
+        layer_head = Some(next);
+        next += 2;
+    }
+    let mut window_heads = None;
+    if let Some(heads) = beside.window_heads {
+        heads.save(file(next)?).map_err(|e| at(&e))?;
+        window_heads = Some(next);
+    }
+    Ok(Staged {
+        dir: dir.to_path_buf(),
+        staging: dir.join(format!(".{name}.tmp")),
+        name,
+        files,
+        layer_head,
+        window_heads,
+        committed: false,
+        _lock: None,
+        by: Some(by),
+    })
 }
 
 fn stage_with(
@@ -742,11 +838,18 @@ fn stage_with(
     // The state first: a configuration a restore could not use fails before anything is
     // written.
     let name = fresh_name();
-    let state = state_of(snap, &name).map_err(|e| at(&e))?;
+    state_of(snap, &name).map_err(|e| at(&e))?;
     let mut staged = staging(dir, name)?;
     let files = (|| -> io::Result<(Vec<File>, Option<usize>, Option<usize>)> {
-        let memory_file = create_unsynced(&staged.staging.join(MEMORY), |f| memory.save(f))?;
+        let mut data = None;
+        let memory_file = create_unsynced(&staged.staging.join(MEMORY), |f| {
+            data = Some(memory.save(f)?);
+            Ok(())
+        })?;
         after(Step::Memory)?;
+        // Its state with the runs of its RAM that hold data, as its memory's save found them.
+        let saved = Snapshot { data, ..snap.clone() };
+        let state = state_of(&saved, &staged.name).map_err(io::Error::other)?;
         let state_file = create_unsynced(&staged.staging.join(STATE), |mut f| f.write_all(&state))?;
         after(Step::State)?;
         let mut files = vec![memory_file, state_file];
@@ -787,12 +890,42 @@ fn stage_with(
 /// its DAX windows' heads (D189), which a machine without them leaves empty. The VM's are [`Staged::handed`]; the commit
 /// makes the generation durable and the one in use once the VM has filled them.
 pub fn prepare(dir: &Path, run: bool) -> Result<Staged, String> {
-    let mut staged = staging(dir, fresh_name())?;
     let names = [MEMORY, STATE, SWAP, LAYER_HEAD, LAYER, WINDOW_HEADS];
+    prepare_named(
+        dir,
+        names.get(..if run { names.len() } else { 2 }).unwrap_or_default(),
+    )
+}
+
+/// Stages an empty generation in `dir` for a VM whose snapshots its spawner stages (D196):
+/// its memory and state, and what it keeps beside them (`kept`: its layer's head and file
+/// system, its windows' heads), in that order, which the VM fills ([`stage`]).
+pub fn prepare_kept(dir: &Path, kept: platform::Kept) -> Result<Staged, String> {
+    let mut names = vec![MEMORY, STATE];
+    if kept.layer {
+        names.extend([LAYER_HEAD, LAYER]);
+    }
+    if kept.window_heads {
+        names.push(WINDOW_HEADS);
+    }
+    prepare_named(dir, &names)
+}
+
+/// An empty generation in `dir` of the files `names`, each made sparse where it is the
+/// memory, a run's swap or the layer's file system, as the VM that fills it may not make it
+/// (D196): each is filled by a copy that skips what is zeros and ends at the file's length
+/// (`platform::copy_ranges`), which takes the disk whole on NTFS unless the file is sparse
+/// (PM M349).
+fn prepare_named(dir: &Path, names: &[&str]) -> Result<Staged, String> {
+    let mut staged = staging(dir, fresh_name())?;
     let made = names
         .iter()
-        .take(if run { names.len() } else { 2 })
-        .map(|name| create_unsynced(&staged.staging.join(name), |_| Ok(())))
+        .map(|&name| {
+            create_unsynced(&staged.staging.join(name), |file| match name {
+                MEMORY | SWAP | LAYER => platform::sparse(file),
+                _ => Ok(()),
+            })
+        })
         .collect::<io::Result<Vec<File>>>();
     match made {
         Ok(files) => {
@@ -819,8 +952,16 @@ pub fn fill(
     if !is_generation(name) {
         return Err(format!("{name:?} names no generation"));
     }
-    let state = state_of(snap, name)?;
-    memory.save(memory_file).map_err(|e| format!("its memory: {e}"))?;
+    state_of(snap, name)?;
+    let data = memory.save(memory_file).map_err(|e| format!("its memory: {e}"))?;
+    // Its state with the runs of its RAM that hold data, as its memory's save found them.
+    let state = state_of(
+        &Snapshot {
+            data: Some(data),
+            ..snap.clone()
+        },
+        name,
+    )?;
     write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
 }
 
@@ -876,7 +1017,8 @@ fn staging(dir: &Path, name: String) -> Result<Staged, String> {
         layer_head: None,
         window_heads: None,
         committed: false,
-        _lock: lock,
+        _lock: Some(lock),
+        by: None,
     })
 }
 
@@ -884,6 +1026,11 @@ impl Staged {
     /// The generation's name, once it is in place.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The snapshot's directory, which the generation is staged in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// The generation's directory, held open: it stays the generation's once the commit
@@ -941,11 +1088,22 @@ impl Staged {
 
     fn commit_with(mut self, after: &mut dyn FnMut(Step) -> io::Result<()>) -> Result<(), String> {
         self.committed = true;
+        // Its spawner's to make durable and put in place, as it staged it, with none of its
+        // files open here: NTFS moves no directory a file of which is open (PM M345).
+        if let Some(by) = self.by {
+            self.files.clear();
+            return by
+                .commit(&self.dir, &self.name)
+                .map_err(|e| format!("{}: {e}", self.dir.display()));
+        }
         let (dir, name, staging) = (&self.dir, &self.name, &self.staging);
         let committed = (|| -> io::Result<()> {
             for file in &self.files {
                 platform::sync_durable(file)?;
             }
+            // Closed once durable, before their directory moves: NTFS renames no directory a
+            // file of which is open, ERROR_ACCESS_DENIED (PM M345).
+            self.files.clear();
             platform::sync_dir(staging)?;
             after(Step::Staged)?;
             fs::rename(staging, dir.join(name))?;
@@ -963,27 +1121,54 @@ impl Drop for Staged {
     /// One dropped uncommitted, a save that failed, goes with its files, under the lock it
     /// holds until then: what it wrote is a guest's memory, which nothing will read.
     fn drop(&mut self) {
-        if !self.committed {
+        // One its spawner staged is the spawner's to remove, as this process may not.
+        if !self.committed && self.by.is_none() {
             let _ = fs::remove_dir_all(&self.staging);
         }
     }
 }
 
 /// Removes everything but what `current` names, which is whole: superseded generations,
-/// and what failed or dead writers left.
+/// pointers a newer one superseded (platform `write_in`'s versions), and what failed or
+/// dead writers left. With no pointer to read it removes no generation: the one a pointer
+/// lost to a crash or a fault named would go with the rest.
 fn tidy(dir: &Path) {
     let keep = current(dir).ok();
+    let pointer = platform::open_dir(dir)
+        .and_then(|d| platform::newest_in(&d, CURRENT))
+        .ok();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let entry_name = entry.file_name();
             let entry_name = entry_name.to_string_lossy();
-            let generation = is_generation(&entry_name) && keep.as_deref() != Some(&*entry_name);
+            let generation =
+                is_generation(&entry_name) && keep.as_deref().is_some_and(|keep| keep != entry_name);
             let leftover = entry_name.starts_with(".g-") || entry_name.starts_with(&format!(".{CURRENT}."));
-            if generation || leftover {
+            let superseded = platform::version_of(&entry_name) == CURRENT
+                && pointer.as_deref().is_some_and(|newest| newest != entry_name);
+            if generation || leftover || superseded {
                 let _ = fs::remove_dir_all(entry.path()).or_else(|_| fs::remove_file(entry.path()));
             }
         }
     }
+}
+
+/// Whether `dir` has a pointer, whatever it points at: `current`, or on Windows its
+/// versions (platform `write_in`, PM M345). A directory with none holds no snapshot: a save
+/// cut short before its pointer, or a removal ([`remove`]) after it.
+pub fn pointed(dir: &Path) -> io::Result<bool> {
+    match platform::open_newest_beneath(dir, &[CURRENT]) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Removes the snapshot `dir`, its pointer first, every version of it, so that a removal
+/// cut short leaves no snapshot a restore takes ([`pointed`]); then all the rest.
+pub fn remove(dir: &Path) -> io::Result<()> {
+    platform::remove_in(&platform::open_dir(dir)?, CURRENT)?;
+    fs::remove_dir_all(dir)
 }
 
 /// Whether `dir` holds a snapshot: a pointer to a generation with its state.
@@ -995,6 +1180,25 @@ pub fn exists(dir: &Path) -> bool {
 enum Open {
     Gone(String),
     Bad(String),
+}
+
+/// The files the generation `dir` points at restores against, disks then pmem, each with
+/// whether its guest only reads it, as its state names them, none of them looked at: for a
+/// process that may look at no file it was not handed (Windows' AppContainer, PM M345) to
+/// be handed them before [`read`] checks each is the file the snapshot was taken with.
+pub fn backing_named(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
+    let name = current(dir).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => format!("{}: no snapshot here", dir.display()),
+        _ => format!("{}: {CURRENT}: {e}", dir.display()),
+    })?;
+    let state = dir.join(&name).join(STATE);
+    let bytes = platform::read_beneath(dir, &[&name, STATE], MAX_STATE)
+        .map_err(|e| format!("{}: {e}", state.display()))?
+        .ok_or_else(|| format!("{}: gone", state.display()))?;
+    let decoded = decode(&bytes).map_err(|e| format!("{}: {e}", state.display()))?;
+    Ok(backing(&decoded.snapshot.config)
+        .map(|(path, read_only)| (path.to_path_buf(), read_only))
+        .collect())
 }
 
 /// Reads the generation `dir` points at, pinned.
@@ -1199,7 +1403,7 @@ pub fn accept_working_set(
 /// Whether the generation the snapshot in `dir` is at has a working set saved: one a
 /// restore of it maps ahead, and records none of.
 pub fn has_working_set(dir: &Path) -> bool {
-    generation(dir).is_ok_and(|g| g.join(WORKING_SET).is_file())
+    current(dir).is_ok_and(|name| platform::open_newest_beneath_input(dir, &[&name, WORKING_SET]).is_ok())
 }
 
 /// A working set as a restore hands it to its spawner (`--working-set FD`): the name of the
@@ -1234,7 +1438,8 @@ pub fn read_working_set(generation: &Path, page: u64, max_pages: u64) -> Result<
             generation.display()
         )));
     };
-    let Some(bytes) = platform::read_beneath(dir, &[name, WORKING_SET], max_bytes).map_err(|e| at(&e))?
+    let Some(bytes) =
+        platform::read_newest_beneath(dir, &[name, WORKING_SET], max_bytes).map_err(|e| at(&e))?
     else {
         return Ok(None);
     };
@@ -1270,6 +1475,7 @@ mod tests {
                 layer_mib: 0,
             },
             plugged: Vec::new(),
+            data: None,
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],
         }
@@ -1307,9 +1513,11 @@ mod tests {
 
     #[test]
     fn rejects_foreign_or_damaged_state() {
-        // With runs of memory plugged, which the state keeps (D176).
+        // With runs of memory plugged, which the state keeps (D176), and its RAM's runs of
+        // data (D151).
         let mut snap = sample(&nowhere(), 1);
         snap.plugged = vec![(1 << 32, 2 << 20), (0x1_0040_0000, 4 << 20)];
+        snap.data = Some(vec![(0, 2 << 20), (6 << 20, 4 << 20)]);
         let ids = vec![Identity::default(); 3];
         let good = encode(&snap, "g-1", &ids).unwrap();
         let decoded = decode(&good).unwrap();
@@ -1337,11 +1545,7 @@ mod tests {
     #[test]
     fn a_state_of_the_formats_before_reads_where_its_machine_has_no_dax_windows() {
         let ids = vec![Identity::default(); 3];
-        let as_of = |snap: &Snapshot, version: u32| {
-            let mut bytes = encode(snap, "g-1", &ids).unwrap();
-            bytes[8..12].copy_from_slice(&version.to_le_bytes());
-            bytes
-        };
+        let as_of = |snap: &Snapshot, version: u32| encode_as(snap, "g-1", &ids, version).unwrap();
         for version in VERSION_WITHOUT_WINDOWS..VERSION {
             let snap = sample(&nowhere(), 1);
             assert_eq!(
@@ -1448,10 +1652,8 @@ mod tests {
         assert!(e.0.contains("bytes left"), "{e}");
     }
 
-    /// The store on disk. It pins generations by their open directories, which only the
-    /// Unix platform layer opens files in; Windows has no backend to take snapshots with
-    /// yet (build.rs).
-    #[cfg(unix)]
+    /// The store on disk, on every host: Windows' platform layer opens files beneath a
+    /// directory and in one it holds as Unix's does (windows_files.rs).
     mod on_disk {
         use super::*;
 
@@ -1540,6 +1742,9 @@ mod tests {
                 assert!(staged.add(theirs, b"x").unwrap_err().contains("names no file"));
             }
             assert_eq!(markers(&read(&dir).unwrap()), (1, 1));
+            // Its VM's files go before the commit, as a VM's go with its save: NTFS moves no
+            // directory a file of which is open (PM M345).
+            drop(handed);
             staged.commit().unwrap();
             let p = read(&dir).unwrap();
             assert_eq!(markers(&p), (2, 2));
@@ -1551,6 +1756,7 @@ mod tests {
             assert_eq!(fs::read(p.path.join(WINDOW_HEADS)).unwrap(), b"heads");
             assert_eq!(fs::read(p.path.join("resume")).unwrap(), b"tokens");
             // Only its user's: a generation holds a guest's memory.
+            #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
                 for file in [MEMORY, STATE, SWAP, "resume"] {
@@ -1561,20 +1767,85 @@ mod tests {
             assert_eq!(generations(&dir).len(), 2, "{:?}", generations(&dir));
         }
 
+        /// A spawner that stages generations for a process that writes in no directory of
+        /// its own (D196), as the shards crate's grants do over a link: each prepared and
+        /// handed over, then committed on the process's word.
+        #[derive(Debug, Default)]
+        struct Spawner(std::sync::Mutex<Vec<Staged>>);
+
+        impl platform::Stager for Spawner {
+            fn stage(&self, dir: &Path, kept: platform::Kept) -> io::Result<(String, Vec<File>)> {
+                let staged = prepare_kept(dir, kept).map_err(io::Error::other)?;
+                let handed = staged.handed().map_err(io::Error::other)?;
+                let name = staged.name().to_string();
+                self.0.lock().unwrap().push(staged);
+                Ok((name, handed))
+            }
+
+            fn data_ranges(&self, file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
+                let _ = file;
+                Ok(vec![(0, len)])
+            }
+
+            fn commit(&self, _: &Path, name: &str) -> io::Result<()> {
+                let mut staged = self.0.lock().unwrap();
+                let at = staged
+                    .iter()
+                    .position(|s| s.name() == name)
+                    .ok_or_else(|| io::Error::other(format!("{name}: not staged")))?;
+                staged.swap_remove(at).commit().map_err(io::Error::other)
+            }
+        }
+
+        /// A generation its spawner stages (D196): the process fills the two files it is
+        /// handed, and its commit has the spawner put the generation in place, where it
+        /// reads as one the process wrote itself; until then the one before is in use. One
+        /// dropped uncommitted leaves its staging to the spawner, which removes it.
+        #[test]
+        fn a_generation_its_spawner_stages_reads_back_once_committed() {
+            let s = Scratch::new("staged-by");
+            let dir = s.0.join("snap");
+            write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
+            let by: &'static Spawner = Box::leak(Box::default());
+            let staged = stage_by(by, &dir, &sample(&s.0, 4), &ram(4), Beside::default()).unwrap();
+            assert_eq!(markers(&read(&dir).unwrap()), (1, 1));
+            staged.commit().unwrap();
+            let p = read(&dir).unwrap();
+            assert_eq!(markers(&p), (4, 4));
+            assert!(by.0.lock().unwrap().is_empty(), "committed, and so let go of");
+
+            let dropped = stage_by(by, &dir, &sample(&s.0, 5), &ram(5), Beside::default()).unwrap();
+            drop(dropped);
+            assert_eq!(
+                by.0.lock().unwrap().len(),
+                1,
+                "the spawner's staging is the spawner's"
+            );
+            assert_eq!(markers(&read(&dir).unwrap()), (4, 4));
+            by.0.lock().unwrap().clear();
+            assert_eq!(generations(&dir).len(), 2, "{:?}", generations(&dir));
+        }
+
         /// A generation held holds what its restores map: its memory and the files its
         /// guest only reads, and not those it writes; a newer generation is not the one
         /// held, whose memory it keeps (PM M315).
         #[test]
         fn a_generation_held_holds_the_files_its_restores_map() {
-            use std::os::unix::fs::MetadataExt as _;
             let s = Scratch::new("held");
             let dir = s.0.join("snap");
             write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
             let held = hold(&dir).unwrap();
             assert!(held.is_current(&dir));
-            let id = |f: &File| {
-                let m = f.metadata().unwrap();
-                (m.dev(), m.ino())
+            // Which file each is: its device and inode, or its volume and index.
+            let id = |f: &File| -> (u64, u64) {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt as _;
+                    let m = f.metadata().unwrap();
+                    (m.dev(), m.ino())
+                }
+                #[cfg(windows)]
+                platform::file_id(f).unwrap()
             };
             let ids: Vec<_> = held._files.iter().map(id).collect();
             let p = read(&dir).unwrap();
@@ -1632,15 +1903,25 @@ mod tests {
             write(&dir, &sample(&s.0, 1), &mem).unwrap();
             assert!(exists(&dir));
             let p = read(&dir).unwrap();
-            assert_eq!(p.snapshot, sample(&s.0, 1));
-            let restored = GuestMemory::from_file(&RAM, &p.memory).unwrap();
+            // Its state says the runs of its RAM that hold data: its one block, cut at its end
+            // (D151).
+            let saved = Snapshot {
+                data: Some(vec![(0, 1 << 20)]),
+                ..sample(&s.0, 1)
+            };
+            assert_eq!(p.snapshot, saved);
+            let restored = GuestMemory::from_file(&RAM, &p.memory, p.snapshot.data.as_deref()).unwrap();
             let mut buf = [0u8; 5];
             restored.access().unwrap().read(0x8000_0010, &mut buf).unwrap();
             assert_eq!(&buf, b"guest");
-            // One generation, and the pointer to it.
+            // One generation, and the pointer to it (a version of it on Windows, platform
+            // `write_in`).
             let names = generations(&dir);
             assert_eq!(names.len(), 2, "{names:?}");
-            assert!(names.contains(&CURRENT.to_string()), "{names:?}");
+            assert!(
+                names.iter().any(|n| platform::version_of(n) == CURRENT),
+                "{names:?}"
+            );
             assert!(!exists(&s.0.join("elsewhere")));
             assert!(
                 read(&s.0.join("elsewhere"))
@@ -1715,7 +1996,7 @@ mod tests {
                 "../snap\n".into(),
                 String::new(),
             ] {
-                fs::write(dir.join(CURRENT), &bad).unwrap();
+                platform::write_in(&platform::open_dir(&dir).unwrap(), CURRENT, bad.as_bytes()).unwrap();
                 assert!(!exists(&dir), "{bad:?}");
                 assert!(
                     read(&dir).unwrap_err().contains("a pointer to no generation"),
@@ -1901,7 +2182,8 @@ mod tests {
             assert_eq!(accept_working_set(&dir, &name, &fewer, page, |_| max), Ok(0));
             assert_eq!(stored(), Some(set.clone()));
             // One a restore cannot read is replaced.
-            fs::write(read(&dir).unwrap().path.join(WORKING_SET), b"damaged").unwrap();
+            let generation = platform::open_dir(&read(&dir).unwrap().path).unwrap();
+            platform::write_in(&generation, WORKING_SET, b"damaged").unwrap();
             assert!(read_working_set(&read(&dir).unwrap().path, page, max).is_err());
             assert_eq!(accept_working_set(&dir, &name, &fewer, page, |_| max), Ok(1));
             assert_eq!(stored(), Some(touches(&[0x8000_4000])));
@@ -1950,7 +2232,14 @@ mod tests {
             let written = write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
             let p = read(&dir).unwrap();
             assert_eq!(read_working_set(&p.path, 16384, 8).unwrap(), None, "none saved");
-            let moved = s.0.join("moved");
+            // Moved while its generation is held, on Unix: NTFS moves no directory a file of
+            // which is open (PM M345), so on Windows it stays where it is.
+            let moved = if cfg!(windows) {
+                dir.clone()
+            } else {
+                s.0.join("moved")
+            };
+            #[cfg(unix)]
             fs::rename(&dir, &moved).unwrap();
             write_working_set(&written, &pages, 16384).unwrap();
             let again = read(&moved).unwrap();
@@ -1989,7 +2278,13 @@ mod tests {
             });
             let saved = read_working_set(&p.path, 16384, 1 << 20).unwrap().unwrap();
             assert!(sets.contains(&saved), "{} pages", saved.len());
-            let names = generations(&dir.join(current(&dir).unwrap()));
+            // Each name once, a set's versions Windows would not yet let go of among them
+            // (platform `write_in`, PM M345), which go with their generation.
+            let mut names: Vec<String> = generations(&dir.join(current(&dir).unwrap()))
+                .iter()
+                .map(|n| platform::version_of(n).to_string())
+                .collect();
+            names.dedup();
             assert_eq!(names, [MEMORY, STATE, WORKING_SET], "no temporary files are left");
         }
     }

@@ -6,11 +6,13 @@ name: builder cold
 # shards with cold.patch, ROUNDS rounds of each build on each of four runners at once; each
 # runner's output, check.py's test of it, tables.py's tables and its builds' stderr and
 # consoles kept as the run's artifact. x86_64 alone, as hosted arm64 runners have no
-# /dev/kvm. Runs when the harness changes, or when asked.
+# /dev/kvm. Runs when the harness changes (not its results), or when asked.
 on:
   push:
     paths:
       - docs/research/measurements/builder-cold/**
+      # Its results, what it measured, start nothing.
+      - "!docs/research/measurements/builder-cold/results/**"
       - .github/workflows/builder-cold.yml
   workflow_dispatch:
 
@@ -59,8 +61,10 @@ jobs:
       - name: Measure
         run: |
           lscpu | grep -E 'Model name|Vendor ID|Hypervisor vendor' || true
+          # The bases from Docker Hub: ECR Public refuses these runners' anonymous pulls ("Data
+          # limit exceeded", run 40281503785).
           python3 -I docs/research/measurements/builder-cold/measure.py "$RUNNER_TEMP/shards" builder-cold \
-            --rounds "$ROUNDS" --home "$RUNNER_TEMP/home"
+            --rounds "$ROUNDS" --home "$RUNNER_TEMP/home" --base docker.io/library
           df -h .
       - name: Check
         shell: bash

@@ -39,11 +39,24 @@ pub(super) struct LayerFile {
     of: Option<String>,
 }
 
+/// What of `from` holds data, copied into a new sparse file at `to` of its length: a
+/// restore's layer, where Windows makes no clone of the generation's.
+#[cfg(windows)]
+fn copied(from: &Path, to: &Path) -> std::io::Result<()> {
+    let source = std::fs::File::open(from)?;
+    let len = source.metadata()?.len();
+    let target = create(to)?;
+    shards_vmm::platform::sparse(&target)?;
+    shards_vmm::platform::copy_used(&source, &target, len)
+}
+
 impl LayerFile {
     /// An empty file, which a restoring microVM fills with its snapshot's layer.
     pub(super) fn empty(home: &Path) -> Result<LayerFile, String> {
         let path = fresh(home)?;
-        create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        create(&path)
+            .and_then(|f| shards_vmm::platform::sparse(&f))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(LayerFile { path, of: None })
     }
 
@@ -75,6 +88,27 @@ impl LayerFile {
                     .map_err(|e| format!("{}: {e}", layer.path.display()))?;
                     return Ok(layer);
                 }
+                // No clone on this host's file system (NTFS): a copy of what holds data in the
+                // generation's, made here, where the file system says what that is (a
+                // confined VM may ask it nothing, D141), so that the restore copies nothing,
+                // its file sparse as the generation's is.
+                #[cfg(windows)]
+                Ok(false) => match copied(&from, &path) {
+                    Ok(()) => {
+                        return Ok(LayerFile {
+                            path,
+                            of: Some(name.to_string()),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&path);
+                        super::log(format!(
+                            "{}: copying it for a restore: {e}; the restore copies it",
+                            from.display()
+                        ));
+                    }
+                },
+                #[cfg(not(windows))]
                 Ok(false) => {}
                 // Replaced meanwhile: the microVM reads the generation that replaced it.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -100,6 +134,10 @@ impl LayerFile {
         let layer = LayerFile { path, of: None };
         let at = |e: &dyn std::fmt::Display| format!("{}: {e}", layer.path.display());
         let mut file = create(&layer.path).map_err(|e| at(&e))?;
+        // Sparse, as a Unix file system makes a file a length set leaves unwritten: the
+        // blocks its file system writes alone are held, and a copy of it reads them alone
+        // (`platform::data_ranges`).
+        shards_vmm::platform::sparse(&file).map_err(|e| at(&e))?;
         file.set_len(bytes).map_err(|e| at(&e))?;
         let mut ids = [0u8; 32];
         shards_vmm::platform::fill_random(&mut ids).map_err(|e| at(&e))?;
@@ -358,13 +396,17 @@ fn fresh(home: &Path) -> Result<PathBuf, String> {
     Ok(dir.join(format!("{}-{n}", std::process::id())))
 }
 
-/// A new file at `path`, read-write, its user's alone.
+/// A new file at `path`, read-write, its user's alone, sparse: a run's layer holds 10 GiB
+/// unless it asks for another size (`run::LAYER_HOLDS`), of which it takes what its guest
+/// writes (PM M349).
 fn create(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)
+    let file = options.open(path)?;
+    shards_vmm::platform::make_sparse(&file)?;
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -395,6 +437,22 @@ mod tests {
         std::fs::write(home.join(LAYERS).join("1-0"), b"").unwrap();
         clear(&home);
         assert!(!home.join(LAYERS).join("1-0").exists() && !empty.path().exists());
+    }
+
+    /// A run's layer takes of its disk what its file system wrote, not what it holds: the
+    /// 10 GiB a run's holds by default took all 10 GiB of an NTFS disk's free space before
+    /// its file was sparse (PM M349), and eight runs at once filled a test host.
+    #[test]
+    fn a_layer_takes_of_its_disk_what_is_written() {
+        let home = shards_testdir::TempDir::new("layers-sparse").unwrap();
+        let made = LayerFile::made(&home, crate::run::LAYER_HOLDS).unwrap();
+        let meta = std::fs::metadata(made.path()).unwrap();
+        let on_disk = crate::os::on_disk(made.path(), &meta);
+        assert!(
+            on_disk < meta.len() / 64,
+            "{on_disk} of {} bytes on disk",
+            meta.len()
+        );
     }
 
     /// A restore's file is a clone of its generation's layer, said to be that generation's,

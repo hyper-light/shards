@@ -16,89 +16,54 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString};
-use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::{Mutex, PoisonError};
 
-use super::host::{self, linux};
+use super::host::{self, AsRaw as _, Stat, linux};
+pub use super::proto::{HEADER_BYTES, IN_HEADER_BYTES, MAX_PAGES, MAX_TABLES, MAX_WRITE};
+use super::proto::{OUT_HEADER_BYTES, op};
 use crate::snapshot::codec::{Reader, Writer};
+
+/// Its host's calls (D197): Unix's, or Windows' through `ntfs`.
+#[cfg(unix)]
+#[path = "server_unix.rs"]
+mod calls;
+#[cfg(windows)]
+#[path = "server_windows.rs"]
+mod calls;
+use calls::*;
 
 const ROOT: u64 = 1;
 /// How long the guest may trust what it was told of a name or its attributes: virtiofsd's
 /// `cache=auto` second, as the host may change the directory meanwhile.
 const VALID_S: u64 = 1;
-/// The most the guest writes or reads in one request: 256 pages.
-pub const MAX_PAGES: u16 = shards_abi::SHARE_MAX_PAGES;
-pub const MAX_WRITE: u32 = MAX_PAGES as u32 * 4096;
 // `mode_t` is u16 on macOS and u32 on Linux: its values as the guest's u32.
 #[allow(clippy::unnecessary_cast)]
-const S_IFMT: u32 = libc::S_IFMT as u32;
+const S_IFMT: u32 = host::S_IFMT as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFDIR: u32 = libc::S_IFDIR as u32;
+const S_IFDIR: u32 = host::S_IFDIR as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFREG: u32 = libc::S_IFREG as u32;
+const S_IFREG: u32 = host::S_IFREG as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFLNK: u32 = libc::S_IFLNK as u32;
+const S_IFLNK: u32 = host::S_IFLNK as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFCHR: u32 = libc::S_IFCHR as u32;
+const S_IFCHR: u32 = host::S_IFCHR as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFBLK: u32 = libc::S_IFBLK as u32;
+const S_IFBLK: u32 = host::S_IFBLK as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFIFO: u32 = libc::S_IFIFO as u32;
+const S_IFIFO: u32 = host::S_IFIFO as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_IFSOCK: u32 = libc::S_IFSOCK as u32;
+const S_IFSOCK: u32 = host::S_IFSOCK as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_ISUID: u32 = libc::S_ISUID as u32;
+const S_ISUID: u32 = host::S_ISUID as u32;
 #[allow(clippy::unnecessary_cast)]
-const S_ISGID: u32 = libc::S_ISGID as u32;
+const S_ISGID: u32 = host::S_ISGID as u32;
 
 /// A stat's mode as the guest's u32.
-#[allow(clippy::unnecessary_cast)]
-fn mode_of(st: &libc::stat) -> u32 {
-    st.st_mode as u32
+fn mode_of(st: &Stat) -> u32 {
+    st.mode
 }
 
 const OWNER_XATTR: &str = "com.docker.grpcfuse.ownership";
-
-pub(super) mod op {
-    pub const LOOKUP: u32 = 1;
-    pub const FORGET: u32 = 2;
-    pub const GETATTR: u32 = 3;
-    pub const SETATTR: u32 = 4;
-    pub const READLINK: u32 = 5;
-    pub const SYMLINK: u32 = 6;
-    pub const MKNOD: u32 = 8;
-    pub const MKDIR: u32 = 9;
-    pub const UNLINK: u32 = 10;
-    pub const RMDIR: u32 = 11;
-    pub const RENAME: u32 = 12;
-    pub const LINK: u32 = 13;
-    pub const OPEN: u32 = 14;
-    pub const READ: u32 = 15;
-    pub const WRITE: u32 = 16;
-    pub const STATFS: u32 = 17;
-    pub const RELEASE: u32 = 18;
-    pub const FSYNC: u32 = 20;
-    pub const SETXATTR: u32 = 21;
-    pub const GETXATTR: u32 = 22;
-    pub const LISTXATTR: u32 = 23;
-    pub const REMOVEXATTR: u32 = 24;
-    pub const FLUSH: u32 = 25;
-    pub const INIT: u32 = 26;
-    pub const OPENDIR: u32 = 27;
-    pub const READDIR: u32 = 28;
-    pub const RELEASEDIR: u32 = 29;
-    pub const FSYNCDIR: u32 = 30;
-    pub const ACCESS: u32 = 34;
-    pub const CREATE: u32 = 35;
-    pub const INTERRUPT: u32 = 36;
-    pub const DESTROY: u32 = 38;
-    pub const BATCH_FORGET: u32 = 42;
-    pub const FALLOCATE: u32 = 43;
-    pub const READDIRPLUS: u32 = 44;
-    pub const RENAME2: u32 = 45;
-    pub const LSEEK: u32 = 46;
-    pub const SYNCFS: u32 = 50;
-}
 
 /// FUSE_INIT's flags this server takes up.
 mod init {
@@ -167,39 +132,9 @@ struct Node {
     volume: u64,
 }
 
-/// The most a share's tables hold, the bytes of its guest's removed files among them: what
-/// a snapshot's state holds (D176).
-pub const MAX_TABLES: usize = crate::snapshot::MAX_STATE as usize;
-
 /// The prefix of a file [`ghost`] makes, which a daemon's start removes where a crash left
 /// one before its removal.
 pub const GHOST_PREFIX: &str = "ghost-";
-
-/// A file holding `bytes`, made in directory `dir` and removed from it at once: the
-/// descriptor of a file no path reaches, as its guest held one before its save (D176).
-fn ghost(dir: RawFd, bytes: &[u8]) -> Result<OwnedFd, String> {
-    let mut random = [0u8; 16];
-    crate::platform::fill_random(&mut random).map_err(|e| format!("a removed file's name: {e}"))?;
-    let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let name = CString::new(format!("{GHOST_PREFIX}{name}")).map_err(|_| "a removed file's name")?;
-    let fd = open_at(
-        dir,
-        &name,
-        libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
-        0o600,
-    )
-    .map_err(|e| format!("a removed file, made again: errno {e}"))?;
-    // SAFETY: unlinkat(2) of the name just made in a directory we hold.
-    if unsafe { libc::unlinkat(dir, name.as_ptr(), 0) } != 0 {
-        return Err(format!(
-            "a removed file, made again: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let file = std::fs::File::from(fd);
-    crate::platform::write_all_at(&file, bytes, 0).map_err(|e| format!("a removed file's bytes: {e}"))?;
-    Ok(file.into())
-}
 
 /// No volume's: a node of a share of one directory, or a join share's root. Node IDs start
 /// at [`ROOT`], so none is 0.
@@ -210,7 +145,7 @@ const NO_VOLUME: u64 = 0;
 /// name, held for as long as it is served.
 #[derive(Debug)]
 struct Volume {
-    fd: OwnedFd,
+    fd: host::Owned,
     read_only: bool,
     only: Option<CString>,
 }
@@ -224,7 +159,7 @@ struct Volume {
 #[derive(Debug)]
 struct Handle {
     node: u64,
-    flags: Option<libc::c_int>,
+    flags: Option<host::c_int>,
 }
 
 /// A node's open handles, and how many may read and write: what a descriptor pinned for
@@ -246,7 +181,7 @@ enum Slot {
 /// A descriptor in `State::fds`: a plain one, or a directory handle's stream.
 #[derive(Debug)]
 enum Held {
-    Fd(OwnedFd),
+    Fd(host::Owned),
     Dir(DirStream),
 }
 
@@ -254,7 +189,7 @@ enum Held {
 struct State {
     /// The shared directory, held for as long as the server: a join share's an empty one,
     /// its volumes reached from it by name.
-    root: OwnedFd,
+    root: host::Owned,
     nodes: HashMap<u64, Node>,
     /// Each node by its volume and what it is (its device and inode): one directory shared
     /// as two volumes, read-only and not, is two nodes, never one whose volume is either's.
@@ -279,7 +214,7 @@ struct State {
     /// or made them or changed them to a mode that refuses their handles. Let go with their
     /// node's last handle, never before, and the only descriptors counted against the
     /// budget.
-    pins: HashMap<u64, (OwnedFd, libc::c_int)>,
+    pins: HashMap<u64, (host::Owned, host::c_int)>,
     /// Nodes whose last name the guest removed with no room to pin them, and the first handle
     /// opened after: those before it are stale once their descriptors are let go, as the
     /// number the node's path might lead to is free to be another file's.
@@ -290,7 +225,7 @@ struct State {
     /// Where a restored server makes the files its guest held open that no path reaches,
     /// each removed as it is made, for its pins (D176): the share process's private
     /// directory, none for a server that keeps none.
-    ghosts: Option<OwnedFd>,
+    ghosts: Option<host::Owned>,
     /// The budgets over the share process's cgroups, which its host's copy of what the guest
     /// reads is dropped past (D188): none for a server that keeps every copy.
     headroom: Option<super::headroom::Headroom>,
@@ -360,14 +295,6 @@ pub struct Server {
 
 /// A failed operation's Linux errno.
 type Errno = i32;
-
-fn last() -> Errno {
-    host::linux_errno(
-        std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or(libc::EIO),
-    )
-}
 
 const EPERM: Errno = 1;
 const EIO: Errno = 5;
@@ -512,194 +439,37 @@ fn cstring(s: &str) -> Result<CString, Errno> {
     CString::new(s).map_err(|_| EINVAL)
 }
 
-/// `fd`'s attribute `name`, or none.
-fn fget_xattr(fd: RawFd, name: &CStr) -> Result<Option<Vec<u8>>, Errno> {
-    let mut buf = vec![0u8; 256];
-    loop {
-        // SAFETY: fgetxattr(2) into a buffer of its length.
-        #[cfg(target_os = "macos")]
-        let n = unsafe { libc::fgetxattr(fd, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
-        // SAFETY: as above.
-        #[cfg(target_os = "linux")]
-        let n = unsafe { libc::fgetxattr(fd, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
-        if n >= 0 {
-            buf.truncate(usize::try_from(n).unwrap_or(0));
-            return Ok(Some(buf));
-        }
-        match last() {
-            ENODATA => return Ok(None),
-            ERANGE if buf.len() < 1 << 16 => buf.resize(buf.len() * 4, 0),
-            e => return Err(e),
-        }
-    }
-}
-
-fn fset_xattr(fd: RawFd, name: &CStr, value: &[u8], flags: u32) -> Result<(), Errno> {
-    let mut host_flags = 0;
-    if flags & linux::XATTR_CREATE != 0 {
-        host_flags |= libc::XATTR_CREATE;
-    }
-    if flags & linux::XATTR_REPLACE != 0 {
-        host_flags |= libc::XATTR_REPLACE;
-    }
-    // SAFETY: fsetxattr(2) of a buffer of its length.
-    #[cfg(target_os = "macos")]
-    let r = unsafe {
-        libc::fsetxattr(
-            fd,
-            name.as_ptr(),
-            value.as_ptr().cast(),
-            value.len(),
-            0,
-            host_flags,
-        )
-    };
-    // SAFETY: as above.
-    #[cfg(target_os = "linux")]
-    let r = unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), host_flags) };
-    if r != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// The name the host keeps a guest's ownership under: Docker Desktop's on macOS, which
-/// keeps no namespaces; in Linux's `user.` namespace on Linux.
-fn owner_xattr() -> Result<CString, Errno> {
-    #[cfg(target_os = "macos")]
-    {
-        cstring(OWNER_XATTR)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        cstring(&format!("user.{OWNER_XATTR}"))
-    }
-}
-
-fn stat_fd(fd: RawFd) -> Result<libc::stat, Errno> {
-    // SAFETY: an all-zero stat is a valid out-parameter for fstat(2).
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstat(2) of a descriptor we hold.
-    if unsafe { libc::fstat(fd, &mut st) } != 0 {
-        return Err(last());
-    }
-    Ok(st)
-}
-
-fn stat_at(dir: RawFd, name: &CStr) -> Result<libc::stat, Errno> {
-    // SAFETY: as stat_fd.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstatat(2) of a NUL-terminated name in a directory we hold, not following it.
-    if unsafe { libc::fstatat(dir, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
-        return Err(last());
-    }
-    Ok(st)
-}
-
 #[cfg(test)]
 thread_local! {
     /// The names this thread's server has opened, for a test of what it never opens.
     static OPENED: std::cell::RefCell<Vec<CString>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn open_at(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> Result<OwnedFd, Errno> {
-    #[cfg(test)]
-    OPENED.with(|o| o.borrow_mut().push(name.to_owned()));
-    // SAFETY: openat(2) of a NUL-terminated name in a directory we hold.
-    let fd = unsafe { libc::openat(dir, name.as_ptr(), flags | libc::O_CLOEXEC, mode) };
-    if fd < 0 {
-        return Err(last());
-    }
-    // SAFETY: a fresh descriptor nothing else owns.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+/// What a file system holds and has room for, as a guest's STATFS asks it.
+struct FsStats {
+    blocks: u64,
+    free: u64,
+    available: u64,
+    files: u64,
+    files_free: u64,
+    block_size: u32,
+    fragment_size: u32,
 }
 
-/// `name` in `dir` opened for a guest's OPEN or CREATE, with `flags` (`host::open_flags`'),
-/// if it is a regular file. A guest kernel opens FIFOs, sockets and device nodes itself and
-/// sends no FUSE request to; one that asks would have this process wait on a FIFO's other
-/// end for good, or open a host device, so they are refused (EBADF), as QEMU's virtiofsd
-/// refuses them (`lo_inode_open`, CVE-2020-35517; audit V02). The name is looked at first,
-/// so no special file is opened, then opened without waiting and looked at again, for one
-/// put there meanwhile.
-fn open_regular(
-    dir: RawFd,
-    name: &CStr,
-    flags: libc::c_int,
-    mode: libc::c_uint,
-) -> Result<(OwnedFd, libc::stat), Errno> {
-    let exclusive = flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL;
-    match stat_at(dir, name) {
-        // An exclusive create of a name that exists fails at the open, opening nothing.
-        Ok(st) if !exclusive && mode_of(&st) & S_IFMT != S_IFREG => return Err(EBADF),
-        Ok(_) => {}
-        Err(ENOENT) if flags & libc::O_CREAT != 0 => {}
-        Err(e) => return Err(e),
-    }
-    let fd = open_at(dir, name, flags | libc::O_NONBLOCK | libc::O_NOCTTY, mode)?;
-    let st = stat_fd(fd.as_raw_fd())?;
-    if mode_of(&st) & S_IFMT != S_IFREG {
-        return Err(EBADF);
-    }
-    // The status flags the guest asked for, without O_NONBLOCK: F_SETFL takes those of
-    // `flags` and ignores its access mode and creation flags (POSIX fcntl(2)).
-    // SAFETY: fcntl(2) of a descriptor we hold.
-    if flags & libc::O_NONBLOCK == 0 && unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } != 0 {
-        return Err(last());
-    }
-    Ok((fd, st))
+/// A time a SETATTR sets: now, one given in seconds and nanoseconds since the epoch, or
+/// the one it has kept.
+#[derive(Debug, Clone, Copy)]
+enum Time {
+    Now,
+    At(u64, u32),
+    Kept,
 }
 
-/// Changes the mode of `name` in `dir` without following it. fchmodat(2) without
-/// AT_SYMLINK_NOFOLLOW follows a final symlink: a guest's link to a host file outside the
-/// share would have that file's mode changed (audit V01). A symlink's own mode is not
-/// changed, as Linux changes none (EOPNOTSUPP: fs/attr.c `notify_change` since 6.6, and
-/// glibc's and musl's fchmodat with AT_SYMLINK_NOFOLLOW before it).
-fn chmod_at(dir: RawFd, name: &CStr, mode: u32) -> Result<(), Errno> {
-    #[cfg(target_os = "linux")]
-    {
-        // Linux's fchmodat(2) takes no AT_SYMLINK_NOFOLLOW before fchmodat2 (6.6). The
-        // name is opened as a path, never followed, and the file changed through its
-        // /proc/self/fd link, which reaches that file whatever is at the name by then
-        // (musl's src/stat/fchmodat.c, virtiofsd's setattr).
-        let fd = open_at(dir, name, libc::O_PATH | libc::O_NOFOLLOW, 0)?;
-        if mode_of(&stat_fd(fd.as_raw_fd())?) & S_IFMT == S_IFLNK {
-            return Err(EOPNOTSUPP);
-        }
-        let link = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|_| EINVAL)?;
-        // SAFETY: fchmodat(2) of a NUL-terminated path.
-        if unsafe { libc::fchmodat(libc::AT_FDCWD, link.as_ptr(), mode as libc::mode_t, 0) } != 0 {
-            return Err(last());
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if mode_of(&stat_at(dir, name)?) & S_IFMT == S_IFLNK {
-            return Err(EOPNOTSUPP);
-        }
-        // A symlink put at the name since has its own mode changed, not its target's.
-        // SAFETY: fchmodat(2) of a NUL-terminated name in a directory we hold.
-        if unsafe {
-            libc::fchmodat(
-                dir,
-                name.as_ptr(),
-                mode as libc::mode_t,
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } != 0
-        {
-            return Err(last());
-        }
-        Ok(())
-    }
+fn key(st: &Stat) -> (u64, u64) {
+    (st.dev, st.ino)
 }
 
-fn key(st: &libc::stat) -> (u64, u64) {
-    #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
-    (st.st_dev as u64, st.st_ino as u64)
-}
-
-fn is_dir(st: &libc::stat) -> bool {
+fn is_dir(st: &Stat) -> bool {
     mode_of(st) & S_IFMT == S_IFDIR
 }
 
@@ -726,22 +496,15 @@ impl Reply {
     }
     /// struct fuse_attr; `dax` where the guest maps the file into its DAX window
     /// ([`Server::dax_of`]).
-    fn attr(&mut self, st: &libc::stat, owner: Owner, dax: bool) -> &mut Self {
-        #[allow(clippy::useless_conversion, clippy::unnecessary_cast, clippy::cast_sign_loss)]
-        let (size, blocks, at, mt, ct) = (
-            st.st_size as u64,
-            st.st_blocks as u64,
-            (st.st_atime as u64, st.st_atime_nsec as u32),
-            (st.st_mtime as u64, st.st_mtime_nsec as u32),
-            (st.st_ctime as u64, st.st_ctime_nsec as u32),
-        );
+    fn attr(&mut self, st: &Stat, owner: Owner, dax: bool) -> &mut Self {
+        let (size, blocks, at, mt, ct) = (st.size, st.blocks, st.atime, st.mtime, st.ctime);
+        crate::debug!("virtio-fs: told the attributes of file {}: {size} bytes", st.ino);
         let host_mode = mode_of(st);
         let perm = owner.mode.unwrap_or(host_mode & 0o7777);
         // A node the host keeps as an empty regular file, as the guest made it.
         let emulated = owner.kind.filter(|_| host_mode & S_IFMT == S_IFREG);
         let mode = emulated.unwrap_or(host_mode & S_IFMT) | (perm & 0o7777);
-        #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
-        let (nlink, host_rdev, blksize) = (st.st_nlink as u32, st.st_rdev as u64, st.st_blksize as u32);
+        let (nlink, host_rdev, blksize) = (st.nlink, st.rdev, st.blksize);
         let rdev = match emulated {
             Some(_) => owner.rdev.unwrap_or(0),
             None => host::encode_dev(host_rdev),
@@ -766,7 +529,7 @@ impl Reply {
             .u32(if emulated.is_none() && dax { ATTR_DAX } else { 0 })
     }
     /// struct fuse_entry_out.
-    fn entry(&mut self, nodeid: u64, st: &libc::stat, owner: Owner, dax: bool) -> &mut Self {
+    fn entry(&mut self, nodeid: u64, st: &Stat, owner: Owner, dax: bool) -> &mut Self {
         self.u64(nodeid)
             .u64(0)
             .u64(VALID_S)
@@ -837,19 +600,19 @@ impl Limits {
 impl Server {
     /// The server of the directory `root` holds, read-only or not, or of its one name
     /// `only`, alone in its process: it may hold what the process has room for.
-    pub fn new(root: OwnedFd, read_only: bool, only: Option<CString>) -> Result<Server, String> {
+    pub fn new(root: host::Owned, read_only: bool, only: Option<CString>) -> Result<Server, String> {
         let limits = Limits::now().ok_or("this process's limit on descriptors is unknown")?;
         Server::with_budget(root, read_only, only, limits.budget(1))
     }
 
     /// [`Server::new`], holding at most `budget` descriptors between requests.
     pub fn with_budget(
-        root: OwnedFd,
+        root: host::Owned,
         read_only: bool,
         only: Option<CString>,
         budget: u64,
     ) -> Result<Server, String> {
-        let st = stat_fd(root.as_raw_fd()).map_err(|e| format!("the shared directory: errno {e}"))?;
+        let st = stat_fd(root.raw()).map_err(|e| format!("the shared directory: errno {e}"))?;
         if !is_dir(&st) {
             return Err("the shared directory is not a directory".into());
         }
@@ -896,7 +659,7 @@ impl Server {
 
     /// A join share's server (D119): its root the empty directory `root` holds, nothing
     /// made there, and each volume [`add`](Self::add)ed reached from it by its name.
-    pub fn joined(root: OwnedFd, budget: u64) -> Result<Server, String> {
+    pub fn joined(root: host::Owned, budget: u64) -> Result<Server, String> {
         let server = Server::with_budget(root, false, None, budget)?;
         server.state.lock().unwrap_or_else(PoisonError::into_inner).joined = true;
         Ok(server)
@@ -907,7 +670,7 @@ impl Server {
     pub fn add(
         &self,
         name: CString,
-        dir: OwnedFd,
+        dir: host::Owned,
         read_only: bool,
         only: Option<CString>,
     ) -> Result<(), String> {
@@ -915,7 +678,7 @@ impl Server {
         if bytes.is_empty() || bytes.contains(&b'/') || bytes == b"." || bytes == b".." {
             return Err(format!("a volume named {name:?}"));
         }
-        let st = stat_fd(dir.as_raw_fd()).map_err(|e| format!("volume {name:?}: errno {e}"))?;
+        let st = stat_fd(dir.raw()).map_err(|e| format!("volume {name:?}: errno {e}"))?;
         if !is_dir(&st) {
             return Err(format!("volume {name:?} is not a directory"));
         }
@@ -983,15 +746,15 @@ impl Server {
         let mut ghosts = Vec::with_capacity(s.pins.len());
         let mut carried = 0u64;
         for (node, (fd, access)) in &s.pins {
-            let st = stat_fd(fd.as_raw_fd())
-                .map_err(|e| format!("a removed file the microVM has open: errno {e}"))?;
+            let st =
+                stat_fd(fd.raw()).map_err(|e| format!("a removed file the microVM has open: errno {e}"))?;
             if mode_of(&st) & S_IFMT != S_IFREG {
                 return Err(
                     "a directory or special file the microVM has open was removed from its volume".into(),
                 );
             }
             #[allow(clippy::cast_sign_loss)]
-            let size = st.st_size as u64;
+            let size = st.size;
             carried = carried.saturating_add(size);
             if carried > MAX_TABLES as u64 {
                 return Err(format!(
@@ -1063,7 +826,7 @@ impl Server {
 
     /// Makes the files its guest held open that no path reaches in `dir`, as it is restored
     /// from a save (D176), each removed as soon as it is made.
-    pub fn keep_ghosts_in(&self, dir: OwnedFd) {
+    pub fn keep_ghosts_in(&self, dir: host::Owned) {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).ghosts = Some(dir);
     }
 
@@ -1089,7 +852,7 @@ impl Server {
         let next_node = r.u64().map_err(bad)?;
         let next_handle = r.u64().map_err(bad)?;
         let name = |r: &mut Reader<'_>| -> crate::snapshot::codec::Result<CString> {
-            let bytes = r.bytes(libc::PATH_MAX as usize)?;
+            let bytes = r.bytes(host::PATH_MAX as usize)?;
             CString::new(bytes).map_err(|_| crate::snapshot::codec::DecodeError("a name with a NUL".into()))
         };
         let nodes = r
@@ -1119,7 +882,7 @@ impl Server {
                 let node = r.u64()?;
                 let has = r.bool()?;
                 #[allow(clippy::cast_possible_wrap)]
-                let flags = r.u32()? as libc::c_int;
+                let flags = r.u32()? as host::c_int;
                 Ok((
                     id,
                     Handle {
@@ -1145,7 +908,7 @@ impl Server {
             .seq(u32::MAX as usize, 8 + 4 + 4, |r| {
                 let node = r.u64()?;
                 #[allow(clippy::cast_possible_wrap)]
-                let access = r.u32()? as libc::c_int;
+                let access = r.u32()? as host::c_int;
                 Ok((node, access, r.bytes(MAX_TABLES)?))
             })
             .map_err(bad)?;
@@ -1190,7 +953,7 @@ impl Server {
                 "the files its guest holds that no path reaches, for a share with nowhere to keep them",
             )?;
             for (node, access, bytes) in ghosts {
-                pins.insert(node, (ghost(dir.as_raw_fd(), bytes)?, access));
+                pins.insert(node, (ghost(dir.raw(), bytes)?, access));
             }
         }
         let mut by_key = HashMap::with_capacity(nodes.len());
@@ -1212,22 +975,19 @@ impl Server {
     /// (D189): a regular file of at least [`DAX_SMALLEST`] the server may read, as a
     /// mapping does; and write, in a volume the guest may write, wherever a mapping's
     /// descriptor is opened to write too (window::SHARED_NEEDS_WRITE).
-    fn dax_of(&self, s: &State, node: u64, st: &libc::stat) -> bool {
-        static EUID: std::sync::OnceLock<libc::uid_t> = std::sync::OnceLock::new();
-        // SAFETY: geteuid(2) takes nothing and cannot fail.
-        let euid = *EUID.get_or_init(|| unsafe { libc::geteuid() });
+    fn dax_of(&self, s: &State, node: u64, st: &Stat) -> bool {
+        let euid = served_by();
         let mode = mode_of(st);
-        #[allow(clippy::unnecessary_cast)]
-        let size = st.st_size as i64;
+        let size = st.size;
         // The owner's bits where the server owns it, else others': a group's members are
         // not looked up, and a file only a group gives is read through FUSE.
         #[allow(clippy::unnecessary_cast)]
-        let (read, write) = if st.st_uid == euid {
-            (libc::S_IRUSR as u32, libc::S_IWUSR as u32)
+        let (read, write) = if st.uid == euid as u32 {
+            (host::S_IRUSR as u32, host::S_IWUSR as u32)
         } else {
-            (libc::S_IROTH as u32, libc::S_IWOTH as u32)
+            (host::S_IROTH as u32, host::S_IWOTH as u32)
         };
-        let large = mode & S_IFMT == S_IFREG && u64::try_from(size).is_ok_and(|n| n >= DAX_SMALLEST);
+        let large = mode & S_IFMT == S_IFREG && size >= DAX_SMALLEST;
         let reachable = mode & read != 0
             && (!super::window::SHARED_NEEDS_WRITE || (mode & write != 0 && self.writable(s, node).is_ok()));
         large && reachable
@@ -1239,7 +999,7 @@ impl Server {
     /// opens it, as virtiofsd does (`setupmapping`). Along its path, checked to be the node;
     /// a file no path reaches, by a copy of its pin where that allows as much. A Linux
     /// errno where it gives none.
-    pub fn descriptor(&self, node: u64, writable: bool) -> Result<OwnedFd, Errno> {
+    pub fn descriptor(&self, node: u64, writable: bool) -> Result<host::Owned, Errno> {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let s = &mut *s;
         let n = s.nodes.get(&node).ok_or(ENOENT)?;
@@ -1253,8 +1013,8 @@ impl Server {
         if rdwr {
             self.writable(s, node)?;
         }
-        let access = if rdwr { libc::O_RDWR } else { libc::O_RDONLY };
-        let flags = access | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let access = if rdwr { host::O_RDWR } else { host::O_RDONLY };
+        let flags = access | host::O_NOFOLLOW | host::O_CLOEXEC;
         let why = match at(s, node).and_then(|(dir, name)| open_regular(dir, &name, flags, 0)) {
             Ok((fd, st)) if key(&st) == want => return Ok(fd),
             Ok(_) => ESTALE,
@@ -1264,13 +1024,7 @@ impl Server {
             Some((pin, held)) if why == ESTALE && allows(*held, access) => pin,
             _ => return Err(why),
         };
-        // SAFETY: fcntl(2) F_DUPFD_CLOEXEC of a descriptor the server holds open.
-        let copy = unsafe { libc::fcntl(pin.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
-        if copy < 0 {
-            return Err(last());
-        }
-        // SAFETY: a descriptor fcntl(2) just made, owned here alone.
-        Ok(unsafe { OwnedFd::from_raw_fd(copy) })
+        dup_fd(pin.raw())
     }
 
     /// Answers request `req`, the bytes of its readable descriptors: the reply's bytes,
@@ -1404,6 +1158,10 @@ impl Server {
         r: &mut Reply,
     ) -> Result<(), Errno> {
         let mut a = Args(body);
+        // Each request at debug, and each size it tells ([`Reply::attr`]): what a guest holds
+        // of a file for its attributes' second (containers.rs's DAX test on CI's Windows
+        // runners, a guest that saw a file's old size past it).
+        crate::debug!("virtio-fs: request {opcode} of node {nodeid}");
         match opcode {
             op::INIT => {
                 // A session begins: nothing the guest knew before it holds.
@@ -1433,8 +1191,7 @@ impl Server {
                     | init::MAP_ALIGNMENT
                     | init::INIT_EXT;
                 // A DAX window's ranges are whole pages of this host's (D189).
-                // SAFETY: sysconf(3) of a constant.
-                let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+                let page = crate::platform::page_size().unwrap_or(4096);
                 let alignment = if flags & init::MAP_ALIGNMENT != 0 {
                     u16::try_from(u64::try_from(page).unwrap_or(4096).trailing_zeros()).unwrap_or(12)
                 } else {
@@ -1494,24 +1251,14 @@ impl Server {
             }
             op::READLINK => {
                 let (dir, name) = at(s, nodeid)?;
-                let mut buf = vec![0u8; 4096];
-                // SAFETY: readlinkat(2) into a buffer of its length.
-                let n = unsafe { libc::readlinkat(dir, name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
-                if n < 0 {
-                    return Err(last());
-                }
-                buf.truncate(usize::try_from(n).unwrap_or(0));
-                r.bytes(&buf);
+                r.bytes(&readlink_at(dir, &name)?);
             }
             op::SYMLINK => {
                 self.writable(s, nodeid)?;
                 let name = a.name()?;
                 let target = a.cstr()?;
                 let dir = dir_fd(s, nodeid)?;
-                // SAFETY: symlinkat(2) of NUL-terminated strings in a directory we hold.
-                if unsafe { libc::symlinkat(target.as_ptr(), dir, name.as_ptr()) } != 0 {
-                    return Err(last());
-                }
+                symlink_at(&target, dir, &name)?;
                 self.made(s, nodeid, &name, caller, Kept::default(), r)?;
             }
             op::MKNOD => {
@@ -1528,7 +1275,7 @@ impl Server {
                     open_at(
                         dir,
                         &name,
-                        libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY,
+                        host::O_CREAT | host::O_EXCL | host::O_WRONLY,
                         host_perm(perm, false),
                     )
                     .map(drop)
@@ -1546,23 +1293,14 @@ impl Server {
                     } else {
                         host_perm(perm, false)
                     };
-                    // SAFETY: mknodat(2) of a NUL-terminated name in a directory we hold.
-                    let made = unsafe {
-                        libc::mknodat(
-                            dir,
-                            name.as_ptr(),
-                            (kind | on_host) as libc::mode_t,
-                            host::decode_dev(rdev),
-                        )
-                    } == 0;
-                    match (made, last()) {
-                        (true, _) => Kept::mode(perm),
+                    match mknod_at(dir, &name, kind | on_host, rdev) {
+                        Ok(()) => Kept::mode(perm),
                         // A node the host makes only for a privileged process (a device,
                         // the whiteout overlayfs marks a removal with: one of 0/0): an
                         // empty regular file, the guest's kind and number kept beside it,
                         // as the guest sees it. The guest's kernel opens a device node
                         // itself, never through the share.
-                        (false, EPERM) => {
+                        Err(EPERM) => {
                             empty(0o600)?;
                             Kept {
                                 mode: Some(perm),
@@ -1570,7 +1308,7 @@ impl Server {
                                 rdev: Some(rdev),
                             }
                         }
-                        (false, e) => return Err(e),
+                        Err(e) => return Err(e),
                     }
                 };
                 self.made(s, nodeid, &name, caller, kept, r)?;
@@ -1581,10 +1319,7 @@ impl Server {
                 let _umask = a.u32()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
-                // SAFETY: mkdirat(2) of a NUL-terminated name in a directory we hold.
-                if unsafe { libc::mkdirat(dir, name.as_ptr(), host_perm(mode, true) as libc::mode_t) } != 0 {
-                    return Err(last());
-                }
+                mkdir_at(dir, &name, host_perm(mode, true))?;
                 self.made(s, nodeid, &name, caller, Kept::mode(mode), r)?;
             }
             op::UNLINK | op::RMDIR => {
@@ -1592,13 +1327,7 @@ impl Server {
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
                 let removal = pin_before_removal(s, volume_of(s, nodeid), dir, &name);
-                let flags = if opcode == op::RMDIR {
-                    libc::AT_REMOVEDIR
-                } else {
-                    0
-                };
-                // SAFETY: unlinkat(2) of a NUL-terminated name in a directory we hold.
-                let failed = (unsafe { libc::unlinkat(dir, name.as_ptr(), flags) } != 0).then(last);
+                let failed = unlink_at(dir, &name, opcode == op::RMDIR).err();
                 removed(s, removal, failed.is_none());
                 if let Some(e) = failed {
                     return Err(e);
@@ -1637,10 +1366,7 @@ impl Server {
                 let name = a.name()?;
                 let (odir, oname) = at(s, old)?;
                 let dir = dir_fd(s, nodeid)?;
-                // SAFETY: linkat(2) of NUL-terminated names in directories we hold.
-                if unsafe { libc::linkat(odir, oname.as_ptr(), dir, name.as_ptr(), 0) } != 0 {
-                    return Err(last());
-                }
+                link_at(odir, &oname, dir, &name)?;
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
                 let dax = self.dax_of(s, id, &st);
                 r.entry(id, &st, owner, dax);
@@ -1685,13 +1411,13 @@ impl Server {
                 let name = a.name()?;
                 room_for_handle(s)?;
                 let dir = dir_fd(s, nodeid)?;
-                let flags = host::open_flags(flags) | libc::O_CREAT;
+                let flags = host::open_flags(flags) | host::O_CREAT;
                 // Made here, or found there: a file O_CREAT finds keeps its owner and mode.
                 let (fd, st, created) =
-                    match open_regular(dir, &name, flags | libc::O_EXCL, host_perm(mode, false)) {
+                    match open_regular(dir, &name, flags | host::O_EXCL, host_perm(mode, false)) {
                         Ok((fd, st)) => (fd, st, true),
-                        Err(EEXIST) if flags & libc::O_EXCL == 0 => {
-                            let (fd, st) = open_regular(dir, &name, flags & !libc::O_CREAT, 0)?;
+                        Err(EEXIST) if flags & host::O_EXCL == 0 => {
+                            let (fd, st) = open_regular(dir, &name, flags & !host::O_CREAT, 0)?;
                             (fd, st, false)
                         }
                         Err(e) => return Err(e),
@@ -1712,7 +1438,7 @@ impl Server {
                     && !s.pins.contains_key(&made)
                     && room_for_pin(s)
                 {
-                    s.pins.insert(made, (fd, flags & libc::O_ACCMODE));
+                    s.pins.insert(made, (fd, flags & host::O_ACCMODE));
                     None
                 } else {
                     Some(Held::Fd(fd))
@@ -1747,7 +1473,14 @@ impl Server {
                 let _ = a.u32()?;
                 let data = a.rest().get(..size as usize).ok_or(EINVAL)?;
                 let fd = file_fd(s, fh)?;
-                let n = pwrite(fd, data, offset)?;
+                // A handle opened to append writes at its file's end as the host has it,
+                // which another writer there may have moved since the guest's kernel looked.
+                let appends = s
+                    .handles
+                    .get(&fh)
+                    .and_then(|h| h.flags)
+                    .is_some_and(|f| f & host::O_APPEND != 0);
+                let n = pwrite(fd, data, (!appends).then_some(offset))?;
                 r.u32(u32::try_from(n).unwrap_or(0)).u32(0);
             }
             op::STATFS => {
@@ -1758,22 +1491,15 @@ impl Server {
                 } else {
                     ROOT
                 };
-                let dir = dir_fd(s, top)?;
-                // SAFETY: an all-zero statvfs is a valid out-parameter.
-                let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
-                // SAFETY: fstatvfs(2) of a descriptor we hold.
-                if unsafe { libc::fstatvfs(dir, &mut v) } != 0 {
-                    return Err(last());
-                }
-                #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
-                r.u64(v.f_blocks as u64)
-                    .u64(v.f_bfree as u64)
-                    .u64(v.f_bavail as u64)
-                    .u64(v.f_files as u64)
-                    .u64(v.f_ffree as u64)
-                    .u32(v.f_bsize as u32)
+                let v = fs_stats(dir_fd(s, top)?)?;
+                r.u64(v.blocks)
+                    .u64(v.free)
+                    .u64(v.available)
+                    .u64(v.files)
+                    .u64(v.files_free)
+                    .u32(v.block_size)
                     .u32(255)
-                    .u32(v.f_frsize as u32)
+                    .u32(v.fragment_size)
                     .u32(0)
                     .bytes(&[0u8; 24]);
             }
@@ -1786,7 +1512,7 @@ impl Server {
                 let fh = a.u64()?;
                 let pinned = s.handles.get(&fh).and_then(|h| s.pins.get(&h.node));
                 let fd = match pinned {
-                    Some((pin, _)) => pin.as_raw_fd(),
+                    Some((pin, _)) => pin.raw(),
                     None if is_file(s, fh) => file_fd(s, fh)?,
                     None => dir_fd(s, nodeid)?,
                 };
@@ -1862,7 +1588,7 @@ impl Server {
                                 }
                             }
                         }
-                    } else if kind == u32::from(libc::DT_REG)
+                    } else if kind == u32::from(host::DT_REG)
                         && let Some(k) = emulated_at(dir_fd(s, nodeid)?, &entry.name)
                     {
                         // Its kind, as overlayfs reads a whiteout's from a listing.
@@ -1934,27 +1660,14 @@ impl Server {
                 }
                 let host_name = host_xattr(&name).map_err(|_| ENODATA)?;
                 let fd = node_fd_to_change(s, nodeid)?;
-                // SAFETY: fremovexattr(2) of a NUL-terminated name.
-                #[cfg(target_os = "macos")]
-                let rc = unsafe { libc::fremovexattr(fd.raw(), host_name.as_ptr(), 0) };
-                // SAFETY: as above.
-                #[cfg(target_os = "linux")]
-                let rc = unsafe { libc::fremovexattr(fd.raw(), host_name.as_ptr()) };
-                if rc != 0 {
-                    return Err(last());
-                }
+                fremove_xattr(fd.raw(), &host_name)?;
             }
             op::LSEEK => {
                 let fh = a.u64()?;
                 let offset = a.u64()?;
                 let whence = host::whence(a.u32()?).ok_or(EINVAL)?;
-                let fd = file_fd(s, fh)?;
-                // SAFETY: lseek(2) of a descriptor we hold.
-                let at = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
-                if at < 0 {
-                    return Err(last());
-                }
-                r.u64(at as u64);
+                let at = seek(file_fd(s, fh)?, offset, whence)?;
+                r.u64(at);
             }
             op::FALLOCATE => {
                 self.writable(s, nodeid)?;
@@ -2031,8 +1744,7 @@ impl Server {
         // A node made in another's place is the guest's kind only as recorded: unrecorded,
         // it is no node of the guest's.
         if let (Err(e), Some(_)) = (recorded, kept.kind) {
-            // SAFETY: unlinkat(2) of the NUL-terminated name just made in a directory we hold.
-            let _ = unsafe { libc::unlinkat(dir, name.as_ptr(), 0) };
+            let _ = unlink_at(dir, name, false);
             return Err(e);
         }
         Ok(())
@@ -2081,63 +1793,38 @@ impl Server {
             fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0)?;
         }
         if valid & fattr::SIZE != 0 {
-            let truncated = match valid & fattr::FH != 0 && is_file(s, fh) {
-                true => {
-                    let fd = file_fd(s, fh)?;
-                    // SAFETY: ftruncate(2) of a descriptor we hold.
-                    unsafe { libc::ftruncate(fd, size as libc::off_t) }
-                }
+            match valid & fattr::FH != 0 && is_file(s, fh) {
+                true => truncate_fd(file_fd(s, fh)?, size)?,
                 false => {
                     let fd = open_at(
                         dir,
                         &name,
-                        libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                        host::O_WRONLY | host::O_NOFOLLOW | host::O_NONBLOCK,
                         0,
                     )?;
-                    // SAFETY: as above.
-                    unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) }
+                    truncate_fd(fd.raw(), size)?;
                 }
-            };
-            if truncated != 0 {
-                return Err(last());
             }
         }
         if valid & (fattr::ATIME | fattr::MTIME) != 0 {
-            let time = |set: bool, now: bool, s_: u64, ns: u32| libc::timespec {
-                tv_sec: s_ as _,
-                tv_nsec: if now {
-                    libc::UTIME_NOW
-                } else if set {
-                    libc::c_long::from(ns as i32)
-                } else {
-                    libc::UTIME_OMIT
-                },
+            let time = |set: bool, now: bool, at: u64, ns: u32| match (now, set) {
+                (true, _) => Time::Now,
+                (false, true) => Time::At(at, ns),
+                (false, false) => Time::Kept,
             };
-            let times = [
-                time(
-                    valid & fattr::ATIME != 0,
-                    valid & fattr::ATIME_NOW != 0,
-                    atime,
-                    atimensec,
-                ),
-                time(
-                    valid & fattr::MTIME != 0,
-                    valid & fattr::MTIME_NOW != 0,
-                    mtime,
-                    mtimensec,
-                ),
-            ];
-            let rc = match own {
-                // SAFETY: futimens(2) of a descriptor we hold.
-                Some(fd) => unsafe { libc::futimens(fd, times.as_ptr()) },
-                // SAFETY: utimensat(2) of a NUL-terminated name in a directory we hold.
-                None => unsafe {
-                    libc::utimensat(dir, name.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW)
-                },
-            };
-            if rc != 0 {
-                return Err(last());
-            }
+            let atime = time(
+                valid & fattr::ATIME != 0,
+                valid & fattr::ATIME_NOW != 0,
+                atime,
+                atimensec,
+            );
+            let mtime = time(
+                valid & fattr::MTIME != 0,
+                valid & fattr::MTIME_NOW != 0,
+                mtime,
+                mtimensec,
+            );
+            set_times(own, dir, &name, atime, mtime)?;
         }
         Ok(())
     }
@@ -2171,7 +1858,7 @@ impl Server {
             kind: Some(S_IFCHR),
             rdev: Some(0),
         };
-        let made = open_at(dir, old, libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY, 0o600)
+        let made = open_at(dir, old, host::O_CREAT | host::O_EXCL | host::O_WRONLY, 0o600)
             .map(drop)
             .and_then(|()| self.record(s, olddir, old, caller, whiteout));
         if let Err(e) = made {
@@ -2186,8 +1873,8 @@ impl Server {
         &self,
         s: &mut State,
         nodeid: u64,
-        own: Option<RawFd>,
-        dir: RawFd,
+        own: Option<host::Raw>,
+        dir: host::Raw,
         name: &CStr,
         mode: u32,
         owner: &mut Owner,
@@ -2197,12 +1884,7 @@ impl Server {
         // Its open handles a mode refuses keep a descriptor taken before it does (audit V09).
         pin_before_chmod(s, nodeid, dir, name, host);
         match own {
-            Some(fd) => {
-                // SAFETY: fchmod(2) of a descriptor we hold.
-                if unsafe { libc::fchmod(fd, host as libc::mode_t) } != 0 {
-                    return Err(last());
-                }
-            }
+            Some(fd) => chmod_fd(fd, host)?,
             None => chmod_at(dir, name, host)?,
         }
         // The guest's mode is kept where the host's differs, or the attribute is kept.
@@ -2215,59 +1897,17 @@ impl Server {
     }
 }
 
-/// The bytes of a request's header that an answer of an error alone needs: its length,
-/// opcode and `unique`.
-pub const HEADER_BYTES: usize = 16;
-/// The bytes of a request's whole header (struct fuse_in_header), after which its
-/// arguments come.
-pub const IN_HEADER_BYTES: usize = 40;
-/// The bytes of a reply's header (struct fuse_out_header): its length, error and `unique`.
-const OUT_HEADER_BYTES: usize = 16;
-
-/// The answer to `req` where no directory is shared yet: ENODEV, or none for a request
-/// that takes no reply.
-pub fn unattached(req: &[u8]) -> Option<Vec<u8>> {
-    failed(req, 19)
-}
-
-/// The answer to a request longer than any FUSE request, of which `req` holds the first
-/// [`HEADER_BYTES`]: EINVAL, or none for one that takes no reply.
-pub fn too_long(req: &[u8]) -> Option<Vec<u8>> {
-    failed(req, EINVAL)
-}
-
-/// The answer to a request whose bytes, or whose answer's, its device could not reach in
-/// guest memory, of which `req` holds the first [`HEADER_BYTES`]: EIO, as a device whose
-/// DMA failed, or none for a request that takes no reply.
-pub fn unreachable(req: &[u8]) -> Option<Vec<u8>> {
-    failed(req, EIO)
-}
-
-/// `errno` as the answer to `req`, from the first [`HEADER_BYTES`] of its header.
-fn failed(req: &[u8], errno: Errno) -> Option<Vec<u8>> {
-    let opcode = u32::from_le_bytes(req.get(4..8)?.try_into().ok()?);
-    if matches!(opcode, op::FORGET | op::BATCH_FORGET | op::INTERRUPT) {
-        return None;
-    }
-    let unique = req.get(8..HEADER_BYTES)?;
-    let mut out = Vec::with_capacity(HEADER_BYTES);
-    out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&(-errno).to_le_bytes());
-    out.extend_from_slice(unique);
-    Some(out)
-}
-
 /// A descriptor of a node, for its attributes: a directory's own, or one opened for it.
 enum NodeFd {
-    Borrowed(RawFd),
-    Owned(OwnedFd),
+    Borrowed(host::Raw),
+    Owned(host::Owned),
 }
 
 impl NodeFd {
-    fn raw(&self) -> RawFd {
+    fn raw(&self) -> host::Raw {
         match self {
             NodeFd::Borrowed(fd) => *fd,
-            NodeFd::Owned(fd) => fd.as_raw_fd(),
+            NodeFd::Owned(fd) => fd.raw(),
         }
     }
 }
@@ -2279,19 +1919,15 @@ impl NodeFd {
 /// Linux gives a special file no `user.` ones (fs/xattr.c `xattr_permission`), the
 /// owner's among them (audit V08). `known` is the node's file type where the caller has
 /// just looked at it, which spares looking again.
-fn open_meta(dir: RawFd, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errno> {
+fn open_meta(dir: host::Raw, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errno> {
     let kind = match known {
         Some(kind) => kind,
         None => mode_of(&stat_at(dir, name)?) & S_IFMT,
     };
-    if matches!(kind, S_IFCHR | S_IFBLK) {
+    if DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK) {
         return Err(ENODATA);
     }
-    #[cfg(target_os = "macos")]
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_SYMLINK;
-    #[cfg(target_os = "linux")]
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
-    open_at(dir, name, flags, 0).map(NodeFd::Owned)
+    open_at(dir, name, META_FLAGS, 0).map(NodeFd::Owned)
 }
 
 fn node_fd(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
@@ -2323,7 +1959,7 @@ fn node_has_owner(s: &mut State, nodeid: u64) -> bool {
 
 /// The guest's owner of a node: its attribute's, or root. `st`, the node's own stat where
 /// the caller has just taken it.
-fn node_owner(s: &mut State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, Errno> {
+fn node_owner(s: &mut State, nodeid: u64, st: Option<&Stat>) -> Result<Owner, Errno> {
     let Ok(fd) = node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) else {
         return Ok(Owner::default());
     };
@@ -2338,12 +1974,12 @@ fn node_owner(s: &mut State, nodeid: u64, st: Option<&libc::stat>) -> Result<Own
 /// the node's path from the nearest of its ancestors held, or the root, and checked to be
 /// the directory the node was. One renamed or replaced on the host since is stale
 /// (ESTALE), which has the guest's kernel look it up again (audit V09).
-fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
+fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
     if nodeid == ROOT {
-        return Ok(s.root.as_raw_fd());
+        return Ok(s.root.raw());
     }
     if let Some(v) = s.volumes.get(&nodeid) {
-        return Ok(v.fd.as_raw_fd());
+        return Ok(v.fd.raw());
     }
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if !node.dir {
@@ -2351,7 +1987,7 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
     }
     let want = node.key;
     if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(nodeid)) {
-        return Ok(fd.as_raw_fd());
+        return Ok(fd.raw());
     }
     // The names down to it; a chain that breaks (a node the guest forgot) or loops (a
     // directory found again under one of its own, through a bind mount) leads nowhere.
@@ -2362,13 +1998,13 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
         names.push(node.name.clone());
         at = node.parent;
         if at == ROOT {
-            break s.root.as_raw_fd();
+            break s.root.raw();
         }
         if let Some(v) = s.volumes.get(&at) {
-            break v.fd.as_raw_fd();
+            break v.fd.raw();
         }
         if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(at)) {
-            break fd.as_raw_fd();
+            break fd.raw();
         }
         if names.len() > s.nodes.len() {
             return Err(ESTALE);
@@ -2376,78 +2012,13 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
     };
     names.reverse();
     let fd = open_beneath(from, &names)?;
-    let st = stat_fd(fd.as_raw_fd())?;
+    let st = stat_fd(fd.raw())?;
     if !is_dir(&st) || key(&st) != want {
         return Err(ESTALE);
     }
-    let raw = fd.as_raw_fd();
+    let raw = fd.raw();
     s.fds.insert(Slot::Node(nodeid), Held::Fd(fd));
     Ok(raw)
-}
-
-/// The directory `names` lead to under `dir`, a component after another, none followed
-/// if a symlink: on Linux in one openat2(2) refusing symlinks and any way out of `dir`
-/// (RESOLVE_NO_SYMLINKS, RESOLVE_BENEATH; Linux 5.6), and a component at a time with
-/// O_NOFOLLOW where the kernel has no openat2, or the path is too long for one call, and on
-/// macOS. A path that no longer leads to a directory is stale.
-fn open_beneath(dir: RawFd, names: &[CString]) -> Result<OwnedFd, Errno> {
-    #[cfg(target_os = "linux")]
-    if let Some(opened) = openat2_beneath(dir, names) {
-        return opened.map_err(stale);
-    }
-    let mut held: Option<OwnedFd> = None;
-    for name in names {
-        let at = held.as_ref().map_or(dir, std::os::fd::AsRawFd::as_raw_fd);
-        let next = open_at(at, name, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW, 0);
-        held = Some(next.map_err(stale)?);
-    }
-    held.ok_or(EINVAL)
-}
-
-/// [`open_beneath`] in one openat2(2); none where this kernel has no openat2 (ENOSYS, or a
-/// seccomp filter's EPERM) or the path is longer than one call takes.
-#[cfg(target_os = "linux")]
-fn openat2_beneath(dir: RawFd, names: &[CString]) -> Option<Result<OwnedFd, Errno>> {
-    /// struct open_how (include/uapi/linux/openat2.h), which libc's leaves unbuilt.
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-    let mut path = Vec::new();
-    for name in names {
-        if !path.is_empty() {
-            path.push(b'/');
-        }
-        path.extend_from_slice(name.to_bytes());
-    }
-    let path = CString::new(path).ok()?;
-    let how = OpenHow {
-        flags: u64::try_from(libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC).ok()?,
-        mode: 0,
-        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS,
-    };
-    // SAFETY: openat2(2) of a NUL-terminated path, with an open_how of the size given.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            dir,
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if let Ok(fd) = RawFd::try_from(fd)
-        && fd >= 0
-    {
-        // SAFETY: a fresh descriptor nothing else owns.
-        return Some(Ok(unsafe { OwnedFd::from_raw_fd(fd) }));
-    }
-    match last() {
-        ENOSYS | EPERM | ENAMETOOLONG => None,
-        e => Some(Err(e)),
-    }
 }
 
 /// An error opening a node's path, as the guest hears it: a path that no longer leads to a
@@ -2460,7 +2031,7 @@ fn stale(e: Errno) -> Errno {
 }
 
 /// A node's parent's descriptor and its name; a directory's own and `.`.
-fn at(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
+fn at(s: &mut State, nodeid: u64) -> Result<(host::Raw, CString), Errno> {
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if node.dir {
         return Ok((dir_fd(s, nodeid)?, cstring(".")?));
@@ -2474,7 +2045,7 @@ fn at(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
 /// does, which becomes its own. Only a file the guest knows by several names is looked at
 /// here; a name that leads to no file of its number is left for the caller's call to say
 /// so (ENOENT).
-fn reach(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
+fn reach(s: &mut State, nodeid: u64) -> Result<(host::Raw, CString), Errno> {
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     let (parent, name, own) = (node.parent, node.name.clone(), node.key);
     let links = node.links.clone();
@@ -2497,7 +2068,7 @@ fn reach(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
     Ok((dir, name))
 }
 
-fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
+fn node_stat(s: &mut State, nodeid: u64) -> Result<Stat, Errno> {
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if node.dir {
         return stat_fd(dir_fd(s, nodeid)?);
@@ -2508,7 +2079,7 @@ fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
 
 /// `name` in directory node `parent`: its node, counted once more and known by this name
 /// now, its attributes and its owner. A directory is not opened until it is used.
-fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, Owner), Errno> {
+fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner), Errno> {
     // A join share's root: its volumes, by name (D119).
     if s.joined && parent == ROOT {
         let id = *s.named.get(name).ok_or(ENOENT)?;
@@ -2700,32 +2271,32 @@ fn room_for_handle(s: &State) -> Result<(), Errno> {
 }
 
 /// Host open `flags` without those that act once, for a handle's opens after its first.
-fn once(flags: libc::c_int) -> libc::c_int {
-    flags & !(libc::O_CREAT | libc::O_EXCL | libc::O_TRUNC)
+fn once(flags: host::c_int) -> host::c_int {
+    flags & !(host::O_CREAT | host::O_EXCL | host::O_TRUNC)
 }
 
 /// Whether a descriptor opened with access mode `access` serves `flags`' access.
-fn allows(access: libc::c_int, flags: libc::c_int) -> bool {
-    match flags & libc::O_ACCMODE {
-        libc::O_RDONLY => access != libc::O_WRONLY,
-        libc::O_WRONLY => access != libc::O_RDONLY,
-        _ => access == libc::O_RDWR,
+fn allows(access: host::c_int, flags: host::c_int) -> bool {
+    match flags & host::O_ACCMODE {
+        host::O_RDONLY => access != host::O_WRONLY,
+        host::O_WRONLY => access != host::O_RDONLY,
+        _ => access == host::O_RDWR,
     }
 }
 
 /// A handle of the guest's on `node`, opened with host `flags` (a file's) or none (a
 /// directory's), its descriptor `held` where the open took one.
-fn add_handle(s: &mut State, node: u64, flags: Option<libc::c_int>, held: Option<Held>) -> u64 {
+fn add_handle(s: &mut State, node: u64, flags: Option<host::c_int>, held: Option<Held>) -> u64 {
     let fh = s.next_handle;
     s.next_handle += 1;
     let opened = s.opened.entry(node).or_default();
     opened.handles += 1;
     if let Some(flags) = flags {
-        let access = flags & libc::O_ACCMODE;
-        if access != libc::O_WRONLY {
+        let access = flags & host::O_ACCMODE;
+        if access != host::O_WRONLY {
             opened.reading += 1;
         }
-        if access != libc::O_RDONLY {
+        if access != host::O_RDONLY {
             opened.writing += 1;
         }
     }
@@ -2747,11 +2318,11 @@ fn release(s: &mut State, fh: u64) {
     };
     opened.handles = opened.handles.saturating_sub(1);
     if let Some(flags) = h.flags {
-        let access = flags & libc::O_ACCMODE;
-        if access != libc::O_WRONLY {
+        let access = flags & host::O_ACCMODE;
+        if access != host::O_WRONLY {
             opened.reading = opened.reading.saturating_sub(1);
         }
-        if access != libc::O_RDONLY {
+        if access != host::O_RDONLY {
             opened.writing = opened.writing.saturating_sub(1);
         }
     }
@@ -2772,14 +2343,14 @@ fn is_file(s: &State, fh: u64) -> bool {
 /// checked to be the file it was. A handle whose file no path reaches, unpinned, or whose
 /// path leads to another file now (renamed or replaced on the host), is stale (ESTALE),
 /// which the guest's kernel reports as it reports a stale NFS handle (audit V09).
-fn file_fd(s: &mut State, fh: u64) -> Result<RawFd, Errno> {
+fn file_fd(s: &mut State, fh: u64) -> Result<host::Raw, Errno> {
     let h = s.handles.get(&fh).ok_or(EBADF)?;
     let (node, flags) = (h.node, h.flags.ok_or(EBADF)?);
     if let Some((pin, _)) = s.pins.get(&node) {
-        return Ok(pin.as_raw_fd());
+        return Ok(pin.raw());
     }
     if let Some(Held::Fd(fd)) = s.fds.get(Slot::Handle(fh)) {
-        return Ok(fd.as_raw_fd());
+        return Ok(fd.raw());
     }
     if s.unreached.get(&node).is_some_and(|&first| fh < first) {
         return Err(ESTALE);
@@ -2794,7 +2365,7 @@ fn file_fd(s: &mut State, fh: u64) -> Result<RawFd, Errno> {
     if key(&st) != want {
         return Err(ESTALE);
     }
-    let raw = fd.as_raw_fd();
+    let raw = fd.raw();
     s.fds.insert(Slot::Handle(fh), Held::Fd(fd));
     Ok(raw)
 }
@@ -2810,7 +2381,7 @@ fn dir_stream(s: &mut State, fh: u64) -> Result<&mut DirStream, Errno> {
     let node = h.node;
     if !matches!(s.fds.get(Slot::Handle(fh)), Some(Held::Dir(_))) {
         let dir = match s.pins.get(&node) {
-            Some((pin, _)) => pin.as_raw_fd(),
+            Some((pin, _)) => pin.raw(),
             None if s.unreached.get(&node).is_some_and(|&first| fh < first) => return Err(ESTALE),
             None => dir_fd(s, node)?,
         };
@@ -2829,7 +2400,7 @@ fn dir_stream(s: &mut State, fh: u64) -> Result<&mut DirStream, Errno> {
 /// files do after an unlink. Pins are the descriptors the server cannot let go, and count
 /// against its budget: past it, none is taken, and the node's handles answer ESTALE once it
 /// is removed (audit V09).
-fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Removal {
+fn pin_before_removal(s: &mut State, volume: u64, dir: host::Raw, name: &CStr) -> Removal {
     let Ok(st) = stat_at(dir, name) else {
         return Removal::Nothing;
     };
@@ -2844,13 +2415,13 @@ fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Re
         return Removal::Nothing;
     }
     let access = match (opened.reading > 0, opened.writing > 0) {
-        (_, false) => libc::O_RDONLY,
-        (false, true) => libc::O_WRONLY,
-        (true, true) => libc::O_RDWR,
+        (_, false) => host::O_RDONLY,
+        (false, true) => host::O_WRONLY,
+        (true, true) => host::O_RDWR,
     };
     // A file the removal leaves another name of needs no pin where there is no room: that
     // name reaches it, and the guest's lookup of it makes it the node's path.
-    if !room_for_pin(s) && !is_dir(&st) && st.st_nlink > 1 {
+    if !room_for_pin(s) && !is_dir(&st) && st.nlink > 1 {
         return Removal::Nothing;
     }
     let fd = if !room_for_pin(s) {
@@ -2859,16 +2430,16 @@ fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Re
         open_at(
             dir,
             name,
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
             0,
         )
         .ok()
     } else {
-        open_regular(dir, name, access | libc::O_NOFOLLOW, 0)
+        open_regular(dir, name, access | host::O_NOFOLLOW, 0)
             .ok()
             .map(|(fd, _)| fd)
     };
-    match fd.filter(|fd| stat_fd(fd.as_raw_fd()).is_ok_and(|now| key(&now) == key(&st))) {
+    match fd.filter(|fd| stat_fd(fd.raw()).is_ok_and(|now| key(&now) == key(&st))) {
         Some(fd) => {
             s.pins.insert(node, (fd, access));
             Removal::Pinned(node)
@@ -2886,7 +2457,7 @@ fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Re
 /// refuses the access its open handles have, one descriptor taken while the old mode allows
 /// it, pinned, so that they go on serving, as a kernel's open files do after a chmod. Past
 /// the budget none is taken, and they are stale once their own descriptors go.
-fn pin_before_chmod(s: &mut State, node: u64, dir: RawFd, name: &CStr, mode: u32) {
+fn pin_before_chmod(s: &mut State, node: u64, dir: host::Raw, name: &CStr, mode: u32) {
     if s.pins.contains_key(&node) || !room_for_pin(s) {
         return;
     }
@@ -2894,9 +2465,9 @@ fn pin_before_chmod(s: &mut State, node: u64, dir: RawFd, name: &CStr, mode: u32
         return;
     };
     let access = match (opened.reading > 0, opened.writing > 0) {
-        (_, false) => libc::O_RDONLY,
-        (false, true) => libc::O_WRONLY,
-        (true, true) => libc::O_RDWR,
+        (_, false) => host::O_RDONLY,
+        (false, true) => host::O_WRONLY,
+        (true, true) => host::O_RDWR,
     };
     if !refuses(mode, access) {
         return;
@@ -2908,16 +2479,16 @@ fn pin_before_chmod(s: &mut State, node: u64, dir: RawFd, name: &CStr, mode: u32
         Ok(st) if is_dir(&st) => open_at(
             dir,
             name,
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
             0,
         )
         .ok(),
-        Ok(_) => open_regular(dir, name, access | libc::O_NOFOLLOW, 0)
+        Ok(_) => open_regular(dir, name, access | host::O_NOFOLLOW, 0)
             .ok()
             .map(|(fd, _)| fd),
         Err(_) => None,
     };
-    if let Some(fd) = fd.filter(|fd| stat_fd(fd.as_raw_fd()).is_ok_and(|now| key(&now) == want)) {
+    if let Some(fd) = fd.filter(|fd| stat_fd(fd.raw()).is_ok_and(|now| key(&now) == want)) {
         s.pins.insert(node, (fd, access));
     }
 }
@@ -2956,10 +2527,13 @@ fn room_for_pin(s: &State) -> bool {
 /// Whether a file of `mode`, its owner's, refuses an open with `flags`' access to its owner,
 /// the share process: once its handle's descriptor were let go, none could be opened for it
 /// again by its path.
-fn refuses(mode: u32, flags: libc::c_int) -> bool {
-    let access = flags & libc::O_ACCMODE;
-    let reads = access != libc::O_WRONLY;
-    let writes = access != libc::O_RDONLY;
+fn refuses(mode: u32, flags: host::c_int) -> bool {
+    if !MODES_REFUSE_OPENS {
+        return false;
+    }
+    let access = flags & host::O_ACCMODE;
+    let reads = access != host::O_WRONLY;
+    let writes = access != host::O_RDONLY;
     (reads && mode & 0o400 == 0) || (writes && mode & 0o200 == 0)
 }
 
@@ -2969,165 +2543,6 @@ struct Entry {
     name: CString,
     ino: u64,
     kind: u32,
-}
-
-/// A directory the guest opened, read as it asks from a descriptor of its own. A handle
-/// holds none of the listing: a copy of it each, taken at OPENDIR, made a guest that opened
-/// a large directory again and again, never releasing it, cost the host memory without
-/// bound (audit V05). Handles are as many as the descriptors the process may have.
-///
-/// Linux: read by getdents64(2) at the offset each request carries, the kernel's cookie
-/// for what follows an entry (`d_off`), as virtiofsd reads one; nothing but the
-/// descriptor is kept between requests (glibc's own stream keeps 32 KiB, PM M130).
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-struct DirStream(OwnedFd);
-
-#[cfg(target_os = "linux")]
-impl DirStream {
-    fn open(dir: RawFd) -> Result<DirStream, Errno> {
-        open_at(dir, c".", libc::O_RDONLY | libc::O_DIRECTORY, 0).map(DirStream)
-    }
-
-    /// Gives `each` the entries from `offset` on, with the offset that follows each, until
-    /// it says to stop or the directory ends; `want` bytes of them are read at a time.
-    fn read(
-        &mut self,
-        offset: u64,
-        want: usize,
-        mut each: impl FnMut(&Entry, u64) -> bool,
-    ) -> Result<(), Errno> {
-        let fd = self.0.as_raw_fd();
-        // SAFETY: lseek(2) of a descriptor we hold.
-        if unsafe { libc::lseek(fd, offset as libc::off_t, libc::SEEK_SET) } < 0 {
-            return Err(last());
-        }
-        // Room for a record of the longest name, 280 bytes, whatever the guest wants.
-        let mut buf = vec![0u8; want.clamp(1024, MAX_WRITE as usize)];
-        loop {
-            // SAFETY: getdents64(2) into a buffer of its length.
-            let n = unsafe { libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len()) };
-            let got = usize::try_from(n).map_err(|_| last())?;
-            if got == 0 {
-                return Ok(());
-            }
-            let mut records = buf.get(..got).unwrap_or_default();
-            // struct linux_dirent64: d_ino, d_off, d_reclen, d_type, then the name.
-            while !records.is_empty() {
-                let u64_at = |at: usize| {
-                    let bytes = records.get(at..at + 8)?;
-                    Some(u64::from_ne_bytes(bytes.try_into().ok()?))
-                };
-                let (Some(ino), Some(next)) = (u64_at(0), u64_at(8)) else {
-                    return Err(EIO);
-                };
-                let reclen = records
-                    .get(16..18)
-                    .and_then(|b| b.try_into().ok())
-                    .map(u16::from_ne_bytes)
-                    .ok_or(EIO)?;
-                let record = records
-                    .get(..usize::from(reclen))
-                    .filter(|r| r.len() > 19)
-                    .ok_or(EIO)?;
-                let name = record.get(19..).unwrap_or_default();
-                let entry = Entry {
-                    name: CStr::from_bytes_until_nul(name).map_err(|_| EIO)?.to_owned(),
-                    ino,
-                    kind: u32::from(record.get(18).copied().unwrap_or(0)),
-                };
-                if !each(&entry, next) {
-                    return Ok(());
-                }
-                records = records.get(usize::from(reclen)..).unwrap_or_default();
-            }
-        }
-    }
-}
-
-/// macOS: a directory stream of the handle's own (2.2 KiB, PM M130), its position counted
-/// in entries, the offsets requests carry, with the entry the last reply had no room for;
-/// a request at any other offset reads again from the start.
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-struct DirStream {
-    stream: std::ptr::NonNull<libc::DIR>,
-    /// Entries read since the stream's start.
-    at: u64,
-    /// The entry at `at`, read already, which the last reply had no room for.
-    held: Option<Entry>,
-}
-
-// SAFETY: the stream is this value's alone, used by one thread at a time (under the
-// server's state lock); a DIR holds nothing tied to the thread that opened it.
-#[cfg(target_os = "macos")]
-unsafe impl Send for DirStream {}
-
-#[cfg(target_os = "macos")]
-impl Drop for DirStream {
-    fn drop(&mut self) {
-        // SAFETY: closedir(3) of the stream this value owns, which closes its descriptor.
-        unsafe { libc::closedir(self.stream.as_ptr()) };
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl DirStream {
-    fn open(dir: RawFd) -> Result<DirStream, Errno> {
-        use std::os::fd::IntoRawFd as _;
-        let fd = open_at(dir, c".", libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
-        // SAFETY: fdopendir(3) of a descriptor we own; the stream owns it once it exists.
-        let stream = std::ptr::NonNull::new(unsafe { libc::fdopendir(fd.as_raw_fd()) }).ok_or_else(last)?;
-        let _ = fd.into_raw_fd();
-        Ok(DirStream {
-            stream,
-            at: 0,
-            held: None,
-        })
-    }
-
-    fn next(&mut self) -> Option<Entry> {
-        // SAFETY: readdir(3) of our open stream; the entry is copied before the next call.
-        let entry = unsafe { libc::readdir(self.stream.as_ptr()).as_ref() }?;
-        Some(Entry {
-            // SAFETY: readdir's entry, its name NUL-terminated.
-            name: unsafe { CStr::from_ptr(entry.d_name.as_ptr()) }.to_owned(),
-            ino: entry.d_ino,
-            kind: u32::from(entry.d_type),
-        })
-    }
-
-    /// Gives `each` the entries from `offset` on, with the offset that follows each, until
-    /// it says to stop or the directory ends.
-    fn read(
-        &mut self,
-        offset: u64,
-        _want: usize,
-        mut each: impl FnMut(&Entry, u64) -> bool,
-    ) -> Result<(), Errno> {
-        if offset != self.at {
-            // SAFETY: rewinddir(3) of our open stream.
-            unsafe { libc::rewinddir(self.stream.as_ptr()) };
-            self.at = 0;
-            self.held = None;
-            while self.at < offset {
-                if self.next().is_none() {
-                    return Ok(());
-                }
-                self.at += 1;
-            }
-        }
-        loop {
-            let Some(entry) = self.held.take().or_else(|| self.next()) else {
-                return Ok(());
-            };
-            if !each(&entry, self.at.saturating_add(1)) {
-                self.held = Some(entry);
-                return Ok(());
-            }
-            self.at += 1;
-        }
-    }
 }
 
 fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags: u32) -> Result<(), Errno> {
@@ -3140,12 +2555,28 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     } else {
         Removal::Nothing
     };
+    let exchange = flags & linux::RENAME_EXCHANGE != 0;
+    if RENAME_NEEDS_NONE_BENEATH {
+        // The directory renamed, and in an exchange the one it is exchanged with.
+        let moved: Vec<u64> = s
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                n.dir
+                    && (n.parent == olddir && n.name.as_c_str() == old
+                        || exchange && n.parent == newdir && n.name.as_c_str() == new)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for moved in moved {
+            let_go_beneath(s, moved, [olddir, newdir]);
+        }
+    }
     let rc = renamed(od, old, nd, new, flags);
     removed(s, removal, rc.is_ok());
     rc?;
     // The names nodes are known by follow, directories' as files': a directory let go is
     // found again by its path.
-    let exchange = flags & linux::RENAME_EXCHANGE != 0;
     for node in s.nodes.values_mut() {
         if node.parent == olddir && node.name.as_c_str() == old {
             (node.parent, node.name) = (newdir, new.to_owned());
@@ -3163,42 +2594,41 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     Ok(())
 }
 
-/// `renameat2(2)` of `old` in `od` to `new` in `nd` with Linux's `flags`, as the host makes
-/// it: `renameat`, macOS's `renameatx_np`, or Linux's own system call.
-fn renamed(od: RawFd, old: &CStr, nd: RawFd, new: &CStr, flags: u32) -> Result<(), Errno> {
-    let rc = if flags == 0 {
-        // SAFETY: renameat(2) of NUL-terminated names in directories we hold.
-        unsafe { libc::renameat(od, old.as_ptr(), nd, new.as_ptr()) }
-    } else {
-        #[cfg(target_os = "macos")]
-        {
-            let mut host = 0;
-            if flags & linux::RENAME_NOREPLACE != 0 {
-                host |= libc::RENAME_EXCL;
+/// The descriptors held for directory node `dir` and every node beneath it let go, but
+/// `keep`'s, which a request holds: they are a cache, each opened again along its node's
+/// path as it is needed (audit V09), and NTFS renames no directory a handle beneath is open
+/// in (`RENAME_NEEDS_NONE_BENEATH`). A pin is no cache, nor beneath: its file was unlinked,
+/// renamed over, or kept against a mode that refuses opens, which NTFS's are not.
+fn let_go_beneath(s: &mut State, dir: u64, keep: [u64; 2]) {
+    let within = |s: &State, mut node: u64| {
+        for _ in 0..=s.nodes.len() {
+            if node == dir {
+                return true;
             }
-            if flags & linux::RENAME_EXCHANGE != 0 {
-                host |= libc::RENAME_SWAP;
-            }
-            if flags & !(linux::RENAME_NOREPLACE | linux::RENAME_EXCHANGE) != 0 {
-                return Err(EINVAL);
-            }
-            // SAFETY: renameatx_np(2) of NUL-terminated names in directories we hold.
-            unsafe { libc::renameatx_np(od, old.as_ptr(), nd, new.as_ptr(), host) }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            // The system call itself: musl 1.2.5, which Rust's musl targets link, has no
-            // renameat2 wrapper, and glibc's is the same call.
-            // SAFETY: renameat2(2) of NUL-terminated names in directories we hold.
-            unsafe {
-                libc::syscall(libc::SYS_renameat2, od, old.as_ptr(), nd, new.as_ptr(), flags) as libc::c_int
+            match s.nodes.get(&node) {
+                Some(n) if node != ROOT => node = n.parent,
+                _ => return false,
             }
         }
+        false
     };
-    if rc != 0 {
-        return Err(last());
+    let slots: Vec<Slot> = s
+        .fds
+        .open
+        .keys()
+        .copied()
+        .filter(|slot| {
+            let node = match *slot {
+                Slot::Node(n) if keep.contains(&n) => return false,
+                Slot::Node(n) => n,
+                Slot::Handle(fh) => s.handles.get(&fh).map_or(ROOT, |h| h.node),
+            };
+            within(s, node)
+        })
+        .collect();
+    for slot in slots {
+        s.fds.remove(slot);
     }
-    Ok(())
 }
 
 fn hidden(name: &CStr) -> bool {
@@ -3209,11 +2639,11 @@ fn hidden(name: &CStr) -> bool {
 /// A listing's `d_type` of a node of kind `kind` (`S_IFCHR` and the rest).
 fn dirent_kind(kind: u32) -> u32 {
     u32::from(match kind {
-        S_IFCHR => libc::DT_CHR,
-        S_IFBLK => libc::DT_BLK,
-        S_IFIFO => libc::DT_FIFO,
-        S_IFSOCK => libc::DT_SOCK,
-        _ => libc::DT_REG,
+        S_IFCHR => host::DT_CHR,
+        S_IFBLK => host::DT_BLK,
+        S_IFIFO => host::DT_FIFO,
+        S_IFSOCK => host::DT_SOCK,
+        _ => host::DT_REG,
     })
 }
 
@@ -3221,9 +2651,9 @@ fn dirent_kind(kind: u32) -> u32 {
 /// regular file in its place ([`Owner::kind`]): none for any other. Only an empty file
 /// the share made so (`0600`) is asked of its attribute, so that a listing reads no
 /// attribute of the rest.
-fn emulated_at(dir: RawFd, name: &CStr) -> Option<u32> {
+fn emulated_at(dir: host::Raw, name: &CStr) -> Option<u32> {
     let st = stat_at(dir, name).ok()?;
-    if mode_of(&st) & S_IFMT != S_IFREG || st.st_size != 0 || mode_of(&st) & 0o7777 != 0o600 {
+    if mode_of(&st) & S_IFMT != S_IFREG || st.size != 0 || mode_of(&st) & 0o7777 != 0o600 {
         return None;
     }
     let fd = open_meta(dir, name, Some(S_IFREG)).ok()?;
@@ -3231,216 +2661,13 @@ fn emulated_at(dir: RawFd, name: &CStr) -> Option<u32> {
     Owner::parse(&owner)?.kind
 }
 
-/// Where the host keeps a guest's extended attribute `name`: under its own name on macOS,
-/// which keeps no namespaces; and on Linux, where only a privileged process sets one in
-/// `trusted.` or `security.` (xattr(7)), those under `user.shards.` (overlayfs keeps its
-/// `trusted.overlay.` ones on its upper directory). The guest's names in `user.` are its
-/// own; `user.shards.` is the server's, as the owner's attribute is.
-fn host_xattr(name: &CStr) -> Result<CString, Errno> {
-    let n = name.to_bytes();
-    if n.starts_with(PRIVATE_XATTR) {
-        return Err(EOPNOTSUPP);
-    }
-    #[cfg(target_os = "linux")]
-    if n.starts_with(b"trusted.") || n.starts_with(b"security.") {
-        let mut host = PRIVATE_XATTR.to_vec();
-        host.extend_from_slice(n);
-        return CString::new(host).map_err(|_| EINVAL);
-    }
-    Ok(name.to_owned())
-}
-
-/// The prefix the host keeps the guest's `trusted.` and `security.` attributes under on
-/// Linux ([`host_xattr`]), which a guest's own names may not take.
-const PRIVATE_XATTR: &[u8] = b"user.shards.";
-
-/// The guest's name for a host attribute `host`: [`host_xattr`]'s, turned back; none for
-/// one the guest does not see: the server's own, another of `user.shards.`'s, and on Linux
-/// the host's own `trusted.` and `security.` attributes, which its kernel keeps (an SELinux
-/// label, file capabilities or an IMA hash the host set), where the guest's of those names
-/// are under `user.shards.`, and reading them by those names reaches the guest's alone.
-fn guest_xattr(host: &[u8]) -> Option<&[u8]> {
-    match host.strip_prefix(PRIVATE_XATTR) {
-        #[cfg(target_os = "linux")]
-        Some(rest) if rest.starts_with(b"trusted.") || rest.starts_with(b"security.") => Some(rest),
-        Some(_) => None,
-        #[cfg(target_os = "linux")]
-        None if host.starts_with(b"trusted.") || host.starts_with(b"security.") => None,
-        None => Some(host),
-    }
-}
-
-/// The names of `fd`'s attributes the guest may see: those in a Linux namespace, but for
-/// the server's own.
-fn list_xattr(fd: RawFd) -> Result<Vec<u8>, Errno> {
-    let mut buf = vec![0u8; 4096];
-    let n = loop {
-        // SAFETY: flistxattr(2) into a buffer of its length.
-        #[cfg(target_os = "macos")]
-        let n = unsafe { libc::flistxattr(fd, buf.as_mut_ptr().cast(), buf.len(), 0) };
-        // SAFETY: as above.
-        #[cfg(target_os = "linux")]
-        let n = unsafe { libc::flistxattr(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n >= 0 {
-            break usize::try_from(n).unwrap_or(0);
-        }
-        match last() {
-            ERANGE if buf.len() < 1 << 20 => buf.resize(buf.len() * 4, 0),
-            e => return Err(e),
-        }
-    };
-    let mut out = Vec::new();
-    for name in buf
-        .get(..n)
-        .unwrap_or_default()
-        .split(|&b| b == 0)
-        .filter(|n| !n.is_empty())
-    {
-        let ours =
-            name == OWNER_XATTR.as_bytes() || name.strip_prefix(b"user.") == Some(OWNER_XATTR.as_bytes());
-        let Some(name) = guest_xattr(name).filter(|_| !ours) else {
-            continue;
-        };
-        let linux = [&b"user."[..], b"trusted.", b"security.", b"system."]
-            .iter()
-            .any(|p| name.starts_with(p));
-        if linux {
-            out.extend_from_slice(name);
-            out.push(0);
-        }
-    }
-    Ok(out)
-}
-
-fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
-    let mut done = 0;
-    while done < buf.len() {
-        let rest = buf.get_mut(done..).ok_or(EIO)?;
-        // SAFETY: pread(2) into the rest of our buffer.
-        let n = unsafe {
-            libc::pread(
-                fd,
-                rest.as_mut_ptr().cast(),
-                rest.len(),
-                (offset + done as u64) as libc::off_t,
-            )
-        };
-        match n {
-            0 => break,
-            n if n > 0 => done += n as usize,
-            _ if last() == 4 => {}
-            _ => return Err(last()),
-        }
-    }
-    Ok(done)
-}
-
-/// Drops the host's cached pages of `len` bytes of `fd` at `offset`, clean ones that no
-/// process maps (posix_fadvise POSIX_FADV_DONTNEED), as the guest took them: a hint, which
-/// a host without it ignores.
-fn drop_cached(fd: RawFd, offset: u64, len: usize) {
-    #[cfg(target_os = "linux")]
-    {
-        let (Ok(offset), Ok(len)) = (libc::off_t::try_from(offset), libc::off_t::try_from(len)) else {
-            return;
-        };
-        // SAFETY: advice on a range of a descriptor the server holds.
-        unsafe { libc::posix_fadvise(fd, offset, len, libc::POSIX_FADV_DONTNEED) };
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = (fd, offset, len);
-}
-
-fn pwrite(fd: RawFd, buf: &[u8], offset: u64) -> Result<usize, Errno> {
-    let mut done = 0;
-    while done < buf.len() {
-        let rest = buf.get(done..).ok_or(EIO)?;
-        // SAFETY: pwrite(2) of the rest of the guest's data.
-        let n = unsafe {
-            libc::pwrite(
-                fd,
-                rest.as_ptr().cast(),
-                rest.len(),
-                (offset + done as u64) as libc::off_t,
-            )
-        };
-        match n {
-            n if n > 0 => done += n as usize,
-            0 => break,
-            _ if last() == 4 => {}
-            _ => return Err(last()),
-        }
-    }
-    Ok(done)
-}
-
-/// Durable on stable storage: F_FULLFSYNC on macOS, whose fsync leaves the drive's cache.
-fn durable(fd: RawFd) -> Result<(), Errno> {
-    #[cfg(target_os = "macos")]
-    // SAFETY: fcntl(2) of a descriptor we hold.
-    let rc = unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) };
-    #[cfg(target_os = "linux")]
-    // SAFETY: fsync(2) of a descriptor we hold.
-    let rc = unsafe { libc::fsync(fd) };
-    if rc != 0 {
-        return Err(last());
-    }
-    Ok(())
-}
-
-/// fallocate(2)'s allocation, with or without KEEP_SIZE; nothing else Linux's takes.
-fn fallocate(fd: RawFd, mode: u32, offset: u64, length: u64) -> Result<(), Errno> {
-    if mode & !linux::FALLOC_FL_KEEP_SIZE != 0 {
-        return Err(EOPNOTSUPP);
-    }
-    let end = offset.checked_add(length).ok_or(EINVAL)?;
-    #[cfg(target_os = "linux")]
-    {
-        let _ = end;
-        // SAFETY: fallocate(2) of a descriptor we hold.
-        if unsafe {
-            libc::fallocate(
-                fd,
-                mode as libc::c_int,
-                offset as libc::off_t,
-                length as libc::off_t,
-            )
-        } != 0
-        {
-            return Err(last());
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let size = stat_fd(fd)?.st_size as u64;
-        if end > size {
-            let mut store = libc::fstore_t {
-                fst_flags: libc::F_ALLOCATEALL,
-                fst_posmode: libc::F_PEOFPOSMODE,
-                fst_offset: 0,
-                fst_length: (end - size) as libc::off_t,
-                fst_bytesalloc: 0,
-            };
-            // SAFETY: fcntl(2) F_PREALLOCATE with a store of ours.
-            if unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &mut store) } != 0 {
-                return Err(last());
-            }
-            if mode & linux::FALLOC_FL_KEEP_SIZE == 0 {
-                // SAFETY: ftruncate(2) of a descriptor we hold.
-                if unsafe { libc::ftruncate(fd, end as libc::off_t) } != 0 {
-                    return Err(last());
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
+// Unix's alone until the slice that runs them on Windows (D197).
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd as _;
 
     /// A request: its header, then `body`.
     fn req(opcode: u32, nodeid: u64, uid: u32, body: &[u8]) -> Vec<u8> {
@@ -3473,9 +2700,124 @@ mod tests {
     /// A share of a directory of the test's own, removed as it goes.
     fn dir() -> (shards_testdir::TempDir, Server) {
         let p = shards_testdir::TempDir::new("fs").unwrap();
-        let fd = std::fs::File::open(&p).unwrap();
-        let server = Server::new(fd.into(), false, None).unwrap();
+        let server = Server::new(root_of(&p), false, None).unwrap();
         (p, server)
+    }
+
+    /// A directory's handle, as a share's root is opened: on Windows with backup semantics,
+    /// which a directory is opened by.
+    fn root_of(p: &std::path::Path) -> host::Owned {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            std::fs::File::options()
+                .read(true)
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                .open(p)
+                .unwrap()
+                .into()
+        }
+        #[cfg(unix)]
+        std::fs::File::open(p).unwrap().into()
+    }
+
+    /// The host's own type and permission bits of `p`, never following it: on Windows
+    /// NTFS's with WSL's metadata, as the server reads them.
+    fn host_mode(p: &std::path::Path) -> u32 {
+        #[cfg(windows)]
+        return host_stat(p).mode;
+        #[cfg(unix)]
+        std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(p).unwrap())
+    }
+
+    /// The host's device and inode of `p`, which the server keys its nodes by.
+    fn host_key(p: &std::path::Path) -> (u64, u64) {
+        #[cfg(windows)]
+        {
+            let st = host_stat(p);
+            (st.dev, st.ino)
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let m = std::fs::symlink_metadata(p).unwrap();
+            (m.dev(), m.ino())
+        }
+    }
+
+    /// `p`'s stat as the server's Windows layer reads it, its reparse point not followed.
+    #[cfg(windows)]
+    fn host_stat(p: &std::path::Path) -> Stat {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let f = std::fs::File::options()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(p)
+            .unwrap();
+        super::super::ntfs::stat(std::os::windows::io::AsHandle::as_handle(&f)).unwrap()
+    }
+
+    /// A link `link` to the directory `target`, as a host's user may plant one: on Unix a
+    /// symlink; on Windows a junction (a mount point reparse point), which any user makes
+    /// and NTFS follows, where a symlink needs Developer Mode.
+    fn link_dir(target: &std::path::Path, link: &std::path::Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            };
+            let full = std::fs::canonicalize(target).unwrap();
+            let full = full.to_str().unwrap();
+            let print = full.strip_prefix(r"\\?\").unwrap_or(full);
+            let wide = |t: &str| t.encode_utf16().collect::<Vec<u16>>();
+            let (sub, print) = (wide(&format!(r"\??\{print}")), wide(print));
+            // A mount point's REPARSE_DATA_BUFFER past its header: its substitute name's
+            // offset and length, its print name's, then each NUL-ended.
+            let mut data = Vec::new();
+            for word in [0, sub.len() * 2, sub.len() * 2 + 2, print.len() * 2] {
+                data.extend(u16::try_from(word).unwrap().to_le_bytes());
+            }
+            for c in sub.iter().chain(&[0]).chain(&print).chain(&[0]) {
+                data.extend(c.to_le_bytes());
+            }
+            std::fs::create_dir(link).unwrap();
+            let dir = std::fs::File::options()
+                .read(true)
+                .write(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(link)
+                .unwrap();
+            const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+            super::super::ntfs::set_reparse(
+                std::os::windows::io::AsHandle::as_handle(&dir),
+                IO_REPARSE_TAG_MOUNT_POINT,
+                &data,
+            )
+            .unwrap();
+        }
+    }
+
+    /// A link [`link_dir`] made, removed.
+    fn unlink_dir(link: &std::path::Path) {
+        #[cfg(unix)]
+        std::fs::remove_file(link).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(link).unwrap();
+    }
+
+    /// `p` made read-only on the host, or writable again: its write bits taken away on
+    /// Unix, its read-only attribute on Windows.
+    fn host_read_only(p: &std::path::Path, read_only: bool) {
+        let mut perms = std::fs::metadata(p).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(read_only);
+        std::fs::set_permissions(p, perms).unwrap();
     }
 
     /// DAX_SMALLEST is what PM M338's measurement found by its rule: 1 MiB, the smallest
@@ -3499,11 +2841,7 @@ mod tests {
         std::fs::write(p.join("big"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
         std::fs::write(p.join("small"), vec![1u8; DAX_SMALLEST as usize - 1]).unwrap();
         std::fs::write(p.join("kept"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
-        std::fs::set_permissions(
-            p.join("kept"),
-            std::os::unix::fs::PermissionsExt::from_mode(0o444),
-        )
-        .unwrap();
+        host_read_only(&p.join("kept"), true);
         let mut init = Vec::new();
         for word in [
             7u32,
@@ -3520,8 +2858,7 @@ mod tests {
         let flags = u32::from_le_bytes(out[12..16].try_into().unwrap());
         let alignment = u16::from_le_bytes(out[30..32].try_into().unwrap());
         let flags2 = u32::from_le_bytes(out[32..36].try_into().unwrap());
-        // SAFETY: sysconf(3) of a constant.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+        let page = crate::platform::page_size().unwrap() as u64;
         assert_ne!(flags & init::MAP_ALIGNMENT, 0);
         assert_eq!(u32::from(alignment), page.trailing_zeros());
         assert_ne!(flags2 & init::HAS_INODE_DAX, 0);
@@ -3554,7 +2891,7 @@ mod tests {
         assert_eq!(s.descriptor(999, false).err(), Some(ENOENT));
         // A read-only share: its file read alone, never written; where a mapping's
         // descriptor is opened to write too, neither, and no file is mapped.
-        let ro = Server::new(std::fs::File::open(&p).unwrap().into(), true, None).unwrap();
+        let ro = Server::new(root_of(&p), true, None).unwrap();
         let (err, out) = answer(&ro, &req(op::LOOKUP, ROOT, 0, &name("big")));
         assert_eq!(err, 0);
         let node = u64::from_le_bytes(out[0..8].try_into().unwrap());
@@ -3579,7 +2916,7 @@ mod tests {
         let (b, _) = dir();
         std::fs::write(a.join("x"), "x").unwrap();
         std::fs::write(b.join("y"), "y").unwrap();
-        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let fd = root_of;
         let c = |n: &str| CString::new(n).unwrap();
         let s = Server::joined(fd(&root), 64).unwrap();
         s.add(c("a"), fd(&a), false, None).unwrap();
@@ -3645,7 +2982,7 @@ mod tests {
         };
         assert_eq!(read(&s), (0, b"kept bytes".to_vec()));
         let tables = s.save().unwrap();
-        let again = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let again = Server::new(root_of(&root), false, None).unwrap();
         again.restore(&tables).unwrap();
         assert_eq!(read(&again), (0, b"kept bytes".to_vec()));
         assert_eq!(id(answer(&again, &req(op::LOOKUP, d, 0, &name("f")))), f);
@@ -3669,11 +3006,11 @@ mod tests {
             }
         }
         assert!(moved >= 4, "the root's and each node's: {moved}");
-        let rebooted = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let rebooted = Server::new(root_of(&root), false, None).unwrap();
         rebooted.restore(&renumbered).unwrap();
         assert_eq!(read(&rebooted), (0, b"kept bytes".to_vec()));
         let (other, _) = dir();
-        let elsewhere = Server::new(std::fs::File::open(&other).unwrap().into(), false, None).unwrap();
+        let elsewhere = Server::new(root_of(&other), false, None).unwrap();
         assert!(
             elsewhere
                 .restore(&tables)
@@ -3699,8 +3036,8 @@ mod tests {
         assert_eq!(read_h(&s), (0, b"held after its removal".to_vec()));
         let tables = s.save().unwrap();
         let private = shards_testdir::TempDir::new("fs-ghosts").unwrap();
-        let held = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
-        held.keep_ghosts_in(std::fs::File::open(&private).unwrap().into());
+        let held = Server::new(root_of(&root), false, None).unwrap();
+        held.keep_ghosts_in(root_of(&private));
         held.restore(&tables).unwrap();
         assert_eq!(read_h(&held), (0, b"held after its removal".to_vec()));
         assert!(
@@ -3708,7 +3045,7 @@ mod tests {
             "no name left"
         );
         assert_eq!(read(&held), (0, b"kept bytes".to_vec()));
-        let nowhere = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let nowhere = Server::new(root_of(&root), false, None).unwrap();
         assert!(
             nowhere
                 .restore(&tables)
@@ -3738,7 +3075,7 @@ mod tests {
         for n in ["a", "b", "c"] {
             std::fs::write(root.join(n), n).unwrap();
         }
-        let other = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let other = Server::new(root_of(&root), false, None).unwrap();
         let ids = |s: &Server| -> Vec<u64> {
             ["a", "b", "c"]
                 .iter()
@@ -3765,7 +3102,7 @@ mod tests {
         let (a, _) = dir();
         std::fs::create_dir_all(a.join("d/e")).unwrap();
         std::fs::write(a.join("d/e/f"), "f").unwrap();
-        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let fd = root_of;
         let s = Server::joined(fd(&root), 64).unwrap();
         s.add(CString::new("a").unwrap(), fd(&a), false, None).unwrap();
         let node = |r: (i32, Vec<u8>)| {
@@ -3814,7 +3151,7 @@ mod tests {
         let (p, _) = dir();
         std::fs::write(p.join("bound"), "b").unwrap();
         std::fs::write(p.join("secret"), "s").unwrap();
-        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let fd = root_of;
         let s = Server::joined(fd(&root), 64).unwrap();
         s.add(
             CString::new("f").unwrap(),
@@ -3856,8 +3193,7 @@ mod tests {
         let (path, _) = dir();
         std::fs::write(path.join("bound"), "b").unwrap();
         std::fs::write(path.join("secret"), "s").unwrap();
-        let fd = std::fs::File::open(&path).unwrap();
-        let s = Server::new(fd.into(), false, Some(CString::new("bound").unwrap())).unwrap();
+        let s = Server::new(root_of(&path), false, Some(CString::new("bound").unwrap())).unwrap();
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("bound"))).0, 0);
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("secret"))).0, -ENOENT);
         assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("bound"))).0, -EBUSY);
@@ -3957,23 +3293,24 @@ mod tests {
     /// symlink's mode (EOPNOTSUPP); a regular file's still changes.
     #[test]
     fn a_mode_change_follows_no_symlink() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (path, s) = dir();
         let elsewhere = shards_testdir::TempDir::new("fs-outside").unwrap();
         let outside = elsewhere.join("outside");
         std::fs::write(&outside, "secret").unwrap();
-        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&outside, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
         let mut body = name("link");
         body.extend(name(outside.to_str().unwrap()));
         assert_eq!(answer(&s, &req(op::SYMLINK, ROOT, 0, &body)).0, 0);
         let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("link")));
         assert_eq!(e, 0);
         let link = u64::from_le_bytes(entry[0..8].try_into().unwrap());
-        let mode = || std::fs::metadata(&outside).unwrap().permissions().mode() & 0o7777;
+        let mode = || host_mode(&outside) & 0o7777;
+        let before = mode();
         for valid in [fattr::MODE, fattr::KILL_SUIDGID] {
             let (e, _) = answer(&s, &req(op::SETATTR, link, 0, &setattr(valid, 0o777)));
             assert_eq!(e, -EOPNOTSUPP, "valid {valid:#x}");
-            assert_eq!(mode(), 0o600, "valid {valid:#x}: the file outside the share");
+            assert_eq!(mode(), before, "valid {valid:#x}: the file outside the share");
         }
         std::fs::write(path.join("file"), "f").unwrap();
         let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
@@ -3982,8 +3319,7 @@ mod tests {
             answer(&s, &req(op::SETATTR, file, 0, &setattr(fattr::MODE, 0o640))).0,
             0
         );
-        let changed = std::fs::metadata(path.join("file")).unwrap().permissions().mode();
-        assert_eq!(changed & 0o7777, 0o640);
+        assert_eq!(host_mode(&path.join("file")) & 0o7777, 0o640);
         let _ = std::fs::remove_dir_all(&path);
         let _ = std::fs::remove_file(&outside);
     }
@@ -4013,8 +3349,7 @@ mod tests {
     fn special_files_are_never_opened() {
         let (path, s) = dir();
         let fields = |v: [u32; 4]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
-        #[allow(clippy::unnecessary_cast)]
-        let fifo_mode = libc::S_IFIFO as u32 | 0o644;
+        let fifo_mode = S_IFIFO | 0o644;
         let mut mknod = fields([fifo_mode, 0, 0, 0]);
         mknod.extend(name("fifo"));
         assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &mknod)).0, 0);
@@ -4028,32 +3363,49 @@ mod tests {
             let errno = answered_or_stuck(&s, request, &path.join("fifo"));
             assert_eq!(errno, Some(-EBADF), "{what} of a FIFO");
         }
-        let dev = Server::new(std::fs::File::open("/dev").unwrap().into(), true, None).unwrap();
-        let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name("null")));
+        // A device node a share reaches: on Unix the host's; on Windows one a guest made,
+        // WSL's, which the host holds as any file.
+        #[cfg(unix)]
+        let (dev, device) = (
+            Server::new(root_of(std::path::Path::new("/dev")), true, None).unwrap(),
+            "null",
+        );
+        #[cfg(windows)]
+        let (dev, device) = {
+            let mut chr = fields([S_IFCHR | 0o644, 0x103, 0, 0]);
+            chr.extend(name("null"));
+            assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &chr)).0, 0);
+            (Server::new(root_of(&path), true, None).unwrap(), "null")
+        };
+        let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name(device)));
         assert_eq!(e, 0);
         let null = u64::from_le_bytes(entry[0..8].try_into().unwrap());
         assert_eq!(answer(&dev, &req(op::OPEN, null, 0, &[0u8; 8])).0, -EBADF);
         // A regular file opens with the status flags asked for: opened without waiting,
-        // it waits again unless the guest asked otherwise.
-        std::fs::write(path.join("file"), "f").unwrap();
-        let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
-        let file = u64::from_le_bytes(entry[0..8].try_into().unwrap());
-        for (guest, nonblocking) in [(linux::O_APPEND | 1, false), (linux::O_NONBLOCK, true)] {
-            let (e, opened) = answer(&s, &req(op::OPEN, file, 0, &fields([guest, 0, 0, 0])[..8]));
-            assert_eq!(e, 0);
-            let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
-            let state = s.state.lock().unwrap();
-            let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fh)) else {
-                panic!("no file handle {fh}");
-            };
-            // SAFETY: F_GETFL of a descriptor the server holds.
-            let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-            assert_eq!(status & libc::O_NONBLOCK != 0, nonblocking, "{guest:#o}");
-            assert_eq!(
-                status & libc::O_APPEND != 0,
-                guest & linux::O_APPEND != 0,
-                "{guest:#o}"
-            );
+        // it waits again unless the guest asked otherwise. Unix's: Windows' handles have
+        // no such flags (an appending one's writes are placed as they are made).
+        #[cfg(unix)]
+        {
+            std::fs::write(path.join("file"), "f").unwrap();
+            let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
+            let file = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+            for (guest, nonblocking) in [(linux::O_APPEND | 1, false), (linux::O_NONBLOCK, true)] {
+                let (e, opened) = answer(&s, &req(op::OPEN, file, 0, &fields([guest, 0, 0, 0])[..8]));
+                assert_eq!(e, 0);
+                let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+                let state = s.state.lock().unwrap();
+                let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fh)) else {
+                    panic!("no file handle {fh}");
+                };
+                // SAFETY: F_GETFL of a descriptor the server holds.
+                let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+                assert_eq!(status & libc::O_NONBLOCK != 0, nonblocking, "{guest:#o}");
+                assert_eq!(
+                    status & libc::O_APPEND != 0,
+                    guest & linux::O_APPEND != 0,
+                    "{guest:#o}"
+                );
+            }
         }
         let _ = std::fs::remove_dir_all(&path);
     }
@@ -4155,10 +3507,13 @@ mod tests {
 
     /// A device node is never opened only to be looked at, which runs its driver's open
     /// where the guest only looked (a serial line raises DTR): a share of /dev looks up,
-    /// stats and lists the attributes of `null` without opening it, and it has none.
+    /// stats and lists the attributes of `null` without opening it, and it has none. Unix's:
+    /// on Windows a device node is WSL's reparse point, which no open reaches a driver
+    /// through (`DEVICE_OPENS_DRIVER`).
+    #[cfg(unix)]
     #[test]
     fn a_device_is_never_opened_to_be_looked_at() {
-        let dev = Server::new(std::fs::File::open("/dev").unwrap().into(), true, None).unwrap();
+        let dev = Server::new(root_of(std::path::Path::new("/dev")), true, None).unwrap();
         OPENED.with(|o| o.borrow_mut().clear());
         let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name("null")));
         assert_eq!(e, 0);
@@ -4179,8 +3534,7 @@ mod tests {
 
     /// A server over `path` holding at most `budget` descriptors between requests.
     fn small(path: &std::path::Path, budget: u64) -> Server {
-        let root = std::fs::File::open(path).unwrap();
-        Server::with_budget(root.into(), false, None, budget).unwrap()
+        Server::with_budget(root_of(path), false, None, budget).unwrap()
     }
 
     fn found(s: &Server, parent: u64, n: &str) -> u64 {
@@ -4216,23 +3570,25 @@ mod tests {
         assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
         assert_eq!(getattr(other), 0);
         assert_eq!(getattr(b), 0, "along z/b, the guest's rename");
-        // Renamed on the host: stale.
+        // Renamed on the host: stale. (Let go of first, as NTFS renames no directory a
+        // handle beneath is open in.)
+        assert_eq!(getattr(other), 0);
         std::fs::rename(path.join("z"), path.join("y")).unwrap();
         assert_eq!(getattr(other), 0);
         assert_eq!(getattr(b), -ESTALE, "renamed on the host");
         // A symlink in its path, to the very directory it was: not followed.
-        std::os::unix::fs::symlink("y", path.join("z")).unwrap();
+        link_dir(&path.join("y"), &path.join("z"));
         assert_eq!(getattr(b), -ESTALE, "through a symlink to itself");
         // A symlink out of the share: not followed, nothing made there.
-        std::fs::remove_file(path.join("z")).unwrap();
-        std::os::unix::fs::symlink(&outside, path.join("z")).unwrap();
+        unlink_dir(&path.join("z"));
+        link_dir(&outside, &path.join("z"));
         let mut mkdir = 0o755u32.to_le_bytes().to_vec();
         mkdir.extend_from_slice(&[0u8; 4]);
         mkdir.extend(name("made"));
         assert_eq!(answer(&s, &req(op::MKDIR, b, 0, &mkdir)).0, -ESTALE);
         assert!(!outside.join("b/made").exists(), "made outside the share");
         // Back at its path: found again.
-        std::fs::remove_file(path.join("z")).unwrap();
+        unlink_dir(&path.join("z"));
         std::fs::rename(path.join("y"), path.join("z")).unwrap();
         assert_eq!(getattr(b), 0, "back along z/b");
         // Replaced on the host by another directory of its name: stale, and a lookup finds
@@ -4544,7 +3900,6 @@ mod tests {
     /// host, or whose mode the host takes away, as none can be opened for it again.
     #[test]
     fn a_file_replaced_on_the_host_while_open_is_stale_once_let_go() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (path, _) = dir();
         std::fs::write(path.join("a"), "old").unwrap();
         crowded(&path, 20);
@@ -4562,13 +3917,29 @@ mod tests {
         std::fs::remove_file(path.join("a")).unwrap();
         crowd(&s, 20);
         assert_eq!(read(&s, b, fb, 0, 16).0, -ESTALE);
-        // Its mode taken away on the host: stale, not refused.
+        // Its mode taken away on the host: stale, not refused. On Unix a reader's, its read
+        // bits taken; on Windows a writer's, its file made read-only.
         std::fs::write(path.join("c"), "c").unwrap();
         let c = found(&s, ROOT, "c");
-        let fc = open(&s, c, 0);
-        std::fs::set_permissions(path.join("c"), std::fs::Permissions::from_mode(0o200)).unwrap();
-        crowd(&s, 20);
-        assert_eq!(read(&s, c, fc, 0, 16).0, -ESTALE);
+        #[cfg(unix)]
+        {
+            let fc = open(&s, c, 0);
+            std::fs::set_permissions(
+                path.join("c"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o200),
+            )
+            .unwrap();
+            crowd(&s, 20);
+            assert_eq!(read(&s, c, fc, 0, 16).0, -ESTALE);
+        }
+        #[cfg(windows)]
+        {
+            let fc = open(&s, c, 1);
+            host_read_only(&path.join("c"), true);
+            crowd(&s, 20);
+            assert_eq!(write(&s, c, fc, 0, b"x"), -ESTALE);
+            host_read_only(&path.join("c"), false);
+        }
         let _ = std::fs::remove_dir_all(&path);
     }
 
@@ -4687,6 +4058,7 @@ mod tests {
     }
 
     /// Linux's numbers for the host's refusals the tests expect.
+    const ENXIO: i32 = 6;
     const EEXIST: i32 = 17;
     const ENOTEMPTY: i32 = 39;
 
@@ -4696,7 +4068,6 @@ mod tests {
     /// however long since the server let go of everything else (audit V09).
     #[test]
     fn a_file_made_read_only_is_filled_through_its_handle() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (path, _) = dir();
         crowded(&path, 20);
         let s = small(&path, 4);
@@ -4709,8 +4080,14 @@ mod tests {
         assert_eq!(std::fs::read(path.join("ro")).unwrap(), b"filled twice");
         // The host's file lets its owner, the share process, write it; the guest sees the
         // mode it made it with (D174).
-        let mode = std::fs::metadata(path.join("ro")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o644);
+        assert!(
+            !std::fs::metadata(path.join("ro"))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        #[cfg(unix)]
+        assert_eq!(host_mode(&path.join("ro")) & 0o777, 0o644);
         let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("ro")));
         assert_eq!(
             u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap()) & 0o7777,
@@ -4720,10 +4097,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
     }
 
+    /// A file the guest made read-only and opens again to write by a CREATE that finds it is
+    /// no pin of the server's where its host's own mode lets it be opened again (its owner's
+    /// on Unix, D174; any on Windows, whose opens no mode of WSL's refuses): its directory
+    /// renames, and the handle writes on, its descriptor opened again along its new path.
+    #[test]
+    fn a_read_only_file_found_by_create_is_opened_again_as_needed() {
+        let (path, _) = dir();
+        std::fs::create_dir(path.join("d")).unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let d = found(&s, ROOT, "d");
+        let (node, fh) = create(&s, d, "ro", 1 | linux::O_EXCL, 0o444);
+        release(&s, node, fh);
+        let (again, fa) = create(&s, d, "ro", 2, 0o444);
+        assert_eq!(again, node);
+        assert!(s.state.lock().unwrap().pins.is_empty(), "pinned");
+        let mut rename = ROOT.to_le_bytes().to_vec();
+        rename.extend(name("d"));
+        rename.extend(name("e"));
+        assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
+        crowd(&s, 20);
+        assert_eq!(write(&s, again, fa, 0, b"written"), 0);
+        assert_eq!(std::fs::read(path.join("e").join("ro")).unwrap(), b"written");
+        release(&s, again, fa);
+    }
+
     /// The guest's names for the host's attributes: its own `trusted.` and `security.` ones
     /// as the host keeps them (`user.shards.`), its `user.` ones as they are; and on Linux,
     /// none for the host's own `trusted.` and `security.` ones (an SELinux label), which the
-    /// guest could list and never read; nor for the server's.
+    /// guest could list and never read; nor for the server's. Unix's: on Windows each guest
+    /// attribute is an EA of its own name ([`calls::ea_name`]'s test).
+    #[cfg(unix)]
     #[test]
     fn the_guest_sees_its_own_attributes_and_not_the_hosts_security_ones() {
         assert_eq!(guest_xattr(b"user.x"), Some(&b"user.x"[..]));
@@ -4753,25 +4158,22 @@ mod tests {
     ///   kept, read and listed back under its own name.
     #[test]
     fn what_the_host_cannot_hold_is_kept_beside_it() {
-        use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
         let (path, s) = dir();
         let mode_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap());
         let rdev_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 76..40 + 80].try_into().unwrap());
         let node_in = |entry: &[u8]| u64::from_le_bytes(entry[0..8].try_into().unwrap());
         let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
-        let host_mode = |name: &str| {
-            std::fs::symlink_metadata(path.join(name))
-                .unwrap()
-                .permissions()
-                .mode()
-        };
         // A directory of mode 0, and one made in it by the guest's root.
         let mut mkdir = fields(&[0, 0]);
         mkdir.extend(name("work"));
         let (e, entry) = answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir));
         assert_eq!(e, 0);
         assert_eq!(mode_in(&entry), S_IFDIR, "mode 0 to the guest");
-        assert_eq!(host_mode("work") & 0o777, 0o700);
+        // The host's, its owner's to reach: on Windows NTFS's access, which WSL's mode is
+        // none of.
+        #[cfg(unix)]
+        assert_eq!(host_mode(&path.join("work")) & 0o777, 0o700);
+        assert!(std::fs::read_dir(path.join("work")).is_ok());
         let mut inner = fields(&[0, 0]);
         inner.extend(name("work"));
         assert_eq!(answer(&s, &req(op::MKDIR, node_in(&entry), 0, &inner)).0, 0);
@@ -4788,9 +4190,16 @@ mod tests {
             );
             let (_, looked) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name(file)));
             assert_eq!((mode_in(&looked), rdev_in(&looked)), (S_IFCHR | 0o644, rdev));
-            // An unprivileged host keeps an empty regular file; a privileged one, the device.
-            let kept = std::fs::symlink_metadata(path.join(file)).unwrap().file_type();
-            assert!(kept.is_file() || kept.is_char_device(), "{file}: {kept:?}");
+            // An unprivileged host keeps an empty regular file; a privileged one, the device;
+            // NTFS, the device as WSL keeps one.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt as _;
+                let kept = std::fs::symlink_metadata(path.join(file)).unwrap().file_type();
+                assert!(kept.is_file() || kept.is_char_device(), "{file}: {kept:?}");
+            }
+            #[cfg(windows)]
+            assert_eq!(host_mode(&path.join(file)), S_IFCHR | 0o644, "{file}");
         }
         // Listed as the device it is, as overlayfs finds whiteouts in a listing.
         let (_, open) = answer(&s, &req(op::OPENDIR, ROOT, 0, &[0u8; 8]));
@@ -4806,7 +4215,7 @@ mod tests {
             rest = &rest[(24 + len + 7) & !7..];
         }
         assert!(
-            kinds.contains(&("gone".into(), u32::from(libc::DT_CHR))),
+            kinds.contains(&("gone".into(), u32::from(host::DT_CHR))),
             "{kinds:?}"
         );
         // A mode taken away: the host's owner keeps its access, the guest has the mode.
@@ -4818,7 +4227,16 @@ mod tests {
         // fuse_attr_out: 16 bytes before its attribute, where an entry has 40.
         let changed_mode = u32::from_le_bytes(changed[16 + 60..16 + 64].try_into().unwrap());
         assert_eq!(changed_mode & 0o7777, 0, "the guest's mode");
-        assert_eq!(host_mode("file") & 0o777, 0o600, "the host's");
+        #[cfg(unix)]
+        assert_eq!(host_mode(&path.join("file")) & 0o777, 0o600, "the host's");
+        assert!(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path.join("file"))
+                .is_ok(),
+            "the host's owner's still"
+        );
         // An attribute of trusted., set, read and listed back.
         let mut set = fields(&[1, 0]);
         set.extend(name("trusted.overlay.opaque"));
@@ -4907,16 +4325,22 @@ mod tests {
         assert_eq!(chmod(r, 0o200), 0);
         crowd(&s, 20);
         assert_eq!(read(&s, r, fr, 0, 16), (0, b"read me".to_vec()));
-        // A new handle to `w` opens a descriptor of its own, with its own status flags.
+        // A new handle to `w` opens a descriptor of its own, with its own status flags
+        // (Unix's).
         let fresh = open(&s, w, linux::O_NONBLOCK);
         {
             let state = s.state.lock().unwrap();
             let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fresh)) else {
                 panic!("no descriptor of its own");
             };
-            // SAFETY: F_GETFL of a descriptor the server holds.
-            let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-            assert_ne!(status & libc::O_NONBLOCK, 0);
+            #[cfg(unix)]
+            {
+                // SAFETY: F_GETFL of a descriptor the server holds.
+                let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+                assert_ne!(status & libc::O_NONBLOCK, 0);
+            }
+            #[cfg(windows)]
+            let _ = fd;
         }
         assert_eq!(read(&s, w, fresh, 0, 16), (0, b"still".to_vec()));
         // A mode that refuses none of its handles keeps nothing more.
@@ -5047,7 +4471,6 @@ mod tests {
     /// once), and that file is not the one the handles opened. One opened after reads it.
     #[test]
     fn a_file_unlinked_unpinned_is_not_found_again_by_its_number() {
-        use std::os::unix::fs::MetadataExt as _;
         let (path, _) = dir();
         std::fs::write(path.join("p"), "p").unwrap();
         std::fs::write(path.join("a"), "gone").unwrap();
@@ -5061,13 +4484,449 @@ mod tests {
         assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("a"))).0, 0);
         // Another file at its name, given its number as a host may give it.
         std::fs::write(path.join("a"), "another").unwrap();
-        let m = std::fs::metadata(path.join("a")).unwrap();
-        s.state.lock().unwrap().nodes.get_mut(&a).unwrap().key = (m.dev(), m.ino());
+        s.state.lock().unwrap().nodes.get_mut(&a).unwrap().key = host_key(&path.join("a"));
         crowd(&s, 20);
         assert_eq!(read(&s, a, fa, 0, 16).0, -ESTALE);
         let fresh = open(&s, a, 0);
         assert_eq!(read(&s, a, fresh, 0, 16), (0, b"another".to_vec()));
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A handle opened to append writes at its file's end as the host then has it, whatever
+    /// offset the guest's kernel names, which took the end to be where it last looked: what
+    /// the host appended since stays, as two writers' appends to one log do. A handle that
+    /// does not append writes where it is told; and one whose file is unlinked, served by a
+    /// pin of the server's, still appends.
+    #[test]
+    fn an_appending_handle_writes_at_its_files_end_as_the_host_has_it() {
+        use std::io::Write as _;
+        let (path, s) = dir();
+        std::fs::write(path.join("log"), "host\n").unwrap();
+        let log = found(&s, ROOT, "log");
+        let fh = open(&s, log, 1 | linux::O_APPEND);
+        let mut host = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path.join("log"))
+            .unwrap();
+        host.write_all(b"more\n").unwrap();
+        assert_eq!(write(&s, log, fh, 5, b"guest\n"), 0);
+        assert_eq!(std::fs::read(path.join("log")).unwrap(), b"host\nmore\nguest\n");
+        let at = open(&s, log, 1);
+        assert_eq!(write(&s, log, at, 0, b"HOST"), 0);
+        assert_eq!(std::fs::read(path.join("log")).unwrap(), b"HOST\nmore\nguest\n");
+        release(&s, log, fh);
+        release(&s, log, at);
+        drop(host);
+        crowded(&path, 20);
+        let small = small(&path, 4);
+        let log = found(&small, ROOT, "log");
+        let fh = open(&small, log, 2 | linux::O_APPEND);
+        assert_eq!(answer(&small, &req(op::UNLINK, ROOT, 0, &name("log"))).0, 0);
+        crowd(&small, 20);
+        assert_eq!(write(&small, log, fh, 0, b"end\n"), 0);
+        assert_eq!(
+            read(&small, log, fh, 0, 64),
+            (0, b"HOST\nmore\nguest\nend\n".to_vec())
+        );
+    }
+
+    /// An attribute of no value is kept as one, as Linux keeps it (overlayfs's
+    /// `metacopy`): set, read back empty, its size asked as none, listed, and removed.
+    #[test]
+    fn an_attribute_of_no_value_is_kept() {
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "f").unwrap();
+        let f = found(&s, ROOT, "f");
+        let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let with = |head: &[u32], n: &str| {
+            let mut b = fields(head);
+            b.extend(name(n));
+            b
+        };
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, f, 0, &with(&[0, 0], "user.empty"))).0,
+            0
+        );
+        assert_eq!(
+            answer(&s, &req(op::GETXATTR, f, 0, &with(&[64, 0], "user.empty"))),
+            (0, Vec::new())
+        );
+        assert_eq!(
+            answer(&s, &req(op::GETXATTR, f, 0, &with(&[0, 0], "user.empty"))),
+            (0, vec![0; 8])
+        );
+        assert_eq!(
+            answer(&s, &req(op::LISTXATTR, f, 0, &fields(&[4096, 0]))),
+            (0, b"user.empty\0".to_vec())
+        );
+        let mut gone = name("user.empty");
+        assert_eq!(answer(&s, &req(op::REMOVEXATTR, f, 0, &gone)).0, 0);
+        assert_eq!(
+            answer(&s, &req(op::GETXATTR, f, 0, &with(&[64, 0], "user.empty"))).0,
+            -ENODATA
+        );
+        gone = name("user.never");
+        assert_eq!(answer(&s, &req(op::REMOVEXATTR, f, 0, &gone)).0, -ENODATA);
+    }
+
+    /// A symlink the guest makes is one, reads back its target byte for byte, characters
+    /// no Windows name holds among them, and is never followed by the server.
+    #[test]
+    fn a_symlink_reads_back_its_target() {
+        let (path, s) = dir();
+        let mut body = name("link");
+        body.extend(name("../some/where?*:"));
+        let (e, entry) = answer(&s, &req(op::SYMLINK, ROOT, 0, &body));
+        assert_eq!(e, 0);
+        let link = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let mode = u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap());
+        assert_eq!(mode & S_IFMT, S_IFLNK);
+        assert_eq!(
+            answer(&s, &req(op::READLINK, link, 0, &[])),
+            (0, b"../some/where?*:".to_vec())
+        );
+        assert_eq!(host_mode(&path.join("link")) & S_IFMT, S_IFLNK);
+        std::fs::write(path.join("file"), "f").unwrap();
+        let file = found(&s, ROOT, "file");
+        assert_eq!(answer(&s, &req(op::READLINK, file, 0, &[])).0, -EINVAL);
+    }
+
+    /// STATFS answers for the share's volume, as statfs(2) of its host's would: its blocks,
+    /// free and available ones within them, a block size, and Linux's longest name.
+    #[test]
+    fn statfs_answers_for_the_shares_volume() {
+        let (_path, s) = dir();
+        let (e, out) = answer(&s, &req(op::STATFS, ROOT, 0, &[]));
+        assert_eq!(e, 0);
+        let word = |at: usize| u64::from_le_bytes(out[at..at + 8].try_into().unwrap());
+        let half = |at: usize| u32::from_le_bytes(out[at..at + 4].try_into().unwrap());
+        let (blocks, free, available) = (word(0), word(8), word(16));
+        assert!(
+            blocks > 0 && free <= blocks && available <= free,
+            "{blocks} {free} {available}"
+        );
+        assert!(half(40) >= 512, "block size {}", half(40));
+        assert_eq!(half(44), 255);
+    }
+
+    /// SETATTR's times are a file's or a directory's, to the 100 ns every host keeps: read
+    /// back by the guest and by the host.
+    #[test]
+    fn times_set_are_the_files() {
+        let (path, s) = dir();
+        std::fs::write(path.join("t"), "t").unwrap();
+        std::fs::create_dir(path.join("d")).unwrap();
+        for n in ["t", "d"] {
+            let node = found(&s, ROOT, n);
+            let mut b = (fattr::ATIME | fattr::MTIME).to_le_bytes().to_vec();
+            b.extend([0u8; 4 + 3 * 8]);
+            b.extend(1_000_000_000u64.to_le_bytes());
+            b.extend(1_234_567_890u64.to_le_bytes());
+            b.extend(0u64.to_le_bytes());
+            b.extend(500u32.to_le_bytes());
+            b.extend(700u32.to_le_bytes());
+            b.extend([0u8; 6 * 4]);
+            let (e, out) = answer(&s, &req(op::SETATTR, node, 0, &b));
+            assert_eq!(e, 0, "{n}");
+            // fuse_attr_out: its attribute after 16 bytes; atime, mtime, their nanoseconds.
+            let word = |at: usize| u64::from_le_bytes(out[16 + at..16 + at + 8].try_into().unwrap());
+            let half = |at: usize| u32::from_le_bytes(out[16 + at..16 + at + 4].try_into().unwrap());
+            assert_eq!((word(24), half(48)), (1_000_000_000, 500), "{n}");
+            assert_eq!((word(32), half(52)), (1_234_567_890, 700), "{n}");
+            let modified = std::fs::metadata(path.join(n)).unwrap().modified().unwrap();
+            assert_eq!(
+                modified,
+                std::time::UNIX_EPOCH + std::time::Duration::new(1_234_567_890, 700),
+                "{n}"
+            );
+        }
+    }
+
+    /// A device node the guest makes is its maker's, of the mode it was made with and the
+    /// kind and number it was given, as the host keeps it: an empty file beside its record
+    /// on an unprivileged Unix host, WSL's device file on Windows.
+    #[test]
+    fn a_device_node_is_its_makers() {
+        let (_path, s) = dir();
+        let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let mut mknod = fields(&[S_IFCHR | 0o600, 0x103, 0, 0]);
+        mknod.extend(name("tty"));
+        let (e, made) = answer(&s, &req(op::MKNOD, ROOT, 1000, &mknod));
+        assert_eq!(e, 0);
+        let (e, looked) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("tty")));
+        assert_eq!(e, 0);
+        for entry in [&made, &looked] {
+            // fuse_attr: the mode at 60, uid 68, gid 72, rdev 76.
+            let word = |at: usize| u32::from_le_bytes(entry[40 + at..40 + at + 4].try_into().unwrap());
+            assert_eq!(
+                (word(60), word(68), word(72), word(76)),
+                (S_IFCHR | 0o600, 1000, 1000, 0x103)
+            );
+        }
+    }
+
+    /// A directory the guest renames while it holds files and directories beneath it open,
+    /// a file's mode taken away, goes on serving each handle by its new path, as on a
+    /// kernel's own filesystem; and a directory's own mode changes as a file's.
+    #[test]
+    fn a_directory_is_renamed_whatever_is_open_beneath_it() {
+        let (path, s) = dir();
+        std::fs::create_dir_all(path.join("d").join("e")).unwrap();
+        std::fs::write(path.join("d").join("e").join("f"), "f").unwrap();
+        let d = found(&s, ROOT, "d");
+        let e = found(&s, d, "e");
+        let f = found(&s, e, "f");
+        let fh = open(&s, f, 2);
+        assert_eq!(
+            answer(&s, &req(op::SETATTR, f, 0, &setattr(fattr::MODE, 0o444))).0,
+            0
+        );
+        let (err, opened) = answer(&s, &req(op::OPENDIR, e, 0, &[0u8; 8]));
+        assert_eq!(err, 0);
+        let eh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        let mut rename = ROOT.to_le_bytes().to_vec();
+        rename.extend(name("d"));
+        rename.extend(name("moved"));
+        assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
+        assert!(path.join("moved").join("e").join("f").is_file());
+        assert_eq!(write(&s, f, fh, 1, b"g"), 0);
+        assert_eq!(read(&s, f, fh, 0, 8), (0, b"fg".to_vec()));
+        let (err, listed) = answer(&s, &req(op::READDIR, e, 0, &readdir(eh, 0, 4096)));
+        assert_eq!(err, 0);
+        assert!(page(&listed, false).iter().any(|(n, _)| n == "f"));
+        assert_eq!(
+            answer(&s, &req(op::SETATTR, e, 0, &setattr(fattr::MODE, 0o710))).0,
+            0
+        );
+        let (err, attr) = answer(&s, &req(op::GETATTR, e, 0, &[0u8; 16]));
+        assert_eq!(err, 0);
+        let mode = u32::from_le_bytes(attr[16 + 60..16 + 64].try_into().unwrap());
+        assert_eq!(mode, S_IFDIR | 0o710);
+        release(&s, f, fh);
+    }
+
+    /// RENAME_EXCHANGE swaps two names, as overlayfs swaps a directory it removes with a
+    /// whiteout (ovl_cleanup_and_whiteout): a directory a handle beneath is open in and a
+    /// file, in one directory or two, the handle going on; one of them missing, it is
+    /// refused (ENOENT) and neither moved, and nothing of the server's own is left.
+    #[test]
+    fn an_exchange_swaps_two_names() {
+        let (path, s) = dir();
+        std::fs::create_dir_all(path.join("d").join("e")).unwrap();
+        std::fs::write(path.join("d").join("e").join("f"), "f").unwrap();
+        std::fs::write(path.join("w"), "w").unwrap();
+        std::fs::create_dir(path.join("other")).unwrap();
+        std::fs::write(path.join("other").join("x"), "x").unwrap();
+        let d = found(&s, ROOT, "d");
+        let e = found(&s, d, "e");
+        let f = found(&s, e, "f");
+        let fh = open(&s, f, 2);
+        let other = found(&s, ROOT, "other");
+        let mode_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap()) & S_IFMT;
+        let exchange = |dir: u64, old: &str, newdir: u64, new: &str| {
+            let mut b = newdir.to_le_bytes().to_vec();
+            b.extend(linux::RENAME_EXCHANGE.to_le_bytes());
+            b.extend([0u8; 4]);
+            b.extend(name(old));
+            b.extend(name(new));
+            answer(&s, &req(op::RENAME2, dir, 0, &b)).0
+        };
+        assert_eq!(exchange(ROOT, "d", ROOT, "w"), 0);
+        assert_eq!(std::fs::read(path.join("d")).unwrap(), b"w");
+        assert_eq!(std::fs::read(path.join("w").join("e").join("f")).unwrap(), b"f");
+        assert_eq!(write(&s, f, fh, 1, b"g"), 0);
+        assert_eq!(read(&s, f, fh, 0, 8), (0, b"fg".to_vec()));
+        let (err, looked) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("w")));
+        assert_eq!((err, mode_in(&looked)), (0, S_IFDIR));
+        assert_eq!(exchange(ROOT, "d", other, "x"), 0);
+        assert_eq!(std::fs::read(path.join("d")).unwrap(), b"x");
+        assert_eq!(std::fs::read(path.join("other").join("x")).unwrap(), b"w");
+        assert_eq!(exchange(ROOT, "d", ROOT, "none"), -ENOENT);
+        assert_eq!(exchange(ROOT, "none", ROOT, "d"), -ENOENT);
+        assert_eq!(std::fs::read(path.join("d")).unwrap(), b"x");
+        let mut names: Vec<String> = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["d", "other", "w"]);
+        release(&s, f, fh);
+    }
+
+    /// FALLOCATE grows a file to what it is given, KEEP_SIZE leaves its size, and any other
+    /// mode is refused (EOPNOTSUPP); LSEEK finds a written file's data where asked and its
+    /// end as its hole, past its end none (ENXIO), as lseek(2) does.
+    #[test]
+    fn fallocate_grows_and_lseek_finds_data() {
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "0123456789").unwrap();
+        let f = found(&s, ROOT, "f");
+        let fh = open(&s, f, 2);
+        let seek = |offset: u64, whence: u32| {
+            let mut b = fh.to_le_bytes().to_vec();
+            b.extend(offset.to_le_bytes());
+            b.extend(whence.to_le_bytes());
+            b.extend([0u8; 4]);
+            let (e, out) = answer(&s, &req(op::LSEEK, f, 0, &b));
+            (
+                e,
+                (e == 0).then(|| u64::from_le_bytes(out[0..8].try_into().unwrap())),
+            )
+        };
+        assert_eq!(seek(2, linux::SEEK_DATA), (0, Some(2)));
+        assert_eq!(seek(2, linux::SEEK_HOLE), (0, Some(10)));
+        assert_eq!(seek(10, linux::SEEK_DATA).0, -ENXIO);
+        assert_eq!(seek(3, 2 /* SEEK_END */), (0, Some(13)));
+        let allocate = |offset: u64, length: u64, mode: u32| {
+            let mut b = fh.to_le_bytes().to_vec();
+            b.extend(offset.to_le_bytes());
+            b.extend(length.to_le_bytes());
+            b.extend(mode.to_le_bytes());
+            b.extend([0u8; 4]);
+            answer(&s, &req(op::FALLOCATE, f, 0, &b)).0
+        };
+        let size = || std::fs::metadata(path.join("f")).unwrap().len();
+        assert_eq!(allocate(0, 4096, linux::FALLOC_FL_KEEP_SIZE), 0);
+        assert_eq!(size(), 10);
+        assert_eq!(allocate(8, 4096, 0), 0);
+        assert_eq!(size(), 4104);
+        assert_eq!(std::fs::read(path.join("f")).unwrap()[..10], *b"0123456789");
+        assert_eq!(allocate(0, 10, 0x02 /* PUNCH_HOLE */), -EOPNOTSUPP);
+    }
+
+    /// Names Windows holds none of keep their characters to the guest, escaped on NTFS as
+    /// WSL escapes them: made, looked up and listed as the guest named them.
+    #[cfg(windows)]
+    #[test]
+    fn names_no_windows_name_holds_are_the_guests() {
+        let (path, s) = dir();
+        let weird = "a:b?c*<d>|\"e\\";
+        let (node, fh) = create(&s, ROOT, weird, 1, 0o644);
+        release(&s, node, fh);
+        assert_eq!(found(&s, ROOT, weird), node);
+        let (_, opened) = answer(&s, &req(op::OPENDIR, ROOT, 0, &[0u8; 8]));
+        let dir_fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        let (e, listed) = answer(&s, &req(op::READDIR, ROOT, 0, &readdir(dir_fh, 0, 4096)));
+        assert_eq!(e, 0);
+        assert!(page(&listed, false).iter().any(|(n, _)| n == weird));
+        let on_host: Vec<String> = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(on_host.len(), 1, "{on_host:?}");
+        assert!(
+            !on_host[0].contains([':', '?', '*', '<', '>', '|', '"', '\\']),
+            "{on_host:?}"
+        );
+    }
+
+    /// A directory the guest makes tells names apart by their case, as Linux's do
+    /// (FileCaseSensitiveInformation), where the host's own may not.
+    #[cfg(windows)]
+    #[test]
+    fn a_guests_directory_tells_names_apart_by_case() {
+        let (_path, s) = dir();
+        let mut mkdir = 0o755u32.to_le_bytes().to_vec();
+        mkdir.extend([0u8; 4]);
+        mkdir.extend(name("d"));
+        let (e, entry) = answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir));
+        assert_eq!(e, 0);
+        let d = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let (upper, uh) = create(&s, d, "Makefile", 1 | linux::O_EXCL, 0o644);
+        let (lower, lh) = create(&s, d, "makefile", 1 | linux::O_EXCL, 0o644);
+        assert_ne!(upper, lower);
+        assert_eq!(write(&s, upper, uh, 0, b"upper"), 0);
+        assert_eq!(write(&s, lower, lh, 0, b"lower"), 0);
+        let rh = open(&s, upper, 0);
+        assert_eq!(read(&s, upper, rh, 0, 16), (0, b"upper".to_vec()));
+        assert_eq!(answer(&s, &req(op::LOOKUP, d, 0, &name("MAKEFILE"))).0, -ENOENT);
+    }
+
+    /// A junction or an NTFS symlink the host made is a symlink to the guest, as a Linux
+    /// symlink is on Unix, and never followed by the server: a junction to a directory of
+    /// the share (pnpm's node_modules on Windows) read as the path to it from the link's
+    /// directory, and listed as a link; an NTFS symlink's relative target as it is, its
+    /// separators Linux's, where this host lets its user make one (an administrator's, or
+    /// Developer Mode).
+    #[cfg(windows)]
+    #[test]
+    fn a_hosts_junctions_and_symlinks_are_symlinks() {
+        let (path, s) = dir();
+        let pkg = path.join("store").join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("index.js"), "x").unwrap();
+        std::fs::create_dir(path.join("modules")).unwrap();
+        link_dir(&pkg, &path.join("modules").join("pkg"));
+        let modules = found(&s, ROOT, "modules");
+        let target = |n: &str| {
+            let (e, entry) = answer(&s, &req(op::LOOKUP, modules, 0, &name(n)));
+            assert_eq!(e, 0, "{n}");
+            let mode = u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap());
+            assert_eq!(mode & S_IFMT, S_IFLNK, "{n}");
+            let node = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+            answer(&s, &req(op::READLINK, node, 0, &[]))
+        };
+        assert_eq!(target("pkg"), (0, b"../store/pkg".to_vec()));
+        let (_, opened) = answer(&s, &req(op::OPENDIR, modules, 0, &[0u8; 8]));
+        let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        let (e, listed) = answer(&s, &req(op::READDIR, modules, 0, &readdir(fh, 0, 4096)));
+        assert_eq!(e, 0);
+        // fuse_dirent: its inode, offset, name's length and type, then its name.
+        let mut kinds = Vec::new();
+        let mut rest = &listed[..];
+        while !rest.is_empty() {
+            let len = u32::from_le_bytes(rest[16..20].try_into().unwrap()) as usize;
+            let kind = u32::from_le_bytes(rest[20..24].try_into().unwrap());
+            kinds.push((String::from_utf8(rest[24..24 + len].to_vec()).unwrap(), kind));
+            rest = &rest[(24 + len + 7) & !7..];
+        }
+        assert!(kinds.contains(&("pkg".into(), 10)), "{kinds:?}");
+        match std::os::windows::fs::symlink_dir(r"..\store\pkg", path.join("modules").join("rel")) {
+            Ok(()) => assert_eq!(target("rel"), (0, b"../store/pkg".to_vec())),
+            // ERROR_PRIVILEGE_NOT_HELD: this host's user makes no NTFS symlink.
+            Err(e) if e.raw_os_error() == Some(1314) => eprintln!("no NTFS symlink made: {e}"),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// A guest's O_SYNC or O_DSYNC write is on its disk before it is answered: its handle
+    /// opened to write through (FILE_WRITE_THROUGH), another not.
+    #[cfg(windows)]
+    #[test]
+    fn a_synchronous_open_writes_through() {
+        use windows_sys::Wdk::Storage::FileSystem::{
+            FILE_MODE_INFORMATION, FILE_WRITE_THROUGH, FileModeInformation, NtQueryInformationFile,
+        };
+        let (path, s) = dir();
+        std::fs::write(path.join("f"), "f").unwrap();
+        let f = found(&s, ROOT, "f");
+        let through = |fh: u64| {
+            let state = s.state.lock().unwrap();
+            let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fh)) else {
+                panic!("no file handle {fh}");
+            };
+            let mut info = FILE_MODE_INFORMATION::default();
+            let mut io = windows_sys::Win32::System::IO::IO_STATUS_BLOCK::default();
+            // SAFETY: a buffer of its own size for the class asked, of a handle the server
+            // holds while its state is locked.
+            let status = unsafe {
+                NtQueryInformationFile(
+                    std::os::windows::io::AsRawHandle::as_raw_handle(fd),
+                    &mut io,
+                    (&raw mut info).cast(),
+                    u32::try_from(size_of::<FILE_MODE_INFORMATION>()).unwrap(),
+                    FileModeInformation,
+                )
+            };
+            assert!(status >= 0, "{status:#x}");
+            info.Mode & FILE_WRITE_THROUGH != 0
+        };
+        for (flags, want) in [(linux::O_SYNC, true), (linux::O_DSYNC, true), (0, false)] {
+            let fh = open(&s, f, 1 | flags);
+            assert_eq!(through(fh), want, "{flags:#o}");
+            assert_eq!(write(&s, f, fh, 0, b"x"), 0);
+            release(&s, f, fh);
+        }
     }
 
     #[test]

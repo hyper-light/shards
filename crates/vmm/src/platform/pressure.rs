@@ -10,6 +10,9 @@
 //! - macOS: libdispatch's memory pressure source (dispatch/source.h), said again every two
 //!   seconds while the system's pressure stays raised, as a trigger is while its stall goes
 //!   on.
+//! - Windows: the system's low memory notification (CreateMemoryResourceNotification,
+//!   `LowMemoryResourceNotification`), signalled while its available physical memory is low,
+//!   said again every two seconds while it stays so, as macOS's is.
 
 use std::io;
 use std::time::Duration;
@@ -30,7 +33,7 @@ const AVERAGE_PERCENT: f64 = 7.0;
 #[cfg(target_os = "linux")]
 const AVERAGE_EVERY: Duration = Duration::from_secs(10);
 /// How often raised pressure is said again: a trigger's window.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const REPEAT: Duration = Duration::from_secs(2);
 
 /// The host's memory pressure, watched: [`wait`](Self::wait) returns each time it is short
@@ -329,6 +332,95 @@ impl MemoryPressure {
     }
 }
 
+/// The host's memory pressure, watched: [`wait`](Self::wait) returns each time it is short
+/// of memory.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct MemoryPressure {
+    /// Signalled while the system's available memory is low.
+    low: std::os::windows::io::OwnedHandle,
+    /// Whether it was low when last looked at.
+    raised: bool,
+}
+
+/// What has a [`MemoryPressure`] watch more: on Windows, nothing, as on macOS: the system's
+/// pressure is all there is.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct PressureWatches;
+
+#[cfg(windows)]
+impl PressureWatches {
+    pub fn watch(&self, _dir: &std::path::Path) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl MemoryPressure {
+    pub fn new() -> io::Result<(MemoryPressure, PressureWatches)> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::System::Memory::{
+            CreateMemoryResourceNotification, LowMemoryResourceNotification,
+        };
+        // SAFETY: the system's own notification object, opened for this process.
+        let raw = unsafe { CreateMemoryResourceNotification(LowMemoryResourceNotification) };
+        if raw.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((
+            MemoryPressure {
+                // SAFETY: a handle just opened, which nothing else owns.
+                low: unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) },
+                raised: false,
+            },
+            PressureWatches,
+        ))
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "the system's low memory notification (CreateMemoryResourceNotification), said again every {} s while it lasts",
+            REPEAT.as_secs()
+        )
+    }
+
+    /// Waits until the system's memory is low, or [`REPEAT`] after the last time it said so
+    /// while it still is.
+    pub fn wait(&mut self) -> io::Result<()> {
+        use windows_sys::Win32::System::Threading::INFINITE;
+        if self.raised {
+            std::thread::sleep(REPEAT);
+            if self.signalled(0)? {
+                // Still low, as it was REPEAT ago.
+                return Ok(());
+            }
+            self.raised = false;
+        }
+        if self.signalled(INFINITE)? {
+            self.raised = true;
+        }
+        Ok(())
+    }
+
+    /// Whether the notification is signalled within `ms` milliseconds: the system's memory
+    /// low (the object is signalled while it is, CreateMemoryResourceNotification), as
+    /// QueryMemoryResourceNotification would say it, and an event that stands in for it
+    /// says it too.
+    fn signalled(&self, ms: u32) -> io::Result<bool> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: a wait on the object this holds.
+        match unsafe { WaitForSingleObject(self.low.as_raw_handle(), ms) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            WAIT_FAILED => Err(io::Error::last_os_error()),
+            other => Err(io::Error::other(format!("a wait answered {other}"))),
+        }
+    }
+}
+
 /// libdispatch's memory pressure source (dispatch/source.h), libSystem's: no framework is
 /// loaded for it.
 #[cfg(target_os = "macos")]
@@ -461,7 +553,8 @@ mod tests {
 
     /// The host's memory pressure can be watched where shards' daemon runs: on Linux, a
     /// trigger armed on the host's memory (a kernel of 6.4 or later), or its averages read;
-    /// on macOS, a source made and dropped.
+    /// on macOS, a source made and dropped; on Windows, the system's notification of low
+    /// memory opened, unsignalled on a host with a gigabyte available.
     #[test]
     fn the_hosts_memory_pressure_can_be_watched() {
         let watched = MemoryPressure::new();
@@ -471,5 +564,85 @@ mod tests {
         }
         let (watched, _) = watched.unwrap();
         assert!(!watched.describe().is_empty());
+        // Windows' notification is of low memory: unsignalled while a gigabyte is available,
+        // where the low one is raised at 64 MB at most by default and the high one is
+        // signalled from three times that (CreateMemoryResourceNotification's documentation).
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+            // SAFETY: MEMORYSTATUSEX is plain data, zeroes a valid value of it.
+            let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+            status.dwLength = u32::try_from(size_of::<MEMORYSTATUSEX>()).unwrap();
+            // SAFETY: a struct of the length it says.
+            assert_ne!(unsafe { GlobalMemoryStatusEx(&raw mut status) }, 0);
+            if status.ullAvailPhys >= 1 << 30 {
+                assert!(
+                    !watched.signalled(0).unwrap(),
+                    "low, with {} bytes available",
+                    status.ullAvailPhys
+                );
+            }
+        }
+    }
+
+    /// On Windows each low-memory signal is a word, one that lasts said again every
+    /// [`REPEAT`], and none while memory is not low: an event stands in for the system's
+    /// notification, a waitable object signalled while its memory is low
+    /// (CreateMemoryResourceNotification).
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn each_low_memory_signal_is_a_word_and_one_that_lasts_is_said_again() {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use std::time::Instant;
+        use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent};
+        // SAFETY: a manual-reset event, unsignalled, owned below.
+        let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert!(!raw.is_null());
+        // SAFETY: the handle just made, which nothing else owns.
+        let event = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let low = |on: bool| {
+            // SAFETY: the event made above.
+            let done = unsafe {
+                if on {
+                    SetEvent(event.as_raw_handle())
+                } else {
+                    ResetEvent(event.as_raw_handle())
+                }
+            };
+            assert_ne!(done, 0);
+        };
+        let mut pressure = MemoryPressure {
+            low: event.try_clone().unwrap(),
+            raised: false,
+        };
+        let (said, words) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                for _ in 0..3 {
+                    pressure.wait().unwrap();
+                    said.send(Instant::now()).unwrap();
+                }
+            });
+            assert!(
+                words.recv_timeout(Duration::from_millis(300)).is_err(),
+                "a word unasked"
+            );
+            low(true);
+            let first = words.recv_timeout(Duration::from_secs(5)).unwrap();
+            let again = words.recv_timeout(REPEAT * 3).unwrap();
+            assert!(
+                again.duration_since(first) >= REPEAT,
+                "said again {:?} on",
+                again.duration_since(first)
+            );
+            low(false);
+            assert!(
+                words.recv_timeout(REPEAT * 2).is_err(),
+                "a word with memory not low"
+            );
+            low(true);
+            words.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
     }
 }

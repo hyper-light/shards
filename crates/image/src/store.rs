@@ -386,12 +386,60 @@ fn platform_string(p: &oci::Platform) -> String {
     s
 }
 
-/// Makes the entries of `dir` durable: the renames into it outlast a power loss.
+/// Makes the entries of `dir` durable: the renames into it outlast a power loss. Windows
+/// takes FlushFileBuffers (std's `sync_all`) of a handle to it that may write ("must have
+/// the GENERIC_WRITE access right", its documentation), which a directory opens for only
+/// with backup semantics (CreateFileW), as the VMM's `platform::sync_dir` does.
 fn sync_dir(dir: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     sync_durable(&File::open(dir)?)?;
-    #[cfg(not(unix))]
-    let _ = dir;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(GENERIC_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)?
+            .sync_all()?;
+    }
+    Ok(())
+}
+
+/// Makes `file` sparse, so that what it holds past what is written takes none of its disk,
+/// as the VMM's `platform::make_sparse` does: NTFS takes every cluster up to a file's end as
+/// it is extended unless the file is sparse (FSCTL_SET_SPARSE; PM M349), where a Unix
+/// file's holes take no blocks already.
+fn make_sparse(file: &File) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        use windows_sys::Win32::System::Ioctl::{FILE_SET_SPARSE_BUFFER, FSCTL_SET_SPARSE};
+        let sparse = FILE_SET_SPARSE_BUFFER { SetSparse: true };
+        let size = u32::try_from(size_of::<FILE_SET_SPARSE_BUFFER>()).map_err(io::Error::other)?;
+        let mut returned = 0u32;
+        // SAFETY: a handle `file` holds open for synchronous I/O, `sparse`'s `size` bytes, no
+        // output buffer, and a count to write.
+        if unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_SPARSE,
+                std::ptr::from_ref(&sparse).cast(),
+                size,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(unix)]
+    let _ = file;
     Ok(())
 }
 

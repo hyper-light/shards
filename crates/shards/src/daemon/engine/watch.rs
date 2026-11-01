@@ -1,11 +1,12 @@
 //! Watching microVMs through the API (D170): `shards stats vm`, what each costs, and
 //! `shards watch system`, what happens to them.
 
+#[cfg(unix)]
 use std::os::fd::AsRawFd as _;
-use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use shards_ipc::Stream as UnixStream;
 use shards_ipc::kind;
 
 use super::http::{Answer, Stream};
@@ -19,6 +20,15 @@ const EVERY: Duration = Duration::from_secs(1);
 
 /// Waits up to `limit` for `client` to go, or to send something, which a client that
 /// waits sends none of: whether it did.
+#[cfg(windows)]
+fn gone_within(client: &UnixStream, limit: Duration) -> bool {
+    let deadline = std::time::Instant::now().checked_add(limit);
+    client.wait_readable(None, deadline).unwrap_or(false)
+}
+
+/// Waits up to `limit` for `client` to go, or to send something, which a client that
+/// waits sends none of: whether it did.
+#[cfg(unix)]
 fn gone_within(client: &UnixStream, limit: Duration) -> bool {
     let mut polled = libc::pollfd {
         fd: client.as_raw_fd(),

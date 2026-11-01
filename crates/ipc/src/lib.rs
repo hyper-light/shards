@@ -6,7 +6,7 @@
 //! The `shards` command links this crate and the standard library alone, so that it
 //! starts fast (docs/research/platform-measurements.md M23).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// shards' home: `SHARDS_HOME`, or `shards` in this user's data directory:
 /// `~/Library/Application Support` on macOS (Apple's File System Programming Guide),
@@ -42,6 +42,32 @@ pub fn home() -> Result<PathBuf, String> {
 
 /// The variable that names shards' home.
 pub const HOME: &str = "SHARDS_HOME";
+
+/// What a daemon that no longer serves keeps in its home while it ends its runs: its
+/// process ID. A daemon or client that finds none serving waits for that one while it
+/// lives, as long as its runs' stop timeouts make it, and then takes its place.
+pub const STOPPING: &str = "daemon.stopping";
+
+/// Whether the daemon that `STOPPING` in `home` names still lives, ending its runs.
+pub fn exiting(home: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(home.join(STOPPING)) else {
+        return false;
+    };
+    #[cfg(unix)]
+    let alive = unix::alive;
+    #[cfg(windows)]
+    let alive = windows::alive;
+    text.trim().parse::<u32>().is_ok_and(alive)
+}
+
+/// Where a daemon the client starts writes its messages.
+pub fn log(home: &Path) -> PathBuf {
+    home.join("daemon.log")
+}
+
+/// The first word of `shards cp`'s steps, which no command line has: what its client asks
+/// the daemon one at a time (cli/cp.rs, daemon/commands.rs).
+pub const COPY_STEP: &str = "\u{0}cp";
 
 /// Message kinds between the daemon, warm VMs and clients.
 pub mod kind {
@@ -337,6 +363,57 @@ pub mod kind {
     /// payload as it came: the client ends as that signal ends the Docker CLI before its
     /// container is made (D26).
     pub const INTERRUPTED: u8 = 71;
+    /// VM → its spawner, on its grants link, where it writes in no directory of its own
+    /// (Windows' AppContainer, D141): stage a snapshot generation in the directory it was
+    /// granted to write in, named as `GRANT` names a path, after a byte that says what the
+    /// generation keeps beside its memory and state (1 its writable layer, 2 its DAX
+    /// windows' heads). Answered with a `GRANTED` carrying the handles in the VM of the
+    /// generation's memory file, state file, layer head and layer file, and windows' heads
+    /// file, those it keeps, each a little-endian u64, then the generation's name; or an
+    /// `ERR` (D196).
+    pub const STAGE: u8 = 72;
+    /// VM → its spawner: the generation the payload names, staged and filled, is to be made
+    /// durable and the one in use. Answered with an empty `GRANTED`, or an `ERR` (D196).
+    pub const COMMIT: u8 = 73;
+    /// Daemon → a running run's VM: its microVM paused where it is (1), every vCPU held out
+    /// of its guest, or let go on (0), as `pause` and `unpause` ask; then the ask's number
+    /// (8, big-endian). Answered with a `PAUSED`.
+    pub const PAUSE: u8 = 74;
+    /// Warm VM → daemon: the `PAUSE` its number (8, big-endian) names done, every vCPU held
+    /// or let go (nothing after it), or why not.
+    pub const PAUSED: u8 = 75;
+    /// VM → its spawner, on its grants link, where it may ask its file system nothing of a
+    /// file's ranges (Windows' AppContainer, which makes no FSCTL, D141): which of a file of
+    /// the VM's hold data, the file's handle in the VM and the bytes looked at, each a
+    /// little-endian u64. Answered with a `GRANTED` of the ranges, each its offset and its
+    /// length, little-endian u64s; or an `ERR` (D196).
+    pub const RANGES: u8 = 76;
+    /// A network process → its spawner's dialer (Windows, D142), numbered as a `DIAL` is:
+    /// a UDP socket to the address (4 or 16 bytes) and port (big-endian) after its number,
+    /// one of those its AppContainer keeps it from (the host's loopback and own addresses,
+    /// PM M204), bound at that address and connected there. Answered as a `DIAL` is: a
+    /// `GRANTED` of the socket shared with it, kept until it says `TAKEN`; or an `ERR`.
+    pub const DIAL_UDP: u8 = 77;
+    /// VM → its spawner, on its grants link (Windows), empty: it asks for no more access,
+    /// as a vsock path's listen says, and the spawner refuses every `GRANT` after; the link
+    /// stays for its `RANGES`, which every save of the VM asks (D176), as it may ask its file
+    /// system nothing of a file's ranges (D141), where with no answer it read its writable
+    /// layer whole and NTFS took that much of its disk (PM M377).
+    pub const SEALED: u8 = 78;
+    /// Warm VM → daemon, empty, before `DONE`: its network process has closed the run's
+    /// published ports, as it answered `UNPUBLISH` (warm.rs `release_ports`), so that the
+    /// daemon closes its own copies of their sockets and frees them at once, rather than as
+    /// that process goes, which on Windows came 95 ms after a run's end on jupiter and past
+    /// 2 s on CI's runners (PM M380): the next program to bind one has it.
+    pub const PORTS_FREE: u8 = 79;
+
+    /// Whether a network process's control message of `kind` hands it sockets: published
+    /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
+    /// message on Unix; on Windows, where a socket is shared with a process by its protocol
+    /// info, before its payload, however many (`with_sockets`).
+    pub fn hands_sockets(kind: u8) -> bool {
+        matches!(kind, PUBLISH | NET_PUBLISHED | NET_PEER)
+    }
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
@@ -380,6 +457,10 @@ pub struct Exec {
     /// `-t` from a client that says what its terminal is: its terminal types, as a run's
     /// ([`Run::terms`]).
     pub terms: Vec<String>,
+    /// Its ID, where it has one already: the Engine API's, made with the exec and said in
+    /// its `exec_create`, as dockerd has it (moby daemon/exec.go); empty for `shards
+    /// exec`'s, which the daemon makes as it starts it.
+    pub id: String,
 }
 
 impl Exec {
@@ -404,6 +485,7 @@ impl Exec {
         put_identity(&mut w, &self.daemon);
         w.push(u8::from(self.privileged));
         put_list(&mut w, &self.terms);
+        put_str(&mut w, &self.id);
         w
     }
 
@@ -428,6 +510,7 @@ impl Exec {
             daemon: r.identity()?,
             privileged: r.flag()?,
             terms: r.list()?,
+            id: r.str()?,
         };
         r.0.is_empty().then_some(exec)
     }
@@ -534,6 +617,28 @@ pub struct Identity {
     pub size: u64,
     pub mtime_s: i64,
     pub mtime_ns: u32,
+}
+
+impl Identity {
+    /// The build a daemon binary belongs to, as clients and the daemon tell builds apart:
+    /// its file's identity, folded with that of the VM binary `SHARDS_VM_BINARY` names in
+    /// its place, if it names one. The binaries it starts are otherwise carried inside it
+    /// (shards' helpers.rs), so any of them rebuilt is this file changed; a daemon given
+    /// another VM binary is another build, which a client with its own replaces.
+    pub fn of_build(daemon: &Path) -> std::io::Result<Identity> {
+        let d = Identity::of(daemon)?;
+        let Some(vm) = std::env::var_os("SHARDS_VM_BINARY").filter(|v| !v.is_empty()) else {
+            return Ok(d);
+        };
+        let v = Identity::of(Path::new(&vm))?;
+        Ok(Identity {
+            dev: d.dev ^ v.dev.rotate_left(17),
+            ino: d.ino ^ v.ino.rotate_left(29),
+            size: d.size ^ v.size.rotate_left(37),
+            mtime_s: d.mtime_s ^ v.mtime_s.rotate_left(41),
+            mtime_ns: d.mtime_ns ^ v.mtime_ns.rotate_left(13),
+        })
+    }
 }
 
 /// `--pull`, as `docker run` takes it.
@@ -1712,7 +1817,8 @@ pub const RUN_SWAP: u8 = 128;
 /// (each segment's most bytes, how many segments it keeps), its log's first segment, the
 /// most memory its guest may plug in bytes (D148), its log's queue (D162): none where
 /// the run's output is kept as it comes, else the most bytes queued for its log; its I/O
-/// limits (D178); and the CPUs its microVM is held to (D191).
+/// limits (D178); the CPUs its microVM is held to (D191); and whether a group's CPU
+/// budget holds it too (D183).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunHead {
     pub flags: u8,
@@ -1728,6 +1834,9 @@ pub struct RunHead {
     /// The CPUs whose time its microVM's vCPUs may use of the host's together (D191), 0
     /// for every one.
     pub cpus: u64,
+    /// Its microVM is held by its group's CPU budget too (D183, slice 3): the budget's
+    /// file comes after its swap among the request's files.
+    pub group: bool,
 }
 
 /// The big-endian u64 `rest` begins with, `rest` then past it.
@@ -1739,8 +1848,9 @@ fn take_u64(rest: &mut &[u8]) -> Option<u64> {
 
 impl RunHead {
     /// Its length: the flags, four big-endian u64s, the queue's mode (0 blocking, 1
-    /// non-blocking), the queue's, the I/O limits' two, then the CPUs held to.
-    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8;
+    /// non-blocking), the queue's, the I/O limits' two, the CPUs held to, then whether a
+    /// group's budget holds it (0 or 1).
+    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);
@@ -1752,6 +1862,7 @@ impl RunHead {
         out.extend(self.io_bytes.to_be_bytes());
         out.extend(self.io_requests.to_be_bytes());
         out.extend(self.cpus.to_be_bytes());
+        out.push(u8::from(self.group));
     }
 
     /// The head `payload` begins with, and what follows it; why not, where it holds none.
@@ -1772,6 +1883,12 @@ impl RunHead {
         let io_bytes = take_u64(&mut rest).ok_or(SHORT)?;
         let io_requests = take_u64(&mut rest).ok_or(SHORT)?;
         let cpus = take_u64(&mut rest).ok_or(SHORT)?;
+        let (&group, rest) = rest.split_first().ok_or(SHORT)?;
+        let group = match group {
+            0 => false,
+            1 => true,
+            g => return Err(format!("a request whose group's mark is {g}")),
+        };
         let head = RunHead {
             flags,
             log_size,
@@ -1782,6 +1899,7 @@ impl RunHead {
             io_bytes,
             io_requests,
             cpus,
+            group,
         };
         Ok((head, rest))
     }
@@ -1837,7 +1955,6 @@ pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
 /// share process's connection.
 pub const MAX_FDS: usize = 9;
 
-#[cfg(unix)]
 pub mod slots;
 #[cfg(unix)]
 mod spawner;
@@ -1848,9 +1965,172 @@ pub use spawner::{Group, end_group, group_ended, serve_spawner, spawn_in_group, 
 #[cfg(unix)]
 pub use unix::*;
 #[cfg(windows)]
+mod pipe;
+#[cfg(windows)]
+pub use pipe::{
+    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, Stream, await_any, await_streams, byte_pair,
+    end, readable_raw, recv, recv_by, send,
+};
+#[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+
+/// A new file at `path`, its user's alone wherever it is, as a file a user's secret is
+/// written to must be (an invitation, a home's identity): mode 0600 on Unix; on Windows a
+/// DACL that grants this process's user, and no one else, all of it, protected from what
+/// its directory would give it, where an ACL inherited is whatever the directory's is.
+/// Refused where a file is there already.
+pub fn create_private(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    }
+    #[cfg(windows)]
+    pipe::create_private(path)
+}
+
+/// What carries shards' own messages between its processes: a Unix socket on Unix; on
+/// Windows a pipe's end ([`pipe::Stream`]), which Unix's code takes as it takes the socket.
+#[cfg(unix)]
+pub type Stream = std::os::unix::net::UnixStream;
+
+/// Descriptors, as shards' processes hand them on: a file descriptor on Unix, a handle on
+/// Windows, named by Unix's names, so that code that hands them on is written once.
+pub mod fd {
+    #[cfg(unix)]
+    pub use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+    #[cfg(windows)]
+    pub use std::os::windows::io::{
+        BorrowedHandle as BorrowedFd, FromRawHandle as FromRawFd, IntoRawHandle as IntoRawFd,
+        OwnedHandle as OwnedFd, RawHandle as RawFd,
+    };
+
+    /// A handle's borrow, as Unix's `AsFd` gives a descriptor's.
+    #[cfg(windows)]
+    pub trait AsFd {
+        fn as_fd(&self) -> BorrowedFd<'_>;
+    }
+
+    #[cfg(windows)]
+    impl<T: std::os::windows::io::AsHandle + ?Sized> AsFd for T {
+        fn as_fd(&self) -> BorrowedFd<'_> {
+            self.as_handle()
+        }
+    }
+
+    /// A handle's value, as Unix's `AsRawFd` gives a descriptor's.
+    #[cfg(windows)]
+    pub trait AsRawFd {
+        fn as_raw_fd(&self) -> RawFd;
+    }
+
+    #[cfg(windows)]
+    impl<T: std::os::windows::io::AsRawHandle + ?Sized> AsRawFd for T {
+        fn as_raw_fd(&self) -> RawFd {
+            self.as_raw_handle()
+        }
+    }
+}
+
+/// The signals shards names a process's end by: this host's own on Unix; on Windows, which
+/// sends a process none but its end, Linux's numbers, which a child it ends takes 128 and
+/// one of as its status (`Child::kill`), as a Unix child a signal ended does.
+pub mod signal {
+    #[cfg(unix)]
+    pub use libc::{SIGCONT, SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGSTOP, SIGTERM};
+    #[cfg(windows)]
+    pub const SIGHUP: i32 = 1;
+    #[cfg(windows)]
+    pub const SIGINT: i32 = 2;
+    #[cfg(windows)]
+    pub const SIGQUIT: i32 = 3;
+    #[cfg(windows)]
+    pub const SIGKILL: i32 = 9;
+    #[cfg(windows)]
+    pub const SIGTERM: i32 = 15;
+    #[cfg(windows)]
+    pub const SIGCONT: i32 = 18;
+    #[cfg(windows)]
+    pub const SIGSTOP: i32 = 19;
+}
+
+/// `stream`'s end, to hand on in a message ([`send`]): borrowed on Unix; on Windows a handle
+/// of its own, as a [`Stream`] lends none (its end closes as it is ended, whatever borrows
+/// it), which the message duplicates for its receiver.
+#[cfg(unix)]
+pub fn handed(stream: &Stream) -> std::io::Result<std::os::fd::BorrowedFd<'_>> {
+    use std::os::fd::AsFd as _;
+    Ok(stream.as_fd())
+}
+
+/// `stream`'s end, to hand on in a message ([`send`]): see Unix's.
+#[cfg(windows)]
+pub fn handed(stream: &Stream) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+    stream.share()
+}
+
+/// What one thread sets, once, for others to see, and a wait can wake on: the daemon's end
+/// of its clients, which a slot's reader of a request waits on beside the request (D185).
+/// A pipe written a byte never read, on Unix; an event, on Windows.
+#[derive(Debug)]
+pub struct Latch {
+    #[cfg(unix)]
+    pipe: (std::io::PipeReader, std::io::PipeWriter),
+    #[cfg(windows)]
+    event: Event,
+}
+
+impl Latch {
+    pub fn new() -> std::io::Result<Latch> {
+        Ok(Latch {
+            #[cfg(unix)]
+            pipe: std::io::pipe()?,
+            #[cfg(windows)]
+            event: Event::new()?,
+        })
+    }
+
+    /// Another handle to it: set through either, it is set for both.
+    pub fn try_clone(&self) -> std::io::Result<Latch> {
+        Ok(Latch {
+            #[cfg(unix)]
+            pipe: (self.pipe.0.try_clone()?, self.pipe.1.try_clone()?),
+            #[cfg(windows)]
+            event: self.event.try_clone()?,
+        })
+    }
+
+    /// Sets it, and it stays set.
+    pub fn set(&self) {
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+            // A full pipe is set already.
+            let _ = (&self.pipe.1).write_all(&[0]);
+        }
+        #[cfg(windows)]
+        self.event.set();
+    }
+
+    /// What a wait wakes on once it is set: readable from then on.
+    #[cfg(unix)]
+    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        self.pipe.0.as_fd()
+    }
+
+    /// What a wait wakes on once it is set.
+    #[cfg(windows)]
+    pub fn event(&self) -> &Event {
+        &self.event
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
@@ -1962,6 +2242,7 @@ mod tests {
                 io_bytes: 10 << 20,
                 io_requests: 100,
                 cpus: 2,
+                group: queue.is_some(),
             };
             let mut bytes = Vec::new();
             head.encode_into(&mut bytes);
@@ -1976,6 +2257,13 @@ mod tests {
         assert_eq!(
             RunHead::decode(&bytes),
             Err("a request whose log's mode is 2".to_string())
+        );
+        let mut bytes = Vec::new();
+        RunHead::default().encode_into(&mut bytes);
+        bytes[RunHead::LEN - 1] = 2;
+        assert_eq!(
+            RunHead::decode(&bytes),
+            Err("a request whose group's mark is 2".to_string())
         );
     }
 
@@ -2062,6 +2350,7 @@ mod tests {
             stdin_terminal: true,
             privileged: true,
             terms: vec!["xterm-kitty".into()],
+            id: "1f".repeat(32),
             daemon: Identity {
                 dev: 1,
                 ino: 2,

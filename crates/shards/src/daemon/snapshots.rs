@@ -4,12 +4,12 @@
 //! VM process fills, as it writes only what it is handed (D30), and the daemon commits.
 
 use std::ffi::OsString;
-use std::os::fd::{AsFd as _, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use serde::{Deserialize, Serialize};
 use shards_cmdline::flags::Parsed;
+use shards_ipc::fd::{AsFd as _, BorrowedFd};
 use shards_ipc::kind;
 
 use super::commands::Reply;
@@ -170,8 +170,7 @@ impl Unsaved {
 /// Snapshot `at` removed, its pointer first: one cut short is then no snapshot a restore
 /// takes, but a directory the next daemon's start removes ([`remove_unsaved`]).
 fn remove(at: &std::path::Path) -> std::io::Result<()> {
-    std::fs::remove_file(shards_vmm::snapshot::pointer(at))?;
-    std::fs::remove_dir_all(at)
+    shards_vmm::snapshot::remove(at)
 }
 
 /// Removes the snapshots in container directory `dir` with no generation in place (D176),
@@ -196,9 +195,9 @@ pub(super) fn remove_unsaved(dir: &std::path::Path, note: &mut dyn FnMut(String)
                 continue;
             }
         };
-        match std::fs::symlink_metadata(shards_vmm::snapshot::pointer(&at)) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        match shards_vmm::snapshot::pointed(&at) {
+            Ok(true) => {}
+            Ok(false) => {
                 if let Err(e) = std::fs::remove_dir_all(&at) {
                     note(format!("{}: {e}", at.display()));
                 }
@@ -210,7 +209,8 @@ pub(super) fn remove_unsaved(dir: &std::path::Path, note: &mut dyn FnMut(String)
 
 /// Removes from the home's private directory `dir` the files share processes made for
 /// restored guests (D176) that a crash left before removing them, as a daemon starts, no
-/// share process of its own running yet.
+/// share process of its own running yet: on every host, as Windows' share processes make
+/// them too (D197).
 pub(super) fn remove_ghosts(dir: &std::path::Path, note: &mut dyn FnMut(String)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -300,19 +300,19 @@ pub(super) fn resume_interface(run: &mut shards_ipc::Run, resume: &Resume) {
 /// A copy of the swap a snapshot's `generation` kept (D176), at `at`, for a run resumed
 /// from it, only this user's and as sparse as the swap was; none where it kept none.
 pub(super) fn copy_swap(generation: &Path, at: &Path) -> std::io::Result<Option<std::fs::File>> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     let kept = std::fs::File::open(shards_vmm::snapshot::swap_of(generation))?;
     let len = kept.metadata()?.len();
     if len == 0 {
         return Ok(None);
     }
-    let copy = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(at)?;
+    let copy = crate::os::owner_only(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
+    .open(at)?;
     shards_vmm::platform::copy_used(&kept, &copy, len)?;
     Ok(Some(copy))
 }
@@ -326,13 +326,11 @@ fn saved_at(name: &str) -> Option<i64> {
 
 /// The disk the files in `generation` take: their blocks, as sparse as each is.
 fn on_disk(generation: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt as _;
     std::fs::read_dir(generation)
         .map(|entries| {
             entries
                 .flatten()
-                .filter_map(|e| e.metadata().ok())
-                .map(|m| m.blocks().saturating_mul(512))
+                .filter_map(|e| Some(crate::os::on_disk(&e.path(), &e.metadata().ok()?)))
                 .fold(0, u64::saturating_add)
         })
         .unwrap_or(0)
@@ -420,7 +418,7 @@ impl<D: Disk> Daemon<D> {
             "restore".into(),
             r.dir.clone().into_os_string(),
             "--resume".into(),
-            "3".into(),
+            super::VM_LINK.into(),
         ];
         for (path, read_only) in shards_vmm::snapshot::backing_of(&pinned) {
             let mut backing = path.into_os_string();
@@ -645,6 +643,13 @@ impl<D: Disk> Daemon<D> {
         if !self.running(&id) {
             return Err(Unsaved::NotRunning(id));
         }
+        // A host whose hypervisor takes snapshots but sets no vCPU's state back saves none,
+        // as nothing here could go on from it: its daemon boots every run cold (PM M345).
+        if shards_vmm::vm::SNAPSHOTS && !shards_vmm::vm::restores_here() {
+            return Err(Unsaved::Failed(
+                "this host's microVMs take no snapshots yet: its hypervisor sets no vCPU's state back, so none would restore here (Windows Server 2022's WHP sets no APIC page back, PM M345)".into(),
+            ));
+        }
         // A joiner's processes are its provider's microVM's, which a save of that one
         // keeps (D119).
         if self.joined_run(&id) {
@@ -736,8 +741,8 @@ impl<D: Disk> Daemon<D> {
         tokens: &[u8],
         leave_running: bool,
     ) -> Result<(), String> {
-        let (inbox, socket, vm) = match lock(&self.runs).get(id) {
-            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone(), t.vm.clone()),
+        let (inbox, socket) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
             _ => return Err("it is not running".into()),
         };
         let microvm = lock(&self.containers)
@@ -775,9 +780,10 @@ impl<D: Disk> Daemon<D> {
             lock(&inbox).saving = None;
             return Err(format!("asking its microVM: {e}"));
         }
+        // A paused microVM's guest goes quiet for its save, so it goes on for it.
         let frozen = lock(&self.paused).contains(id);
         if frozen {
-            let _ = vm.kill(libc::SIGCONT);
+            let _ = self.pause_vm(id, false);
         }
         // As long as the save takes, which is its memory's writing: its VM answers, or
         // ends, and the run's end tells this then.
@@ -785,7 +791,7 @@ impl<D: Disk> Daemon<D> {
             .recv()
             .unwrap_or_else(|_| Err("its microVM stopped".into()));
         if frozen && leave_running && lock(&self.paused).contains(id) {
-            let _ = vm.kill(libc::SIGSTOP);
+            let _ = self.pause_vm(id, true);
         }
         answered
     }
@@ -795,6 +801,25 @@ impl<D: Disk> Daemon<D> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A daemon's start removes the ghost files a crash left in the home's private
+    /// directory, whichever host's share process made them, and nothing else there.
+    #[test]
+    fn a_crashs_ghosts_are_removed_and_nothing_else() {
+        let dir = shards_testdir::TempDir::new("ghosts").unwrap();
+        let ghost = dir.path().join(format!(
+            "{}0123abcd",
+            shards_vmm::devices::virtio::fs::server::GHOST_PREFIX
+        ));
+        let kept = dir.path().join("kept");
+        std::fs::write(&ghost, b"left").unwrap();
+        std::fs::write(&kept, b"mine").unwrap();
+        let mut notes = Vec::new();
+        remove_ghosts(dir.path(), &mut |n| notes.push(n));
+        assert!(!ghost.exists(), "{notes:?}");
+        assert!(kept.exists());
+        assert!(notes.is_empty(), "{notes:?}");
+    }
 
     /// A snapshot is named as a checkpoint is, and one saved without a name takes the
     /// time's, made unique.
@@ -841,7 +866,9 @@ mod tests {
     }
 
     /// A daemon's start removes what its end cut short of a snapshot's save or removal: a
-    /// snapshot with no generation in place, never one with its pointer.
+    /// snapshot with no generation in place, never one with its pointer, a pointer as the
+    /// platform writes it (versions of it on Windows, PM M345) among them; and a removal
+    /// takes the pointer, every version of it, with the rest.
     #[test]
     fn a_start_removes_snapshots_cut_short() {
         let dir = shards_testdir::TempDir::new("cut").unwrap();
@@ -849,6 +876,7 @@ mod tests {
         for (name, file) in [
             ("kept", "g-1/memory"),
             ("kept", shards_vmm::snapshot::CURRENT),
+            ("written", "g-1/memory"),
             ("cut", ".g-2.tmp/memory"),
             ("half", "g-3/memory"),
         ] {
@@ -856,11 +884,19 @@ mod tests {
             std::fs::create_dir_all(at.parent().unwrap()).unwrap();
             std::fs::write(at, b"g-1\n").unwrap();
         }
+        let written = snapshots.join("written");
+        for _ in 0..2 {
+            let held = shards_vmm::platform::open_dir(&written).unwrap();
+            shards_vmm::platform::write_in(&held, shards_vmm::snapshot::CURRENT, b"g-1\n").unwrap();
+        }
         let mut notes = Vec::new();
         remove_unsaved(dir.path(), &mut |n| notes.push(n));
         assert!(notes.is_empty(), "{notes:?}");
         assert!(snapshots.join("kept/g-1/memory").exists());
+        assert!(written.join("g-1/memory").exists());
         assert!(!snapshots.join("cut").exists() && !snapshots.join("half").exists());
+        remove(&written).unwrap();
+        assert!(!written.exists());
         // A container with none has nothing to remove, and nothing to say.
         let none = shards_testdir::TempDir::new("none").unwrap();
         remove_unsaved(none.path(), &mut |n| notes.push(n));

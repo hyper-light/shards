@@ -9,8 +9,6 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read as _, Write as _};
-use std::os::fd::{AsRawFd as _, FromRawFd as _};
-use std::os::unix::fs::FileExt as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -19,7 +17,8 @@ use shards_vmm::platform;
 
 use super::{Daemon, Threads, lock, log};
 use crate::containers::Disk;
-use crate::segments::{log_segment, packed_segment, unlink_in};
+use crate::os::ReadAt as _;
+use crate::segments::{log_segment, packed_segment};
 
 /// How much of a segment's log a frame holds, the most a reader decompresses to read a
 /// record of it: real logs in frames of 1 MiB come to 7.63% of their size, where whole
@@ -63,7 +62,7 @@ fn pack_with(dir: &File, seq: u64, durable: bool) -> io::Result<bool> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
     };
-    let out = create_in(dir, &packed_name)?;
+    let out = platform::create_in(dir, &packed_name)?;
     let made = write_packed(&written, &out).and_then(|()| {
         if durable {
             platform::sync_durable(&out)?;
@@ -72,10 +71,10 @@ fn pack_with(dir: &File, seq: u64, durable: bool) -> io::Result<bool> {
         Ok(())
     });
     if let Err(e) = made {
-        let _ = unlink_in(dir, &packed_name);
+        let _ = platform::unlink_in(dir, &packed_name);
         return Err(e);
     }
-    match unlink_in(dir, &log_name) {
+    match platform::unlink_in(dir, &log_name) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
@@ -84,7 +83,7 @@ fn pack_with(dir: &File, seq: u64, durable: bool) -> io::Result<bool> {
     if let Err(e) = platform::open_in(dir, &index_name)
         && e.kind() == io::ErrorKind::NotFound
     {
-        let _ = unlink_in(dir, &packed_name);
+        let _ = platform::unlink_in(dir, &packed_name);
     }
     Ok(true)
 }
@@ -137,20 +136,6 @@ fn seek_table(entries: &[(usize, usize)]) -> io::Result<Vec<u8>> {
     table.push(0);
     table.extend(SEEKABLE_MAGIC.to_le_bytes());
     Ok(table)
-}
-
-/// Makes `name` in the directory `dir` holds open, this user's alone, to write anew.
-fn create_in(dir: &File, name: &str) -> io::Result<File> {
-    let name = std::ffi::CString::new(name)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name with NUL"))?;
-    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC;
-    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory held open.
-    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags, 0o600 as libc::c_uint) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a descriptor just opened, owned by nothing else.
-    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 /// A segment's log as its readers read it: as written, or compressed.

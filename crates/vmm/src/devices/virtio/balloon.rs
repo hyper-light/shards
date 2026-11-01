@@ -220,10 +220,13 @@ impl<M> Drop for Balloon<M> {
 /// that the host could not give back, is left as it is, and the first is said. Writes
 /// nothing.
 fn answer(chain: &Chain, memory: &GuestMemory, stage2: &impl Mapper, said: &AtomicBool) -> u32 {
+    // Joined before the access is taken, which holds every device's queues: memory taken
+    // under it, past a cgroup's `memory.high`, stopped them all (PM M391).
+    let ranges = merged(chain.writable().map(|d| (d.addr, u64::from(d.len))));
     let Ok(access) = memory.access() else {
         return 0;
     };
-    for (gpa, len) in merged(chain.writable().map(|d| (d.addr, u64::from(d.len)))) {
+    for (gpa, len) in ranges {
         let unmap = |gpa, size| stage2.unmap(gpa, size);
         let map = |host, gpa, size| {
             // SAFETY: guest RAM stays mapped in this process as long as the guest memory

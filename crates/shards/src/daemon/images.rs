@@ -1055,7 +1055,6 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
 /// The bytes the files under `dir` hold, as `du` counts them: their blocks.
 fn on_disk(dir: &std::path::Path) -> u64 {
-    use std::os::unix::fs::MetadataExt;
     let mut total = 0u64;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -1069,7 +1068,7 @@ fn on_disk(dir: &std::path::Path) -> u64 {
             if meta.is_dir() {
                 stack.push(entry.path());
             } else {
-                total = total.saturating_add(meta.blocks().saturating_mul(512));
+                total = total.saturating_add(crate::os::on_disk(&entry.path(), &meta));
             }
         }
     }

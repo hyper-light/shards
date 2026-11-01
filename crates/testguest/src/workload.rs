@@ -188,6 +188,12 @@ pub fn main() -> ! {
         // Reads each file named through, a megabyte at a time, and says how much: what it
         // read stays in the page cache, the reader's own memory one megabyte.
         "read" => read_through(args.get(1..).unwrap_or_default()),
+        // Says it begins, reads a file through, as `read` does, then waits up to N seconds
+        // for the guest's page cache to hold at least half of it less, as its builder gives
+        // back what it holds cold (D188), and says whether it did; then reads it again and
+        // writes what it read, a checksum of its bytes, to OUT: a build's result the same,
+        // given back or not.
+        "read-dropped" => read_dropped(arg(1), arg(2).parse().unwrap_or(0), arg(3)),
         // Touches N MiB, a page at a time, then says so: what a memory limit stops.
         "alloc" => {
             let mib: usize = arg(1).parse().unwrap_or(0);
@@ -204,11 +210,101 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "allocated {}", held.len());
             0
         }
+        // Holds N MiB in all from THREADS threads at once, as a build's parallel jobs take
+        // memory: each thread its share a MiB at a time, as fast as it can; and for each 8
+        // MiB it holds, a job of its own that touches 16 MiB, frees them and ends, as a
+        // compiler's process does, on whichever CPU it ran, which keeps what it freed on its
+        // own list of free pages (PM M392). Then says so, and the most its CPUs' lists held
+        // as it went (/proc/zoneinfo's `count` of each CPU's pages, of each zone). With PATH
+        // and its MiB, a file of that many MiB written there first, as `big` writes one, and
+        // kept as it goes: memory nothing reclaims where PATH is a tmpfs's, as a builder's
+        // layers are.
+        "alloc-par" => 'par: {
+            fn touched(mib: usize) -> Vec<u8> {
+                let mut chunk = vec![0u8; mib << 20];
+                for page in chunk.chunks_mut(4096) {
+                    if let Some(b) = page.first_mut() {
+                        *b = 1;
+                    }
+                }
+                chunk
+            }
+            fn on_lists() -> u64 {
+                std::fs::read_to_string("/proc/zoneinfo")
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| l.trim().strip_prefix("count:")?.trim().parse::<u64>().ok())
+                    .sum()
+            }
+            let threads: usize = arg(1).parse().unwrap_or(1);
+            let threads = threads.max(1);
+            let mib: usize = arg(2).parse().unwrap_or(0);
+            if !arg(3).is_empty()
+                && let Err(e) = big(arg(3), arg(4).parse().unwrap_or(0))
+            {
+                let _ = writeln!(io::stderr(), "{}: {e}", arg(3));
+                break 'par 1;
+            }
+            let done = std::sync::atomic::AtomicBool::new(false);
+            let (held, most) = std::thread::scope(|s| {
+                let done = &done;
+                let sampler = s.spawn(move || {
+                    let mut most = 0;
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        most = most.max(on_lists());
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    most
+                });
+                let workers: Vec<_> = (0..threads)
+                    .map(|t| {
+                        let share = mib / threads + usize::from(t < mib % threads);
+                        s.spawn(move || {
+                            std::thread::scope(|jobs| {
+                                let mut held: Vec<Vec<u8>> = Vec::with_capacity(share);
+                                for i in 1..=share {
+                                    held.push(touched(1));
+                                    if i % 8 == 0 {
+                                        jobs.spawn(|| drop(touched(16)));
+                                    }
+                                }
+                                held
+                            })
+                        })
+                    })
+                    .collect();
+                let held: Vec<Vec<Vec<u8>>> = workers
+                    .into_iter()
+                    .map(|w| w.join().unwrap_or_default())
+                    .collect();
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                (held, sampler.join().unwrap_or(0))
+            });
+            let _ = writeln!(
+                io::stdout(),
+                "allocated {}, its CPUs' lists holding {} pages at most",
+                held.iter().map(Vec::len).sum::<usize>(),
+                most
+            );
+            0
+        }
         // Walks MIB MiB, one word a page, STEPS times in an order of its own, each step
         // the address the step before read, and says the nanoseconds a step took: a load
         // whose translation every step misses, as a host's address space shapes it (D159,
         // PM M230).
         "walk" => walk(arg(1).parse().unwrap_or(0), arg(2).parse().unwrap_or(0)),
+        // Touches N MiB as `alloc` does, says so, and holds it for SECONDS: memory its
+        // microVM holds and has nothing of to give back (D183's groups).
+        "alloc-hold" => {
+            let mib: usize = arg(1).parse().unwrap_or(0);
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..mib {
+                held.push(vec![1u8; 1 << 20]);
+            }
+            let _ = writeln!(io::stdout(), "allocated {}", held.len());
+            std::thread::sleep(std::time::Duration::from_secs(arg(2).parse().unwrap_or(0)));
+            i32::from(held.is_empty() && mib > 0)
+        }
         // Touches N MiB as `alloc` does, frees it, says so, and idles for SECONDS: memory
         // its microVM may give back (D151).
         "alloc-free" => {
@@ -1702,7 +1798,8 @@ fn fetch_one(
 }
 
 /// Sends a datagram to `addr` from a connected socket, and waits up to 5 s for an answer:
-/// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it.
+/// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it, then
+/// `waited MS`, from the send to its end, by the guest's clock.
 fn udp(addr: &str) -> i32 {
     // A socket of the address's version.
     let any = if addr.starts_with('[') {
@@ -1710,9 +1807,11 @@ fn udp(addr: &str) -> i32 {
     } else {
         "0.0.0.0:0"
     };
+    let mut sent = None;
     let answered = std::net::UdpSocket::bind(any).and_then(|s| {
         s.connect(addr)?;
         s.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        sent = Some(std::time::Instant::now());
         s.send(b"?")?;
         let mut buf = [0u8; 512];
         s.recv(&mut buf)
@@ -1724,6 +1823,9 @@ fn udp(addr: &str) -> i32 {
         }
         Err(e) => {
             let _ = writeln!(io::stdout(), "udp error {e}");
+            if let Some(sent) = sent {
+                let _ = writeln!(io::stdout(), "waited {}", sent.elapsed().as_millis());
+            }
             1
         }
     }
@@ -2903,12 +3005,81 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
     while std::fs::symlink_metadata(signal).is_err() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Past its attributes' second (the share's VALID_S): the stat asks the host.
+    // Past its attributes' second (the share's VALID_S): the stat asks the host. How far
+    // the kernel's jiffies, which FUSE times its attributes' second by (fs/fuse/dir.c,
+    // fuse_dentry_revalidate), went against CLOCK_MONOTONIC, which the sleep is timed by:
+    // CI's windows-2025 saw a stat 1.2 s past its file's attributes ask nothing of its
+    // share's server (05e9cc57, the server's log).
+    let (mono, ticks) = (std::time::Instant::now(), clock_ticks());
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let size = std::fs::metadata(path)?.len();
+    let slept = (mono.elapsed(), clock_ticks().saturating_sub(ticks));
+    // And asked of the file system afresh, whatever the kernel holds of it, said on stderr:
+    // where the size seen is not the file's, which of the kernel's cache and the share's
+    // server held it (containers.rs's DAX test, CI's windows-2022).
+    let asked = size_asked(path)?;
+    let clocks = [
+        "clocksource/clocksource0/current_clocksource",
+        "clockevents/clockevent0/current_device",
+    ]
+    .map(|at| {
+        std::fs::read_to_string(format!("/sys/devices/system/{at}"))
+            .map_or_else(|e| e.to_string(), |s| s.trim().to_string())
+    });
+    let _ = writeln!(
+        io::stderr(),
+        "map2m {path} asked afresh {asked}; slept {} us of CLOCK_MONOTONIC, {} clock ticks of jiffies at {} a second; clocksource {}, clockevent {}",
+        slept.0.as_micros(),
+        slept.1,
+        // SAFETY: sysconf(3) reads a constant.
+        unsafe { libc::sysconf(libc::_SC_CLK_TCK) },
+        clocks[0],
+        clocks[1]
+    );
     drop(std::fs::File::open(path)?);
     let _ = read_all();
     Ok(size)
+}
+
+/// The kernel's jiffies as clock ticks since boot, as times(2) gives them (kernel/sys.c,
+/// `jiffies_64_to_clock_t`): what a FUSE attribute's time is counted in.
+fn clock_ticks() -> u64 {
+    let mut t = libc::tms {
+        tms_utime: 0,
+        tms_stime: 0,
+        tms_cutime: 0,
+        tms_cstime: 0,
+    };
+    // SAFETY: times(2) fills a tms this frame owns.
+    let ticks = unsafe { libc::times(&mut t) };
+    u64::try_from(ticks).unwrap_or(0)
+}
+
+/// `path`'s size as its file system says it now (statx(2), AT_STATX_FORCE_SYNC): a FUSE
+/// file's asked of its server whatever its attributes' time (fs/fuse/dir.c,
+/// fuse_update_get_attr).
+fn size_asked(path: &str) -> io::Result<u64> {
+    // include/uapi/linux/stat.h: STATX_SIZE, AT_STATX_FORCE_SYNC, and stx_size struct
+    // statx's sixth word.
+    const STATX_SIZE: libc::c_uint = 0x200;
+    const AT_STATX_FORCE_SYNC: libc::c_int = 0x2000;
+    let c = std::ffi::CString::new(path).map_err(io::Error::other)?;
+    let mut st = [0u64; 32];
+    // SAFETY: statx(2) of a NUL-terminated path into a buffer of struct statx's size.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            AT_STATX_FORCE_SYNC,
+            STATX_SIZE,
+            st.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(st[5])
 }
 
 /// `file`'s whole pages mapped shared, `prot` their access: where, and how many bytes,
@@ -3245,6 +3416,79 @@ fn cat() -> i32 {
 }
 
 /// `read`'s: each file of `paths` read to its end, then `read PATH BYTES in MS ms` said.
+/// The guest's page cache, in KiB (/proc/meminfo's `Cached`).
+fn cached_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("Cached:"))
+        .and_then(|v| v.split_whitespace().next()?.parse().ok())
+}
+
+/// The bytes of the file at `path` and their FNV-1a checksum.
+fn checksum(path: &str) -> io::Result<(u64, u64)> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 1 << 20];
+    let (mut total, mut sum) = (0u64, 0xcbf2_9ce4_8422_2325u64);
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => return Ok((total, sum)),
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        for &b in buf.get(..n).unwrap_or_default() {
+            sum = (sum ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        total += n as u64;
+    }
+}
+
+/// `read-dropped PATH SECONDS OUT`: says `reading PATH` as it begins.
+fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
+    let _ = writeln!(io::stdout(), "reading {path}");
+    let (total, first) = match checksum(path) {
+        Ok(read) => read,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            return 1;
+        }
+    };
+    let _ = writeln!(io::stdout(), "read {path} {total}");
+    let held = cached_kib().unwrap_or(0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        let now = cached_kib().unwrap_or(held);
+        if held.saturating_sub(now) >= total / 2 / 1024 {
+            let _ = writeln!(io::stdout(), "dropped {} MiB", held.saturating_sub(now) >> 10);
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = writeln!(io::stdout(), "kept");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let again = match checksum(path) {
+        Ok((_, sum)) => sum,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            return 1;
+        }
+    };
+    if again != first {
+        let _ = writeln!(io::stderr(), "{path}: read {first:016x}, then {again:016x}");
+        return 1;
+    }
+    match std::fs::write(out, format!("{total} {again:016x}\n")) {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{out}: {e}");
+            1
+        }
+    }
+}
+
 fn read_through(paths: &[String]) -> i32 {
     let mut buf = vec![0u8; 1 << 20];
     for path in paths {

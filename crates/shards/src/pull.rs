@@ -195,7 +195,6 @@ pub fn command(
                 }
                 Err(e) => return refuse(&format!("shards: {e}")),
             };
-            #[cfg(unix)]
             if let Some(disk) = &pulled.rootfs {
                 publish(home, reference, &pulled.id, &pulled.config, disk, env);
             }
@@ -229,7 +228,6 @@ pub fn command(
 /// daemon's publisher, so that the pull does not wait: unless `SHARDS_LOCAL_STORE` is
 /// `none`, or no store is found (local_store.rs). The client's `env` names the store,
 /// else the daemon's own.
-#[cfg(unix)]
 pub(crate) fn publish(
     home: &Path,
     reference: &Reference,
@@ -244,6 +242,15 @@ pub(crate) fn publish(
         return;
     }
     let Some(socket) = crate::local_store::engine(&env) else {
+        // Said where its client named a store that is not there, which a publish that
+        // makes nothing would leave unsaid.
+        if let Some(host) = env("DOCKER_HOST").filter(|h| !h.is_empty()) {
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards daemon {}: {reference}: not published: DOCKER_HOST {host} names no socket here",
+                std::process::id()
+            );
+        }
         return;
     };
     let platform = match config.variant.as_deref() {

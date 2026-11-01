@@ -57,6 +57,38 @@ fn boots_to_root_mount_without_a_root_device() {
     );
 }
 
+/// A guest whose console no one reads says, as it resets, what its kernel wrote there last:
+/// the VM process reports its panic with its reset.
+#[test]
+fn a_reset_with_no_console_says_its_guests_panic() {
+    if cannot_run_vms() {
+        return;
+    }
+    let r = vm_run(
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--memory",
+            "256",
+            "--no-console",
+            "--cmdline",
+            "console=ttyS0 panic=-1",
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(r.status, Some(EXIT_RESET), "{r}");
+    assert!(
+        r.stderr
+            .contains("guest requested a reset, its console's last lines:\n"),
+        "{r}"
+    );
+    assert!(
+        r.stderr
+            .contains("Kernel panic - not syncing: VFS: Unable to mount root fs"),
+        "{r}"
+    );
+}
+
 /// A DAX window's page structures are its head's, not its guest's memory, and its linear
 /// map is in blocks (D189, shards' kernel patches 0008 and 0010, PM M300): a guest with a
 /// 4 GiB window has as much memory free as one with none, but for the spread of boots,
@@ -899,6 +931,197 @@ fn a_run_is_given_a_hosts_vfio_group() {
     assert_eq!(ran.status, Some(0), "{ran}");
 }
 
+/// shards' snapshot tests pass on a KVM host of this architecture's Linux (D154): a guest
+/// given virtualization of its own (`--nested`, D132), its kernel the pinned `kvm`
+/// variant's, runs them as such a host runs them, built for it (`common::linux_tests`),
+/// with real VMs of its own, KVM's: snapshots taken and restored, cold and from warm
+/// pools, templates and their working sets, microVMs saved and restored. Every VM test
+/// must run there (SHARDS_REQUIRE_VMS). A host that gives a guest no EL2 (a Mac before
+/// the M3; x86_64, not yet) skips, before building anything.
+#[test]
+fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(nested) = common::nested_kernel() else {
+        eprintln!("SKIP: no nested guest kernel for {}", common::ARCH);
+        return;
+    };
+    let dir = common::TempDir::new("l1-e2e");
+    let read = |p: &std::path::Path| std::fs::read(p).unwrap();
+    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
+        vm_run(
+            &[
+                "--kernel",
+                nested.to_str().unwrap(),
+                "--initrd",
+                initrd.to_str().unwrap(),
+                "--nested",
+                "--cpus",
+                cpus,
+                "--memory",
+                memory,
+                "--cmdline",
+                &format!("console=ttyS0 panic=-1 {cmdline}"),
+            ],
+            timeout,
+        )
+    };
+    // Whether this host gives a guest EL2, before the tests are built for one.
+    let probe = dir.join("probe.cpio");
+    std::fs::write(&probe, shards_vmm::initramfs::with_init(&read(test_guest()))).unwrap();
+    let probed = outer(&probe, "1", "256", "shards_test=kmsg", TIMEOUT);
+    if probed.stderr.contains("gives a guest no EL2") {
+        eprintln!("SKIP: this host gives a guest no EL2");
+        return;
+    }
+    assert_eq!(probed.status, Some(0), "{probed}");
+    // Each test binary, and what it is given: whole files, and of the rest the tests of
+    // snapshots alone (`cannot_snapshot`), one at a time: a nested guest's exits each go
+    // through this host's hypervisor, its KVM's nVHE world switches among them, and two of
+    // the daemon's tests together, some 20 VMs of eight vCPUs on its eight, had restored
+    // guests stall 30 s between resuming and dialing their host, their runs past 60 s, in
+    // 11 of 24 rounds, where the one that failed passed 9 of 9 alone (PM M346).
+    // SHARDS_L1_TESTS names others instead (`binary` or `binary:filter`, comma-separated),
+    // SHARDS_L1_LOG their SHARDS_LOG, and SHARDS_TEST_LOG_SHOWN how much of a failing
+    // test's logs they show.
+    let runs: Vec<(String, String)> = match std::env::var("SHARDS_L1_TESTS") {
+        Ok(chosen) => chosen
+            .split(',')
+            .map(|run| match run.split_once(':') {
+                Some((test, filter)) => (test.to_string(), filter.to_string()),
+                None => (run.to_string(), String::new()),
+            })
+            .collect(),
+        Err(_) => [
+            ("snapshot", ""),
+            ("restore", ""),
+            ("warm", ""),
+            ("saved", ""),
+            ("daemon", ""),
+            ("run", "templates_restore_into_runs_of_their_own"),
+            ("vsock", "restored_copies"),
+            ("pmem", "restored_copies"),
+            ("boot", "a_snapshot_keeps"),
+        ]
+        .map(|(test, filter)| (test.to_string(), filter.to_string()))
+        .to_vec(),
+    };
+    let tests: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
+    let built = common::linux_tests(&tests);
+    // The host's CA certificates, as every Linux host has a bundle of them, where Linux's
+    // TLS libraries look (rustls-native-certs, openssl-probe): the registry client trusts
+    // the system's roots, and on Linux builds no verifier without them (registry tls.rs).
+    let roots = [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ]
+    .iter()
+    .find_map(|path| std::fs::read(path).ok())
+    .expect("no CA bundle on this host");
+    let mut cpio = shards_vmm::initramfs::Cpio::new();
+    cpio.dir("dev", 0o755)
+        .char_dev("dev/console", 0o600, 5, 1)
+        .dir("proc", 0o555)
+        .dir("sys", 0o555)
+        .dir("tmp", 0o1777)
+        .dir("etc", 0o755)
+        .dir("etc/ssl", 0o755)
+        .dir("etc/ssl/certs", 0o755)
+        .file("etc/ssl/certs/ca-certificates.crt", 0o644, &roots)
+        .file("init", 0o755, &read(test_guest()))
+        .dir("e2e", 0o755)
+        .dir("e2e/bin", 0o755)
+        .dir("e2e/tests", 0o755)
+        .dir("e2e/guests", 0o755)
+        .dir("e2e/guests/guest", 0o755)
+        .file("e2e/guests/guest/shards-testguest", 0o755, &read(test_guest()));
+    // The files the binaries name by their build's paths, the kernel their VMs boot among
+    // them, each under the directories that hold it; and the checkout's, which they
+    // name as their workspace.
+    let mut dirs = std::collections::BTreeSet::new();
+    let mut place = |cpio: &mut shards_vmm::initramfs::Cpio, path: &std::path::Path, data: Option<&[u8]>| {
+        let relative = path.strip_prefix("/").unwrap();
+        for ancestor in relative.ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
+            let name = ancestor.to_str().unwrap();
+            if !name.is_empty() && dirs.insert(name.to_string()) {
+                cpio.dir(name, 0o755);
+            }
+        }
+        match data {
+            Some(bytes) => {
+                cpio.file(relative.to_str().unwrap(), 0o755, bytes);
+            }
+            None => {
+                if dirs.insert(relative.to_str().unwrap().to_string()) {
+                    cpio.dir(relative.to_str().unwrap(), 0o755);
+                }
+            }
+        }
+    };
+    for file in built
+        .files
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .chain([kernel()])
+    {
+        place(&mut cpio, file, Some(&read(file)));
+    }
+    place(&mut cpio, &common::workspace().join("crates/shards"), None);
+    let (mut run, mut names) = (String::new(), Vec::new());
+    for (test, args) in &runs {
+        let (_, binary) = built
+            .binaries
+            .iter()
+            .find(|(name, _)| name == test)
+            .unwrap_or_else(|| panic!("no test binary {test} built"));
+        let name = format!("e2e/tests/{test}");
+        cpio.file(&name, 0o755, &read(binary));
+        run.push_str(&format!("/{name} --test-threads=1 {args}\n"));
+        names.push(name);
+    }
+    let mut env = String::from(
+        "HOME=/tmp\nPATH=/e2e/bin\nTMPDIR=/tmp\nXDG_CACHE_HOME=/tmp/cache\nRUST_BACKTRACE=1\nSHARDS_REQUIRE_VMS=1\nSHARDS_TEST_GUESTS=/e2e/guests\n",
+    );
+    if let Ok(level) = std::env::var("SHARDS_L1_LOG") {
+        env.push_str(&format!("SHARDS_LOG={level}\n"));
+    }
+    if let Ok(bytes) = std::env::var("SHARDS_TEST_LOG_SHOWN") {
+        env.push_str(&format!("SHARDS_TEST_LOG_SHOWN={bytes}\n"));
+    }
+    cpio.file("e2e/run", 0o644, run.as_bytes())
+        .file("e2e/env", 0o644, env.as_bytes());
+    let initrd = dir.join("l1.cpio");
+    std::fs::write(&initrd, cpio.finish()).unwrap();
+    let ran = outer(
+        &initrd,
+        "8",
+        "24576",
+        "shards_test=e2e",
+        Duration::from_secs(45 * 60),
+    );
+    // SHARDS_L1_CONSOLE names a file its console is written to, passing or failing, for
+    // what the tests in it say of themselves.
+    if let Some(console) = std::env::var_os("SHARDS_L1_CONSOLE") {
+        std::fs::write(console, ran.to_string()).unwrap();
+    }
+    for name in &names {
+        assert!(
+            ran.stdout
+                .lines()
+                .any(|l| l.trim_end() == format!("E2E STATUS /{name} exit status: 0")),
+            "/{name} failed on Linux: {ran}"
+        );
+    }
+    assert!(!ran.stdout.contains("SKIP: snapshots are not supported"), "{ran}");
+    assert!(
+        ran.stdout.lines().any(|l| l.trim_end() == "SHARDS-TEST PASS"),
+        "{ran}"
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+}
+
 /// A snapshot of a guest with memory to plug, none of it plugged (D148): the VM that
 /// booted and each VM restored from it plug memory as their guest asks, and write it.
 #[test]
@@ -1077,4 +1300,524 @@ fn a_guest_grows_and_gives_back_its_memory() {
         held < 16 << 10,
         "the VM process held {held} KiB of the memory it gave back"
     );
+}
+
+/// What cold boots at once cost on a Windows host (PM M376): guests of as many vCPUs as the
+/// host has CPUs, as the daemon boots a run's, one, two, four and eight at once, then guests
+/// of one vCPU, eight and sixteen at once; each its console's lines as they come and the
+/// guest's own times on them, until its kernel, given no root, panics and resets; each VM
+/// process's CPU time, user and kernel, read once it has ended. Under CI's whole suite a
+/// run's cold boot took past 20 s, its VM process at 0.6 of a host CPU throughout (CI
+/// 40715919365, windows-2022): whether a guest's vCPUs waiting on one another make a boot
+/// cost more as more boot at once, which guests of one vCPU would not.
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boots_at_once_cost"]
+fn cold_boots_at_once_cost() {
+    let host = std::thread::available_parallelism().unwrap().get();
+    boots_at_once(&[(host, 1), (host, 2), (host, 4), (host, 8), (1, 8), (1, 16)].map(|(v, n)| (v, n, "")));
+}
+
+/// The same, each case beside its kernel told `quiet`, which writes only warnings and worse
+/// to its console: whether a boot's console lines, each byte two port exits, are what it
+/// spends (PM M376).
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boots_at_once_cost_quiet"]
+fn cold_boots_at_once_cost_quiet() {
+    let host = std::thread::available_parallelism().unwrap().get();
+    boots_at_once(&[
+        (host, 1, ""),
+        (host, 4, ""),
+        (host, 1, " quiet"),
+        (host, 2, " quiet"),
+        (host, 4, " quiet"),
+        (host, 8, " quiet"),
+        (1, 8, " quiet"),
+        (1, 16, " quiet"),
+    ]);
+}
+
+/// Boots each case's guests at once, as [`cold_boots_at_once_cost`] says: of its vCPUs,
+/// as many at once, its kernel told the words past its console.
+#[cfg(windows)]
+#[allow(clippy::print_stderr, clippy::unwrap_used, clippy::indexing_slicing)]
+fn boots_at_once(cases: &[(usize, usize, &str)]) {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if cannot_run_vms() {
+        return;
+    }
+    // The child of `cli` (the VM process), opened so that its times outlive it.
+    let open_vm = |cli: u32| -> HANDLE {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            // SAFETY: a snapshot of every process, closed below.
+            let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+            assert_ne!(snap, INVALID_HANDLE_VALUE);
+            let mut entry = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut vm = None;
+            // SAFETY: the snapshot, and an entry of its own size.
+            let mut more = unsafe { Process32FirstW(snap, &raw mut entry) } != 0;
+            while more {
+                if entry.th32ParentProcessID == cli {
+                    vm = Some(entry.th32ProcessID);
+                }
+                // SAFETY: as above.
+                more = unsafe { Process32NextW(snap, &raw mut entry) } != 0;
+            }
+            // SAFETY: the snapshot taken above.
+            unsafe { CloseHandle(snap) };
+            if let Some(vm) = vm {
+                // SAFETY: a process handle of the one right asked, closed by the caller.
+                let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, vm) };
+                if !h.is_null() {
+                    return h;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no VM process of {cli} in 10 s");
+    };
+    // Its CPU time in seconds, user and kernel; the handle closed.
+    let times = |h: HANDLE| -> (f64, f64) {
+        let mut t = [FILETIME::default(); 4];
+        let [c, e, k, u] = &mut t;
+        // SAFETY: the process, and four times to fill.
+        let ok = unsafe { GetProcessTimes(h, c, e, k, u) };
+        // SAFETY: the handle `open_vm` opened.
+        unsafe { CloseHandle(h) };
+        assert_ne!(ok, 0);
+        let s =
+            |t: &FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64 / 1e7;
+        (s(u), s(k))
+    };
+    // A console line's guest time, `[    1.529486] ...`.
+    let guest_at = |line: &str| -> Option<f64> {
+        let (at, _) = line.strip_prefix('[')?.split_once(']')?;
+        at.trim().parse().ok()
+    };
+    let host = std::thread::available_parallelism().unwrap().get();
+    let k = kernel();
+    eprintln!("M376 host CPUs {host}");
+    for &(vcpus, at_once, told) in cases {
+        let t0 = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, Option<(Duration, String)>)>();
+        let mut vms: Vec<(std::process::Child, HANDLE)> = Vec::new();
+        for i in 0..at_once {
+            let mut child = common::command()
+                .args(["run", "--kernel"])
+                .arg(k)
+                .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
+                .args(["--cmdline", &format!("console=ttyS0 earlycon panic=-1{told}")])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let out = child.stdout.take().unwrap();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    let _ = tx.send((i, Some((t0.elapsed(), line))));
+                }
+                let _ = tx.send((i, None));
+            });
+            let h = open_vm(child.id());
+            vms.push((child, h));
+        }
+        drop(tx);
+        let mut lines: Vec<Vec<(Duration, String)>> = vec![Vec::new(); at_once];
+        let mut ended = 0;
+        let deadline = t0 + Duration::from_secs(240);
+        while ended < at_once {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok((i, Some(line))) => lines[i].push(line),
+                Ok((_, None)) => ended += 1,
+                Err(_) => break,
+            }
+        }
+        let mut summary = Vec::new();
+        for (i, (mut child, h)) in vms.into_iter().enumerate() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let (user, kernel) = times(h);
+            let said = &lines[i];
+            let end = said.iter().find(|(_, l)| l.contains("Kernel panic"));
+            let first = said.first().map(|(at, _)| at.as_secs_f64());
+            let guest_end = said.iter().rev().find_map(|(_, l)| guest_at(l));
+            let mut gaps: Vec<(f64, &str)> = said
+                .windows(2)
+                .filter_map(|w| Some((guest_at(&w[1].1)? - guest_at(&w[0].1)?, w[1].1.as_str())))
+                .collect();
+            gaps.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let gaps: Vec<String> = gaps
+                .iter()
+                .take(4)
+                .map(|(g, l)| format!("+{g:.3}s {}", l.chars().take(110).collect::<String>()))
+                .collect();
+            let end_at = end.map(|(at, _)| at.as_secs_f64());
+            eprintln!(
+                "M376 vcpus={vcpus} at_once={at_once}{told} vm={i}: first {first:.2?} s, panic {end_at:.2?} s, guest {guest_end:.2?} s, cpu user {user:.2} s kernel {kernel:.2} s, {} lines; longest guest gaps: {gaps:#?}",
+                said.len()
+            );
+            summary.push((end_at.unwrap_or(f64::INFINITY), user + kernel));
+        }
+        let mut ends: Vec<f64> = summary.iter().map(|s| s.0).collect();
+        let mut cpus: Vec<f64> = summary.iter().map(|s| s.1).collect();
+        ends.sort_by(f64::total_cmp);
+        cpus.sort_by(f64::total_cmp);
+        eprintln!(
+            "M376 SUMMARY vcpus={vcpus} at_once={at_once}{told}: panic at p50 {:.2} s max {:.2} s; CPU a VM p50 {:.2} s max {:.2} s; wall {:.2} s",
+            ends[ends.len() / 2],
+            ends[ends.len() - 1],
+            cpus[cpus.len() / 2],
+            cpus[cpus.len() - 1],
+            t0.elapsed().as_secs_f64()
+        );
+    }
+}
+
+/// What a Windows host says of itself as a machine (PM M379): whether it is a virtual
+/// machine by its SMBIOS tables (GetSystemFirmwareTable's raw SMBIOS: its BIOS
+/// characteristics extension byte 2's bit 4, "SMBIOS table describes a virtual machine",
+/// and its system's manufacturer and product), and its hypervisor's CPUID leaves as its own
+/// processes see them: what tells CI's runners, nested in Azure, from jupiter, bare metal,
+/// for the boots that bring their CPUs up late.
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:host_machine_facts"]
+#[allow(clippy::print_stderr, clippy::unwrap_used, clippy::indexing_slicing)]
+fn host_machine_facts() {
+    use windows_sys::Win32::System::SystemInformation::{GetSystemFirmwareTable, RSMB};
+    // SAFETY: a size query, with no buffer.
+    let size = unsafe { GetSystemFirmwareTable(RSMB, 0, std::ptr::null_mut(), 0) };
+    let mut buf = vec![0u8; size as usize];
+    // SAFETY: a buffer of the size asked for.
+    let got = unsafe { GetSystemFirmwareTable(RSMB, 0, buf.as_mut_ptr(), size) };
+    assert_eq!(got, size);
+    // RawSMBIOSData: its calling method and versions, a u32 length, then the tables.
+    let (major, minor) = (buf[1], buf[2]);
+    let len = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
+    let tables = &buf[8..(8 + len).min(buf.len())];
+    let mut at = 0;
+    while at + 4 <= tables.len() {
+        let (kind, length) = (tables[at], tables[at + 1] as usize);
+        let formatted = &tables[at..(at + length).min(tables.len())];
+        // Its strings, each ended by a NUL, the set by a second.
+        let mut end = at + length;
+        while end + 1 < tables.len() && !(tables[end] == 0 && tables[end + 1] == 0) {
+            end += 1;
+        }
+        let strings: Vec<String> = tables[(at + length).min(end)..end]
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect();
+        let s = |i: Option<&u8>| {
+            i.and_then(|i| strings.get(usize::from(*i).wrapping_sub(1)))
+                .cloned()
+                .unwrap_or_default()
+        };
+        match kind {
+            0 => eprintln!(
+                "M379 HOST SMBIOS {major}.{minor} BIOS vendor {:?} version {:?}, its characteristics' extension bytes {:?}: a virtual machine {}",
+                s(formatted.get(4)),
+                s(formatted.get(5)),
+                formatted.get(0x12..0x14),
+                formatted.get(0x13).is_some_and(|b| b & (1 << 4) != 0)
+            ),
+            1 => eprintln!(
+                "M379 HOST system manufacturer {:?} product {:?} version {:?}",
+                s(formatted.get(4)),
+                s(formatted.get(5)),
+                s(formatted.get(6))
+            ),
+            127 => break,
+            _ => {}
+        }
+        at = end + 2;
+    }
+    // Its hypervisor's leaves as this process sees them.
+    for leaf in [
+        0x4000_0000u32,
+        0x4000_0001,
+        0x4000_0003,
+        0x4000_0004,
+        0x4000_0006,
+        0x4000_000A,
+    ] {
+        let r = std::arch::x86_64::__cpuid(leaf);
+        eprintln!(
+            "M379 HOST CPUID {leaf:#x}: eax {:#x} ebx {:#x} ecx {:#x} edx {:#x}",
+            r.eax, r.ebx, r.ecx, r.edx
+        );
+    }
+    eprintln!(
+        "M379 HOST CPUID 1 ecx's bit 31, a hypervisor present: {}",
+        (std::arch::x86_64::__cpuid(1).ecx >> 31) & 1
+    );
+}
+
+/// Where a cold boot's CPU time goes in its VM process (PM M376): one guest of as many
+/// vCPUs as the host has CPUs booted to its kernel's panic, left there (`panic=0`), and as
+/// its panic is said each of the VM process's threads' CPU time, user and kernel, by its
+/// name (`vcpu0`, `vcpu1`, ...), the largest first; plain and told `quiet`. A guest of 32
+/// vCPUs used 7.7 s of CPU time in a boot of 1 s on jupiter, one of 1 vCPU 0.2 s.
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boot_threads_cost"]
+fn cold_boot_threads_cost() {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::Stdio;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+        TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetThreadDescription, GetThreadTimes, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+    };
+
+    if cannot_run_vms() {
+        return;
+    }
+    let s = |t: &FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64 / 1e7;
+    let host = std::thread::available_parallelism().unwrap().get();
+    for (vcpus, told) in [(host, ""), (host, " quiet"), (4.min(host), ""), (1, "")] {
+        let mut child = common::command()
+            .args(["run", "--kernel"])
+            .arg(kernel())
+            .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
+            .args(["--cmdline", &format!("console=ttyS0 earlycon panic=0{told}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = BufReader::new(child.stdout.take().unwrap());
+        let start = std::time::Instant::now();
+        let mut panicked = false;
+        for line in out.lines().map_while(Result::ok) {
+            if line.contains("Kernel panic") {
+                panicked = true;
+                break;
+            }
+        }
+        let wall = start.elapsed();
+        // The VM process: the child of the one started.
+        // SAFETY: a snapshot of every process and thread, closed below.
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPTHREAD, 0) };
+        assert_ne!(snap, INVALID_HANDLE_VALUE);
+        let mut p = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut vm = None;
+        // SAFETY: the snapshot, and an entry of its own size.
+        let mut more = unsafe { Process32FirstW(snap, &raw mut p) } != 0;
+        while more {
+            if p.th32ParentProcessID == child.id() {
+                vm = Some(p.th32ProcessID);
+            }
+            // SAFETY: as above.
+            more = unsafe { Process32NextW(snap, &raw mut p) } != 0;
+        }
+        let vm = vm.unwrap();
+        let mut t = THREADENTRY32 {
+            dwSize: size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut threads: Vec<(f64, f64, String)> = Vec::new();
+        // SAFETY: as above.
+        let mut more = unsafe { Thread32First(snap, &raw mut t) } != 0;
+        while more {
+            if t.th32OwnerProcessID == vm {
+                // SAFETY: a thread handle of the one right asked, closed below.
+                let h = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, t.th32ThreadID) };
+                if !h.is_null() {
+                    let mut f = [FILETIME::default(); 4];
+                    let [c, e, k, u] = &mut f;
+                    // SAFETY: the thread, and four times to fill.
+                    let ok = unsafe { GetThreadTimes(h, c, e, k, u) } != 0;
+                    let mut name = std::ptr::null_mut();
+                    // SAFETY: the thread; its description, freed by LocalFree's owner.
+                    let described = unsafe { GetThreadDescription(h, &raw mut name) } >= 0 && !name.is_null();
+                    let mut said = String::new();
+                    if described {
+                        // SAFETY: a NUL-terminated wide string the call returned.
+                        let len = (0..).take_while(|&i| unsafe { *name.add(i) } != 0).count();
+                        // SAFETY: as above, `len` units long.
+                        said = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name, len) });
+                        // SAFETY: the string GetThreadDescription allocated.
+                        unsafe { windows_sys::Win32::Foundation::LocalFree(name.cast()) };
+                    }
+                    if ok {
+                        threads.push((s(u), s(k), format!("{said}#{}", t.th32ThreadID)));
+                    }
+                    // SAFETY: the handle opened above.
+                    unsafe { CloseHandle(h) };
+                }
+            }
+            // SAFETY: as above.
+            more = unsafe { Thread32Next(snap, &raw mut t) } != 0;
+        }
+        // SAFETY: the snapshot taken above.
+        unsafe { CloseHandle(snap) };
+        let _ = child.kill();
+        let _ = child.wait();
+        threads.sort_by(|a, b| (b.0 + b.1).total_cmp(&(a.0 + a.1)));
+        let total: f64 = threads.iter().map(|t| t.0 + t.1).sum();
+        let vcpu0 = threads
+            .iter()
+            .find(|t| t.2.starts_with("vcpu0#"))
+            .map_or(0.0, |t| t.0 + t.1);
+        let aps: f64 = threads
+            .iter()
+            .filter(|t| t.2.starts_with("vcpu") && !t.2.starts_with("vcpu0#"))
+            .map(|t| t.0 + t.1)
+            .sum();
+        let top: Vec<String> = threads
+            .iter()
+            .take(6)
+            .map(|(u, k, n)| format!("{n} user {u:.3} kernel {k:.3}"))
+            .collect();
+        eprintln!(
+            "M376 THREADS vcpus={vcpus}{told}: panicked {panicked} at {:.2} s; {} threads, CPU {total:.2} s: vcpu0 {vcpu0:.2} s, the other vCPUs {aps:.2} s; most: {top:?}",
+            wall.as_secs_f64(),
+            threads.len()
+        );
+    }
+}
+
+/// Where a cold boot's CPUs spend their ticks as more boot at once (PM M376): guests of as
+/// many vCPUs as the host has CPUs, one alone and then eight at once, each booting the test
+/// guest with its kernel's profiler on (`profile=4`) and quiet, the test guest reporting
+/// where its kernel's ticks went from boot to its start (`profile`), summed over the case's
+/// guests by symbol, the most first. Guests of the host's vCPUs boot past linearly slower as
+/// more boot at once, where guests of one vCPU do not: what their CPUs do meanwhile.
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:boot, ignored:cold_boots_profiled"]
+fn cold_boots_profiled() {
+    use std::collections::HashMap;
+    if cannot_run_vms() {
+        return;
+    }
+    let (k, guest) = (kernel(), test_guest());
+    let host = std::thread::available_parallelism().unwrap().get();
+    // Each beside its kernel told to bring up its boot CPU alone (`maxcpus=1`), its test
+    // guest bringing the rest online before it reports.
+    for (vcpus, at_once, told) in [
+        (host, 1, ""),
+        (host, 8, ""),
+        (host, 1, " maxcpus=1"),
+        (host, 8, " maxcpus=1"),
+        (host, 1, " maxcpus=1 rcupdate.rcu_expedited=1"),
+        (host, 8, " maxcpus=1 rcupdate.rcu_expedited=1"),
+        (1, 8, ""),
+    ] {
+        let started = std::time::Instant::now();
+        let runs: Vec<_> = (0..at_once)
+            .map(|_| {
+                let (k, guest) = (k.to_path_buf(), guest.to_path_buf());
+                std::thread::spawn(move || {
+                    vm_run(
+                        &[
+                            "--kernel",
+                            k.to_str().unwrap(),
+                            "--init",
+                            guest.to_str().unwrap(),
+                            "--cpus",
+                            &vcpus.to_string(),
+                            "--memory",
+                            "512",
+                            "--cmdline",
+                            &format!(
+                                "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
+                            ),
+                        ],
+                        Duration::from_secs(240),
+                    )
+                })
+            })
+            .collect();
+        let mut by: HashMap<String, u64> = HashMap::new();
+        let mut calls: HashMap<String, (u64, u64)> = HashMap::new();
+        let (mut total, mut uptimes, mut gaps) = (0u64, Vec::new(), Vec::new());
+        let (mut offered, mut steps) = (std::collections::BTreeSet::new(), Vec::new());
+        let mut onlined = Vec::new();
+        for (i, run) in runs.into_iter().enumerate() {
+            let r = run.join().unwrap();
+            for line in r.stdout.lines() {
+                if let Some(rest) = line.split_once("SHARDS-TEST INITCALL ").map(|(_, r)| r) {
+                    if let Some((us, name)) = rest.split_once(' ') {
+                        let us = us.parse::<u64>().unwrap_or(0);
+                        let c = calls.entry(name.to_string()).or_default();
+                        *c = (c.0 + us, c.1.max(us));
+                    }
+                } else if let Some(rest) = line.split_once("SHARDS-TEST ONLINE ").map(|(_, r)| r) {
+                    onlined.push(rest.to_string());
+                } else if let Some(rest) = line.split_once("SHARDS-TEST HV ").map(|(_, r)| r) {
+                    offered.insert(rest.to_string());
+                } else if let Some(rest) = line.split_once("SHARDS-TEST AT ").map(|(_, r)| r) {
+                    steps.push((i, rest.to_string()));
+                } else if let Some(rest) = line.split_once("SHARDS-TEST GAP ").map(|(_, r)| r) {
+                    if gaps.iter().filter(|(vm, _)| *vm == i).count() < 3 {
+                        gaps.push((i, rest.to_string()));
+                    }
+                } else if let Some(rest) = line.split_once("SHARDS-TEST PROFILE ").map(|(_, r)| r) {
+                    if let Some((ticks, name)) = rest.split_once(' ') {
+                        *by.entry(name.to_string()).or_default() += ticks.parse::<u64>().unwrap_or(0);
+                    }
+                } else if let Some(rest) = line.split_once("SHARDS-TEST PROFILE-TOTAL ").map(|(_, r)| r) {
+                    let mut parts = rest.split_whitespace();
+                    total += parts.next().and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+                    uptimes.push(parts.next().unwrap_or("?").to_string());
+                }
+            }
+        }
+        let mut ranked: Vec<(String, u64)> = by.into_iter().collect();
+        ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
+        let top: Vec<String> = ranked
+            .iter()
+            .take(25)
+            .map(|(name, ticks)| {
+                format!(
+                    "{ticks} ({:.1}%) {name}",
+                    100.0 * *ticks as f64 / total.max(1) as f64
+                )
+            })
+            .collect();
+        let mut slowest: Vec<(String, (u64, u64))> = calls.into_iter().collect();
+        slowest.sort_by_key(|c| std::cmp::Reverse(c.1.0));
+        let slowest: Vec<String> = slowest
+            .iter()
+            .take(15)
+            .map(|(name, (sum, max))| {
+                format!(
+                    "{:.1} ms a guest, at most {:.1}: {name}",
+                    *sum as f64 / 1e3 / at_once as f64,
+                    *max as f64 / 1e3
+                )
+            })
+            .collect();
+        eprintln!(
+            "M376 PROFILE vcpus={vcpus} at_once={at_once}{told}: {:.2} s, CPUs brought online (count, us) {onlined:?}, {total} ticks, guests up {uptimes:?} s at their start: {top:#?}\nM376 INITCALLS vcpus={vcpus} at_once={at_once}{told}: {slowest:#?}\nM376 GAPS vcpus={vcpus} at_once={at_once}{told} (us, each guest's longest three): {gaps:#?}\nM376 STEPS vcpus={vcpus} at_once={at_once}{told} (us): {steps:#?}\nM376 HYPER-V vcpus={vcpus} at_once={at_once}{told}: {offered:#?}",
+            started.elapsed().as_secs_f64()
+        );
+    }
 }

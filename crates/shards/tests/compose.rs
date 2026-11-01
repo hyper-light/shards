@@ -1,10 +1,9 @@
 //! A Compose project through the Engine API (D173): docker compose's own client,
-//! unchanged, with `DOCKER_HOST` at shards' socket, makes each service a microVM. Its
-//! services start in the order their dependencies' health says, reach each other by name
-//! on the project's network and nothing else through it, keep their data in its volumes,
-//! and go with `down`.
+//! unchanged, with `DOCKER_HOST` at shards' socket (on Windows its named pipe), makes each
+//! service a microVM. Its services start in the order their dependencies' health says,
+//! reach each other by name on the project's network and nothing else through it, keep
+//! their data in its volumes, and go with `down`.
 
-#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
@@ -21,13 +20,16 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 const CLIENT: Duration = Duration::from_secs(600);
 
 /// docker compose, where this host has it: on `PATH`, or where the Docker CLI looks for
-/// its plugins (cli-plugins/manager's system directories, and Docker Desktop's).
+/// its plugins (cli-plugins/manager's system directories, and Docker Desktop's; on Windows
+/// the user's own beside its config, `~/.docker/cli-plugins`, then manager_windows.go's).
 fn compose() -> Option<PathBuf> {
+    let name = format!("docker-compose{}", std::env::consts::EXE_SUFFIX);
     let on_path = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join("docker-compose"));
-    let plugins = [
+        .map(|d| d.join(&name));
+    #[cfg(unix)]
+    let plugins: Vec<PathBuf> = [
         "/usr/local/lib/docker/cli-plugins",
         "/usr/local/libexec/docker/cli-plugins",
         "/usr/lib/docker/cli-plugins",
@@ -35,8 +37,31 @@ fn compose() -> Option<PathBuf> {
         "/Applications/Docker.app/Contents/Resources/cli-plugins",
     ]
     .into_iter()
-    .map(|d| Path::new(d).join("docker-compose"));
+    .map(|d| Path::new(d).join(&name))
+    .collect();
+    #[cfg(windows)]
+    let plugins: Vec<PathBuf> = [
+        std::env::var_os("USERPROFILE").map(|h| Path::new(&h).join(".docker").join("cli-plugins")),
+        std::env::var_os("ProgramFiles").map(|p| Path::new(&p).join("Docker").join("cli-plugins")),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|d| d.join(&name))
+    .collect();
     on_path.chain(plugins).find(|p| p.is_file())
+}
+
+/// `DOCKER_HOST` for the engine of `home`'s daemon: its socket, or on Windows the named
+/// pipe its `engine.pipe` names.
+fn docker_host(home: &Path) -> String {
+    #[cfg(unix)]
+    return format!("unix://{}", home.join("engine.sock").display());
+    #[cfg(windows)]
+    {
+        let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+        let pipe = name.trim().strip_prefix(r"\\.\pipe\").unwrap();
+        format!("npipe:////./pipe/{pipe}")
+    }
 }
 
 /// A home whose daemon runs, the test image pulled into it.
@@ -105,7 +130,7 @@ volumes:
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let run = |args: &[&str]| {
         let out = common::output_within(
             std::process::Command::new(&compose)
@@ -200,6 +225,7 @@ volumes:
 /// and a job in a profile, run once.
 #[test]
 fn a_compose_projects_services_get_what_it_says() {
+    // Compose binds a secret's file (`secrets.file`).
     let Some(compose) = compose() else {
         eprintln!("SKIP: no docker compose on this host");
         return;
@@ -268,7 +294,7 @@ configs:
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let run = |args: &[&str]| {
         let out = common::output_within(
             std::process::Command::new(&compose)
@@ -393,7 +419,7 @@ services:
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let run = |args: &[&str], set: &[(&str, &str)]| {
         let out = common::output_within(
             std::process::Command::new(&compose)

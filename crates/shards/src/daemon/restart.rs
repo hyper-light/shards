@@ -8,11 +8,11 @@
 //! is a deadline of the followers' loop, and the start goes through the daemon's own
 //! door, as a client's detached `shards start` would.
 
-use std::os::fd::AsFd as _;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 use shards_ipc::{Run, kind};
 
 use super::{Daemon, Threads, lock, log};
@@ -128,8 +128,8 @@ impl<D: Disk> Daemon<D> {
             std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open("/dev/null")
-                .map_err(|e| format!("/dev/null: {e}"))
+                .open(crate::os::NULL)
+                .map_err(|e| format!("{}: {e}", crate::os::NULL))
         };
         let (stdin, stdout, stderr) = (null()?, null()?, null()?);
         let run = Run {

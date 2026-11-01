@@ -149,8 +149,9 @@ fn numeric_zone(offset: i64, colon: bool) -> String {
     format!("{sign}{:02}{colon}{:02}", zone / 60, zone % 60)
 }
 
-/// The proleptic Gregorian date `days` after 1970-01-01 (Howard Hinnant's civil_from_days).
-fn civil(days: i128) -> (i128, i128, i128) {
+/// The proleptic Gregorian date `days` after 1970-01-01 (Howard Hinnant's civil_from_days):
+/// its year, its month from 1, and its day of the month from 1.
+pub fn civil(days: i128) -> (i128, i128, i128) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

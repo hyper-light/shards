@@ -82,6 +82,12 @@ pub fn mount_layer(target: &str) -> Result<bool, String> {
     let (device, target_c) = (c(&format!("/dev/{disk}"))?, c(target)?);
     // noinit_itable: its host made every inode table zeros as it made the file system
     // (shards-ext4, EXT4_BG_INODE_ZEROED), which nothing need write again.
+    // no_prefetch_block_bitmaps: ext4lazyinit reads every group's block bitmap and builds
+    // its buddy cache in the background after a mount (fs/ext4/super.c,
+    // `ext4_run_li_request`), so that a first allocation does not wait on a disk; a DAX
+    // device's bitmap is memory, read as an allocation needs it. A template mounts the
+    // layer before its snapshot, so every restored guest did that work again, and nested
+    // and loaded it held a CPU 22 to 27 s (soft lockups; PM M346).
     // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
     let mounted = unsafe {
         libc::mount(
@@ -89,7 +95,9 @@ pub fn mount_layer(target: &str) -> Result<bool, String> {
             target_c.as_ptr(),
             c"ext4".as_ptr(),
             0,
-            c"dax=always,noinit_itable".as_ptr().cast(),
+            c"dax=always,noinit_itable,no_prefetch_block_bitmaps"
+                .as_ptr()
+                .cast(),
         )
     };
     if mounted != 0 {

@@ -317,6 +317,23 @@ pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether memory reserved for a guest is charged the host's memory as it is reserved: not
+/// here, where Linux and macOS give an anonymous mapping's pages as they are touched.
+pub const CHARGED_AS_RESERVED: bool = false;
+
+/// Reserves `len` bytes of guest RAM of which the host gives nothing yet: [`reserve_ram`]'s,
+/// [`withhold`]n at once, each part [`grant`]ed as it is given out (memory to plug, D133).
+pub fn reserve_withheld(len: usize) -> io::Result<NonNull<u8>> {
+    let p = reserve_ram(len)?;
+    // SAFETY: the mapping just made, which nothing else references.
+    if let Err(e) = unsafe { withhold(p, len) } {
+        // SAFETY: as above, released as it goes unused.
+        unsafe { release(p, len) };
+        return Err(e);
+    }
+    Ok(p)
+}
+
 /// # Safety
 /// `ptr..ptr+len` must be a mapping returned by `reserve` or `reserve_ram` and not used
 /// afterwards.
@@ -461,6 +478,92 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
         let _ = (ptr, pages);
         Ok(None)
     }
+}
+
+/// Whether every one of the `len / page` pages at `ptr` is [`untouched`], asked without
+/// taking memory: a device asks it of what its guest reports free while it holds guest
+/// memory's lock, and memory taken there, charged to a cgroup past its `memory.high`, had
+/// its kernel stop the device 2 s at each return to user mode (mm/memcontrol.c,
+/// `mem_cgroup_handle_over_high`), every other device's queue waiting on the lock meanwhile
+/// and its guest's give-back with them (PM M391). Linux reads /proc/self/pagemap, opened
+/// once, a page of entries at a time into the stack, and stops at the first page the host
+/// holds; macOS asks [`untouched`]. Where the OS cannot say, `None`.
+///
+/// # Safety
+/// As for [`untouched`].
+pub unsafe fn all_untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<Option<bool>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::FileExt;
+        const PRESENT: u64 = 1 << 63;
+        const SWAPPED: u64 = 1 << 62;
+        static PAGEMAP: std::sync::OnceLock<File> = std::sync::OnceLock::new();
+        let pagemap = match PAGEMAP.get() {
+            Some(pagemap) => pagemap,
+            None => {
+                let opened = File::open("/proc/self/pagemap")?;
+                PAGEMAP.get_or_init(|| opened)
+            }
+        };
+        let (first, pages) = (ptr as usize / page, len / page);
+        let mut entries = [0u8; 4096];
+        let mut done = 0;
+        while done < pages {
+            let n = (pages - done).min(entries.len() / 8);
+            let read = entries.get_mut(..n * 8).unwrap_or_default();
+            pagemap.read_exact_at(read, ((first + done) * 8) as u64)?;
+            if read
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .any(|e| u64::from_ne_bytes(*e) & (PRESENT | SWAPPED) != 0)
+            {
+                return Ok(Some(false));
+            }
+            done += n;
+        }
+        Ok(Some(true))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: forwarded caller contract.
+        Ok(unsafe { untouched(ptr, len, page) }?.map(|pages| pages.iter().all(|u| *u)))
+    }
+}
+
+/// Guest RAM mapped privately from a file ([`map_file_views`]): nothing kept here, as a
+/// private mapping's written pages go back to its file's at [`discard`] (Linux's
+/// MADV_DONTNEED frees a private mapping's copies; macOS maps fresh memory over them).
+#[derive(Debug)]
+pub struct FileViews;
+
+impl FileViews {
+    /// Gives back the pages of `ptr..ptr + len` ([`discard`]): the bytes given back.
+    ///
+    /// # Safety
+    /// As for [`discard`].
+    pub unsafe fn give_back(&self, ptr: NonNull<u8>, len: usize) -> io::Result<usize> {
+        // SAFETY: forwarded caller contract.
+        unsafe { discard(ptr, len) }.map(|()| len)
+    }
+}
+
+/// Maps `len` bytes of `file` from `offset` copy-on-write at `at` ([`map_file_private`]), as
+/// a restore maps its RAM, whose pages its guest gives back through the [`FileViews`]:
+/// whole, whatever runs of it hold data (windows.rs maps those alone from the file), as a
+/// private mapping gives a page back to its file's however much of the file it maps.
+///
+/// # Safety
+/// As for [`map_file_private`].
+pub unsafe fn map_file_views(
+    file: &File,
+    offset: u64,
+    len: usize,
+    at: NonNull<u8>,
+    _data: &[std::ops::Range<usize>],
+) -> io::Result<FileViews> {
+    // SAFETY: forwarded caller contract.
+    unsafe { map_file_private(file, offset, len, at) }.map(|()| FileViews)
 }
 
 /// Replaces `len` bytes at `at` with a private, copy-on-write mapping of `file` from
@@ -1139,6 +1242,88 @@ pub fn open_in(dir: &File, name: &str) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
+/// `name` in the directory `dir` holds open, opened with `flags` beside close-on-exec, made
+/// this user's alone where it is made.
+fn make_in(dir: &File, name: &str, flags: libc::c_int) -> io::Result<File> {
+    use std::os::fd::FromRawFd as _;
+    let name = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL"))?;
+    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory we hold open.
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC,
+            0o600 as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor we just opened, and nothing else owns.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Makes `name` in the directory `dir` holds open, this user's alone, to write anew: one
+/// there is emptied.
+pub fn create_in(dir: &File, name: &str) -> io::Result<File> {
+    make_in(dir, name, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC)
+}
+
+/// Makes `name` in the directory `dir` holds open, this user's alone, to append to;
+/// refused where it is there.
+pub fn append_new_in(dir: &File, name: &str) -> io::Result<File> {
+    make_in(
+        dir,
+        name,
+        libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT | libc::O_EXCL,
+    )
+}
+
+/// What `entry`, a name a directory lists, is a version of: itself, as a write here replaces
+/// the file at its name (windows_files.rs `version_of`, whose writes replace none).
+pub fn version_of(entry: &str) -> &str {
+    entry
+}
+
+/// The name `name`'s newest version goes by in the directory `dir` holds open: `name`, as a
+/// write here replaces the file there (windows_files.rs `newest_in`).
+pub fn newest_in(_dir: &File, name: &str) -> io::Result<String> {
+    Ok(name.to_string())
+}
+
+/// Opens `name`'s newest version for reading in the directory `dir` holds open: the file at
+/// `name` ([`open_in`]; windows_files.rs `open_newest_in`).
+pub fn open_newest_in(dir: &File, name: &str) -> io::Result<File> {
+    open_in(dir, name)
+}
+
+/// The regular file `rel` names beneath `root`, its newest version, opened for reading: the
+/// file itself ([`open_beneath`]; windows_files.rs `open_newest_beneath`).
+pub fn open_newest_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    open_beneath(root, rel)
+}
+
+/// Removes `name` from the directory `dir` holds open, where it is there (windows_files.rs
+/// `remove_in`, which removes its every version).
+pub fn remove_in(dir: &File, name: &str) -> io::Result<()> {
+    match unlink_in(dir, name) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    }
+}
+
+/// Removes `name` from the directory `dir` holds open.
+pub fn unlink_in(dir: &File, name: &str) -> io::Result<()> {
+    let name = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL"))?;
+    // SAFETY: unlinkat(2) with a NUL-terminated name, relative to a directory we hold open.
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Creates `name` in the directory `dir` holds open, durably: written to a temporary
 /// sibling of its own, synced, renamed over `name`, and the directory synced. It lands
 /// there even if the directory was renamed since it was opened, and of writers racing to
@@ -1201,6 +1386,12 @@ pub fn sync_entries(dir: &File) -> io::Result<()> {
     return dir.sync_all();
 }
 
+/// Makes `file` keep what is never written to it as holes: nothing to do, as ext4, btrfs,
+/// XFS and APFS leave a file's unwritten ranges holes by themselves (windows.rs must ask).
+pub fn sparse(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
 /// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)). A filesystem without
 /// `F_FULLFSYNC` gets `fsync` instead, as SQLite falls back (`full_fsync`, os_unix.c):
@@ -1220,6 +1411,13 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
     }
     #[cfg(not(target_os = "macos"))]
     file.sync_data()
+}
+
+/// Makes `file` sparse, so that what it holds past what is written takes none of its disk:
+/// a Unix file extended past what is written (ftruncate(2)) is already, its holes taking no
+/// blocks (windows.rs makes an NTFS file so, PM M349).
+pub fn make_sparse(_file: &File) -> io::Result<()> {
+    Ok(())
 }
 
 /// Gives back the file system's blocks under `len` bytes of `file` from `offset`, whole 4
@@ -1445,10 +1643,17 @@ pub fn descriptor_limit() -> Option<u64> {
     Some(lim.rlim_cur)
 }
 
-/// How many descriptors this process has open: the entries of /dev/fd (fdescfs on macOS,
-/// /proc/self/fd on Linux), less the one that lists them.
+/// How many descriptors this process has open: the entries of /dev/fd on macOS (fdescfs)
+/// and of /proc/self/fd on Linux, less the one that lists them. Linux's /dev/fd is a link
+/// a host's init or udev makes, which a host without them has not (a guest whose PID 1 is
+/// its own, D154's test path): a share then failed to start.
 pub fn open_descriptors() -> Option<u64> {
-    let count = std::fs::read_dir("/dev/fd").ok()?.count();
+    let dir = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    let count = std::fs::read_dir(dir).ok()?.count();
     u64::try_from(count.checked_sub(1)?).ok()
 }
 
@@ -1541,7 +1746,8 @@ impl Poller {
     }
 
     /// Watches `fd`, named `token`, until it is [`remove`](Self::remove)d or closed.
-    pub fn add(&self, fd: std::os::fd::BorrowedFd<'_>, token: u64) -> io::Result<()> {
+    pub fn add(&self, fd: &impl std::os::fd::AsFd, token: u64) -> io::Result<()> {
+        let fd = fd.as_fd();
         #[cfg(target_os = "macos")]
         {
             self.change(fd, libc::EV_ADD, token)
@@ -1605,7 +1811,7 @@ impl Poller {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            use std::os::fd::{AsFd as _, FromRawFd as _};
+            use std::os::fd::FromRawFd as _;
             // SAFETY: pidfd_open(2) of a process, without flags: its descriptor is
             // close-on-exec.
             let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -1616,13 +1822,14 @@ impl Poller {
                 .map_err(|_| io::Error::other("a descriptor out of range"))?;
             // SAFETY: a descriptor just made, owned by nothing else.
             let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-            self.add(pidfd.as_fd(), token)?;
+            self.add(&pidfd, token)?;
             Ok(ExitWatch { _pidfd: pidfd })
         }
     }
 
     /// Stops watching `fd`.
-    pub fn remove(&self, fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    pub fn remove(&self, fd: &impl std::os::fd::AsFd) -> io::Result<()> {
+        let fd = fd.as_fd();
         #[cfg(target_os = "macos")]
         {
             self.change(fd, libc::EV_DELETE, 0)
@@ -2375,6 +2582,23 @@ impl ThreadClock {
             Ok(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
         }
     }
+}
+
+/// The host's monotonic clock in nanoseconds: "the monotonic clock for the system"
+/// (POSIX, `clock_getres`, CLOCK_MONOTONIC), one reading in every process of the host, by
+/// which the processes that share a budget mark its time alike (a group's CPU, D183).
+pub fn monotonic_ns() -> io::Result<u64> {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the system's monotonic clock, and a timespec to write.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let secs = u64::try_from(t.tv_sec).unwrap_or(0);
+    let nanos = u64::try_from(t.tv_nsec).unwrap_or(0);
+    Ok(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
 }
 
 /// This process's page faults, page-ins from files, copy-on-write faults and context

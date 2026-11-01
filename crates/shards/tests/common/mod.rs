@@ -118,18 +118,37 @@ pub fn cannot_run_vms() -> bool {
     }
 }
 
-/// Snapshots exist where this build has a backend (vm::SNAPSHOTS); tests of them skip
-/// elsewhere with a SKIP line, even where `SHARDS_REQUIRE_VMS=1` says VMs must run: a
-/// backend without snapshots (WHP's, so far) runs VMs all the same.
+/// Snapshots restore where this build has a backend that takes them (vm::SNAPSHOTS) and
+/// the host's hypervisor sets a vCPU's state back (vm::restores_here: not Windows Server
+/// 2022's, PM M345); tests of them skip elsewhere with a SKIP line, even where
+/// `SHARDS_REQUIRE_VMS=1` says VMs must run: such a host runs VMs all the same.
 pub fn cannot_snapshot() -> bool {
-    if shards_vmm::vm::SNAPSHOTS {
-        return false;
+    if !shards_vmm::vm::SNAPSHOTS {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: snapshots are not supported on {ARCH} yet"
+        );
+        return true;
     }
-    let _ = writeln!(
-        std::io::stderr(),
-        "SKIP: snapshots are not supported on {ARCH} yet"
-    );
-    true
+    if !shards_vmm::vm::restores_here() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: this host's hypervisor sets no vCPU's state back, so no snapshot restores here (Windows Server 2022's WHP sets no APIC page back, PM M345)"
+        );
+        return true;
+    }
+    false
+}
+
+/// Whether the daemon here keeps the snapshots it keeps, its templates, warm pools and saves
+/// (D25, D26, D176): wherever snapshots restore ([`cannot_snapshot`]).
+pub fn pools() -> bool {
+    shards_vmm::vm::restores_here()
+}
+
+/// Whether tests of the snapshots a daemon keeps skip here ([`pools`]), saying why.
+pub fn cannot_pool() -> bool {
+    cannot_snapshot()
 }
 
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
@@ -138,11 +157,20 @@ pub mod pinned;
 
 #[cfg(unix)]
 pub mod terminal;
+#[cfg(windows)]
+#[path = "terminal_windows.rs"]
+pub mod terminal;
 
-/// The file `name` of the snapshot generation `dir` points at (vmm snapshot/mod.rs).
+/// The file `name` of the snapshot generation `dir` points at, as the store reads both:
+/// its pointer, and the file's newest version, which on Windows a file written after its
+/// generation was committed (its working set) lands as (platform `write_in`); the name
+/// itself where none has.
 pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
-    let current = std::fs::read_to_string(dir.join("current")).unwrap();
-    dir.join(current.trim_end()).join(name)
+    let generation = shards_vmm::snapshot::generation(dir).unwrap();
+    let newest = shards_vmm::platform::open_dir(&generation)
+        .and_then(|d| shards_vmm::platform::newest_in(&d, name))
+        .unwrap_or_else(|_| name.to_string());
+    generation.join(newest)
 }
 
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
@@ -271,13 +299,13 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-e39058b2b627",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-e39058b2b627/Image-6.18.48-aarch64-kvm",
+                name: "Image-6.18.48-aarch64-kvm-64a9427a8997",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/Image-6.18.48-aarch64-kvm",
                 sha256: "b3834451dd3504010f9ac398d8602f37030cda3225ecb2ef2d8f60eebc5d14a6",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-e39058b2b627",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-e39058b2b627/vmlinux-6.18.48-x86_64-kvm",
+                name: "vmlinux-6.18.48-x86_64-kvm-64a9427a8997",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/vmlinux-6.18.48-x86_64-kvm",
                 sha256: "fb1a14009a675a39d61a5d2c19bd62129266bd4bbbb04038bdbefa419c0b6c2d",
             },
             _ => return None,
@@ -337,7 +365,11 @@ fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &s
     guest_binary_with(package, name, target_dir, "guest", env)
 }
 
-/// [`guest_binary_in`], of cargo's profile `profile`.
+/// [`guest_binary_in`], of cargo's profile `profile`. Where `SHARDS_TEST_GUESTS` names a
+/// directory, the binary built beforehand into it, as `target_dir`'s last part and `name`
+/// (`guest/shards-testguest`): for test binaries run where no cargo builds them, a guest
+/// of the host's that is itself a KVM host (boot.rs,
+/// `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`).
 fn guest_binary_with(
     package: &str,
     name: &str,
@@ -345,52 +377,20 @@ fn guest_binary_with(
     profile: &str,
     env: &[(&str, &str)],
 ) -> PathBuf {
+    if let Some(built) = std::env::var_os("SHARDS_TEST_GUESTS") {
+        let variant = Path::new(target_dir).file_name().unwrap_or_default();
+        return Path::new(&built).join(variant).join(name);
+    }
     let target_dir = workspace().join(target_dir);
     let guest_target = format!("{ARCH}-unknown-linux-musl");
-    // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
-    // the dyld paths cargo injects into test processes: the proxy's environment is
-    // what lets rust-lld find the toolchain's libLLVM.
-    // Linked as build.rs links the init shardsd carries, whatever linker the environment
-    // names for the host's own musl builds.
-    let linker = format!(
-        "CARGO_TARGET_{}_LINKER",
-        guest_target.to_ascii_uppercase().replace('-', "_")
-    );
     // One build at a time, and this process's own copy of what it made: cargo puts its
     // output in place again on every build, up to date or not, and another test process
     // reading it meanwhile finds it missing.
     std::fs::create_dir_all(&target_dir).unwrap();
     let lock = std::fs::File::create(target_dir.join(".tests.lock")).unwrap();
     lock.lock().unwrap();
-    // Its C (AWS-LC) by zig, as build.rs compiles init's (scripts/zig-cc).
-    let var = guest_target.replace('-', "_");
-    let mut cc: Vec<(String, String)> = Vec::new();
-    if std::env::var_os(format!("CC_{var}")).is_none() {
-        let tool = |name: &str| {
-            let script = workspace().join("scripts").join(name);
-            if cfg!(windows) {
-                // As a POSIX shell on Windows (Git's, MSYS) takes a path: forward slashes,
-                // and no verbatim prefix (`\\?\`), whose backslashes it reads as escapes.
-                let text = script.display().to_string();
-                format!(
-                    "sh {}",
-                    text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
-                )
-            } else {
-                script.display().to_string()
-            }
-        };
-        cc.push((format!("CC_{var}"), tool("zig-cc")));
-        cc.push((format!("AR_{var}"), tool("zig-ar")));
-        cc.push(("ZIG_TARGET".to_string(), format!("{ARCH}-linux-musl")));
-    }
-    let st = Command::new("cargo")
-        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
-        .env_remove("DYLD_LIBRARY_PATH")
-        .env(linker, "rust-lld")
-        .envs(cc)
+    let st = guest_cargo(&guest_target)
         .envs(env.iter().copied())
-        .current_dir(workspace())
         .args([
             "build",
             "-p",
@@ -429,6 +429,141 @@ fn guest_binary_with(
     std::fs::copy(&built, &copy).unwrap();
     drop(lock);
     copy
+}
+
+/// cargo for this architecture's Linux (static musl), `guest_target`, from the workspace:
+/// through the rustup proxy on PATH (not $CARGO, the bare cargo binary), without the dyld
+/// paths cargo injects into test processes, as the proxy's environment is what lets
+/// rust-lld find the toolchain's libLLVM; linked as build.rs links the init shardsd
+/// carries, whatever linker the environment names for the host's own musl builds; its C
+/// (AWS-LC) by zig, as build.rs compiles init's (scripts/zig-cc).
+fn guest_cargo(guest_target: &str) -> Command {
+    let linker = format!(
+        "CARGO_TARGET_{}_LINKER",
+        guest_target.to_ascii_uppercase().replace('-', "_")
+    );
+    let var = guest_target.replace('-', "_");
+    let mut cc: Vec<(String, String)> = Vec::new();
+    if std::env::var_os(format!("CC_{var}")).is_none() {
+        let tool = |name: &str| {
+            let script = workspace().join("scripts").join(name);
+            if cfg!(windows) {
+                // As a POSIX shell on Windows (Git's, MSYS) takes a path: forward slashes,
+                // and no verbatim prefix (`\\?\`), whose backslashes it reads as escapes.
+                let text = script.display().to_string();
+                format!(
+                    "sh {}",
+                    text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
+                )
+            } else {
+                script.display().to_string()
+            }
+        };
+        cc.push((format!("CC_{var}"), tool("zig-cc")));
+        cc.push((format!("AR_{var}"), tool("zig-ar")));
+        cc.push(("ZIG_TARGET".to_string(), format!("{ARCH}-linux-musl")));
+    }
+    let mut cargo = Command::new("cargo");
+    cargo
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .env(linker, "rust-lld")
+        .envs(cc)
+        .current_dir(workspace());
+    cargo
+}
+
+/// shards' E2E test binaries of `tests` (their targets' names), built for this
+/// architecture's Linux (static musl) with the tests' profile, without debug information,
+/// for a guest that is itself a KVM host to run as such a host runs them (boot.rs,
+/// `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`).
+pub struct LinuxTests {
+    /// Each test's binary, by its target's name.
+    pub binaries: Vec<(String, PathBuf)>,
+    /// What the binaries reach by the paths their build gave them: `shards`
+    /// (CARGO_BIN_EXE_shards), the init build.rs made (OUT_DIR) and the helpers it carries
+    /// (SHARDS_HELPERS_CARRIED).
+    pub files: Vec<PathBuf>,
+}
+
+pub fn linux_tests(tests: &[&str]) -> LinuxTests {
+    let target_dir = workspace().join("target/l1");
+    let guest_target = format!("{ARCH}-unknown-linux-musl");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    let lock = std::fs::File::create(target_dir.join(".tests.lock")).unwrap();
+    lock.lock().unwrap();
+    let mut cargo = guest_cargo(&guest_target);
+    cargo
+        .env("CARGO_PROFILE_TEST_RELEASE_DEBUG", "false")
+        .args(["test", "-p", "shards", "--profile", "test-release", "--no-run"])
+        .args([
+            "--message-format=json-render-diagnostics",
+            "--target",
+            &guest_target,
+        ])
+        .arg("--target-dir")
+        .arg(&target_dir);
+    for test in tests {
+        cargo.args(["--test", test]);
+    }
+    let out = cargo.stdin(Stdio::null()).output().unwrap();
+    assert!(
+        out.status.success(),
+        "building the tests for Linux: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    drop(lock);
+    let (mut binaries, mut shards) = (Vec::new(), None);
+    // Each package's build script's output directory, and the helpers it carries, if any.
+    let mut scripts: Vec<(String, PathBuf, Option<PathBuf>)> = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Ok(m) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        let package = text(&m["package_id"]);
+        match m["reason"].as_str() {
+            Some("compiler-artifact") => {
+                let (Some(kinds), Some(executable)) =
+                    (m["target"]["kind"].as_array(), m["executable"].as_str())
+                else {
+                    continue;
+                };
+                let name = text(&m["target"]["name"]);
+                if kinds.iter().any(|k| k == "test") {
+                    binaries.push((name, PathBuf::from(executable)));
+                } else if kinds.iter().any(|k| k == "bin") && name == "shards" {
+                    shards = Some((package, PathBuf::from(executable)));
+                }
+            }
+            Some("build-script-executed") => {
+                let carried = m["env"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|kv| kv[0] == "SHARDS_HELPERS_CARRIED")
+                    .and_then(|kv| kv[1].as_str())
+                    .map(PathBuf::from);
+                scripts.push((package, PathBuf::from(text(&m["out_dir"])), carried));
+            }
+            _ => {}
+        }
+    }
+    let (package, shards) = shards.expect("cargo built no shards for Linux");
+    let (_, out_dir, carried) = scripts
+        .into_iter()
+        .find(|(p, ..)| *p == package)
+        .expect("no build script ran for shards");
+    let carried = carried.expect("shards' build carries no helpers");
+    LinuxTests {
+        binaries,
+        files: vec![
+            shards,
+            out_dir.join("shards-init"),
+            carried.join("shards-vm"),
+            carried.join("shards-net"),
+        ],
+    }
 }
 
 /// The production guest init (PID 1): the one `shardsd` carries, as build.rs made it.
@@ -511,8 +646,30 @@ pub fn kvm_counters_in(text: &str) -> std::collections::BTreeMap<String, u64> {
 }
 
 /// KVM's counters of VM process `pid` ([`kvm_counters_in`]), from debugfs, which only root
-/// reads: through `sudo -n`, as CI's runners allow; none where they cannot be read.
+/// reads: directly where this process may, as root on a guest that is a KVM host of its own
+/// (boot.rs, `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`), else through
+/// `sudo -n`, as CI's runners allow; none where they cannot be read.
 pub fn kvm_counters(pid: u32) -> Option<std::collections::BTreeMap<String, u64>> {
+    let mine = format!("{pid}-");
+    let direct: String = std::fs::read_dir("/sys/kernel/debug/kvm")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|vm| vm.file_name().to_string_lossy().starts_with(&mine))
+        .flat_map(|vm| std::fs::read_dir(vm.path()).into_iter().flatten().flatten())
+        .filter_map(|f| {
+            let value = std::fs::read_to_string(f.path()).ok()?;
+            Some(format!(
+                "{} {}\n",
+                f.file_name().to_string_lossy(),
+                value.replace('\n', " ")
+            ))
+        })
+        .collect();
+    let counters = kvm_counters_in(&direct);
+    if !counters.is_empty() {
+        return Some(counters);
+    }
     let script = format!(
         "for f in /sys/kernel/debug/kvm/{pid}-*/*; do [ -f \"$f\" ] && printf '%s %s\\n' \"${{f##*/}}\" \"$(tr '\\n' ' ' < \"$f\")\"; done; true"
     );
@@ -538,10 +695,356 @@ fn carried() -> PathBuf {
     PathBuf::from(env!("SHARDS_HELPERS_CARRIED"))
 }
 
+#[cfg(unix)]
+pub fn alive(pid: i32) -> bool {
+    // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// The IDs of the VM processes `parent` started: its children named shards-vm. On Windows
+/// `shards run --kernel` and `shards restore` start the VM process as a child, confined,
+/// and answer what it asks for, where Unix's become it.
+#[cfg(windows)]
+pub fn vm_processes(parent: u32) -> Vec<u32> {
+    processes()
+        .into_iter()
+        .filter(|(_, ppid, name)| *ppid == parent && name.eq_ignore_ascii_case("shards-vm.exe"))
+        .map(|(pid, _, _)| pid)
+        .collect()
+}
+
+/// Every process of the system's, as its snapshot of them says (Toolhelp32): its ID, its
+/// parent's, and its executable's name.
+#[cfg(windows)]
+pub fn processes() -> Vec<(u32, u32, String)> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: a snapshot of every process, closed below.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    assert_ne!(snap, INVALID_HANDLE_VALUE);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = Vec::new();
+    // SAFETY: the snapshot, and an entry of its own size.
+    let mut more = unsafe { Process32FirstW(snap, &raw mut entry) } != 0;
+    while more {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        found.push((
+            entry.th32ProcessID,
+            entry.th32ParentProcessID,
+            String::from_utf16_lossy(&entry.szExeFile[..end]),
+        ));
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snap, &raw mut entry) } != 0;
+    }
+    // SAFETY: the snapshot taken above, closed once.
+    unsafe { CloseHandle(snap) };
+    found
+}
+
+/// A handle to process `pid` that may give it handles (PROCESS_DUP_HANDLE), as a VM's
+/// spawner holds one: what `shards_ipc::Stream::gives_to` takes.
+#[cfg(windows)]
+pub fn giver(pid: u32) -> std::os::windows::io::OwnedHandle {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_DUP_HANDLE};
+    // SAFETY: a process handle of the one right asked, owned from here on.
+    let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, pid) };
+    assert!(!raw.is_null(), "process {pid}: {}", io::Error::last_os_error());
+    // SAFETY: the handle just opened, which nothing else owns.
+    unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) }
+}
+
+/// Whether process `pid` has yet to end: its exit code still STILL_ACTIVE
+/// (GetExitCodeProcess), which a process that ended with that code would be taken for.
+#[cfg(windows)]
+pub fn alive(pid: i32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let Ok(pid) = u32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: a process's handle opened, read and closed here.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let read = GetExitCodeProcess(process, &raw mut code) != 0;
+        CloseHandle(process);
+        read && code == STILL_ACTIVE.cast_unsigned()
+    }
+}
+
+/// Ends process `pid` outright: SIGKILL on Unix; on Windows TerminateProcess, its status
+/// 128 and 9 as a Unix child's.
+pub fn kill_now(pid: i32) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of a process this test started.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+        let pid = u32::try_from(pid).unwrap();
+        // SAFETY: a process's handle opened, used and closed here.
+        unsafe {
+            let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            assert!(!process.is_null(), "process {pid} could not be opened");
+            TerminateProcess(process, 128 + 9);
+            CloseHandle(process);
+        }
+    }
+}
+
+/// This host's physical memory, in bytes: sysconf(3)'s pages on Unix; on Windows
+/// GlobalMemoryStatusEx's total.
+pub fn host_memory() -> u64 {
+    #[cfg(unix)]
+    // SAFETY: sysconf(3) with constant arguments.
+    unsafe {
+        u64::try_from(libc::sysconf(libc::_SC_PHYS_PAGES)).unwrap()
+            * u64::try_from(libc::sysconf(libc::_SC_PAGESIZE)).unwrap()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).unwrap(),
+            ..MEMORYSTATUSEX::default()
+        };
+        // SAFETY: a structure on this stack, its length set as the call asks.
+        assert_ne!(unsafe { GlobalMemoryStatusEx(&raw mut status) }, 0);
+        status.ullTotalPhys
+    }
+}
+
+/// This host's name, as the daemon reads it (daemon/info.rs `host_name`): gethostname(2)
+/// on Unix; on Windows its DNS host name (GetComputerNameExW,
+/// ComputerNamePhysicalDnsHostname), as Go's `os.Hostname` reads it.
+pub fn host_name() -> String {
+    #[cfg(unix)]
+    {
+        let mut name = [0u8; 256];
+        // SAFETY: gethostname(2) into our own buffer, of its length.
+        let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
+        assert_eq!(got, 0);
+        String::from_utf8_lossy(name.split(|&b| b == 0).next().unwrap()).into_owned()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{
+            ComputerNamePhysicalDnsHostname, GetComputerNameExW,
+        };
+        let mut name = [0u16; 256];
+        let mut len = u32::try_from(name.len()).unwrap();
+        // SAFETY: at most `len` units written into `name`, and its length back.
+        let got =
+            unsafe { GetComputerNameExW(ComputerNamePhysicalDnsHostname, name.as_mut_ptr(), &raw mut len) };
+        assert_ne!(got, 0, "{}", std::io::Error::last_os_error());
+        String::from_utf16(&name[..usize::try_from(len).unwrap()]).unwrap()
+    }
+}
+
+/// Writes `bytes` into `file` at `at`, in place, as a host's program writes one.
+pub fn write_at(file: &std::fs::File, bytes: &[u8], at: u64) {
+    #[cfg(unix)]
+    std::os::unix::fs::FileExt::write_all_at(file, bytes, at).unwrap();
+    #[cfg(windows)]
+    assert_eq!(
+        std::os::windows::fs::FileExt::seek_write(file, bytes, at).unwrap(),
+        bytes.len()
+    );
+}
+
+/// `path`'s DACL on Windows, as SDDL writes it, and what it is where the file is its user's
+/// alone, as `shards_ipc::create_private` makes one: protected from its directory's, one
+/// ACE, allowing this process's user all of a file (`FA`), and no one else anything, which
+/// NTFS keeps of a file made with `D:P(A;;GA;;;USER)` (jupiter, Windows 11 26200). Each as
+/// SDDL writes a descriptor back, its user's SID an alias where it has one: `LA`, a
+/// machine's administrator (RID 500), as CI's runners run as.
+#[cfg(windows)]
+pub fn dacl_and_private(path: &Path) -> (String, String) {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+        TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated path, and a descriptor for the call to fill, freed below.
+    let got = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut sd,
+        )
+    };
+    assert_eq!(got, 0, "{}", path.display());
+    let dacl = dacl_text(sd);
+    // SAFETY: what the call above allocated, freed once.
+    unsafe { LocalFree(sd) };
+    // This process's user, as SDDL names it.
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: this process's own token, for querying, never closed: the test's life.
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) };
+    assert_ne!(opened, 0);
+    let mut buf = vec![0u8; 256];
+    let mut needed = 0u32;
+    // SAFETY: a buffer of its own size for the token's user.
+    let read = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            buf.as_mut_ptr().cast(),
+            u32::try_from(buf.len()).unwrap(),
+            &raw mut needed,
+        )
+    };
+    assert_ne!(read, 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: TokenUser's TOKEN_USER, at the start of the buffer it filled.
+    let sid = unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut named: *mut u16 = std::ptr::null_mut();
+    // SAFETY: the SID the token holds, and a string for the call to fill, freed below.
+    let converted = unsafe { ConvertSidToStringSidW(sid, &raw mut named) };
+    assert_ne!(converted, 0);
+    // SAFETY: a NUL-terminated string the call made.
+    let user = unsafe {
+        let n = (0..).take_while(|&i| *named.add(i) != 0).count();
+        let user = String::from_utf16_lossy(std::slice::from_raw_parts(named, n));
+        LocalFree(named.cast());
+        user
+    };
+    let private: Vec<u16> = format!("D:P(A;;FA;;;{user})").encode_utf16().chain([0]).collect();
+    let mut made: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated SDDL string, and a descriptor for the call to fill, freed
+    // below.
+    let parsed = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            private.as_ptr(),
+            SDDL_REVISION_1,
+            &raw mut made,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(parsed, 0, "{}", std::io::Error::last_os_error());
+    let private = dacl_text(made);
+    // SAFETY: what the call above allocated, freed once.
+    unsafe { LocalFree(made) };
+    (dacl, private)
+}
+
+/// The DACL of the descriptor `sd` as SDDL writes it.
+#[cfg(windows)]
+fn dacl_text(sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR) -> String {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    let mut text: *mut u16 = std::ptr::null_mut();
+    let mut len = 0u32;
+    // SAFETY: a descriptor its caller holds, and a string for the call to fill, freed below.
+    let converted = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &raw mut text,
+            &raw mut len,
+        )
+    };
+    assert_ne!(converted, 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: the `len` characters the call wrote.
+    let dacl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) });
+    // SAFETY: what the call allocated, freed once.
+    unsafe { LocalFree(text.cast()) };
+    dacl.trim_end_matches('\0').to_string()
+}
+
+/// `cmd` started so that [`interrupt`] reaches it: on Windows in a process group of its own,
+/// which a console's events reach by its leader's id (CREATE_NEW_PROCESS_GROUP).
+pub fn interruptible(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
+    }
+    cmd
+}
+
+/// Interrupts `child`, started [`interruptible`], as a terminal's interrupt does: SIGINT on
+/// Unix; on Windows CTRL_BREAK_EVENT to its group, the one console event a process can send
+/// one group (GenerateConsoleCtrlEvent), which the client takes as Go's runtime takes it,
+/// for SIGINT.
+pub fn interrupt(child: &std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of a child of this test's.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+        // SAFETY: an event sent to the group the child leads.
+        let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+        assert_ne!(sent, 0, "CTRL_BREAK_EVENT: {}", std::io::Error::last_os_error());
+    }
+}
+
+/// Ends `child`, started [`interruptible`], as a signal it takes no hold of ends a client:
+/// SIGTERM on Unix; on Windows its interrupt, which the console's own handler takes where
+/// the client took none, ending it with STATUS_CONTROL_C_EXIT ([`TERMINATED`]).
+pub fn terminate(child: &std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: kill(2) of a child of this test's.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    interrupt(child);
+}
+
+/// The status of a client [`terminate`] ended: none on Unix, where a signal ended it; on
+/// Windows STATUS_CONTROL_C_EXIT (0xC000013A), the console's handler's.
+pub const TERMINATED: Option<i32> = if cfg!(windows) {
+    Some(0xC000_013A_u32.cast_signed())
+} else {
+    None
+};
+
+/// The signal a client that proxies its signals passes on as [`terminate`] ends it, by
+/// name and Linux's number: SIGTERM on Unix; on Windows, where its interrupt is the event,
+/// SIGINT.
+pub const PROXIED: (&str, u8) = if cfg!(windows) { ("INT", 2) } else { ("TERM", 15) };
+
 /// Waits until no daemon serves `home`'s slots: a daemon killed holds its lists until the
 /// kernel has closed all its descriptors, which may be after a client sees its own slot
 /// end, as the kernel closes the dead process's descriptors one by one.
-#[cfg(unix)]
 pub fn until_unserved(home: &Path) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while shards_ipc::slots::served(home) {
@@ -555,9 +1058,8 @@ pub fn until_unserved(home: &Path) {
 }
 
 /// The processes under the daemon whose log is `log` (its first line names its PID), each
-/// as `ps` shows it: whether a run's VM and network processes still live, for a failure
-/// to say.
-#[cfg(unix)]
+/// as `ps` shows it, or Windows' table of processes: whether a run's VM and network
+/// processes still live, for a failure to say.
 pub fn processes_under(log: &str) -> String {
     let Some(daemon) = log.lines().find_map(|l| {
         l.strip_prefix("shards daemon ")?
@@ -568,11 +1070,18 @@ pub fn processes_under(log: &str) -> String {
     }) else {
         return "(no daemon named in its log)".into();
     };
-    let listed = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let listed = if cfg!(windows) {
+        let each = r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }"#;
+        Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", each])
+            .output()
+    } else {
+        Command::new("ps")
+            .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
+            .output()
+    }
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    .unwrap_or_default();
     let rows: Vec<(u32, u32, &str)> = listed
         .lines()
         .filter_map(|l| {
@@ -606,7 +1115,6 @@ pub fn processes_under(log: &str) -> String {
 
 /// Docker's default bridge as the daemon and the builder elect it on this host
 /// (shards_net::bridge): its gateway and guest addresses are what a run sees.
-#[cfg(unix)]
 pub fn bridge() -> shards_net::bridge::Bridge {
     shards_net::bridge::elected_here(&mut |note| panic!("{note}")).expect("a subnet for the default bridge")
 }
@@ -1189,11 +1697,94 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     run_command(cmd, &asked, timeout)
 }
 
+/// What a client that never ended shows before it is killed: its home's runs as its daemon
+/// has them (`ps -a`), whether the daemon took its run at all; and on Windows its threads'
+/// stacks and its daemon's, where this host has Microsoft's console debugger (cdb, the
+/// Windows SDK's Debugging Tools), attached without stopping them (`-pv`).
+fn stuck(pid: u32, home: Option<&Path>) -> String {
+    stacks_of(&[("its client", pid)], home)
+}
+
+/// [`stuck`]'s view of processes `pids`, each named, as a test that found one of them stuck
+/// shows them: its home's runs, and on Windows their stacks and its daemon's.
+pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
+    // What `cmd` said by `timeout`; a word that it said nothing where it never ended, so
+    // that the failure this adds to is never lost to one of its own.
+    let said_by = |cmd: &mut Command, timeout: Duration| match std::panic::catch_unwind(
+        std::panic::AssertUnwindSafe(|| output_within(cmd, timeout)),
+    ) {
+        Ok(out) => format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(_) => format!("(it did not end within {timeout:?})"),
+    };
+    let mut said = String::new();
+    if let Some(home) = home {
+        let mut ps = command();
+        ps.args(["ps", "-a", "--no-trunc"])
+            .env("SHARDS_HOME", home)
+            .stdin(Stdio::null());
+        said.push_str(&format!(
+            "\n--- ps -a in its home\n{}",
+            said_by(&mut ps, Duration::from_secs(20))
+        ));
+    }
+    #[cfg(windows)]
+    {
+        let cdb = Path::new(r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe");
+        if cdb.is_file() {
+            let daemon = home
+                .and_then(|h| std::fs::read_to_string(h.join("daemon.pid")).ok())
+                .and_then(|p| p.trim().parse::<u32>().ok());
+            // shards' symbols: its PDB beside the build's own binary, which the copy these
+            // tests run names (the test binary's deps directory and the one above it).
+            let deps = std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(Path::to_path_buf));
+            let symbols = deps
+                .iter()
+                .flat_map(|d| [d.clone()].into_iter().chain(d.parent().map(Path::to_path_buf)))
+                .fold("srv*".to_string(), |path, d| format!("{path};{}", d.display()));
+            for &(who, pid) in pids.iter().chain(daemon.map(|d| ("its daemon", d)).as_ref()) {
+                let mut stacks = Command::new(cdb);
+                stacks
+                    .args([
+                        "-pv",
+                        "-p",
+                        &pid.to_string(),
+                        "-y",
+                        &symbols,
+                        "-c",
+                        ".reload /f; ~*kn 40; qd",
+                    ])
+                    .stdin(Stdio::null());
+                said.push_str(&format!(
+                    "\n--- {who} ({pid}): its threads' stacks (cdb)\n{}",
+                    said_by(&mut stacks, Duration::from_secs(120))
+                ));
+            }
+        } else {
+            said.push_str("\n(no cdb on this host for the stacks)");
+        }
+    }
+    // Its stacks are Windows' alone here: Linux CI's hang watcher takes them there.
+    #[cfg(not(windows))]
+    let _ = pids;
+    said
+}
+
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
 /// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
 /// after `timeout`, `asked` naming it then.
 pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run {
     let start = Instant::now();
+    // Its home, for what is shown of a run that never ends ([`stuck`]).
+    let home: Option<PathBuf> = cmd
+        .get_envs()
+        .find(|(k, _)| *k == "SHARDS_HOME")
+        .and_then(|(_, v)| v.map(PathBuf::from));
     let mut child = cmd
         .env("SHARDS_TIMING", "1")
         .stdin(Stdio::null())
@@ -1247,10 +1838,11 @@ pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run
             break st;
         }
         if start.elapsed() > timeout {
+            let seen = stuck(child.id(), home.as_deref());
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
+                "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
                 asked.join(" "),
                 took(&out),
                 took(&err)
@@ -2986,10 +3578,214 @@ pub fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
     (index, blobs, layer_digest)
 }
 
+/// An SSH agent of this test's own on Windows, at a named pipe, as Windows' OpenSSH serves
+/// its own (`\\.\pipe\openssh-ssh-agent`), whose agent is a service of the machine's that no
+/// test may take over: it holds one ed25519 key, which it lists and signs with
+/// (draft-miller-ssh-agent: SSH_AGENTC_REQUEST_IDENTITIES, SSH_AGENTC_SIGN_REQUEST), and
+/// refuses all else, counting each removal it is asked for. Served for the test's life.
+#[cfg(windows)]
+pub struct SshAgent {
+    /// What `SSH_AUTH_SOCK` names it by: its pipe.
+    pub pipe: String,
+    /// The removals it was asked for, which it refused.
+    pub removals: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// `bytes` as the agent protocol's string: its length, then itself.
+#[cfg(windows)]
+fn ssh_string(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// An ed25519 public key as SSH writes its blob: its type's name, then its 32 bytes.
+#[cfg(windows)]
+fn ed25519_blob(public: &[u8]) -> Vec<u8> {
+    let mut blob = Vec::new();
+    ssh_string(&mut blob, b"ssh-ed25519");
+    ssh_string(&mut blob, public);
+    blob
+}
+
+/// Writes at `path` the ed25519 key of `seed`, with `comment`, as `ssh-keygen -N ""` writes
+/// one: an unencrypted OpenSSH private key (openssh-key-v1, OpenSSH's PROTOCOL.key).
+#[cfg(windows)]
+pub fn ssh_key_file(path: &Path, seed: &[u8; 32], comment: &str) {
+    use base64::Engine as _;
+    let pair = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(seed).unwrap();
+    let public = aws_lc_rs::signature::KeyPair::public_key(&pair).as_ref().to_vec();
+    let mut private = Vec::new();
+    // Its check, any word written twice.
+    let check = 0x5348_4152u32.to_be_bytes();
+    private.extend_from_slice(&check);
+    private.extend_from_slice(&check);
+    ssh_string(&mut private, b"ssh-ed25519");
+    ssh_string(&mut private, &public);
+    let secret: Vec<u8> = seed.iter().chain(&public).copied().collect();
+    ssh_string(&mut private, &secret);
+    ssh_string(&mut private, comment.as_bytes());
+    let mut pad = 1u8;
+    while !private.len().is_multiple_of(8) {
+        private.push(pad);
+        pad += 1;
+    }
+    let mut body = b"openssh-key-v1\0".to_vec();
+    ssh_string(&mut body, b"none");
+    ssh_string(&mut body, b"none");
+    ssh_string(&mut body, b"");
+    body.extend_from_slice(&1u32.to_be_bytes());
+    ssh_string(&mut body, &ed25519_blob(&public));
+    ssh_string(&mut body, &private);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&body);
+    let mut text = String::from("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    for line in encoded.as_bytes().chunks(70) {
+        text.push_str(std::str::from_utf8(line).unwrap());
+        text.push('\n');
+    }
+    text.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+    std::fs::write(path, text).unwrap();
+}
+
+/// An instance of the pipe `name`, waiting for its client; the first of its name, which no
+/// other process may already hold, where `first`.
+#[cfg(windows)]
+fn agent_instance(name: &[u16], first: bool) -> std::fs::File {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+    use windows_sys::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+    let flags = PIPE_ACCESS_DUPLEX | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 };
+    // SAFETY: a NUL-terminated name and plain arguments; checked below.
+    let handle = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            flags,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES,
+            1 << 16,
+            1 << 16,
+            0,
+            std::ptr::null(),
+        )
+    };
+    assert_ne!(
+        handle,
+        INVALID_HANDLE_VALUE,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: the instance just made, owned from here on.
+    unsafe { std::fs::File::from_raw_handle(handle) }
+}
+
+/// Starts [`SshAgent`]: the ed25519 key of `seed`, its comment `comment`.
+#[cfg(windows)]
+pub fn ssh_agent_windows(seed: [u8; 32], comment: &str) -> SshAgent {
+    use std::os::windows::io::AsRawHandle as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED;
+    use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
+    static MADE: AtomicUsize = AtomicUsize::new(0);
+    let pipe = format!(
+        r"\\.\pipe\shards-test-agent-{}-{}",
+        std::process::id(),
+        MADE.fetch_add(1, Ordering::Relaxed)
+    );
+    let name: Vec<u16> = pipe.encode_utf16().chain([0]).collect();
+    let removals = std::sync::Arc::new(AtomicUsize::new(0));
+    // Its first instance made now: a client may connect as soon as this returns.
+    let first = agent_instance(&name, true);
+    let (counted, comment) = (removals.clone(), comment.to_string());
+    std::thread::spawn(move || {
+        let mut next = Some(first);
+        loop {
+            let conn = next.take().unwrap_or_else(|| agent_instance(&name, false));
+            // SAFETY: an instance this thread holds, waited on to its client.
+            let connected = unsafe { ConnectNamedPipe(conn.as_raw_handle(), std::ptr::null_mut()) } != 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32);
+            if connected {
+                let (counted, comment) = (counted.clone(), comment.clone());
+                std::thread::spawn(move || serve_agent(conn, &seed, &comment, &counted));
+            }
+        }
+    });
+    SshAgent { pipe, removals }
+}
+
+/// Answers one client of [`SshAgent`] until it goes.
+#[cfg(windows)]
+fn serve_agent(
+    mut conn: std::fs::File,
+    seed: &[u8; 32],
+    comment: &str,
+    removals: &std::sync::atomic::AtomicUsize,
+) {
+    use std::io::{Read as _, Write as _};
+    const FAILURE: u8 = 5;
+    const IDENTITIES: u8 = 11;
+    const IDENTITIES_ANSWER: u8 = 12;
+    const SIGN: u8 = 13;
+    const SIGN_RESPONSE: u8 = 14;
+    const REMOVE: u8 = 18;
+    let pair = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(seed).unwrap();
+    let public = aws_lc_rs::signature::KeyPair::public_key(&pair).as_ref().to_vec();
+    let blob = ed25519_blob(&public);
+    loop {
+        let mut len = [0u8; 4];
+        if conn.read_exact(&mut len).is_err() {
+            return;
+        }
+        let mut message = vec![0u8; u32::from_be_bytes(len) as usize];
+        if conn.read_exact(&mut message).is_err() {
+            return;
+        }
+        let mut answer = Vec::new();
+        match message.first() {
+            Some(&IDENTITIES) => {
+                answer.push(IDENTITIES_ANSWER);
+                answer.extend_from_slice(&1u32.to_be_bytes());
+                ssh_string(&mut answer, &blob);
+                ssh_string(&mut answer, comment.as_bytes());
+            }
+            Some(&SIGN) => {
+                // Its key's blob, then the data to sign, then its flags.
+                let rest = &message[1..];
+                let at = 4 + u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+                let asked = &rest[4..at];
+                let n = u32::from_be_bytes(rest[at..at + 4].try_into().unwrap()) as usize;
+                let data = &rest[at + 4..at + 4 + n];
+                if asked == blob.as_slice() {
+                    let mut signature = Vec::new();
+                    ssh_string(&mut signature, b"ssh-ed25519");
+                    ssh_string(&mut signature, pair.sign(data).as_ref());
+                    answer.push(SIGN_RESPONSE);
+                    ssh_string(&mut answer, &signature);
+                } else {
+                    answer.push(FAILURE);
+                }
+            }
+            Some(&REMOVE) => {
+                removals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                answer.push(FAILURE);
+            }
+            _ => answer.push(FAILURE),
+        }
+        let mut framed = u32::try_from(answer.len()).unwrap().to_be_bytes().to_vec();
+        framed.extend_from_slice(&answer);
+        if conn.write_all(&framed).is_err() {
+            return;
+        }
+    }
+}
+
 /// An SSH agent at `sock`, which goes as this test's process does, however it ends:
 /// ssh-agent given a command runs it as its parent and exits once that has gone
 /// (OpenSSH ssh-agent.c, check_parent_exists), the command a wait on this process. The
 /// child is that command; killing it ends the agent too.
+#[cfg(unix)]
 pub fn ssh_agent(sock: &Path) -> std::process::Child {
     let me = std::process::id();
     std::process::Command::new("ssh-agent")

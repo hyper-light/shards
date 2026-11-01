@@ -142,8 +142,16 @@ impl Drop for TempDir {
     }
 }
 
-/// The last bytes [`show_logs`] shows of a log.
+/// The last bytes [`show_logs`] shows of a log, unless `SHARDS_TEST_LOG_SHOWN` says how many
+/// (a test whose programs log at debug, read whole).
 const SHOWN: u64 = 32 << 10;
+
+fn shown() -> u64 {
+    std::env::var("SHARDS_TEST_LOG_SHOWN")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(SHOWN)
+}
 
 /// What a failing test's directory says of why: the last [`SHOWN`] bytes of each log in it,
 /// `depth` directories down (`*.log`, `*.stderr`, `*.sample`), into `out`.
@@ -168,7 +176,7 @@ fn show_logs(dir: &Path, depth: u32, out: &mut impl io::Write) {
             };
             let len = f.metadata().map_or(0, |m| m.len());
             let mut tail = Vec::new();
-            if f.seek(io::SeekFrom::Start(len.saturating_sub(SHOWN))).is_err()
+            if f.seek(io::SeekFrom::Start(len.saturating_sub(shown()))).is_err()
                 || f.read_to_end(&mut tail).is_err()
             {
                 continue;

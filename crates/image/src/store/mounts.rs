@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
-use super::{Locked, Partial, Store, sync_dir, sync_durable, unix_now};
+use super::{Locked, Partial, Store, make_sparse, sync_dir, sync_durable, unix_now};
 use crate::{Error, bad};
 
 pub(super) const VERSION: u32 = 2;
@@ -461,6 +461,7 @@ impl Store {
             file,
             kept: false,
         };
+        make_sparse(&part.file)?;
         part.file.set_len(len)?;
         Ok(part)
     }
@@ -1382,6 +1383,40 @@ mod tests {
         fs::remove_file(s.layers_dir("a").unwrap().join("0.erofs")).unwrap();
         let next = s.take_mount("/k", Sharing::Private, "c", "b").unwrap();
         assert_eq!((next.id.as_str(), next.fresh), ("b", true));
+    }
+
+    /// The bytes of its disk the file at `path` takes: its blocks on Unix; on Windows its
+    /// clusters where it is sparse, else its length (GetCompressedFileSizeW).
+    fn allocated(path: &Path) -> u64 {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            fs::metadata(path).unwrap().blocks() * 512
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt as _;
+            use windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW;
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut high = 0u32;
+            // SAFETY: a NUL-terminated wide path, and a word for the size's high half.
+            let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &raw mut high) };
+            (u64::from(high) << 32) | u64::from(low)
+        }
+    }
+
+    /// A part takes of its disk what is written to it, not its length: the builder's is as
+    /// large as the store has room for (D134), all of which NTFS took at once until parts
+    /// were sparse (PM M349).
+    #[test]
+    fn a_part_takes_of_its_disk_what_is_written() {
+        let (_d, s) = store();
+        let held = s.take_mount("/k", Sharing::Private, "c", "a").unwrap();
+        let part = s.mount_part(&held, "big", 1 << 30).unwrap();
+        let path = s.layers_dir("a").unwrap().join("big.part");
+        assert_eq!(fs::metadata(&path).unwrap().len(), 1 << 30);
+        assert_eq!(allocated(&path), 0, "a part of 1 GiB, nothing written");
+        drop((part, held));
     }
 
     /// What a removal leaves where Windows refused to move a record a step held open as it

@@ -2,7 +2,6 @@
 //! microVMs, from the test image a loopback registry serves (tests/common, `served`),
 //! booted from SHARDS_KERNEL and SHARDS_INIT.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -18,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{Run, TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, served};
+use common::{Run, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -109,7 +108,7 @@ fn evidence(home: &Path, name: &str) -> String {
     let lines: Vec<&str> = log.lines().collect();
     let tail = lines.get(lines.len().saturating_sub(60)..).unwrap_or_default();
     // What its guest does: its processes, their states and where they wait; and whether it
-    // uses any CPU, sampled twice a second apart.
+    // uses any CPU, sampled twice, a second and more apart.
     let top = shards_in(home, &["top", name, "-o", "pid,stat,wchan:32,time,args"]);
     let stats = || {
         let s = shards_in(
@@ -124,7 +123,7 @@ fn evidence(home: &Path, name: &str) -> String {
         );
         format!("{}{}", s.stdout.trim(), s.stderr.trim())
     };
-    // What its kernel does with memory, a second apart: swapping, reclaiming or stalled
+    // What its kernel does with memory, twice: swapping, reclaiming or stalled
     // (vmstat's pswpin, pswpout and pgscan, the pressure it is under, its cgroup's events),
     // and the host's, whose faults a guest's swap and restored memory take.
     let memory = || {
@@ -149,11 +148,49 @@ fn evidence(home: &Path, name: &str) -> String {
             .collect();
         format!("{}{}{host}", guest.stdout, guest.stderr)
     };
+    // What its vCPUs do, as KVM counts it where this host lets the tests read it: its exits
+    // by kind, its faults and its halts.
+    let pid = vm_pid(&state.stdout);
+    let kvm = || {
+        pid.and_then(common::kvm_counters)
+            .map(|c| format!("{c:?}"))
+            .unwrap_or_default()
+    };
+    let faults = || match pid.and_then(host_faults) {
+        Some((minor, major)) => format!("minflt {minor} majflt {major}"),
+        None => "(not said on this host)".into(),
+    };
+    // The host's own counters that moved: its faults, reclaim and page cache.
+    let host_vmstat = || {
+        let all = std::fs::read_to_string("/proc/vmstat").unwrap_or_default();
+        all.lines()
+            .filter_map(|l| l.split_once(' '))
+            .filter_map(|(k, v)| Some((k.to_string(), v.parse::<i64>().ok()?)))
+            .collect::<std::collections::BTreeMap<String, i64>>()
+    };
+    // The host's counters bracket the second alone, the guest's around them: a slow
+    // guest's exec takes seconds. Each pair's span is said with it.
     let first = stats();
+    let guest_from = Instant::now();
     let first_memory = memory();
+    let host_from = Instant::now();
+    let first_kvm = kvm();
+    let first_faults = faults();
+    let first_host = host_vmstat();
     std::thread::sleep(Duration::from_secs(1));
-    let second = stats();
+    let second_kvm = kvm();
+    let second_faults = faults();
+    let moved: Vec<String> = host_vmstat()
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let was = first_host.get(&k).copied().unwrap_or(0);
+            (v != was).then(|| format!("{k} {:+}", v - was))
+        })
+        .collect();
+    let host_span = host_from.elapsed();
     let second_memory = memory();
+    let guest_span = guest_from.elapsed();
+    let second = stats();
     // Where each of its processes waits, in its kernel (proc(5)'s stack: privileged).
     let stacks = shards_in(
         home,
@@ -168,11 +205,12 @@ fn evidence(home: &Path, name: &str) -> String {
         ],
     );
     format!(
-        "its state: {}{}\nits processes:\n{}{}\nits use, a second apart: {first} | {second}\nits VM process's threads:\n{}\nits processes' stacks:\n{}{}\nits memory:\n{first_memory}\na second later:\n{second_memory}\nthe daemon's log's end:\n{}",
+        "its state: {}{}\nits processes:\n{}{}\nits use, apart: {first} | {second}\nits VM's KVM counters, {host_span:?} apart:\n{first_kvm}\n{second_kvm}\nits VM process's host faults, as far apart: {first_faults} | {second_faults}\nthe host's vmstat counters that moved meanwhile: {}\nits VM process's threads:\n{}\nits processes' stacks:\n{}{}\nits memory:\n{first_memory}\n{guest_span:?} later:\n{second_memory}\nthe daemon's log's end:\n{}",
         state.stdout,
         state.stderr,
         top.stdout,
         top.stderr,
+        moved.join(", "),
         vm_threads(&state.stdout),
         stacks.stdout,
         stacks.stderr,
@@ -180,14 +218,31 @@ fn evidence(home: &Path, name: &str) -> String {
     )
 }
 
+/// The VM process of a run whose `inspect` State is `state`, where it runs.
+fn vm_pid(state: &str) -> Option<u32> {
+    serde_json::from_str::<serde_json::Value>(state)
+        .ok()
+        .and_then(|s| s["Pid"].as_u64())
+        .and_then(|p| u32::try_from(p).ok())
+        .filter(|&p| p > 0)
+}
+
+/// The host's faults in process `pid`, minor and major, on Linux: proc(5)'s minflt and
+/// majflt, which count KVM's for its stage 2 to the vCPU that takes them (mm/memory.c,
+/// `mm_account_fault`).
+fn host_faults(pid: u32) -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The fields after the name, which is in parentheses: minflt is the 10th, majflt
+    // the 12th.
+    let (_, rest) = stat.rsplit_once(") ")?;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    Some((fields.get(7)?.parse().ok()?, fields.get(9)?.parse().ok()?))
+}
+
 /// The VM process's threads as the host has them, on Linux: each one's name, state and the
 /// kernel function it waits in (proc(5)), which say whether its vCPUs run or wait.
 fn vm_threads(state: &str) -> String {
-    let pid = serde_json::from_str::<serde_json::Value>(state)
-        .ok()
-        .and_then(|s| s["Pid"].as_u64())
-        .filter(|&p| p > 0);
-    let Some(pid) = pid else {
+    let Some(pid) = vm_pid(state) else {
         return "(none running)".into();
     };
     let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
@@ -232,7 +287,7 @@ fn a_running_microvm_is_saved_whole_left_running_or_stopped() {
     let shards = |args: &[&str]| shards_in(&home, args);
     let (mut client, mut counts, said) =
         start(&home, &image, &["--name", "counter", "--rm"], &["counter", "20"]);
-    if cannot_snapshot() {
+    if cannot_pool() {
         let refused = shards(&["save", "vm", "counter", "first"]);
         assert_eq!(refused.status, Some(1), "{refused}");
         assert!(refused.stderr.contains("take no snapshots yet"), "{refused}");
@@ -325,7 +380,7 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     let Some((home, image)) = home("saved-refused") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -441,7 +496,7 @@ fn a_saved_microvm_writes_on_through_its_volume() {
     let Some((home, image)) = home("saved-volume") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -525,7 +580,7 @@ fn a_saved_microvm_writes_on_through_its_volume() {
 /// host wrote while it was saved among it.
 #[test]
 fn a_saved_microvm_reads_on_through_its_dax_window() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let (image, _) = served();
@@ -566,12 +621,11 @@ fn a_saved_microvm_reads_on_through_its_dax_window() {
     let at = 3 << 20;
     big[at] = big[at].wrapping_add(1);
     {
-        use std::os::unix::fs::FileExt as _;
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(dir.join("big"))
             .unwrap();
-        file.write_all_at(&big[at..=at], at as u64).unwrap();
+        common::write_at(&file, &big[at..=at], at as u64);
     }
     let restored = shards(&["restore", "vm", "daxsave", "mapped"]);
     assert_eq!(restored.status, Some(0), "{restored}");
@@ -619,7 +673,7 @@ fn a_saved_microvm_resumes_where_it_was_saved() {
     let Some((home, image)) = home("resumed") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -689,7 +743,7 @@ fn a_microvm_saved_and_left_running_is_restored_from_its_save() {
     let Some((home, image)) = home("resumed-left") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -741,7 +795,7 @@ fn a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored() {
     let Some((home, image)) = home("resumed-writer") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -780,12 +834,10 @@ fn a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored() {
 /// M330).
 #[test]
 fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
-    use std::io::Write as _;
-    use std::os::fd::AsRawFd as _;
     let Some((home, image)) = home("resumed-stdin") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -796,16 +848,7 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
     // An exec that reads none of its stdin, given it until nothing takes more: its pipe,
     // what init holds for it, its connection and the client between them all full, the
     // rest of what its connection took unread in the guest as the save is taken.
-    let (stdin, mut writer) = std::io::pipe().unwrap();
-    // SAFETY: fcntl(2) setting the flags of a descriptor this test holds open.
-    unsafe {
-        let fd = writer.as_raw_fd();
-        libc::fcntl(
-            fd,
-            libc::F_SETFL,
-            libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
-        );
-    }
+    let (stdin, writer) = std::io::pipe().unwrap();
     let mut exec = common::command()
         .args(["exec", "-i", "reader", "/bin/testguest", "sleep"])
         .env("SHARDS_HOME", &*home)
@@ -816,22 +859,7 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let chunk = vec![b'x'; 64 << 10];
-    let (mut given, mut full_since) = (0usize, None::<Instant>);
-    while full_since.is_none_or(|at| at.elapsed() < Duration::from_secs(1)) {
-        match writer.write(&chunk) {
-            Ok(n) => {
-                given += n;
-                full_since = None;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                full_since.get_or_insert_with(Instant::now);
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => panic!("the exec's stdin: {e}"),
-        }
-        assert!(given < 64 << 20, "the exec took 64 MiB of stdin");
-    }
+    let given = filled(writer);
     let saved = shards(&["save", "vm", "reader", "snap"]);
     assert_eq!(saved.status, Some(0), "{saved}");
     let _ = exit(&mut exec);
@@ -851,6 +879,69 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
     );
 }
 
+/// Writes `writer` until it takes nothing more for a second, its reader's pipe and all
+/// between it and its reader full, and says how much it took: on Unix without blocking; on
+/// Windows, whose anonymous pipes do not, on a thread of its own, which its count stops,
+/// and which ends as its reader goes.
+fn filled(writer: std::io::PipeWriter) -> usize {
+    use std::io::Write as _;
+    let chunk = vec![b'x'; 64 << 10];
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        let mut writer = writer;
+        // SAFETY: fcntl(2) setting the flags of a descriptor this test holds open.
+        unsafe {
+            let fd = writer.as_raw_fd();
+            libc::fcntl(
+                fd,
+                libc::F_SETFL,
+                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+            );
+        }
+        let (mut given, mut full_since) = (0usize, None::<Instant>);
+        while full_since.is_none_or(|at| at.elapsed() < Duration::from_secs(1)) {
+            match writer.write(&chunk) {
+                Ok(n) => {
+                    given += n;
+                    full_since = None;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    full_since.get_or_insert_with(Instant::now);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("the exec's stdin: {e}"),
+            }
+            assert!(given < 64 << 20, "the exec took 64 MiB of stdin");
+        }
+        given
+    }
+    #[cfg(windows)]
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static GIVEN: AtomicUsize = AtomicUsize::new(0);
+        GIVEN.store(0, Ordering::SeqCst);
+        let mut writer = writer;
+        std::thread::spawn(move || {
+            while writer
+                .write(&chunk)
+                .is_ok_and(|n| GIVEN.fetch_add(n, Ordering::SeqCst) < 64 << 20)
+            {}
+        });
+        let (mut last, mut since) = (usize::MAX, Instant::now());
+        loop {
+            let given = GIVEN.load(Ordering::SeqCst);
+            assert!(given < 64 << 20, "the exec took 64 MiB of stdin");
+            if given != last {
+                (last, since) = (given, Instant::now());
+            } else if since.elapsed() >= Duration::from_secs(1) {
+                return given;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 /// An exec reading its stdin through a save ends once its microVM is restored: its stdin
 /// ends with its client, which went with the microVM saved (D176), as a client's going
 /// ends it while it runs. Before, it read on for ever from a stdin no one could write (PM
@@ -861,7 +952,7 @@ fn an_exec_reading_its_stdin_through_a_save_ends_once_restored() {
     let Some((home, image)) = home("resumed-cat") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -915,7 +1006,7 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     let Some((home, image)) = home("resumed-swap") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -968,13 +1059,42 @@ fn a_saved_microvm_keeps_what_it_swapped() {
         evidence(&home, "swapped")
     );
     // The round the save cut short ends from what was restored, and the next reads all of
-    // it back so.
-    until_in(
-        "its pattern kept after the restore",
-        TIMEOUT + 2 * round,
-        &mut || log().matches("kept ").count() >= rounds + 2,
-        &said,
-    );
+    // it back so. Those rounds fault back in what its guest holds, as a restored guest's
+    // memory and swap are mapped a page at a time as it touches them, which a host whose
+    // faults cost much takes long for: a nested guest's first two rounds after the restore
+    // took 15.8 and 16.9 s, its VM process faulting 36,900 pages, 0.9 ms each, and the
+    // next ones 0.9 s, as before the save (PM M346). So each round or host fault moves the
+    // wait's end on, the faults as many as twice the pages its memory and swap hold (each
+    // read, then written), and it fails after as long without either.
+    let memory = std::fs::metadata(common::snapshot_file(&snapshot, "memory")).unwrap();
+    let most = 2 * (memory.len() + kept.len()) / 4096;
+    let pid = vm_pid(&shards(&["inspect", "-f", "{{json .State}}", "swapped"]).stdout);
+    let faulted = || pid.and_then(host_faults).map(|(minor, major)| minor + major);
+    let from = faulted();
+    let within = TIMEOUT + 2 * round;
+    let mut last = (rounds, from);
+    let mut deadline = Instant::now() + within;
+    loop {
+        let now = (
+            log().matches("kept ").count(),
+            faulted().filter(|&f| f.saturating_sub(from.unwrap_or(f)) <= most),
+        );
+        if now.0 >= rounds + 2 {
+            break;
+        }
+        if now != last {
+            last = now;
+            deadline = Instant::now() + within;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "its pattern kept after the restore, {} rounds and {:?} host faults on: {}",
+            now.0 - rounds,
+            now.1.zip(from).map(|(f, from)| f.saturating_sub(from)),
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(!log().contains("lost"), "{}", log());
     assert_eq!(shards(&["kill", "swapped"]).status, Some(0));
 }
@@ -987,7 +1107,7 @@ fn a_microvm_saved_as_it_writes_loses_none_of_its_output() {
     let Some((home, image)) = home("resumed-firehose") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -1032,7 +1152,7 @@ fn a_saved_microvm_on_a_network_is_restored_at_its_address() {
     let Some((home, image)) = home("resumed-net") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -1132,7 +1252,7 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
     let Some((home, image)) = home("checkpoints") else {
         return;
     };
-    if cannot_snapshot() {
+    if cannot_pool() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -1234,4 +1354,118 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
     );
     assert!(!cut.exists(), "{} was left", cut.display());
     assert_eq!(shards(&["rm", "-f", "cp"]).status, Some(0));
+}
+
+/// What a run's save takes of its host's disk on Windows (PM M377): the volume's free space
+/// (GetDiskFreeSpaceExW) before a run, as it runs, after a save that leaves it running and
+/// after its end, and what each file of its home holds of the disk (GetCompressedFileSizeW,
+/// a sparse file's holes holding none), the most first. On CI's windows-2025 each of
+/// saved.rs's saves took some 10 GB of its 29 GB at once, and on jupiter as much, while no
+/// file under the tests' directories held more than 148 MB.
+#[cfg(windows)]
+#[test]
+#[ignore = "a measurement: budget-e2e.yml windows:saved, ignored:a_runs_save_takes_of_its_disk"]
+fn a_runs_save_takes_of_its_disk() {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::{GetCompressedFileSizeW, GetDiskFreeSpaceExW};
+
+    let Some((home, image)) = home("saved-disk") else {
+        return;
+    };
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
+    let free = || {
+        let mut avail = 0u64;
+        // SAFETY: a NUL-terminated path and a count to fill.
+        unsafe {
+            GetDiskFreeSpaceExW(
+                wide(&home).as_ptr(),
+                &raw mut avail,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        avail as i64 / (1 << 20)
+    };
+    let began = free();
+    let say = |step: &str| {
+        let mut held: Vec<(i64, u64, String)> = Vec::new();
+        let mut stack = vec![home.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                let Ok(meta) = entry.metadata() else { continue };
+                if meta.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let mut high = 0u32;
+                // SAFETY: a NUL-terminated path and the high half to fill.
+                let low = unsafe { GetCompressedFileSizeW(wide(&path).as_ptr(), &raw mut high) };
+                let bytes = if low == u32::MAX {
+                    -1
+                } else {
+                    (((u64::from(high)) << 32) | u64::from(low)) as i64
+                };
+                held.push((
+                    bytes,
+                    meta.len(),
+                    path.strip_prefix(&*home).unwrap().display().to_string(),
+                ));
+            }
+        }
+        held.sort_by_key(|h| std::cmp::Reverse(h.0));
+        // What the file system says the long files hold allocated, as a copy of their
+        // ranges reads them (FSCTL_QUERY_ALLOCATED_RANGES).
+        for (_, len, name) in held.iter().filter(|h| h.1 >= 1 << 30) {
+            let ranges = std::fs::File::open(home.join(name))
+                .and_then(|f| shards_vmm::platform::allocated_ranges(&f, *len))
+                .map(|r| (r.len(), r.iter().map(|x| x.1).sum::<u64>() >> 20));
+            eprintln!("M377 {step}: {name}: {len} bytes long, allocated ranges (count, MiB): {ranges:?}");
+        }
+        let total: i64 = held.iter().map(|h| h.0.max(0)).sum();
+        let top: Vec<String> = held
+            .iter()
+            .take(6)
+            .map(|(h, len, name)| format!("{} MiB of {} MiB {name}", h / (1 << 20), len / (1 << 20)))
+            .collect();
+        eprintln!(
+            "M377 {step}: free {} MiB ({:+} MiB); its files hold {} MiB: {top:#?}",
+            free(),
+            free() - began,
+            total / (1 << 20)
+        );
+    };
+    say("pulled");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let (mut client, mut counts, _said) =
+        start(&home, &image, &["--name", "counter", "--rm"], &["counter", "20"]);
+    let _ = next_count(&mut counts);
+    say("its run counting");
+    let saved = shards(&["save", "vm", "counter", "first", "--leave-running"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    say("saved, left running");
+    // What its VM said of the ranges it copied, where it logs at debug (SHARDS_LOG=debug).
+    let mut stack = vec![home.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "log") {
+                for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+                    if line.contains("ranges of data") {
+                        eprintln!("M377 its VM said: {line}");
+                    }
+                }
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_secs(3));
+    say("3 s on");
+    let _ = next_count(&mut counts);
+    let _ = shards(&["kill", "counter"]);
+    let _ = exit(&mut client);
+    std::thread::sleep(Duration::from_secs(3));
+    say("its run ended");
 }

@@ -87,16 +87,17 @@ fn local(path: &str) -> Result<PathBuf, String> {
     ))
 }
 
-/// filepath.Clean of an absolute path.
+/// filepath.Clean of an absolute path, its volume (a Windows drive or share) kept.
 fn clean(path: &Path) -> PathBuf {
-    let mut out = PathBuf::from("/");
+    let mut out = PathBuf::new();
     for c in path.components() {
         match c {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => out.push(c),
             std::path::Component::Normal(n) => out.push(n),
             std::path::Component::ParentDir => {
                 out.pop();
             }
-            _ => {}
+            std::path::Component::CurDir => {}
         }
     }
     out
@@ -140,19 +141,35 @@ fn stat(ask: &Ask<'_>, container: &str, path: &str) -> Result<Stat, String> {
     })
 }
 
+/// Whether `m` is a device's: a block or character device's on Unix; on Windows what is no
+/// directory, file nor link, as `NUL` is.
+fn is_device(m: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        m.file_type().is_block_device() || m.file_type().is_char_device()
+    }
+    #[cfg(windows)]
+    {
+        let t = m.file_type();
+        !t.is_dir() && !t.is_file() && !t.is_symlink()
+    }
+}
+
+/// What the daemon is asked of `path` in `container`: the path with slashes, as the moby
+/// client sends it, whatever separators the copy rules gave it here.
 fn step(what: &str, container: &str, path: &str) -> Vec<String> {
     vec![
-        crate::daemon::COPY_STEP.to_string(),
+        shards_ipc::COPY_STEP.to_string(),
         what.to_string(),
         container.to_string(),
-        path.to_string(),
+        copy::to_slash(Path::new(path)).display().to_string(),
     ]
 }
 
 /// ValidateOutputPath: a destination whose directory is there, and that is a directory, a
 /// regular file, or nothing yet.
 fn validate_output(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::FileTypeExt as _;
     if let Some(dir) = clean(path).parent().filter(|d| !d.as_os_str().is_empty())
         && !dir.exists()
     {
@@ -163,7 +180,7 @@ fn validate_output(path: &Path) -> Result<(), String> {
     }
     match std::fs::metadata(path) {
         Ok(m) if m.is_dir() || m.is_file() => Ok(()),
-        Ok(m) if m.file_type().is_block_device() || m.file_type().is_char_device() => Err(format!(
+        Ok(m) if is_device(&m) => Err(format!(
             "invalid output path: {:?} must be a directory or a regular file: got a device",
             path.display().to_string()
         )),
@@ -239,7 +256,7 @@ fn from_container(ask: &Ask<'_>, o: &Options, container: &str, src: &str, dst: &
             });
             let asked = ask(
                 step("archive", container, &src),
-                &[crate::cli::Stream::To(std::os::fd::AsFd::as_fd(&writer))],
+                &[crate::cli::Stream::To(shards_ipc::fd::AsFd::as_fd(&writer))],
             );
             drop(writer);
             let laid = unpacking.join().map_err(|_| "unpacking failed".to_string())?;
@@ -348,16 +365,11 @@ fn to_container(ask: &Ask<'_>, o: &Options, container: &str, src: &str, dst: &st
     let done = with_progress(o.quiet, "Copying to container - ", &copied, || {
         std::thread::scope(|scope| {
             let packing = scope.spawn(packer);
+            let mut asking = step("extract", container, &dir.display().to_string());
+            asking.extend([if o.uid_gid { "1" } else { "0" }.into(), "0".into()]);
             let asked = ask(
-                vec![
-                    crate::daemon::COPY_STEP.to_string(),
-                    "extract".into(),
-                    container.to_string(),
-                    dir.display().to_string(),
-                    if o.uid_gid { "1" } else { "0" }.into(),
-                    "0".into(),
-                ],
-                &[crate::cli::Stream::From(std::os::fd::AsFd::as_fd(&reader))],
+                asking,
+                &[crate::cli::Stream::From(shards_ipc::fd::AsFd::as_fd(&reader))],
             );
             drop(reader);
             let packed = packing.join().map_err(|_| "packing failed".to_string())?;

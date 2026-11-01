@@ -9,10 +9,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use shards_ipc::Stream as UnixStream;
+use shards_vmm::platform::FileWatch;
 
 use super::logs::{LogFile, Piece, Pos, Reader};
 use super::{Daemon, Threads, lock, log};
@@ -20,11 +23,15 @@ use crate::containers::Disk;
 use crate::spec::LOG_STDERR;
 
 mod awslogs;
+#[cfg(windows)]
+mod etwlogs;
 mod fluentd;
 mod gcplogs;
 mod gelf;
 #[cfg(target_os = "linux")]
 mod journald;
+#[cfg(target_os = "macos")]
+mod oslog;
 mod sockets;
 mod splunk;
 mod stream;
@@ -87,13 +94,55 @@ pub(super) struct Wait<'a>(&'a UnixStream);
 impl Wait<'_> {
     /// Waits `d`: whether the daemon stops meanwhile.
     pub(super) fn pause(&self, d: Duration) -> bool {
-        stopped_within(self.0, None, d)
+        #[cfg(unix)]
+        {
+            stopped_within(self.0, None, d)
+        }
+        // A wait that cannot be made is taken for a stop, as on Unix.
+        #[cfg(windows)]
+        {
+            let deadline = std::time::Instant::now().checked_add(d);
+            self.0.wait_readable(None, deadline).unwrap_or(true)
+        }
     }
 
     /// Waits until `fd` is readable, or `d` has passed; an error where the daemon stops
     /// first.
+    #[cfg(unix)]
     pub(super) fn readable(&self, fd: BorrowedFd<'_>, d: Duration) -> io::Result<()> {
         if stopped_within(self.0, Some(fd), d) {
+            Err(stops())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Waits until `socket` is readable, or `d` has passed; an error where the daemon stops
+    /// first: what it reads and its close as an event (WSAEventSelect), waited on with the
+    /// daemon's stop, and let go of after, the socket left not blocking, as its caller has
+    /// it.
+    #[cfg(windows)]
+    pub(super) fn readable(
+        &self,
+        socket: std::os::windows::io::BorrowedSocket<'_>,
+        d: Duration,
+    ) -> io::Result<()> {
+        use std::os::windows::io::{AsHandle as _, AsRawSocket as _};
+        use windows_sys::Win32::Networking::WinSock::{FD_CLOSE, FD_READ, SOCKET, WSAEVENT, WSAEventSelect};
+        let raw = SOCKET::try_from(socket.as_raw_socket())
+            .map_err(|_| io::Error::other("a socket's value past SOCKET's range"))?;
+        let event = shards_ipc::Event::new()?;
+        // SAFETY: a socket its caller holds, and an event of ours, which outlives the
+        // selection: it is let go of below.
+        if unsafe { WSAEventSelect(raw, event.raw() as WSAEVENT, (FD_READ | FD_CLOSE) as i32) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let deadline = std::time::Instant::now().checked_add(d);
+        let waited = shards_ipc::await_any(&[self.0], &[event.as_handle()], deadline);
+        // SAFETY: as above: no event of the socket's is set from here on.
+        unsafe { WSAEventSelect(raw, 0, 0) };
+        let (stopped, _) = waited?;
+        if stopped.first().copied().unwrap_or(false) {
             Err(stops())
         } else {
             Ok(())
@@ -457,20 +506,73 @@ fn first(at: [Pos; 2]) -> u64 {
     at[0].seq().min(at[1].seq())
 }
 
-/// Whether any of `fds` is readable now.
-fn ready_now(fds: &[Option<std::os::fd::BorrowedFd<'_>>; 3]) -> bool {
-    let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
-        events: libc::POLLIN,
-        revents: 0,
-    });
-    // SAFETY: poll(2), not waiting, on three pollfds of descriptors the caller holds.
-    let ready = unsafe { libc::poll(polled.as_mut_ptr(), 3, 0) };
-    ready > 0
+/// What a shipper following a run waits on: its log's watch, where it has one, its run's
+/// end, and the daemon's stop.
+struct Waits<'a> {
+    watch: Option<&'a FileWatch>,
+    end: &'a UnixStream,
+    stopped: &'a UnixStream,
+}
+
+#[cfg(windows)]
+impl Waits<'_> {
+    /// Whether any has something now: its watch's event set, or a stream readable.
+    fn ready_now(&self) -> bool {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        self.end.readable()
+            || self.stopped.readable()
+            || self.watch.is_some_and(|w| {
+                // SAFETY: the watch's event, which it holds, looked at without waiting.
+                unsafe { WaitForSingleObject(w.fd().as_raw_handle(), 0) == WAIT_OBJECT_0 }
+            })
+    }
+
+    /// Waits until one has something, or `within` has passed, where it is given: which do,
+    /// as [`Waits::wait`] on Unix answers. The watch's event is a manual-reset one, which a
+    /// wait leaves set (windows_watch.rs).
+    fn wait(&self, within: Option<Duration>) -> io::Result<[bool; 3]> {
+        let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
+        let watch: Vec<_> = self.watch.map(FileWatch::fd).into_iter().collect();
+        let (streams, set) = shards_ipc::await_any(&[self.end, self.stopped], &watch, deadline)?;
+        let at = |v: &[bool], i: usize| v.get(i).copied().unwrap_or(false);
+        Ok([at(&set, 0), at(&streams, 0), at(&streams, 1)])
+    }
+}
+
+#[cfg(unix)]
+impl Waits<'_> {
+    /// Each as poll(2) takes it: one not given is no descriptor, which it passes over.
+    fn fds(&self) -> [Option<BorrowedFd<'_>>; 3] {
+        [
+            self.watch.map(FileWatch::fd),
+            Some(self.end.as_fd()),
+            Some(self.stopped.as_fd()),
+        ]
+    }
+
+    /// Whether any is readable now.
+    fn ready_now(&self) -> bool {
+        let mut polled = self.fds().map(|fd| libc::pollfd {
+            fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        // SAFETY: poll(2), not waiting, on three pollfds of descriptors the caller holds.
+        let ready = unsafe { libc::poll(polled.as_mut_ptr(), 3, 0) };
+        ready > 0
+    }
+
+    /// Waits until one is readable, or `within` has passed, where it is given: which are.
+    fn wait(&self, within: Option<Duration>) -> io::Result<[bool; 3]> {
+        wait_ready(&self.fds(), within)
+    }
 }
 
 /// Waits until one of `fds` is readable, or `within` has passed, where it is given:
 /// which are. One not given is no descriptor, which poll(2) passes over.
+#[cfg(unix)]
 fn wait_ready(fds: &[Option<BorrowedFd<'_>>; 3], within: Option<Duration>) -> io::Result<[bool; 3]> {
     let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
     let mut polled = fds.map(|fd| libc::pollfd {
@@ -512,6 +614,7 @@ enum Shipped {
 
 /// Waits until `stop` is told, or `also` is readable, or `wait` has passed: whether `stop`
 /// was told. A wait poll(2) cannot make is taken for a stop: none is left to wait with.
+#[cfg(unix)]
 fn stopped_within(stop: &UnixStream, also: Option<BorrowedFd<'_>>, wait: Duration) -> bool {
     let deadline = std::time::Instant::now() + wait;
     loop {
@@ -626,7 +729,7 @@ impl<D: Disk> Daemon<D> {
                 let followed = (|| -> io::Result<Shipped> {
                     // Where no watch can be had (on Linux, its user's inotify instances
                     // spent: PM M257), it reads again every RETRY, as `logs -f` does.
-                    let mut watch = shards_vmm::platform::FileWatch::new(file.dir()).ok();
+                    let mut watch = FileWatch::new(file.dir()).ok();
                     let mut watched = None;
                     loop {
                         let mut each = |p: Piece<'_>| lines.take(&p, &mut |m| sender.send(m)).map(|()| true);
@@ -644,12 +747,12 @@ impl<D: Disk> Daemon<D> {
                             watched = Some(segment.seq());
                             continue;
                         }
-                        let fds = [
-                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
-                            Some(end.as_fd()),
-                            Some(stopped.as_fd()),
-                        ];
-                        if !ready_now(&fds) {
+                        let waits = Waits {
+                            watch: watch.as_ref(),
+                            end: &end,
+                            stopped,
+                        };
+                        if !waits.ready_now() {
                             sender.flush()?;
                             place.keep(id, dir, sender.delivered(), false, cached);
                         }
@@ -660,7 +763,7 @@ impl<D: Disk> Daemon<D> {
                             (Some(due), None) => Some(due.min(super::RETRY)),
                             (None, None) => Some(super::RETRY),
                         };
-                        let ready = wait_ready(&fds, within)?;
+                        let ready = waits.wait(within)?;
                         if ready[1] {
                             return Ok(Shipped::Ended);
                         }
@@ -704,6 +807,13 @@ impl<D: Disk> Daemon<D> {
         let details = self.log_details(id)?;
         let tag = crate::logging::tag(run, &details.info())?;
         Ok(Some(match remote {
+            // macOS keeps nothing sent to its syslogd's socket (PM M374): its own syslog,
+            // the local default's, is its unified log, which os_log writes, the run's tag
+            // its category (D199).
+            #[cfg(target_os = "macos")]
+            crate::logging::Remote::Syslog(config) if config.to == crate::logging::syslog::To::Local => {
+                Box::new(oslog::Oslog::new(&tag).map_err(|e| e.to_string())?)
+            }
             crate::logging::Remote::Syslog(config) => Box::new(syslog::Syslog::new(
                 config,
                 crate::logging::syslog::From {
@@ -809,6 +919,25 @@ impl<D: Disk> Daemon<D> {
                 return Err(
                     "--log-driver journald: the journal is systemd's, on Linux, and this host keeps none"
                         .into(),
+                );
+            }
+            #[cfg(windows)]
+            crate::logging::Remote::Etwlogs => {
+                Box::new(etwlogs::Etwlogs::new(&details).map_err(|e| e.to_string())?)
+            }
+            #[cfg(not(windows))]
+            crate::logging::Remote::Etwlogs => {
+                return Err(
+                    "--log-driver etwlogs: Event Tracing for Windows is Windows' own, and this host keeps none"
+                        .into(),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            crate::logging::Remote::Oslog => Box::new(oslog::Oslog::new(&tag).map_err(|e| e.to_string())?),
+            #[cfg(not(target_os = "macos"))]
+            crate::logging::Remote::Oslog => {
+                return Err(
+                    "--log-driver oslog: the unified log is macOS's own, and this host keeps none".into(),
                 );
             }
         }))

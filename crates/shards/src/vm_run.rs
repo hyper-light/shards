@@ -43,7 +43,7 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --memory-max: the most memory the guest may have: --memory at boot, and up to this
             much in all as it asks for more through shards' control page, plugged by a
             virtio-mem device. Whole 2 MiB blocks. A snapshot keeps none plugged.
-  --gpu: this Mac's GPU, Vulkan through Venus, on the guest's render node
+  --gpu: a GPU, Vulkan through Venus on the host's, on the guest's render node
          /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
          --snapshot-dir, a snapshot is refused once the guest has made a context or a
          resource of the GPU's: those are its host driver's, which no snapshot holds.
@@ -92,6 +92,7 @@ const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
   --resume: DIR is a run's snapshot, its command running already: take its run's stdio,
             log and swap from the daemon at descriptor FD, then resume it.
+  On Windows each FD is the name its spawner gave the VM that pipe or socket by.
   --backing: a file the snapshot restores against, read-only with :ro: given, a snapshot
              naming any other is refused, its state being what the VM saving it wrote.
   --gpu: restore in the GPU's VM process, which a snapshot of a VM with a GPU needs.
@@ -274,7 +275,48 @@ enum Mode {
     Template(PathBuf),
     /// Into an image, as a warm VM that takes one command from the daemon on `fd`;
     /// with a snapshot policy, it saves a template on the way.
-    Warm { rootfs: PathBuf, fd: i32 },
+    Warm { rootfs: PathBuf, fd: LinkArg },
+}
+
+/// What names a VM's link to its daemon (`--warm`, `--resume`): its descriptor's number on
+/// Unix; on Windows the name its spawner handed it by (`daemon`, D195), as `--attach`'s and
+/// `--slates-fs`' are, no spawner knowing a handle's value in a child before it gives it.
+#[cfg(unix)]
+type LinkArg = i32;
+#[cfg(windows)]
+type LinkArg = String;
+
+/// `value` of option `flag`, as a [`LinkArg`].
+fn link_arg(flag: &str, value: String) -> Result<LinkArg, String> {
+    #[cfg(unix)]
+    return value
+        .parse::<i32>()
+        .map_err(|_| format!("{flag}: {value:?} is not a descriptor"));
+    #[cfg(windows)]
+    {
+        let _ = flag;
+        Ok(value)
+    }
+}
+
+/// The link to its daemon `arg` names, owned from here on, and the null device held for
+/// the clients it lets go of (`workload::null`): /dev/null, or on Windows the NUL its
+/// spawner gave it (`null`), as its AppContainer opens no file by name (PM M351).
+fn daemon_link(flag: &str, arg: LinkArg) -> Result<crate::warm::Link, String> {
+    #[cfg(unix)]
+    {
+        let _ = flag;
+        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        crate::workload::hold_null(null);
+        crate::warm::Link::from_fd(arg)
+    }
+    #[cfg(windows)]
+    {
+        let handle = take_given(flag, &arg)?;
+        let stream = shards_ipc::Stream::given(handle).map_err(|e| format!("{flag} {arg}: {e}"))?;
+        crate::workload::hold_null(std::fs::File::from(take_given(flag, "null")?));
+        Ok(crate::warm::Link::new(stream))
+    }
 }
 
 struct Run {
@@ -298,6 +340,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut attach = None;
     #[cfg(unix)]
     let mut served: Vec<i32> = Vec::new();
+    #[cfg(windows)]
+    let mut served: Vec<String> = Vec::new();
     while let Some(arg) = args.next() {
         let arg = text(arg)?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -328,7 +372,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             "--disk" => cfg.disks.push(disk(value("--disk")?)),
             // Shared directories its run gives it (D38): slots, filled as the run arrives.
-            #[cfg(unix)]
             "--shares" => {
                 let n: u32 = text(value("--shares")?)?
                     .parse()
@@ -348,6 +391,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                         .map_err(|_| format!("--slates-fs-fd: {fd:?} is not a descriptor"))?,
                 );
             }
+            // The same on Windows (PM M340): the name its spawner gave a pipe it duplicated
+            // into this process from `shards run … --slates-fs-handle V`, as `--net`'s are
+            // given; no handle's value crosses as a flag. Taken once its flags are all read.
+            #[cfg(windows)]
+            "--slates-fs" => served.push(text(value("--slates-fs")?)?),
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
             // A DAX window of this many MiB for each shared directory (D189).
@@ -371,7 +419,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.join = Some(give_join_disk());
             }
             // A join share, served by none until a joiner brings volumes (D119).
-            #[cfg(unix)]
             "--join-share" => cfg.join_share = Some(give_join_share()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             // A writable layer (D190), its ext4 file system in this file.
@@ -390,13 +437,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }),
             "--reporting" => cfg.reporting = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
-            "--warm" => {
-                let fd = text(value("--warm")?)?;
-                warm = Some(
-                    fd.parse::<i32>()
-                        .map_err(|_| format!("--warm: {fd:?} is not a descriptor"))?,
-                );
-            }
+            "--warm" => warm = Some(link_arg("--warm", text(value("--warm")?)?)?),
             "--" => {
                 common.workload.argv = args.by_ref().map(text).collect::<Result<_, _>>()?;
                 break;
@@ -406,8 +447,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
     }
     common.check_workload()?;
-    #[cfg(unix)]
-    served_shares(&mut cfg, &served, warm)?;
+    served_shares(&mut cfg, &served, warm.is_some())?;
     if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
         return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
     }
@@ -476,11 +516,12 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
 struct Restore {
     cfg: RestoreConfig,
     workload: Options,
-    /// `--warm FD`: the daemon's socket.
-    warm: Option<i32>,
-    /// `--working-set FD`: where the working set this restore records goes, for its spawner
-    /// to keep (D30).
-    working_set_to: Option<i32>,
+    /// `--warm FD` (Windows: `--warm NAME`): the daemon's link ([`LinkArg`]).
+    warm: Option<LinkArg>,
+    /// `--working-set FD` (Windows: `--working-set NAME`, the name its spawner handed the
+    /// pipe by): where the working set this restore records goes, for its spawner to keep
+    /// (D30).
+    working_set_to: Option<LinkArg>,
     /// `--resume FD`, in place of `--warm FD`: the snapshot is a run's, whose command goes
     /// on (D176).
     resume: bool,
@@ -521,27 +562,13 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             // Which generation's layer that file is a clone of.
             "--layer-cloned" => layer_cloned = Some(text(value("--layer-cloned")?)?),
             "--working-set" => {
-                let fd = text(value("--working-set")?)?;
-                working_set_to = Some(
-                    fd.parse::<i32>()
-                        .map_err(|_| format!("--working-set: {fd:?} is not a descriptor"))?,
-                );
+                working_set_to = Some(link_arg("--working-set", text(value("--working-set")?)?)?)
             }
-            "--warm" => {
-                let fd = text(value("--warm")?)?;
-                warm = Some(
-                    fd.parse::<i32>()
-                        .map_err(|_| format!("--warm: {fd:?} is not a descriptor"))?,
-                );
-            }
+            "--warm" => warm = Some(link_arg("--warm", text(value("--warm")?)?)?),
             // A run's snapshot (D176): served as a warm VM's run is, its command running
             // already.
             "--resume" => {
-                let fd = text(value("--resume")?)?;
-                warm = Some(
-                    fd.parse::<i32>()
-                        .map_err(|_| format!("--resume: {fd:?} is not a descriptor"))?,
-                );
+                warm = Some(link_arg("--resume", text(value("--resume")?)?)?);
                 resume = true;
             }
             "--" => {
@@ -586,11 +613,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         vsock: common.vsock.map(VsockHost::at),
         net: common.net.take(),
         // Its slots are made once its snapshot is read (`restore_vm`).
-        #[cfg(unix)]
         shares: Vec::new(),
         // As its join disk and join share are, where the snapshot has them.
         join: None,
-        #[cfg(unix)]
         join_share: None,
         io_limit: Some(&IO),
         // A working set its generation has is mapped ahead: off a held or warm VM's
@@ -618,14 +643,13 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
 /// host's to keep, rather than a tmpfs in its memory.
 static LAYERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// [`LAYERED`]: read where a run keeps its layer (workload.rs), a Unix host's.
-#[cfg(unix)]
+/// [`LAYERED`]: read where a run keeps its layer (workload.rs); a Windows host runs no
+/// writable layer of its own yet (D190), so never there.
 pub fn layered() -> bool {
     LAYERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// This VM's shared directories' slots, which its run fills (D38).
-#[cfg(unix)]
 pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Share>> =
     std::sync::OnceLock::new();
 
@@ -640,14 +664,12 @@ static HAS_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 
 /// Saves this VM for its daemon (D176): into the files of a generation the daemon
 /// prepared, then on or stopped ([`Handle::save`]).
-#[cfg(unix)]
 pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
     RUNNING.get().ok_or("the microVM has not started")?.save(save)
 }
 
 /// Sets the most memory this VM's guest may plug past what it booted with, its run's
 /// limit updated (`PLUG`, D148).
-#[cfg(unix)]
 pub fn set_plug_most(bytes: u64) -> Result<(), String> {
     RUNNING
         .get()
@@ -657,12 +679,23 @@ pub fn set_plug_most(bytes: u64) -> Result<(), String> {
 
 /// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU
 /// limits updated (`CPUS`, D191).
-#[cfg(unix)]
 pub fn hold_cpus(cpus: u32) -> Result<(), String> {
     RUNNING
         .get()
         .ok_or("the microVM has not started")?
         .hold_cpus(cpus)
+}
+
+/// This VM paused where it is, every vCPU held out of its guest (`frozen`), or let go on
+/// (`PAUSE`): returns once each is held.
+pub fn pause(frozen: bool) -> Result<(), String> {
+    let running = RUNNING.get().ok_or("the microVM has not started")?;
+    if frozen {
+        running.pause()
+    } else {
+        running.resume();
+        Ok(())
+    }
 }
 
 /// This VM's join disk, for its device.
@@ -789,9 +822,9 @@ fn serve_attach(name: &str) -> Result<(), String> {
     std::thread::Builder::new()
         .name("attach".into())
         .spawn(move || {
-            while let Ok(Some(m)) = shards_ipc::recv(&socket) {
+            while let Ok(Some(m)) = shards_ipc::read_message(&socket) {
                 let (kind, payload) = answer(m).unwrap_or_else(|e| (kind::DISK_REFUSED, e.into_bytes()));
-                if shards_ipc::send(&socket, kind, &payload).is_err() {
+                if shards_ipc::write_message(&socket, kind, &payload).is_err() {
                     break;
                 }
             }
@@ -804,12 +837,10 @@ fn serve_attach(name: &str) -> Result<(), String> {
 }
 
 /// This VM's handle, once it runs: what a joiner's swap is mapped through (D159).
-#[cfg(unix)]
 static RUNNING: std::sync::OnceLock<Handle> = std::sync::OnceLock::new();
 
 /// Maps `file`, a joiner's swap, into this VM's swap window (D159), unless a member's is
 /// mapped already, which they share: its length where this one was mapped.
-#[cfg(unix)]
 pub fn attach_swap(file: std::fs::File) -> Result<Option<u64>, String> {
     RUNNING
         .get()
@@ -827,21 +858,17 @@ pub fn join_disk() -> Option<&'static shards_vmm::devices::virtio::block::Join> 
 
 /// This VM's join share (D119): served by none until a container joining its network brings
 /// volumes; one VM a process, so one share, a `static` its device and its joiners reach.
-#[cfg(unix)]
 static JOIN_SHARE: shards_vmm::devices::virtio::fs::Slot = shards_vmm::devices::virtio::fs::Slot::new();
 /// Whether this VM has [`JOIN_SHARE`]: its device given it.
-#[cfg(unix)]
 static HAS_JOIN_SHARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// This VM's join share, for its device.
-#[cfg(unix)]
 fn give_join_share() -> &'static shards_vmm::devices::virtio::fs::Slot {
     HAS_JOIN_SHARE.store(true, std::sync::atomic::Ordering::Release);
     &JOIN_SHARE
 }
 
 /// This VM's join share, where it has one (D119).
-#[cfg(unix)]
 pub fn join_share() -> Option<&'static shards_vmm::devices::virtio::fs::Slot> {
     HAS_JOIN_SHARE
         .load(std::sync::atomic::Ordering::Acquire)
@@ -928,6 +955,9 @@ fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     // `--cpu-rt-runtime` set.
     cfg.cmdline
         .push_str(" quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0");
+    // Its CPUs past the first brought online by shards-init where its backend's boots wait
+    // on them (PM M379).
+    cfg.cmdline.push_str(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus));
     if template {
         cfg.cmdline.push_str(" shards_template=1");
     }
@@ -1028,15 +1058,17 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
 }
 
 /// Where a restore's recorded working set goes (`--working-set FD`): its spawner's
-/// descriptor, which it writes the generation's name to, a newline, then the working set
-/// as the daemon takes one (`snapshot::encode_working_set`), and closes; nothing where it
-/// recorded none, its generation having one already. Its spawner keeps it beside that
-/// generation (`vm::accept_working_set`): no VM writes its snapshot (D30).
+/// descriptor (on Windows its pipe, handed by name), which it writes the generation's name
+/// to, a newline, then the working set as the daemon takes one
+/// (`snapshot::encode_working_set`), and closes; nothing where it recorded none, its
+/// generation having one already. Its spawner keeps it beside that generation
+/// (`vm::accept_working_set`): no VM writes its snapshot (D30).
 struct WorkingSetTo(std::fs::File);
 
 impl WorkingSetTo {
+    /// The pipe its spawner left it at descriptor `fd`.
     #[cfg(unix)]
-    fn new(fd: i32) -> Result<WorkingSetTo, String> {
+    fn new(fd: LinkArg) -> Result<WorkingSetTo, String> {
         use std::os::fd::FromRawFd as _;
         // SAFETY: fcntl(2) asks whether the descriptor is open.
         if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
@@ -1051,12 +1083,14 @@ impl WorkingSetTo {
         Ok(WorkingSetTo(unsafe { std::fs::File::from_raw_fd(fd) }))
     }
 
-    /// No restore records its working set where descriptors are not inherited by number.
-    #[cfg(not(unix))]
-    fn new(fd: i32) -> Result<WorkingSetTo, String> {
-        Err(format!(
-            "--working-set {fd}: a descriptor this platform does not pass"
-        ))
+    /// The pipe its spawner handed it by `name`, as `--warm`'s is: the CLI's, which keeps
+    /// the working set as the VM ends.
+    #[cfg(windows)]
+    fn new(name: LinkArg) -> Result<WorkingSetTo, String> {
+        Ok(WorkingSetTo(std::fs::File::from(take_given(
+            "--working-set",
+            &name,
+        )?)))
     }
 
     /// Hands what `handle` records once `after` has passed since its vCPUs started, or the
@@ -1138,20 +1172,18 @@ enum Source<'a> {
     },
     /// A warm VM's: one request from the daemon (warm.rs); with `true`, for a run its
     /// microVM was restored from a save of (D176).
-    #[cfg(unix)]
     Warm(crate::warm::Link, bool),
 }
 
 /// The setup entry that gives a GPU VM's workload its render node, as
 /// `--device /dev/dri/renderD128` gives it (setup.rs `devices`): `-`, not privileged, then
 /// the device, its path in the workload and its access (D144).
-#[cfg(unix)]
 const RENDER_NODE: &[u8] = b"devices=-\0d\0/dev/dri/renderD128\0/dev/dri/renderD128\0rwm\0";
 
 /// A warm VM's restore: `vm restore DIR --warm FD`, or a run's, `--resume FD` (D176).
-#[cfg(unix)]
-fn warm_restore(mut cfg: RestoreConfig, fd: i32, resume: bool) -> ExitCode {
-    let daemon = match crate::warm::Link::new(fd) {
+fn warm_restore(mut cfg: RestoreConfig, fd: LinkArg, resume: bool) -> ExitCode {
+    let flag = if resume { "--resume" } else { "--warm" };
+    let daemon = match daemon_link(flag, fd) {
         Ok(link) => link,
         Err(e) => {
             report(e);
@@ -1165,16 +1197,9 @@ fn warm_restore(mut cfg: RestoreConfig, fd: i32, resume: bool) -> ExitCode {
     })
 }
 
-#[cfg(not(unix))]
-fn warm_restore(_: RestoreConfig, _: i32, _: bool) -> ExitCode {
-    report("warm VMs need Unix sockets, which shards does not support on this platform yet");
-    ExitCode::from(125)
-}
-
 /// A warm VM's boot: `vm run --rootfs IMAGE [--snapshot-dir DIR] --warm FD`.
-#[cfg(unix)]
-fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
-    let daemon = match crate::warm::Link::new(fd) {
+fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: LinkArg) -> ExitCode {
+    let daemon = match daemon_link("--warm", fd) {
         Ok(link) => link,
         Err(e) => {
             report(e);
@@ -1191,16 +1216,9 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
     })
 }
 
-#[cfg(not(unix))]
-fn warm_boot(_: Config, _: PathBuf, _: i32) -> ExitCode {
-    report("warm VMs need Unix sockets, which shards does not support on this platform yet");
-    ExitCode::from(125)
-}
-
 /// Runs a workload in the VM `start` starts, whose vsock device's host side it gives:
 /// `given`, if the command line gave one, and the run's ports, which this process serves.
 /// Exits as the workload does.
-#[cfg(unix)]
 fn serve_workload(
     given: Option<VsockHost>,
     source: Source<'_>,
@@ -1268,7 +1286,7 @@ fn serve_workload(
         let warm = matches!(command, Command::Warm(..));
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
-            let reads_terminal = *interactive && unsafe { libc::isatty(0) } == 1;
+            let reads_terminal = *interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
             if let Err(e) = workload::forward_signals(to_guest, reads_terminal) {
                 return failed(e);
             }
@@ -1345,7 +1363,7 @@ fn serve_workload(
                         )
                     }
                     Command::Warm(link, resumed) => {
-                        let client: std::sync::OnceLock<Option<std::os::unix::net::UnixStream>> =
+                        let client: std::sync::OnceLock<Option<shards_ipc::Stream>> =
                             std::sync::OnceLock::new();
                         let engines = std::cell::Cell::new(engines);
                         let started = || {
@@ -1438,6 +1456,14 @@ fn serve_workload(
                             // hears of the run: what its workload may use whatever its
                             // guest does.
                             stopper.hold_cpus(request.cpus).inspect_err(|e| report(e))?;
+                            // Its group's CPU budget too (D183), which every microVM of
+                            // the group charges, before its guest hears of the run.
+                            if let Some(file) = request.group {
+                                shards_vmm::vm::group::GroupCpu::map(file)
+                                    .map_err(|e| format!("its group's CPU budget: {e}"))
+                                    .and_then(|group| stopper.hold_group(group))
+                                    .inspect_err(|e| report(e))?;
+                            }
                             // Its I/O limits, before its guest hears of the run (D178).
                             IO.set(request.io.0, request.io.1);
                             // Its swap (D159), mapped into the guest's swap window before
@@ -1552,7 +1578,6 @@ fn serve_workload(
         let reason = running.wait_then(crate::warm::tell_kept);
         // Its joiners (D119), which the guest ended with its workload, tell the daemon how
         // each ended before this process goes, as the relay has had 5 s to (below).
-        #[cfg(unix)]
         crate::warm::await_joiners(std::time::Duration::from_secs(5));
         // A warm VM's client printed its timing line from the exit status.
         if !warm {
@@ -1588,16 +1613,6 @@ fn serve_workload(
     }
 }
 
-#[cfg(not(unix))]
-fn serve_workload(
-    _: Option<VsockHost>,
-    _: Source<'_>,
-    _: impl FnOnce(VsockHost) -> Result<(Handle, Running), String>,
-) -> ExitCode {
-    report("running a command in a microVM needs vsock, which shards does not support on this platform yet");
-    ExitCode::from(125)
-}
-
 /// How long a VM records its working set after its command starts, at most, unless the
 /// command answers first: a command still running then has long passed its start. The
 /// whole way from the request to the start is recorded, however long a host takes over
@@ -1614,7 +1629,6 @@ const RECORD_FOR: std::time::Duration = if shards_vmm::vm::RESTORES_RECORD {
 };
 
 /// Saves the working set `after` from now, if the VM still records it then.
-#[cfg(unix)]
 fn end_recording_in(handle: &Handle, after: std::time::Duration) {
     if !handle.recording() {
         return;
@@ -1634,10 +1648,7 @@ fn end_recording_in(handle: &Handle, after: std::time::Duration) {
 }
 
 /// The workload's request and answer times, where there is a workload.
-#[cfg(unix)]
 type WorkloadTiming = crate::workload::Timing;
-#[cfg(not(unix))]
-type WorkloadTiming = ();
 
 /// With `SHARDS_TIMING` set: one machine-readable line on stderr, for benchmark harnesses.
 fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
@@ -1661,18 +1672,12 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         .iter()
         .map(|(m, t)| format!("[{m},{t}]"))
         .collect();
-    #[cfg(unix)]
     let (request, answered) = workload.map_or((0, 0), |t| {
         (
             t.request_us.get().copied().unwrap_or(0),
             t.answered_us.get().copied().unwrap_or(0),
         )
     });
-    #[cfg(not(unix))]
-    let (request, answered) = {
-        let _ = workload;
-        (0, 0)
-    };
     format!(
         "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"hotplug_held_kib\":{},\"reported_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
@@ -1689,22 +1694,13 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
 
 /// This process's own memory now, in KiB, as memory per VM is counted; 0 where unknown.
 fn footprint_kib() -> u64 {
-    #[cfg(unix)]
-    {
-        shards_ipc::footprint_kib()
-    }
-    #[cfg(not(unix))]
-    0
+    shards_ipc::footprint_kib()
 }
 
-/// This process's peak resident set so far, in KiB; 0 where unknown.
+/// This process's peak resident set (its peak working set on Windows) so far, in KiB; 0
+/// where unknown.
 fn max_rss_kib() -> u64 {
-    #[cfg(unix)]
-    {
-        shards_ipc::peak_rss_kib()
-    }
-    #[cfg(not(unix))]
-    0
+    shards_ipc::peak_rss_kib()
 }
 
 /// Starts the VM `cfg` describes, once this process is confined to the files it names, the
@@ -1766,12 +1762,17 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     if cfg.snapshot.is_some() {
         snapshots()?;
     }
+    // The GPU's VM process reaches its host's GPU driver (D201).
+    #[cfg(target_os = "linux")]
+    if shards_vmm::devices::virtio::gpu::RENDERS {
+        crate::confine::gpu_paths(&mut paths);
+    }
     confine(&paths)?;
     vm::start(cfg)
 }
 
-/// A host whose microVMs take no snapshots says so before a VM starts that would take or
-/// restore one (D140).
+/// A host whose microVMs take no snapshots, arm64 KVM's (D154), says so before a VM starts
+/// that would take or restore one.
 fn snapshots() -> Result<(), String> {
     if vm::SNAPSHOTS {
         return Ok(());
@@ -1793,11 +1794,11 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     vm::check_host()?;
     snapshots()?;
     let mut paths = crate::confine::Paths::default();
-    // The snapshot says which files it restores against: on macOS it is granted first, to
-    // be read for them.
-    #[cfg(target_os = "macos")]
+    // The snapshot says which files it restores against: on macOS and Windows it is granted
+    // first, to be read for them.
+    #[cfg(any(target_os = "macos", windows))]
     granted_template(&cfg.dir)?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     paths.read_under.push(cfg.dir.clone());
     written(
         &mut paths,
@@ -1808,6 +1809,11 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     sealing(&paths, cfg.snapshot.as_ref().map(|p| p.dir.as_path()));
     // Its writable layer, which its guest writes (D190).
     paths.write.extend(cfg.layer.iter().cloned());
+    // The GPU's VM process reaches its host's GPU driver (D201).
+    #[cfg(target_os = "linux")]
+    if shards_vmm::devices::virtio::gpu::RENDERS {
+        crate::confine::gpu_paths(&mut paths);
+    }
     let add = |paths: &mut crate::confine::Paths, files: &[(PathBuf, bool)]| {
         for (path, read_only) in files {
             let list = if *read_only {
@@ -1829,8 +1835,6 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
         Some(given) => {
             add(&mut paths, given);
             confine(&paths)?;
-            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
-            let backing = shards_vmm::snapshot::backing_of(&pinned);
             // Each given file as its snapshot named the files it was taken with: resolved,
             // links and all (vmm platform::input_path), so that one given through a link,
             // macOS's /var to /private/var among them, is the file it names, not another.
@@ -1841,20 +1845,51 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
                     (real, *read_only)
                 })
                 .collect();
-            let unasked: Vec<String> = backing
-                .iter()
-                .filter(|b| !given.contains(b))
-                .map(|(path, read_only)| format!("{}{}", path.display(), if *read_only { ":ro" } else { "" }))
-                .collect();
-            if !unasked.is_empty() {
-                return Err(format!(
+            let refuse_unasked = |backing: &[(PathBuf, bool)]| -> Result<(), String> {
+                let unasked: Vec<String> = backing
+                    .iter()
+                    .filter(|b| !given.contains(b))
+                    .map(|(path, read_only)| {
+                        format!("{}{}", path.display(), if *read_only { ":ro" } else { "" })
+                    })
+                    .collect();
+                if unasked.is_empty() {
+                    return Ok(());
+                }
+                Err(format!(
                     "{}: the template names files it was not given: {}",
                     cfg.dir.display(),
                     unasked.join(", ")
+                ))
+            };
+            // On Windows before the state is read too, which looks at each file it names,
+            // as an AppContainer may not at one it was not handed (PM M345).
+            #[cfg(windows)]
+            refuse_unasked(&shards_vmm::snapshot::backing_named(&cfg.dir)?)?;
+            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            refuse_unasked(&shards_vmm::snapshot::backing_of(&pinned))?;
+            pinned
+        }
+        // On Windows its files are granted it before the state is read: an AppContainer may
+        // not look even at the metadata of a file it was not handed (PM M345), where the
+        // state's check of each is a look. So the files the state names are asked for
+        // first, then the state is read, each checked through its grant, and refused if a
+        // newer generation in between names others.
+        #[cfg(windows)]
+        None => {
+            let named = shards_vmm::snapshot::backing_named(&cfg.dir)?;
+            add(&mut paths, &named);
+            confine(&paths)?;
+            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            if shards_vmm::snapshot::backing_of(&pinned) != named {
+                return Err(format!(
+                    "{}: its snapshot was saved again as it was read",
+                    cfg.dir.display()
                 ));
             }
             pinned
         }
+        #[cfg(not(windows))]
         None => {
             let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
             add(&mut paths, &shards_vmm::snapshot::backing_of(&pinned));
@@ -1864,17 +1899,13 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     };
     // A slot for each of its shared directories, which its run fills (D38), and its own
     // join disk where the snapshot has one (D119).
-    #[cfg(unix)]
-    {
-        cfg.shares = (0..pinned.snapshot.config.shares)
-            .map(|_| std::sync::Arc::default())
-            .collect();
-        let _ = SHARES.set(cfg.shares.clone());
-    }
+    cfg.shares = (0..pinned.snapshot.config.shares)
+        .map(|_| std::sync::Arc::default())
+        .collect();
+    let _ = SHARES.set(cfg.shares.clone());
     if pinned.snapshot.config.join {
         cfg.join = Some(give_join_disk());
     }
-    #[cfg(unix)]
     if pinned.snapshot.config.join_share {
         cfg.join_share = Some(give_join_share());
     }
@@ -1903,9 +1934,9 @@ static CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// snapshot's directory, which only the save writes. A template's saver goes on to serve a
 /// run, and a guest that took its process over could otherwise rewrite what every later
 /// run of the image restores.
-#[cfg(unix)]
 struct Seal {
-    /// The directory given up.
+    /// The directory given up. None on Windows, which saves no snapshot yet (vm::SNAPSHOTS).
+    #[cfg_attr(windows, allow(dead_code))]
     dir: PathBuf,
     /// All else the process keeps: on Linux, applied as a Landlock layer of its own, which
     /// leaves the first's rules but the directory's.
@@ -1913,7 +1944,6 @@ struct Seal {
     kept: crate::confine::Paths,
 }
 
-#[cfg(unix)]
 static SEAL: std::sync::OnceLock<Seal> = std::sync::OnceLock::new();
 
 /// Records what [`seal`] gives up once a snapshot `paths` lets this VM save is committed.
@@ -1942,7 +1972,6 @@ fn sealing(paths: &crate::confine::Paths, snapshot: Option<&Path>) {
 /// its files), and Landlock takes back nothing open. On macOS nothing can be given up:
 /// App Sandbox's grants last the process's life (PM M102); [`moved`] holds instead. A VM
 /// that saved no snapshot has nothing to give up.
-#[cfg(unix)]
 fn seal() -> Result<(), String> {
     let Some(seal) = SEAL.get() else {
         return Ok(());
@@ -1977,7 +2006,6 @@ fn seal() -> Result<(), String> {
 /// up (PM M102), by being no longer at the path it was granted, as the daemon moves a
 /// template into place before it hands over a run. A VM that would reach it takes no run,
 /// and its spawner gives the run to another (daemon.rs, `hand_over`).
-#[cfg(unix)]
 fn moved() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     if let Some(seal) = SEAL.get()
@@ -2027,6 +2055,26 @@ static GRANTS: std::sync::Mutex<Option<crate::grant::Link>> = std::sync::Mutex::
 /// its network's ring and doorbells (`--net`).
 #[cfg(windows)]
 static GIVEN: std::sync::Mutex<Vec<(String, shards_ipc::Handed)>> = std::sync::Mutex::new(Vec::new());
+
+/// The handle its spawner handed this process as `name` ([`GIVEN`]), for option `flag`:
+/// taken once, owned from here on.
+#[cfg(windows)]
+fn take_given(flag: &str, name: &str) -> Result<std::os::windows::io::OwnedHandle, String> {
+    use std::os::windows::io::FromRawHandle as _;
+    let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let at = given
+        .iter()
+        .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
+        .ok_or_else(|| format!("{flag}: no {name} was given"))?;
+    let shards_ipc::Handed::Handle(value) = given.swap_remove(at).1 else {
+        return Err(format!("{flag}: {name} is no handle"));
+    };
+    // SAFETY: a handle the spawner duplicated into this process for this alone, owned from
+    // here on.
+    Ok(unsafe {
+        std::os::windows::io::OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle)
+    })
+}
 
 /// `--net REGION,WAKE_ME,WAKE_PEER,MAC`: the frame ring and doorbells its spawner left this
 /// process at those descriptors, which it owns from here on, and the guest's MAC.
@@ -2110,11 +2158,24 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
             .map_err(|e| format!("--net: net-wake-peer: {e}"))?;
         std::sync::Arc::new(shards_netring::Bell::Socket(rings))
     };
+    // Where its run's published ports close as it ends, where a daemon gave it one: a
+    // builder's spawner publishes nothing.
+    if let Some(at) = given
+        .iter()
+        .position(|(n, h)| n == "net-release" && matches!(h, shards_ipc::Handed::Socket(_)))
+        && let shards_ipc::Handed::Socket(info) = given.swap_remove(at).1
+    {
+        let release = shards_vmm::platform::UnixStream::from_shared(&info)
+            .map_err(|e| format!("--net: net-release: {e}"))?;
+        crate::warm::adopt_release(release)?;
+    }
     let mac = spec
         .parse::<shards_net::Mac>()
         .map_err(|e| format!("--net: {e}"))?
         .0;
+    // Asked as the command ends, so that what it sent goes before the run does.
     let flush = shards_vmm::devices::virtio::net::TxFlush::default();
+    crate::warm::adopt_flush(flush.clone());
     Ok(shards_vmm::devices::virtio::net::NetHost {
         region,
         wake_me,
@@ -2124,19 +2185,26 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     })
 }
 
+/// Refuses a share another server serves beside the shares a daemon gives its VM (`--warm`,
+/// `--shares`): such a VM is given its shares by its daemon, never these. Both hosts' alike.
+fn served_beside_daemon(cfg: &Config, warm: bool, flag: &str) -> Result<(), String> {
+    if warm || !cfg.shares.is_empty() {
+        return Err(format!(
+            "{flag} with --warm or --shares: a daemon's VM is given its shares by its daemon"
+        ));
+    }
+    Ok(())
+}
+
 /// The shares other servers serve (`--slates-fs-fd`, D38), after the VM's own: each a
 /// socket its spawner handed this process alone, as it hands `--grants` its, taken once.
 /// A daemon's VM is given its shares by its daemon (`--warm`, `--shares`), never these.
 #[cfg(unix)]
-fn served_shares(cfg: &mut Config, served: &[i32], warm: Option<i32>) -> Result<(), String> {
+fn served_shares(cfg: &mut Config, served: &[i32], warm: bool) -> Result<(), String> {
     if served.is_empty() {
         return Ok(());
     }
-    if warm.is_some() || !cfg.shares.is_empty() {
-        return Err(
-            "--slates-fs-fd with --warm or --shares: a daemon's VM is given its shares by its daemon".into(),
-        );
-    }
+    served_beside_daemon(cfg, warm, "--slates-fs-fd")?;
     // The socket `--grants` took, where the VM process asks a broker for access (macOS).
     #[cfg(target_os = "macos")]
     let grants = {
@@ -2154,6 +2222,44 @@ fn served_shares(cfg: &mut Config, served: &[i32], warm: Option<i32>) -> Result<
         let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
         slot.attach(crate::warm::inherited_socket("--slates-fs-fd", fd)?)
             .map_err(|e| format!("--slates-fs-fd {fd}: {e}"))?;
+        cfg.shares.push(slot);
+    }
+    Ok(())
+}
+
+/// The shares other servers serve on Windows (`--slates-fs`, D38, PM M340), after the VM's
+/// own: each a pipe its spawner duplicated into this process and named in its grants, taken
+/// from them once, as `--net`'s are. A daemon's VM is given its shares by its daemon, never
+/// these.
+#[cfg(windows)]
+fn served_shares(cfg: &mut Config, served: &[String], warm: bool) -> Result<(), String> {
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    if served.is_empty() {
+        return Ok(());
+    }
+    served_beside_daemon(cfg, warm, "--slates-fs")?;
+    for (i, name) in served.iter().enumerate() {
+        if served.iter().take(i).any(|other| other == name) {
+            return Err(format!("--slates-fs {name}: given twice"));
+        }
+    }
+    let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for name in served {
+        let at = given
+            .iter()
+            .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
+            .ok_or_else(|| format!("--slates-fs {name}: no such pipe was given"))?;
+        let shards_ipc::Handed::Handle(value) = given.swap_remove(at).1 else {
+            return Err(format!("--slates-fs {name}: no handle"));
+        };
+        // SAFETY: a handle the spawner duplicated into this process for this share alone,
+        // owned from here on.
+        let pipe = unsafe { OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle) };
+        let stream = shards_vmm::platform::ShareStream::from_handle(pipe)
+            .map_err(|e| format!("--slates-fs {name}: {e}"))?;
+        let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
+        slot.attach(stream)
+            .map_err(|e| format!("--slates-fs {name}: {e}"))?;
         cfg.shares.push(slot);
     }
     Ok(())
@@ -2261,7 +2367,7 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         return Err("a directory of sockets cannot be granted to a confined VM process".into());
     }
     if !paths.devices.is_empty() {
-        return Err("a host's device is passed through by VFIO, Linux's (D154)".into());
+        return Err(vm::NO_PASSTHROUGH.into());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read
@@ -2319,18 +2425,67 @@ fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
     }))
 }
 
-/// A restore's template, as a VM in App Sandbox is granted it: its pointer, then the
-/// files of the generation it names, never its directory.
-#[cfg(target_os = "macos")]
+/// The spawner, as the stager of this VM's snapshots (D196): an AppContainer writes in no
+/// directory of its user's (D141), so the spawner makes each generation where it granted
+/// this VM to write, and hands it the generation's files to fill, over the grants link, a
+/// request and its answer at a time (the lock held through both).
+#[cfg(windows)]
+#[derive(Debug)]
+struct SpawnerStages;
+
+#[cfg(windows)]
+impl shards_vmm::platform::Stager for SpawnerStages {
+    fn stage(
+        &self,
+        dir: &Path,
+        kept: shards_vmm::platform::Kept,
+    ) -> std::io::Result<(String, Vec<std::fs::File>)> {
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no spawner to stage a snapshot through",
+            )
+        })?;
+        crate::grant_ask::stage(link, dir, kept)
+    }
+
+    fn data_ranges(&self, file: &std::fs::File, len: u64) -> std::io::Result<Vec<(u64, u64)>> {
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no spawner to read a file's ranges through",
+            )
+        })?;
+        crate::grant_ask::ranges(link, file, len)
+    }
+
+    fn commit(&self, _dir: &Path, name: &str) -> std::io::Result<()> {
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no spawner to commit a snapshot through",
+            )
+        })?;
+        crate::grant_ask::commit(link, name)
+    }
+}
+
+/// A restore's template, as a VM in App Sandbox or an AppContainer is granted it: its
+/// pointer, then the files of the generation it names, never its directory; the pointer's
+/// and the working set's newest versions (platform `write_in`).
+#[cfg(any(target_os = "macos", windows))]
 fn granted_template(dir: &Path) -> Result<(), String> {
     use crate::grant::Access;
-    ask(&[(Access::ReadIfThere, shards_vmm::snapshot::pointer(dir))])?;
+    ask(&[(Access::ReadNewestIfThere, shards_vmm::snapshot::pointer(dir))])?;
     let ([state, memory], [working_set, layer_head, layer, window_heads]) =
         shards_vmm::snapshot::generation_files(dir)?;
     ask(&[
         (Access::Read, state),
         (Access::Read, memory),
-        (Access::ReadIfThere, working_set),
+        (Access::ReadNewestIfThere, working_set),
         (Access::ReadIfThere, layer_head),
         (Access::ReadIfThere, layer),
         (Access::ReadIfThere, window_heads),
@@ -2355,22 +2510,33 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     return crate::confine::landlock(paths);
     // As on macOS; and once its partition is set up, before anything of its guest's is
-    // read, this process forbids itself dynamic code (D141, PM M202).
+    // read, this process forbids itself dynamic code (D141, PM M202). Its snapshots its
+    // spawner stages, over the link (D196), which stays open for them.
     #[cfg(windows)]
     {
         #[cfg(target_arch = "x86_64")]
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
+        let stages = !paths.write_under.is_empty();
+        // Its spawner stages its snapshots and reads its files' ranges for it, as long as
+        // the link stays: it may make no FSCTL (D141), and a restore copies a template's
+        // writable layer by its ranges (D196), as any save of it copies its layer and swap
+        // by theirs (D176). Every VM's: a run's VM, with neither a snapshot to save nor a
+        // vsock path, saved later had none to ask, read its 10 GiB layer whole, and NTFS
+        // took that much of the disk for the holes read (PM M377).
+        shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
         match &paths.vsock {
             Some(vsock) => dial_through_spawner(vsock),
+            None if stages => Ok(()),
+            // Nothing more asked of the spawner but ranges, which it answers on the link it
+            // keeps: no grant after (`SEALED`).
             None => {
-                drop(
-                    GRANTS
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take(),
-                );
-                Ok(())
+                let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                match grants.as_ref() {
+                    Some(link) => shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
+                        .map_err(|e| format!("sealing its grants: {e}")),
+                    None => Ok(()),
+                }
             }
         }
     }
@@ -2404,13 +2570,55 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
         }
         ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
         ExitReason::Reset => {
-            report("guest requested a reset");
+            let said = if console == Console::Discard {
+                last_said(&handle.console_said())
+            } else {
+                String::new()
+            };
+            report(format!("guest requested a reset{said}"));
             ExitCode::from(3)
         }
         ExitReason::Error(e) => {
             report(e);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What a guest whose console no one read wrote to it last, `said`, as a kernel writes there
+/// why it panics (`panic=-1` resets it): its lines, each other character a terminal acts on
+/// written as its escape, so that what a guest wrote moves no terminal it is shown on.
+/// Nothing where it wrote nothing.
+fn last_said(said: &[u8]) -> String {
+    let mut text = String::new();
+    for c in String::from_utf8_lossy(said).chars() {
+        match c {
+            '\r' => {}
+            '\n' | '\t' => text.push(c),
+            c if c.is_control() => text.extend(c.escape_default()),
+            c => text.push(c),
+        }
+    }
+    match text.trim_start_matches('\n').trim_end() {
+        "" => String::new(),
+        said => format!(", its console's last lines:\n{said}"),
+    }
+}
+
+#[cfg(test)]
+mod said {
+    use super::last_said;
+
+    /// A guest's last words are its lines as it wrote them, their carriage returns gone and
+    /// each other character a terminal acts on escaped; nothing where it said nothing.
+    #[test]
+    fn a_guests_last_words_move_no_terminal() {
+        assert_eq!(last_said(b""), "");
+        assert_eq!(last_said(b"\r\n \r\n"), "");
+        assert_eq!(
+            last_said(b"\r\n[    0.44] Kernel panic - not syncing: VFS\r\n\x1b[2J\x1b]0;mine\x07\tyes\r\n"),
+            ", its console's last lines:\n[    0.44] Kernel panic - not syncing: VFS\n\\u{1b}[2J\\u{1b}]0;mine\\u{7}\tyes"
+        );
     }
 }
 
@@ -2546,7 +2754,7 @@ mod tests {
         // here as a VM's own slot).
         let mut cfg = Config::new(PathBuf::new(), None);
         cfg.shares.push(std::sync::Arc::default());
-        let e = served_shares(&mut cfg, &[kept.as_raw_fd()], None).unwrap_err();
+        let e = served_shares(&mut cfg, &[kept.as_raw_fd()], false).unwrap_err();
         assert!(e.contains("with --warm or --shares"), "{e}");
         // Taken, and owned by its share from here on.
         let (ours, _theirs) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -2606,5 +2814,55 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.starts_with("--memory-max: "), "{e}");
+    }
+}
+
+/// The served-share test on Windows, apart from `tests`, which is Unix's alone (its helpers
+/// take arguments as bytes, as Unix gives them).
+#[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used)]
+mod served_pipe_tests {
+    use super::*;
+
+    /// A share another server serves on Windows (`--slates-fs`, PM M340) takes a pipe its
+    /// spawner named in its grants, once, as the VM's last share: never a name given twice,
+    /// a name no grant holds, nor beside the shares a daemon gives its VM.
+    #[test]
+    fn a_served_share_takes_its_named_pipe_once() {
+        use std::os::windows::io::{IntoRawHandle as _, OwnedHandle};
+        let with = |extra: &[&str]| {
+            let all: Vec<OsString> = ["--kernel", "/k"]
+                .iter()
+                .chain(extra)
+                .map(|a| OsString::from(*a))
+                .collect();
+            parse_run(all.into_iter())
+        };
+        for (extra, why) in [
+            (vec!["--slates-fs", "test-none"], "no such pipe was given"),
+            (
+                vec!["--slates-fs", "test-twice", "--slates-fs", "test-twice"],
+                "given twice",
+            ),
+            (
+                vec!["--slates-fs", "test-warm", "--warm", "9"],
+                "with --warm or --shares",
+            ),
+        ] {
+            let e = with(&extra).err().unwrap();
+            assert!(e.contains(why), "{extra:?}: {e}");
+        }
+        // Taken from the grants under its name, and owned by its share from here on: any
+        // handle stands for the pipe here, as the share asks nothing of it until its guest does.
+        let handle = OwnedHandle::from(std::fs::File::open("NUL").unwrap());
+        let value = handle.into_raw_handle() as usize;
+        GIVEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(("test-pipe".into(), shards_ipc::Handed::Handle(value)));
+        let run = with(&["--slates-fs", "test-pipe"]).unwrap();
+        assert_eq!(run.cfg.shares.len(), 1);
+        let left = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!left.iter().any(|(n, _)| n == "test-pipe"), "taken once");
     }
 }

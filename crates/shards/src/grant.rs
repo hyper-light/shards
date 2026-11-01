@@ -12,8 +12,10 @@
 //! reaches no file or socket of its user's; it asks the same way, over two pipes, and is
 //! answered with handles its spawner duplicated into it, each file with the path the
 //! spawner found it at (the VM may not ask, PM M203), and with sockets shared with it as
-//! Winsock documents (WSADuplicateSocketW, PM M203). It writes in no directory: its
-//! hypervisor takes no snapshots yet (D140).
+//! Winsock documents (WSADuplicateSocketW, PM M203). It writes in no directory of its user's:
+//! the directory its snapshots go to its spawner makes, and stages each generation there for
+//! it, handing it the generation's memory and state files to fill and committing the
+//! generation on its word (`kind::STAGE`, `kind::COMMIT`, D196).
 //!
 //! Linux confines VMs with Landlock.
 //!
@@ -90,18 +92,16 @@ pub enum Access {
     /// A file it reads: a descriptor opened read-only.
     Read,
     /// A file it reads if it is there: a descriptor, or word that it is not.
-    #[cfg_attr(
-        windows,
-        allow(
-            dead_code,
-            reason = "a restore's, which a VM process on Windows does not make yet (D140)"
-        )
-    )]
     ReadIfThere,
+    /// A file it reads if it is there, its newest version (platform `write_in`): a snapshot's
+    /// pointer and working set, which a write on Windows lands under a name of their own
+    /// beside the one asked for. A descriptor, or word that there is none.
+    ReadNewestIfThere,
     /// A file it reads and writes: a descriptor opened read-write.
     Write,
     /// A directory it writes in, its own: made first if it is not there, then a read-write
-    /// bookmark. A directory cannot be granted read-only (PM M70).
+    /// bookmark on macOS (a directory cannot be granted read-only, PM M70); on Windows,
+    /// where its snapshots' generations are staged for it (D196).
     MakeDir,
     /// Its vsock device's socket path (`--vsock`): a socket the spawner binds there and
     /// hands it, and from then on, connections the spawner dials for it to the host ports

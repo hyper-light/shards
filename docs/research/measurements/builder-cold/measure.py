@@ -3,7 +3,9 @@
 and unplug under memory pressure"), measured on real builds: builds/rust (a Rust crate,
 cargo's registry and target as cache mounts), builds/npm (npm ci of a lockfile, npm's cache
 mounted) and builds/apt (an apt-get install, apt's archives and lists mounted), each built
---no-cache in rounds, the builds' order turning each round, by a build of shards with
+in rounds, its steps run again each round (its ROUND build argument, a new value each round:
+--no-cache would start every step's caches empty, PM M141), the builds' order turning each
+round, by a build of shards with
 cold.patch: its builder's console in a file of its own (SHARDS_BUILDER_CONSOLE), where no
 other writer cuts its lines as the build's progress cut them on the build's stderr, and
 where its init writes a `builder-cold` line each second and one at each step's end: its build cgroup's
@@ -18,7 +20,7 @@ Beside it, each second, the builder's VM process on this host (the build's desce
 named shards-vm): its phys_footprint on macOS (proc_pid_rusage), its Pss, Rss and RssFile,
 RssAnon and RssShmem on Linux (smaps_rollup, status).
 
-    measure.py SHARDS OUT [--builds rust,npm,apt] [--rounds 3] [--home HOME]
+    measure.py SHARDS OUT [--builds rust,npm,apt] [--rounds 3] [--home HOME] [--base REGISTRY]
 
 Each build runs in HOME (default OUT/home, kept), with an empty DOCKER_CONFIG; a round's
 first build of each kind fills its cache mounts, its later ones read them back. Where the
@@ -37,6 +39,7 @@ p.add_argument("out")
 p.add_argument("--builds", default="rust,npm,apt")
 p.add_argument("--rounds", type=int, default=3)
 p.add_argument("--home")
+p.add_argument("--base", help="the registry and repository the builds' bases come from (their BASE)")
 a = p.parse_args()
 
 shards = os.path.realpath(a.shards)
@@ -45,7 +48,8 @@ os.makedirs(os.path.join(out, "raw"), exist_ok=True)
 home = os.path.realpath(a.home) if a.home else os.path.join(out, "home")
 config = os.path.join(out, "docker-config")
 os.makedirs(config, exist_ok=True)
-OUT = open(os.path.join(out, "out.txt"), "a")
+# One run an output: its rounds keyed by their number (tables.py, check.py).
+OUT = open(os.path.join(out, "out.txt"), "w")
 macos = sys.platform == "darwin"
 
 
@@ -69,7 +73,8 @@ def header():
         mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     say(f"host {platform.node()}; {osname}; kernel {platform.release()}; {platform.machine()}; {cpu}; "
         f"shards {rev}; memory {mem >> 20} MiB; cpus {os.cpu_count()}")
-    say(f"builds {a.builds}; rounds {a.rounds}; home {home}")
+    bases = a.base or "each Dockerfile's own"
+    say(f"builds {a.builds}; rounds {a.rounds}; home {home}; bases {bases}")
 
 
 class RusageInfoV2(ctypes.Structure):
@@ -159,6 +164,9 @@ def sample_host(build_pid, tag, stop):
 
 
 GUEST = re.compile(r"builder-cold (.*)$")
+# This run's own, in each round's ROUND: no step of a run before in the same home answers
+# one of this run's from its cache.
+RUN = int(time.time())
 STEP = re.compile(r"^#(\d+) \[")
 
 
@@ -195,9 +203,10 @@ def one(r, name):
     started = time.time()
     raw = open(os.path.join(out, "raw", f"{r}-{name}.txt"), "w")
     # Its output and its progress one stream, as each line comes, wherever shards writes it.
-    proc = subprocess.Popen([shards, "build", "--no-cache", "--progress", "plain", "-t", f"builder-cold-{name}",
-                             "-f", os.path.join(ctx, "Dockerfile"), ctx], env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, errors="replace")
+    base = ["--build-arg", f"BASE={a.base}"] if a.base else []
+    proc = subprocess.Popen([shards, "build", "--progress", "plain", "-t", f"builder-cold-{name}",
+                             "--build-arg", f"ROUND={RUN}-{r}", *base, "-f", os.path.join(ctx, "Dockerfile"), ctx],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     stop = threading.Event()
     step = ["-"]
     sampler = threading.Thread(target=sample_host, args=(proc.pid, tag, stop))

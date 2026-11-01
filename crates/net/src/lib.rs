@@ -29,6 +29,15 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
+
+/// A socket a control message hands this process (PUBLISH, NET_PUBLISHED, NET_PEER): a
+/// descriptor passed beside it on Unix; on Windows one this process makes its own from the
+/// protocol info its sender shared it by, before the message's payload
+/// ([`shards_ipc::with_sockets`], PM M203).
+#[cfg(unix)]
+type Handed = OwnedFd;
+#[cfg(windows)]
+type Handed = std::os::windows::io::OwnedSocket;
 use std::time::{Duration, Instant};
 
 use shards_netring::{Consumer, Handle, Producer, RING, Region};
@@ -533,6 +542,12 @@ struct UdpFlow {
 /// The guest's ends of a UDP flow: its port, and the remote address and port.
 type UdpKey = (u16, IpAddr, u16);
 
+/// The most of a UDP flow's datagrams that wait for its socket from the spawner's dialer
+/// (Windows): what the guest sends past them goes, as datagrams past a full socket buffer
+/// go. Its answer comes once the spawner has bound and connected one, in microseconds.
+#[cfg(windows)]
+const UDP_WAITING: usize = 16;
+
 /// What a poller's token or a timer names (review 2.14): its kind in the top byte, then
 /// the generation of the slot it names, then the slot, so that what an earlier holder of
 /// a slot left is never taken for its next's.
@@ -657,6 +672,10 @@ struct Stack<'r> {
     /// UDP flows by their numbers, and the next number.
     udp_ids: HashMap<u32, UdpKey>,
     next_udp: u32,
+    /// The guest's datagrams of UDP flows whose sockets the spawner's dialer is asked for
+    /// (Windows, `DIAL_UDP`), [`UDP_WAITING`] of each at most.
+    #[cfg(windows)]
+    udp_waiting: HashMap<UdpKey, Vec<Vec<u8>>>,
     /// What waits for the host's sockets, the timers due, earliest first, and the
     /// connections a full ring kept from the guest, in turn (review 2.14).
     poller: poll::Poller,
@@ -880,6 +899,8 @@ pub fn serve(
         udp: HashMap::new(),
         udp_ids: HashMap::new(),
         next_udp: 0,
+        #[cfg(windows)]
+        udp_waiting: HashMap::new(),
         poller: poll::Poller::new()?,
         timers: BinaryHeap::new(),
         blocked: VecDeque::new(),
@@ -1028,42 +1049,54 @@ fn control(
         if !role.says(m.kind) {
             return false;
         }
-        // What hands this process sockets: the daemon's, on Unix, which no Windows host runs
-        // yet (D143).
-        #[cfg(windows)]
-        if matches!(
-            m.kind,
-            shards_ipc::kind::PUBLISH | shards_ipc::kind::NET_PUBLISHED | shards_ipc::kind::NET_PEER
-        ) {
-            return false;
-        }
-        #[cfg(unix)]
-        let answered = if m.kind == shards_ipc::kind::PUBLISH {
-            stack.publish(&m.payload, m.fds);
-            answer(sock, shards_ipc::kind::PUBLISH)
-        } else if m.kind == shards_ipc::kind::NET_PUBLISHED {
-            // A port of the host's network (D124): its number, then as PUBLISH's. Not
-            // answered: the daemon holds its copy of the socket until it lets the port go.
-            let Some((id, ports)) = m.payload.split_first_chunk::<4>() else {
+        let answered = if shards_ipc::kind::hands_sockets(m.kind) {
+            // Its sockets: passed beside it on Unix; on Windows shared before its payload.
+            #[cfg(unix)]
+            let (fds, payload) = (m.fds, m.payload.as_slice());
+            #[cfg(windows)]
+            let Ok((fds, payload)) = shards_ipc::adopt_sockets(&m.payload) else {
                 return false;
             };
-            let at = stack.published.len();
-            stack.publish(ports, m.fds);
-            if stack.published.len() > at {
-                stack.hosted.insert(u32::from_be_bytes(*id), at);
-            }
-            Ok(())
-        } else if m.kind == shards_ipc::kind::NET_PEER {
-            stack.add_peer(&m.payload, m.fds);
-            answer(sock, shards_ipc::kind::NET_PEER)
+            handed(stack, sock, m.kind, payload, fds)
         } else {
             answer_other(stack, sock, &m)
         };
-        #[cfg(windows)]
-        let answered = answer_other(stack, sock, &m);
         if answered.is_err() {
             return false;
         }
+    }
+}
+
+/// [`control`]'s answer to a message of `kind` that hands this process sockets, `fds`,
+/// with `payload`.
+fn handed(
+    stack: &mut Stack<'_>,
+    sock: &UnixStream,
+    kind: u8,
+    payload: &[u8],
+    fds: Vec<Handed>,
+) -> io::Result<()> {
+    if kind == shards_ipc::kind::PUBLISH {
+        stack.publish(payload, fds);
+        answer(sock, shards_ipc::kind::PUBLISH)
+    } else if kind == shards_ipc::kind::NET_PUBLISHED {
+        // A port of the host's network (D124): its number, then as PUBLISH's. Not
+        // answered: the daemon holds its copy of the socket until it lets the port go.
+        let Some((id, ports)) = payload.split_first_chunk::<4>() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a port of the host's network without its number",
+            ));
+        };
+        let at = stack.published.len();
+        stack.publish(ports, fds);
+        if stack.published.len() > at {
+            stack.hosted.insert(u32::from_be_bytes(*id), at);
+        }
+        Ok(())
+    } else {
+        stack.add_peer(payload, fds);
+        answer(sock, shards_ipc::kind::NET_PEER)
     }
 }
 
@@ -1142,17 +1175,25 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             stack.cfg.guest_link_local = addresses;
             answer(sock, shards_ipc::kind::NET_LINK_LOCAL)
         } else {
-            // Flows left answer nobody: their sockets are forgotten, and closed.
-            for (i, slot) in stack.published.iter().enumerate() {
-                if let Some((listener, _)) = slot {
-                    let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
-                    let _ = stack.poller.set(
+            // Flows left answer nobody: their sockets are forgotten, and closed. Each is
+            // forgotten before it closes, as the poller has a socket closed: on Windows a
+            // registration it keeps by the socket's value would be taken for the next socket
+            // given that value, which it would never register (a joiner's listener on the
+            // host's network never accepting, jupiter 7 of 20 runs).
+            let listening: Vec<(RawSock, u64)> = stack
+                .published
+                .iter()
+                .enumerate()
+                .filter_map(|(i, slot)| {
+                    let (listener, _) = slot.as_ref()?;
+                    Some((
                         listener.raw_sock(),
-                        named,
-                        poll::Interest::READ,
-                        poll::Interest::NONE,
-                    );
-                }
+                        token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX)),
+                    ))
+                })
+                .collect();
+            for (sock, named) in listening {
+                stack.forget(sock, named, poll::Interest::READ);
             }
             stack.published.clear();
             stack.hosted.clear();
@@ -1166,7 +1207,7 @@ fn answer(sock: &UnixStream, kind: u8) -> io::Result<()> {
     #[cfg(unix)]
     return shards_ipc::send(sock, kind, &[], &[]);
     #[cfg(windows)]
-    return shards_ipc::send(sock, kind, &[]);
+    return shards_ipc::write_message(sock, kind, &[]);
 }
 
 /// Takes the guest's frames from the ring, `frames` of them at most, until it is empty or
@@ -1241,11 +1282,10 @@ impl<'r> Stack<'r> {
         initial_seq(&self.isn_key, ticks, guest, key)
     }
 
-    #[cfg(unix)]
     /// Takes published ports' host sockets, each for the guest port and protocol its
     /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
     /// what does not pair up, or names another protocol, is closed.
-    fn publish(&mut self, ports: &[u8], fds: Vec<OwnedFd>) {
+    fn publish(&mut self, ports: &[u8], fds: Vec<Handed>) {
         for (fd, &[hi, lo, proto]) in fds.into_iter().zip(ports.as_chunks::<3>().0) {
             let listener = match proto {
                 wire::PROTO_TCP => Listener::Tcp(std::net::TcpListener::from(fd)),
@@ -1287,13 +1327,10 @@ impl<'r> Stack<'r> {
         if let Some(slot) = self.published.get_mut(i)
             && let Some((listener, _)) = slot.take()
         {
+            // Forgotten before it closes ([`Poller::forget`]): on Windows a registration kept
+            // by its value would be taken for the next socket given that value.
             let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
-            let _ = self.poller.set(
-                listener.raw_sock(),
-                named,
-                poll::Interest::READ,
-                poll::Interest::NONE,
-            );
+            self.forget(listener.raw_sock(), named, poll::Interest::READ);
         }
         self.inbound_ports.retain(|(published, _), _| *published != i);
         self.inbound.retain(|_, f| f.published != i);
@@ -1562,10 +1599,9 @@ impl<'r> Stack<'r> {
         self.frames.guest_mac = mac;
     }
 
-    #[cfg(unix)]
     /// A peer (`NET_PEER`): its guest's address, then its IPv6 one on a network with
     /// IPv6, and the socket to its network process.
-    fn add_peer(&mut self, payload: &[u8], fds: Vec<OwnedFd>) {
+    fn add_peer(&mut self, payload: &[u8], fds: Vec<Handed>) {
         let (Some((&[a, b, c, d], rest)), Some(fd)) =
             (payload.split_first_chunk::<4>(), fds.into_iter().next())
         else {
@@ -1867,38 +1903,94 @@ impl<'r> Stack<'r> {
     /// Sends `payload` on UDP flow `key`, its host socket connected to `to`, made where
     /// there is none; its answers go to the guest from `key`'s remote end.
     fn flow(&mut self, key: UdpKey, to: (IpAddr, u16), payload: &[u8]) {
-        let f = match self.udp.entry(key) {
-            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let any = match to.0 {
-                    IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                    IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-                };
-                let Ok(sock) = UdpSocket::bind((any, 0)) else {
-                    return;
-                };
-                if sock.connect(to).is_err() || sock.set_nonblocking(true).is_err() {
-                    return;
+        if !self.udp.contains_key(&key) {
+            // What its AppContainer keeps it from, the host's loopback and own addresses
+            // (Windows, PM M204), its spawner's dialer binds and connects for it, as its TCP
+            // connections there are: the datagrams wait for it meanwhile, as a socket's
+            // buffer holds them.
+            #[cfg(windows)]
+            if let Some(dialer) = self.dialer.as_mut()
+                && dialer.reaches(to.0)
+            {
+                let waiting = self.udp_waiting.entry(key).or_default();
+                if waiting.len() < UDP_WAITING {
+                    waiting.push(payload.to_vec());
                 }
-                // Its answers waited for from now on, and its end timed.
-                let id = self.next_udp;
-                let named = token::of(token::UDP, 0, id);
-                if self
-                    .poller
-                    .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)
-                    .is_err()
-                {
-                    return;
+                if !dialer.asking_udp(&key) && dialer.ask_udp(std::net::SocketAddr::from(to), key).is_err() {
+                    self.udp_waiting.remove(&key);
                 }
-                self.next_udp = id.wrapping_add(1);
-                self.udp_ids.insert(id, key);
-                let life = Lifetime::new(Instant::now());
-                self.timers.push(Reverse((life.until, named)));
-                v.insert(UdpFlow { sock, life })
+                self.wait_on_dialer();
+                return;
+            }
+            let any = match to.0 {
+                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            };
+            let Ok(sock) = UdpSocket::bind((any, 0)) else {
+                return;
+            };
+            if sock.connect(to).is_err() || sock.set_nonblocking(true).is_err() {
+                return;
+            }
+            if !self.add_udp_flow(key, sock) {
+                return;
+            }
+        }
+        if let Some(f) = self.udp.get_mut(&key) {
+            let _ = f.sock.send(payload);
+            f.life.datagram(Instant::now(), false);
+        }
+    }
+
+    /// UDP flow `key`'s host socket, connected and nonblocking: its answers waited for from
+    /// now on, and its end timed. False where the poller would not take it.
+    fn add_udp_flow(&mut self, key: UdpKey, sock: UdpSocket) -> bool {
+        let id = self.next_udp;
+        let named = token::of(token::UDP, 0, id);
+        if self
+            .poller
+            .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)
+            .is_err()
+        {
+            return false;
+        }
+        self.next_udp = id.wrapping_add(1);
+        self.udp_ids.insert(id, key);
+        let life = Lifetime::new(Instant::now());
+        self.timers.push(Reverse((life.until, named)));
+        self.udp.insert(key, UdpFlow { sock, life });
+        true
+    }
+
+    /// A UDP flow's socket the dialer answered: its waiting datagrams sent on it; or, where
+    /// there is none, those datagrams gone, as a far end's refusal loses them.
+    #[cfg(windows)]
+    fn udp_dialed(&mut self, key: UdpKey, got: io::Result<UdpSocket>) {
+        let waiting = self.udp_waiting.remove(&key).unwrap_or_default();
+        let sock = match got {
+            Ok(sock) => sock,
+            Err(e) => {
+                if e.kind() != io::ErrorKind::ConnectionRefused {
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        io::stderr(),
+                        "shards-net: guest port {}'s datagrams to {:?} dropped: its dialer: {e}",
+                        key.0,
+                        (key.1, key.2)
+                    );
+                }
+                return;
             }
         };
-        let _ = f.sock.send(payload);
-        f.life.datagram(Instant::now(), false);
+        if self.udp.contains_key(&key) || !self.add_udp_flow(key, sock) {
+            return;
+        }
+        if let Some(f) = self.udp.get_mut(&key) {
+            for datagram in waiting {
+                let _ = f.sock.send(&datagram);
+                f.life.datagram(Instant::now(), false);
+            }
+        }
     }
 
     /// What UDP flow `id`'s host socket holds, to the guest.
@@ -2113,13 +2205,18 @@ impl<'r> Stack<'r> {
         if writable {
             let _ = dialer.flush();
         }
-        let (answers, there) = dialer.answers();
-        if !there && let Some(gone) = self.dialer.take() {
+        let answers = dialer.answers();
+        if !answers.there
+            && let Some(gone) = self.dialer.take()
+        {
             let had = std::mem::replace(&mut self.dialer_waits, poll::Interest::NONE);
             self.forget(gone.sock(), token::of(token::DIALER, 0, 0), had);
         }
-        for (d, got) in answers {
+        for (d, got) in answers.tcp {
             self.dialed(d, got);
+        }
+        for (key, got) in answers.udp {
+            self.udp_dialed(key, got);
         }
         self.wait_on_dialer();
     }
@@ -2467,6 +2564,8 @@ mod tests {
             udp: HashMap::new(),
             udp_ids: HashMap::new(),
             next_udp: 0,
+            #[cfg(windows)]
+            udp_waiting: HashMap::new(),
             poller: poll::Poller::new().unwrap(),
             timers: BinaryHeap::new(),
             blocked: VecDeque::new(),
@@ -2487,6 +2586,61 @@ mod tests {
             dialer: None,
             #[cfg(windows)]
             dialer_waits: poll::Interest::NONE,
+        }
+    }
+
+    /// A published port let go of has its listener forgotten before it closes, so that the
+    /// next socket given its value is waited on as its own: on Windows the poller keeps a
+    /// registration by its socket's value, and a listener let go of without that kept the
+    /// next listener given its value from ever being waited on (a joiner on the host's
+    /// network that never accepted, jupiter 7 of 20 runs). Eight in turn, each ready once a
+    /// connection waits on it.
+    #[test]
+    fn a_listener_let_go_of_leaves_its_socket_value_to_the_next() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        for round in 0u32..8 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let at = listener.local_addr().unwrap();
+            let index = stack.published.len();
+            stack.publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)]);
+            assert_eq!(stack.published.len(), index + 1, "round {round}: not taken");
+            stack.hosted.insert(round, index);
+            let waiting = std::net::TcpStream::connect(at).unwrap();
+            let listening = token::of(token::LISTENER, 0, u32::try_from(index).unwrap());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut events = Vec::new();
+            while !events.iter().any(|e: &poll::Event| e.token == listening) {
+                assert!(
+                    Instant::now() < deadline,
+                    "round {round}: its listener never ready"
+                );
+                stack
+                    .poller
+                    .wait(&mut events, Some(Duration::from_millis(100)))
+                    .unwrap();
+            }
+            // Waited on again, as the loop's next wait arms what a notice disarmed; then
+            // let go of, the last socket closed, so that the next one made is likeliest to
+            // be given its value.
+            stack.poller.wait(&mut events, Some(Duration::ZERO)).unwrap();
+            drop(waiting);
+            #[cfg(windows)]
+            let value = stack
+                .published
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(|(l, _)| l.raw_sock())
+                .unwrap();
+            stack.unpublish(round);
+            // Nothing kept of its value, whatever the next socket given it is.
+            #[cfg(windows)]
+            assert!(!stack.poller.keeps(value), "round {round}: its registration kept");
         }
     }
 
@@ -2987,7 +3141,7 @@ mod tests {
         let mut to_itself = port.to_be_bytes().to_vec();
         to_itself.splice(0..0, [127, 0, 0, 1]);
         for id in [0u32, 1] {
-            let ask = shards_ipc::recv(&theirs).unwrap().unwrap();
+            let ask = shards_ipc::read_message(&theirs).unwrap().unwrap();
             assert_eq!(ask.kind, kind::DIAL);
             assert_eq!(
                 ask.payload,
@@ -2997,7 +3151,7 @@ mod tests {
         }
         // The second answered first, refused; then the first, connected.
         let answer = |id: u32, kind: u8, rest: &[u8]| {
-            shards_ipc::send(&theirs, kind, &[&id.to_be_bytes()[..], rest].concat()).unwrap();
+            shards_ipc::write_message(&theirs, kind, &[&id.to_be_bytes()[..], rest].concat()).unwrap();
         };
         answer(1, kind::ERR, b"refused");
         let conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -3006,7 +3160,7 @@ mod tests {
         // Each answer whole before the stack looks: it takes both at once.
         std::thread::sleep(std::time::Duration::from_millis(100));
         stack.on_dialer(false);
-        let taken = shards_ipc::recv(&theirs).unwrap().unwrap();
+        let taken = shards_ipc::read_message(&theirs).unwrap().unwrap();
         assert_eq!(
             (taken.kind, taken.payload),
             (kind::TAKEN, 0u32.to_be_bytes().to_vec())

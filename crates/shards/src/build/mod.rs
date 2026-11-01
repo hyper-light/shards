@@ -45,6 +45,7 @@ mod exec;
 pub mod gc;
 mod gha;
 mod git;
+mod give;
 pub(crate) mod http;
 mod live;
 pub(crate) mod multi;
@@ -2524,12 +2525,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
     let exports = buildflags::parse_exports(parsed.many("output"))?;
     buildflags::check_iidfile(&exports, parsed.string("iidfile"))?;
-    let env = |name: &str| std::env::var_os(name).map(os_bytes);
-    let secrets = buildflags::store(
-        buildflags::parse_secrets(parsed.many("secret"))?,
-        &env,
-        u64::from(shards_abi::run::MAX_PAYLOAD),
-    )?;
+    let asked = buildflags::parse_secrets(parsed.many("secret"))?;
+    // On Windows a secret its daemon gave this build at a number (`src=/dev/fd/N`, D180's
+    // machine side) is read from what it gave there, as a Unix build reads the
+    // descriptor's path (crate::synced::given_secrets).
+    #[cfg(windows)]
+    let (asked, given) = crate::synced::given_secrets(asked, u64::from(shards_abi::run::MAX_PAYLOAD))?;
+    let env = |name: &str| {
+        #[cfg(windows)]
+        if let Some(held) = given.get(name) {
+            return Some(held.bytes().to_vec());
+        }
+        std::env::var_os(name).map(os_bytes)
+    };
+    let secrets = buildflags::store(asked, &env, u64::from(shards_abi::run::MAX_PAYLOAD))?;
     // --builder, or SHARDS_BUILDER, else BUILDX_BUILDER: shards' own builder, which
     // `default` names too; any other is none shards has.
     let builder_name = match parsed.string("builder") {
@@ -3923,10 +3932,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     return Err(fail(&v, &why));
                 }
                 if builder.is_none() {
-                    // Steps given this Mac's GPU by a CDI device of its render node have a
-                    // builder with the GPU, booting the kernel with its driver where none is
-                    // given (D145).
-                    let gpu = cfg!(target_os = "macos")
+                    // Steps given a GPU by a CDI device of its render node have a builder
+                    // with the GPU, booting the kernel with its driver where none is given
+                    // (D145).
+                    let gpu = crate::run::GIVES_GPU
                         && cdi_edits.values().any(|e| {
                             let render = |p: &str| p == crate::run::RENDER_NODE;
                             e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
@@ -3987,6 +3996,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
                     step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;
                     builder = Some(builder::Builder::start(&boot).map_err(|e| fail(&v, &e))?);
+                    // Asked to give back what it holds cold as its host runs short of memory
+                    // (D188), what its builders gave back said where the plain display's
+                    // lines go.
+                    if let Some(giver) = builder.as_ref().and_then(builder::Builder::giver) {
+                        let p = progress.borrow();
+                        give::watch(giver, p.live.is_none() && !p.quiet);
+                    }
                 }
                 let Some(b) = builder.as_mut() else {
                     return Err(fail(&v, "the builder is gone"));

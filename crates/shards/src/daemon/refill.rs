@@ -177,7 +177,12 @@ impl<D: Disk> Daemon<D> {
         }
         pool.starting += count;
         // It writes no file of the home: the daemon gives it its container's log (D30).
-        let mut args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
+        let mut args: Vec<OsString> = vec![
+            "restore".into(),
+            dir.into(),
+            "--warm".into(),
+            super::VM_LINK.into(),
+        ];
         if let Some(rootfs) = &pool.rootfs {
             let mut backing = rootfs.as_os_str().to_os_string();
             backing.push(":ro");

@@ -91,11 +91,21 @@ unsafe impl Pod for u64 {}
 /// The width of the volatile reads that look for a zero page.
 const WORD: usize = size_of::<u64>();
 
+/// The blocks a snapshot's memory file says it holds data in ([`GuestMemory::save`]): the
+/// least a guest reports free, Linux's pageblock of 4 KiB pages (D151), so that a restore
+/// maps from its template's file only the blocks its template's guest used, and gives the
+/// rest memory of its own, zeros, which a block its guest reports free gives back whole
+/// (Windows: [`platform::map_file_views`]).
+pub const DATA_BLOCK: usize = 2 << 20;
+
 #[derive(Debug)]
 struct Region {
     gpa: u64,
     len: usize,
     host: NonNull<u8>,
+    /// Where it is a file's, copy-on-write ([`GuestMemory::from_file`]): what gives its
+    /// pages back to the file's ([`platform::FileViews::give_back`]).
+    views: Option<platform::FileViews>,
 }
 
 impl Region {
@@ -367,7 +377,12 @@ impl GuestMemory {
             }
             // Ownership moves into `mem`, whose Drop releases it.
             let host = platform::reserve_ram(len)?;
-            mem.regions.push(Region { gpa, len, host });
+            mem.regions.push(Region {
+                gpa,
+                len,
+                host,
+                views: None,
+            });
         }
         mem.regions.sort_by_key(|r| r.gpa);
         Ok(mem)
@@ -409,7 +424,7 @@ impl GuestMemory {
         if self.regions.iter().any(|r| gpa < r.end() && r.gpa < end) {
             return Err(invalid("memory to plug overlaps guest RAM".into()));
         }
-        let host = platform::reserve_ram(len)?;
+        let host = platform::reserve_withheld(len)?;
         let words = (len as u64 / block).div_ceil(64);
         // Ownership moves into `self`, whose Drop releases it.
         self.hotplug = Some(Hotplug {
@@ -421,8 +436,6 @@ impl GuestMemory {
             ever: (0..words).map(|_| AtomicU64::new(0)).collect(),
             said_kept: AtomicBool::new(false),
         });
-        // SAFETY: the reservation just made, which nothing else references.
-        unsafe { platform::withhold(host, len) }?;
         Ok(self)
     }
 
@@ -500,10 +513,18 @@ impl GuestMemory {
     /// where on base pages it holds 9.0; its first beat comes 1.8 ms later, and a pooled
     /// run, whose working set is prefetched before its request, takes as long (PM M287).
     /// Where the platform cannot map a file into reserved memory, the file is read in.
+    /// `data`, the runs of the file's RAM that hold data as [`save`](Self::save) said them,
+    /// `(offset, len)`: where the platform maps those alone from the file, the rest is
+    /// memory of the guest's own, zeros, as the file holds there (Windows,
+    /// [`platform::map_file_views`]); none says all of it may.
     ///
     /// The file must hold all of them, and must not change while the VM runs: pages the
     /// guest has not yet touched come from it.
-    pub fn from_file(ranges: &[(u64, usize)], file: &File) -> io::Result<GuestMemory> {
+    pub fn from_file(
+        ranges: &[(u64, usize)],
+        file: &File,
+        data: Option<&[(u64, u64)]>,
+    ) -> io::Result<GuestMemory> {
         let mut mem = GuestMemory::anonymous(ranges)?;
         let total = mem.regions.iter().map(|r| r.len as u64).sum::<u64>();
         let have = file.metadata()?.len();
@@ -515,20 +536,30 @@ impl GuestMemory {
             ));
         }
         let mut offset = 0u64;
-        for r in &mem.regions {
+        for i in 0..mem.regions.len() {
+            let Some((gpa, len, host)) = mem.regions.get(i).map(|r| (r.gpa, r.len, r.host)) else {
+                break;
+            };
+            let runs = region_data(data, offset, len);
             // SAFETY: a whole region we just reserved: page-aligned, unmapped by any
             // hypervisor, unreferenced; region offsets in the file are page-aligned sums.
-            match unsafe { platform::map_file_private(file, offset, r.len, r.host) } {
-                Ok(()) => {
-                    platform::small_pages(r.host, r.len);
+            match unsafe { platform::map_file_views(file, offset, len, host, &runs) } {
+                Ok(views) => {
+                    platform::small_pages(host, len);
+                    if let Some(r) = mem.regions.get_mut(i) {
+                        r.views = Some(views);
+                    }
                     mem.file_backed = true;
                 }
+                // Its data read in, the rest zeros already.
                 Err(e) if e.kind() == io::ErrorKind::Unsupported => {
-                    mem.read_file(r.gpa, r.len, file, offset)?;
+                    for run in &runs {
+                        mem.read_file(gpa + run.start as u64, run.len(), file, offset + run.start as u64)?;
+                    }
                 }
                 Err(e) => return Err(e),
             }
-            offset += r.len as u64;
+            offset += len as u64;
         }
         Ok(mem)
     }
@@ -583,11 +614,17 @@ impl GuestMemory {
     /// machine whose vCPUs and devices are paused. After the RAM, the memory a virtio-mem
     /// device has plugged, run by run in the order of their addresses (D176): a restore
     /// plugs the same runs and reads them back ([`restore_plugged`](Self::restore_plugged)).
-    pub fn save(&self, file: &File) -> io::Result<()> {
+    /// The runs of the file's RAM that hold data, `(offset, len)` in order, each of whole
+    /// [`DATA_BLOCK`]s but at a region's end: what a restore maps from the file
+    /// ([`from_file`](Self::from_file)).
+    pub fn save(&self, file: &File) -> io::Result<Vec<(u64, u64)>> {
         let page = platform::page_size()?;
         let _held = self.access().map_err(io::Error::other)?;
         file.set_len(0)?;
+        // Its holes holes on every host (NTFS keeps none it is not told to).
+        platform::sparse(file)?;
         let mut offset = 0u64;
+        let mut data = Vec::new();
         for r in &self.regions {
             // Pages of anonymous RAM the guest never touched hold zeros, and reading them
             // would make the host give each one a page (audit D01): the OS says which, where
@@ -598,7 +635,12 @@ impl GuestMemory {
                 // SAFETY: the whole region, which this value owns.
                 unsafe { platform::untouched(r.host.as_ptr(), r.len, page) }?
             };
-            write_used(file, r, untouched.as_deref(), offset, page)?;
+            let used = write_used(file, r, untouched.as_deref(), offset, page)?;
+            data.extend(
+                blocks_of(&used, r.len)
+                    .into_iter()
+                    .map(|b| (offset + b.start as u64, b.len() as u64)),
+            );
             offset += r.len as u64;
         }
         if let Some(h) = &self.hotplug {
@@ -606,14 +648,20 @@ impl GuestMemory {
                 let len = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
                 let host = NonNull::new(h.host(gpa)).ok_or(io::ErrorKind::InvalidData)?;
                 // A view of the run, which owns nothing: the reservation is the region's.
-                let run = Region { gpa, len, host };
+                let run = Region {
+                    gpa,
+                    len,
+                    host,
+                    views: None,
+                };
                 // SAFETY: whole plugged blocks of the reservation, which the host was granted.
                 let untouched = unsafe { platform::untouched(host.as_ptr(), len, page) }?;
                 write_used(file, &run, untouched.as_deref(), offset, page)?;
                 offset += len as u64;
             }
         }
-        file.set_len(offset)
+        file.set_len(offset)?;
+        Ok(data)
     }
 
     /// Plugs `runs` again, the memory a snapshot's machine had plugged, and reads each back
@@ -694,7 +742,12 @@ impl GuestMemory {
             {
                 return Err(format!("{} overlaps other guest memory", named()));
             }
-            given.push(Region { gpa, len, host });
+            given.push(Region {
+                gpa,
+                len,
+                host,
+                views: None,
+            });
         }
         self.devices
             .set(given.into_boxed_slice())
@@ -990,11 +1043,10 @@ impl<'a> Access<'a> {
         let size = usize::try_from(end - start).map_err(|e| e.to_string())?;
         let host = self.mem.host_ptr(start, size).map_err(|e| e.to_string())?;
         let at = NonNull::new(host).ok_or("a null host address")?;
+        // Asked without taking memory, as this access holds every device's queues: taken
+        // here past a cgroup's `memory.high`, its kernel held them all (PM M391).
         // SAFETY: guest RAM of this memory, whole host pages of it.
-        let held = unsafe { platform::untouched(host, size, page as usize) };
-        if let Ok(Some(untouched)) = held
-            && untouched.iter().all(|u| *u)
-        {
+        if let Ok(Some(true)) = unsafe { platform::all_untouched(host, size, page as usize) } {
             return Ok(0);
         }
         // A working set being recorded keeps what the host held of it.
@@ -1004,13 +1056,23 @@ impl<'a> Access<'a> {
         {
             kept.keep(region, ((start - r.gpa) / page) as usize, host, size);
         }
+        // A file's RAM, a restore's, gives its pages back through its views: Windows gives
+        // a copy-on-write view's written pages back only as the view goes (PM M371, M375).
+        let views = (self.mem.regions.iter())
+            .find(|r| start >= r.gpa && end <= r.end())
+            .and_then(|r| r.views.as_ref());
         unmap(start, size)?;
         // SAFETY: whole host pages of guest RAM, which the guest holds free and no host
         // thread accesses under this access: a device's buffers are the guest's in use.
-        let discarded = unsafe { platform::discard(at, size) };
+        let discarded = unsafe {
+            match views {
+                Some(views) => views.give_back(at, size),
+                None => platform::discard(at, size).map(|()| size),
+            }
+        };
         map(host, start, size)?;
-        discarded.map_err(|e| e.to_string())?;
-        Ok(size as u64)
+        let given = discarded.map_err(|e| e.to_string())?;
+        Ok(given as u64)
     }
 
     /// The blocks `gpa..gpa+len` is, where it is whole blocks of the memory to plug.
@@ -1149,16 +1211,18 @@ unsafe fn is_zero(p: *const u8, len: usize) -> bool {
 /// Writes `run` of region `r` to `file`, which holds the region from `offset` on, by
 /// system calls given the guest address.
 /// Writes the pages of `r` the guest used to `file` at `offset`, one write for each run of
-/// them, all-zero pages and those `untouched` marks left as holes.
+/// them, all-zero pages and those `untouched` marks left as holes: the runs written, from
+/// the region's start, in order.
 fn write_used(
     file: &File,
     r: &Region,
     untouched: Option<&[bool]>,
     offset: u64,
     page: usize,
-) -> io::Result<()> {
+) -> io::Result<Vec<Range<usize>>> {
     // Where the run of used pages being gathered starts.
     let mut run = None;
+    let mut written = Vec::new();
     for (i, start) in (0..r.len).step_by(page).enumerate() {
         let skipped = untouched.is_some_and(|u| u.get(i).copied().unwrap_or(false));
         // SAFETY: the page at `start` lies in `r`, which is page-aligned.
@@ -1167,6 +1231,7 @@ fn write_used(
             (None, true) => run = Some(start),
             (Some(first), false) => {
                 write_run(file, r, first..start, offset)?;
+                written.push(first..start);
                 run = None;
             }
             _ => {}
@@ -1174,8 +1239,39 @@ fn write_used(
     }
     if let Some(first) = run {
         write_run(file, r, first..r.len, offset)?;
+        written.push(first..r.len);
     }
-    Ok(())
+    Ok(written)
+}
+
+/// The runs of whole [`DATA_BLOCK`]s, the last cut at `len`, that `used`'s runs, in order,
+/// of a region `len` long lie in, in order.
+fn blocks_of(used: &[Range<usize>], len: usize) -> Vec<Range<usize>> {
+    let mut blocks: Vec<Range<usize>> = Vec::new();
+    for run in used.iter().filter(|r| r.start < r.end) {
+        let start = run.start - run.start % DATA_BLOCK;
+        let end = run.end.div_ceil(DATA_BLOCK).saturating_mul(DATA_BLOCK).min(len);
+        match blocks.last_mut() {
+            Some(last) if last.end >= start => last.end = last.end.max(end),
+            _ => blocks.push(start..end),
+        }
+    }
+    blocks
+}
+
+/// The runs of a region at `offset` of its memory file, `len` long, that `data`'s runs of
+/// the file say hold data, from the region's start: all of it where none are said.
+fn region_data(data: Option<&[(u64, u64)]>, offset: u64, len: usize) -> Vec<Range<usize>> {
+    let Some(data) = data else {
+        return std::iter::once(0..len).collect();
+    };
+    let end = offset.saturating_add(len as u64);
+    data.iter()
+        .filter_map(|&(at, n)| {
+            let (start, stop) = (at.max(offset), at.saturating_add(n).min(end));
+            (start < stop).then(|| (start - offset) as usize..(stop - offset) as usize)
+        })
+        .collect()
 }
 
 fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Result<()> {
@@ -1492,7 +1588,7 @@ mod tests {
         let file = std::fs::File::create(dir.join("mem")).unwrap();
         m.save(&file).unwrap();
         let file = std::fs::File::open(dir.join("mem")).unwrap();
-        let back = GuestMemory::from_file(&ram, &file)
+        let back = GuestMemory::from_file(&ram, &file, None)
             .unwrap()
             .with_plug_region(hot, 4 * block as usize, block)
             .unwrap();
@@ -1542,7 +1638,7 @@ mod tests {
             "the RAM, then each run"
         );
         let file = std::fs::File::open(dir.join("mem")).unwrap();
-        let back = GuestMemory::from_file(&ram, &file)
+        let back = GuestMemory::from_file(&ram, &file, None)
             .unwrap()
             .with_plug_region(hot, 4 * block as usize, block)
             .unwrap();
@@ -1571,7 +1667,7 @@ mod tests {
             "block 1 was never plugged"
         );
         drop(a);
-        let other = GuestMemory::from_file(&ram, &file)
+        let other = GuestMemory::from_file(&ram, &file, None)
             .unwrap()
             .with_plug_region(hot, 4 * block as usize, block)
             .unwrap();
@@ -1597,7 +1693,7 @@ mod tests {
             .open(dir.join("mem"))
             .unwrap();
         m.save(&file).unwrap();
-        let restored = GuestMemory::from_file(&ranges, &file).unwrap();
+        let restored = GuestMemory::from_file(&ranges, &file, None).unwrap();
         let (_, host, len) = restored.regions().next().unwrap();
         let (start, end) = (host as usize, host as usize + len);
         let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
@@ -1642,8 +1738,8 @@ mod tests {
         m.save(&file).unwrap();
         assert_eq!(file.metadata().unwrap().len(), 6 * p as u64);
 
-        let a = GuestMemory::from_file(&ranges, &file).unwrap();
-        let b = GuestMemory::from_file(&ranges, &file).unwrap();
+        let a = GuestMemory::from_file(&ranges, &file, None).unwrap();
+        let b = GuestMemory::from_file(&ranges, &file, None).unwrap();
         let mut buf = [0u8; 5];
         a.access()
             .unwrap()
@@ -1669,7 +1765,7 @@ mod tests {
             .unwrap();
         assert_eq!(&buf, b"hello");
         drop((a, b));
-        let c = GuestMemory::from_file(&ranges, &file).unwrap();
+        let c = GuestMemory::from_file(&ranges, &file, None).unwrap();
         c.access()
             .unwrap()
             .read(0x8000_0000 + p as u64 + 5, &mut buf)
@@ -1739,7 +1835,7 @@ mod tests {
         }
         assert_eq!(data, (0..19).filter(|&page| used(page)).collect::<Vec<_>>());
 
-        let r = GuestMemory::from_file(&ranges, &file).unwrap();
+        let r = GuestMemory::from_file(&ranges, &file, None).unwrap();
         for page in 0..19 {
             let first = r.access().unwrap().read_obj::<u8>(gpa(page)).unwrap();
             let last = r
@@ -1751,6 +1847,122 @@ mod tests {
         }
         drop((m, r, file));
         let _ = std::fs::remove_file(path);
+    }
+
+    /// A restore's RAM, its runs of data a file's copy-on-write and the rest zeros, gives
+    /// what its guest reports free back (D151 on Windows, PM M375): its save says the runs
+    /// of whole blocks that hold data; restored, a stretch between them its guest wrote
+    /// reads zeros again, and a run its guest wrote whole reads the file's bytes again, or
+    /// zeros where the host maps fresh memory over it (macOS); and on Windows, where each
+    /// run is a view of its own, a run the range only partly covers keeps what its guest
+    /// wrote, and is not said given back.
+    #[test]
+    fn a_files_ram_gives_back_what_its_guest_frees() {
+        let block = DATA_BLOCK;
+        let base = 0x8000_0000u64;
+        let ranges = [(base, 6 * block)];
+        let saved = GuestMemory::anonymous(&ranges).unwrap();
+        // The file's bytes: 0x5a in each page's first byte of blocks 0, 1 and 4.
+        let p = page_size().unwrap();
+        for page in (0..2 * block).chain(4 * block..5 * block).step_by(p) {
+            saved
+                .access()
+                .unwrap()
+                .write(base + page as u64, &[0x5a])
+                .unwrap();
+        }
+        let dir = shards_testdir::TempDir::new("give-back").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dir.join("memory"))
+            .unwrap();
+        let data = saved.save(&file).unwrap();
+        let b = block as u64;
+        assert_eq!(data, vec![(0, 2 * b), (4 * b, b)], "its runs of data");
+        let m = GuestMemory::from_file(&ranges, &file, Some(&data)).unwrap();
+        assert!(m.file_backed);
+        let first = |at: usize| m.access().unwrap().read_obj::<u8>(base + at as u64).unwrap();
+        assert!(
+            (0..6 * block)
+                .step_by(p)
+                .all(|at| first(at) == saved_byte(at, block))
+        );
+        // The guest writes every page of blocks 1 to 4.
+        for page in (block..5 * block).step_by(p) {
+            m.access().unwrap().write(base + page as u64, &[0xa5]).unwrap();
+        }
+        let none = |_: u64, _: usize| Ok(());
+        let none_map = |_: *mut u8, _: u64, _: usize| Ok(());
+        let given = (m.access().unwrap())
+            .discard(base + b, 4 * b, none, none_map)
+            .unwrap();
+        // Blocks 2 and 3, between the runs, zeros again.
+        assert!(
+            (2 * block..4 * block).step_by(p).all(|at| first(at) == 0),
+            "a page of memory of its own given back still holds what the guest wrote"
+        );
+        // Block 4, a run whole, the file's again.
+        let filed = |at: usize| first(at) == 0x5a || (cfg!(target_os = "macos") && first(at) == 0);
+        assert!(
+            (4 * block..5 * block).step_by(p).all(filed),
+            "a page of the run given back still holds what the guest wrote"
+        );
+        if cfg!(windows) {
+            assert_eq!(given, 3 * b, "the run only partly given back said given back");
+            assert!(
+                (block..2 * block).step_by(p).all(|at| first(at) == 0xa5),
+                "the run the range only partly covers lost what the guest wrote"
+            );
+        } else {
+            assert_eq!(given, 4 * b);
+        }
+        // Block 0, never written, still reads the file's, and block 5 zeros.
+        assert!((0..block).step_by(p).all(|at| first(at) == 0x5a));
+        assert!((5 * block..6 * block).step_by(p).all(|at| first(at) == 0));
+    }
+
+    /// The byte a page at `at` of `a_files_ram_gives_back_what_its_guest_frees`'s file
+    /// starts with.
+    fn saved_byte(at: usize, block: usize) -> u8 {
+        if at < 2 * block || (4 * block..5 * block).contains(&at) {
+            0x5a
+        } else {
+            0
+        }
+    }
+
+    /// A save's runs of data are runs of whole blocks, the last cut at its region's end,
+    /// and a restore takes from them its region's own, from its start; a state that says
+    /// none maps a region from its file whole.
+    #[test]
+    fn runs_of_data_are_whole_blocks_and_each_region_takes_its_own() {
+        let mib = 1usize << 20;
+        let used = [
+            4096..8192,
+            3 * mib..3 * mib + 4096,
+            9 * mib..10 * mib,
+            10 * mib + 4096..10 * mib + 8192,
+        ];
+        assert_eq!(blocks_of(&used, 11 * mib), vec![0..4 * mib, 8 * mib..11 * mib]);
+        assert_eq!(
+            blocks_of(&used[..3], 11 * mib),
+            vec![0..4 * mib, 8 * mib..10 * mib]
+        );
+        assert!(blocks_of(&[], 11 * mib).is_empty());
+        let m = mib as u64;
+        let data = [(0, 4 * m), (8 * m, 2 * m), (12 * m, 2 * m)];
+        assert_eq!(
+            region_data(Some(&data), 2 * m, 8 * mib),
+            vec![0..2 * mib, 6 * mib..8 * mib]
+        );
+        assert_eq!(
+            region_data(Some(&data), 14 * m, 2 * mib),
+            Vec::<Range<usize>>::new()
+        );
+        assert_eq!(region_data(None, 2 * m, 8 * mib), vec![0..8 * mib]);
     }
 
     /// What working sets record on Linux (vm::x86_64::recorder): memory mapped from a
@@ -1780,7 +1992,7 @@ mod tests {
             .open(&path)
             .unwrap();
         saved.save(&file).unwrap();
-        let m = GuestMemory::from_file(&ranges, &file).unwrap();
+        let m = GuestMemory::from_file(&ranges, &file, None).unwrap();
         let (_, host, len) = m.regions().next().unwrap();
         assert_eq!(platform::mapped_pages(host, len).unwrap(), []);
 
@@ -1984,7 +2196,7 @@ mod tests {
         let mut reversed = sorted;
         reversed.reverse();
         for order in [&ranges[..], &sorted, &reversed] {
-            let r = GuestMemory::from_file(order, &file).unwrap();
+            let r = GuestMemory::from_file(order, &file, None).unwrap();
             let a = r.access().unwrap();
             for &(gpa, len) in &ranges {
                 assert_eq!(
@@ -2001,7 +2213,7 @@ mod tests {
         }
         // A file that cannot hold the guest's RAM is refused, not mapped past its end.
         file.set_len(6 * p as u64).unwrap();
-        assert!(GuestMemory::from_file(&ranges, &file).is_err());
+        assert!(GuestMemory::from_file(&ranges, &file, None).is_err());
     }
 
     /// A save into a file that held other bytes leaves none of them, in zero pages or past
@@ -2021,7 +2233,7 @@ mod tests {
             file.write_all(&vec![0xa5; garbage]).unwrap();
             m.save(&file).unwrap();
             assert_eq!(file.metadata().unwrap().len(), 5 * p as u64);
-            let r = GuestMemory::from_file(&ranges, &file).unwrap();
+            let r = GuestMemory::from_file(&ranges, &file, None).unwrap();
             let a = r.access().unwrap();
             let mut page = vec![0u8; p];
             for &(gpa, len) in &ranges {
@@ -2068,7 +2280,7 @@ mod tests {
                 assert_eq!(after[i], !touched, "page {i} after the save: the save touched it");
             }
         }
-        let r = GuestMemory::from_file(&[(0, len)], &file).unwrap();
+        let r = GuestMemory::from_file(&[(0, len)], &file, None).unwrap();
         let a = r.access().unwrap();
         let mut page = vec![0u8; p];
         for i in 0..64 {
@@ -2081,6 +2293,56 @@ mod tests {
         }
     }
 
+    /// Whether a range is untouched, asked without taking memory (`all_untouched`), is what
+    /// `untouched` says of each of its pages, past the first read of entries too: a fresh
+    /// range's are all untouched, and one page written leaves those before it untouched and
+    /// none of a range that holds it, however long.
+    #[test]
+    fn a_range_is_untouched_as_each_of_its_pages_is() {
+        let p = page_size().unwrap();
+        // Past one read's 512 entries twice, on base pages: a huge page would make one
+        // write's whole 2 MiB resident.
+        let pages = 1100usize;
+        let m = GuestMemory::anonymous(&[(0, pages * p)]).unwrap();
+        let host = m.regions().next().unwrap().1;
+        crate::platform::small_pages(NonNull::new(host).unwrap(), pages * p);
+        let all = |from: usize, n: usize| {
+            // SAFETY: pages of the region this test's memory owns.
+            unsafe { crate::platform::all_untouched(host.add(from * p), n * p, p) }.unwrap()
+        };
+        let each = |from: usize, n: usize| {
+            // SAFETY: as above.
+            unsafe { crate::platform::untouched(host.add(from * p), n * p, p) }.unwrap()
+        };
+        let agree = |from: usize, n: usize| {
+            assert_eq!(
+                all(from, n),
+                each(from, n).map(|u| u.iter().all(|u| *u)),
+                "pages {from}..{}",
+                from + n
+            );
+        };
+        agree(0, pages);
+        m.access().unwrap().write((1050 * p) as u64, &[1]).unwrap();
+        for (from, n) in [
+            (0, pages),
+            (0, 1050),
+            (0, 1051),
+            (1049, 2),
+            (1050, 1),
+            (1051, 49),
+            (600, 500),
+        ] {
+            agree(from, n);
+        }
+        if cfg!(target_os = "linux") {
+            assert_eq!(all(0, 1050), Some(true));
+            assert_eq!(all(0, pages), Some(false));
+            assert_eq!(all(1050, 1), Some(false));
+            assert_eq!(all(1051, 49), Some(true));
+        }
+    }
+
     /// Restored RAM reserves no commit, as booted RAM reserves none: Linux would charge a
     /// private writable mapping its whole size (PM M56). Strict overcommit, mode 2,
     /// charges it all the same.
@@ -2090,7 +2352,7 @@ mod tests {
         let len = 64 << 20;
         let file = tempfile("noreserve");
         file.set_len(len as u64).unwrap();
-        let r = GuestMemory::from_file(&[(0, len)], &file).unwrap();
+        let r = GuestMemory::from_file(&[(0, len)], &file, None).unwrap();
         assert!(r.file_backed);
         let start = format!("{:x}-", r.regions[0].host.as_ptr() as usize);
         let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();

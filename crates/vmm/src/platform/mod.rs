@@ -21,6 +21,25 @@ pub use unix::*;
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+#[cfg(windows)]
+mod windows_files;
+#[cfg(windows)]
+mod windows_process;
+#[cfg(windows)]
+mod windows_watch;
+#[cfg(windows)]
+pub use windows_files::{
+    append_new_in, create_in, make_sparse, names_in, newest_in, open_beneath, open_dir_beneath, open_in,
+    open_newest_beneath, open_newest_in, punch_hole, remove_in, sync_entries, unlink_in, version_of,
+    write_in,
+};
+#[cfg(windows)]
+pub use windows_process::{
+    Usage, descriptor_limit, file_table, launched, mapped_pages, open_descriptors, process_usage,
+    raise_descriptor_limit, thread_limit, user_processes,
+};
+#[cfg(windows)]
+pub use windows_watch::FileWatch;
 
 /// AF_UNIX stream sockets, std's on Unix and shards' own on Windows (PM M199).
 #[cfg(windows)]
@@ -30,6 +49,13 @@ pub use std::os::unix::net::{UnixListener, UnixStream};
 /// A socket as the vsock device's poller names it.
 #[cfg(unix)]
 pub type RawSocket = std::os::fd::RawFd;
+
+/// The stream of a share another server serves (D38): a Unix stream socket on Unix
+/// (`--slates-fs-fd`), a duplex named pipe on Windows (`--slates-fs-handle`, PM M340).
+#[cfg(unix)]
+pub type ShareStream = std::os::unix::net::UnixStream;
+#[cfg(windows)]
+pub type ShareStream = windows::PipeStream;
 
 /// A socket's [`RawSocket`], on every host.
 pub trait AsRawSocket {
@@ -67,16 +93,15 @@ impl AsRawSocket for UnixListener {
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
-#[cfg(unix)]
 mod pressure;
-#[cfg(unix)]
 pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
 
 mod granted;
-#[cfg(unix)]
-pub use granted::open_beneath_input;
+#[cfg(windows)]
+pub use granted::input_file_id;
 pub use granted::{
-    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_input, set_dialer,
+    Kept, Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix,
+    open_beneath_input, open_input, open_newest_beneath_input, set_dialer, set_stager, stager,
 };
 
 #[cfg(target_os = "linux")]
@@ -139,6 +164,11 @@ pub fn read_beneath(root: &std::path::Path, rel: &[&str], max: u64) -> io::Resul
     read_bounded(open_beneath_input(root, rel), &rel.join("/"), max)
 }
 
+/// [`read_beneath`] of the file's newest version ([`open_newest_beneath_input`]).
+pub fn read_newest_beneath(root: &std::path::Path, rel: &[&str], max: u64) -> io::Result<Option<Vec<u8>>> {
+    read_bounded(open_newest_beneath_input(root, rel), &rel.join("/"), max)
+}
+
 /// [`read_in`] for a VM's input at `path` ([`open_input`]).
 pub fn read_input(path: &std::path::Path, max: u64) -> io::Result<Option<Vec<u8>>> {
     read_bounded(open_input(path, false), &path.display().to_string(), max)
@@ -169,15 +199,10 @@ fn read_bounded(opened: io::Result<File>, name: &str, max: u64) -> io::Result<Op
 
 /// Makes the entries of the directory at `path` durable: the renames into it survive a
 /// crash once this returns. Linux takes an fsync of the directory itself (fsync(2)); macOS
-/// takes `sync_durable`'s flush, whose `F_FULLFSYNC` directories accept (PM M46).
+/// takes `sync_durable`'s flush, whose `F_FULLFSYNC` directories accept (PM M46); Windows
+/// takes FlushFileBuffers of a handle to it that may write (windows_files.rs).
 pub fn sync_dir(path: &std::path::Path) -> io::Result<()> {
-    #[cfg(unix)]
-    return sync_entries(&File::open(path)?);
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    sync_entries(&open_dir(path)?)
 }
 
 /// Whether letting go of a file written through a shared mapping, its last writable
@@ -264,10 +289,15 @@ pub fn copy_used(from: &File, to: &File, len: u64) -> io::Result<()> {
 
 /// Copies `ranges` of `from`'s first `len` bytes, `(offset, length)` as [`data_ranges`]
 /// gives them, into `to`, which is `len` bytes long after: of them only the blocks not all
-/// zeros.
+/// zeros. `to` sparse first, where a file system keeps no hole it is not told to: NTFS takes
+/// every cluster up to a file's end as it is extended unless the file is sparse (PM M349),
+/// and four saves of a run's swap on windows-2025 took its temp disk's 29 GB at once. A
+/// process that may make no FSCTL (a confined VM, D141) is handed files sparse already, and
+/// one that is not is refused here rather than taking its length of the disk.
 pub fn copy_ranges(from: &File, to: &File, len: u64, ranges: &[(u64, u64)]) -> io::Result<()> {
     const CHUNK: usize = 1 << 20;
     const BLOCK: usize = 4 << 10;
+    sparse(to)?;
     to.set_len(0)?;
     let mut buf = vec![0u8; CHUNK];
     for &(start, n) in ranges {
@@ -381,7 +411,6 @@ mod tests {
     #[test]
     fn a_poller_names_what_is_ready() {
         use std::io::Read as _;
-        use std::os::fd::AsFd as _;
         use std::os::unix::net::UnixStream;
         use std::time::{Duration, Instant};
         // Its 150 pairs past the 256 descriptors a macOS terminal starts a process with.
@@ -389,8 +418,8 @@ mod tests {
         let poller = Poller::new().unwrap();
         let (mut a, a_peer) = UnixStream::pair().unwrap();
         let (b, b_peer) = UnixStream::pair().unwrap();
-        poller.add(a_peer.as_fd(), 7).unwrap();
-        poller.add(b_peer.as_fd(), 9).unwrap();
+        poller.add(&a_peer, 7).unwrap();
+        poller.add(&b_peer, 9).unwrap();
         let mut ready = Vec::new();
         let t0 = Instant::now();
         poller.wait(&mut ready, Some(Duration::from_millis(50))).unwrap();
@@ -409,13 +438,13 @@ mod tests {
         b.shutdown(std::net::Shutdown::Write).unwrap();
         poller.wait(&mut ready, None).unwrap();
         assert_eq!(ready, [9]);
-        poller.remove(b_peer.as_fd()).unwrap();
+        poller.remove(&b_peer).unwrap();
         poller.wait(&mut ready, Some(Duration::ZERO)).unwrap();
         assert!(ready.is_empty());
         // More ready than one wait holds: each comes, as what is read stops being ready.
         let pairs: Vec<(UnixStream, UnixStream)> = (0..150).map(|_| UnixStream::pair().unwrap()).collect();
         for (i, (_, theirs)) in pairs.iter().enumerate() {
-            poller.add(theirs.as_fd(), 100 + i as u64).unwrap();
+            poller.add(theirs, 100 + i as u64).unwrap();
         }
         for (mut ours, _) in pairs.iter().map(|(o, t)| (o, t)) {
             ours.write_all(b"y").unwrap();

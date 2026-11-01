@@ -1,11 +1,11 @@
 //! The Engine API (D170), end to end on real microVMs: what programs that make sandboxes
-//! ask of a container engine, asked of `engine.sock` in a home as they ask it, raw, and by
-//! the docker CLI where this host has one (its `DOCKER_HOST` the socket, its config an
-//! empty directory, so that it reaches nothing else). Real VMs, booted from SHARDS_KERNEL
-//! and SHARDS_INIT, which the daemon has from the client that started it; the image comes
-//! from a loopback registry (tests/common, `served`), and its entrypoint is the test guest.
+//! ask of a container engine, asked of `engine.sock` in a home as they ask it (on Windows
+//! the named pipe its `engine.pipe` names), raw, and by the docker CLI where this host has
+//! one (its `DOCKER_HOST` the socket or pipe, its config an empty directory, so that it
+//! reaches nothing else). Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT, which the
+//! daemon has from the client that started it; the image comes from a loopback registry
+//! (tests/common, `served`), and its entrypoint is the test guest.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -17,6 +17,7 @@ mod common;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
@@ -26,6 +27,8 @@ use common::{
     Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, served_counting, tar,
 };
 use serde_json::{Value, json};
+#[cfg(windows)]
+use shards_ipc::Stream as UnixStream;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// A client's call past this is taken for hung, and fails its test with what it said
@@ -112,9 +115,33 @@ struct Api {
     reader: BufReader<UnixStream>,
 }
 
+/// A connection to the engine of `home`'s daemon: its socket, or on Windows the named pipe
+/// its `engine.pipe` names, as Docker's clients reach their engine there.
+fn connect(home: &Path) -> UnixStream {
+    #[cfg(unix)]
+    return UnixStream::connect(home.join("engine.sock")).unwrap();
+    #[cfg(windows)]
+    {
+        let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+        UnixStream::connect(name.trim()).unwrap()
+    }
+}
+
+/// `DOCKER_HOST` for the engine of `home`'s daemon.
+fn docker_host(home: &Path) -> String {
+    #[cfg(unix)]
+    return format!("unix://{}", home.join("engine.sock").display());
+    #[cfg(windows)]
+    {
+        let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+        let pipe = name.trim().strip_prefix(r"\\.\pipe\").unwrap();
+        format!("npipe:////./pipe/{pipe}")
+    }
+}
+
 impl Api {
     fn new(home: &Path) -> Api {
-        let conn = UnixStream::connect(home.join("engine.sock")).unwrap();
+        let conn = connect(home);
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
         let reader = BufReader::new(conn.try_clone().unwrap());
         Api { conn, reader }
@@ -651,7 +678,8 @@ fn a_volumes_data_outlives_the_microvm_that_wrote_it() {
     let in_use = api.call("DELETE", "/volumes/work", None);
     assert_eq!(in_use.status, 409, "{}", in_use.text());
     assert_eq!(api.call("DELETE", "/containers/reader?force=1", None).status, 204);
-    assert_eq!(api.call("DELETE", "/volumes/work", None).status, 204);
+    let removed = api.call("DELETE", "/volumes/work", None);
+    assert_eq!(removed.status, 204, "{}", removed.text());
     // Unused, pruned with `all`.
     assert_eq!(
         api.call("POST", "/volumes/create", Some(json!({"Name": "spare"})))
@@ -1224,14 +1252,21 @@ fn lists_filter_and_info_counts() {
 }
 
 /// A command run in a running container by exec: made, started on the connection taken
-/// over, its streams as frames, its status kept for its client to read; the container
-/// then killed and removed.
+/// over, its streams as frames, its status kept for its client to read, and its events,
+/// `exec_create` as it is made, `exec_start` and `exec_die`, said with the ID its client
+/// has, as dockerd says them (moby daemon/exec.go, daemon/monitor.go); the container then
+/// killed and removed.
 #[test]
 fn a_command_runs_in_a_running_container_by_exec() {
     let Some((home, image)) = home("eng-exec") else {
         return;
     };
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let mut api = Api::new(&home);
+    let mut execs = Vec::new();
     let made = api.call(
         "POST",
         "/containers/create?name=held",
@@ -1264,6 +1299,7 @@ fn a_command_runs_in_a_running_container_by_exec() {
         );
         assert_eq!(exec.status, 201, "{}", exec.text());
         let exec_id = exec.json()["Id"].as_str().unwrap().to_string();
+        execs.push((exec_id.clone(), code));
         let (status, _, streamed) = Api::new(&home).upgraded(
             &format!("/exec/{exec_id}/start"),
             Some(json!({"Detach": false, "Tty": false})),
@@ -1319,6 +1355,38 @@ fn a_command_runs_in_a_running_container_by_exec() {
     assert!(refused.text().contains("/no/such/command"), "{}", refused.text());
     let unknown = api.call("GET", "/exec/nothing/json", None);
     assert_eq!(unknown.status, 404, "{}", unknown.text());
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1;
+    let events = api.call("GET", &format!("/events?since={since}&until={until}"), None);
+    assert_eq!(events.status, 200, "{}", events.text());
+    let said: Vec<Value> = events
+        .text()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    for (exec_id, code) in &execs {
+        let of_it: Vec<String> = said
+            .iter()
+            .filter(|e| e["Actor"]["Attributes"]["execID"] == json!(exec_id))
+            .map(|e| {
+                let action = e["Action"].as_str().unwrap();
+                let action = action.split_once(':').map_or(action, |(a, _)| a);
+                match e["Actor"]["Attributes"]["exitCode"].as_str() {
+                    Some(c) => format!("{action} {c}"),
+                    None => action.to_string(),
+                }
+            })
+            .collect();
+        assert_eq!(
+            of_it,
+            ["exec_create", "exec_start", &format!("exec_die {code}")],
+            "{exec_id} in {}",
+            events.text()
+        );
+    }
     let killed = api.call("POST", "/containers/held/kill", None);
     assert_eq!(killed.status, 204, "{}", killed.text());
     let waited = api.call("POST", "/containers/held/wait", None);
@@ -1528,7 +1596,7 @@ fn images_are_tagged_traced_removed_and_pruned() {
     assert_eq!(df["Containers"][0]["Names"], json!(["/user"]), "{df}");
     assert!(df["LayersSize"].as_i64().unwrap() > 0, "{df}");
     // Where this build has snapshots, the run saved its image's template.
-    assert_eq!(saved > 0, shards_vmm::vm::SNAPSHOTS, "{saved} templates");
+    assert_eq!(saved > 0, common::pools(), "{saved} templates");
     match saved {
         0 => assert_eq!(df["TemplateUsage"], json!({}), "{df}"),
         n => assert_eq!(df["TemplateUsage"]["TotalCount"], json!(n), "{df}"),
@@ -2031,7 +2099,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
     let Some((home, image)) = home("eng-cp") else {
         return;
     };
-    if !shards_vmm::vm::SNAPSHOTS {
+    if !common::pools() {
         return;
     }
     let config = home.join("docker-config");
@@ -2039,7 +2107,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
     // No credential helper on PATH: what the CLI keeps stays in the test's config.
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let docker = |args: &[&str]| {
         let out = common::output_within(
             std::process::Command::new(&docker)
@@ -2118,7 +2186,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     // login keeps goes in the test's config, never in this host's keychain.
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let docker_with = |args: &[&str], set: &[(&str, &str)]| {
         let out = common::output_within(
             std::process::Command::new(&docker)
@@ -3710,6 +3778,7 @@ fn a_compose_project_runs_in_its_microvms_own_engine() {
     std::fs::create_dir_all(&project).unwrap();
     let client = project.join("docker-compose");
     std::fs::copy(compose, &client).unwrap();
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -3981,7 +4050,7 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     .unwrap();
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let docker = |args: &[&str]| {
         let out = common::output_within(
             std::process::Command::new(&docker)
@@ -4036,12 +4105,12 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     );
 }
 
-/// `name` on PATH.
+/// `name` on PATH, the host's executable's suffix after it.
 fn which(name: &str) -> Result<std::path::PathBuf, ()> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join(name))
+        .map(|d| d.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
         .find(|p| p.is_file())
         .ok_or(())
 }

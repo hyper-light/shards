@@ -134,6 +134,12 @@ fn address(given: &str) -> Result<To, String> {
             if path.is_empty() {
                 return Err(said("a socket's path, after unix://"));
             }
+            // On Windows a drive's path, as a file URL names one (RFC 8089):
+            // unix:///C:/logs/fluentd.sock.
+            #[cfg(windows)]
+            if path.get(1..2) == Some(":") {
+                return Ok(To::Unix(PathBuf::from(path)));
+            }
             Ok(To::Unix(PathBuf::from(format!("/{path}"))))
         }
         "tcp" | "tls" => {

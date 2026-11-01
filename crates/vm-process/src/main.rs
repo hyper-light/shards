@@ -26,7 +26,6 @@ mod spec;
 mod terminal;
 #[path = "../../shards/src/vm_run.rs"]
 mod vm_run;
-#[cfg(unix)]
 #[path = "../../shards/src/warm.rs"]
 mod warm;
 #[path = "../../shards/src/workload.rs"]

@@ -6,13 +6,19 @@
 //! SYSTEM_RESET come back as system events. A trapped device access completes in the
 //! kernel, which takes a read's data from the run's exit as the vCPU enters again.
 
+mod gic;
+mod prefetch;
+mod state;
+
+pub use state::VcpuState;
+
 use std::os::fd::RawFd;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{Error, Kicker, Result, Slots, Thread, call, install_kick_handler, kvm, sys};
-use crate::arch::aarch64::state::VcpuState;
 use crate::arch::aarch64::{Entry, layout, sysreg};
 use crate::hv::{Exit, Io, Touch};
+use crate::sync::lock;
 
 /// Working sets' pages: the host's, as on x86_64.
 pub const PAGE: u64 = 4 << 10;
@@ -276,6 +282,10 @@ pub struct Vm {
     its: OnceLock<sys::DeviceFd>,
     /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
     pub(super) vfio: OnceLock<sys::DeviceFd>,
+    /// Each vCPU, by index, as it is made, not kept by the VM: what a restore reaches from
+    /// the thread that finishes the machine, while the vCPUs' own threads wait (the
+    /// prefetch, [`Vm::prefetch`]).
+    vcpus: Mutex<Vec<sys::WeakVcpu>>,
 }
 
 impl Vm {
@@ -328,6 +338,7 @@ impl Vm {
             gic: OnceLock::new(),
             its: OnceLock::new(),
             vfio: OnceLock::new(),
+            vcpus: Mutex::new(Vec::new()),
         })
     }
 
@@ -424,6 +435,7 @@ impl Vm {
                 "vCPU {index}: KVM's MPIDR {given:#x}, where the devicetree says {mpidr:#x}"
             )));
         }
+        lock(&self.vcpus).push(fd.weak());
         let thread = super::this_thread();
         Ok(Vcpu {
             kicker: Kicker {
@@ -435,19 +447,73 @@ impl Vm {
         })
     }
 
-    /// The GIC's state, which no snapshot keeps yet: arm64 KVM VMs are not snapshotted
-    /// (vm::SNAPSHOTS).
+    /// The GIC's state, its registers as KVM gives them (`gic`): every vCPU must be out of
+    /// the guest and out of every other call of KVM's, as KVM takes them all to read it
+    /// (arm-vgic-v3.rst: EBUSY). A machine with an ITS saves none: its tables are in guest
+    /// memory and its state the ITS's own.
     pub fn save_gic(&self) -> Result<Vec<u8>> {
-        Err(not_snapshotted())
+        if self.its.get().is_some() {
+            return Err(Error::Guest(
+                "a machine with an ITS is not snapshotted: its translation tables are the ITS's".into(),
+            ));
+        }
+        let gic = self
+            .gic
+            .get()
+            .ok_or_else(|| Error::Guest("the VM has no GIC".into()))?;
+        gic::save(gic, &self.mpidrs)
     }
 
-    pub fn restore_gic(&self, _state: &[u8]) -> Result<()> {
-        Err(not_snapshotted())
+    /// Restores [`save_gic`](Self::save_gic)'s state into this VM's GIC, initialized once
+    /// every vCPU exists ([`Vm::vcpus_created`]), before any runs the guest, with every vCPU
+    /// out of every call of KVM's.
+    pub fn restore_gic(&self, state: &[u8]) -> Result<()> {
+        let gic = self
+            .gic
+            .get()
+            .ok_or_else(|| Error::Guest("the VM has no GIC".into()))?;
+        gic::restore(gic, state)
+    }
+
+    /// Runs the prefetch program on vCPU 0 over `pages` (`prefetch`), `memory` saying of
+    /// each page whether it is guest memory, and writable, then restores `first`, vCPU 0's
+    /// state, over all it set. For a restore once every vCPU exists, the GIC initialized
+    /// ([`Vm::vcpus_created`]), from a thread that is not vCPU 0's, which waits meanwhile.
+    /// Returns how many pages it touched; its failure is the VM's, as HVF's is.
+    pub fn prefetch(
+        &self,
+        pages: &[Touch],
+        first: &VcpuState,
+        memory: impl Fn(u64) -> Option<bool>,
+    ) -> Result<usize> {
+        let mut fd = lock(&self.vcpus)
+            .first()
+            .and_then(sys::WeakVcpu::upgrade)
+            .ok_or_else(|| Error::Guest("vCPU 0 is gone".into()))?;
+        let touched = prefetch::run(self, &mut fd, pages, memory);
+        let restored = state::restore(&fd, first);
+        let touched = touched?;
+        restored.map(|()| touched)
     }
 }
 
-fn not_snapshotted() -> Error {
-    Error::Guest("a VM on arm64 KVM is not snapshotted yet".into())
+/// The guest's virtual counter, which a restore sets for the whole VM, once, as its vCPUs
+/// are released (KVM_REG_ARM_TIMER_CNT, of any of them, sets the VM's one offset): a
+/// handle of vCPU 0's that does not keep it.
+#[derive(Debug, Clone)]
+pub struct Counter(sys::WeakVcpu);
+
+impl Counter {
+    /// Sets the guest's virtual counter to `value` now, every vCPU's: the counter goes on
+    /// from where the snapshot's guest left it. Nothing where the vCPU has gone.
+    pub fn set(&self, value: u64) -> Result<()> {
+        match self.0.upgrade() {
+            Some(fd) => fd
+                .set_reg(sys::REG_TIMER_CNT, value)
+                .map_err(call("KVM_SET_ONE_REG")),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The host counter guest counters are offset from, now: CNTVCT_EL0, which Linux gives
@@ -501,23 +567,27 @@ impl Vcpu {
             .collect()
     }
 
+    /// Captures the vCPU's state (`state`). Call on the owning thread, with the vCPU out of
+    /// the guest.
     pub fn save_state(&self) -> Result<VcpuState> {
-        Err(not_snapshotted())
+        state::save(&self.fd)
     }
 
-    pub fn restore_state(&mut self, _state: &VcpuState) -> Result<()> {
-        Err(not_snapshotted())
+    /// Loads captured state into this freshly created vCPU. The guest counter is set for
+    /// the whole VM as the vCPUs are released ([`Counter`]).
+    pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
+        state::restore(&self.fd, st)
     }
 
+    /// The guest's virtual counter now.
     pub fn guest_counter(&self) -> Result<u64> {
-        Err(not_snapshotted())
+        self.fd
+            .get_reg(sys::REG_TIMER_CNT)
+            .map_err(call("KVM_GET_ONE_REG"))
     }
 
-    pub fn set_counter_offset(&mut self, _offset: u64) -> Result<()> {
-        Err(not_snapshotted())
-    }
-
-    pub fn prefetch(&mut self, _vm: &Vm, _pages: &[Touch]) -> Result<usize> {
-        Err(not_snapshotted())
+    /// What sets the guest's counter at the release ([`Counter`]).
+    pub fn counter(&self) -> Counter {
+        Counter(self.fd.weak())
     }
 }

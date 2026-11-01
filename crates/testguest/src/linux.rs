@@ -35,12 +35,14 @@ pub fn main() {
             "plug-snapshot" => plug_snapshot(),
             "unplug-cost" => unplug_cost(),
             "memory" => memory_report(),
+            "profile" => profile_report(),
             "limits" => limits(),
             "pci" => pci(),
             "pci-irq" => pci_irq(),
             "pci-dma" => pci_dma(),
             "host" => host(),
             "daemon" => daemon(),
+            "e2e" => e2e(),
             "slates_fs" => slates_fs(),
             "slates_fs_dax" => slates_fs_dax(),
             other => Err(format!("unknown test {other:?}")),
@@ -124,8 +126,12 @@ fn slates_fs() -> Result<(), String> {
 /// (`SLATES-DAX STORED`); the host then reads the volume and rewrites the file through another
 /// path, keeping the store and changing other bytes, and slates writes that change into the map
 /// before the host's write returns. So the guest waits, with no deadline of its own (the host
-/// bounds the test), for both to show in its same map. The bytes and offsets are those of
-/// crates/shards/tests/slates_fs.rs.
+/// bounds the test), for both to show in its same map. It then says so (`SLATES-DAX SEEN`), the
+/// host cuts the file inside this range at a length no page ends at, and the rest of the page that
+/// holds the new end must read zeros through the same map, the store and the change before it kept:
+/// a file's tail past its end, as every host's window shows it (slates zeroes what a cut takes). Pages
+/// wholly past the end are not touched, since the guest's own kernel answers those `SIGBUS` (POSIX's
+/// rule, not the window's). The bytes and offsets are those of crates/shards/tests/slates_fs.rs.
 fn slates_fs_dax() -> Result<(), String> {
     use std::os::fd::AsRawFd;
     const BIG: &str = "/mnt/big";
@@ -135,6 +141,8 @@ fn slates_fs_dax() -> Result<(), String> {
     const GUEST: &[u8] = b"stored by a shards guest through its DAX map\n";
     const HOST_AT: usize = 1 << 20;
     const HOST: &[u8] = b"written by the host through slates while the guest held its map\n";
+    // Where the host cuts the file: past the change, inside the first range, at no page's end.
+    const CUT: usize = (3 << 19) + 100;
     std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
     let (src, target, fs, opts) = (
         cstr("shards0")?,
@@ -207,6 +215,26 @@ fn slates_fs_dax() -> Result<(), String> {
                 "host bytes {:?}, own store {:?}",
                 String::from_utf8_lossy(&host),
                 String::from_utf8_lossy(&own)
+            ))
+        }
+    });
+    let _ = writeln!(io::stdout(), "SLATES-DAX SEEN");
+    // SAFETY: a pure query of the page size.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .map_err(|_| "the page size".to_string())?;
+    let tail_end = CUT.div_ceil(page) * page;
+    waiting("the cut's tail to read zeros", || {
+        let tail = read(CUT, tail_end - CUT);
+        let (host, own) = (read(HOST_AT, HOST.len()), read(GUEST_AT, GUEST.len()));
+        if tail.iter().all(|byte| *byte == 0) && host == HOST && own == GUEST {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} of the tail's {} bytes not zero, host bytes kept {}, own store kept {}",
+                tail.iter().filter(|byte| **byte != 0).count(),
+                tail.len(),
+                host == HOST,
+                own == GUEST
             ))
         }
     });
@@ -2163,6 +2191,212 @@ fn daemon() -> Result<(), String> {
     Ok(())
 }
 
+/// A guest that is a KVM host of its architecture's Linux running shards' own E2E test
+/// binaries (D154's test path, boot.rs `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`):
+/// a host as Linux has one, its pseudo-terminals, cgroups and loopback up, where each line
+/// of /e2e/run names a binary and its arguments, run in turn with /e2e/env's variables
+/// (`KEY=VALUE` lines) and no others. Each line a binary writes is printed as it comes,
+/// after `E2E: ` (its stderr's after `E2E stderr: `), then its status, `E2E STATUS
+/// <binary> <status>`; the test passes where every binary ended well.
+fn e2e() -> Result<(), String> {
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    // KVM's counters of each VM, which tests read for evidence (`common::kvm_counters`),
+    // where the kernel has debugfs: no test needs them to pass.
+    for (src, target, fs, data, needed) in [
+        ("devpts", "/dev/pts", "devpts", "ptmxmode=0666", true),
+        ("cgroup2", "/sys/fs/cgroup", "cgroup2", "", true),
+        ("debugfs", "/sys/kernel/debug", "debugfs", "", false),
+    ] {
+        let mounted = std::fs::create_dir_all(target)
+            .map_err(|e| format!("{target}: {e}"))
+            .and_then(|()| {
+                let c = |s: &str| CString::new(s).map_err(|e| e.to_string());
+                let (src, at, fs, data) = (c(src)?, c(target)?, c(fs)?, c(data)?);
+                // SAFETY: NUL-terminated strings, a data string of the file system's options.
+                match unsafe { libc::mount(src.as_ptr(), at.as_ptr(), fs.as_ptr(), 0, data.as_ptr().cast()) }
+                {
+                    0 => Ok(()),
+                    _ => Err(format!("mount {target}: {}", io::Error::last_os_error())),
+                }
+            });
+        if let Err(e) = mounted
+            && needed
+        {
+            return Err(e);
+        }
+    }
+    loopback_up()?;
+    // As a host's init, PID 1 reaps every process orphaned to it: a daemon that detached and
+    // has ended is then gone, not a zombie its test takes for alive, as kill(2) finds one.
+    // The reaper takes the test binaries' statuses too, and hands them on.
+    let (reaped, statuses) = std::sync::mpsc::channel::<(libc::pid_t, libc::c_int)>();
+    thread::Builder::new()
+        .name("reaper".into())
+        .spawn(move || {
+            loop {
+                let mut status = 0;
+                // SAFETY: waitpid(2) into a local.
+                let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
+                if pid > 0 {
+                    if reaped.send((pid, status)).is_err() {
+                        return;
+                    }
+                } else if io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+                    // No child yet, or none between binaries.
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        })
+        .map_err(|e| format!("the reaper: {e}"))?;
+    let read = |path: &str| std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"));
+    let env: Vec<(String, String)> = read("/e2e/env")?
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let mut failed = Vec::new();
+    for line in read("/e2e/run")?.lines() {
+        let mut words = line.split_whitespace();
+        let Some(binary) = words.next() else {
+            continue;
+        };
+        let spawned = std::process::Command::new(binary)
+            .args(words)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(e) => {
+                let _ = writeln!(io::stdout(), "E2E STATUS {binary} not started: {e}");
+                failed.push(binary.to_string());
+                continue;
+            }
+        };
+        let relay = |from: Option<Box<dyn io::Read + Send>>, prefix: &'static str| {
+            move || {
+                let Some(from) = from else {
+                    return;
+                };
+                for line in io::BufRead::lines(io::BufReader::new(from)).map_while(Result::ok) {
+                    let _ = writeln!(io::stdout().lock(), "{prefix}{line}");
+                }
+            }
+        };
+        let out = child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn io::Read + Send>);
+        let err = child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn io::Read + Send>);
+        let pid = libc::pid_t::try_from(child.id()).map_err(|e| format!("{binary}: {e}"))?;
+        let status = thread::scope(|s| {
+            s.spawn(relay(out, "E2E: "));
+            s.spawn(relay(err, "E2E stderr: "));
+            statuses
+                .iter()
+                .find(|&(reaped, _)| reaped == pid)
+                .map(|(_, status)| status)
+        })
+        .ok_or_else(|| format!("{binary}: the reaper ended"))?;
+        let said = if libc::WIFEXITED(status) {
+            format!("exit status: {}", libc::WEXITSTATUS(status))
+        } else if libc::WIFSIGNALED(status) {
+            format!("signal: {}", libc::WTERMSIG(status))
+        } else {
+            format!("status {status:#x}")
+        };
+        let _ = writeln!(io::stdout(), "E2E STATUS {binary} {said}");
+        if !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0) {
+            failed.push(binary.to_string());
+        }
+        // What it left running ends before the next starts, as its runner's would with
+        // it: a daemon idling, a microVM it left going, which would take the next binary's
+        // CPUs, and the guest's power-off with KVM's vCPUs in it.
+        end_the_rest();
+        // What the binaries before left of this host's memory, its tmpfs's among it: what
+        // the next one runs with.
+        let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let fields: Vec<&str> = meminfo
+            .lines()
+            .filter(|l| {
+                ["MemFree:", "MemAvailable:", "Shmem:", "AnonPages:"]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
+            .collect();
+        let _ = writeln!(io::stdout(), "E2E MEMORY after {binary}: {}", fields.join(", "));
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("these failed: {}", failed.join(" ")))
+    }
+}
+
+/// Ends every process but PID 1 (kill(2) of -1) and waits, ten seconds at most, until none
+/// is left running: a process's /proc entry with a command line, which a kernel thread's
+/// and a zombie's lack.
+fn end_the_rest() {
+    // SAFETY: kill(2) of every process PID 1 may signal, which is all but itself.
+    unsafe { libc::kill(-1, libc::SIGKILL) };
+    let running = || {
+        std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n != "1" && n.parse::<u32>().is_ok())
+            })
+            .any(|e| std::fs::read(e.path().join("cmdline")).is_ok_and(|c| !c.is_empty()))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Brings the loopback interface up, as a host has it, with 127.0.0.1/8 and ::1
+/// (netdevice(7), SIOCSIFFLAGS).
+fn loopback_up() -> Result<(), String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let failed = |what: &str| format!("bringing up lo: {what}: {}", io::Error::last_os_error());
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(failed("socket"));
+    }
+    // SAFETY: a descriptor just opened, owned from here on.
+    let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    // SAFETY: ifreq is plain data, for which all zeroes is valid.
+    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (dst, src) in req.ifr_name.iter_mut().zip(b"lo") {
+        *dst = *src as libc::c_char;
+    }
+    // SAFETY: an ifreq naming an interface, which the kernel fills in.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFFLAGS as libc::Ioctl, &mut req) } != 0 {
+        return Err(failed("SIOCGIFFLAGS"));
+    }
+    // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
+    unsafe {
+        req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+    }
+    // SAFETY: the ifreq as read, with IFF_UP added.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &req) } != 0 {
+        return Err(failed("SIOCSIFFLAGS"));
+    }
+    Ok(())
+}
+
 /// A booted guest at rest, for measuring any VMM that holds it (the Firecracker
 /// comparison): prints `SHARDS-TEST READY` and its monotonic clock in microseconds, its
 /// time since its kernel started keeping time, and waits for the host to end the VM. It
@@ -2481,6 +2715,192 @@ fn unplug_cost() -> Result<(), String> {
 /// free pages its CPUs' lists hold (/proc/zoneinfo, each pageset's `count`), which MemFree
 /// leaves out and which held 2 to 16 MiB at a boot's start (PM M300):
 /// `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed free>`.
+/// Where the kernel's CPUs spent their ticks from its boot to now (`profile=N` on its
+/// command line, kernel/profile.c; PM M376): /proc/profile's counts, a bucket of 2^N bytes
+/// of kernel text each from `_stext`, summed by the text symbol holding each
+/// (/proc/kallsyms), the most first: `SHARDS-TEST PROFILE <ticks> <symbol>`, then
+/// `SHARDS-TEST PROFILE-TOTAL <ticks> <uptime>`.
+fn profile_report() -> Result<(), String> {
+    online_cpus()?;
+    let raw = std::fs::read("/proc/profile").map_err(|e| format!("/proc/profile: {e}"))?;
+    let words: Vec<u32> = raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_ne_bytes(*c))
+        .collect();
+    let (step, counts) = words.split_first().ok_or("/proc/profile: empty")?;
+    let syms = std::fs::read_to_string("/proc/kallsyms").map_err(|e| format!("/proc/kallsyms: {e}"))?;
+    let mut text: Vec<(u64, &str)> = syms
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let at = u64::from_str_radix(parts.next()?, 16).ok()?;
+            let kind = parts.next()?;
+            let name = parts.next()?;
+            matches!(kind, "t" | "T").then_some((at, name))
+        })
+        .collect();
+    text.sort_unstable();
+    let stext = text
+        .iter()
+        .find(|(_, name)| *name == "_stext")
+        .map(|(at, _)| *at)
+        .ok_or("/proc/kallsyms: no _stext")?;
+    let mut by: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut total = 0u64;
+    for (i, &ticks) in counts.iter().enumerate() {
+        if ticks == 0 {
+            continue;
+        }
+        total += u64::from(ticks);
+        let at = stext + i as u64 * u64::from(*step);
+        let name = text
+            .partition_point(|(a, _)| *a <= at)
+            .checked_sub(1)
+            .and_then(|n| text.get(n))
+            .map_or("?", |(_, name)| *name);
+        *by.entry(name).or_default() += u64::from(ticks);
+    }
+    let mut ranked: Vec<(&str, u64)> = by.into_iter().collect();
+    ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
+    let mut out = io::stdout();
+    for (name, ticks) in ranked.iter().take(30) {
+        let _ = writeln!(out, "SHARDS-TEST PROFILE {ticks} {name}");
+    }
+    let uptime = std::fs::read_to_string("/proc/uptime").map_err(|e| format!("/proc/uptime: {e}"))?;
+    let up = uptime.split_whitespace().next().unwrap_or("?");
+    let _ = writeln!(out, "SHARDS-TEST PROFILE-TOTAL {total} {up}");
+    boot_log_report(&mut out)
+}
+
+/// Brings each CPU the kernel has and has not brought up online, one after another, as a
+/// guest booted with `maxcpus=1` is to be: `SHARDS-TEST ONLINE <cpus> <us>`, the CPUs
+/// brought up and the time it took them, said where any were.
+fn online_cpus() -> Result<(), String> {
+    let list = |name: &str| -> Result<Vec<u32>, String> {
+        let path = format!("/sys/devices/system/cpu/{name}");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+        let mut cpus = Vec::new();
+        for part in text.trim().split(',').filter(|p| !p.is_empty()) {
+            let (from, to) = part.split_once('-').unwrap_or((part, part));
+            let (from, to) = (
+                from.parse::<u32>().map_err(|e| format!("{path}: {part}: {e}"))?,
+                to.parse::<u32>().map_err(|e| format!("{path}: {part}: {e}"))?,
+            );
+            cpus.extend(from..=to);
+        }
+        Ok(cpus)
+    };
+    let online = list("online")?;
+    let offline: Vec<u32> = list("present")?
+        .into_iter()
+        .filter(|c| !online.contains(c))
+        .collect();
+    if offline.is_empty() {
+        return Ok(());
+    }
+    let started = Instant::now();
+    for cpu in &offline {
+        let path = format!("/sys/devices/system/cpu/cpu{cpu}/online");
+        std::fs::write(&path, b"1").map_err(|e| format!("{path}: {e}"))?;
+    }
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST ONLINE {} {}",
+        offline.len(),
+        started.elapsed().as_micros()
+    );
+    Ok(())
+}
+
+/// What the kernel's log says of where its boot's time went, read from /dev/kmsg's start:
+/// the initcalls that took longest (`initcall_debug`'s `initcall FN returned N after US
+/// usecs`), and the longest gaps between one record and the next, with both, the time each
+/// record's own.
+fn boot_log_report(out: &mut io::Stdout) -> Result<(), String> {
+    let fd = open("/dev/kmsg", libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let mut record = vec![0u8; 8192];
+    let mut log: Vec<(u64, String)> = Vec::new();
+    loop {
+        // SAFETY: `record` is valid for writes of its length; each read is one record.
+        let n = unsafe { libc::read(fd, record.as_mut_ptr().cast(), record.len()) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EAGAIN) => break,
+                // A record overwritten before it was read.
+                Some(libc::EPIPE) => continue,
+                _ => {
+                    // SAFETY: closing our own descriptor.
+                    unsafe { libc::close(fd) };
+                    return Err(format!("reading /dev/kmsg: {e}"));
+                }
+            }
+        }
+        // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE" (Documentation/ABI/testing/dev-kmsg).
+        let text = String::from_utf8_lossy(record.get(..n as usize).unwrap_or_default()).into_owned();
+        let Some((head, message)) = text.split_once(';') else {
+            continue;
+        };
+        if let Some(at) = head.split(',').nth(2).and_then(|us| us.parse::<u64>().ok()) {
+            log.push((at, message.lines().next().unwrap_or_default().to_string()));
+        }
+    }
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    // Each initcall's time from its records' own times, `calling  FN @ PID` to `initcall FN
+    // returned`: what it says itself (`after US usecs`) is of the timekeeper's clock, jiffies
+    // until the clocksource's switch (clocksource_done_booting), where a record's time is
+    // the scheduler's clock.
+    let mut began: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut calls: Vec<(u64, &str)> = Vec::new();
+    for (at, m) in &log {
+        if let Some((name, _)) = m.strip_prefix("calling  ").and_then(|r| r.split_once(" @ ")) {
+            began.insert(name, *at);
+        } else if let Some((name, start)) = m
+            .strip_prefix("initcall ")
+            .and_then(|r| r.split_once(" returned "))
+            .and_then(|(name, _)| Some((name, began.get(name)?)))
+        {
+            calls.push((at.saturating_sub(*start), name));
+        }
+    }
+    calls.sort_by_key(|c| std::cmp::Reverse(c.0));
+    for (us, name) in calls.iter().take(15) {
+        let _ = writeln!(out, "SHARDS-TEST INITCALL {us} {name}");
+    }
+    // What its hypervisor offers it, and when its boot's steps came.
+    const STEPS: [&str; 5] = [
+        "smp: Bringing up secondary CPUs",
+        "smp: Brought up",
+        "clocksource: Switched to clocksource",
+        "Freeing unused kernel image",
+        "Run /init as init process",
+    ];
+    for (at, m) in &log {
+        if m.starts_with("Hyper-V:") {
+            let _ = writeln!(out, "SHARDS-TEST HV {m}");
+        } else if STEPS.iter().any(|s| m.starts_with(s)) {
+            let _ = writeln!(out, "SHARDS-TEST AT {at} {m}");
+        }
+    }
+    let mut gaps: Vec<(u64, &str, &str)> = log
+        .windows(2)
+        .filter_map(|w| match w {
+            [(a, before), (b, after)] => Some((b.saturating_sub(*a), before.as_str(), after.as_str())),
+            _ => None,
+        })
+        .collect();
+    gaps.sort_by_key(|g| std::cmp::Reverse(g.0));
+    let short = |m: &str| m.chars().take(90).collect::<String>();
+    for (us, before, after) in gaps.iter().take(8) {
+        let _ = writeln!(out, "SHARDS-TEST GAP {us} {} => {}", short(before), short(after));
+    }
+    let _ = writeln!(out, "SHARDS-TEST LOG {} records", log.len());
+    Ok(())
+}
+
 fn memory_report() -> Result<(), String> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
     let field = |name: &str| -> Result<u64, String> {

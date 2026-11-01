@@ -184,9 +184,9 @@ is of that engine's machine's. A volume it makes (`-v data:/var/lib/data`, Compo
 `MICROVM.data`, reached by no name of yours or of another microVM's, and removed with the
 microVM. A call it can't serve yet is refused with what it serves.
 
-### MicroVMs under your own limits (Linux)
+### MicroVMs under your own limits
 
-`shards run vm --cgroup-parent agents.slice IMAGE` (and Compose's `cgroup_parent:`, through
+On Linux, `shards run vm --cgroup-parent agents.slice IMAGE` (and Compose's `cgroup_parent:`, through
 shards' Engine API file) puts a microVM under a slice of your own systemd manager, so
 whatever you give that slice covers every microVM in it: `systemctl --user set-property
 agents.slice MemoryMax=16G` caps them together, and `systemctl --user status agents.slice`
@@ -194,8 +194,14 @@ shows what they use. Each microVM's memory, its network's process included, is c
 there from its first page, warm starts too, and only the first run under a slice asks
 systemd for anything. It works from an ssh login as from a desktop session, with nothing to
 set up. A container that shares another's network runs in that one's microVM, so it names
-that one's slice or none. A path in place of a slice is refused; on macOS, which has no
-such group, the flag is refused with the reason.
+that one's slice or none. A path in place of a slice is refused.
+
+On macOS, which has no such group, `shards run vm --cgroup-parent agents IMAGE` puts a
+microVM in a group shards keeps for you, a folder of its home, `groups/agents`, with the
+files a Linux cgroup has. Write `4G` to its `memory.high` and its microVMs are held to it
+together: past it, each gives back what it holds cold. Past its `memory.max`, with nothing
+more to give back, the one that holds the most is stopped, as a cgroup's out-of-memory
+killer stops one, and `inspect` says so. `memory.current` shows what they hold.
 
 ### Boot a kernel yourself
 
@@ -205,7 +211,7 @@ reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
 file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
-curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-e39058b2b627/$file
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/$file
 shasum -a 256 vmlinux
 ```
 
@@ -286,7 +292,7 @@ it where it was, at the same address on its network.
 | Images, Dockerfiles and Agentfiles | Pulled, pushed and built, every `RUN` step in a microVM of the build's own, for other CPUs too under emulation |
 | Many agents in one microVM, each in its own domain | Works, from an Agentfile: each agent's own processes, files, networks and devices, and nothing it isn't granted |
 | Networks, volumes and devices | Work: a microVM reaches only what you give it, networks deny by default |
-| GPUs | macOS: Vulkan compute in the guest. Linux: a host's PCI device passed through to a microVM (VFIO), tested with a test device; a GPU itself not yet |
+| GPUs | macOS, Linux and Windows (x86_64): your machine's GPU, for Vulkan in the microVM (`--gpus all`), tested on Apple's, NVIDIA's and AMD's. Linux also passes a host's PCI device through to a microVM (VFIO), tested with a test device |
 | `docker` command lines, Compose and the Docker Engine API | Work, through shards' Engine API file |
 | Running shards' commands on another machine | Works: `shards create context`, over QUIC |
 

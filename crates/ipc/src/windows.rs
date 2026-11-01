@@ -17,8 +17,9 @@
 //!   that one whose maker went without deleting it is deleted by the next ([`sweep`]). It
 //!   holds the capabilities VidExo's DACL grants, read from the device as it is made
 //!   ([`hypervisor_capabilities`]), without which it runs no partition (M200).
-//! - **Messages** ([`send`], [`recv`]) carry no handles: a handle goes in a payload, its
-//!   value in the receiver's process, where its sender put it ([`Child::give`]).
+//! - **Messages** of a VM's grants ([`write_message`], [`read_message`]) carry no handles: a
+//!   handle goes in a payload, its value in the receiver's process, where its sender put it
+//!   ([`Child::give`]). A [`crate::Stream`]'s carry them as Unix's do (pipe.rs, D195).
 //! - **Windows' mitigations**: strict handle checks, no Win32k, no extension points, no
 //!   images from remote devices or of a low label, no child processes, and no FSCTLs where
 //!   the Windows takes it (windows-2022 does not, M201). Not dynamic code: windows-2022's
@@ -34,6 +35,9 @@ use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _,
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use crate::pipe::Message;
+use crate::signal::SIGKILL;
 
 use windows_sys::Win32::Foundation::{
     DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, GENERIC_ALL,
@@ -51,12 +55,12 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppContainer};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WriteFile,
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
 };
 use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
-    TerminateJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
@@ -173,17 +177,98 @@ impl Job {
     }
 }
 
-/// A child made by [`spawn`]: ended as this drops, its Job's last handle going with it.
+/// A group's job (D183, slice 3, PM M359): what a run's VM process under a group shards
+/// keeps is made in, its own Job nested under it, so that the group's `memory.max` is this
+/// job's memory limit, which refuses its processes' commits past it. A process already in
+/// a Job of its own joins none that holds another (M359), so each is made in it.
+#[derive(Debug)]
+pub struct GroupJob(OwnedHandle);
+
+impl GroupJob {
+    /// A job of no limit yet.
+    pub fn new() -> io::Result<GroupJob> {
+        // SAFETY: an anonymous job, owned below.
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw.is_null() {
+            return Err(last());
+        }
+        // SAFETY: a handle just made, which nothing else owns.
+        Ok(GroupJob(unsafe { OwnedHandle::from_raw_handle(raw) }))
+    }
+
+    /// Its processes' commits held to `bytes` together from now (JOB_OBJECT_LIMIT_JOB_MEMORY),
+    /// or to no limit where `None`.
+    pub fn limit_memory(&self, bytes: Option<u64>) -> io::Result<()> {
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        if let Some(bytes) = bytes {
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY;
+            limits.JobMemoryLimit = usize::try_from(bytes).unwrap_or(usize::MAX);
+        }
+        // SAFETY: limits of their own size, on our job.
+        if unsafe {
+            SetInformationJobObject(
+                self.0.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        } == 0
+        {
+            return Err(last());
+        }
+        Ok(())
+    }
+
+    /// The same job again, a handle of its own.
+    pub fn try_clone(&self) -> io::Result<GroupJob> {
+        self.0.try_clone().map(GroupJob)
+    }
+}
+
+/// A child made by [`spawn_confined`], ended as this drops, its Job's last handle going
+/// with it; or by [`spawn`], which runs on.
 #[derive(Debug)]
 pub struct Child {
     process: OwnedHandle,
     pid: u32,
-    job: Job,
+    /// A confined child's Job; none for one of [`spawn`]'s.
+    job: Option<Job>,
+    /// Its AppContainer, where it holds one ([`Child::hold`]): its profile goes as this
+    /// drops, after its Job has ended it (fields drop in order).
+    container: Option<AppContainer>,
 }
 
 impl Child {
     pub fn id(&self) -> u32 {
         self.pid
+    }
+
+    /// Keeps `container`, the one it runs in, as long as it is held: whoever follows it to
+    /// its end lets go of its profile then too.
+    pub fn hold(&mut self, container: AppContainer) {
+        self.container = Some(container);
+    }
+
+    /// Waits for the child to end. Its ID stays its own while this value holds its handle,
+    /// as a Unix child's does until it is reaped.
+    pub fn ended(&self) -> io::Result<()> {
+        self.wait().map(drop)
+    }
+
+    /// The status of a child that has ended, as [`wait`](Self::wait) gives it.
+    pub fn ended_status(&self) -> io::Result<i32> {
+        self.wait()
+    }
+
+    /// Whether the child has ended, without waiting.
+    pub fn has_ended(&self) -> bool {
+        self.try_wait().is_some()
+    }
+
+    /// As [`kill`](Self::kill): a Windows child leads no group of processes, and its Job,
+    /// where it has one, is ended with it.
+    pub fn kill_group(&self, signal: i32) -> io::Result<()> {
+        self.kill(signal)
     }
 
     /// Its exit code, once it has ended.
@@ -213,14 +298,29 @@ impl Child {
         Ok(code as i32)
     }
 
-    /// Ends it, and anything of its Job.
-    pub fn kill(&self) -> io::Result<()> {
-        // SAFETY: our own job and process.
-        unsafe {
-            if TerminateJobObject(self.job.raw(), 1) == 0
-                && TerminateProcess(self.process.as_raw_handle(), 1) == 0
-            {
-                return Err(last());
+    /// Ends it, and anything of its Job, its status 128 and `signal`, as a Unix child's that
+    /// `signal` ended: Windows sends a process no signal but its end. One ended already is
+    /// no error. SIGSTOP and SIGCONT, which end no process, are refused: Windows stops a
+    /// process no documented way.
+    pub fn kill(&self, signal: i32) -> io::Result<()> {
+        if matches!(signal, crate::signal::SIGSTOP | crate::signal::SIGCONT) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a process is not stopped or continued on Windows",
+            ));
+        }
+        let code = 128u32.saturating_add(u32::try_from(signal).unwrap_or(0));
+        // SAFETY: our own job, and our own process.
+        let ended = unsafe {
+            self.job
+                .as_ref()
+                .is_some_and(|job| TerminateJobObject(job.raw(), code) != 0)
+                || TerminateProcess(self.process.as_raw_handle(), code) != 0
+        };
+        if !ended {
+            let e = last();
+            if !self.has_ended() {
+                return Err(e);
             }
         }
         Ok(())
@@ -236,6 +336,11 @@ impl Child {
     /// the child may use.
     pub fn give(&self, handle: BorrowedHandle<'_>) -> io::Result<usize> {
         give(&self.process, handle)
+    }
+
+    /// The child's handle `value`, duplicated into this process, of the same access.
+    pub fn take(&self, value: usize) -> io::Result<OwnedHandle> {
+        take(&self.process, value)
     }
 
     /// A handle to the child that may only wait for its end (PROCESS_SYNCHRONIZE): for
@@ -288,10 +393,45 @@ impl Process {
         self.pid
     }
 
+    /// Its handle, which may give the child handles and no more: what a [`crate::Stream`]
+    /// whose peer's end is the child's sends handles to ([`crate::Stream::gives_to`]).
+    pub fn into_handle(self) -> OwnedHandle {
+        self.handle
+    }
+
     /// As [`Child::give`].
     pub fn give(&self, handle: BorrowedHandle<'_>) -> io::Result<usize> {
         give(&self.handle, handle)
     }
+
+    /// As [`Child::take`].
+    pub fn take(&self, value: usize) -> io::Result<OwnedHandle> {
+        take(&self.handle, value)
+    }
+}
+
+/// Handle `value` of `process`, duplicated into this process, of the same access: one a
+/// value that names no handle of `process`'s fails.
+fn take(process: &OwnedHandle, value: usize) -> io::Result<OwnedHandle> {
+    let mut ours: HANDLE = std::ptr::null_mut();
+    // SAFETY: a value of a process we made, duplicated into this one, of the same access; a
+    // value that is no handle of its fails the call.
+    if unsafe {
+        DuplicateHandle(
+            process.as_raw_handle(),
+            value as HANDLE,
+            GetCurrentProcess(),
+            &raw mut ours,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+    {
+        return Err(last());
+    }
+    // SAFETY: the handle just made, which nothing else owns.
+    Ok(unsafe { OwnedHandle::from_raw_handle(ours) })
 }
 
 /// `handle` duplicated into `process`, of the same access: its value there.
@@ -389,16 +529,10 @@ pub fn in_app_container() -> bool {
     ok != 0 && is != 0
 }
 
-/// A message as [`send`] and [`recv`] carry it on Windows.
-#[derive(Debug)]
-pub struct Message {
-    pub kind: u8,
-    pub payload: Vec<u8>,
-}
-
-/// Sends a message as [`recv`] reads it: its kind, its payload's length (a big-endian u32)
-/// and its payload, framed as Unix's messages are.
-pub fn send(mut to: impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
+/// Writes a message as [`read_message`] reads it: its kind, its payload's length (a
+/// big-endian u32) and its payload, framed as Unix's messages are, without handles: what a
+/// VM's grants and a network process's links carry (D141, D142).
+pub fn write_message(mut to: impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     if payload.len() > crate::MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -472,13 +606,18 @@ impl Incoming {
             let [kind, ..] = self.header;
             let payload = self.payload.take().unwrap_or_default();
             self.have = 0;
-            return Ok(Took::Message(Message { kind, payload }));
+            return Ok(Took::Message(Message {
+                kind,
+                payload,
+                fds: Vec::new(),
+            }));
         }
     }
 }
 
-/// The next message, or `None` where the stream ends before one starts.
-pub fn recv(mut from: impl Read) -> io::Result<Option<Message>> {
+/// The next message [`write_message`] wrote, or `None` where the stream ends before one
+/// starts.
+pub fn read_message(mut from: impl Read) -> io::Result<Option<Message>> {
     let mut header = [0u8; 5];
     let mut got = 0;
     while got < header.len() {
@@ -504,7 +643,11 @@ pub fn recv(mut from: impl Read) -> io::Result<Option<Message>> {
     }
     let mut payload = vec![0u8; len];
     from.read_exact(&mut payload)?;
-    Ok(Some(Message { kind, payload }))
+    Ok(Some(Message {
+        kind,
+        payload,
+        fds: Vec::new(),
+    }))
 }
 
 /// A SID the system allocated, freed as it drops.
@@ -816,6 +959,8 @@ pub struct Spawn<'a> {
     /// Its container, which holds what `holds` says.
     pub container: Option<&'a AppContainer>,
     pub holds: Holds,
+    /// The job of the group it is made in, if any, its own Job nested under it (D183).
+    pub group: Option<&'a GroupJob>,
 }
 
 /// A child [`spawn_suspended`] made, handed all it is given, which runs once resumed.
@@ -850,18 +995,1007 @@ impl Suspended {
         // SAFETY: the child's first thread, suspended until now.
         if unsafe { ResumeThread(self.thread.as_raw_handle()) } == u32::MAX {
             let e = last();
-            let _ = self.child.kill();
+            let _ = self.child.kill(SIGKILL);
             return Err(e);
         }
         Ok(self.child)
     }
 }
 
-/// Starts `s`: suspended, its handles duplicated into it and its sockets shared with it,
-/// what it was handed (`NAME=VALUE` for a handle, `NAME=@HEX` for a socket's info, a line
-/// each) written to its grants pipe, which is then closed, and resumed.
-pub fn spawn(s: &Spawn<'_>) -> io::Result<Child> {
+/// Starts `s`, confined: suspended, its handles duplicated into it and its sockets shared
+/// with it, what it was handed (`NAME=VALUE` for a handle, `NAME=@HEX` for a socket's info,
+/// a line each) written to its grants pipe, which is then closed, and resumed.
+pub fn spawn_confined(s: &Spawn<'_>) -> io::Result<Child> {
     spawn_suspended(s)?.resume()
+}
+
+/// Whether process `pid` lives: one that opens and has not ended, or another user's, which
+/// does not open (ERROR_ACCESS_DENIED). An ended process opens while a handle to it is
+/// held, and has ended.
+pub(crate) fn alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError};
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: a process handle of waiting access alone, owned below.
+    let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if raw.is_null() {
+        // SAFETY: no arguments.
+        return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+    }
+    // SAFETY: the handle just opened, which nothing else owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    // SAFETY: a process handle this function holds, not waited on.
+    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_TIMEOUT }
+}
+
+impl crate::Identity {
+    /// A file's identity, or a directory's: its volume's serial number and its index there,
+    /// Windows' device and inode (GetFileInformationByHandle's), its size and its last write.
+    pub fn of(path: &Path) -> io::Result<crate::Identity> {
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+            GetFileInformationByHandle,
+        };
+        // A directory opens only with backup semantics (CreateFileW's documentation).
+        let file = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: a file this function holds open, and a structure for the call to fill.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } == 0 {
+            return Err(last());
+        }
+        let wide = |high: u32, low: u32| (u64::from(high) << 32) | u64::from(low);
+        // In 100 ns units since 1601, 11,644,473,600 s before 1970.
+        let written = wide(
+            info.ftLastWriteTime.dwHighDateTime,
+            info.ftLastWriteTime.dwLowDateTime,
+        );
+        let seconds = i64::try_from(written / 10_000_000).unwrap_or(i64::MAX) - 11_644_473_600;
+        Ok(crate::Identity {
+            dev: u64::from(info.dwVolumeSerialNumber),
+            ino: wide(info.nFileIndexHigh, info.nFileIndexLow),
+            size: wide(info.nFileSizeHigh, info.nFileSizeLow),
+            mtime_s: seconds,
+            mtime_ns: u32::try_from(written % 10_000_000).unwrap_or(0) * 100,
+        })
+    }
+}
+
+/// A child's resource group (D183's `--cgroup-parent`): none on Windows yet, where a run
+/// that names one is refused before anything starts. It has no value, so that what takes
+/// one is written once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {}
+
+impl Group {
+    pub fn pid(self) -> u32 {
+        match self {}
+    }
+}
+
+/// A group of its own for this process's children: none on Windows yet (D183).
+pub fn start_group() -> io::Result<Group> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no resource group of its own for a process on Windows yet",
+    ))
+}
+
+/// [`spawn_in`], in `group`: Windows has none yet.
+pub fn spawn_in_group(
+    group: Option<Group>,
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    detach: bool,
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    match group {
+        Some(group) => match group {},
+        None => spawn_in(program, args, fds, detach, env),
+    }
+}
+
+pub fn end_group(group: Group) {
+    match group {}
+}
+
+pub fn group_ended(group: Group) -> bool {
+    match group {}
+}
+
+/// The daemon's spawner (PM M158), which on Windows is none. A Unix child is forked with
+/// every descriptor its parent holds, closed only as it executes, so the daemon's children
+/// are made by a process made before it held any; a Windows child is made with the handles
+/// named for it alone (PROC_THREAD_ATTRIBUTE_HANDLE_LIST, [`spawn`]), and inherits nothing
+/// else the daemon holds.
+pub fn start_spawner(_program: &Path, _args: &[&OsStr]) -> io::Result<()> {
+    Ok(())
+}
+
+/// The Linux signal `sig` is, shards' own being Linux's numbers on Windows
+/// ([`crate::signal`]).
+pub fn linux_signal(sig: i32) -> Option<u32> {
+    u32::try_from(sig).ok()
+}
+
+/// The signal of this host's Linux signal `linux` is: the same number on Windows.
+pub fn local_signal(linux: u32) -> Option<i32> {
+    i32::try_from(linux).ok()
+}
+
+/// Reads what `from` has into `buf`, as it reads: on Windows a read waits as it reads, and
+/// a pipe's writer's end ends it at once after all it wrote (PM M340), as a FIFO's read sees
+/// its writer's end on Linux.
+pub fn read<T: ?Sized>(from: &T, buf: &mut [u8]) -> io::Result<usize>
+where
+    for<'a> &'a T: Read,
+{
+    let mut from = from;
+    loop {
+        match from.read(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            got => return got,
+        }
+    }
+}
+
+/// What reads through [`read`]: a stream, a pipe or a file read with
+/// `BufReader::new(Polled(&conn))`, `io::copy(&mut Polled(&conn), …)` and the like.
+#[derive(Debug)]
+pub struct Polled<S>(pub S);
+
+impl<T: ?Sized> Read for Polled<&T>
+where
+    for<'a> &'a T: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read(self.0, buf)
+    }
+}
+
+/// What this process's memory counters say (GetProcessMemoryInfo).
+fn memory() -> Option<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS_EX> {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+    let size = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).ok()?;
+    // SAFETY: this process, and counters of the size given, for the call to fill.
+    if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), size) } == 0 {
+        return None;
+    }
+    Some(counters)
+}
+
+/// This process's peak working set so far, in KiB, Windows' resident set; 0 where unknown.
+pub fn peak_rss_kib() -> u64 {
+    memory().map_or(0, |m| (m.PeakWorkingSetSize / 1024) as u64)
+}
+
+/// This process's own memory now, in KiB: its private working set, what it holds of the
+/// host's memory that no other process shares (PROCESS_MEMORY_COUNTERS_EX2), as the daemon
+/// reads a VM process's (`platform::process_usage`); where Windows counts none, its working
+/// set. Not its private bytes committed (PrivateUsage), which stay as they are whatever it
+/// gives back (PM M371); 0 where unknown.
+pub fn footprint_kib() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2};
+    let Ok(cb) = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX2>()) else {
+        return 0;
+    };
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX2 {
+        cb,
+        ..Default::default()
+    };
+    // SAFETY: this process, and counters of the size their `cb` says, for the call to fill.
+    if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), cb) } != 0
+        && counters.PrivateWorkingSetSize != 0
+    {
+        return (counters.PrivateWorkingSetSize / 1024) as u64;
+    }
+    memory().map_or(0, |m| (m.WorkingSetSize / 1024) as u64)
+}
+
+/// What process `pid` has done so far, for a log that says why it seems stuck: its CPU time
+/// in user mode and in the kernel (GetProcessTimes), its working set and page faults, two of
+/// which, a while apart, tell one that never ran from one that runs on and one that ran and
+/// waits; each of its threads' state and what it waits for ([`thread_states`]); and the
+/// host's memory available; or why it cannot say (a process gone, or not this user's).
+/// CI's windows-2022 left a VM process 0 ms of CPU in 10 s and 15 ms in 20 s while its
+/// working set grew from 5,740 KiB to 28,788 (CI 41004323062), which its threads' waits
+/// tell apart: on the disk (PageIn), on a CPU (Ready), or never resumed (Suspended).
+pub fn process_activity(pid: u32) -> String {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: a process opened by its ID, for its times and counters alone, not inherited.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        return format!("its process: {}", io::Error::last_os_error());
+    }
+    // SAFETY: the handle just opened, which nothing else owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the process's handle, and four FILETIMEs for the call to fill.
+    let timed = unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+    if timed == 0 {
+        return format!("its times: {}", io::Error::last_os_error());
+    }
+    // A FILETIME counts 100 ns.
+    let ms = |t: FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) / 10_000;
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).unwrap_or(0),
+        ..Default::default()
+    };
+    // SAFETY: the process's handle, and counters of the size their `cb` says.
+    let counted =
+        unsafe { GetProcessMemoryInfo(process.as_raw_handle(), &raw mut counters, counters.cb) } != 0;
+    let working = if counted {
+        format!(
+            "{} KiB, {} page faults",
+            counters.WorkingSetSize / 1024,
+            counters.PageFaultCount
+        )
+    } else {
+        io::Error::last_os_error().to_string()
+    };
+    format!(
+        "its CPU time {} ms in user mode and {} ms in the kernel, its working set {working}; {}; {}",
+        ms(user),
+        ms(kernel),
+        thread_states(pid),
+        memory_available()
+    )
+}
+
+/// Each thread of process `pid` as the system lists it (NtQuerySystemInformation's
+/// SystemProcessInformation, winternl.h's SYSTEM_PROCESS_INFORMATION and the
+/// SYSTEM_THREAD_INFORMATION after it, one a thread): its state, as the Thread object's
+/// "Thread State" counter numbers them, and, waiting, why (wdm.h's KWAIT_REASON); a thread
+/// that is ready and does not run waits for a CPU, one in PageIn for the disk.
+fn thread_states(pid: u32) -> String {
+    use windows_sys::Wdk::System::SystemInformation::{NtQuerySystemInformation, SystemProcessInformation};
+    use windows_sys::Win32::Foundation::STATUS_INFO_LENGTH_MISMATCH;
+    use windows_sys::Win32::System::WindowsProgramming::{
+        SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION,
+    };
+    // The list of every process and thread: grown to what the system says it needs, which
+    // may grow again between two asks.
+    let mut buf: Vec<u64> = vec![0; 1 << 16];
+    let mut status = STATUS_INFO_LENGTH_MISMATCH;
+    for _ in 0..4 {
+        let len = u32::try_from(buf.len().saturating_mul(8)).unwrap_or(u32::MAX);
+        let mut needed = 0u32;
+        // SAFETY: a buffer of `len` bytes for the call to fill, and its length's.
+        status = unsafe {
+            NtQuerySystemInformation(
+                SystemProcessInformation,
+                buf.as_mut_ptr().cast(),
+                len,
+                &raw mut needed,
+            )
+        };
+        if status != STATUS_INFO_LENGTH_MISMATCH {
+            break;
+        }
+        buf.resize(
+            (needed as usize / 8)
+                .saturating_add(1 << 13)
+                .max(buf.len().saturating_mul(2)),
+            0,
+        );
+    }
+    if status < 0 {
+        return format!("its threads: NTSTATUS {:#010x}", status as u32);
+    }
+    let bytes = buf.len().saturating_mul(8);
+    let base = buf.as_ptr().cast::<u8>();
+    let process_size = size_of::<SYSTEM_PROCESS_INFORMATION>();
+    let thread_size = size_of::<SYSTEM_THREAD_INFORMATION>();
+    let mut at = 0usize;
+    loop {
+        if at.saturating_add(process_size) > bytes {
+            return "its threads: not listed".into();
+        }
+        // SAFETY: an entry within the buffer the call filled, read as it lies.
+        let process = unsafe { std::ptr::read_unaligned(base.add(at).cast::<SYSTEM_PROCESS_INFORMATION>()) };
+        if process.UniqueProcessId as usize == pid as usize {
+            let mut states = Vec::new();
+            for i in 0..process.NumberOfThreads as usize {
+                let Some(offset) = i
+                    .checked_mul(thread_size)
+                    .and_then(|o| o.checked_add(at.saturating_add(process_size)))
+                    .filter(|o| o.saturating_add(thread_size) <= bytes)
+                else {
+                    break;
+                };
+                // SAFETY: a thread's entry after its process's, within the buffer.
+                let thread =
+                    unsafe { std::ptr::read_unaligned(base.add(offset).cast::<SYSTEM_THREAD_INFORMATION>()) };
+                states.push(thread_state(thread.ThreadState, thread.WaitReason));
+            }
+            return format!("its {} threads: {}", process.NumberOfThreads, states.join(", "));
+        }
+        if process.NextEntryOffset == 0 {
+            return "its threads: not listed".into();
+        }
+        at = at.saturating_add(process.NextEntryOffset as usize);
+    }
+}
+
+/// A thread's state and, where it waits, why: the "Thread State" counter's 0 to 6 and wdm.h's
+/// KWAIT_REASON by name, where they have one.
+fn thread_state(state: u32, reason: u32) -> String {
+    let name = match state {
+        0 => "initialized",
+        1 => "ready",
+        2 => "running",
+        3 => "standby",
+        4 => "terminated",
+        5 => "waiting",
+        6 => "in transition",
+        _ => return format!("state {state}"),
+    };
+    if state != 5 {
+        return name.into();
+    }
+    let why = match reason {
+        0 => "Executive",
+        1 => "FreePage",
+        2 => "PageIn",
+        3 => "PoolAllocation",
+        4 => "DelayExecution",
+        5 => "Suspended",
+        6 => "UserRequest",
+        7 => "WrExecutive",
+        8 => "WrFreePage",
+        9 => "WrPageIn",
+        10 => "WrPoolAllocation",
+        11 => "WrDelayExecution",
+        12 => "WrSuspended",
+        13 => "WrUserRequest",
+        15 => "WrQueue",
+        16 => "WrLpcReceive",
+        17 => "WrLpcReply",
+        18 => "WrVirtualMemory",
+        19 => "WrPageOut",
+        21 => "WrKeyedEvent",
+        23 => "WrProcessInSwap",
+        24 => "WrCpuRateControl",
+        27 => "WrResource",
+        28 => "WrPushLock",
+        29 => "WrMutex",
+        34 => "WrFastMutex",
+        35 => "WrGuardedMutex",
+        37 => "WrAlertByThreadId",
+        39 => "WrPhysicalFault",
+        _ => return format!("waiting ({reason})"),
+    };
+    format!("waiting ({why})")
+}
+
+/// The host's memory available to processes now, and its total (GlobalMemoryStatusEx).
+fn memory_available() -> String {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: u32::try_from(size_of::<MEMORYSTATUSEX>()).unwrap_or(0),
+        ..Default::default()
+    };
+    // SAFETY: a status of the size its `dwLength` says, for the call to fill.
+    if unsafe { GlobalMemoryStatusEx(&raw mut status) } == 0 {
+        return format!("the host's memory: {}", io::Error::last_os_error());
+    }
+    format!(
+        "the host's memory {} MiB available of {} MiB",
+        status.ullAvailPhys >> 20,
+        status.ullTotalPhys >> 20
+    )
+}
+
+/// The variable a child of [`spawn`]'s finds its grants pipe by: the handles it was given
+/// past its standard ones ([`given_fd`]).
+const GIVEN: &str = "SHARDS_GIVEN";
+
+/// Starts `program` with `args`, not confined: a process of shards' own, the daemon a
+/// client starts and what the daemon starts besides its microVMs and their networks, which
+/// [`spawn_confined`] makes. `fds` are its handles, each with the number a Unix child would
+/// have it at: 0, 1 and 2 its standard input, output and error, inherited (only these, each
+/// a copy made for it, PROC_THREAD_ATTRIBUTE_HANDLE_LIST); one past them duplicated into it
+/// as it waits to run, which it finds by its number ([`given_fd`]). With `detach` it is in no
+/// console, process group nor Job of this process's (where the Job lets it go), and outlives
+/// it, as a Unix child of its own session does. Its environment is this process's.
+pub fn spawn(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    detach: bool,
+) -> io::Result<Child> {
+    spawn_with(program, args, fds, detach, &[])
+}
+
+/// [`spawn`], with the variables `set` in the child's environment in place of this
+/// process's.
+pub fn spawn_with(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    detach: bool,
+    set: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let inherited = std::env::vars_os().filter(|(k, _)| {
+        !k.eq_ignore_ascii_case(GIVEN) && !set.iter().any(|(name, _)| k.eq_ignore_ascii_case(name))
+    });
+    let given = set
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(
+        program,
+        args,
+        fds,
+        detach,
+        inherited.chain(given).collect(),
+        None,
+        None,
+    )
+}
+
+/// [`spawn`], with the variables `env` alone for the child's environment, and what Windows
+/// needs of this process's ([`KEPT`]).
+pub fn spawn_in(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    detach: bool,
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(
+        program,
+        args,
+        fds,
+        detach,
+        kept.chain(given).collect(),
+        None,
+        None,
+    )
+}
+
+/// [`spawn_in`], made in the pseudoconsole `console` (ConPTY): what of `fds` it is given,
+/// its standard streams that are not the console's among them, and those it has none of
+/// opened there by the child itself (CONIN$, CONOUT$), as a console's own are. In no Job
+/// of this process's, where the Job lets it go.
+pub fn spawn_in_console(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    env: &[(&str, &OsStr)],
+    console: &PseudoConsole,
+) -> io::Result<Child> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(
+        program,
+        args,
+        fds,
+        false,
+        kept.chain(given).collect(),
+        None,
+        Some(console),
+    )
+}
+
+/// A pseudoconsole (ConPTY) of a terminal's size, for a child made in it
+/// ([`spawn_in_console`]), as Windows Terminal and Windows' OpenSSH host a command: what its
+/// programs write there comes on the reader [`PseudoConsole::new`] gives, rendered as a
+/// terminal shows it, and what is written to its writer is typed there. Closed as this
+/// drops (ClosePseudoConsole), once its last program has gone; its reader then reads what
+/// it held, and its end. Before Windows 11 24H2 the close waits for that read, so a closer
+/// whose reader may not be read on closes it where it can wait.
+#[derive(Debug)]
+pub struct PseudoConsole(windows_sys::Win32::System::Console::HPCON);
+
+impl PseudoConsole {
+    /// A pseudoconsole of `rows` by `cols`; its writer, its typed input; and its reader,
+    /// what it shows ([`Shown`]). It starts where its terminal's cursor is
+    /// (PSEUDOCONSOLE_INHERIT_CURSOR), as a pty does, where one made without that clears
+    /// the screen it is shown on as it starts: a client's terminal through a context had its
+    /// screen cleared as each command began, and a test's showed the 22 blank lines of its
+    /// repaint (tests/context.rs, CI's windows-2022 and windows-2025). It asks where the
+    /// cursor is as it starts (`ESC[6n`), and is answered here, its last row and first
+    /// column, as LLDB answers its own ("so ConPTY won't scroll back over existing output",
+    /// lldb/source/Host/windows/PseudoConsole.cpp): the terminal it is shown on may be
+    /// another machine's, whose answer would come as typed input, or none at all.
+    pub fn new(rows: u16, cols: u16) -> io::Result<(PseudoConsole, std::io::PipeWriter, Shown)> {
+        use windows_sys::Win32::System::Console::{CreatePseudoConsole, PSEUDOCONSOLE_INHERIT_CURSOR};
+        let (input_read, mut input_write) = std::io::pipe()?;
+        let (output_read, output_write) = std::io::pipe()?;
+        let mut pc = 0;
+        // SAFETY: the pipes' ends the pseudoconsole takes copies of, and a handle to fill.
+        let made = unsafe {
+            CreatePseudoConsole(
+                size(rows, cols),
+                input_read.as_raw_handle(),
+                output_write.as_raw_handle(),
+                PSEUDOCONSOLE_INHERIT_CURSOR,
+                &raw mut pc,
+            )
+        };
+        if made < 0 {
+            return Err(io::Error::from_raw_os_error(made));
+        }
+        let console = PseudoConsole(pc);
+        // Its ends are its own now: ours go, so that its close is its output's end.
+        drop((input_read, output_write));
+        input_write.write_all(format!("\x1b[{};1R", rows.max(1)).as_bytes())?;
+        Ok((console, input_write, Shown::new(output_read)))
+    }
+
+    /// Sizes it `rows` by `cols`, as a terminal resized is, which its programs read as a
+    /// console's resize.
+    pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
+        use windows_sys::Win32::System::Console::ResizePseudoConsole;
+        // SAFETY: the pseudoconsole this holds.
+        let resized = unsafe { ResizePseudoConsole(self.0, size(rows, cols)) };
+        if resized < 0 {
+            return Err(io::Error::from_raw_os_error(resized));
+        }
+        Ok(())
+    }
+
+    fn raw(&self) -> windows_sys::Win32::System::Console::HPCON {
+        self.0
+    }
+}
+
+impl Drop for PseudoConsole {
+    fn drop(&mut self) {
+        // SAFETY: the pseudoconsole this holds, closed once.
+        unsafe { windows_sys::Win32::System::Console::ClosePseudoConsole(self.0) };
+    }
+}
+
+/// What a [`PseudoConsole`] shows, less the one question it asks as it starts, where the
+/// cursor is (`ESC[6n`), which [`PseudoConsole::new`] answers: passed on, a terminal
+/// would answer it again, its answer the command's input.
+#[derive(Debug)]
+pub struct Shown {
+    reader: std::io::PipeReader,
+    /// Whether the question is still to come.
+    asking: bool,
+    /// What was read that may begin the question, held until what follows says.
+    held: Vec<u8>,
+    /// What was read and is the screen's, not yet taken.
+    ready: std::collections::VecDeque<u8>,
+}
+
+/// The question a pseudoconsole asks as it starts (PSEUDOCONSOLE_INHERIT_CURSOR): DSR 6, a
+/// cursor position report.
+const ASKED: &[u8] = b"\x1b[6n";
+
+impl Shown {
+    fn new(reader: std::io::PipeReader) -> Shown {
+        Shown {
+            reader,
+            asking: true,
+            held: Vec::new(),
+            ready: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// `came` read: the question taken out where it comes whole, the start of one held.
+    fn sift(&mut self, came: &[u8]) {
+        let mut all = std::mem::take(&mut self.held);
+        all.extend_from_slice(came);
+        if let Some(at) = all.windows(ASKED.len()).position(|w| w == ASKED) {
+            self.asking = false;
+            self.ready.extend(all.get(..at).unwrap_or_default());
+            self.ready.extend(all.get(at + ASKED.len()..).unwrap_or_default());
+            return;
+        }
+        // The longest tail that begins the question waits for what follows.
+        let keep = (1..ASKED.len().min(all.len() + 1))
+            .rev()
+            .find(|&n| {
+                all.get(all.len() - n..)
+                    .is_some_and(|tail| ASKED.starts_with(tail))
+            })
+            .unwrap_or(0);
+        let cut = all.len() - keep;
+        self.ready.extend(all.get(..cut).unwrap_or_default());
+        self.held = all.get(cut..).unwrap_or_default().to_vec();
+    }
+}
+
+impl Read for Shown {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            if !self.ready.is_empty() {
+                let n = buf.len().min(self.ready.len());
+                for (to, from) in buf.iter_mut().zip(self.ready.drain(..n)) {
+                    *to = from;
+                }
+                return Ok(n);
+            }
+            if !self.asking {
+                return self.reader.read(buf);
+            }
+            let mut came = [0u8; 4096];
+            let n = self.reader.read(&mut came)?;
+            if n == 0 {
+                // Its end: what was held is the screen's.
+                self.asking = false;
+                self.ready.extend(std::mem::take(&mut self.held));
+                if self.ready.is_empty() {
+                    return Ok(0);
+                }
+                continue;
+            }
+            self.sift(came.get(..n).unwrap_or_default());
+        }
+    }
+}
+
+/// A console's size of `rows` by `cols`, each at most what a COORD holds.
+fn size(rows: u16, cols: u16) -> windows_sys::Win32::System::Console::COORD {
+    windows_sys::Win32::System::Console::COORD {
+        X: i16::try_from(cols).unwrap_or(i16::MAX),
+        Y: i16::try_from(rows).unwrap_or(i16::MAX),
+    }
+}
+
+/// [`spawn_in`], made in `group`'s job where there is one (D183's groups on Windows): held
+/// to the group's limits with the group's other processes, as a VM process of the group's
+/// is, with none of a confined child's mitigations (`spawn_confined`): a process of shards'
+/// own binary that serves the guest's files (a run's share process, D197).
+pub fn spawn_in_job(
+    group: Option<&GroupJob>,
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(
+        program,
+        args,
+        fds,
+        false,
+        kept.chain(given).collect(),
+        group,
+        None,
+    )
+}
+
+/// Whether this process has a console: a child that would share it has none else, and is
+/// made with none of its own (CREATE_NO_WINDOW), where a console a daemon's child made would
+/// open a window.
+fn no_window() -> u32 {
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    if has_console() { 0 } else { CREATE_NO_WINDOW }
+}
+
+/// Whether this process is attached to a console, one with a window or one without (a CI
+/// runner's): the processes attached to it counted (GetConsoleProcessList, which fails
+/// where there is none), where GetConsoleWindow answers no window for one without its own.
+/// A child made sharing it hears its events, an interrupt among them.
+fn has_console() -> bool {
+    let mut ids = [0u32; 1];
+    // SAFETY: a buffer of one ID, its length said.
+    unsafe { windows_sys::Win32::System::Console::GetConsoleProcessList(ids.as_mut_ptr(), 1) != 0 }
+}
+
+/// [`spawn`]'s child, its environment `env`.
+fn spawn_env(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    detach: bool,
+    mut env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    group: Option<&GroupJob>,
+    console: Option<&PseudoConsole>,
+) -> io::Result<Child> {
+    use windows_sys::Win32::System::Threading::{
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+    };
+    let mut stdio: [Option<RawHandle>; 3] = [None; 3];
+    let mut past: Vec<(BorrowedHandle<'_>, i32)> = Vec::new();
+    for &(handle, n) in fds {
+        match stdio.get_mut(usize::try_from(n).unwrap_or(usize::MAX)) {
+            Some(at) => *at = Some(handle.as_raw_handle()),
+            None => past.push((handle, n)),
+        }
+    }
+    // Copies of its standard handles made to be inherited, the caller's own left as they
+    // are: no spawn by std meanwhile takes them.
+    let copies: Vec<(usize, OwnedHandle)> = stdio
+        .iter()
+        .enumerate()
+        .filter_map(|(i, h)| h.map(|h| (i, h)))
+        .map(|(i, h)| inheritable_copy(h).map(|c| (i, c)))
+        .collect::<io::Result<_>>()?;
+    let grants = if past.is_empty() { None } else { Some(pipe()?) };
+    // Its grants pipe is this spawn's alone: a variable of the name already in `env` is
+    // another process's, as the daemon's own is in a client's command's (daemon/remote.rs
+    // `kept`, every `SHARDS_` variable of the daemon's), and the block's sort keeps it
+    // first, where the child's lookup found it and read the daemon's handle value as its
+    // own pipe: "/dev/fd/3: The handle is invalid", a build's secret through a context
+    // (tests/context.rs, CI's windows-2022 and windows-2025).
+    env.retain(|(k, _)| !k.eq_ignore_ascii_case(GIVEN));
+    if let Some((read, _)) = &grants {
+        env.push((GIVEN.into(), (read.as_raw_handle() as usize).to_string().into()));
+    }
+    let mut inherited: Vec<RawHandle> = copies.iter().map(|(_, c)| c.as_raw_handle()).collect();
+    inherited.extend(grants.as_ref().map(|(read, _)| read.as_raw_handle()));
+    let std_of = |i: usize| {
+        copies
+            .iter()
+            .find(|(at, _)| *at == i)
+            .map_or(std::ptr::null_mut(), |(_, c)| c.as_raw_handle())
+    };
+    let mut line = command_line(program, args);
+    let block = environment_of(&env);
+    // Made in a pseudoconsole, it holds that console alone, and none of this process's: it
+    // breaks away from this process's Job as a detached child does.
+    let flags = EXTENDED_STARTUPINFO_PRESENT
+        | CREATE_SUSPENDED
+        | CREATE_UNICODE_ENVIRONMENT
+        | match (console.is_some(), detach) {
+            (true, _) => CREATE_BREAKAWAY_FROM_JOB,
+            (false, true) => DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+            (false, false) => no_window(),
+        };
+    let pc = console.map(PseudoConsole::raw);
+    let made = match create_plain(
+        &mut line,
+        &inherited,
+        [std_of(0), std_of(1), std_of(2)],
+        &block,
+        flags,
+        pc,
+    ) {
+        // A Job that lets nothing break away from it: the child stays in it.
+        Err(e)
+            if flags & CREATE_BREAKAWAY_FROM_JOB != 0
+                && e.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32) =>
+        {
+            create_plain(
+                &mut line,
+                &inherited,
+                [std_of(0), std_of(1), std_of(2)],
+                &block,
+                flags & !CREATE_BREAKAWAY_FROM_JOB,
+                pc,
+            )
+        }
+        made => made,
+    }?;
+    drop(copies);
+    // SAFETY: the handles CreateProcessW returned, owned from here on.
+    let (process, thread) = unsafe {
+        (
+            OwnedHandle::from_raw_handle(made.hProcess),
+            OwnedHandle::from_raw_handle(made.hThread),
+        )
+    };
+    let child = Child {
+        process,
+        pid: made.dwProcessId,
+        job: None,
+        container: None,
+    };
+    // In its group's job before it runs, as a VM process is made in one.
+    if let Some(group) = group {
+        // SAFETY: a job this process holds, and the child's process, suspended.
+        if unsafe { AssignProcessToJobObject(group.0.as_raw_handle(), child.process.as_raw_handle()) } == 0 {
+            let e = last();
+            let _ = child.kill(SIGKILL);
+            return Err(e);
+        }
+    }
+    if let Some((read, write)) = grants {
+        drop(read);
+        let mut told = String::new();
+        for (handle, n) in past {
+            let theirs = child.give(handle).inspect_err(|_| {
+                let _ = child.kill(SIGKILL);
+            })?;
+            told.push_str(&format!("{n}={theirs}\n"));
+        }
+        if let Err(e) = tell(write, told) {
+            let _ = child.kill(SIGKILL);
+            return Err(e);
+        }
+    }
+    // SAFETY: the child's first thread, suspended until now.
+    if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
+        let e = last();
+        let _ = child.kill(SIGKILL);
+        return Err(e);
+    }
+    Ok(child)
+}
+
+/// `handle` duplicated within this process, inheritable: a copy for one child's handle list.
+fn inheritable_copy(handle: RawHandle) -> io::Result<OwnedHandle> {
+    let mut copy: HANDLE = std::ptr::null_mut();
+    // SAFETY: a handle the caller lends us, duplicated within this process.
+    if unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            handle,
+            GetCurrentProcess(),
+            &raw mut copy,
+            0,
+            1,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+    {
+        return Err(last());
+    }
+    // SAFETY: the handle just made, owned from here on.
+    Ok(unsafe { OwnedHandle::from_raw_handle(copy) })
+}
+
+/// CreateProcessW for [`spawn_env`]: `inherited` its only inherited handles, `std` its
+/// standard ones, `env` its environment block, `flags` its creation flags, and `console`
+/// the pseudoconsole it is made in, where it is made in one.
+fn create_plain(
+    line: &mut [u16],
+    inherited: &[RawHandle],
+    std: [RawHandle; 3],
+    env: &[u16],
+    flags: u32,
+    console: Option<windows_sys::Win32::System::Console::HPCON>,
+) -> io::Result<PROCESS_INFORMATION> {
+    use windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE;
+    let count = 1 + u32::from(console.is_some());
+    let mut size = 0usize;
+    // SAFETY: the size query, which fails and fills `size`.
+    unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), count, 0, &raw mut size) };
+    let mut list = vec![0usize; size.div_ceil(size_of::<usize>())];
+    let attrs = list.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+    // SAFETY: a buffer of at least the size asked, aligned for the list.
+    if unsafe { InitializeProcThreadAttributeList(attrs, count, 0, &raw mut size) } == 0 {
+        return Err(last());
+    }
+    let made = (|| -> io::Result<PROCESS_INFORMATION> {
+        if let Some(pc) = console {
+            // SAFETY: the pseudoconsole's handle, its value itself the attribute, which the
+            // caller keeps open past the call.
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    attrs,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                    pc as *const std::ffi::c_void,
+                    size_of::<windows_sys::Win32::System::Console::HPCON>(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            } == 0
+            {
+                return Err(last());
+            }
+        }
+        if !inherited.is_empty() {
+            // SAFETY: a list of handles that outlives the attribute list, deleted below.
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    attrs,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                    inherited.as_ptr().cast(),
+                    std::mem::size_of_val(inherited),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            } == 0
+            {
+                return Err(last());
+            }
+        }
+        let mut si = STARTUPINFOEXW::default();
+        si.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        let [stdin, stdout, stderr] = std;
+        si.StartupInfo.hStdInput = stdin;
+        si.StartupInfo.hStdOutput = stdout;
+        si.StartupInfo.hStdError = stderr;
+        si.lpAttributeList = attrs;
+        let mut pi = PROCESS_INFORMATION::default();
+        // SAFETY: a command line we own and may be written; startup info and its
+        // attributes, and the environment block, alive through the call.
+        if unsafe {
+            CreateProcessW(
+                std::ptr::null(),
+                line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                i32::from(!inherited.is_empty()),
+                flags,
+                env.as_ptr().cast(),
+                std::ptr::null(),
+                (&raw const si).cast(),
+                &raw mut pi,
+            )
+        } == 0
+        {
+            return Err(last());
+        }
+        Ok(pi)
+    })();
+    // SAFETY: the list initialized above, its values alive still.
+    unsafe { DeleteProcThreadAttributeList(attrs) };
+    made
+}
+
+/// What a child of [`spawn`]'s was given at `n`, a number past its standard handles: the
+/// handle its spawner put in this process, owned from here on, once; `None` where it was
+/// given none there. Read from its grants pipe as first asked.
+pub fn given_fd(n: i32) -> io::Result<Option<OwnedHandle>> {
+    /// What the grants pipe gave, read once, under the lock: its read end is closed as it
+    /// is read.
+    static GIVEN_FDS: std::sync::Mutex<Option<Vec<(String, usize)>>> = std::sync::Mutex::new(None);
+    let mut held = GIVEN_FDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if held.is_none() {
+        let read = match std::env::var(GIVEN) {
+            Ok(pipe) => given(
+                pipe.parse::<usize>()
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("{GIVEN}={pipe:?}")))?,
+            )?
+            .into_iter()
+            .filter_map(|(name, handed)| match handed {
+                Handed::Handle(value) => Some((name, value)),
+                Handed::Socket(_) => None,
+            })
+            .collect(),
+            Err(_) => Vec::new(),
+        };
+        *held = Some(read);
+    }
+    let Some(given) = held.as_mut() else {
+        return Ok(None);
+    };
+    let name = n.to_string();
+    let Some(at) = given.iter().position(|(k, _)| *k == name) else {
+        return Ok(None);
+    };
+    let (_, value) = given.swap_remove(at);
+    // SAFETY: a handle this process's spawner put here for it, taken once.
+    Ok(Some(unsafe { OwnedHandle::from_raw_handle(value as RawHandle) }))
 }
 
 /// [`spawn`], left suspended: for a spawner that hands another child this one's process
@@ -908,48 +2042,47 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
     let child = Child {
         process,
         pid: made.dwProcessId,
-        job,
+        job: Some(job),
+        container: None,
     };
     drop(pipe_read);
     let mut told = String::new();
     for g in s.given {
         let theirs = child.give(g.handle).map_err(|e| {
-            let _ = child.kill();
+            let _ = child.kill(SIGKILL);
             io::Error::new(e.kind(), format!("giving {}: {e}", g.name))
         })?;
         told.push_str(&format!("{}={theirs}\n", g.name));
     }
     for shared in s.sockets {
         let info = share_socket(shared.socket, child.pid).map_err(|e| {
-            let _ = child.kill();
+            let _ = child.kill(SIGKILL);
             io::Error::new(e.kind(), format!("sharing {}: {e}", shared.name))
         })?;
         let hex: String = info.iter().map(|b| format!("{b:02x}")).collect();
         told.push_str(&format!("{}=@{hex}\n", shared.name));
     }
-    let mut written = 0usize;
-    while written < told.len() {
-        let rest = told.as_bytes().get(written..).unwrap_or_default();
-        let mut n = 0u32;
-        // SAFETY: our pipe's write end; bytes we own.
-        if unsafe {
-            WriteFile(
-                pipe_write.as_raw_handle(),
-                rest.as_ptr(),
-                u32::try_from(rest.len()).unwrap_or(u32::MAX),
-                &raw mut n,
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            let e = last();
-            let _ = child.kill();
-            return Err(e);
-        }
-        written += n as usize;
+    if let Err(e) = tell(pipe_write, told) {
+        let _ = child.kill(SIGKILL);
+        return Err(e);
     }
-    drop(pipe_write);
     Ok(Suspended { child, thread })
+}
+
+/// Writes `told`, a child's grants, into `pipe`, its grants pipe's write end, on a thread of
+/// its own, which ends once the child has read them all, or has gone (its read end closed):
+/// a pipe holds what its buffer holds, a size the system chooses (CreatePipe), and a child
+/// made suspended reads nothing until it runs, so a spawner that wrote it grants past the
+/// buffer before it ran waited for ever, as a network process given four sockets did (each
+/// socket's protocol info 628 bytes, written in hex: 5 KB, CI's windows-2022 and
+/// windows-2025 and jupiter, 2026-10-28).
+fn tell(pipe: OwnedHandle, told: String) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("grants".into())
+        .spawn(move || {
+            let _ = File::from(pipe).write_all(told.as_bytes());
+        })
+        .map(drop)
 }
 
 /// What process `pid` makes its own copy of `socket` from ([`adopt_socket`]):
@@ -1008,6 +2141,48 @@ pub fn adopt_socket(info: &[u8]) -> io::Result<std::os::windows::io::OwnedSocket
     Ok(unsafe { std::os::windows::io::OwnedSocket::from_raw_socket(s as u64) })
 }
 
+/// The bytes of one socket's protocol info, as [`share_socket`] gives it.
+pub const SHARED_SOCKET: usize = size_of::<windows_sys::Win32::Networking::WinSock::WSAPROTOCOL_INFOW>();
+
+/// A message's payload with `sockets` in it for process `pid`, as Windows hands a process a
+/// socket, where Unix passes descriptors beside a message (SCM_RIGHTS): their count, each
+/// one's protocol info shared with `pid` ([`share_socket`]), then `payload`, as
+/// [`adopt_sockets`] reads it. The sender keeps its own until its receiver says it has
+/// them: a socket shared and closed before it is taken is gone.
+pub fn with_sockets(payload: &[u8], sockets: &[u64], pid: u32) -> io::Result<Vec<u8>> {
+    let count = u8::try_from(sockets.len())
+        .ok()
+        .filter(|&n| usize::from(n) <= crate::MAX_FDS)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "too many sockets for one message"))?;
+    let mut out = Vec::with_capacity(1 + sockets.len() * SHARED_SOCKET + payload.len());
+    out.push(count);
+    for &socket in sockets {
+        out.extend(share_socket(socket, pid)?);
+    }
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+/// The sockets a payload [`with_sockets`] made shares with this process, each its own
+/// ([`adopt_socket`]), and the payload after them.
+pub fn adopt_sockets(payload: &[u8]) -> io::Result<(Vec<std::os::windows::io::OwnedSocket>, &[u8])> {
+    let short = || io::Error::new(io::ErrorKind::InvalidData, "a message's sockets cut short");
+    let (&count, mut rest) = payload.split_first().ok_or_else(short)?;
+    if usize::from(count) > crate::MAX_FDS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "more sockets than one message carries",
+        ));
+    }
+    let mut sockets = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let (info, after) = rest.split_at_checked(SHARED_SOCKET).ok_or_else(short)?;
+        sockets.push(adopt_socket(info)?);
+        rest = after;
+    }
+    Ok((sockets, rest))
+}
+
 /// A pipe: its read end, inheritable, for a child's list alone; its write end, not.
 fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
@@ -1056,7 +2231,13 @@ fn create(
             inherited.push(h);
         }
     }
-    let jobs = [job.raw()];
+    // The group's job first, the outermost, then its own (PROC_THREAD_ATTRIBUTE_JOB_LIST).
+    let jobs: Vec<HANDLE> = s
+        .group
+        .map(|g| g.0.as_raw_handle())
+        .into_iter()
+        .chain(std::iter::once(job.raw()))
+        .collect();
     let child_policy = CHILD_PROCESS_RESTRICTED;
     let words = MITIGATIONS;
     let mut held: Vec<SID_AND_ATTRIBUTES> = caps
@@ -1113,7 +2294,7 @@ fn create(
         update(
             PROC_THREAD_ATTRIBUTE_JOB_LIST,
             jobs.as_ptr().cast(),
-            size_of::<HANDLE>(),
+            jobs.len() * size_of::<HANDLE>(),
         )?;
         update(
             PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
@@ -1145,6 +2326,15 @@ fn create(
         si.lpAttributeList = attrs;
         let mut pi = PROCESS_INFORMATION::default();
         let env = environment(s.env);
+        // A spawner with no console (the daemon) makes its child none at all
+        // (DETACHED_PROCESS): one made for a confined child, hidden or not, failed it as
+        // it started (STATUS_DLL_INIT_FAILED, on jupiter). One with a console, a window's or
+        // not, has its child share it, and hear its interrupts.
+        let console = if has_console() {
+            0
+        } else {
+            windows_sys::Win32::System::Threading::DETACHED_PROCESS
+        };
         // SAFETY: a command line we own and may be written; startup info and its
         // attributes, and the environment block, alive through the call.
         if unsafe {
@@ -1154,7 +2344,7 @@ fn create(
                 std::ptr::null(),
                 std::ptr::null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | console,
                 env.as_ptr().cast(),
                 std::ptr::null(),
                 (&raw const si).cast(),
@@ -1187,12 +2377,22 @@ fn environment(given: &[(&str, &OsStr)]) -> Vec<u16> {
         .filter(|k| !given.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
         .filter_map(|&k| std::env::var_os(k).map(|v| (k, v)))
         .collect();
-    let mut vars: Vec<(&str, &OsStr)> = given.to_vec();
-    vars.extend(kept.iter().map(|(k, v)| (*k, v.as_os_str())));
-    vars.sort_by_key(|(n, _)| n.to_ascii_uppercase());
+    let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = given
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()))
+        .collect();
+    vars.extend(kept.into_iter().map(|(k, v)| (OsStr::new(k).to_os_string(), v)));
+    environment_of(&vars)
+}
+
+/// The environment block of `vars`, each `NAME=VALUE` and its NUL, sorted by name as
+/// Windows keeps a block (case folded), and a NUL to end it.
+fn environment_of(vars: &[(std::ffi::OsString, std::ffi::OsString)]) -> Vec<u16> {
+    let mut sorted: Vec<&(std::ffi::OsString, std::ffi::OsString)> = vars.iter().collect();
+    sorted.sort_by_key(|(n, _)| n.to_ascii_uppercase());
     let mut block = Vec::new();
-    for (name, value) in vars {
-        block.extend(name.encode_utf16());
+    for (name, value) in sorted {
+        block.extend(name.encode_wide());
         block.push(u16::from(b'='));
         block.extend(value.encode_wide());
         block.push(0);
@@ -1245,22 +2445,52 @@ mod tests {
         String::from_utf16(&w).unwrap()
     }
 
+    /// What a pseudoconsole shows, each of `writes` written whole in turn, as [`Shown`] reads
+    /// it to its end.
+    fn shown_of(writes: &[&[u8]]) -> Vec<u8> {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let writes: Vec<Vec<u8>> = writes.iter().map(|w| w.to_vec()).collect();
+        let writing = std::thread::spawn(move || {
+            for w in writes {
+                writer.write_all(&w).unwrap();
+                writer.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let mut shown = Vec::new();
+        Shown::new(reader).read_to_end(&mut shown).unwrap();
+        writing.join().unwrap();
+        shown
+    }
+
+    /// The question a pseudoconsole asks as it starts goes, whole or split across its
+    /// writes, and nothing else does: a second, later, is the screen's, as is anything that
+    /// only begins as it does.
+    #[test]
+    fn a_pseudoconsoles_question_as_it_starts_is_not_shown() {
+        assert_eq!(shown_of(&[b"\x1b[?25l\x1b[6nready\r\n"]), b"\x1b[?25lready\r\n");
+        assert_eq!(shown_of(&[b"\x1b[?25l\x1b[", b"6", b"nready"]), b"\x1b[?25lready");
+        assert_eq!(shown_of(&[b"\x1b[6n", b"a\x1b[6nb"]), b"a\x1b[6nb");
+        assert_eq!(shown_of(&[b"\x1b[6m\x1b[", b"6x"]), b"\x1b[6m\x1b[6x");
+        assert_eq!(shown_of(&[b"held \x1b["]), b"held \x1b[");
+    }
+
     /// A message goes over whole, kind and payload; a stream that ends between messages
     /// ends them, and one that ends within one is an error.
     #[test]
     fn messages_frame_as_unix_messages_do() {
         let mut wire = Vec::new();
-        send(&mut wire, 7, b"payload").unwrap();
-        send(&mut wire, 8, b"").unwrap();
+        write_message(&mut wire, 7, b"payload").unwrap();
+        write_message(&mut wire, 8, b"").unwrap();
         let mut from = wire.as_slice();
-        let m = recv(&mut from).unwrap().unwrap();
+        let m = read_message(&mut from).unwrap().unwrap();
         assert_eq!((m.kind, m.payload.as_slice()), (7, &b"payload"[..]));
-        let m = recv(&mut from).unwrap().unwrap();
+        let m = read_message(&mut from).unwrap().unwrap();
         assert_eq!((m.kind, m.payload.len()), (8, 0));
-        assert!(recv(&mut from).unwrap().is_none());
-        assert!(recv(&wire[..3]).is_err());
+        assert!(read_message(&mut from).unwrap().is_none());
+        assert!(read_message(&wire[..3]).is_err());
         let too_long = [1u8, 0xff, 0xff, 0xff, 0xff];
-        assert!(recv(&too_long[..]).is_err());
+        assert!(read_message(&too_long[..]).is_err());
     }
 
     /// A message read a byte at a time, as a socket that does not wait gives it, is taken
@@ -1268,8 +2498,8 @@ mod tests {
     #[test]
     fn a_message_comes_whole_from_its_parts() {
         let mut wire = Vec::new();
-        send(&mut wire, 9, b"parts").unwrap();
-        send(&mut wire, 3, b"").unwrap();
+        write_message(&mut wire, 9, b"parts").unwrap();
+        write_message(&mut wire, 3, b"").unwrap();
         struct Trickle<'a>(&'a [u8], usize);
         impl Read for Trickle<'_> {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -1323,6 +2553,32 @@ mod tests {
         assert!(other.exists());
     }
 
+    /// Sockets go in a message as Windows shares them, each its receiver's own once taken
+    /// out: a listener shared with this process and adopted, its sharer's copy closed,
+    /// takes a connection, and the payload after them is as it was sent; a message whose
+    /// sockets are cut short, or that counts more than a message carries, is refused.
+    #[test]
+    fn a_messages_sockets_are_its_receivers_own() {
+        use std::os::windows::io::AsRawSocket as _;
+        // std's bind starts Winsock, which sharing a socket needs.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let payload = with_sockets(b"after", &[listener.as_raw_socket()], std::process::id()).unwrap();
+        assert_eq!(payload.len(), 1 + SHARED_SOCKET + 5);
+        drop(listener);
+        let (sockets, rest) = adopt_sockets(&payload).unwrap();
+        assert_eq!(rest, b"after");
+        let [socket] = <[_; 1]>::try_from(sockets).unwrap();
+        let adopted = std::net::TcpListener::from(socket);
+        let _client = std::net::TcpStream::connect(at).unwrap();
+        adopted.accept().unwrap();
+        assert!(adopt_sockets(payload.get(..SHARED_SOCKET).unwrap()).is_err());
+        assert!(adopt_sockets(&[]).is_err());
+        let mut counted = vec![u8::try_from(crate::MAX_FDS + 1).unwrap()];
+        counted.resize(1 + (crate::MAX_FDS + 1) * SHARED_SOCKET, 0);
+        assert!(adopt_sockets(&counted).is_err());
+    }
+
     /// A test process runs in no AppContainer.
     #[test]
     fn this_process_is_in_no_app_container() {
@@ -1367,5 +2623,163 @@ mod tests {
             ("localappdata", OsStr::new("L")),
         ]);
         assert_eq!(text(&block), "localappdata=L\0SYSTEMROOT=D:\\w\0\0");
+    }
+
+    use std::os::windows::io::AsHandle as _;
+
+    /// This test binary, run again by [`plain`] as a child of `spawn`'s: it writes what it was
+    /// given at 3, a pipe's write end, `SHARDS_PLAIN_SAY` and whether `SHARDS_PLAIN_OWN` came
+    /// with it, then its stdout's word, and sleeps where asked.
+    #[test]
+    fn a_plain_child() {
+        let Ok(say) = std::env::var("SHARDS_PLAIN_SAY") else {
+            return;
+        };
+        if let Some(given) = given_fd(3).unwrap() {
+            let own = std::env::var_os("SHARDS_PLAIN_OWN").is_some();
+            File::from(given)
+                .write_all(format!("{say} own={own}").as_bytes())
+                .unwrap();
+        }
+        let _ = writeln!(io::stdout(), "out");
+        if std::env::var_os("SHARDS_PLAIN_SLEEP").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(600));
+        }
+    }
+
+    /// The test binary as [`a_plain_child`], by `spawn_with` (or `spawn_in` where `alone`),
+    /// given a pipe at 3 and its stdout: what it wrote to each, and itself.
+    fn plain(alone: bool, sleep: bool) -> (Child, File, File) {
+        let exe = std::env::current_exe().unwrap();
+        let args: Vec<&OsStr> = [
+            "--exact",
+            "windows::tests::a_plain_child",
+            "--nocapture",
+            "--test-threads=1",
+        ]
+        .map(OsStr::new)
+        .to_vec();
+        let (said, says) = std::io::pipe().unwrap();
+        let (out, outs) = std::io::pipe().unwrap();
+        let mut env = vec![("SHARDS_PLAIN_SAY", OsStr::new("hello"))];
+        if sleep {
+            env.push(("SHARDS_PLAIN_SLEEP", OsStr::new("1")));
+        }
+        let fds = [(outs.as_handle(), 1), (says.as_handle(), 3)];
+        let child = if alone {
+            spawn_in(&exe, &args, &fds, false, &env).unwrap()
+        } else {
+            spawn_with(&exe, &args, &fds, false, &env).unwrap()
+        };
+        drop((says, outs));
+        (
+            child,
+            File::from(OwnedHandle::from(said)),
+            File::from(OwnedHandle::from(out)),
+        )
+    }
+
+    /// A plain child is given its handles by number, its stdout at 1 and a pipe at 3, which
+    /// it finds by its number, and its environment: this process's with `spawn_with`, not
+    /// with `spawn_in`. It inherits no other handle of this process's.
+    #[test]
+    fn a_plain_child_is_given_its_handles_by_number() {
+        // SAFETY: set before any child of this test's is made; read by the children alone.
+        unsafe { std::env::set_var("SHARDS_PLAIN_OWN", "1") };
+        for alone in [false, true] {
+            let (child, mut said, mut out) = plain(alone, false);
+            let mut text = String::new();
+            said.read_to_string(&mut text).unwrap();
+            assert_eq!(text, format!("hello own={}", !alone));
+            let mut shown = String::new();
+            out.read_to_string(&mut shown).unwrap();
+            assert!(shown.contains("out"), "{shown:?}");
+            assert_eq!(child.wait().unwrap(), 0);
+        }
+    }
+
+    /// A child's grants are written whatever their length, the spawner never waiting for the
+    /// child to read them: 100 KB, past any pipe's buffer, told while nothing reads, all of
+    /// it read once the reader comes.
+    #[test]
+    fn grants_past_a_pipes_buffer_never_wait_for_their_reader() {
+        let (read, write) = pipe().unwrap();
+        let told: String = (0..2_000)
+            .map(|i| format!("socket-{i}=@{}\n", "ab".repeat(24)))
+            .collect();
+        assert!(told.len() > 100_000);
+        let (done, finished) = std::sync::mpsc::channel();
+        let telling = told.clone();
+        std::thread::spawn(move || {
+            tell(write, telling).unwrap();
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the spawner waited for a reader that had not come");
+        let mut text = String::new();
+        File::from(read).read_to_string(&mut text).unwrap();
+        assert_eq!(text, told);
+    }
+
+    /// A plain child killed ends at once, its status 128 and the signal, as a Unix child's
+    /// is; killed again, it says nothing more.
+    #[test]
+    fn a_killed_plain_child_says_its_signal() {
+        let (child, mut said, _out) = plain(false, true);
+        let mut text = String::new();
+        said.read_to_string(&mut text).unwrap();
+        assert!(!child.has_ended());
+        child.kill(SIGKILL).unwrap();
+        assert_eq!(child.wait().unwrap(), 128 + SIGKILL);
+        assert!(child.has_ended());
+        child.kill(SIGKILL).unwrap();
+    }
+
+    /// What a process has done names each of its threads' states, as the system lists
+    /// them: of this process's, the thread that asks is running as it asks, and one made
+    /// suspended waits so.
+    #[test]
+    fn a_processs_activity_names_its_threads_states() {
+        use windows_sys::Win32::System::Threading::{CREATE_SUSPENDED, CreateThread, WaitForSingleObject};
+        unsafe extern "system" fn nothing(_: *mut std::ffi::c_void) -> u32 {
+            0
+        }
+        // SAFETY: a thread of a function that returns at once, made suspended.
+        let raw = unsafe {
+            CreateThread(
+                std::ptr::null(),
+                0,
+                Some(nothing),
+                std::ptr::null(),
+                CREATE_SUSPENDED,
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(!raw.is_null());
+        // SAFETY: the thread just made, owned here.
+        let thread = unsafe { OwnedHandle::from_raw_handle(raw) };
+        // Asked until the thread made suspended waits so: on a 4-CPU runner none of the
+        // process's 78 threads was listed waiting (Suspended), 9 of them ready (CI's
+        // windows-2025 at 1415ad8f).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let said = loop {
+            let said = process_activity(std::process::id());
+            if said.contains("waiting (Suspended)") || std::time::Instant::now() > deadline {
+                break said;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        // SAFETY: the thread made suspended above, then waited for as it returns.
+        unsafe {
+            ResumeThread(thread.as_raw_handle());
+            WaitForSingleObject(thread.as_raw_handle(), INFINITE);
+        }
+        assert!(said.contains(" threads: ") && said.contains("running"), "{said}");
+        assert!(said.contains("waiting (Suspended)"), "{said}");
+        assert!(
+            said.contains("page faults") && said.contains("MiB available of"),
+            "{said}"
+        );
     }
 }

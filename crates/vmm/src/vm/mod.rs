@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(hv)]
 use crate::memory::{FileSpan, GuestMemory};
 
-#[cfg(hv = "hvf")]
+#[cfg(hv)]
 use crate::devices::virtio::gpu;
 #[cfg(hv)]
 use crate::devices::virtio::{head, mem, pmem, vsock};
@@ -25,21 +25,93 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Whether this build's VMs can be snapshotted and restored: HVF's and x86_64 KVM's can,
-/// arm64 KVM's and WHP's not yet (D140).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", all(hv = "kvm", target_arch = "x86_64")));
+/// Working sets from the pages a restored machine's host maps: KVM's, and the x86_64
+/// machine's on any backend.
+#[cfg(any(hv = "kvm", all(hv, target_arch = "x86_64")))]
+mod mapped;
+/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's, on x86_64 and
+/// arm64 (D154), and WHP's (D196).
+pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm", hv = "whp"));
+
+/// The most vCPUs of VMs booting at once that a host of `cpus` CPUs boots the most VMs a
+/// second with, on this build's backend. WHP's: twice its CPUs, the most boots a second CI's
+/// 4-CPU Windows runners gave of 4-vCPU VMs booted 1, 2, 4 and 8 at once, where four at once
+/// were slower than one after another on Windows Server 2022, and eight took 52 to 55 s
+/// each there where one took 1.6 (PM M357). Elsewhere unmeasured, and so unheld.
+pub fn booting_vcpus_at_most(cpus: usize) -> usize {
+    if cfg!(hv = "whp") {
+        cpus.saturating_mul(2).max(1)
+    } else {
+        usize::MAX
+    }
+}
+/// What the kernel of a guest of `vcpus` vCPUs whose init brings its CPUs online itself
+/// (shards-init's `shards_online`) is told, on this build's backend and host. WHP's on a host
+/// whose hypervisor is nested in another's partition ([`nested_hyperv`]), a Windows host that
+/// is itself a virtual machine: its boot CPU alone brought up at boot (`maxcpus=1`), its
+/// init bringing the rest online. A boot's initcalls patch its kernel's text as they set
+/// static calls and keys, each patch waiting for every CPU online to sync, and on CI's
+/// Windows runners, nested in Azure, every vCPU waited on was one with no host CPU: eight
+/// guests of 4 vCPUs booting at once on windows-2022's 4 CPUs spent 75.7% of their kernels'
+/// ticks waiting so and took 46.20 s, where with their boot CPUs alone at boot they took
+/// 5.37 s, and on windows-2025 11.61 s to 3.84 s, a guest alone 0.09 to 0.19 s slower (PM
+/// M379). On jupiter, bare metal, a guest of 32 vCPUs came up in 0.32 s alone and 0.68 to
+/// 1.16 s eight at once with every CPU at boot, and in 2.28 s and 3.89 to 4.24 s so, its 31
+/// CPUs brought online in 2.1 s (M379): nothing there, nor elsewhere (on the M5 Max's HVF a
+/// guest of 18 vCPUs came up in 0.11 s with every CPU at boot, and in 0.35 s so).
+pub fn late_cpus_cmdline(vcpus: u32) -> &'static str {
+    #[cfg(hv = "whp")]
+    if vcpus > 1 && host_hyperv_nested() {
+        return " maxcpus=1 shards_online=1";
+    }
+    #[cfg(not(hv = "whp"))]
+    let _ = vcpus;
+    ""
+}
+
+/// Whether this host's Hyper-V, whose leaves its processes read, is nested in another's
+/// partition ([`nested_hyperv`]).
+#[cfg(hv = "whp")]
+fn host_hyperv_nested() -> bool {
+    use std::arch::x86_64::__cpuid;
+    let top = __cpuid(0x4000_0000);
+    let info = if top.eax >= 0x4000_0004 {
+        __cpuid(0x4000_0004).eax
+    } else {
+        0
+    };
+    nested_hyperv([top.eax, top.ebx, top.ecx, top.edx], info)
+}
+
+/// Whether CPUID's leaf 0x40000000 (`top`: its highest leaf and vendor) and the EAX of
+/// 0x40000004, Hyper-V's implementation recommendations, say a Hyper-V nested in another
+/// Hyper-V's partition: the vendor "Microsoft Hv", and 0x40000004's bit 12 (Linux's
+/// HV_X64_HYPERV_NESTED, include/hyperv/hvgdk_mini.h, which Linux reads as "running on a
+/// nested hypervisor", arch/x86/kernel/cpu/mshyperv.c). CI's Windows runners' Hyper-V says
+/// so, and their SMBIOS tables that they are virtual machines; jupiter's says neither (M379).
+pub fn nested_hyperv(top: [u32; 4], info: u32) -> bool {
+    let [highest, vendor @ ..] = top;
+    vendor == [0x7263_694d, 0x666f_736f, 0x7648_2074] && highest >= 0x4000_0004 && info & (1 << 12) != 0
+}
+
 /// Whether a VM resumed from its snapshot records its working set, for restores to
-/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
-/// (vm::x86_64::recorder).
-pub const WORKING_SETS: bool = SNAPSHOTS;
+/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's and x86_64 WHP's from the pages its
+/// host maps (vm::mapped). Not arm64 WHP's yet, which takes no snapshot.
+pub const WORKING_SETS: bool = cfg!(any(
+    hv = "hvf",
+    hv = "kvm",
+    all(hv = "whp", target_arch = "x86_64")
+));
 /// Which run records it. HVF's: the one that saves the template, whose command recording
-/// slows sixfold (PM M30), on a run that boots anyway. KVM's: the first warm restore
-/// without one, for which recording costs nothing, and whose pages later restores touch,
-/// where the saving run's they barely do (PM M33).
-pub const RESTORES_RECORD: bool = cfg!(hv = "kvm");
+/// slows sixfold (PM M30), on a run that boots anyway. KVM's and WHP's: the first warm
+/// restore without one, for which recording costs nothing, its host's mapped pages read
+/// after (vm::mapped), and whose pages later restores touch, where the saving run's they
+/// barely do (PM M33).
+pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", all(hv = "whp", target_arch = "x86_64")));
 
 #[cfg(any(hv, test))]
 mod barrier;
+pub mod group;
 #[cfg(any(hv, test))]
 mod hold;
 #[cfg(hv)]
@@ -47,7 +119,7 @@ mod runtime;
 #[cfg(hv)]
 pub use runtime::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, start, working_set_limit,
+    restore_from, restores_here, start, working_set_limit,
 };
 
 #[cfg(not(hv))]
@@ -55,7 +127,7 @@ mod unsupported;
 #[cfg(not(hv))]
 pub use unsupported::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, start, working_set_limit,
+    restore_from, restores_here, start, working_set_limit,
 };
 
 /// The host sides of a VM's devices that live outside it.
@@ -65,13 +137,11 @@ pub(crate) struct Hosts<'a> {
     pub vsock: Option<&'a VsockHost>,
     pub net: Option<&'a crate::devices::virtio::net::NetHost>,
     /// Each virtio-fs device's slot, in order (D38).
-    #[cfg(unix)]
     pub shares: &'a [crate::devices::virtio::fs::Share],
     /// The join disk's ranges, which its VM process gives joining containers' images
     /// (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
-    #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// The microVM's I/O limits (D178), which its disks and shared directories charge.
     pub io: Option<&'static crate::devices::virtio::limit::Limiter>,
@@ -106,7 +176,6 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
         (None, Some(_)) => return Err("the snapshot has no network device for a network process".into()),
         _ => {}
     }
-    #[cfg(unix)]
     if snap.config.shares as usize != hosts.shares.len() {
         return Err(format!(
             "the snapshot has {} shared directories; the restore gives {}",
@@ -137,7 +206,6 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
         (false, Some(_)) => return Err("the snapshot has no join disk for the restore's".into()),
         _ => {}
     }
-    #[cfg(unix)]
     match (snap.config.join_share, hosts.join_share) {
         (true, None) => return Err("the snapshot has a join share: give the restored VM its own".into()),
         (false, Some(_)) => return Err("the snapshot has no join share for the restore's".into()),
@@ -312,18 +380,20 @@ fn guest_memory(
     memory.map_err(|e| format!("guest RAM: {e}"))
 }
 
-/// Guest RAM of `ranges` from a snapshot's memory `file`, and, as boot made it, the memory
-/// `config` may have plugged at `at`, none of it plugged yet: what the snapshot's machine
-/// had plugged is plugged again once the VM exists ([`replug`]).
+/// Guest RAM of `ranges` from snapshot `snap`'s memory `file`, as much of it from the file
+/// as its state says holds data ([`Snapshot::data`](crate::snapshot::Snapshot::data)), and,
+/// as boot made it, the memory its machine may have plugged at `at`, none of it plugged yet:
+/// what the snapshot's machine had plugged is plugged again once the VM exists ([`replug`]).
 #[cfg(hv)]
 fn restored_memory(
     ranges: &[(u64, usize)],
     file: &std::fs::File,
-    config: &crate::snapshot::MachineConfig,
+    snap: &crate::snapshot::Snapshot,
     at: u64,
 ) -> Result<crate::memory::GuestMemory, String> {
-    let memory =
-        crate::memory::GuestMemory::from_file(ranges, file).map_err(|e| format!("snapshot memory: {e}"))?;
+    let config = &snap.config;
+    let memory = crate::memory::GuestMemory::from_file(ranges, file, snap.data.as_deref())
+        .map_err(|e| format!("snapshot memory: {e}"))?;
     match hotplug(config)? {
         None => Ok(memory),
         Some((_, region)) => {
@@ -370,7 +440,7 @@ impl mem::Mapper for crate::hv::Stage2 {
     }
 }
 
-#[cfg(all(hv, unix))]
+#[cfg(hv)]
 impl crate::devices::virtio::fs::window::Stage2 for crate::hv::Stage2 {
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
         // SAFETY: forwarded caller contract.
@@ -588,8 +658,8 @@ fn window_heads(
         .checked_mul(windows.len())
         .ok_or_else(|| at(format!("{} heads of {each} bytes", windows.len())))?;
     let head = match kept {
-        Some(kept) => head::Head::restore(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
-        None => head::Head::new(len).inspect(|head| {
+        Some(kept) => head::Head::restore_as_touched(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
+        None => head::Head::as_touched(len).inspect(|head| {
             // On the host's base pages, as a restored head is: its guest writes a range's
             // page structures as it first maps the range (shards' kernel patch 0011), 32 KiB
             // of a 2 MiB block, which a huge page would hold whole (2 MiB for the one page
@@ -618,9 +688,10 @@ fn map_window_heads(vm: &crate::hv::Vm, heads: &head::WindowHeads) -> Result<(),
 
 /// A share's DAX window (D189) at `at`: its host side reserved, and on KVM one memslot over
 /// it, as memory to plug's (`add_hotplug`), which each range its guest maps is placed in;
-/// on other hypervisors each range mapped at stage 2 as it is placed. Its held record is
-/// mapped right after it, writable.
-#[cfg(all(hv, unix))]
+/// on HVF each range mapped at stage 2 as it is placed; on WHP each range mapped at stage 2
+/// as it is first placed and left standing, as stage 2 follows the host's view there (PM
+/// M341). Its held record is mapped right after it, writable.
+#[cfg(hv)]
 fn dax_window(
     vm: Option<&crate::hv::Vm>,
     at: &WindowAt,
@@ -687,7 +758,7 @@ fn virtio_devices(
     config: &crate::snapshot::MachineConfig,
     regions: &[(Arc<pmem::Region>, u64)],
     layer: Option<&Placed>,
-    // The shares' alone, which only Unix hosts have, and the VM their windows map into.
+    // The shares' windows, which only Unix hosts build, and the VM they map into.
     #[cfg_attr(not(unix), allow(unused_variables))] windows: &[WindowAt],
     #[cfg_attr(not(unix), allow(unused_variables))] vm: Option<&crate::hv::Vm>,
     hosts: Hosts<'_>,
@@ -748,7 +819,6 @@ fn virtio_devices(
         devices.push(Box::new(crate::devices::virtio::net::Net::new(host)?));
     }
     // Then its shared directories, each mounted by its tag, `shards0` and on.
-    #[cfg(unix)]
     for i in 0..config.shares as usize {
         let slot = hosts
             .shares
@@ -767,7 +837,6 @@ fn virtio_devices(
     }
     // Its join share, after them, which init mounts by its tag once a joiner brings
     // volumes (D119).
-    #[cfg(unix)]
     if config.join_share {
         let slot = hosts
             .join_share
@@ -787,29 +856,154 @@ fn virtio_devices(
 }
 
 /// A GPU's renderer, and the length of the window its blobs are mapped into: what the
-/// host's GPU says it has of memory the host can map, which Venus tells the guest, the most
-/// a guest can have mapped at once (D144).
-#[cfg(all(hv = "hvf", feature = "gpu"))]
+/// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
+/// most a guest can have mapped at once (D144, D201).
+#[cfg(all(hv, feature = "gpu"))]
 fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
     let venus = gpu::virgl::Venus::new()?;
     let len = venus.host_visible();
     Ok((Box::new(venus), len))
 }
 
-#[cfg(all(hv = "hvf", not(feature = "gpu")))]
+#[cfg(all(hv, not(feature = "gpu")))]
 fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
-    Err("this VM process renders no GPU: shards' GPU VM process does, on macOS (D144)".into())
+    Err("this VM process renders no GPU: shards' GPU VM process does, on macOS, Linux and Windows (D144, D201, D202)".into())
+}
+
+/// A GPU's renderer and its window (D144, D201), at the first GiB boundary at or past
+/// `top`: as long as the renderer offers, whole host pages, where `saw` is 0 (a boot's);
+/// `saw` long, a restore's, where the renderer offers at least that much (D150).
+#[cfg(hv)]
+fn gpu_layout(
+    saw: u64,
+    top: u64,
+) -> Result<(Box<dyn gpu::Renderer>, crate::devices::virtio::ShmRegion), String> {
+    const GIB: u64 = 1 << 30;
+    let (renderer, offers) = gpu_renderer()?;
+    let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
+    let offers = offers
+        .checked_next_multiple_of(page)
+        .ok_or("the GPU's window overflows the address space")?;
+    if offers < saw {
+        return Err(format!(
+            "this host's GPU offers {offers} bytes of memory the host can map, where the snapshot's guest saw {saw}"
+        ));
+    }
+    let len = if saw == 0 { offers } else { saw };
+    let at = top
+        .checked_next_multiple_of(GIB)
+        .ok_or("the GPU's window overflows the address space")?;
+    Ok((
+        renderer,
+        crate::devices::virtio::ShmRegion {
+            id: gpu::HOST_VISIBLE,
+            base: at,
+            len,
+        },
+    ))
+}
+
+/// The virtio-gpu device of `renderer`, its window `region` (D144, D201): no request it
+/// reads is larger than the guest's `ram`, from which no legitimate command outsizes, and
+/// a blob's place and length are whole pages of the host's.
+#[cfg(hv)]
+fn gpu_device(
+    vm: &crate::hv::Vm,
+    renderer: Box<dyn gpu::Renderer>,
+    region: crate::devices::virtio::ShmRegion,
+    ram: u64,
+) -> Result<Box<dyn crate::devices::virtio::VirtioDevice>, String> {
+    let max = usize::try_from(ram).map_err(|_| format!("{ram} bytes of guest memory"))?;
+    let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
+    let window = gpu_window(vm, &region)?;
+    let served = gpu::Served::new(renderer, window, region, page, max);
+    Ok(Box::new(gpu::Gpu::new(Box::new(served))))
+}
+
+/// The window a GPU's blobs are mapped into, `region` of the guest's addresses:
+/// Hypervisor.framework's stage 2, which maps each blob at its place (D144).
+#[cfg(hv = "hvf")]
+fn gpu_window(
+    vm: &crate::hv::Vm,
+    _region: &crate::devices::virtio::ShmRegion,
+) -> Result<Box<dyn gpu::Window>, String> {
+    Ok(Box::new(vm.window()))
+}
+
+/// The window a GPU's blobs are mapped into, `region` of the guest's addresses: a range of
+/// this process reserved for it, one memslot over it, as a share's DAX window is
+/// (`dax_window`), which each blob is mapped into by its descriptor (D201).
+#[cfg(hv = "kvm")]
+fn gpu_window(
+    vm: &crate::hv::Vm,
+    region: &crate::devices::virtio::ShmRegion,
+) -> Result<Box<dyn gpu::Window>, String> {
+    let window = gpu::window::Reserved::new(region.base, region.len, |host, len| {
+        // SAFETY: the window's reservation stays mapped until the window drops, which its
+        // device holds, after the VM (`Machine` and `Running` drop the VM first).
+        unsafe { vm.add_hotplug(host, region.base, len) }
+            .map(drop)
+            .map_err(|e| e.to_string())
+    })?;
+    Ok(Box::new(window))
+}
+
+/// The window a GPU's blobs are mapped into, `region` of the guest's addresses: the
+/// partition's mappings, each blob mapped at its place by its address, as
+/// Hypervisor.framework's stage 2 maps them; readable and writable, never executable
+/// (D202).
+#[cfg(hv = "whp")]
+fn gpu_window(
+    vm: &crate::hv::Vm,
+    _region: &crate::devices::virtio::ShmRegion,
+) -> Result<Box<dyn gpu::Window>, String> {
+    Ok(Box::new(vm.device_slots(0)))
+}
+
+#[cfg(hv = "whp")]
+impl gpu::Window for crate::hv::DeviceSlots {
+    unsafe fn map(&self, pages: gpu::Pages, gpa: u64, len: usize) -> Result<(), String> {
+        let gpu::Pages::At(host) = pages;
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map(self, 0, host, gpa, len, true) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::DeviceSlots::unmap(self, 0, gpa, len).map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(hv = "hvf")]
 impl gpu::Window for crate::hv::Window {
-    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+    unsafe fn map(&self, pages: gpu::Pages, gpa: u64, len: usize) -> Result<(), String> {
+        let gpu::Pages::At(host) = pages else {
+            return Err("Hypervisor.framework maps a blob by its address".into());
+        };
         // SAFETY: forwarded caller contract.
         unsafe { crate::hv::Window::map(self, host, gpa, len) }.map_err(|e| e.to_string())
     }
 
     fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
         crate::hv::Window::unmap(self, gpa, len).map_err(|e| e.to_string())
+    }
+}
+
+/// The command line a guest's kernel boots with, of `cfg`'s: where nobody reads its console,
+/// told to write it only errors and worse (`quiet`), unless it names a level itself. Each
+/// byte a kernel writes to its console is an exit or two, and a boot writes some 18 KB: of a
+/// cold boot's kernel to its panic with no root, 1.64 s of 2.14 on CI's windows-2022, 0.99 of
+/// 1.49 on windows-2025, and 37 of 65 ms on an M5 Max's HVF (PM M376). What it says stays
+/// in its ring buffer, which `dmesg` reads.
+#[cfg(hv)]
+fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
+    let told = cfg
+        .cmdline
+        .split_whitespace()
+        .any(|word| word == "quiet" || word.starts_with("loglevel="));
+    if cfg.console == Console::Discard && !told {
+        format!("{} quiet", cfg.cmdline).into()
+    } else {
+        cfg.cmdline.as_str().into()
     }
 }
 
@@ -844,15 +1038,9 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
             .collect::<Result<_, String>>()?,
         vsock: cfg.vsock.is_some(),
         net: cfg.net.as_ref().map(|n| n.mac),
-        #[cfg(unix)]
         shares: u32::try_from(cfg.shares.len()).map_err(|_| "too many shared directories")?,
-        #[cfg(not(unix))]
-        shares: 0,
         join: cfg.join.is_some(),
-        #[cfg(unix)]
         join_share: cfg.join_share.is_some(),
-        #[cfg(not(unix))]
-        join_share: false,
         nested: cfg.nested,
         hotplug_mib: cfg.hotplug_mib,
         reporting: cfg.reporting,
@@ -917,7 +1105,6 @@ pub struct Config {
     /// A virtio-net device, and the network process's side of it (D31).
     pub net: Option<crate::devices::virtio::net::NetHost>,
     /// virtio-fs devices, each a slot its directory's server is put in (D38).
-    #[cfg(unix)]
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// A join disk, after the disks: empty until the VM process gives a joining
     /// container's image a range of it (D119).
@@ -934,7 +1121,6 @@ pub struct Config {
     /// (D151), after the memory to plug: last of its devices.
     pub reporting: bool,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
-    #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// Its I/O limits (D178), which its disks and shared directories charge: its process's,
     /// given their rates with its run.
@@ -993,6 +1179,19 @@ pub struct Vfio {
     pub cdev: Option<PathBuf>,
 }
 
+/// Why this host passes no PCI function through to a microVM (D154, PM M356): VFIO, Linux's,
+/// is how a host gives a process one, its DMA translated by the host's IOMMU. macOS has no
+/// such path: Hypervisor.framework assigns no device to a VM, and a function reaches a
+/// process only through a DriverKit driver Apple has entitled to it. Windows gives a
+/// partition one only once its administrator has dismounted it from the host (Discrete
+/// Device Assignment), which Microsoft supports on Windows Server alone.
+#[cfg(not(target_os = "linux"))]
+pub const NO_PASSTHROUGH: &str = if cfg!(target_os = "macos") {
+    "this host passes no PCI function through to a microVM: macOS's Hypervisor.framework assigns no device to a VM, and a function reaches a process only through a DriverKit driver Apple entitles to it (D154)"
+} else {
+    "this host passes no PCI function through to a microVM: Windows gives a partition one only once its administrator dismounts it from the host (Discrete Device Assignment), which Microsoft supports on Windows Server alone (D154)"
+};
+
 impl Vfio {
     /// The host's function `name`, by the VFIO group it is in: it must be bound to
     /// vfio-pci, as must every other function in its IOMMU group.
@@ -1012,9 +1211,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!(
-            "{name}: a host's PCI devices are passed through by VFIO, Linux's (D154)"
-        ))
+        Err(format!("{name}: {NO_PASSTHROUGH}"))
     }
 
     /// The host's function whose VFIO device node is `cdev` (`/dev/vfio/devices/vfioN`),
@@ -1038,10 +1235,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!(
-            "{}: a host's PCI devices are passed through by VFIO, Linux's (D154)",
-            cdev.display()
-        ))
+        Err(format!("{}: {NO_PASSTHROUGH}", cdev.display()))
     }
 }
 
@@ -1597,7 +1791,7 @@ fn passed_through(
     _machine: &PciMachine<'_>,
     _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
-    Err("a host's PCI devices are passed through by VFIO, Linux's (D154)".into())
+    Err(NO_PASSTHROUGH.into())
 }
 
 /// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
@@ -1674,10 +1868,8 @@ impl Config {
             pmem: Vec::new(),
             vsock: None,
             net: None,
-            #[cfg(unix)]
             shares: Vec::new(),
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io_limit: None,
             nested: false,
@@ -1711,13 +1903,11 @@ pub struct RestoreConfig {
     /// one: a network process serves one VM alone.
     pub net: Option<crate::devices::virtio::net::NetHost>,
     /// The slots of the snapshot's shared directories, one each (D38).
-    #[cfg(unix)]
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// The restored VM's own join disk, where the snapshot has one (D119): empty, as the
     /// snapshot's was.
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
-    #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// Its I/O limits (D178), as [`Config::io_limit`].
     pub io_limit: Option<&'static crate::devices::virtio::limit::Limiter>,
@@ -2025,6 +2215,27 @@ mod tests {
     #[cfg(unix)]
     use crate::snapshot::Snapshot;
 
+    /// A guest whose console nobody reads boots `quiet`, unless its command line names a
+    /// level itself; one whose console is read boots as it is told.
+    #[test]
+    fn a_console_nobody_reads_is_told_only_errors() {
+        let told = |cmdline: &str, console: Console| {
+            let mut cfg = Config::new("k".into(), None);
+            cfg.cmdline = cmdline.into();
+            cfg.console = console;
+            kernel_cmdline(&cfg).into_owned()
+        };
+        let base = "console=ttyS0 earlycon panic=-1";
+        assert_eq!(told(base, Console::Discard), format!("{base} quiet"));
+        assert_eq!(told(base, Console::Stdout), base);
+        for own in [format!("{base} loglevel=7"), format!("{base} quiet")] {
+            assert_eq!(told(&own, Console::Discard), own);
+        }
+        // A word that only starts with one is no level.
+        let other = format!("{base} quietly loglevels=1");
+        assert_eq!(told(&other, Console::Discard), format!("{other} quiet"));
+    }
+
     /// BARs are placed from the window's start, each at the next multiple of its size,
     /// and one past the window's end is refused, the window as it was.
     #[test]
@@ -2089,6 +2300,7 @@ mod tests {
         let snap = |vsock, net| Snapshot {
             config: machine(vsock, net),
             plugged: Vec::new(),
+            data: None,
             arch: Vec::new(),
             devices: Vec::new(),
         };
@@ -2097,7 +2309,6 @@ mod tests {
             net: n.then_some(&net),
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,
@@ -2242,7 +2453,6 @@ mod tests {
             net: Some(&net),
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,
@@ -2282,7 +2492,6 @@ mod tests {
             net: Some(&net),
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,
@@ -2297,7 +2506,6 @@ mod tests {
             net: None,
             shares: &[],
             join: None,
-            #[cfg(unix)]
             join_share: None,
             io: None,
             layer: None,
@@ -2567,6 +2775,38 @@ mod tests {
         );
     }
 
+    /// A guest whose init brings its CPUs online is told to on WHP on a nested Hyper-V
+    /// alone, and only where it has CPUs past its first; and a nested Hyper-V is known by its
+    /// leaves as CI's runners and jupiter gave them (PM M379).
+    #[test]
+    fn guests_are_brought_up_late_on_a_nested_hyperv_alone() {
+        assert_eq!(late_cpus_cmdline(1), "");
+        let late = late_cpus_cmdline(4);
+        #[cfg(hv = "whp")]
+        let nested = host_hyperv_nested();
+        #[cfg(not(hv = "whp"))]
+        let nested = false;
+        if nested {
+            assert!(
+                late.contains(" maxcpus=1 ") && late.contains("shards_online=1"),
+                "{late}"
+            );
+        } else {
+            assert_eq!(late, "");
+        }
+        let hv = [0x4000_000c, 0x7263_694d, 0x666f_736f, 0x7648_2074];
+        // windows-2022's and windows-2025's leaves, then jupiter's.
+        assert!(nested_hyperv(hv, 0x41d3c));
+        assert!(nested_hyperv(hv, 0x94_1d3c));
+        assert!(!nested_hyperv(hv, 0x94_0d1c));
+        // Another hypervisor's leaves, and a Hyper-V with no recommendations' leaf.
+        assert!(!nested_hyperv(
+            [0x4000_0001, 0x4b4d_564b, 0x564b_4d56, 0x4d],
+            0x1000
+        ));
+        assert!(!nested_hyperv([0x4000_0003, hv[1], hv[2], hv[3]], 0x1000));
+    }
+
     /// A working set naming a page the guest does not have is not prefetched at all
     /// (audit A16).
     #[test]
@@ -2579,6 +2819,26 @@ mod tests {
         for outside in [0x8010_0000, 0x7fff_c000, 0x1_0020_0000, !(page - 1)] {
             let set = vec![touch(0x8000_0000), touch(outside)];
             assert!(usable_working_set(set, page, &ranges).is_empty(), "{outside:#x}");
+        }
+    }
+
+    /// Off Linux a host's PCI function is refused by name, with the OS's own limit: macOS's
+    /// Hypervisor.framework assigns no device, and Windows assigns one through Discrete Device
+    /// Assignment on Windows Server alone (D154, PM M356).
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn a_hosts_pci_function_is_refused_with_its_oss_own_limit() {
+        for refused in [
+            Vfio::of("0000:01:00.0").unwrap_err(),
+            Vfio::of_cdev(std::path::Path::new("/dev/vfio/devices/vfio0")).unwrap_err(),
+        ] {
+            assert!(refused.ends_with(NO_PASSTHROUGH), "{refused}");
+            let limit = if cfg!(target_os = "macos") {
+                "Hypervisor.framework assigns no device"
+            } else {
+                "Discrete Device Assignment"
+            };
+            assert!(refused.contains(limit), "{refused}");
         }
     }
 }

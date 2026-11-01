@@ -8,12 +8,12 @@
 //! is, and a visit that only reads (`diff`, `export`, `cp` out of it) saves nothing.
 
 use std::fs::File;
-use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_cmdline::flags::{self, Outcome};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd as _, BorrowedFd};
 use shards_ipc::{Run, kind};
 
 use super::{Daemon, Inbox, Keep, LAYER_NEW, REQUEST, RunState, Threads, lock, log, network, open_layer};
@@ -149,14 +149,23 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let opened = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))?;
             prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None, None)?;
             crate::spec::fits(&prepared.spec)?;
-            let link = self.start_shares(threads, &opened.dirs, &prepared.parent)?;
+            let link = self.start_shares(threads, id, &opened.dirs, &prepared.parent)?;
             prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
             link
         } else {
             None
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a visit's connection: {e}"))?;
-        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        let handed = shards_ipc::handed(&theirs).map_err(|e| format!("a visit's connection: {e}"))?;
+        // Its shares' link as a message hands it on; on Windows each share's stream as it is
+        // (`ShareEnds`).
+        #[cfg(unix)]
+        let link = link
+            .as_ref()
+            .map(shards_ipc::handed)
+            .transpose()
+            .map_err(|e| format!("its shares' connection: {e}"))?;
+        let null = File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         // Its files as its last run left them: in their file (D190), packed here, or as its
         // guest packed them.
         let layer_in = self.layer_in(threads, id, false)?;
@@ -164,7 +173,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .then(|| open_layer(&dir.join(LAYER_NEW)).map_err(|e| format!("its writable layer: {e}")))
             .transpose()?;
         let mut flags = 0;
-        let mut fds: Vec<BorrowedFd<'_>> = vec![theirs.as_fd(), null.as_fd(), null.as_fd(), null.as_fd()];
+        let mut fds: Vec<BorrowedFd<'_>> = vec![handed.as_fd(), null.as_fd(), null.as_fd(), null.as_fd()];
         if let Some(file) = &layer_in {
             flags |= shards_ipc::RUN_LAYER_IN;
             fds.push(file.as_fd());
@@ -173,9 +182,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
             flags |= shards_ipc::RUN_LAYER_OUT;
             fds.push(file.as_fd());
         }
+        #[cfg(unix)]
         if let Some(link) = &link {
             fds.push(link.as_fd());
         }
+        // Each share's stream on Windows, sent after the request (`hand_over`).
+        #[cfg(windows)]
+        let ends: Vec<BorrowedFd<'_>> = link.iter().flatten().map(|e| e.as_fd()).collect();
+        #[cfg(unix)]
+        let ends: Vec<BorrowedFd<'_>> = Vec::new();
         let mut payload =
             Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));
         let kept = self.log_retention()?;
@@ -194,8 +209,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // Its own built-ins' reads: no run's I/O to limit.
             io_bytes: 0,
             io_requests: 0,
-            // Nor CPUs to hold.
+            // Nor CPUs to hold, nor a group's.
             cpus: 0,
+            group: false,
         }
         .encode_into(&mut payload);
         prepared.spec.encode_into(&mut payload);
@@ -206,6 +222,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             id,
             &payload,
             &fds,
+            &ends,
             Keep {
                 detached: None,
                 options: prepared.options.clone(),
@@ -254,7 +271,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// Takes run `id`'s messages until its VM says it holds: the built-ins' requests then
     /// find its files in place.
     fn await_holding(&self, id: &str, inbox: &Arc<Mutex<Inbox>>) -> Result<(), String> {
-        let fd = lock(inbox).socket.stream.as_raw_fd();
+        #[cfg(unix)]
+        let fd = {
+            use std::os::fd::AsRawFd as _;
+            lock(inbox).socket.stream.as_raw_fd()
+        };
+        // Its end, the inbox's still: what a read of it waits on.
+        #[cfg(windows)]
+        let stream = lock(inbox)
+            .socket
+            .stream
+            .try_clone()
+            .map_err(|e| format!("its VM's connection: {e}"))?;
         let deadline = Instant::now() + START_LIMIT;
         loop {
             let ended = self.take_messages(id, inbox);
@@ -271,14 +299,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if left.is_zero() {
                 return Err("its VM did not start in time".into());
             }
-            let mut polled = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let ms = libc::c_int::try_from(left.as_millis().min(1000)).unwrap_or(1000);
-            // SAFETY: poll(2) on one pollfd of a descriptor the inbox holds open.
-            unsafe { libc::poll(&raw mut polled, 1, ms) };
+            #[cfg(unix)]
+            {
+                let mut polled = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ms = libc::c_int::try_from(left.as_millis().min(1000)).unwrap_or(1000);
+                // SAFETY: poll(2) on one pollfd of a descriptor the inbox holds open.
+                unsafe { libc::poll(&raw mut polled, 1, ms) };
+            }
+            #[cfg(windows)]
+            let _ = stream.wait_readable(None, Instant::now().checked_add(left.min(Duration::from_secs(1))));
         }
     }
 }

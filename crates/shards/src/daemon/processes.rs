@@ -5,7 +5,6 @@
 //! processes` shows it, `shards watch processes` follows it as it grows.
 
 use std::io::{self, Write as _};
-use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 
 use super::commands::{Reply, wait_readable};
@@ -228,7 +227,7 @@ impl<D: Disk> Daemon<D> {
         // coming, by the run's end, or by the client's hanging up, as `logs -f` is; where
         // no watch can be had, it reads again every RETRY, as `logs -f` does.
         let followed = (|| -> io::Result<()> {
-            let mut watch = shards_vmm::platform::FileWatch::new(&std::fs::File::open(&dir)?).ok();
+            let mut watch = shards_vmm::platform::FileWatch::new(&shards_vmm::platform::open_dir(&dir)?).ok();
             // The segment watched, by its number.
             let mut watched: Option<u64> = None;
             let Some((number, end)) = self.wake_at_end(&id)? else {
@@ -252,11 +251,9 @@ impl<D: Disk> Daemon<D> {
                         }
                     }
                     let ready = wait_readable(
-                        &[
-                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
-                            Some(end.as_fd()),
-                            Some(reply.0.as_fd()),
-                        ],
+                        watch.as_ref(),
+                        &end,
+                        reply.0,
                         watch.is_none().then_some(super::RETRY),
                     )?;
                     if ready[1] {

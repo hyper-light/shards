@@ -15,30 +15,47 @@
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::sync::mpsc;
 
 use shards_abi::run::Spec;
+// The daemon's link and its clients' connections: Unix sockets on Unix, shards' own pipes
+// on Windows (D195). The guest's connections are the VMM's (workload.rs).
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd as _, OwnedFd};
 use shards_ipc::kind;
 
 use crate::spec::NOT_RUN;
 use crate::workload::{self, ToGuest};
 
-/// A warm VM's side of the daemon: the socket its request arrives on, and /dev/null, to
-/// replace the client's stdio when the VM lets go of the client.
+/// A warm VM's side of the daemon: the socket its request arrives on. The null device that
+/// replaces the client's stdio when the VM lets go of the client is held beside it
+/// ([`workload::null`]).
 pub struct Link {
     daemon: UnixStream,
-    null: File,
 }
 
 impl Link {
-    /// The daemon's socket at `fd`, which must be an open Unix socket other than stdio.
-    pub fn new(fd: RawFd) -> Result<Link, String> {
-        let daemon = daemon_socket(fd)?;
-        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-        Ok(Link { daemon, null })
+    /// The daemon's link, `--warm`'s `daemon`.
+    pub fn new(daemon: UnixStream) -> Link {
+        Link { daemon }
     }
+
+    /// The daemon's socket at `fd`, which must be an open Unix socket other than stdio.
+    #[cfg(unix)]
+    pub fn from_fd(fd: RawFd) -> Result<Link, String> {
+        Ok(Link::new(daemon_socket(fd)?))
+    }
+}
+
+/// The stream a message's handle `fd` is an end of, owned from here on: a socket's
+/// descriptor on Unix; on Windows a pipe's end the daemon gave this process.
+fn stream(fd: OwnedFd) -> Result<UnixStream, String> {
+    #[cfg(unix)]
+    return Ok(UnixStream::from(fd));
+    #[cfg(windows)]
+    return UnixStream::given(fd).map_err(|e| format!("a connection: {e}"));
 }
 
 /// One message at a time to the daemon, whichever of the VM's threads sends it, on a
@@ -55,7 +72,7 @@ fn to_daemon(
     daemon: &UnixStream,
     kind: u8,
     payload: &[u8],
-    fds: &[std::os::fd::BorrowedFd<'_>],
+    fds: &[shards_ipc::fd::BorrowedFd<'_>],
 ) -> io::Result<()> {
     let _turn = TO_DAEMON
         .lock()
@@ -64,8 +81,9 @@ fn to_daemon(
 }
 
 /// The VM's socket to its network process, on which its run's published ports close as
-/// the run ends (`--net-release`).
-static RELEASE: std::sync::OnceLock<UnixStream> = std::sync::OnceLock::new();
+/// the run ends (`--net-release`; on Windows the AF_UNIX socket given it as `net-release`,
+/// which that process waits on with its own, PM M213).
+static RELEASE: std::sync::OnceLock<shards_vmm::platform::UnixStream> = std::sync::OnceLock::new();
 /// The run publishes ports (`RUN_PUBLISHED`): only then is there anything to close.
 static PUBLISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -117,11 +135,20 @@ pub fn adopt_flush(flush: shards_vmm::devices::virtio::net::TxFlush) {
 }
 
 /// Takes the socket at `fd` as [`RELEASE`].
+#[cfg(unix)]
 pub fn adopt_release(fd: RawFd) -> Result<(), String> {
     let socket = inherited_socket("--net-release", fd)?;
     RELEASE
         .set(socket)
         .map_err(|_| "--net-release given twice".to_string())
+}
+
+/// Takes `socket`, its spawner's `net-release`, as [`RELEASE`] (Windows).
+#[cfg(windows)]
+pub fn adopt_release(socket: shards_vmm::platform::UnixStream) -> Result<(), String> {
+    RELEASE
+        .set(socket)
+        .map_err(|_| "net-release given twice".to_string())
 }
 
 /// Has the network process close the run's published ports, and waits until it has, so
@@ -134,30 +161,49 @@ pub fn adopt_release(fd: RawFd) -> Result<(), String> {
 /// ring, which it takes before UNPUBLISH: a datagram a command sends just before it exits
 /// reaches its peer, as a container's does, rather than going with the run's ports or its
 /// VM (the published UDP flake of 2026-10-06 and 2026-10-10: the guest answered its last
-/// datagram and exited, and the answer never came).
-fn release_ports() {
+/// datagram and exited, and the answer never came). Whether it published ports and its
+/// network process has closed them, as it answered.
+fn release_ports() -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     if let Some(flush) = FLUSH.get() {
         flush.flush(deadline);
     }
     if !PUBLISHED.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
+        return false;
     }
-    let Some(release) = RELEASE.get() else { return };
-    if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
-        return;
+    let Some(release) = RELEASE.get() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
+            return false;
+        }
+        // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
+        // setsockopt(2) (confine.rs).
+        matches!(shards_ipc::recv_by(release, deadline), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
     }
-    // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
-    // setsockopt(2) (confine.rs).
-    let _ = shards_ipc::recv_by(release, deadline);
+    #[cfg(windows)]
+    {
+        if shards_ipc::write_message(release, kind::UNPUBLISH, &[]).is_err() {
+            return false;
+        }
+        // Bounded by a poll before the read (shards_afunix's read timeout).
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        !left.is_zero()
+            && release.set_read_timeout(Some(left)).is_ok()
+            && matches!(shards_ipc::read_message(release), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
+    }
 }
 
+#[cfg(unix)]
 fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
     inherited_socket("--warm", fd)
 }
 
 /// The socket a spawner left this process at descriptor `fd`, named by option `flag`:
 /// owned from here on, and closed on exec.
+#[cfg(unix)]
 pub fn inherited_socket(flag: &str, fd: RawFd) -> Result<UnixStream, String> {
     if fd < 3 {
         return Err(format!("{flag} {fd}: not a descriptor of its own"));
@@ -208,6 +254,9 @@ pub struct Request {
     /// guest's swap window; or, for a run its microVM was restored from a save of, a copy of
     /// the swap the save kept (D176).
     pub swap: Option<File>,
+    /// Its group's CPU budget (D183, slice 3), which its microVM's vCPUs are held by too,
+    /// every microVM of the group charging it.
+    pub group: Option<File>,
     /// A run its microVM was restored from a save of (D176): the save's tokens, which its
     /// guest dials the host again with; its request brings them in place of a command.
     pub tokens: Option<Vec<u8>>,
@@ -259,6 +308,7 @@ fn watch_windows(daemon: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::
 
 /// Takes a connection for each of `slots` from the run's share process, in order, and
 /// says it has them (`kind::SHARE_ENDS`).
+#[cfg(unix)]
 fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -> Result<(), String> {
     let mut ends = Vec::with_capacity(slots.len());
     while ends.len() < slots.len() {
@@ -286,6 +336,32 @@ fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -
     Ok(())
 }
 
+/// Each of `count` shares' streams, which the daemon sends after a run's request on Windows
+/// (D197), `kind::SHARE_ENDS` messages of `MAX_FDS` at most.
+#[cfg(windows)]
+fn share_ends(daemon: &UnixStream, count: usize) -> Result<Vec<OwnedFd>, String> {
+    let mut ends = Vec::with_capacity(count);
+    while ends.len() < count {
+        let m = shards_ipc::recv(daemon)
+            .map_err(|e| format!("waiting for its shares' streams: {e}"))?
+            .ok_or("the daemon closed before its shares' streams")?;
+        if m.kind != kind::SHARE_ENDS {
+            return Err(format!(
+                "expected its shares' streams, got message kind {}",
+                m.kind
+            ));
+        }
+        ends.extend(m.fds);
+    }
+    if ends.len() != count {
+        return Err(format!(
+            "the daemon gave {} streams for {count} shares",
+            ends.len()
+        ));
+    }
+    Ok(ends)
+}
+
 /// Tells the daemon this VM is ready, then waits for its request, and tells the daemon it
 /// has taken it. Until then the daemon holds its own copies of the client's descriptors,
 /// and gives the request to another VM if this one fails. Then makes the client's stdio
@@ -303,6 +379,8 @@ struct Head<'a> {
     io: (u64, u64),
     /// The CPUs its microVM is held to (D191), 0 for every one.
     cpus: u32,
+    /// A group's CPU budget holds it too (D183): its file comes after its swap.
+    group: bool,
     spec: &'a [u8],
 }
 
@@ -333,6 +411,7 @@ fn head(payload: &[u8]) -> Result<Head<'_>, String> {
         queue: head.queue,
         io: (head.io_bytes, head.io_requests),
         cpus: u32::try_from(head.cpus).unwrap_or(u32::MAX),
+        group: head.group,
         spec,
     })
 }
@@ -365,6 +444,7 @@ pub fn receive(
         queue,
         io,
         cpus,
+        group,
         spec,
     } = head(&request.payload)?;
     let (spec, tokens) = if resumed {
@@ -386,15 +466,11 @@ pub fn receive(
         fds.next()
             .ok_or(format!("a request brings too few descriptors: {count}"))
     };
-    let client = if detached {
-        None
-    } else {
-        Some(UnixStream::from(next()?))
-    };
+    let client = if detached { None } else { Some(stream(next()?)?) };
     let stdin = next()?;
     // A detached run's output goes only to its log.
     let (stdout, stderr) = if detached {
-        let null = || link.null.try_clone().map_err(|e| format!("/dev/null: {e}"));
+        let null = || workload::null().map_err(|e| format!("the null device: {e}"));
         (null()?, null()?)
     } else {
         (File::from(next()?), File::from(next()?))
@@ -432,16 +508,24 @@ pub fn receive(
     } else {
         None
     };
-    // Its share process (D38), where this VM was made with shared directories.
+    // Its group's CPU budget (D183), which every microVM of the group charges.
+    let group = if group { Some(File::from(next()?)) } else { None };
+    // Its share process's (D38), where this VM was made with shared directories: its
+    // connection to it on Unix, which hands it each share's stream; on Windows each share's
+    // stream itself, whose other end the share process holds, from the daemon after the
+    // request (D197).
     let slots = crate::vm_run::SHARES.get().map(Vec::as_slice).unwrap_or_default();
+    #[cfg(unix)]
     let share_link = if slots.is_empty() {
         None
     } else {
-        Some(UnixStream::from(next()?))
+        Some(stream(next()?)?)
     };
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
+    #[cfg(windows)]
+    let share_ends = share_ends(daemon, slots.len())?;
     // What must hold for this VM to take a run, checked while the daemon may still give
     // it to another.
     may_take()?;
@@ -462,28 +546,23 @@ pub fn receive(
     // restored run's among them, which its shares map again as they are given.
     #[cfg(target_os = "linux")]
     watch_windows(daemon, slots);
+    #[cfg(unix)]
     if let Some(link) = share_link {
         shared(&link, slots)?;
     }
+    #[cfg(windows)]
+    for (slot, end) in slots.iter().zip(share_ends) {
+        let conn = shards_vmm::platform::PipeStream::from_handle(end)
+            .map_err(|e| format!("a share's stream: {e}"))?;
+        slot.attach(conn)?;
+    }
     // The VM's own log stays where it was, its daemon's: the client's stderr carries the
     // command's alone, as a container's does (review 8.10).
-    if let Ok(log) = std::os::fd::AsFd::as_fd(&io::stderr()).try_clone_to_owned() {
+    if let Ok(log) = shards_ipc::fd::AsFd::as_fd(&io::stderr()).try_clone_to_owned() {
         shards_vmm::log::to(File::from(log));
     }
-    for (fd, target) in [
-        (stdin.as_raw_fd(), 0),
-        (stdout.as_raw_fd(), 1),
-        (stderr.as_raw_fd(), 2),
-    ] {
-        // SAFETY: dup2(2) onto this process's standard descriptors, which nothing else in
-        // this process holds open as its own.
-        if unsafe { libc::dup2(fd, target) } < 0 {
-            return Err(format!(
-                "taking the client's stdio: {}",
-                io::Error::last_os_error()
-            ));
-        }
-    }
+    set_stdio([stdin, OwnedFd::from(stdout), OwnedFd::from(stderr)])
+        .map_err(|e| format!("taking the client's stdio: {e}"))?;
     // The command will run: a signal from here on waits for it rather than being lost.
     workload::will_run(to);
     let from_daemon = daemon
@@ -503,6 +582,7 @@ pub fn receive(
         io,
         cpus,
         swap,
+        group,
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
         detached,
@@ -574,6 +654,35 @@ enum From<'a> {
     Joiner(mpsc::Sender<Segment>, &'a std::sync::atomic::AtomicU32),
 }
 
+/// A pause (true) or resume the daemon asked for: its number, and a copy of the daemon's
+/// connection to answer on.
+type Pause = (bool, [u8; 8], UnixStream);
+
+/// The pauses and resumes the daemon asks of this VM (`PAUSE`), done in order on a thread
+/// of their own, each answered (`PAUSED`) on its own copy of the daemon's connection as it
+/// is done: a pause waits for every vCPU to be held, which a vCPU busy with an exit this
+/// connection serves must not wait out.
+fn pauses() -> Result<&'static mpsc::Sender<Pause>, String> {
+    static PAUSES: std::sync::OnceLock<Result<mpsc::Sender<Pause>, String>> = std::sync::OnceLock::new();
+    PAUSES
+        .get_or_init(|| {
+            let (asks, asked) = mpsc::channel::<Pause>();
+            std::thread::Builder::new()
+                .name("pauses".into())
+                .spawn(move || {
+                    for (frozen, number, answer) in asked {
+                        let done = crate::vm_run::pause(frozen);
+                        let said = done.as_ref().err().map(String::as_bytes).unwrap_or_default();
+                        let _ = to_daemon(&answer, kind::PAUSED, &[&number[..], said].concat(), &[]);
+                    }
+                })
+                .map(|_| asks)
+                .map_err(|e| format!("its pauses' thread: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
 /// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
 /// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
@@ -607,10 +716,18 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = segments.send((u64::from_be_bytes(seq), message.fds));
                 }
             }
-            // An engine connection the daemon has (D181): this VM's copy goes (M24).
+            // An engine connection the daemon has (D181): this VM's copy goes (M24). On
+            // Windows the daemon gives the pipe the connection is relayed onto, or none for
+            // a connection it closes.
             kind::ENGINE_CONN if matches!(from, From::Daemon(_)) => {
                 if let Ok(n) = <[u8; 8]>::try_from(message.payload.as_slice()) {
-                    engine_held().remove(&u64::from_be_bytes(n));
+                    let held = engine_held().remove(&u64::from_be_bytes(n));
+                    #[cfg(windows)]
+                    if let (Some(guest), Some(pipe)) = (held, message.fds.into_iter().next()) {
+                        relay_engine(guest, pipe);
+                    }
+                    #[cfg(unix)]
+                    drop(held);
                 }
             }
             // Its run's limit updated (D148): its guest's most to plug, before the exec that
@@ -632,9 +749,26 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = writeln!(io::stderr(), "shards: its CPUs' hold: {e}");
                 }
             }
+            // Paused where it is, or let go on (`pause`, `unpause`): in order, each
+            // answered once done ([`pauses`]).
+            kind::PAUSE if matches!(from, From::Daemon(_)) => {
+                if let Some((&frozen, number)) = message.payload.split_first()
+                    && let Ok(number) = <[u8; 8]>::try_from(number)
+                {
+                    let asked = conn.try_clone().map_err(|e| e.to_string()).and_then(|answer| {
+                        pauses()?
+                            .send((frozen == 1, number, answer))
+                            .map_err(|_| "its pauses' thread has ended".to_string())
+                    });
+                    if let Err(e) = asked {
+                        let _ = to_daemon(conn, kind::PAUSED, &[&number[..], e.as_bytes()].concat(), &[]);
+                    }
+                }
+            }
             // A file a share's DAX window maps, cut short by another process (D189): mapped
             // as it is now, zeros where it has no pages, and a vCPU that spun there on its
             // guest's read past its end runs on (PM M273).
+            #[cfg(unix)]
             kind::CUT if matches!(from, From::Daemon(_)) => {
                 let named = message
                     .payload
@@ -729,14 +863,22 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                 }
             }
             // The server of its join share (D119), from the first joiner to bring volumes:
-            // before that joiner's `JOIN`, and so before its guest mounts the share.
+            // before that joiner's `JOIN`, and so before its guest mounts the share. On
+            // Windows its stream itself, a duplex pipe whose other end the server holds
+            // (D197).
             kind::JOIN_SHARE if !client && joiner.is_none() => {
                 if let Some(number) = message.payload.first_chunk::<8>() {
                     let _ = to_daemon(conn, kind::EXEC_TAKEN, number, &[]);
                 }
                 match (message.fds.into_iter().next(), crate::vm_run::join_share()) {
                     (Some(server), Some(slot)) => {
-                        if let Err(e) = slot.attach(UnixStream::from(server)) {
+                        #[cfg(unix)]
+                        let attached = slot.attach(UnixStream::from(server));
+                        #[cfg(windows)]
+                        let attached = shards_vmm::platform::PipeStream::from_handle(server)
+                            .map_err(|e| format!("its stream: {e}"))
+                            .and_then(|stream| slot.attach(stream));
+                        if let Err(e) = attached {
                             let _ = writeln!(io::stderr(), "shards: a join share: {e}");
                         }
                     }
@@ -766,7 +908,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             _ => {}
         }
     }
-    if client && let Ok(null) = File::open("/dev/null") {
+    if client && let Ok(null) = workload::null() {
         let_go(&null);
     }
     // The daemon gone with the run going: its stop, its signal and then SIGKILL once its
@@ -906,7 +1048,7 @@ fn exec_request(
             detached: flags & shards_ipc::EXEC_DETACHED != 0,
             number,
             daemon,
-            client: UnixStream::from(client),
+            client: stream(client)?,
             stdin: File::from(stdin),
             stdout: File::from(stdout),
             stderr: File::from(stderr),
@@ -951,7 +1093,7 @@ fn join_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<()
     let (Some(link), Some(image), None) = (fds.next(), fds.next(), fds.next()) else {
         return Err("a join without its connection and image".into());
     };
-    let link = UnixStream::from(link);
+    let link = stream(link)?;
     // What fails here, the run says as its own start failing, once it has the run.
     let range = match crate::vm_run::join_disk() {
         // A joiner starting in a guest going quiet for its save would be in its snapshot
@@ -1008,11 +1150,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
         fds.next()
             .ok_or(format!("a request brings too few descriptors: {count}"))
     };
-    let client = if detached {
-        None
-    } else {
-        Some(UnixStream::from(next()?))
-    };
+    let client = if detached { None } else { Some(stream(next()?)?) };
     let stdin = File::from(next()?);
     let (stdout, stderr) = if detached {
         (None, None)
@@ -1242,7 +1380,7 @@ fn attach_request(
         return Err("an attach without its client's four descriptors".into());
     };
     let req = workload::AttachRequest {
-        client: UnixStream::from(client),
+        client: stream(client)?,
         stdin: File::from(stdin),
         stdout: File::from(stdout),
         stderr: File::from(stderr),
@@ -1257,11 +1395,15 @@ fn attach_request(
 }
 
 /// The engine connections handed to the daemon and not yet taken, by number: held
-/// meanwhile, as XNU collects a socket in flight that no process holds (M24).
-static ENGINE_HELD: std::sync::Mutex<std::collections::BTreeMap<u64, UnixStream>> =
+/// meanwhile, as XNU collects a socket in flight that no process holds (M24); on Windows
+/// until the daemon gives the pipe each is relayed onto.
+static ENGINE_HELD: std::sync::Mutex<std::collections::BTreeMap<u64, GuestConn>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-fn engine_held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, UnixStream>> {
+/// A guest's connection to a port this VM serves, as its vsock device makes it.
+type GuestConn = shards_vmm::platform::UnixStream;
+
+fn engine_held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, GuestConn>> {
     ENGINE_HELD
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1286,7 +1428,9 @@ pub fn engine_token(spec: &Spec) -> Option<[u8; shards_abi::run::TOKEN]> {
 /// Serves the run's own engine port (D181) on a thread of its own: each guest connection
 /// whose hello says `token`, which only the guest's init was given, is the daemon's, on
 /// this VM's link (`ENGINE_CONN`), held here until the daemon says it has it; any other is
-/// closed. The daemon serves it with its Engine API, scoped to this microVM.
+/// closed. The daemon serves it with its Engine API, scoped to this microVM. On Windows,
+/// where a VM gives its daemon no handle, the daemon gives a pipe for it instead, which
+/// the connection is relayed onto ([`relay_engine`]).
 pub fn serve_engine(
     link: &Link,
     token: [u8; shards_abi::run::TOKEN],
@@ -1297,23 +1441,20 @@ pub fn serve_engine(
         .try_clone()
         .map_err(|e| format!("the daemon's connection: {e}"))?;
     let next = std::sync::atomic::AtomicU64::new(0);
-    let heard = move |conn: UnixStream, said: &[u8; shards_abi::run::TOKEN]| {
+    let heard = move |conn: GuestConn, said: &[u8; shards_abi::run::TOKEN]| {
         if !workload::same_token(&token, said) || conn.set_nonblocking(false).is_err() {
             return;
         }
         let number = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Held before it goes, as the daemon's answer may come before the send returns.
-        let Ok(held) = conn.try_clone() else {
+        #[cfg(unix)]
+        let (Ok(held), handed) = (conn.try_clone(), [std::os::fd::AsFd::as_fd(&conn)]) else {
             return;
         };
+        #[cfg(windows)]
+        let (held, handed) = (conn, []);
         engine_held().insert(number, held);
-        let sent = to_daemon(
-            &daemon,
-            kind::ENGINE_CONN,
-            &number.to_be_bytes(),
-            &[std::os::fd::AsFd::as_fd(&conn)],
-        );
-        if sent.is_err() {
+        if to_daemon(&daemon, kind::ENGINE_CONN, &number.to_be_bytes(), &handed).is_err() {
             engine_held().remove(&number);
         }
     };
@@ -1322,6 +1463,83 @@ pub fn serve_engine(
         .spawn(move || workload::accept_hellos(port, "engine-hellos", heard))
         .map(drop)
         .map_err(|e| format!("its engine's thread: {e}"))
+}
+
+/// Relays a guest's connection to its run's engine onto the pipe its daemon gave for it
+/// (Windows, where a VM gives its daemon no handle): each way on a thread of its own, the
+/// end of each side's writes said to the other (the pipe's message of no bytes, the
+/// socket's half-close), as the daemon serves a connection passed whole elsewhere; a side
+/// that can take no more ends the other's, and each is closed once both ways have ended.
+#[cfg(windows)]
+fn relay_engine(guest: GuestConn, pipe: OwnedFd) {
+    let Ok(pipe) = UnixStream::given(pipe) else {
+        return;
+    };
+    let (Ok(guest_down), Ok(pipe_down)) = (guest.try_clone(), pipe.try_clone()) else {
+        return;
+    };
+    let down = std::thread::Builder::new()
+        .name("engine-down".into())
+        .spawn(move || {
+            pass(
+                &pipe_down,
+                &guest_down,
+                |guest| guest.shutdown(std::net::Shutdown::Write),
+                shards_ipc::end,
+            )
+        });
+    if down.is_err() {
+        return;
+    }
+    let up = std::thread::Builder::new().name("engine-up".into()).spawn({
+        let (guest, pipe) = (guest.try_clone(), pipe.try_clone());
+        move || {
+            if let (Ok(guest), Ok(pipe)) = (guest, pipe) {
+                pass(
+                    &guest,
+                    &pipe,
+                    |pipe| pipe.shutdown(std::net::Shutdown::Write),
+                    |guest| {
+                        let _ = guest.shutdown(std::net::Shutdown::Both);
+                    },
+                );
+            }
+        }
+    });
+    if up.is_err() {
+        shards_ipc::end(&pipe);
+        let _ = guest.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Copies what `from` reads to `to` until `from` ends, then ends `to`'s writes
+/// (`ended`); where `to` takes no more, ends `from` (`refused`), so that its writer stops.
+#[cfg(windows)]
+fn pass<F: ?Sized, T: ?Sized>(
+    from: &F,
+    to: &T,
+    ended: impl FnOnce(&T) -> io::Result<()>,
+    refused: impl FnOnce(&F),
+) where
+    for<'a> &'a F: io::Read,
+    for<'a> &'a T: Write,
+{
+    let mut buf = vec![0u8; 64 << 10];
+    loop {
+        match shards_ipc::read(from, &mut buf) {
+            Ok(0) | Err(_) => {
+                let _ = ended(to);
+                return;
+            }
+            Ok(n) => {
+                let mut to = to;
+                if to.write_all(buf.get(..n).unwrap_or_default()).is_err() {
+                    refused(from);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Tells the daemon the command runs, before the client has anything the command wrote.
@@ -1379,7 +1597,9 @@ pub fn finish(
         said_status = exits;
         status = *kept;
     }
-    let_go(&link.null);
+    if let Ok(null) = workload::null() {
+        let_go(&null);
+    }
     let mut done = vec![status];
     if let Some((said, _)) = &failed {
         done.extend_from_slice(said.as_bytes());
@@ -1399,7 +1619,11 @@ pub fn finish(
             to_daemon(&link.daemon, kind::WORKING_SET, part, &[])
         });
     }
-    release_ports();
+    // Its ports closed, the daemon frees them before it hears the run is done, as dockerd's
+    // are by the time `docker run` returns.
+    if release_ports() {
+        let _ = to_daemon(&link.daemon, kind::PORTS_FREE, &[], &[]);
+    }
     release_host(0);
     let _ = to_daemon(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {
@@ -1409,7 +1633,7 @@ pub fn finish(
             .load(std::sync::atomic::Ordering::Relaxed)
             .then(own_pidfd)
             .flatten();
-        let fds: Vec<std::os::fd::BorrowedFd<'_>> = pidfd.iter().map(std::os::fd::AsFd::as_fd).collect();
+        let fds: Vec<shards_ipc::fd::BorrowedFd<'_>> = pidfd.iter().map(|p| p.as_fd()).collect();
         let _ = shards_ipc::send(client, kind::EXIT, &payload, &fds);
     }
 }
@@ -1538,37 +1762,120 @@ pub fn tell_kept() {
 }
 
 /// Stops using the client's stdio: this process's standard descriptors become `null`.
+/// Should that fail, they stay the client's until this process exits.
 fn let_go(null: &File) {
-    for target in [0, 1, 2] {
-        // SAFETY: dup2(2) onto this process's own standard descriptors. Should it fail,
-        // the descriptor stays the client's until this process exits.
-        unsafe { libc::dup2(null.as_raw_fd(), target) };
+    let nulls = [null.try_clone(), null.try_clone(), null.try_clone()];
+    if let [Ok(a), Ok(b), Ok(c)] = nulls {
+        let _ = set_stdio([a.into(), b.into(), c.into()]);
     }
+}
+
+/// Makes `stdio` this process's standard input, output and error, each its own from here
+/// on: dup2(2) onto 0, 1 and 2 on Unix, which closes what they were; on Windows its
+/// standard handles (SetStdHandle), those they were closed after, each once. A thread may
+/// be reading the standard input it was, a client's that says nothing: on Windows that
+/// read is cancelled (CancelIoEx) and the handle closed on a thread of its own, since a
+/// close of a handle a synchronous read waits on waits for that read, as dup2 never does.
+fn set_stdio(stdio: [OwnedFd; 3]) -> io::Result<()> {
+    #[cfg(unix)]
+    for (fd, target) in stdio.iter().zip([0, 1, 2]) {
+        // SAFETY: dup2(2) onto this process's standard descriptors, which nothing else in
+        // this process holds open as its own.
+        if unsafe { libc::dup2(fd.as_raw_fd(), target) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::IntoRawHandle as _;
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+        };
+        let which = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+        // SAFETY: no pointers: the process's standard handles as they are.
+        let before = which.map(|w| unsafe { GetStdHandle(w) });
+        let mut now = Vec::with_capacity(3);
+        for (handle, w) in stdio.into_iter().zip(which) {
+            let raw = handle.into_raw_handle();
+            // SAFETY: a handle of this process's, its standard one from here on.
+            if unsafe { SetStdHandle(w, raw) } == 0 {
+                let e = io::Error::last_os_error();
+                // SAFETY: the handle just let go of, which nothing took.
+                unsafe { CloseHandle(raw) };
+                return Err(e);
+            }
+            now.push(raw);
+        }
+        let mut closed = Vec::with_capacity(3);
+        // Its output and error first, which its client waits to see end; its input last.
+        for (i, old) in before.into_iter().enumerate().rev() {
+            if old.is_null() || old == INVALID_HANDLE_VALUE || now.contains(&old) || closed.contains(&old) {
+                continue;
+            }
+            closed.push(old);
+            if i == 0 {
+                close_input(old);
+                continue;
+            }
+            // SAFETY: a standard handle this process had, none of its own from here on.
+            unsafe { CloseHandle(old) };
+        }
+    }
+    Ok(())
+}
+
+/// Closes `old`, the standard input this process had, waiting for no read of it: one under
+/// way is cancelled, and the handle closed on a thread of its own, which a read cancel does
+/// not end waits for.
+#[cfg(windows)]
+fn close_input(old: windows_sys::Win32::Foundation::HANDLE) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::IO::CancelIoEx;
+    // SAFETY: a handle this process holds; no OVERLAPPED: every request on it.
+    unsafe { CancelIoEx(old, std::ptr::null()) };
+    let raw = old as usize;
+    let closing = std::thread::Builder::new()
+        .name("stdin-close".into())
+        .spawn(move || {
+            // SAFETY: the standard handle let go of above, closed here alone.
+            unsafe { CloseHandle(raw as windows_sys::Win32::Foundation::HANDLE) };
+        });
+    // Where no thread starts, it stays open until this process exits.
+    drop(closing);
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::os::fd::AsFd as _;
+
+    /// The null device's path.
+    const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
     /// A request that brings fewer descriptors than it needs, or more, is refused, in words
     /// that say which, before the VM takes it.
     #[test]
     fn a_request_with_the_wrong_descriptors_is_refused() {
         static TO_GUEST: ToGuest = ToGuest::new(workload::Signals::new());
+        workload::hold_null(File::open(NULL).unwrap());
+        // A file, as a log and its index are: CI's Windows Server reads no metadata of NUL
+        // (ERROR_INVALID_FUNCTION), which a log's is read first.
+        let dir = shards_testdir::TempDir::new("warm-fds").unwrap();
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.path().join("f"))
+            .unwrap();
         // A detached run's: its stdin, its log and its index.
         for (given, said) in [
             (1, "a request brings too few descriptors: 1"),
             (4, "a request brings too many descriptors: 4"),
         ] {
             let (ours, daemon) = UnixStream::pair().unwrap();
-            let link = Link {
-                daemon: ours,
-                null: File::open("/dev/null").unwrap(),
-            };
-            let null = File::open("/dev/null").unwrap();
-            let fds = vec![null.as_fd(); given];
+            let link = Link::new(ours);
+            let fds = vec![file.as_fd(); given];
             let refused = std::thread::scope(|s| {
                 let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(()), false));
                 assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);

@@ -1,11 +1,11 @@
 //! Images' calls (D170): pulled, inspected and listed as shards' CLI asks for each.
 
 use std::io::BufRead;
-use std::os::fd::AsFd as _;
-use std::os::unix::net::UnixStream;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::AsFd as _;
 use shards_ipc::kind;
 
 use super::http::{self, Answer, Stream};
@@ -509,7 +509,10 @@ impl<D: Disk> Daemon<D> {
         if http::head_to_close(conn, 200, "application/x-tar", &[]).is_err() {
             return Done::Close;
         }
-        let _ = self.ask_command_with(threads, &argv, &[conn.as_fd()]);
+        let Ok(out) = shards_ipc::handed(conn) else {
+            return Done::Close;
+        };
+        let _ = self.ask_command_with(threads, &argv, &[out.as_fd()]);
         shards_ipc::end(conn);
         Done::Close
     }

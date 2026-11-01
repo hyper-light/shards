@@ -15,13 +15,8 @@ use std::path::{Path, PathBuf};
 
 /// Where the archive goes.
 pub enum Output {
-    #[cfg(unix)]
     Stdout(std::io::Stdout),
-    File {
-        file: File,
-        temp: Temp,
-        dest: PathBuf,
-    },
+    File { file: File, temp: Temp, dest: PathBuf },
 }
 
 /// The temporary file the archive is written to, removed when this is dropped: once it is
@@ -83,6 +78,62 @@ pub fn output(path: &str, failed: &str) -> Result<Output, String> {
         return Err(format!("{failed}: {e}"));
     }
     Ok(Output::File { file, temp, dest })
+}
+
+/// The output `-o` names, or stdout; or what the CLI says instead. On Windows the console's
+/// events that end the client (Ctrl-C, Ctrl-Break, its close, logoff, shutdown) remove the
+/// temporary file first, as Unix's signals do, then end the client as they would have
+/// ([`remove_when_ended`]).
+#[cfg(windows)]
+pub fn output(path: &str, failed: &str) -> Result<Output, String> {
+    use std::io::IsTerminal as _;
+    if path.is_empty() {
+        if std::io::stdout().is_terminal() {
+            return Err("cowardly refusing to save to a terminal. Use the -o flag or redirect".into());
+        }
+        return Ok(Output::Stdout(std::io::stdout()));
+    }
+    let (dir, base, dest) = destination(path, failed)?;
+    let (file, temp) = create_temp(&dir, &base).map_err(|e| format!("{failed}: {e}"))?;
+    remove_when_ended(temp.0.clone()).map_err(|e| format!("{failed}: {}", go(&e)))?;
+    Ok(Output::File { file, temp, dest })
+}
+
+/// The temporary file a console event that ends the client removes first
+/// ([`remove_when_ended`]).
+#[cfg(windows)]
+static ENDED_TEMP: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Has each console event that ends the client remove `temp` first: the handler removes it,
+/// then leaves the event to the next, Windows' own, which ends the process as it would have
+/// ended (ExitProcess with STATUS_CONTROL_C_EXIT).
+#[cfg(windows)]
+fn remove_when_ended(temp: PathBuf) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+        SetConsoleCtrlHandler,
+    };
+    unsafe extern "system" fn on_event(event: u32) -> windows_sys::core::BOOL {
+        if matches!(
+            event,
+            CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
+        ) && let Some(temp) = ENDED_TEMP
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = std::fs::remove_file(temp);
+        }
+        0
+    }
+    *ENDED_TEMP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(temp);
+    // SAFETY: a handler this process keeps for its life.
+    if unsafe { SetConsoleCtrlHandler(Some(on_event), 1) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// The file `-o` names, written as [`output`] writes it, the signals that end this process
@@ -189,10 +240,12 @@ fn random() -> Result<u32, String> {
     Ok(u32::from_le_bytes(b))
 }
 
-/// atomicwriter's validateDestination.
+/// atomicwriter's validateDestination: its directory as Go's filepath.Dir has it, and each
+/// error as os.Stat and os.Lstat give it on this platform ([`stat_op`]).
 fn validate(name: &str) -> Result<(), String> {
     let path = Path::new(name);
-    let dir = path.parent().map(Path::as_os_str).unwrap_or_default();
+    let dir = shards_archive::copy::dir(path);
+    let dir = dir.as_os_str();
     if !dir.is_empty() && dir != "." && dir != ".." {
         match std::fs::metadata(dir) {
             Ok(m) if m.is_dir() => {}
@@ -204,7 +257,8 @@ fn validate(name: &str) -> Result<(), String> {
             }
             Err(e) => {
                 return Err(format!(
-                    "invalid output path: stat {}: {}",
+                    "invalid output path: {} {}: {}",
+                    stat_op(&e, "stat"),
                     dir.to_string_lossy(),
                     go(&e)
                 ));
@@ -213,10 +267,39 @@ fn validate(name: &str) -> Result<(), String> {
     }
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("failed to stat output path: lstat {name}: {}", go(&e))),
+        Err(e) if not_there(&e) => return Ok(()),
+        Err(e) => {
+            return Err(format!(
+                "failed to stat output path: {} {name}: {}",
+                stat_op(&e, "lstat"),
+                go(&e)
+            ));
+        }
     };
     unwritable(&meta).map_or(Ok(()), |why| Err(why.to_string()))
+}
+
+/// Whether `e` is os.ErrNotExist's: on Windows ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+/// or ERROR_BAD_NETPATH (syscall_windows.go, `Errno.Is`), where std's NotFound takes more.
+fn not_there(e: &std::io::Error) -> bool {
+    if cfg!(windows) {
+        matches!(e.raw_os_error(), Some(2 | 3 | 53))
+    } else {
+        e.kind() == std::io::ErrorKind::NotFound
+    }
+}
+
+/// The call Go's os.Stat and os.Lstat name in an error of theirs: `unix`'s off Windows; on
+/// Windows GetFileAttributesEx's for a path not there, else CreateFile's, which they try
+/// next (os/stat_windows.go, `stat`).
+fn stat_op(e: &std::io::Error, unix: &'static str) -> &'static str {
+    if !cfg!(windows) {
+        unix
+    } else if not_there(e) {
+        "GetFileAttributesEx"
+    } else {
+        "CreateFile"
+    }
 }
 
 /// What atomicwriter refuses of an existing destination, by its type and mode.
@@ -266,7 +349,6 @@ impl Output {
     pub fn handle(&self) -> Option<&File> {
         match self {
             Output::File { file, .. } => Some(file),
-            #[cfg(unix)]
             Output::Stdout(_) => None,
         }
     }
@@ -275,15 +357,13 @@ impl Output {
     pub fn temp(&self) -> Option<&Path> {
         match self {
             Output::File { temp, .. } => Some(&temp.0),
-            #[cfg(unix)]
             Output::Stdout(_) => None,
         }
     }
 
     /// The descriptor the daemon writes the archive to.
-    #[cfg(unix)]
-    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        use std::os::fd::AsFd as _;
+    pub fn fd(&self) -> shards_ipc::fd::BorrowedFd<'_> {
+        use shards_ipc::fd::AsFd as _;
         match self {
             Output::Stdout(out) => out.as_fd(),
             Output::File { file, .. } => file.as_fd(),
@@ -296,7 +376,6 @@ impl Output {
     pub fn finish(self, status: u8) -> Result<(), String> {
         let (file, temp, dest) = match self {
             Output::File { file, temp, dest } => (file, temp, dest),
-            #[cfg(unix)]
             Output::Stdout(_) => return Ok(()),
         };
         let written = file.metadata().map(|m| m.len() > 0).unwrap_or(false);
@@ -321,11 +400,9 @@ impl Output {
 
 /// Where `shards load` reads, as docker/cli's runLoad opens it: `-i`'s file, or stdin,
 /// unless it is a terminal. What the CLI says instead, in Go's words.
-#[cfg(unix)]
 pub fn input(path: &str) -> Result<Option<File>, String> {
     if path.is_empty() {
-        // SAFETY: isatty(3) on this process's stdin.
-        if unsafe { libc::isatty(0) } == 1 {
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             return Err("requested load from stdin, but stdin is empty".into());
         }
         return Ok(None);

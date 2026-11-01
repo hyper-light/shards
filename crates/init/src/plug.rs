@@ -399,6 +399,15 @@ impl Plug {
         }
         enable(BUILD)?;
         enable(&format!("{BUILD}/steps"))?;
+        // Its peak, counted afresh by each giving back through this descriptor
+        // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
+        if let Ok(peak) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{BUILD}/memory.peak"))
+        {
+            let _ = PEAK.set(peak);
+        }
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         let mut fds = [0; 2];
@@ -535,9 +544,17 @@ fn grown_hold(cgroup: &str) -> io::Result<u64> {
 /// needs to go on ([`working_room`]), which a room short of it raises no hold past (what
 /// it holds past the room is given back by the host's passes, `RECLAIM`, whose pages the
 /// kernel reports free together); or with no budget (`None`), as its memory alone holds
-/// it. What the hold leaves above it the kernel reclaims at once, which is then reported
-/// free (D151). The bytes it is held within past what it uses; `None` with no budget.
+/// it. A room short of nothing, its budget already past, first has as much of the run's
+/// file pages reclaimed as it is short ([`crate::run::reclaim_files`]): its host takes that
+/// back one way or another, and with no swap only by throttling it, where what the guest's
+/// own passes counted cold (`inactive_file`) left a held build's host 38 MiB past its
+/// budget, its reread throttled for 15 minutes (CI's ubuntu-24.04, 2026-10-27). What the
+/// hold leaves above it the kernel reclaims at once, which is then reported free (D151).
+/// The bytes it is held within past what it uses; `None` with no budget.
 pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
+    if let Some(short) = room.filter(|r| *r < 0) {
+        crate::run::reclaim_files(cgroup, short.unsigned_abs())?;
+    }
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
     set_cap(room.map_or(u64::MAX, |r| within(used, r, working_room(), cap())));
@@ -726,6 +743,105 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     Ok(plugged.saturating_sub(keep))
 }
 
+/// Answers its host's asks for what the builder holds cold back, on `conn`
+/// (shards_abi::build::GIVE_PORT, D188), from a process of PID 1's in the root cgroup,
+/// which no `memory.high` slows, as the grower is: the host asks as it runs short, when the
+/// build may be held at its own. At each `GIVE_BACK`, what the build's cgroup holds cold of
+/// its files reclaimed and reported free at once, then what the builder holds plugged past
+/// what it keeps asked to be unplugged ([`shrink_run`]), as a run's init answers `RECLAIM`;
+/// else why it gave nothing back. It ends as its connection does. Called by PID 1 before it
+/// starts any thread.
+pub fn answer_give_backs(conn: std::fs::File) -> io::Result<()> {
+    // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy of a
+    // process with no other thread, whose locks no one holds.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(err(format!(
+            "starting the give-back's answerer: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    if pid == 0 {
+        // Out of the build's cgroup, where PID 1 is: the root's ("0", the writer itself).
+        let _ = std::fs::write("/sys/fs/cgroup/cgroup.procs", "0");
+        answer(
+            &conn,
+            || crate::run::reclaim_cold(BUILD).and_then(|freed| Ok((freed, shrink_run(BUILD)?))),
+            |room| hold_within(BUILD, room),
+        );
+        // SAFETY: _exit(2) ends this process alone.
+        unsafe { libc::_exit(0) };
+    }
+    Ok(())
+}
+
+/// The most a frame on the give-back connection holds: a `GIVE_BACK` holds nothing and a
+/// `ROOM` a number, and a frame past this ends the connection rather than have its answerer
+/// hold it.
+const GIVE_FRAME: usize = 4096;
+
+/// What [`answer_give_backs`]'s process does until its connection ends: each frame read
+/// whole; each `GIVE_BACK` answered with a `GAVE` of what `give` gave back (the bytes its
+/// files freed and those it asked to unplug), or of why nothing; each `ROOM` with a `HELD`
+/// of what `hold` held the build within past what it uses (nothing with no budget, its
+/// room's payload empty), or of why not; any other frame passed over.
+fn answer(
+    conn: &std::fs::File,
+    mut give: impl FnMut() -> io::Result<(u64, u64)>,
+    mut hold: impl FnMut(Option<i64>) -> io::Result<Option<u64>>,
+) {
+    use shards_abi::{build::kind, run};
+    let mut h = [0u8; run::HEADER];
+    let mut payload = Vec::new();
+    loop {
+        let mut r = conn;
+        if r.read_exact(&mut h).is_err() {
+            return;
+        }
+        let Some((which, len)) = run::parse_header(h) else {
+            return;
+        };
+        let Some(len) = usize::try_from(len).ok().filter(|&len| len <= GIVE_FRAME) else {
+            return;
+        };
+        payload.resize(len, 0);
+        if r.read_exact(&mut payload).is_err() {
+            return;
+        }
+        let (answers, said) = match which {
+            kind::GIVE_BACK => (
+                kind::GAVE,
+                match give() {
+                    Ok((freed, unplugging)) => format!("{freed} {unplugging}"),
+                    Err(e) => format!("nothing given back: {e}"),
+                },
+            ),
+            kind::ROOM => {
+                let room = match std::str::from_utf8(&payload).map(str::trim) {
+                    Ok("") => Ok(None),
+                    Ok(text) => text
+                        .parse::<i64>()
+                        .map(Some)
+                        .map_err(|_| err(format!("a room that is no number of bytes: {text:?}"))),
+                    Err(_) => Err(err("a room that is no text")),
+                };
+                (
+                    kind::HELD,
+                    match room.and_then(&mut hold) {
+                        Ok(Some(held)) => held.to_string(),
+                        Ok(None) => String::new(),
+                        Err(e) => format!("not held: {e}"),
+                    },
+                )
+            }
+            _ => continue,
+        };
+        if crate::run::send(conn, answers, said.as_bytes()).is_err() {
+            return;
+        }
+    }
+}
+
 /// Holds a run's processes in `cgroup` at what is plugged so far again, as [`Plug::hold_run`]
 /// held them (D148), where the host has raised its most since (`update -m`, its `PLUG`):
 /// its grower lifted the hold once all its old most was plugged, and is woken only as its
@@ -831,14 +947,27 @@ pub fn mount_cgroups() -> io::Result<()> {
     Ok(())
 }
 
-/// What the kernel keeps beside the build's `memory.high`: [`SLACK`], and the page
-/// structures of the memory plugged next, a 64th of it (a 64-byte `struct page` for each
-/// 4 KiB page), which the kernel takes from what it has before the memory comes online.
-/// Growth asks for as much as the builder has ([`grow`]), so that is a 64th of what it
-/// has, until it has all it may.
+/// What the kernel keeps beside the build's `memory.high`: [`SLACK`]; the page structures
+/// of the memory plugged next, a 64th of it (a 64-byte `struct page` for each 4 KiB page),
+/// which the kernel takes from what it has before the memory comes online (growth asks for
+/// as much as the builder has, [`grow`], so that is a 64th of what it has, until it has all
+/// it may); and the free pages its CPUs may keep on their own lists, which are neither free
+/// to its readers nor charged to the build ([`PCP_FRACTION`]).
 fn reserve(total: u64, left: u64) -> u64 {
-    SLACK.saturating_add(total.min(left) / 64)
+    SLACK
+        .saturating_add(total.min(left) / 64)
+        .saturating_add(total / PCP_FRACTION)
 }
+
+/// The share of a zone's pages its CPUs' own lists of free pages may hold between them:
+/// an eighth, as the kernel tunes each CPU's list up to (mm/page_alloc.c,
+/// `MIN_PERCPU_PAGELIST_HIGH_FRACTION`, `zone_set_pageset_high_and_batch`, Linux 6.7 on).
+/// Those pages are not in MemFree, and no cgroup is charged for them: a reserve without
+/// them was taken by them as a build of 8 compilers grew on 32 vCPUs, 98 MiB on their
+/// lists of 2,010 MiB, 77 MiB more than as the hold was set, and the guest ran out of
+/// memory with the build 25 MiB short of its `memory.high`, so that its grower, woken
+/// only there, was never asked to plug more (PM M392).
+const PCP_FRACTION: u64 = 8;
 
 /// The build's `memory.high`: what it holds now and what is free and stays plugged, less
 /// the [`reserve`] for what may still be plugged, `left` of it. Its page cache counts as
@@ -1419,9 +1548,10 @@ mod tests {
         let (boot, total, free, current) = (244_293_632u64, 378_511_360u64, 316_907_520u64, 20_647_936u64);
         let (kernel, leaving) = (total - free - current, total - boot);
         let reserve = reserve(total, u64::MAX);
+        // 264,532,352 before the reserve kept an eighth for its CPUs' lists (PM M392).
         assert_eq!(
             hold_of(current, free, 0, reserve),
-            264_532_352,
+            217_218_432,
             "the hold it was given"
         );
         assert_eq!(hold_of(current, free, 0, reserve) + kernel + reserve, total);
@@ -1430,6 +1560,33 @@ mod tests {
         // With nothing going, as before.
         assert_eq!(hold_of(current, free, 0, 0), current + free);
         assert_eq!(hold_of(current, free, current + free, reserve), 0);
+    }
+
+    /// A build reaches its hold, which wakes its grower, while its guest still has memory
+    /// free, whatever its CPUs keep on their own lists. On jupiter a builder of 2,010 MiB was
+    /// held at 1,829.5 MiB, its build and the free memory 1,925 MiB as the hold was set; as
+    /// 8 compilers grew, what the build was not charged for went from 85 MiB to 175, 98 of it
+    /// on the CPUs' lists, and the guest ran out of memory with the build 25 MiB short of its
+    /// hold. Held with what the lists may keep in reserve, it was woken with 243 MiB free
+    /// (PM M392).
+    #[test]
+    fn a_build_reaches_its_hold_with_memory_free_whatever_its_cpus_keep() {
+        let total = 2010 * MIB;
+        let at_hold = 1925 * MIB;
+        let uncharged = 175 * MIB;
+        // Free as the build reaches its hold, with what it was not charged for as it ran out.
+        let free_at = |reserve: u64| {
+            total
+                .saturating_sub(uncharged)
+                .saturating_sub(hold_of(at_hold, 0, 0, reserve))
+        };
+        let without = SLACK + total / 64;
+        assert!(free_at(without) < 8 * MIB, "{}", free_at(without) / MIB);
+        // At least a memory block free, which its driver adds the memory asked for in.
+        assert!(free_at(reserve(total, u64::MAX)) >= ALIGN);
+        // An eighth of what it has, past all its lists held as it ran out.
+        assert_eq!(reserve(total, u64::MAX) - without, total / 8);
+        assert!(total / 8 >= 98 * MIB);
     }
 
     /// The least room a run is held within covers what its kernel charges it ahead on
@@ -1624,5 +1781,135 @@ mod tests {
             "{:?}",
             g.clock
         );
+    }
+
+    /// The give-back connection's two ends: the host's, and the answerer's as init holds it.
+    fn give_pair() -> (std::os::unix::net::UnixStream, std::fs::File) {
+        let (host, guest) = std::os::unix::net::UnixStream::pair().unwrap();
+        (host, std::fs::File::from(std::os::fd::OwnedFd::from(guest)))
+    }
+
+    /// The host's end of a give-back connection, shut both ways as it drops: a test that
+    /// fails still ends its answerer, which would otherwise wait on it for ever.
+    struct Shut<'a>(&'a std::os::unix::net::UnixStream);
+
+    impl Drop for Shut<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// The next frame the answerer sent the host: its kind and payload.
+    fn heard(host: &std::os::unix::net::UnixStream) -> (u8, String) {
+        use shards_abi::run;
+        let mut r = host;
+        let mut h = [0u8; run::HEADER];
+        r.read_exact(&mut h).unwrap();
+        let (which, len) = run::parse_header(h).unwrap();
+        let mut payload = vec![0u8; len as usize];
+        r.read_exact(&mut payload).unwrap();
+        (which, String::from_utf8(payload).unwrap())
+    }
+
+    /// Each `GIVE_BACK` is answered with a `GAVE` of what was given back, the bytes its
+    /// files freed and those it asked to unplug, in decimal, or of why nothing was; a frame of
+    /// any other kind is passed over, and its answerer ends as its connection does.
+    #[test]
+    fn a_give_back_is_answered_with_what_was_given_back() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let gave = std::sync::Mutex::new(vec![Err(io::Error::other("no cgroup")), Ok((5 * MIB, 128 * MIB))]);
+        std::thread::scope(|s| {
+            let answerer = s.spawn(|| answer(&guest, || gave.lock().unwrap().pop().unwrap(), |_| Ok(None)));
+            let _shut = Shut(&host);
+            let mut w = &host;
+            w.write_all(&run::header(kind::EMULATE, 3)).unwrap();
+            w.write_all(b"abc").unwrap();
+            w.write_all(&run::header(kind::GIVE_BACK, 0)).unwrap();
+            assert_eq!(heard(&host), (kind::GAVE, "5242880 134217728".into()));
+            w.write_all(&run::header(kind::GIVE_BACK, 0)).unwrap();
+            assert_eq!(heard(&host), (kind::GAVE, "nothing given back: no cgroup".into()));
+            host.shutdown(std::net::Shutdown::Write).unwrap();
+            answerer.join().unwrap();
+        });
+        assert!(gave.lock().unwrap().is_empty());
+    }
+
+    /// Each `ROOM` is answered with a `HELD` of what the build was held within past what it
+    /// uses: the room parsed as signed decimal bytes, none where its payload is empty; a room
+    /// that is no number refused unheld, and a hold that failed said, each answered all the
+    /// same.
+    #[test]
+    fn a_room_is_answered_with_what_the_build_is_held_within() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let rooms = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|s| {
+            let answerer = s.spawn(|| {
+                answer(
+                    &guest,
+                    || Ok((0, 0)),
+                    |room| {
+                        rooms.lock().unwrap().push(room);
+                        match room {
+                            Some(r) if r < 0 => Err(io::Error::other("no memory.high")),
+                            Some(_) => Ok(Some(64 * MIB)),
+                            None => Ok(None),
+                        }
+                    },
+                )
+            });
+            let _shut = Shut(&host);
+            let mut w = &host;
+            let mut room = |payload: &[u8]| {
+                w.write_all(&run::header(kind::ROOM, u32::try_from(payload.len()).unwrap()))
+                    .unwrap();
+                w.write_all(payload).unwrap();
+                heard(&host)
+            };
+            assert_eq!(room(b"134217728"), (kind::HELD, "67108864".into()));
+            assert_eq!(room(b""), (kind::HELD, String::new()));
+            assert_eq!(
+                room(b"x"),
+                (
+                    kind::HELD,
+                    "not held: a room that is no number of bytes: \"x\"".into()
+                )
+            );
+            assert_eq!(room(b"-5"), (kind::HELD, "not held: no memory.high".into()));
+            host.shutdown(std::net::Shutdown::Write).unwrap();
+            answerer.join().unwrap();
+        });
+        assert_eq!(*rooms.lock().unwrap(), [Some(128 * MIB as i64), None, Some(-5)]);
+    }
+
+    /// A frame longer than any its host sends ends the connection, unread and unanswered,
+    /// rather than have its answerer hold it.
+    #[test]
+    fn a_give_back_frame_past_its_most_ends_the_connection() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                answer(
+                    &guest,
+                    || {
+                        asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Ok((0, 0))
+                    },
+                    |_| Ok(None),
+                );
+                ended.send(()).unwrap();
+            });
+            let len = u32::try_from(GIVE_FRAME + 1).unwrap();
+            (&host).write_all(&run::header(kind::GIVE_BACK, len)).unwrap();
+            let gone = end.recv_timeout(Duration::from_secs(10));
+            // Ends a mutant's read, which waits for the frame's bytes.
+            host.shutdown(std::net::Shutdown::Both).unwrap();
+            gone.unwrap();
+        });
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 }

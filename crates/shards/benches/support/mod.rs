@@ -2,35 +2,120 @@
 //! statistics, and the host/OS/revision stamp every result carries (CLAUDE.md).
 #![allow(dead_code)]
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::process::Stdio;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::mpsc;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::{Duration, Instant};
 
 use crate::common;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct Sample {
     pub run: common::Run,
+    /// When it began and ended, for [`frozen`].
+    pub began: Instant,
+    pub ended: Instant,
+}
+
+/// The least gap between two ticks of a 1 ms sleeper that says its process was frozen: on
+/// jupiter, kiln's headroom guard froze every process of a run for 1.5 to 29 s at a time
+/// while a sleeper running woke within 51 ms (PM M418), so a sample taken across such a gap
+/// times the freeze, not what it measures.
+const FROZEN: Duration = Duration::from_millis(250);
+
+/// The spans this process's ticker saw it frozen ([`FROZEN`]), and its last tick, in
+/// microseconds since [`base`].
+static FREEZES: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+static LAST_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn base() -> Instant {
+    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *BASE.get_or_init(Instant::now)
+}
+
+fn since_base(t: Instant) -> u64 {
+    u64::try_from(t.saturating_duration_since(base()).as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Starts this process's ticker once: a thread that sleeps a millisecond at a time and
+/// records each gap past [`FROZEN`] between its ticks.
+fn tick() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let _ = base();
+        std::thread::Builder::new()
+            .name("frozen".into())
+            .spawn(|| {
+                let mut last = Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(1));
+                    let now = Instant::now();
+                    if now.duration_since(last) > FROZEN {
+                        FREEZES
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push((since_base(last), since_base(now)));
+                    }
+                    LAST_TICK.store(since_base(now), std::sync::atomic::Ordering::Release);
+                    last = now;
+                }
+            })
+            .expect("the ticker");
+    });
+}
+
+/// Whether this process was frozen while `sample` was taken, as its ticker saw it once it
+/// had ticked past the sample's end: a sample to take again, its time the freeze's.
+pub fn frozen(sample: &Sample) -> bool {
+    let (began, ended) = (since_base(sample.began), since_base(sample.ended));
+    while LAST_TICK.load(std::sync::atomic::Ordering::Acquire) <= ended {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    FREEZES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|&(from, to)| from < ended && to > began)
+}
+
+/// What `take` takes, taken again until no freeze of this process spans it ([`frozen`]),
+/// each taken again counted in `retaken`.
+pub fn unfrozen(retaken: &mut usize, mut take: impl FnMut() -> Sample) -> Sample {
+    loop {
+        let sample = take();
+        if !frozen(&sample) {
+            return sample;
+        }
+        *retaken += 1;
+    }
 }
 
 /// Runs `shards-vm <args>`, the VMM's own process without the `shards` command in front,
 /// to completion. With `hold`, waits for `shards-ready` on stderr, then sends the start
 /// line.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn run(args: &[String], hold: bool) -> Sample {
     measure(common::shards_vm(), args, hold, &[])
 }
 
+/// [`run`] where a VM process opens only what its spawner grants it: on macOS, in App
+/// Sandbox (D30), and on Windows, in the AppContainer `shards` starts it in (D141): `shards
+/// <args>`, which grants it its files, its VM process's own timing line passed through. A
+/// VM process started alone there refuses to start ("nothing was granted to this VM").
+#[cfg(not(target_os = "linux"))]
+pub fn run(args: &[String], hold: bool) -> Sample {
+    measure(common::shards(), args, hold, &[])
+}
+
 /// Runs the `shards` command as a user runs it, with `env` added to its environment.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn run_env(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     measure(common::shards(), args, hold, env)
 }
@@ -38,6 +123,7 @@ pub fn run_env(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) ->
 #[cfg(unix)]
 #[allow(clippy::zombie_processes)] // reaped by wait4, not Child::wait
 fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+    tick();
     let start = Instant::now();
     let mut child = Command::new(bin)
         .args(args)
@@ -91,7 +177,74 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
         elapsed,
     };
     assert_eq!(run.status, Some(0), "shards failed: {run}");
-    Sample { run }
+    Sample {
+        run,
+        began: start,
+        ended: Instant::now(),
+    }
+}
+
+/// [`measure`] on Windows: the child waited for, and ended where it outlives [`TIMEOUT`],
+/// by a watchdog holding a handle of its own to the child's process.
+#[cfg(windows)]
+fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    tick();
+    let start = Instant::now();
+    let mut child = Command::new(bin)
+        .args(args)
+        .envs(env.iter().copied())
+        .env("SHARDS_TIMING", "1")
+        .stdin(if hold { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawning shards");
+    let stderr = child.stderr.take().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if line == "shards-ready" {
+                let _ = ready_tx.send(());
+            }
+            all.push_str(&line);
+            all.push('\n');
+        }
+        all
+    });
+    if hold {
+        ready_rx
+            .recv_timeout(TIMEOUT)
+            .expect("shards never reported shards-ready");
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"go\n").unwrap();
+    }
+    let process = child.as_handle().try_clone_to_owned().unwrap();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if done_rx.recv_timeout(TIMEOUT).is_err() {
+            // SAFETY: a handle of the child's process, which this thread holds open.
+            unsafe { windows_sys::Win32::System::Threading::TerminateProcess(process.as_raw_handle(), 1) };
+        }
+    });
+    let status = child.wait().unwrap();
+    let elapsed = start.elapsed();
+    let _ = done_tx.send(());
+    watchdog.join().unwrap();
+    let run = common::Run {
+        status: status.code(),
+        signal: None,
+        stdout: String::new(),
+        stderr: reader.join().unwrap(),
+        elapsed,
+    };
+    assert_eq!(run.status, Some(0), "shards failed: {run}");
+    Sample {
+        run,
+        began: start,
+        ended: Instant::now(),
+    }
 }
 
 /// Nearest-rank percentile of sorted `v`.

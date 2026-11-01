@@ -30,6 +30,10 @@ pub fn check_host() -> Result<(), String> {
     Err(no_backend())
 }
 
+pub fn restores_here() -> bool {
+    false
+}
+
 pub fn accept_working_set(_dir: &std::path::Path, _name: &str, _bytes: &[u8]) -> Result<usize, String> {
     Err(no_backend())
 }
@@ -72,6 +76,18 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn hold_group(&self, _group: super::group::GroupCpu) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn pause(&self) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn resume(&self) {
+        match self.0 {}
+    }
+
     pub fn layer_reads_ahead(&self) {
         match self.0 {}
     }
@@ -101,6 +117,10 @@ impl Handle {
     }
 
     pub fn console_input(&self, _bytes: &[u8]) {
+        match self.0 {}
+    }
+
+    pub fn console_said(&self) -> Vec<u8> {
         match self.0 {}
     }
 

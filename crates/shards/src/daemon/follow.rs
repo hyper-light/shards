@@ -8,12 +8,16 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::io::{self, Read as _, Write as _};
-use std::os::fd::AsFd as _;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
+use shards_ipc::Stream as UnixStream;
+// What Windows' daemon waits on together is its own streams (D195), which shards_ipc
+// watches, beside processes' ends.
+#[cfg(windows)]
+use shards_ipc::{ExitWatch, Poller};
+#[cfg(unix)]
 use shards_vmm::platform::{ExitWatch, Poller};
 
 use super::{Daemon, Inbox, Threads, lock, log};
@@ -46,7 +50,9 @@ enum Process {
         ended_vm: Option<Arc<shards_ipc::Child>>,
         watch: Option<ExitWatch>,
     },
-    /// A run's share process (D38), which ends as its VM's connections close.
+    /// A run's share process (D38), which ends as its VM's connections close: Unix's
+    /// alone as yet.
+    #[cfg_attr(windows, allow(dead_code))]
     Share {
         child: Arc<shards_ipc::Child>,
         watch: Option<ExitWatch>,
@@ -79,7 +85,7 @@ impl Followers {
         let (tell, heard) = UnixStream::pair()?;
         heard.set_nonblocking(true)?;
         tell.set_nonblocking(true)?;
-        poller.add(heard.as_fd(), WAKE)?;
+        poller.add(&heard, WAKE)?;
         Ok(Followers {
             poller,
             runs: Mutex::new(HashMap::new()),
@@ -119,7 +125,7 @@ impl Followers {
         for process in lock(&self.processes).values() {
             let (Process::Vm { vm: child, .. } | Process::Net { child, .. } | Process::Share { child, .. }) =
                 process;
-            let _ = child.kill(libc::SIGKILL);
+            let _ = child.kill(shards_ipc::signal::SIGKILL);
         }
     }
 }
@@ -136,6 +142,15 @@ pub(super) struct Completing {
     /// The removals of the batch in hand, taken from `pending` and not yet complete:
     /// changed under `pending`'s lock.
     working: AtomicU64,
+    /// The removals a run's end took out of sight ([`removal_taken`]) and has not yet
+    /// queued, or completed itself: taken out under the records' lock, each is queued once
+    /// that is let go of, and a shutdown between the two found nothing pending, its
+    /// `destroy` lost and its files left (windows-2025, CI 40961442989). Counted in before
+    /// the run goes from the runs a shutdown waits to see none of; counted out under
+    /// `pending`'s lock.
+    ///
+    /// [`removal_taken`]: Daemon::removal_taken
+    taken: AtomicU64,
     started: AtomicBool,
     ended: AtomicBool,
 }
@@ -169,7 +184,7 @@ impl<D: Disk> Daemon<D> {
         let added = {
             let held = lock(&inbox);
             lock(&f.runs).insert(token, (id.clone(), inbox.clone()));
-            f.poller.add(held.socket.stream.as_fd(), token)
+            f.poller.add(&held.socket.stream, token)
         };
         // The files its VM asks for are made on a thread of their own (files.rs), and its
         // log's rotated segments compressed on another (packed.rs).
@@ -226,7 +241,7 @@ impl<D: Disk> Daemon<D> {
                     continue;
                 };
                 if self.take_messages(&id, &inbox) {
-                    let _ = f.poller.remove(lock(&inbox).socket.stream.as_fd());
+                    let _ = f.poller.remove(&lock(&inbox).socket.stream);
                     lock(&f.runs).remove(&token);
                 }
             }
@@ -252,7 +267,7 @@ impl<D: Disk> Daemon<D> {
                 }
                 // Its end follows, which frees its VM's ports.
                 if let Some(Process::Net { child, .. }) = lock(&f.processes).get(&token) {
-                    let _ = child.kill(libc::SIGKILL);
+                    let _ = child.kill(shards_ipc::signal::SIGKILL);
                 }
             }
         }
@@ -322,7 +337,9 @@ impl<D: Disk> Daemon<D> {
                     *kept = Some(watch);
                 }
             }
-            // Ended already: macOS watches only ends to come.
+            // Ended already: macOS watches only ends to come. Windows tells such an end at
+            // once, as Linux does.
+            #[cfg(unix)]
             Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.process_ended(threads, token),
             Err(e) => {
                 let pid = child.id();
@@ -415,7 +432,12 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Follows share process `child` to its end on the followers' loop, which reaps it.
-    pub(super) fn follow_share<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, child: shards_ipc::Child) {
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(super) fn follow_share<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        child: shards_ipc::Child,
+    ) -> Arc<shards_ipc::Child> {
         let f = &self.followers;
         let token = f.next.fetch_add(1, Ordering::Relaxed);
         let child = Arc::new(child);
@@ -427,40 +449,79 @@ impl<D: Disk> Daemon<D> {
             },
         );
         self.start_followers(threads);
-        self.watch_exit(threads, token, child);
+        self.watch_exit(threads, token, child.clone());
+        child
     }
 
     /// Follows run `id` on this thread, waiting on its socket alone: where the poller
     /// could not take it.
     fn follow_alone(&self, id: &str, inbox: &Mutex<Inbox>) {
-        use std::os::fd::AsRawFd as _;
-        let fd = lock(inbox).socket.stream.as_raw_fd();
+        #[cfg(unix)]
+        let fd = {
+            use std::os::fd::AsRawFd as _;
+            lock(inbox).socket.stream.as_raw_fd()
+        };
+        // Its end, `inbox`'s still: what a read of it waits on.
+        #[cfg(windows)]
+        let stream = match lock(inbox).socket.stream.try_clone() {
+            Ok(stream) => stream,
+            Err(e) => {
+                log(format!("container {id}: following its run alone: {e}"));
+                return;
+            }
+        };
         while !self.take_messages(id, inbox) {
-            let mut pfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: poll(2) on one descriptor `inbox` holds open; no timeout: the run's
-            // end, whoever takes it, comes as its VM's end, which makes it readable.
-            unsafe { libc::poll(&mut pfd, 1, -1) };
+            #[cfg(unix)]
+            {
+                let mut pfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: poll(2) on one descriptor `inbox` holds open; no timeout: the
+                // run's end, whoever takes it, comes as its VM's end, which makes it
+                // readable.
+                unsafe { libc::poll(&mut pfd, 1, -1) };
+            }
+            // No timeout, as above.
+            #[cfg(windows)]
+            let _ = stream.wait_readable(None, None);
         }
     }
 
-    /// Sets `removal` aside and makes it durable, with any others pending, on the
-    /// completer's thread; on this one where that thread does not run. Never under the
-    /// records' lock: the completer's waiters take it under the queue's
-    /// ([`await_released`]).
+    /// Sets `removal`, one a run's end took out ([`removal_taken`](Self::removal_taken)),
+    /// aside and makes it durable, with any others pending, on the completer's thread; on
+    /// this one where that thread does not run. Never under the records' lock: the
+    /// completer's waiters take it under the queue's ([`await_released`]).
     pub(super) fn complete_soon(&self, removal: Removal) {
         let c = &self.completing;
         if !c.started.load(Ordering::SeqCst) {
             if self.set_aside(&removal).is_ok() {
                 let _ = self.complete(&removal);
             }
+            self.removal_settled();
             return;
         }
-        lock(&c.pending).push(removal);
+        let mut pending = lock(&c.pending);
+        pending.push(removal);
+        c.taken.fetch_sub(1, Ordering::SeqCst);
         c.queued.notify_all();
+    }
+
+    /// Counts in a removal a run's end has taken out, until it is queued or complete
+    /// ([`removal_settled`](Self::removal_settled)): what a shutdown waits for
+    /// ([`await_removals`](Self::await_removals)).
+    pub(super) fn removal_taken(&self) {
+        self.completing.taken.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Counts out a removal [`removal_taken`](Self::removal_taken) counted in, complete
+    /// where it was taken out or failed there: a shutdown waiting for it looks again.
+    pub(super) fn removal_settled(&self) {
+        let c = &self.completing;
+        let _guard = lock(&c.pending);
+        c.taken.fetch_sub(1, Ordering::SeqCst);
+        c.done.notify_all();
     }
 
     /// Starts the completer's thread.
@@ -507,12 +568,16 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Waits until every removal queued is complete, with the anonymous volumes of those
-    /// that ended with `--rm`: what a command that reads volumes sees, as `docker run
-    /// --rm` has removed them by the time it returns.
+    /// that ended with `--rm`, and every one a run's end has taken out and not yet queued:
+    /// what a command that reads volumes sees, as `docker run --rm` has removed them by the
+    /// time it returns, and what a shutdown leaves done.
     pub(super) fn await_removals(&self) {
         let c = &self.completing;
         let mut pending = lock(&c.pending);
-        while !pending.is_empty() || c.working.load(Ordering::SeqCst) > 0 {
+        while !pending.is_empty()
+            || c.working.load(Ordering::SeqCst) > 0
+            || c.taken.load(Ordering::SeqCst) > 0
+        {
             pending = c
                 .done
                 .wait(pending)

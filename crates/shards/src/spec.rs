@@ -159,7 +159,6 @@ fn replace_or_append(defaults: Vec<Vec<u8>>, overrides: Vec<Vec<u8>>) -> Vec<Vec
 }
 
 /// Nanoseconds since the Unix epoch, now.
-#[cfg(unix)]
 pub fn now() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

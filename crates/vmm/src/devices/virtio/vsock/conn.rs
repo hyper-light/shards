@@ -161,6 +161,35 @@ impl Conn {
         self.expiry
     }
 
+    /// An ended connection, kept for its host socket until the socket's peer ends its side,
+    /// if it has not: on Windows a socket closed while its peer may still read loses the
+    /// peer what it had not read yet, where the closer held some of the peer's data unread
+    /// and where the peer writes after the close (PM M358). None where the peer has ended
+    /// its side, all it sent read, and the socket may close at once.
+    #[cfg(windows)]
+    pub fn linger(mut self) -> Option<Conn> {
+        if !self.host_write_shut {
+            self.host_write_shut = true;
+            let _ = self.stream.shutdown(Shutdown::Write);
+        }
+        (!self.host_eof && !self.drained()).then_some(self)
+    }
+
+    /// Reads what a lingering connection's host socket holds, and drops it: whether the
+    /// socket's peer has ended its side (end-of-stream, or an error: it is gone).
+    #[cfg(windows)]
+    pub fn drained(&mut self) -> bool {
+        let mut sink = [0u8; 4096];
+        loop {
+            match io::Read::read(&mut &self.stream, &mut sink) {
+                Ok(0) => return true,
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return e.kind() != io::ErrorKind::WouldBlock,
+            }
+        }
+    }
+
     /// Ends the connection: an RST goes to the guest and buffered data is dropped.
     pub fn kill(&mut self) {
         self.killed = true;

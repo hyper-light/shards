@@ -25,13 +25,13 @@ mod watch;
 
 use std::collections::HashMap;
 use std::io::{self, BufReader, PipeReader, Read as _, Write as _};
-use std::os::fd::{AsFd as _, BorrowedFd};
-use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use serde_json::json;
+use shards_ipc::Stream as UnixStream;
+use shards_ipc::fd::{AsFd as _, BorrowedFd};
 use shards_ipc::{Run, kind};
 
 use super::{Daemon, Threads, lock, log};
@@ -43,7 +43,12 @@ pub(super) use scope::Scope;
 
 /// The socket, relative to the home, the daemon's working directory: a socket address fits
 /// it whatever the home's path (`sun_path`).
+#[cfg(unix)]
 pub(super) const SOCKET: &str = "engine.sock";
+/// On Windows the file of the home that names the Engine API's named pipe, which Docker's
+/// clients reach their engine by there (npipe): a fresh name for each daemon.
+#[cfg(windows)]
+pub(super) const SOCKET: &str = "engine.pipe";
 /// The API served, and the oldest answered (cli/version.rs).
 pub(super) const VERSION: &str = crate::cli::version::ENGINE_API.0;
 pub(super) const MIN_VERSION: &str = crate::cli::version::ENGINE_API.1;
@@ -80,6 +85,120 @@ pub(super) struct Engine {
     arrived: Mutex<Vec<(String, UnixStream)>>,
     /// How many connections each microVM's own engine holds open (D181), by its run's ID.
     scoped: Mutex<HashMap<String, usize>>,
+    /// The relays of runs' output to their attaches under way, by the run's container ID,
+    /// and what waits for them ([`Relaying`]).
+    pub(super) relays: Mutex<HashMap<String, Relays>>,
+}
+
+/// How long the end of a run whose output goes to attaches through the daemon waits for
+/// it to reach them, at most, from the run's end on: dockerd's (moby v28.5.1
+/// daemon/monitor.go, handleContainerExit: `StreamConfig.Wait` for 2 s before the container
+/// is stopped and `die` logged). An attach that reads none of it by then has what it has.
+const RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The relays of one run's output to its attaches under way, and its end, where it came
+/// meanwhile.
+#[derive(Default)]
+pub(super) struct Relays {
+    count: usize,
+    pub(super) ended: Option<super::Ended>,
+    /// An exec's end, where the relay is of an exec's output: its container's ID and its
+    /// status, for its `exec_die`.
+    exec_died: Option<(String, u8)>,
+}
+
+/// A relay of run `id`'s output to its Engine API attaches, under way until it drops: the
+/// run's end, if it comes meanwhile, is told once every relay of it has ended
+/// (`end_after_relays`), so that its attaches have what it wrote before anyone hears it
+/// ended, as dockerd has it ([`RELAY_WAIT`]). Compose's `up`, which stops at the first exit
+/// it hears, drops what it reads after it (compose v2.38.2 pkg/compose/printer.go,
+/// `aborting`): a built service's one line, written as its run ended, went so on CI
+/// (40577156435).
+pub(super) struct Relaying<'d, D: Disk> {
+    daemon: &'d Daemon<D>,
+    id: String,
+}
+
+impl<D: Disk> Drop for Relaying<'_, D> {
+    fn drop(&mut self) {
+        let ended = {
+            let mut relays = lock(&self.daemon.engine.relays);
+            let Some(r) = relays.get_mut(&self.id) else {
+                return;
+            };
+            r.count = r.count.saturating_sub(1);
+            if r.count > 0 {
+                return;
+            }
+            relays.remove(&self.id)
+        };
+        let Some(Relays { ended, exec_died, .. }) = ended else {
+            return;
+        };
+        if let Some(ended) = ended {
+            self.daemon.tell_end(&self.id, ended);
+        }
+        if let Some((container, status)) = exec_died {
+            self.daemon.exec_died(&container, &self.id, status);
+        }
+    }
+}
+
+/// Waits until every copy of a relay has ended, each holding a sender of `copies`, or
+/// [`RELAY_WAIT`] has passed: once its run has ended, what the relay waits for before it
+/// drops its [`Relaying`].
+fn copied(copies: &std::sync::mpsc::Receiver<()>) {
+    let _ = copies.recv_timeout(RELAY_WAIT);
+}
+
+impl<D: Disk> Daemon<D> {
+    /// A relay of run `id`'s output to its attaches, under way until the value drops.
+    pub(super) fn relaying(&self, id: &str) -> Relaying<'_, D> {
+        lock(&self.engine.relays).entry(id.to_string()).or_default().count += 1;
+        Relaying {
+            daemon: self,
+            id: id.to_string(),
+        }
+    }
+
+    /// Tells run `id`'s end now, or once the relays of its output under way have ended.
+    pub(in crate::daemon) fn end_after_relays(&self, id: &str, ended: super::Ended) {
+        {
+            let mut relays = lock(&self.engine.relays);
+            if let Some(r) = relays.get_mut(id)
+                && r.count > 0
+            {
+                r.ended = Some(ended);
+                return;
+            }
+        }
+        self.tell_end(id, ended);
+    }
+
+    /// Says exec `exec_id` of container `id` ended with `status` (`exec_die`) now, or once
+    /// the relays of its output under way have ended.
+    pub(in crate::daemon) fn exec_died_after_relays(&self, id: &str, exec_id: &str, status: u8) {
+        {
+            let mut relays = lock(&self.engine.relays);
+            if let Some(r) = relays.get_mut(exec_id)
+                && r.count > 0
+            {
+                r.exec_died = Some((id.to_string(), status));
+                return;
+            }
+        }
+        self.exec_died(id, exec_id, status);
+    }
+
+    /// `exec_die` of exec `exec_id` of container `id`, ended with `status` (moby
+    /// daemon/monitor.go, ProcessEvent's exit of an exec).
+    fn exec_died(&self, id: &str, exec_id: &str, status: u8) {
+        self.container_event(
+            id,
+            "exec_die",
+            &[("execID", exec_id.to_string()), ("exitCode", status.to_string())],
+        );
+    }
 }
 
 impl Engine {
@@ -93,7 +212,8 @@ impl Engine {
     }
 
     /// Keeps `conn`, a connection run `provider`'s command made to its own microVM's engine
-    /// (D181), for the listener to take ([`Engine::take_arrived`]).
+    /// (D181), for the listener to take ([`Engine::take_arrived`]): the one its VM gave, or
+    /// on Windows the end of the pipe its VM was given for it.
     pub(super) fn arrive(&self, provider: &str, conn: UnixStream) {
         lock(&self.arrived).push((provider.to_string(), conn));
     }
@@ -357,8 +477,14 @@ impl<D: Disk> Daemon<D> {
         conn: UnixStream,
         scope: Option<Scope>,
     ) {
+        // On Windows a host client comes through the Engine API's named pipe, whose DACL
+        // admits this user's processes alone (shards_ipc::Listener), as Unix's comes
+        // through its socket, its peer's user checked below; a microVM's own engine's
+        // through the pipe its daemon gave its VM for it (`ENGINE_CONN`), scoped.
         // SAFETY: geteuid(2) cannot fail.
+        #[cfg(unix)]
         let ours = unsafe { libc::geteuid() };
+        #[cfg(unix)]
         match shards_ipc::peer_uid(&conn) {
             _ if scope.is_some() => {}
             Ok(uid) if uid == ours => {}
@@ -435,10 +561,7 @@ impl<D: Disk> Daemon<D> {
         conn: &UnixStream,
         scope: Option<&Scope>,
     ) {
-        let Ok(reading) = conn.try_clone() else {
-            return;
-        };
-        let mut reader = BufReader::new(shards_ipc::Polled(reading));
+        let mut reader = BufReader::new(shards_ipc::Polled(conn));
         let mut after_post = false;
         loop {
             let head = match head::read(&mut reader, true, after_post) {
@@ -466,7 +589,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         conn: &UnixStream,
         head: &Head,
-        reader: &mut BufReader<shards_ipc::Polled<UnixStream>>,
+        reader: &mut BufReader<shards_ipc::Polled<&UnixStream>>,
         scope: Option<&Scope>,
     ) -> bool {
         let (target, query) = head.target.split_once('?').unwrap_or((&head.target, ""));
@@ -483,7 +606,7 @@ impl<D: Disk> Daemon<D> {
         };
         // A call refused before its body is read: answered first, then the rest of its
         // body read and dropped ([`answered_first`]).
-        let refuse = |reader: &mut BufReader<shards_ipc::Polled<UnixStream>>, answer: Answer| {
+        let refuse = |reader: &mut BufReader<shards_ipc::Polled<&UnixStream>>, answer: Answer| {
             answered_first(conn, head, answer, &mut Body::new(reader, framing))
         };
         let Some(decoded) = unescape(&path, false) else {
@@ -830,6 +953,12 @@ impl<D: Disk> Daemon<D> {
 /// a request's context as its connection's read ends, server.go `backgroundRead`), and not
 /// at its next message, which a quiet microVM's log, or a host where nothing happens, may
 /// never send.
+#[cfg(windows)]
+fn gone_first(ipc: &UnixStream, client: &UnixStream) -> bool {
+    shards_ipc::await_streams(&[ipc, client], None).is_ok_and(|ready| ready.get(1).copied().unwrap_or(false))
+}
+
+#[cfg(unix)]
 fn gone_first(ipc: &UnixStream, client: &UnixStream) -> bool {
     use std::os::fd::AsRawFd as _;
     let pollfd = |fd: &UnixStream| libc::pollfd {

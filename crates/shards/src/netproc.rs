@@ -7,6 +7,104 @@
 #[cfg(unix)]
 use std::os::fd::{AsFd, OwnedFd};
 
+/// A socket handed to a network process (a published port's host socket, a peer's link):
+/// a descriptor on Unix; on Windows a socket, which Winsock closes (closesocket).
+#[cfg(unix)]
+pub type Sock = OwnedFd;
+#[cfg(windows)]
+pub type Sock = std::os::windows::io::OwnedSocket;
+
+/// A [`Sock`] lent to a message that hands it on.
+#[cfg(unix)]
+pub type Lent<'a> = std::os::fd::BorrowedFd<'a>;
+#[cfg(windows)]
+pub type Lent<'a> = std::os::windows::io::BorrowedSocket<'a>;
+
+/// [`Sock`]'s loan.
+pub fn lend(sock: &Sock) -> Lent<'_> {
+    #[cfg(unix)]
+    return sock.as_fd();
+    #[cfg(windows)]
+    return std::os::windows::io::AsSocket::as_socket(sock);
+}
+
+/// A VM's network process's control socket (D31), on which its run's published ports, its
+/// peers and its policy go: a Unix socket on Unix.
+#[cfg(unix)]
+pub type Control = std::os::unix::net::UnixStream;
+
+/// On Windows an AF_UNIX socket, which the network process waits on with its own sockets
+/// (PM M213), with the process's ID, which a socket handed to it is shared with
+/// (WSADuplicateSocketW, PM M203).
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct Control {
+    pub socket: shards_vmm::platform::UnixStream,
+    pub pid: u32,
+}
+
+#[cfg(windows)]
+impl Control {
+    pub fn try_clone(&self) -> std::io::Result<Control> {
+        Ok(Control {
+            socket: self.socket.try_clone()?,
+            pid: self.pid,
+        })
+    }
+
+    pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.socket.set_read_timeout(timeout)
+    }
+
+    pub fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.socket.set_write_timeout(timeout)
+    }
+}
+
+#[cfg(windows)]
+impl std::io::Read for &Control {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut &self.socket, buf)
+    }
+}
+
+/// Sends `kind`, with `payload` and the sockets `socks`, to the network process on its
+/// control `net`, as that process takes them (shards_net `control`): beside the message on
+/// Unix; on Windows each shared with the process, before its payload, in a message of a
+/// kind that hands sockets (`shards_ipc::kind::hands_sockets`).
+pub fn send(net: &Control, kind: u8, payload: &[u8], socks: &[Lent<'_>]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return shards_ipc::send(net, kind, payload, socks);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket as _;
+        if !shards_ipc::kind::hands_sockets(kind) {
+            if !socks.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "sockets with a message of a kind that hands none",
+                ));
+            }
+            return shards_ipc::write_message(&net.socket, kind, payload);
+        }
+        let raw: Vec<u64> = socks.iter().map(|s| s.as_raw_socket()).collect();
+        shards_ipc::write_message(
+            &net.socket,
+            kind,
+            &shards_ipc::with_sockets(payload, &raw, net.pid)?,
+        )
+    }
+}
+
+/// The next message the network process sends on its control `net`; none once it has
+/// hung up.
+pub fn recv(net: &Control) -> std::io::Result<Option<shards_ipc::Message>> {
+    #[cfg(unix)]
+    return shards_ipc::recv(net);
+    #[cfg(windows)]
+    return shards_ipc::read_message(&net.socket);
+}
+
 /// What a VM or network process is given of its spawner's environment: the variables it
 /// reads, and nothing else. A daemon's environment is that of the client that started
 /// it, which may hold secrets (an API key, an agent's socket), and these are the
@@ -276,14 +374,18 @@ pub fn reap(net: &shards_ipc::Child) {
 /// The VM's side of its network (Windows, D142): the ring and its two doorbells, handed
 /// to the VM process by name ([`VmSide::given`], [`VmSide::shared`]): the event it sleeps
 /// on, and the AF_UNIX socket it rings its network process by, which that process waits on
-/// with its sockets (PM M213). No ports are published there yet, a daemon's, so it has no
-/// control nor release, as a builder's on Unix uses neither.
+/// with its sockets (PM M213). And as on Unix, the spawner's control, on which published
+/// ports go, and the VM's release, on which they close as its run ends
+/// ([`VmSide::release`]): AF_UNIX sockets that process waits on too. A builder's spawner
+/// publishes nothing, and drops both.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct VmSide {
     pub region: std::os::windows::io::OwnedHandle,
     pub sleeps: std::os::windows::io::OwnedHandle,
     pub rings: shards_vmm::platform::UnixStream,
+    pub control: shards_vmm::platform::UnixStream,
+    pub release: shards_vmm::platform::UnixStream,
 }
 
 #[cfg(windows)]
@@ -315,6 +417,15 @@ impl VmSide {
             socket: self.rings.raw() as u64,
         }
     }
+
+    /// The socket its run's published ports close on as the run ends, by the name a VM
+    /// process takes it by (`--net`, vm_run.rs).
+    pub fn release(&self) -> shards_ipc::Shared<'_> {
+        shards_ipc::Shared {
+            name: "net-release",
+            socket: self.release.raw() as u64,
+        }
+    }
 }
 
 /// A VM's network process, made ready to start once its VM's process exists, whose end it
@@ -325,6 +436,9 @@ pub struct Ready {
     region: std::os::windows::io::OwnedHandle,
     sleeps: shards_vmm::platform::UnixStream,
     rings: std::os::windows::io::OwnedHandle,
+    /// Its ends of the spawner's control and of the VM's release ([`VmSide`]).
+    control: shards_vmm::platform::UnixStream,
+    release: shards_vmm::platform::UnixStream,
     args: Vec<std::ffi::OsString>,
     /// A build's proxy's socket, which its spawner dials for it (D110).
     proxy: Option<std::path::PathBuf>,
@@ -353,6 +467,10 @@ pub fn prepare(
         return Err("a VM's network: a doorbell of sockets".into());
     };
     let (policy, proxy) = policy_args(policy)?;
+    let pair =
+        || shards_vmm::platform::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
+    let (control, net_control) = pair()?;
+    let (release, net_release) = pair()?;
     let mut args: Vec<std::ffi::OsString> = vec![
         "--policy".into(),
         policy.into(),
@@ -360,6 +478,10 @@ pub fn prepare(
         shards_net::Mac(*mac).to_string().into(),
         "--bridge".into(),
         bridge.to_string().into(),
+        "--control".into(),
+        "net-control".into(),
+        "--release".into(),
+        "net-release".into(),
     ];
     for r in resolvers() {
         args.extend(["--resolver".into(), r.into()]);
@@ -387,6 +509,8 @@ pub fn prepare(
             region: region.try_clone().map_err(at)?,
             sleeps: net_sleeps,
             rings: net_rings,
+            control: net_control,
+            release: net_release,
             args,
             proxy,
         },
@@ -394,18 +518,15 @@ pub fn prepare(
             region,
             sleeps: vm_sleeps,
             rings: vm_rings,
+            control,
+            release,
         },
     ))
 }
 
-/// A started network process (Windows): it, and the AppContainer it runs in, whose profile
-/// goes once it has.
-#[cfg(windows)]
-#[derive(Debug)]
-pub struct NetProcess {
-    pub child: shards_ipc::Child,
-    _container: shards_ipc::AppContainer,
-}
+/// A started network process: on Windows holding the AppContainer it runs in, whose profile
+/// goes once it has (`shards_ipc::Child::hold`).
+pub type NetProcess = shards_ipc::Child;
 
 /// Starts `ready`, the network process of the VM `vm`, made and not yet running: given a
 /// handle to it that may only wait for its end, in an AppContainer holding the network's
@@ -432,11 +553,19 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
             name: "net-wake-me",
             socket: ready.sleeps.raw() as u64,
         },
+        shards_ipc::Shared {
+            name: "net-control",
+            socket: ready.control.raw() as u64,
+        },
+        shards_ipc::Shared {
+            name: "net-release",
+            socket: ready.release.raw() as u64,
+        },
     ];
     let args: Vec<&std::ffi::OsStr> = ready.args.iter().map(std::ffi::OsString::as_os_str).collect();
     let err = std::io::stderr();
     let env = child_env();
-    let child = shards_ipc::spawn(&shards_ipc::Spawn {
+    let mut child = shards_ipc::spawn_confined(&shards_ipc::Spawn {
         program: &binary,
         args: &args,
         grants_at: 0,
@@ -461,6 +590,7 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         env: &env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Network,
+        group: None,
     })
     .map_err(|e| format!("starting {}: {e}", binary.display()))?;
     drop(theirs);
@@ -472,10 +602,8 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         .name("network dialer".into())
         .spawn(move || serve_dials(&ours, proxy.as_deref(), pid))
         .map_err(|e| format!("a network process's dialer: {e}"))?;
-    Ok(NetProcess {
-        child,
-        _container: container,
-    })
+    child.hold(container);
+    Ok(child)
 }
 
 /// Dials for the network process `pid`, in an AppContainer, as it asks over `link`
@@ -499,7 +627,7 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
     let answer = |id: u32, kind: u8, rest: &[u8]| {
         let mut payload = id.to_be_bytes().to_vec();
         payload.extend(rest);
-        shards_ipc::send(link, kind, &payload)
+        shards_ipc::write_message(link, kind, &payload)
     };
     let mut connecting: Vec<(u32, std::net::TcpStream)> = Vec::new();
     let mut held: Vec<(u32, Held)> = Vec::new();
@@ -558,7 +686,7 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
         if fds.first().map_or(0, |fd| fd.revents) == 0 {
             continue;
         }
-        let Ok(Some(asked)) = shards_ipc::recv(link) else {
+        let Ok(Some(asked)) = shards_ipc::read_message(link) else {
             return;
         };
         let Some((id, rest)) = asked.payload.split_first_chunk::<4>() else {
@@ -590,6 +718,21 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
                     }
                 }
             },
+            // A UDP socket connects at once: answered as it is made.
+            kind::DIAL_UDP => {
+                let made = host_udp(rest).and_then(|sock| {
+                    shards_ipc::share_socket(sock.as_raw_socket(), pid).map(|info| (sock, info))
+                });
+                let sent = match made {
+                    Ok((sock, info)) => {
+                        answer(id, kind::GRANTED, &info).map(|()| held.push((id, Box::new(sock))))
+                    }
+                    Err(e) => answer(id, kind::ERR, e.to_string().as_bytes()),
+                };
+                if sent.is_err() {
+                    return;
+                }
+            }
             _ => return,
         }
     }
@@ -601,6 +744,24 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path
 /// capabilities reach the rest.
 #[cfg(windows)]
 fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
+    shards_net::sys::connect_tcp_to_itself(dialed(asked)?).map_err(not_the_hosts)
+}
+
+/// A UDP socket bound at the address (4 or 16 bytes) `asked` names and connected there, to
+/// its port (big-endian), as [`host_tcp`] connects: only an address the host holds as it
+/// binds, its own or its loopback, which a network process's AppContainer keeps it from
+/// (D142).
+#[cfg(windows)]
+fn host_udp(asked: &[u8]) -> std::io::Result<std::net::UdpSocket> {
+    let to = dialed(asked)?;
+    let sock = std::net::UdpSocket::bind(std::net::SocketAddr::new(to.ip(), 0)).map_err(not_the_hosts)?;
+    sock.connect(to)?;
+    Ok(sock)
+}
+
+/// Where a dial `asked` goes: its address (4 or 16 bytes), then its port (big-endian).
+#[cfg(windows)]
+fn dialed(asked: &[u8]) -> std::io::Result<std::net::SocketAddr> {
     let refused = |why: &str| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_string());
     let (address, port) = asked
         .split_at_checked(asked.len().saturating_sub(2))
@@ -615,13 +776,20 @@ fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
             .into(),
         _ => return Err(refused("a dial of no address")),
     };
-    shards_net::sys::connect_tcp_to_itself(std::net::SocketAddr::new(ip, port)).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AddrNotAvailable {
-            refused("not one of this host's addresses")
-        } else {
-            e
-        }
-    })
+    Ok(std::net::SocketAddr::new(ip, port))
+}
+
+/// A bind's refusal of an address the host does not hold, said so.
+#[cfg(windows)]
+fn not_the_hosts(e: std::io::Error) -> std::io::Error {
+    if e.kind() == std::io::ErrorKind::AddrNotAvailable {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "not one of this host's addresses",
+        )
+    } else {
+        e
+    }
 }
 
 /// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it (Windows):
@@ -629,8 +797,8 @@ fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
 #[cfg(windows)]
 pub fn reap(net: &NetProcess) {
     let grace = u32::try_from(GRACE.as_millis()).unwrap_or(u32::MAX);
-    if !net.child.ended_within(grace) {
-        let _ = net.child.kill();
-        let _ = net.child.wait();
+    if !net.ended_within(grace) {
+        let _ = net.kill(shards_ipc::signal::SIGKILL);
+        let _ = net.wait();
     }
 }

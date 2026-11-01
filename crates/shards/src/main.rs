@@ -14,14 +14,10 @@ mod alloc_count;
 mod aws;
 mod build;
 mod cli;
-#[cfg(unix)]
 mod containers;
 mod context;
-#[cfg(unix)]
 mod daemon;
 mod disk;
-// The daemon's (Unix's alone as yet) and a search's.
-#[cfg_attr(not(unix), allow(dead_code))]
 mod filters;
 mod from_image;
 mod frontend;
@@ -37,32 +33,27 @@ mod guest;
 mod helpers;
 mod kernel;
 mod keyless;
-#[cfg(unix)]
 mod local_store;
-#[cfg(unix)]
 mod logging;
 mod login;
-#[cfg(unix)]
 mod names;
 mod netproc;
-#[cfg(unix)]
 mod networks;
 mod oidc;
+mod os;
+mod pressure;
 mod pull;
 mod resources;
 mod run;
 mod search;
-#[cfg(unix)]
 mod segments;
 mod setup;
-#[cfg(unix)]
 mod share;
 mod spec;
 mod spiffe;
 mod synced;
-#[cfg(unix)]
 mod volumes;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod working_set;
 
 const USAGE: &str = "usage: shards ACTION THING [ARG...]
@@ -73,12 +64,11 @@ fn main() -> ExitCode {
     // (`client_us`, cli/client.rs).
     let _ = shards_vmm::log::uptime_us();
     // A command a daemon started for another machine's client on a terminal (D180).
-    #[cfg(unix)]
-    {
-        context::take_terminal();
-        context::take_cidfile();
-        build::ssh::take_agents();
-    }
+    context::take_terminal();
+    context::take_cidfile();
+    build::ssh::take_agents();
+    #[cfg(windows)]
+    cli::take_signal_pipe();
     cli::main()
 }
 
@@ -88,12 +78,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
     let mut args = args.into_iter();
     let command = args.next();
     match command.as_ref().and_then(|c| c.to_str()) {
-        #[cfg(unix)]
         Some("daemon") => daemon::daemon(args),
-        #[cfg(not(unix))]
-        Some("daemon") => {
-            usage_error("the daemon needs Unix sockets, which shards does not support on this platform yet")
-        }
         Some("guest") => guest::guest(args),
         Some("disk") => disk::command(args),
         Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),
@@ -104,7 +89,6 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),
         // a run's share process (D38), which the daemon starts: not for people to run.
-        #[cfg(unix)]
         Some("share") => share::share(args),
         // the daemon's spawner (shards_ipc::start_spawner, PM M158): not for people to run.
         #[cfg(unix)]

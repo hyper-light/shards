@@ -46,9 +46,7 @@ fn env(k: &str) -> Option<String> {
 
 /// `text` on stderr, and status 1, as the Docker CLI fails a command; in a panel under
 /// `command`'s head on a colour terminal.
-#[cfg_attr(not(unix), allow(unused_variables))]
 fn failed(command: &str, text: &str) -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = crate::cli::look::styled_err() {
         let first = text.lines().next().unwrap_or(text);
         let first = ["error: ", "shards: "]

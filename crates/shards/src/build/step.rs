@@ -97,8 +97,7 @@ pub fn resolv_with(
 /// there (PM M177, "Based on host file" without "(legacy)"): the host's nameservers as they
 /// are, loopback and IPv6 ones too, which are the host's own there, and none added; the
 /// run's `--dns`, `--dns-search` and `--dns-option` in place of the host's, as on a bridge.
-/// The daemon's alone, which Windows has none of.
-#[cfg(unix)]
+/// The daemon's alone.
 pub fn resolv_host(
     host: &[u8],
     dns: &[String],

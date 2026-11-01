@@ -12,25 +12,24 @@ use std::process::ExitCode;
 
 use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 
-#[cfg(unix)]
 mod client;
-#[cfg(unix)]
-pub(crate) use client::{Stream, ask_here};
-#[cfg(unix)]
+pub(crate) use client::Stream;
+#[cfg(windows)]
+pub(crate) use client::take_signal_pipe;
+// The daemon's, for a context's copy step (D180).
+pub(crate) use client::ask_here;
 pub(crate) mod cp;
-#[cfg(unix)]
 pub(crate) mod listing;
-#[cfg(unix)]
 pub(crate) mod look;
 pub(crate) mod request;
 pub(crate) mod save;
-#[cfg(unix)]
 mod screens;
-#[cfg(unix)]
 mod show;
 pub(crate) mod terminal;
 pub(crate) mod terms;
 pub(crate) mod version;
+#[cfg(windows)]
+mod zones;
 
 /// `docker run`'s status when it could not run the command at all.
 const NOT_RUN: u8 = 125;
@@ -113,7 +112,6 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
     }
     // An action Docker has too, alone, on a colour terminal: its page, where Docker's
     // answer is that it lacks an argument; elsewhere, Docker's answer.
-    #[cfg(unix)]
     if let [action] = text.as_slice()
         && shards_cmdline::grammar::is_action(action)
         && !shards_cmdline::commands::find(&[action.as_str()]).is_some_and(|(c, _, _)| {
@@ -134,7 +132,6 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
     {
         // The page is named as it was asked for: `list vms`, not `ps`; and is that form's,
         // in shards' words, where help is asked.
-        #[cfg(unix)]
         look::name_as(&text.iter().take(2).cloned().collect::<Vec<_>>().join(" "));
         if let Some(form) = shards_cmdline::grammar::form(&text) {
             let _ = FORM.set(form);
@@ -208,7 +205,6 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         ["container", "exec", ..] => {
             request::exec("shards container exec", args.get(2..).unwrap_or_default())
         }
-        #[cfg(unix)]
         ["daemon", "stop"] if args.len() == 2 => match shards_ipc::home() {
             Ok(home) => client::stop(&home),
             Err(e) => failed(&e),
@@ -254,7 +250,7 @@ fn names_a_microvm(target: &str) -> bool {
         && name
             .iter()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
-    named && !shards_vmm::snapshot::pointer(std::path::Path::new(target)).exists()
+    named && !shards_vmm::snapshot::pointed(std::path::Path::new(target)).unwrap_or(false)
 }
 
 /// A container command, `named` words of `words` naming it: read here, and run by the
@@ -294,7 +290,6 @@ fn container(
     };
     // A listing's `--format` is the client's to apply, and to check first, as the CLI
     // checks it before it asks (container/list.go, buildContainerListOptions).
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::PS) {
         let format = parsed.string("format").to_string();
         if !format.is_empty() {
@@ -315,7 +310,6 @@ fn container(
             ..listing::Asked::default()
         });
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_LS) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -324,7 +318,6 @@ fn container(
             ..listing::Asked::default()
         });
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::IMAGES) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -337,7 +330,6 @@ fn container(
             filtered: false,
         });
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_LS) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -388,7 +380,6 @@ fn container(
         );
         return ExitCode::FAILURE;
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::SYSTEM_DF) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -408,17 +399,13 @@ fn container(
                 return ExitCode::FAILURE;
             }
         };
-        #[cfg(unix)]
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
             verbose: parsed.bool("verbose"),
             filtered,
             ..listing::Asked::default()
         });
-        #[cfg(not(unix))]
-        let _ = filtered;
     }
-    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::HISTORY) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -434,7 +421,6 @@ fn container(
     // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in
     // shards' look, elsewhere in the CLI's words.
     if let Some(warning) = prune_warning(command, &parsed) {
-        #[cfg(unix)]
         let asked = match look::styled() {
             Some(p) => {
                 let items = prune_items(command, &parsed);
@@ -443,13 +429,10 @@ fn container(
             }
             None => confirmed(&warning),
         };
-        #[cfg(not(unix))]
-        let asked = confirmed(&warning);
         if !asked {
             return ExitCode::SUCCESS;
         }
     }
-    #[cfg(unix)]
     {
         // `save` and `export` write where the client says, opened here, before the
         // client moves to the daemon's home.
@@ -514,7 +497,7 @@ fn container(
         });
         match resolved {
             Ok((daemon, identity, home)) => {
-                use std::os::fd::AsFd as _;
+                use shards_ipc::fd::AsFd as _;
                 // What the daemon writes, the command's output; what it reads, its input.
                 let mut fds: Vec<client::Stream<'_>> =
                     output.iter().map(|o| client::Stream::To(o.fd())).collect();
@@ -531,8 +514,7 @@ fn container(
                     }),
                     now: now_ns(),
                     utc_offset: utc_offset(),
-                    // SAFETY: isatty(3) on this process's stdout.
-                    terminal: unsafe { libc::isatty(1) } == 1,
+                    terminal: std::io::IsTerminal::is_terminal(&std::io::stdout()),
                     width: terminal::size(1).1,
                     // docker/cli's tui.NewOutput: any NO_COLOR but an empty one; and a
                     // terminal that says it is dumb.
@@ -562,35 +544,6 @@ fn container(
             }
             Err(e) => failed(&e),
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = words;
-        // No daemon here yet: a pull runs in this process, said as `docker pull` says it.
-        if std::ptr::eq(command, &shards_cmdline::commands::PULL) {
-            let home = match shards_ipc::home() {
-                Ok(home) => home,
-                Err(e) => return failed(&e),
-            };
-            let out = crate::pull::Out {
-                out: &|line| {
-                    let _ = writeln!(std::io::stdout(), "{line}");
-                },
-                err: &|line| {
-                    let _ = writeln!(std::io::stderr(), "{line}");
-                },
-                progress: None,
-            };
-            let env = |k: &str| std::env::var(k).ok();
-            let status = crate::pull::command(&parsed, &home, &env, &out, None);
-            if let Some(agentfile) = agentfile {
-                return pulled_agentfile(agentfile, status, &home, &parsed);
-            }
-            return ExitCode::from(status);
-        }
-        failed(
-            "container commands need the daemon, which needs Unix sockets, which shards does not support on this platform yet",
-        )
     }
 }
 
@@ -648,7 +601,6 @@ fn action_help(action: &str) -> ExitCode {
         .filter(|(_, a, _, _)| *a == action)
         .map(|(_, _, takes, about)| (*takes, *about))
         .collect();
-    #[cfg(unix)]
     if let Some(p) = look::styled() {
         look::action(&p, action, &rows, &mut std::io::stdout().lock());
         return ExitCode::SUCCESS;
@@ -663,7 +615,6 @@ fn action_help(action: &str) -> ExitCode {
 
 /// `shards --help`: shards' grammar, its own page on a colour terminal, plain elsewhere.
 fn top_help() -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = look::styled() {
         look::top(&p, &mut std::io::stdout().lock());
         return ExitCode::SUCCESS;
@@ -675,7 +626,6 @@ fn top_help() -> ExitCode {
 
 /// A management command's help, as [`top_help`] says the root's.
 fn management_help(name: &str) -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = look::styled()
         && look::management(&p, name, &mut std::io::stdout().lock())
     {
@@ -693,7 +643,6 @@ fn management_help(name: &str) -> ExitCode {
 /// A command shards does not have, refused as docker/cli refuses one (status 1); in a
 /// panel on a colour terminal.
 fn unknown(text: &str) -> ExitCode {
-    #[cfg(unix)]
     if let Some(p) = look::styled_err() {
         let first = text.lines().next().unwrap_or(text);
         let first = first.strip_prefix("shards: ").unwrap_or(first);
@@ -780,7 +729,6 @@ fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
 }
 
 /// A page's name for the command `path` names: `prune image` for `shards image prune`.
-#[cfg(unix)]
 fn look_name(path: &str) -> String {
     let words: Vec<&str> = path.split(' ').skip(1).collect();
     match words.as_slice() {
@@ -791,7 +739,6 @@ fn look_name(path: &str) -> String {
 }
 
 /// What a prune removes, in shards' words, for its page.
-#[cfg(unix)]
 fn prune_items(command: &'static Command, parsed: &Parsed) -> Vec<String> {
     use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE, VOLUME_PRUNE};
     if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_PRUNE) {
@@ -868,7 +815,6 @@ fn confirmed(question: &str) -> bool {
 
 /// Draws a page that changes as it is watched over the last one drawn into `live`: a
 /// search's (D172), its results filled in as their lookups answer.
-#[cfg(unix)]
 pub(crate) fn show_live(sheet: &shards_ipc::Sheet, live: &mut shards_tui::frame::Frame) {
     screens::show(sheet, live);
 }
@@ -897,7 +843,6 @@ pub(crate) fn read(
         Outcome::Help { notices } => {
             let _ = std::io::stdout().write_all(notices.as_bytes());
             let form = FORM.get();
-            #[cfg(unix)]
             if let Some(p) = look::styled() {
                 match form {
                     Some(form) => look::form(&p, command, form, &mut std::io::stdout().lock()),
@@ -918,7 +863,6 @@ pub(crate) fn read(
             status,
         } => {
             let _ = std::io::stdout().write_all(notices.as_bytes());
-            #[cfg(unix)]
             if let Some(p) = look::styled_err() {
                 let first = text.lines().next().unwrap_or(&text);
                 let name = path.strip_prefix("shards ").unwrap_or(path);
@@ -950,13 +894,24 @@ fn columns() -> u16 {
 }
 
 /// This clock, in nanoseconds since the epoch.
-#[cfg(unix)]
 fn now_ns() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|d| i64::try_from(d.as_nanos()).ok())
         .unwrap_or(0)
+}
+
+/// This process's time zone's offset east of UTC now, in seconds, as Go's `time.Now()`
+/// has it in its `Local` zone: the system's zone at this instant ([`listing::local`]).
+#[cfg(windows)]
+pub(crate) fn utc_offset() -> i32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+    i32::try_from(listing::local(now).offset).unwrap_or(0)
 }
 
 /// This process's time zone's offset east of UTC now, in seconds, as Go's `time.Now()`
@@ -1118,13 +1073,12 @@ fn vm(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// `args` with `--working-set FD` given, its writer started on the pipe's other end, where
-/// they restore a snapshot whose generation has no working set and this backend records a
-/// restore's (`vm::RESTORES_RECORD`); none otherwise, or where the writer cannot start: a
-/// restore without one only takes the faults it would have.
-#[cfg(target_os = "linux")]
-fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
-    use std::os::fd::{AsFd as _, IntoRawFd as _};
+/// The snapshot directory, made absolute, whose working set a restore of `args` records:
+/// one whose generation has none, where this backend records a restore's
+/// (`vm::RESTORES_RECORD`); none for a warm VM's or a run's the daemon starts (`--warm`,
+/// `--resume`), which hand theirs to it, or one given a writer already (`--working-set`).
+#[cfg(any(target_os = "linux", windows))]
+fn recording_restore(args: &[OsString]) -> Result<Option<std::path::PathBuf>, String> {
     let spawned_by_daemon = args
         .iter()
         .take_while(|a| *a != "--")
@@ -1140,7 +1094,21 @@ fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String
     {
         return Ok(None);
     }
-    let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::path::absolute(dir)
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+/// `args` with `--working-set FD` given, its writer started on the pipe's other end, where
+/// they restore a snapshot whose working set the restore records ([`recording_restore`]);
+/// none otherwise, or where the writer cannot start: a restore without one only takes the
+/// faults it would have.
+#[cfg(target_os = "linux")]
+fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
+    use std::os::fd::{AsFd as _, IntoRawFd as _};
+    let Some(dir) = recording_restore(args)? else {
+        return Ok(None);
+    };
     let (from_vm, to_writer) = std::io::pipe().map_err(|e| format!("the working set's pipe: {e}"))?;
     let writer = shardsd()?;
     // SAFETY: signal(2) setting SIGCHLD's disposition, before any thread starts.
@@ -1177,6 +1145,28 @@ fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String
     Ok(Some(with))
 }
 
+/// The pipe a restore on Windows hands its working set to, where `args` restore a snapshot
+/// whose working set the restore records ([`recording_restore`]): the snapshot's
+/// directory, the end this process keeps the working set from as the VM ends
+/// ([`crate::working_set::keep`]), and the VM's end, given it as [`WORKING_SET`]. Linux's
+/// writer is a process of its own, as the CLI there becomes the VM; this one, which waits
+/// for its VM as a child, keeps it itself: no VM writes its snapshot (D30).
+#[cfg(windows)]
+fn working_set_writer(
+    args: &[OsString],
+) -> Result<Option<(std::path::PathBuf, std::io::PipeReader, std::io::PipeWriter)>, String> {
+    let Some(dir) = recording_restore(args)? else {
+        return Ok(None);
+    };
+    let (from_vm, to_keeper) = std::io::pipe().map_err(|e| format!("the working set's pipe: {e}"))?;
+    Ok(Some((dir, from_vm, to_keeper)))
+}
+
+/// The name a restore's working-set pipe is given to the VM by (`--working-set`), on
+/// Windows.
+#[cfg(windows)]
+const WORKING_SET: &str = "working-set";
+
 /// No other Unix but macOS records a restore's working set, so none starts a writer.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
@@ -1196,8 +1186,19 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
+    let (args, served) = match served_pipes(args) {
+        Ok(served) => served,
+        Err(e) => return failed(&e),
+    };
+    let args = args.as_slice();
     let bin = match vm_binary(args) {
         Ok(bin) => bin,
+        Err(e) => return failed(&e),
+    };
+    // A restore that records its generation's working set hands it to this process.
+    let (keeping, to_keeper) = match working_set_writer(args) {
+        Ok(Some((dir, from_vm, to_keeper))) => (Some((dir, from_vm)), Some(OwnedHandle::from(to_keeper))),
+        Ok(None) => (None, None),
         Err(e) => return failed(&e),
     };
     let container = match crate::helpers::containers().and_then(|records| {
@@ -1218,27 +1219,51 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(cwd) => cwd,
         Err(e) => return failed(&format!("the working directory: {e}")),
     };
-    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 2);
+    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 4);
     with.extend(args.first().map(OsString::as_os_str));
     with.push("--cwd".as_ref());
     with.push(cwd.as_os_str());
+    if to_keeper.is_some() {
+        with.push("--working-set".as_ref());
+        with.push(WORKING_SET.as_ref());
+    }
     with.extend(args.iter().skip(1).map(OsString::as_os_str));
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
     let env = crate::netproc::child_env();
-    let spawned = shards_ipc::spawn(&shards_ipc::Spawn {
+    let mut given = vec![
+        shards_ipc::Given {
+            name: "ask",
+            handle: asks_to.as_handle(),
+        },
+        shards_ipc::Given {
+            name: "answer",
+            handle: answers_from.as_handle(),
+        },
+    ];
+    given.extend(served.iter().map(|(name, handle)| shards_ipc::Given {
+        name,
+        handle: *handle,
+    }));
+    given.extend(to_keeper.as_ref().map(|to_keeper| shards_ipc::Given {
+        name: WORKING_SET,
+        handle: to_keeper.as_handle(),
+    }));
+    // A warm VM holds its spawner's NUL for the clients it lets go of, as the daemon's
+    // do: its AppContainer opens no file by name (PM M351).
+    let warm = served.iter().any(|(name, _)| name == WARM);
+    let null = match warm.then(|| std::fs::File::open(crate::os::NULL)).transpose() {
+        Ok(null) => null,
+        Err(e) => return failed(&format!("{}: {e}", crate::os::NULL)),
+    };
+    given.extend(null.as_ref().map(|null| shards_ipc::Given {
+        name: "null",
+        handle: null.as_handle(),
+    }));
+    let spawned = shards_ipc::spawn_confined(&shards_ipc::Spawn {
         program: &bin,
         args: &with,
         grants_at: 1,
-        given: &[
-            shards_ipc::Given {
-                name: "ask",
-                handle: asks_to.as_handle(),
-            },
-            shards_ipc::Given {
-                name: "answer",
-                handle: answers_from.as_handle(),
-            },
-        ],
+        given: &given,
         stdin: Some(std::io::stdin().as_handle()),
         stdout: std::io::stdout().as_handle(),
         stderr: std::io::stderr().as_handle(),
@@ -1246,17 +1271,26 @@ fn vm(args: &[OsString]) -> ExitCode {
         env: &crate::netproc::env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,
+        group: None,
     });
-    // The VM's ends are its own now: its exit ends the requests.
-    drop((asks_to, answers_from));
+    // The VM's ends are its own now: its exit ends the requests, and what it hands over of
+    // its working set.
+    drop((asks_to, answers_from, to_keeper));
     let child = match spawned {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
     };
-    // Its Ctrl-C is the VM's, which shares this console; made after it, so that it keeps
-    // the default (SetConsoleCtrlHandler: the setting is inherited).
-    // SAFETY: no handler, ignoring Ctrl-C in this process.
-    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1) };
+    // Its console's interrupts, Ctrl+C and Ctrl+Break, are the VM's, which shares this
+    // console and gives its guest each as SIGINT (workload::forward_signals): this process
+    // takes them and goes on waiting for it. Not by ignoring Ctrl+C alone (a null handler),
+    // which leaves Ctrl+Break to the default handler that ends this process, the event a
+    // process group is sent (GenerateConsoleCtrlEvent).
+    unsafe extern "system" fn interrupts(event: u32) -> windows_sys::core::BOOL {
+        use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+        i32::from(matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT))
+    }
+    // SAFETY: a handler of this process's that lives as long as it does.
+    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(interrupts), 1) };
     let link = crate::grant::Link {
         from: std::fs::File::from(OwnedHandle::from(asks_from)),
         to: std::fs::File::from(OwnedHandle::from(answers_to)),
@@ -1265,10 +1299,31 @@ fn vm(args: &[OsString]) -> ExitCode {
         let serving = std::thread::Builder::new()
             .name("grants".into())
             .spawn_scoped(scope, || crate::grant_answer::serve(&link, &child));
+        // Not kept, the next restore takes the faults this one did.
+        let keeper = keeping.and_then(|(dir, from_vm)| {
+            let kept = std::thread::Builder::new()
+                .name("working-set".into())
+                .spawn_scoped(scope, move || {
+                    if let Err(e) = crate::working_set::keep(from_vm, &dir) {
+                        let _ = writeln!(std::io::stderr(), "shards: the working set: {e}");
+                    }
+                });
+            match kept {
+                Ok(keeper) => Some(keeper),
+                Err(e) => {
+                    shards_vmm::debug!("not keeping this restore's working set: {e}");
+                    None
+                }
+            }
+        });
         let ended = child.wait();
         // What it could not grant, the VM was told and said.
         if let Ok(serving) = serving {
             let _ = serving.join();
+        }
+        // What it handed over is kept before this process says how it ended.
+        if let Some(keeper) = keeper {
+            let _ = keeper.join();
         }
         ended
     });
@@ -1279,7 +1334,300 @@ fn vm(args: &[OsString]) -> ExitCode {
     }
 }
 
+/// A pipe a share another server serves rides (Windows): its name in the VM's grants, and
+/// the handle this process inherited.
+#[cfg(windows)]
+type ServedPipe = (String, std::os::windows::io::BorrowedHandle<'static>);
+
+/// The pipes `shards run … --slates-fs-handle V` names (D38, PM M340): each a handle this
+/// process inherited from the server that serves its share (slates' `slates shards`). The
+/// VM is given each through its grants as `slates-fs-<i>`, in its order, and told the name
+/// with `--slates-fs`, as `--net`'s handles are given: no handle's value crosses as a flag,
+/// since none is known in the child before the spawn duplicates it there. Each must be a
+/// pipe this process holds of its own, given once ([`served_pipe`]). `restore` takes none,
+/// as Unix's takes no `--slates-fs-fd`. `--warm V`, a warm VM's link to the daemon that
+/// serves it its request (D26), as Unix's `--warm FD` names its socket, goes so too, as
+/// [`WARM`], once. What follows `--` is the workload's, kept as it is. The arguments the VM
+/// is given, and the pipes.
+#[cfg(windows)]
+fn served_pipes(args: &[OsString]) -> Result<(Vec<OsString>, Vec<ServedPipe>), String> {
+    let restoring = args.first().is_some_and(|a| a == "restore");
+    let mut kept = Vec::with_capacity(args.len());
+    let mut pipes: Vec<ServedPipe> = Vec::new();
+    let mut values: Vec<usize> = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--" {
+            kept.push(arg.clone());
+            kept.extend(rest.cloned());
+            break;
+        }
+        let flag = match arg.to_str() {
+            Some(flag @ ("--slates-fs-handle" | "--warm")) => flag,
+            _ => {
+                kept.push(arg.clone());
+                continue;
+            }
+        };
+        // Refused under its own name, as Unix's parse_restore refuses --slates-fs-fd, not
+        // under the `--slates-fs` it would become.
+        if restoring && flag == "--slates-fs-handle" {
+            return Err(format!("unexpected argument {arg:?}"));
+        }
+        let given = rest
+            .next()
+            .and_then(|v| v.to_str())
+            .ok_or(format!("{flag}: no handle given"))?;
+        let value: usize = given
+            .parse()
+            .map_err(|_| format!("{flag} {given:?}: not a handle"))?;
+        if values.contains(&value) {
+            return Err(format!("{flag} {value}: given twice"));
+        }
+        let name = if flag == "--warm" {
+            if pipes.iter().any(|(name, _)| name == WARM) {
+                return Err(format!("{flag}: given twice"));
+            }
+            WARM.to_string()
+        } else {
+            format!("slates-fs-{}", pipes.len())
+        };
+        let handle = served_pipe(flag, value)?;
+        kept.push(if flag == "--warm" { "--warm" } else { "--slates-fs" }.into());
+        kept.push(name.clone().into());
+        values.push(value);
+        pipes.push((name, handle));
+    }
+    Ok((kept, pipes))
+}
+
+/// The name a warm VM's link to its daemon goes to it by in its grants (`--warm V`).
+#[cfg(windows)]
+const WARM: &str = "warm";
+
+/// The pipe at `value`, which this process inherited for a share or a warm VM's link (named
+/// by `flag`): never one of its standard handles, refused as Unix refuses descriptors 0 to
+/// 2 (a piped stdin passes GetFileType, and would be the share's stream and the VM's stdin
+/// at once), and a pipe. Its inherit flag is cleared: an inherited handle stays
+/// inheritable, and a spawn by std, which passes every inheritable handle on, would hand it
+/// to that child too. It reaches the VM by DuplicateHandle alone.
+#[cfg(windows)]
+fn served_pipe(flag: &str, value: usize) -> Result<std::os::windows::io::BorrowedHandle<'static>, String> {
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    let raw = value as std::os::windows::io::RawHandle;
+    let standard = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+        .into_iter()
+        .any(|which| {
+            // SAFETY: GetStdHandle reads one of this process's standard handles and touches no
+            // memory.
+            let held = unsafe { GetStdHandle(which) };
+            !held.is_null() && held != INVALID_HANDLE_VALUE && held == raw
+        });
+    if standard {
+        return Err(format!("{flag} {value}: not a handle of its own"));
+    }
+    // SAFETY: GetFileType reads a handle's type and touches no memory; a value this
+    // process holds no handle at answers FILE_TYPE_UNKNOWN.
+    if value == 0 || unsafe { GetFileType(raw) } != FILE_TYPE_PIPE {
+        return Err(format!("{flag} {value}: not a pipe this process holds"));
+    }
+    // SAFETY: changes one flag of a pipe this process holds, as GetFileType just answered.
+    if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(format!("{flag} {value}: {}", std::io::Error::last_os_error()));
+    }
+    // SAFETY: a handle this process inherited for this share and never closes: it stays
+    // open while the spawn duplicates it into the VM, and until this process ends.
+    Ok(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) })
+}
+
 fn failed(message: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "shards: {message}");
     ExitCode::FAILURE
+}
+
+#[cfg(all(test, windows))]
+mod served_pipes_tests {
+    //! `shards run … --slates-fs-handle V` on Windows (D38, PM M340): each pipe the spawner
+    //! holds goes to the VM through its grants by name, never by value.
+    use std::ffi::OsString;
+    use std::os::windows::io::AsRawHandle as _;
+
+    use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation};
+
+    use super::served_pipes;
+
+    fn args(of: &[&str]) -> Vec<OsString> {
+        of.iter().map(OsString::from).collect()
+    }
+
+    /// Whether `handle` is inheritable, as a spawn by std would hand it on.
+    fn inheritable(handle: &impl std::os::windows::io::AsRawHandle) -> bool {
+        let mut flags = 0;
+        // SAFETY: reads the flags of a handle this test holds into a local.
+        let read = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+        assert_ne!(read, 0);
+        flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    /// A pipe this process holds goes to the VM as `slates-fs-0`, named with
+    /// `--slates-fs`, the rest of the arguments kept in order; inherited inheritable, as a
+    /// server hands it, it is no longer so, and no spawn by std hands it on.
+    #[test]
+    fn a_pipe_it_holds_goes_by_name() {
+        let (read, _write) = std::io::pipe().unwrap();
+        // SAFETY: sets one flag of a handle this test holds.
+        let set =
+            unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        assert_ne!(set, 0);
+        assert!(inheritable(&read), "as a handle inherited is");
+        let value = (read.as_raw_handle() as usize).to_string();
+        let (kept, pipes) = served_pipes(&args(&[
+            "run",
+            "--kernel",
+            "/k",
+            "--slates-fs-handle",
+            &value,
+            "--cpus",
+            "2",
+        ]))
+        .unwrap();
+        assert_eq!(
+            kept,
+            args(&[
+                "run",
+                "--kernel",
+                "/k",
+                "--slates-fs",
+                "slates-fs-0",
+                "--cpus",
+                "2"
+            ])
+        );
+        assert_eq!(pipes.len(), 1);
+        assert_eq!(pipes[0].0, "slates-fs-0");
+        assert!(!inheritable(&read), "no spawn by std hands it on");
+    }
+
+    /// No value, one that is no number, a handle that is no pipe, a pipe given twice, and
+    /// one given to `restore` are each refused, the flag named.
+    #[test]
+    fn what_is_no_pipe_it_holds_is_refused() {
+        let (read, _write) = std::io::pipe().unwrap();
+        let pipe = (read.as_raw_handle() as usize).to_string();
+        let file = std::fs::File::open("NUL").unwrap();
+        let not_pipe = (file.as_raw_handle() as usize).to_string();
+        for (given, why) in [
+            (vec!["run", "--slates-fs-handle"], "no handle given"),
+            (vec!["run", "--slates-fs-handle", "x"], "not a handle"),
+            (
+                vec!["run", "--slates-fs-handle", not_pipe.as_str()],
+                "not a pipe this process holds",
+            ),
+            (
+                vec!["run", "--slates-fs-handle", "0"],
+                "not a pipe this process holds",
+            ),
+            (
+                vec![
+                    "run",
+                    "--slates-fs-handle",
+                    pipe.as_str(),
+                    "--slates-fs-handle",
+                    pipe.as_str(),
+                ],
+                "given twice",
+            ),
+            (
+                vec!["restore", "/snapshot", "--slates-fs-handle", pipe.as_str()],
+                "unexpected argument",
+            ),
+        ] {
+            let e = served_pipes(&args(&given)).err().unwrap();
+            assert!(
+                e.contains("--slates-fs-handle") && e.contains(why),
+                "{given:?}: {e}"
+            );
+        }
+    }
+
+    /// A warm VM's link (`--warm V`) goes to `restore` and `run` as `warm`, once; what
+    /// follows `--` is the workload's, its `--warm` and `--slates-fs-handle` among it.
+    #[test]
+    fn a_warm_vms_link_goes_by_name_once() {
+        let (read, _write) = std::io::pipe().unwrap();
+        let value = (read.as_raw_handle() as usize).to_string();
+        for command in ["restore", "run"] {
+            let (kept, pipes) = served_pipes(&args(&[
+                command,
+                "/t",
+                "--warm",
+                value.as_str(),
+                "--",
+                "/bin/x",
+                "--warm",
+                "5",
+            ]))
+            .unwrap();
+            assert_eq!(
+                kept,
+                args(&[command, "/t", "--warm", "warm", "--", "/bin/x", "--warm", "5"])
+            );
+            assert_eq!(pipes.len(), 1);
+            assert_eq!(pipes[0].0, "warm");
+        }
+        let (second, _w) = std::io::pipe().unwrap();
+        let other = (second.as_raw_handle() as usize).to_string();
+        for (given, why) in [
+            (
+                vec![
+                    "restore",
+                    "/t",
+                    "--warm",
+                    value.as_str(),
+                    "--warm",
+                    other.as_str(),
+                ],
+                "given twice",
+            ),
+            (
+                vec!["restore", "/t", "--warm", "0"],
+                "not a pipe this process holds",
+            ),
+            (vec!["restore", "/t", "--warm", "x"], "not a handle"),
+            (vec!["restore", "/t", "--warm"], "no handle given"),
+        ] {
+            let e = served_pipes(&args(&given)).err().unwrap();
+            assert!(e.contains("--warm") && e.contains(why), "{given:?}: {e}");
+        }
+    }
+
+    /// Each of this process's standard handles is refused as none of its own, whatever its
+    /// type: a piped stdin is a pipe, and would be the share's stream and the VM's stdin at
+    /// once.
+    #[test]
+    fn its_standard_handles_are_refused() {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        let mut refused = 0;
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: reads one of this process's standard handles.
+            let held = unsafe { GetStdHandle(which) };
+            if held.is_null() || held == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            let value = (held as usize).to_string();
+            let e = served_pipes(&args(&["run", "--slates-fs-handle", &value]))
+                .err()
+                .unwrap();
+            assert!(e.contains("not a handle of its own"), "{value}: {e}");
+            refused += 1;
+        }
+        assert!(refused > 0, "a test process has a standard handle to offer");
+    }
 }

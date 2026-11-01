@@ -23,7 +23,6 @@ const NOT_RUN: u8 = 125;
 
 /// What names a connection to the machine's Engine API (D180 part 4) to its daemon: no
 /// command line's word, as no command line can hold NUL.
-#[cfg(unix)]
 pub(crate) const ENGINE_STEP: &str = "\u{0}engine";
 
 /// Where this home's daemon serves context `name`'s engine, relative to the home: in `e`, by
@@ -36,15 +35,31 @@ pub(crate) fn engine_socket(name: &str) -> PathBuf {
     Path::new("e").join(format!("{short}.sock"))
 }
 
-/// Context `name`'s engine as `DOCKER_HOST` names one.
+/// Context `name`'s engine as `DOCKER_HOST` names one: its socket; on Windows the named
+/// pipe the file at that path names, as the home's own engine's is named
+/// ([`own_endpoint`]), or the path where its daemon has named none yet.
 fn engine_endpoint(home: &Path, name: &str) -> String {
-    format!("unix://{}", home.join(engine_socket(name)).display())
+    let path = home.join(engine_socket(name));
+    #[cfg(unix)]
+    return format!("unix://{}", path.display());
+    #[cfg(windows)]
+    return std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|named| {
+            named
+                .trim()
+                .strip_prefix(r"\\.\pipe\")
+                .map(|pipe| format!("npipe:////./pipe/{pipe}"))
+        })
+        .unwrap_or_else(|| path.display().to_string());
 }
 
-/// The variable a daemon sets for a client's command on a terminal of its own: the command
-/// takes the terminal as its session's controlling terminal, first thing, as a login's
-/// command has its own (D180), which no action of posix_spawn(3) makes on every system.
-#[cfg(unix)]
+/// The variable a daemon sets for a client's command on a terminal of its own (D180). On
+/// Unix the command takes the terminal as its session's controlling terminal, first thing,
+/// as a login's command has its own, which no action of posix_spawn(3) makes on every
+/// system. On Windows, whose command is made in the terminal's pseudoconsole (ConPTY), it
+/// names which of its standard streams the terminal is (`0`, `1`, `2`), each opened there
+/// (CONIN$, CONOUT$) as the command's own.
 pub(crate) const TAKE_TERMINAL: &str = "SHARDS_TAKE_TERMINAL";
 
 /// What a client says in place of a run's or create's `--cidfile` path, before it: the file is
@@ -53,40 +68,65 @@ pub(crate) const CIDFILE: &str = "\0cidfile/";
 
 /// The variable a daemon sets for a client's command whose `--cidfile` is the client's
 /// ([`CIDFILE`]): the descriptor the command writes its microVM's ID to, which the daemon
-/// tells the client.
-#[cfg(unix)]
+/// tells the client; on Windows the handle its daemon gave it at that number
+/// (`shards_ipc::given_fd`).
 pub(crate) const CIDFILE_FD: &str = "SHARDS_CIDFILE_FD";
 
 /// The descriptor [`CIDFILE_FD`] names.
-#[cfg(unix)]
 pub(crate) const CIDFILE_DESCRIPTOR: i32 = 3;
 
+/// The variable a Windows daemon sets for a client's command: the number it gave the
+/// command a pipe at, which the client's signals and hang-up come on as Unix's come by
+/// kill(2), each its Linux number, four bytes little-endian, and the hang-up its end
+/// (cli::client `take_signal_pipe`). Windows sends a process no signal.
+#[cfg(windows)]
+pub(crate) const SIGNAL_FD: &str = "SHARDS_SIGNAL_FD";
+
+/// The number a Windows daemon gives a client's command its signals' pipe at, which
+/// [`SIGNAL_FD`] names: past every other it gives the command, its cidfile's and a build's
+/// secrets' and agents' among them, which number from 3 as a Unix command's descriptors
+/// do. A constant 4 was a build's second secret's too: its CLI took that secret's pipe for
+/// its signals and the pipe's end for its hang-up, and the build ended at 129
+/// (tests/context.rs, CI's windows-2022).
+#[cfg(windows)]
+pub(crate) fn signal_descriptor(given: impl IntoIterator<Item = i32>) -> i32 {
+    given.into_iter().fold(2, i32::max).saturating_add(1)
+}
+
 /// The descriptor [`take_cidfile`] took.
-#[cfg(unix)]
 static TOLD: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
 
 /// Takes what [`CIDFILE_FD`] names, close-on-exec, and lets the variable go, so that nothing
 /// this process starts takes it too.
-#[cfg(unix)]
 pub(crate) fn take_cidfile() {
-    use std::os::fd::FromRawFd as _;
     let Some(fd) = std::env::var(CIDFILE_FD).ok().and_then(|v| v.parse::<i32>().ok()) else {
         return;
     };
     // SAFETY: first thing in main, before any thread: the environment is this one's alone.
     unsafe { std::env::remove_var(CIDFILE_FD) };
-    // SAFETY: fcntl(2) of a descriptor past stdio's, which its daemon gave this process.
-    if fd <= 2 || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+    if fd <= 2 {
         return;
     }
-    // SAFETY: the descriptor its daemon gave this process for the ID, which nothing else
-    // here holds.
-    let file = unsafe { fs::File::from_raw_fd(fd) };
+    #[cfg(unix)]
+    let file = {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: fcntl(2) of a descriptor past stdio's, which its daemon gave this process.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return;
+        }
+        // SAFETY: the descriptor its daemon gave this process for the ID, which nothing
+        // else here holds.
+        unsafe { fs::File::from_raw_fd(fd) }
+    };
+    #[cfg(windows)]
+    let file = match shards_ipc::given_fd(fd) {
+        Ok(Some(handle)) => fs::File::from(handle),
+        _ => return,
+    };
     *TOLD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file);
 }
 
 /// The descriptor a client's `--cidfile` is told through ([`take_cidfile`]), once.
-#[cfg(unix)]
 pub(crate) fn told_cidfile() -> Option<fs::File> {
     TOLD.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -94,7 +134,6 @@ pub(crate) fn told_cidfile() -> Option<fs::File> {
 }
 
 /// Whether this process's `--cidfile` is a client's ([`take_cidfile`]).
-#[cfg(unix)]
 pub(crate) fn tells_cidfile() -> bool {
     TOLD.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -115,6 +154,36 @@ pub(crate) fn take_terminal() {
         // SAFETY: TIOCSCTTY on our own descriptor: a session's leader with no controlling
         // terminal takes it.
         unsafe { libc::ioctl(fd, libc::TIOCSCTTY as _, 0) };
+    }
+}
+
+/// [`take_terminal`] on Windows: each standard stream [`TAKE_TERMINAL`] names is the
+/// pseudoconsole's, its input buffer (CONIN$) or its screen (CONOUT$), opened read and
+/// write as a console's own handles are and set as this process's, for its life.
+#[cfg(windows)]
+pub(crate) fn take_terminal() {
+    use std::os::windows::io::IntoRawHandle as _;
+    use windows_sys::Win32::System::Console::{
+        STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+    let Some(streams) = std::env::var_os(TAKE_TERMINAL) else {
+        return;
+    };
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(TAKE_TERMINAL) };
+    for stream in streams.to_string_lossy().chars() {
+        let (buffer, which) = match stream {
+            '0' => ("CONIN$", STD_INPUT_HANDLE),
+            '1' => ("CONOUT$", STD_OUTPUT_HANDLE),
+            '2' => ("CONOUT$", STD_ERROR_HANDLE),
+            _ => continue,
+        };
+        let Ok(opened) = fs::OpenOptions::new().read(true).write(true).open(buffer) else {
+            continue;
+        };
+        // SAFETY: a console handle this process owns, given to its standard stream for the
+        // process's life.
+        unsafe { SetStdHandle(which, opened.into_raw_handle()) };
     }
 }
 
@@ -461,13 +530,10 @@ fn unnamed(path: &Path) -> PathBuf {
     path.with_file_name(format!("~{name}.{}", std::process::id()))
 }
 
-/// A new file at `path`, only its owner's, holding `bytes` on disk.
+/// A new file at `path`, only its owner's wherever the home is (shards_ipc::create_private),
+/// holding `bytes` on disk.
 fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(path)?;
+    let mut file = shards_ipc::create_private(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -649,9 +715,8 @@ fn not_carried(args: &[OsString]) -> Option<String> {
         .collect();
     let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
-    let first = refs.first().copied().unwrap_or_default();
-    // `cp` is driven here, step by step, where this client's CLI drives one (cli/cp.rs, Unix);
-    // a build's context is kept in step on the machine ([`building`]), and all else a build
+    // `cp` is driven here, step by step, as this client's CLI drives one (cli/cp.rs); a
+    // build's context is kept in step on the machine ([`building`]), and all else a build
     // names of this client's crosses with it ([`build_there`]).
     if shards_cmdline::commands::build(&refs).is_some() {
         return None;
@@ -660,13 +725,8 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     // the machine as its builder: not carried yet. Every other
     // `buildx` and `builder` command asks the machine's builder alone, and `compose`,
     // which is no command of shards', is the machine's to say so of, as this one's would.
-    let policy = matches!(refs.as_slice(), ["buildx", "policy", "eval" | "test", ..]);
-    if policy || (first == "cp" && !cfg!(unix)) {
-        let named = if policy {
-            refs.get(..3).unwrap_or_default().join(" ")
-        } else {
-            first.to_string()
-        };
+    if matches!(refs.as_slice(), ["buildx", "policy", "eval" | "test", ..]) {
+        let named = refs.get(..3).unwrap_or_default().join(" ");
         return Some(format!(
             "{named} over a context reads this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
@@ -824,8 +884,12 @@ fn csv_path_here(
 
 /// An `--output` of `value` to a file or directory here: said as the same output to the
 /// machine's directory of this build's outputs, under its own name, recorded in `outputs`.
-/// None for one of the machine's own, a registry's, or stdout's, and for one the build
-/// refuses, which it says there.
+/// A directory's files (`type=local`) are asked of the machine as their archive
+/// (`type=tar`), which comes back as a file and is unpacked here: the files never land on
+/// the machine's own disk, where a Windows machine's would keep none of their modes, links
+/// or owners (an output packed again from NTFS has its modes made up). None for one of
+/// the machine's own, a registry's, or stdout's, and for one the build refuses, which it
+/// says there.
 fn output_here(value: &str, outputs: &mut Vec<(String, PathBuf, bool)>) -> Option<String> {
     let mut exports = shards_cmdline::buildflags::parse_exports(&[value.to_string()]).ok()?;
     let e = exports.pop().filter(|_| exports.is_empty())?;
@@ -837,8 +901,9 @@ fn output_here(value: &str, outputs: &mut Vec<(String, PathBuf, bool)>) -> Optio
     let here = std::path::absolute(&e.dest).ok()?;
     let name = outputs.len().to_string();
     outputs.push((name.clone(), here, dir));
+    let kind = if e.kind == "local" { "tar" } else { e.kind.as_str() };
     let fields = [
-        format!("type={}", e.kind),
+        format!("type={kind}"),
         format!("dest={}{name}", crate::synced::OUT),
     ]
     .into_iter()
@@ -1529,7 +1594,34 @@ fn build_there(
                 }
             })
             .map_err(|e| shards_remote::Error::new(format!("a thread for the build's agents: {e}")))?;
-        client::exec(
+        // On Windows no signal says this terminal resized: its size is asked every quarter
+        // second while the build runs, as docker/cli's MonitorTtySize asks a container's
+        // (cli/command/container/tty.go), and sent as it changes. Its console's input says
+        // a resize too, but reading it takes the keys typed ahead of the next command.
+        #[cfg(windows)]
+        let (ended, end) = std::sync::mpsc::channel::<()>();
+        #[cfg(windows)]
+        if let Some(t) = terminal {
+            std::thread::Builder::new()
+                .name("build-size".into())
+                .spawn_scoped(scope, move || {
+                    let mut said = (t.rows, t.cols);
+                    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                        end.recv_timeout(std::time::Duration::from_millis(250))
+                    {
+                        let now = crate::cli::terminal::size(2);
+                        let steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if now != said
+                            && let Some(controls) = steered.as_ref()
+                            && controls.resize(now.0, now.1).is_ok()
+                        {
+                            said = now;
+                        }
+                    }
+                })
+                .map_err(|e| shards_remote::Error::new(format!("a thread for the build's terminal: {e}")))?;
+        }
+        let ran = client::exec(
             identity,
             context.remote(),
             request,
@@ -1537,7 +1629,10 @@ fn build_there(
             crate::synced::Demux::new(io::stdout(), fetched),
             io::stderr(),
             steered,
-        )
+        );
+        #[cfg(windows)]
+        drop(ended);
+        ran
     });
     let sent = sending.join();
     // An output not kept is the build's failure, as one the build here could not write is.
@@ -1651,11 +1746,13 @@ impl Fetched {
 
 impl crate::synced::Outputs for Fetched {
     fn begin(&mut self, name: &str, dir: bool) -> io::Result<()> {
-        let Some((_, dest, _)) = self.wanted.iter().find(|(n, ..)| n == name) else {
+        let Some((_, dest, asked_dir)) = self.wanted.iter().find(|(n, ..)| n == name) else {
             return Err(io::Error::other(format!("an output {name:?} not asked for")));
         };
         let dest = dest.clone();
-        if dir {
+        // A directory comes as its archive, a directory's of the machine's (`dir`) or the
+        // file its build exported in its place ([`output_here`]): unpacked here alike.
+        if dir || *asked_dir {
             fs::create_dir_all(&dest).map_err(|e| self.failed(&dest, e))?;
             let (output, input) = io::pipe().map_err(|e| self.failed(&dest, e))?;
             let to = dest.clone();
@@ -2334,27 +2431,28 @@ fn own_named<'a>(refs: &[&'a str]) -> Option<&'a str> {
 
 /// Whether this home's daemon serves now: its request slots (D185).
 fn daemon_serves(home: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        shards_ipc::slots::served(home)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = home;
-        false
-    }
+    shards_ipc::slots::served(home)
 }
 
 /// Where this home's daemon is reached from outside shards' own CLI: its Engine API's
-/// socket (D170), which Docker's clients and SDKs take as their endpoint.
+/// socket (D170), which Docker's clients and SDKs take as their endpoint; on Windows its
+/// named pipe, which the home's file names, as Docker's clients write one
+/// (`npipe:////./pipe/NAME`), or the home where its daemon has named none.
 fn own_endpoint(home: &Path) -> String {
     #[cfg(unix)]
     {
         format!("unix://{}", home.join(crate::daemon::ENGINE_SOCKET).display())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        home.display().to_string()
+        std::fs::read_to_string(home.join(crate::daemon::ENGINE_SOCKET))
+            .ok()
+            .and_then(|name| {
+                name.trim()
+                    .strip_prefix(r"\\.\pipe\")
+                    .map(|pipe| format!("npipe:////./pipe/{pipe}"))
+            })
+            .unwrap_or_else(|| home.display().to_string())
     }
 }
 
@@ -2499,7 +2597,6 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     // A copy is driven here, as this machine's CLI drives one, each of its steps asked of the
     // machine's daemon: its files here are this client's. What steers a command steers no
     // step, so a signal ends the client, and the step there with its stream.
-    #[cfg(unix)]
     if let Some(parsed) = copying(&words_sent) {
         return crate::cli::cp::copy(&parsed, &|argv, fds| step_there(&identity, context, argv, fds));
     }
@@ -2701,7 +2798,6 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
 
 /// `words`' copy, read as `cp` reads it (cli/cp.rs), where the command is one; a command
 /// shards' parser refuses, or `-h`, goes as it is.
-#[cfg(unix)]
 fn copying(words: &[String]) -> Option<shards_cmdline::flags::Parsed> {
     let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
@@ -2720,7 +2816,6 @@ fn copying(words: &[String]) -> Option<shards_cmdline::flags::Parsed> {
 /// CLI there would ask its daemon, the step's stream its descriptors, an archive's written
 /// into the one in `fds` and an extract's read from it; else what it said on stdout, and on
 /// stderr, taken whole, with its status.
-#[cfg(unix)]
 fn step_there(
     identity: &Identity,
     context: &Context,
@@ -2800,12 +2895,9 @@ pub(crate) fn asks_help(words: &[&str], valued: &[&str]) -> bool {
 
 /// `usage`, a command's page, as its help: on a colour terminal laid out as `name`'s.
 pub(crate) fn help_page(name: &str, usage: &str) -> ExitCode {
-    #[cfg(unix)]
     if crate::cli::look::usage_page(name, usage) {
         return ExitCode::SUCCESS;
     }
-    #[cfg(not(unix))]
-    let _ = name;
     let _ = writeln!(io::stdout(), "{usage}");
     ExitCode::SUCCESS
 }
@@ -3019,8 +3111,7 @@ pub(crate) fn clients(home: &Path) -> Vec<Client> {
     out
 }
 
-/// Enrolls `key` as client `name`: the daemon's, which listens on Unix alone.
-#[cfg(unix)]
+/// Enrolls `key` as client `name`: the daemon's, as a client joins.
 pub(crate) fn enroll(home: &Path, name: &str, key: &[u8]) -> Result<(), String> {
     let text = format!(
         "{CLIENT}\nname {name}\nkey {}\nenrolled {}\n",
@@ -3064,7 +3155,6 @@ fn invitations(home: &Path) -> Vec<(Invitation, u64)> {
 }
 
 /// How many of this machine's invitations are open: unspent, and not lapsed.
-#[cfg(unix)]
 pub(crate) fn open_invitations(home: &Path) -> usize {
     invitations(home)
         .iter()
@@ -3443,6 +3533,22 @@ mod tests {
         assert_eq!(yes.join().unwrap(), [11], "what reached the agent");
     }
 
+    /// An output to a directory here is asked of the machine as its archive, which comes
+    /// back as a file to unpack into it; one to a file here, and a directory of OCI's
+    /// layout, as asked.
+    #[test]
+    fn a_directorys_output_is_asked_as_its_archive() {
+        let mut outputs = Vec::new();
+        let local = output_here("type=local,dest=out", &mut outputs).unwrap();
+        assert_eq!(local, format!("type=tar,dest={}0", crate::synced::OUT));
+        let tar = output_here("type=tar,dest=r.tar", &mut outputs).unwrap();
+        assert_eq!(tar, format!("type=tar,dest={}1", crate::synced::OUT));
+        let oci = output_here("type=oci,dest=layout,tar=false", &mut outputs).unwrap();
+        assert!(oci.starts_with("type=oci,"), "{oci}");
+        let dirs: Vec<bool> = outputs.iter().map(|(_, _, dir)| *dir).collect();
+        assert_eq!(dirs, [true, false, true]);
+    }
+
     #[test]
     fn a_context_refuses_what_it_does_not_carry() {
         let args = |s: &str| s.split(' ').map(OsString::from).collect::<Vec<_>>();
@@ -3452,6 +3558,9 @@ mod tests {
         assert!(not_carried(&args("run -it alpine sh")).is_none());
         assert!(not_carried(&args("exec -it web sh")).is_none());
         assert!(not_carried(&args("attach web")).is_none());
+        // A copy is driven here a step at a time, on every host (cli/cp.rs).
+        assert!(not_carried(&args("cp web:/a b")).is_none());
+        assert!(not_carried(&args("cp b web:/a")).is_none());
         // No command of shards', said so there as here.
         assert!(not_carried(&args("compose up")).is_none());
         // The builder's own, asked of the machine's; a policy's files here, not yet.
@@ -3514,9 +3623,9 @@ mod tests {
         ] {
             assert!(not_carried(&args(remote)).is_none(), "{remote}");
         }
-        // A copy is driven here, where cp.rs runs.
+        // A copy is driven here, as cli/cp.rs drives one, on every host.
         for copy in ["cp web:/x .", "container cp web:/x .", "copy vm web:/x ."] {
-            assert_eq!(not_carried(&args(copy)).is_none(), cfg!(unix), "{copy}");
+            assert!(not_carried(&args(copy)).is_none(), "{copy}");
         }
         assert!(not_carried(&args("agent ls")).is_none());
         // A file a command writes or reads whole crosses as its output or input ([`here_files`]).

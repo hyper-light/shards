@@ -195,10 +195,16 @@ pub fn obtain(link: &std::os::unix::net::UnixStream, wanted: &[Wanted]) -> Resul
             .ok_or_else(|| format!("the spawner went before granting {}", path.display()))?;
         match answer.kind {
             kind::GRANTED => match (*access, answer.fds.into_iter().next(), answer.payload.is_empty()) {
-                (Access::Read | Access::ReadIfThere | Access::Write, Some(fd), true) => {
+                (
+                    Access::Read | Access::ReadIfThere | Access::ReadNewestIfThere | Access::Write,
+                    Some(fd),
+                    true,
+                ) => {
                     shards_vmm::platform::grant_input(path.clone(), Some(fd));
                 }
-                (Access::ReadIfThere, None, true) => shards_vmm::platform::grant_input(path.clone(), None),
+                (Access::ReadIfThere | Access::ReadNewestIfThere, None, true) => {
+                    shards_vmm::platform::grant_input(path.clone(), None);
+                }
                 (Access::Listen, Some(fd), true) => shards_vmm::platform::grant_listener(path.clone(), fd),
                 (Access::MakeDir, None, false) => {
                     let resolved =
@@ -263,21 +269,22 @@ pub fn dial(
 #[cfg(windows)]
 pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String> {
     use shards_ipc::kind;
-    shards_ipc::send(&link.to, kind::GRANT, &encode(wanted)?)
+    shards_ipc::write_message(&link.to, kind::GRANT, &encode(wanted)?)
         .map_err(|e| format!("asking for access: {e}"))?;
     for (access, path) in wanted {
-        let answer = shards_ipc::recv(&link.from)
+        let answer = shards_ipc::read_message(&link.from)
             .map_err(|e| format!("the grant for {}: {e}", path.display()))?
             .ok_or_else(|| format!("the spawner went before granting {}", path.display()))?;
         let at = |e: String| format!("{}: {e}", path.display());
         match (answer.kind, *access) {
-            (kind::GRANTED, Access::Read | Access::ReadIfThere | Access::Write)
-                if !answer.payload.is_empty() =>
-            {
+            (
+                kind::GRANTED,
+                Access::Read | Access::ReadIfThere | Access::ReadNewestIfThere | Access::Write,
+            ) if !answer.payload.is_empty() => {
                 let handed = handed_file(&answer.payload).map_err(at)?;
                 shards_vmm::platform::grant_input(path.clone(), Some(handed), *access == Access::Write);
             }
-            (kind::GRANTED, Access::ReadIfThere) => {
+            (kind::GRANTED, Access::ReadIfThere | Access::ReadNewestIfThere) => {
                 shards_vmm::platform::grant_input(path.clone(), None, false)
             }
             (kind::GRANTED, Access::Listen) => {
@@ -285,6 +292,8 @@ pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String
                     .map_err(|e| at(e.to_string()))?;
                 shards_vmm::platform::grant_listener(path.clone(), listener);
             }
+            // Made, for the spawner to stage this VM's snapshots in ([`stage`]).
+            (kind::GRANTED, Access::MakeDir) if answer.payload.is_empty() => {}
             (kind::GRANTED, _) => {
                 return Err(format!(
                     "the spawner's answer for {} was not what was asked",
@@ -325,14 +334,14 @@ fn handed_file(payload: &[u8]) -> Result<(std::fs::File, PathBuf), String> {
 #[cfg(windows)]
 pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm::platform::UnixStream> {
     use shards_ipc::kind;
-    shards_ipc::send(&link.to, kind::DIAL, &port.to_be_bytes())?;
-    let answer = shards_ipc::recv(&link.from)?
+    shards_ipc::write_message(&link.to, kind::DIAL, &port.to_be_bytes())?;
+    let answer = shards_ipc::read_message(&link.from)?
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
     match answer.kind {
         kind::GRANTED => {
             let conn = shards_vmm::platform::UnixStream::from_shared(&answer.payload)?;
             // Had: the spawner lets go of its copy, as on macOS (review 8.7).
-            let _ = shards_ipc::send(&link.to, kind::TAKEN, &[]);
+            let _ = shards_ipc::write_message(&link.to, kind::TAKEN, &[]);
             Ok(conn)
         }
         kind::ERR => Err(std::io::Error::new(
@@ -345,11 +354,123 @@ pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm:
     }
 }
 
+/// A snapshot generation the spawner on `link` stages in `dir`, a directory it granted this
+/// VM to write in (`kind::STAGE`, D196), with what the VM keeps beside its memory and state
+/// (`kept`): its name, then its files in [`Kept::files`]'s order, handles the spawner
+/// duplicated into this process.
+///
+/// [`Kept::files`]: shards_vmm::platform::Kept::files
+#[cfg(windows)]
+pub fn stage(
+    link: &crate::grant::Link,
+    dir: &std::path::Path,
+    kept: shards_vmm::platform::Kept,
+) -> std::io::Result<(String, Vec<std::fs::File>)> {
+    use shards_ipc::kind;
+    use std::os::windows::io::FromRawHandle as _;
+    let asked = [&[kept.bits()][..], &crate::grant::path_bytes(dir)].concat();
+    shards_ipc::write_message(&link.to, kind::STAGE, &asked)?;
+    let answer = shards_ipc::read_message(&link.from)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
+    let refused = |why: String| std::io::Error::other(why);
+    match answer.kind {
+        kind::GRANTED => {
+            let (handles, name) = answer
+                .payload
+                .split_at_checked(8 * kept.files())
+                .ok_or_else(|| refused("a stage answered cut short".into()))?;
+            // Every handle owned first, so that an answer refused below closes them all.
+            let mut files = Vec::with_capacity(kept.files());
+            let mut none = false;
+            for value in handles.as_chunks::<8>().0 {
+                match usize::try_from(u64::from_le_bytes(*value))
+                    .ok()
+                    .filter(|&v| v != 0)
+                {
+                    // SAFETY: a handle the spawner duplicated into this process for this
+                    // generation alone, owned from here on.
+                    Some(handle) => files.push(unsafe {
+                        std::fs::File::from_raw_handle(handle as std::os::windows::io::RawHandle)
+                    }),
+                    None => none = true,
+                }
+            }
+            if none {
+                return Err(refused("a stage answered with no handle".into()));
+            }
+            let name = std::str::from_utf8(name)
+                .map_err(|_| refused("a generation named in no UTF-8".into()))?
+                .to_string();
+            Ok((name, files))
+        }
+        kind::ERR => Err(refused(String::from_utf8_lossy(&answer.payload).into_owned())),
+        other => Err(refused(format!(
+            "the spawner answered a stage with message kind {other}"
+        ))),
+    }
+}
+
+/// Which of `file`'s first `len` bytes hold data, as the spawner on `link` finds them for
+/// this VM, which may ask its file system nothing of the file's ranges (`kind::RANGES`,
+/// D196): the file named by its handle here, which the spawner takes.
+#[cfg(windows)]
+pub fn ranges(link: &crate::grant::Link, file: &std::fs::File, len: u64) -> std::io::Result<Vec<(u64, u64)>> {
+    use shards_ipc::kind;
+    use std::os::windows::io::AsRawHandle as _;
+    let handle = file.as_raw_handle() as usize as u64;
+    let asked = [handle.to_le_bytes(), len.to_le_bytes()].concat();
+    shards_ipc::write_message(&link.to, kind::RANGES, &asked)?;
+    let answer = shards_ipc::read_message(&link.from)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
+    match answer.kind {
+        kind::GRANTED => {
+            let (pairs, rest) = answer.payload.as_chunks::<16>();
+            if !rest.is_empty() {
+                return Err(std::io::Error::other("ranges answered cut short"));
+            }
+            Ok(pairs
+                .iter()
+                .map(|pair| {
+                    let (at, n) = pair.split_at(8);
+                    let word = |b: &[u8]| <[u8; 8]>::try_from(b).map(u64::from_le_bytes).unwrap_or(0);
+                    (word(at), word(n))
+                })
+                .collect())
+        }
+        kind::ERR => Err(std::io::Error::other(
+            String::from_utf8_lossy(&answer.payload).into_owned(),
+        )),
+        other => Err(std::io::Error::other(format!(
+            "the spawner answered ranges with message kind {other}"
+        ))),
+    }
+}
+
+/// Has the spawner on `link` make generation `name`, which this VM filled, durable and the
+/// one in use (`kind::COMMIT`, D196).
+#[cfg(windows)]
+pub fn commit(link: &crate::grant::Link, name: &str) -> std::io::Result<()> {
+    use shards_ipc::kind;
+    shards_ipc::write_message(&link.to, kind::COMMIT, name.as_bytes())?;
+    let answer = shards_ipc::read_message(&link.from)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
+    match answer.kind {
+        kind::GRANTED => Ok(()),
+        kind::ERR => Err(std::io::Error::other(
+            String::from_utf8_lossy(&answer.payload).into_owned(),
+        )),
+        other => Err(std::io::Error::other(format!(
+            "the spawner answered a commit with message kind {other}"
+        ))),
+    }
+}
+
 /// An access's byte in a request.
 fn code(access: Access) -> u8 {
     match access {
         Access::Read => 0,
         Access::ReadIfThere => 1,
+        Access::ReadNewestIfThere => 5,
         Access::Write => 2,
         Access::MakeDir => 3,
         Access::Listen => 4,

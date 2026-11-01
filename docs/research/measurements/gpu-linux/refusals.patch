@@ -1,0 +1,16 @@
+--- a/crates/syscall-filter/src/lib.rs
++++ b/crates/syscall-filter/src/lib.rs
+@@ -605,10 +605,11 @@
+         }
+     }
+     put(b"\n");
+-    // SAFETY: write(2) of our stack buffer, then exit_group(2).
++    // SAFETY: MEASUREMENT: write(2), then the syscall returns ENOSYS.
+     unsafe {
+         libc::write(2, buf.as_ptr().cast(), len);
+-        libc::syscall(libc::SYS_exit_group, REFUSED);
++        let uc = &mut *context.cast::<libc::ucontext_t>();
++        uc.uc_mcontext.gregs[libc::REG_RAX as usize] = -(libc::ENOSYS as i64);
+     }
+ }
+ 
