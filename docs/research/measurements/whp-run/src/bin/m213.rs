@@ -358,7 +358,7 @@ fn beside(idle: usize, how: Waits) -> Result<Vec<f64>, String> {
                     }
                     let port = register(&served)?;
                     let mut entries = vec![OVERLAPPED_ENTRY::default(); 64];
-                    let (mut answered, mut empty) = (0, 0u32);
+                    let (mut answered, mut empty, mut lost) = (0, 0u32, 0u32);
                     while answered < ROUNDS {
                         // SAFETY: our event.
                         unsafe { WSAResetEvent(ev) };
@@ -399,7 +399,18 @@ fn beside(idle: usize, how: Waits) -> Result<Vec<f64>, String> {
                         }
                         let h = ev as HANDLE;
                         // SAFETY: our event, as the handle it is.
-                        unsafe { WSAWaitForMultipleEvents(1, &raw const h, 0, 100, 0) };
+                        if unsafe { WSAWaitForMultipleEvents(1, &raw const h, 0, 100, 0) } == WSA_WAIT_TIMEOUT {
+                            // The event did not come where the port had the socket ready: a
+                            // wake lost, this way's finding. Lost a hundred times, 10 s of its
+                            // waits, it is told: beside 100 sockets on windows-2025 its rounds
+                            // outlasted the job's 15 minutes (CI 40961442817, 41281977635).
+                            lost += 1;
+                            if lost >= 100 {
+                                return Err(format!(
+                                    "{lost} wakes lost in {answered} round trips: the event did not come, where the port named the socket"
+                                ));
+                            }
+                        }
                     }
                     // SAFETY: our port and event.
                     unsafe {
