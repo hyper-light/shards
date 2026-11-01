@@ -16897,6 +16897,18 @@ revision before comparing a changed API/implementation.
     as M391 found its balloon thread.
   - Open: what of the path from the daemon to a guest's give-back, and of the give-back
     itself, allocates under a budget.
+- **Found, short with nothing given back** (f0880522, CI 41292358322, x86_64 Linux with
+  glibc, the test's try 1, its guest's kernel counting what it read as the test asks): the
+  budget's first word counted the slice holding 818 MiB; its host's own pressure (140 ms
+  stalled in 2 s) then had the microVM give back 513 MiB it held cold of its files; the
+  budget set a quarter GiB short of 818 found it short by 256 MiB with none left to give
+  back, the 512 MiB its guest read still counted inactive (Inactive(file) 524,268 kB as the
+  budget came). Its host still counted them: memory.current, which caps what the budget
+  counts held, falls as its guest reports the pages free, each 2 s (Linux 6.18
+  mm/page_reporting.c, PAGE_REPORTING_DELAY), and the daemon tells a microVM held short its
+  room again each window. So the test's race of its host's pressure taking first, which it
+  already met as a budget within reach, is met as a budget short too where its host took
+  first between the word that counted and the budget (containers.rs, `host_took`).
 
 ### M417. What a guest's kernel writes to a console told to be quiet, as it panics
 
@@ -16956,7 +16968,12 @@ revision before comparing a changed API/implementation.
   it ran through here and below every freeze, and a sample taken across one is taken again,
   counted in the report (`frozen_retaken`; support `unfrozen`); the restore bench takes each
   of its samples so, its working set set aside again with a sample that runs without one.
-  On a host no guard freezes, none is taken again.
+  On a host no guard freezes, none is taken again. Its waits, for a child's readiness and
+  end and for a working set kept, count only the time its process could run, the wall's less
+  each freeze its ticker saw and the one it has not yet ticked past (support
+  `runnable_since`): a process ran 0.2 to 0.6 s between freezes of 25 s (above), so a
+  child given a minute of the wall's had 1.8 s at most to run, where on a host no guard
+  froze it had the minute.
 
 
 ### M419. Stops beside a gigabyte build (D27's stop, D195's daemon on Windows)
@@ -16989,3 +17006,67 @@ revision before comparing a changed API/implementation.
   10,035.1, p90 10,611.8, max 10,847.0. None gave up: a run just started stops beside the
   build as it does alone. So the measurement now stops runs idle from before the build
   too (Method).
+- **Found, with the idle runs** (f3760b80, budget-e2e 41292368066): windows-2022, alone n
+  40, p50 10,023.2 ms, max 10,079.2; beside the build (119.4 s) n 24, p50 10,027.0, p90
+  10,349.5, max 19,383.1; idle, stopped as its image is read, n 8, p50 10,292.9, max
+  10,317.8. windows-2025, alone n 40, p50 10,028.6, max 10,083.8; beside n 24, p50 10,058.9,
+  p90 10,217.8, max 14,809.3; idle n 8, p50 10,190.7, max 10,239.5. None gave up, but
+  beside the build a stop's SIGKILL took up to 9.4 s to be heard (19.4 s, less its 10 s of
+  grace), against `KILL_WAIT`'s 10: a guest stalled near the wait whose end is the VM's
+  kill. How long a VM process takes to end once killed there, `LAST_WAIT`'s 2 s, the
+  measurement now times too: eight more runs' VM processes killed outright 5 s into the
+  read, each's end after the kill.
+- **Found, killed outright** (8bdb04f2, budget-e2e 41295804483, windows-2025): the eight VM
+  processes killed 5 s into the read ended within 1.4 ms of their kills, the last of them;
+  a VM process idle beside the build ends at once. So a stop that gave up, its VM process
+  running on 2 s after its kill, killed one the host held up, and its guest's SIGKILL took
+  up to 9.4 s beside the build: the stalls are the host's, beside its disk's gigabytes.
+  dev's CI at de631b49 (41291108866, windows-2025) failed two runs not ready in 60 s, their
+  VMs idle 20 s with every thread waiting and 11.9 GiB of memory free, again as
+  an_image_of_gigabytes_boots read its image: the same tree had passed (41284231177).
+- **Decided.** an_image_of_gigabytes_boots runs alone, in a test binary of its own
+  (tests/gigabytes.rs): cargo runs a crate's test binaries one after another, so no test
+  waits on a host whose disk it fills. A stop or a start held up by its host's disk as long
+  as Docker's waits (KILL_WAIT, LAST_WAIT, READY_TIMEOUT) still fails as Docker's does.
+
+### M420. CI's native tests' steps at their limits again (M245)
+
+- **Question.** dev's CI at beb04a58 (41311980102) ran out of x86_64 Linux's tests' step's
+  41 minutes, the limit M245 set a third above the slowest it measured (30.2), as seven more
+  of the runs before it had. Were their runners slow or their tests hung, and what limits do
+  the native jobs' steps need now?
+- **Method.** GitHub's records of the last 79 CI runs (2026-10-27 15:05 to 2026-11-01 13:35
+  UTC, runs 40527550618 to 41311980102; `docs/research/measurements/ci-limits/runs.txt`),
+  through `ci-limits/limits.py`: each native job's steps' starts and ends, a job's time its
+  steps' (GitHub recorded one macOS job's end, 41284231177's, an hour past its last step's);
+  and x86_64 Linux's logs, each tests' step split at cargo's `Finished` line into building
+  the tests and running them, and for each step that ran out, the binary it was in, how long
+  since the suite last moved, and what the rest of the suite took from that binary's start
+  in the runs that ran through.
+- **Found** (minutes; n, p50, p90, p99, max of the steps that ran through):
+
+  | job | tests' step | ran out | other steps' max |
+  |---|---|---|---|
+  | x86_64-unknown-linux-gnu | 54, 35.6, 40.2, 40.8, 40.8 | 8 | 13.0 |
+  | aarch64-unknown-linux-gnu | 66, 15.0, 16.1, 16.5, 16.5 | 0 | 7.3 |
+  | aarch64-apple-darwin | 61, 24.8, 27.9, 28.8, 28.8 | 0 | 11.3 |
+  | x86_64-pc-windows-msvc (windows-2025) | 57, 58.1, 75.7, 90.9, 90.9 | 2 | 16.1 |
+  | x86_64-pc-windows-msvc (windows-2022) | 44, 62.1, 66.9, 80.4, 80.4 | 2 | 15.0 |
+
+  - x86_64 Linux's step has grown 8.7 minutes at p50 since M245's 26.9, two weeks before.
+    Building its tests took 14.5 at p50 and 16.4 at most, running them 22.0 and 24.7.
+  - Four of the eight that ran out were slow runners in the suite's last binaries, at most
+    1.6 minutes since the suite last moved: 41311980102 (dev) in tests/image.rs, 41291076590
+    (gpu), 41167803629 and 40614692136 (win-pools) in the last tests/oracle.rs, whose rest took
+    0.3 to 0.5 in the runs that ran through: steps of 41.5 to 41.7.
+  - The other four, all of 2026-10-27, stopped far from the end, 7.8 to 22.6 minutes of the
+    suite left by those runs' times: 40527550618 in tests/daemon.rs, 40537861914 and 40571636357 in
+    tests/containers.rs (a test running 3.2 and 4.9 minutes since the suite last moved), and
+    40544371607 in tests/build.rs (`run_caches_are_shared_among_concurrent_builds`, 23.8).
+  - Windows' four that ran out were one tree's: 23b2841a's, on both runners of win-pools'
+    run 40631138814 and win-pools-stage's 40631141474.
+- **Decided.** Each limit a third above the slowest measured, as M245 set them: the tests'
+  step 56 minutes (41.7 slowest, x86_64 Linux's), and the job 74, those 56 and a third above
+  its other steps' slowest (13.0); on Windows, whose runs now say how long the slowest take,
+  the tests' step 122 (90.9 slowest, windows-2025's) where it had 120, and the job 144, those
+  122 and a third above its other steps' slowest (16.1), where it had 150.

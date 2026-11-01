@@ -340,7 +340,7 @@ impl Terminal {
     pub fn exit(&mut self) -> (String, i32, bool) {
         let shown = self.wait_for("exit ");
         let shown = shown.strip_suffix("exit ").unwrap_or_default().to_string();
-        let status = self.wait_for("\r\n");
+        let status = self.wait_for(".");
         let restored = modes(&self.dir, &["after"]) == modes(&self.dir, &["before"]);
         // The shell waits for a line, read as a console in its modes reads Return.
         self.type_in(b"\r");
@@ -352,7 +352,11 @@ impl Terminal {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        (shown, status.trim().parse().unwrap(), restored)
+        (
+            shown,
+            status.trim().trim_end_matches('.').parse().unwrap(),
+            restored,
+        )
     }
 }
 
@@ -421,7 +425,7 @@ fn console_shell() {
 /// The shell's part, where the test that holds a terminal started this binary as its
 /// shell, in a directory that says what to run ([`Terminal::run`]); elsewhere nothing. It
 /// writes the console's modes as they are before the client runs, as they change while it
-/// runs, and after it; says its status, `exit N`; and waits for a line, so that the console
+/// runs, and after it; says its status, `exit N.`; and waits for a line, so that the console
 /// outlives the client, as a pty does a login shell's.
 fn shell_if_asked() {
     use std::os::windows::io::AsRawHandle as _;
@@ -480,7 +484,10 @@ fn shell_if_asked() {
         std::thread::sleep(Duration::from_millis(2));
     };
     write("after", now());
-    let _ = writeln!(std::io::stdout(), "exit {}", status.code().unwrap_or(-1));
+    // Its status ended by a character, not the line's end: past a resize a pseudoconsole
+    // may move its cursor to the next row for a line feed, which writes no CR LF (CI's
+    // windows-2022 in 41292358322: `exit 0` then `\x1b[26;1H`).
+    let _ = writeln!(std::io::stdout(), "exit {}.", status.code().unwrap_or(-1));
     let mut done = String::new();
     let _ = std::io::stdin().read_line(&mut done);
 }

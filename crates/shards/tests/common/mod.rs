@@ -3800,3 +3800,21 @@ pub fn ssh_agent(sock: &Path) -> std::process::Child {
         .spawn()
         .unwrap()
 }
+
+/// `mib` MiB of xorshift64's bytes at `path`, which no file system keeps as holes or shares.
+pub fn noise(path: &Path, mib: usize) {
+    use std::io::Write as _;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut block = vec![0u8; 1 << 20];
+    for _ in 0..mib {
+        for word in block.as_chunks_mut::<8>().0 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *word = x.to_le_bytes();
+        }
+        file.write_all(&block).unwrap();
+    }
+    file.flush().unwrap();
+}

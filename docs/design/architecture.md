@@ -10667,7 +10667,7 @@ builder memory as its build needs it; runs now have it too.
   probe, was not there yet as init mounted it, and its runs failed every time (M217).
 - **No deadline:** the wait ends when the kernel says probing is done; a mount that fails
   again says why. Where the first mount succeeds, it is the one call it always was.
-- **Verified:** `an_image_of_gigabytes_boots` (a 2 GiB root of random bytes); 200 of 200
+- **Verified:** gigabytes.rs `an_image_of_gigabytes_boots` (a 2 GiB root of random bytes); 200 of 200
   cold boots of 108 MB and 2.1 GB roots (M217). Mutation-checked: without the retry, the
   test fails 3 of 3 with ENOENT.
 

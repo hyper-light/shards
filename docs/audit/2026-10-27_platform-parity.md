@@ -46,15 +46,15 @@ stood alone unseen, each a host's own mechanism (platform-parity.tsv), one of th
 
 | # | What | Hosts without it | Evidence |
 |---|---|---|---|
-| 1 | The daemon, and all it serves. That is `shards run IMAGE`, containers and their every command (create, start, stop, rm, ps, logs, exec, attach, cp, top, stats, update, wait, kill, inspect), images run, volumes and binds, networks, published ports, log drivers, names, warm pools, the Engine API, compose, events, and the CLI's client, listings, terminal UI, `cp`, `save` and `show` | Windows (amd64; arm64 has no backend, row 5) | main.rs:93-96 "the daemon needs Unix sockets, which shards does not support on this platform yet"; cli/mod.rs:592 "container commands need the daemon"; main.rs:17-66 `containers`, `daemon`, `local_store`, `logging`, `names`, `networks`, `segments`, `share`, `volumes`, `working_set` are `cfg(unix)`; cli/mod.rs:15-29 `client`, `cp`, `listing`, `look`, `screens`, `show` likewise; architecture.md:4282 "No daemon of shards' runs on Windows yet", :9753 "No published ports yet", :7897 "etwlogs ... waits for shards' daemon on Windows" |
-| 2a | Snapshots and restores: `--snapshot-dir`, `shards restore`, templates (D25), warm pools (D26) | Windows amd64 (D140) | D13 "no snapshots yet (D140)"; grant_answer.rs:406 "a microVM on Windows takes no snapshot yet"; grant.rs:97; vmm platform/windows.rs:559-630 (a snapshot's files, directories, prefetch and working sets "not ... on Windows") |
+| 1 | The daemon, and all it serves. That is `shards run IMAGE`, containers and their every command (create, start, stop, rm, ps, logs, exec, attach, cp, top, stats, update, wait, kill, inspect), images run, volumes and binds, networks, published ports, log drivers, names, warm pools, the Engine API, compose, events, and the CLI's client, listings, terminal UI, `cp`, `save` and `show` | closed: Windows amd64 (D195); arm64 has no backend (row 5) | main.rs:93-96 "the daemon needs Unix sockets, which shards does not support on this platform yet"; cli/mod.rs:592 "container commands need the daemon"; main.rs:17-66 `containers`, `daemon`, `local_store`, `logging`, `names`, `networks`, `segments`, `share`, `volumes`, `working_set` are `cfg(unix)`; cli/mod.rs:15-29 `client`, `cp`, `listing`, `look`, `screens`, `show` likewise; architecture.md:4282 "No daemon of shards' runs on Windows yet", :9753 "No published ports yet", :7897 "etwlogs ... waits for shards' daemon on Windows" |
+| 2a | Snapshots and restores: `--snapshot-dir`, `shards restore`, templates (D25), warm pools (D26) | closed: Windows amd64 (D196) | D13 "no snapshots yet (D140)"; grant_answer.rs:406 "a microVM on Windows takes no snapshot yet"; grant.rs:97; vmm platform/windows.rs:559-630 (a snapshot's files, directories, prefetch and working sets "not ... on Windows") |
 | 2b | The same | Linux arm64 (D154) | D13 "no snapshots yet (D154)" |
 | 3 | Host directories shared into a microVM (volumes and binds, D38: the share process and its FUSE server) and their DAX windows (D189) | Windows | virtio/fs/mod.rs: `server`, `host`, `headroom`, `window` are `cfg(unix)`; window_none.rs and vm/mod.rs:764 "a DAX window is not built on Windows yet (D189)" (slates-d7 holds the WHP window, its step 6) |
 | 4 | Memory a microVM gives back: free page reporting (D151), budgets (D148), the host's pressure watched and given back to (D188) for runs and builders | Windows | platform/pressure.rs Linux's and macOS's alone; build/mod.rs:48 `give` `cfg(unix)`; D188 "The daemon has no other platform yet" |
 | 5 | A hypervisor backend | Windows arm64 | hv/mod.rs: `whp` is "Windows on x86_64"; D13 "planned" |
 | 6 | A GPU given a microVM (D144, Venus) | Windows arm64, which has no backend (row 5); closed: Linux (D201), Windows x86_64 (D202) | vm/x86_64.rs and vm/aarch64.rs "a GPU is given on macOS and Linux hosts alone so far (D144, D201)"; user decision 2026-10-13 "--gpus Linux YES" |
-| 7 | `--cgroup-parent` (D183) | macOS (refused: "no host resource group a process can be placed in"), Windows (refused until D183's slice 3, a job object) | D183 "Refused before anything starts" |
-| 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | journald on macOS and Windows; etwlogs nowhere yet | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
+| 7 | `--cgroup-parent` (D183) | closed: macOS and Windows (D183's slice 3) | D183 "Refused before anything starts" |
+| 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | closed: etwlogs on Windows (D198), and macOS's own log (D199) and etwlogs as journald's counterparts; journald is Linux's own | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
 | 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | Windows | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
 | 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
@@ -94,6 +94,33 @@ Each lone item is confirmed or closed as its row is worked.
 
 ## Closed
 
+- Row 1, the daemon on Windows and all it serves (the plan's steps 1, 2 and 8): the home's
+  request slots as named pipes and the daemon's spawner (D195), every container command and
+  the CLI's client, images' save, load and import, the Engine API on its named pipe, events,
+  compose and every log driver. Tested with real VMs on CI's windows-2022 and windows-2025:
+  tests/daemon.rs 37 of 37 (CI 40618994939 at 61a07442), and containers.rs 132 of 132,
+  lifecycle.rs 1, run.rs 6, images.rs 11, engine.rs 27 (Docker's own CLI on the Engine API's
+  pipe) and compose.rs 3 (the real compose plugin), every log driver among them (CI
+  40862958912 at 624ba89b); on jupiter, the same counts, and shards_ipc's slots 58 of 58 with
+  23 mutants caught.
+- Row 2a, snapshots, restores, templates and warm pools on Windows amd64 (steps 3 and 4,
+  D196): a WHP partition saved and restored, D25's templates and D26's warm pools served by
+  the Windows daemon. Tested on jupiter (Windows 10.0.26200): snapshot.rs 10 of 10, restore.rs
+  2 of 2, warm.rs 6 of 6; on CI's windows-2025 snapshot.rs 10, restore.rs 2 and the vmm's 233
+  (CI 40519967428, 40527550618), warm.rs 6 (40684427069), tests/daemon.rs's pool and template
+  tests among its 37 (CI 40618994939). windows-2022's WHP sets no APIC page back and so
+  restores nothing, which its tests say (PM M345). Its cost: PM M345.
+- Row 7, `--cgroup-parent` on macOS and Windows (step 12, D183's slice 3): groups shards keeps,
+  held to their `memory.high`, `memory.max` and `cpu.max`; on Windows each group's VM processes
+  in a job of its own. Tested with real VMs: a_microvm_under_a_group_is_held_to_its_budget on
+  macOS (PM M355), a_groups_job_holds_its_microvms_to_its_memory_max on CI's windows-2022 and
+  windows-2025 (CI 40624202863), and a_groups_microvms_are_held_to_its_cpu_max_together on
+  macOS, jupiter and both CI runners (03943f0a).
+- Row 8, log drivers bound to one host (step 8): etwlogs, Docker's on Windows, built (D198),
+  its real-time ETW session's lines word for word on both CI runners (CI 40862958912,
+  `a_runs_log_is_sent_to_etw_as_its_options_say`); journald's counterparts, macOS's own log
+  (`oslog`, D199, `a_runs_log_is_sent_to_macos_own_log_as_its_options_say` with `log show`)
+  and etwlogs on Windows, journald itself refused off Linux as Linux's own.
 - Row 6, Linux: a microVM given its host's GPUs through Venus, rendered by the host's own
   Vulkan driver in the GPU's VM process (D201), tested by tests/gpu.rs on the GPU desktop's
   NVIDIA GeForce RTX 5060 Ti and Radeon 610M (PM M381, M382, M384).

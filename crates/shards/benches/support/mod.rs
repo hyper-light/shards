@@ -97,6 +97,46 @@ pub fn unfrozen(retaken: &mut usize, mut take: impl FnMut() -> Sample) -> Sample
     }
 }
 
+/// How long this process could run since `start`: the wall's time less each freeze its
+/// ticker saw ([`FROZEN`]), and the one it has not yet ticked past. A wait timed so outlasts
+/// a guard that freezes this process and its children together: under kiln's headroom guard
+/// on jupiter a sample's process had 0.2 to 0.6 s to run between freezes of 25 s (PM M418),
+/// and a minute of the wall's time was no minute of theirs.
+pub fn runnable_since(start: Instant) -> Duration {
+    let (from, now) = (since_base(start), since_base(Instant::now()));
+    let seen: u64 = FREEZES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|&(a, b)| b.min(now).saturating_sub(a.max(from)))
+        .sum();
+    let last = LAST_TICK.load(std::sync::atomic::Ordering::Acquire);
+    let frozen_us = u64::try_from(FROZEN.as_micros()).unwrap_or(u64::MAX);
+    let unseen = if now.saturating_sub(last) > frozen_us {
+        now.saturating_sub(last.max(from))
+    } else {
+        0
+    };
+    Duration::from_micros(
+        now.saturating_sub(from)
+            .saturating_sub(seen.saturating_add(unseen)),
+    )
+}
+
+/// What `rx` gets before this process has run `limit` since `start` ([`runnable_since`]).
+pub fn recv_within<T>(
+    rx: &mpsc::Receiver<T>,
+    start: Instant,
+    limit: Duration,
+) -> Result<T, mpsc::RecvTimeoutError> {
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Err(mpsc::RecvTimeoutError::Timeout) if runnable_since(start) < limit => {}
+            got => return got,
+        }
+    }
+}
+
 /// Runs `shards-vm <args>`, the VMM's own process without the `shards` command in front,
 /// to completion. With `hold`, waits for `shards-ready` on stderr, then sends the start
 /// line.
@@ -149,15 +189,13 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
     });
     let pid = child.id() as libc::pid_t;
     if hold {
-        ready_rx
-            .recv_timeout(TIMEOUT)
-            .expect("shards never reported shards-ready");
+        recv_within(&ready_rx, start, TIMEOUT).expect("shards never reported shards-ready");
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(b"go\n").unwrap();
     }
     let (done_tx, done_rx) = mpsc::channel::<()>();
     let watchdog = std::thread::spawn(move || {
-        if done_rx.recv_timeout(TIMEOUT).is_err() {
+        if recv_within(&done_rx, start, TIMEOUT).is_err() {
             // SAFETY: the child is not yet reaped, so `pid` still names it.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
@@ -214,16 +252,14 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
         all
     });
     if hold {
-        ready_rx
-            .recv_timeout(TIMEOUT)
-            .expect("shards never reported shards-ready");
+        recv_within(&ready_rx, start, TIMEOUT).expect("shards never reported shards-ready");
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(b"go\n").unwrap();
     }
     let process = child.as_handle().try_clone_to_owned().unwrap();
     let (done_tx, done_rx) = mpsc::channel::<()>();
     let watchdog = std::thread::spawn(move || {
-        if done_rx.recv_timeout(TIMEOUT).is_err() {
+        if recv_within(&done_rx, start, TIMEOUT).is_err() {
             // SAFETY: a handle of the child's process, which this thread holds open.
             unsafe { windows_sys::Win32::System::Threading::TerminateProcess(process.as_raw_handle(), 1) };
         }

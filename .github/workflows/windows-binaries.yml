@@ -1,0 +1,125 @@
+name: windows binaries
+
+# Windows bench and test binaries, built for a machine that runs them but cannot build them
+# in reasonable time: jupiter, whose kiln runs the headroom guard holds to a few thousandths
+# of a core (PM M418), where a release build of the restore bench was still compiling shards
+# after five hours. A bench or test binary reaches its workspace and what its build made by
+# the paths its build gave it (CARGO_MANIFEST_DIR, CARGO_BIN_EXE_shards, OUT_DIR), so each is
+# built at the paths the machine keeps them at, kiln's copy of this checkout and a target
+# directory of its own, and uploaded with what it reaches, each file at its place beneath
+# that target directory: shards, the init and the helpers build.rs made, and for the
+# benches the test guest (SHARDS_TEST_GUESTS, test-guests/ there). Built on windows-2022,
+# whose temp disk has room for a release build (78 GB free, windows-2025's 27). Runs when
+# the workflow changes, or when asked.
+on:
+  push:
+    paths:
+      - .github/workflows/windows-binaries.yml
+  workflow_dispatch:
+    inputs:
+      workspace:
+        description: the machine's copy of this checkout
+      target:
+        description: the target directory there
+      benches:
+        description: benches to build with the release profile, comma-separated
+      tests:
+        description: tests to build with the test-release profile, comma-separated
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+  WORKSPACE: ${{ github.event.inputs.workspace || 'C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-cli-6628f0fd9d' }}
+  TARGET: ${{ github.event.inputs.target || 'C:\Users\corph\g121-db-pre' }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: bench
+            names: ${{ github.event.inputs.benches || 'restore' }}
+          - kind: test
+            names: ${{ github.event.inputs.tests || 'context' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: The checkout, where the machine keeps its own
+        shell: bash
+        run: |
+          # A worktree of the checkout, its links made as the checkout made them (MSYS's cp
+          # makes no symlink).
+          git worktree add --detach "$(cygpath -u "$WORKSPACE")" HEAD
+          pwsh -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round(\$_.Free/1GB,1)}}"
+      - name: Build
+        shell: bash
+        working-directory: ${{ env.WORKSPACE }}
+        env:
+          KIND: ${{ matrix.kind }}
+          NAMES: ${{ matrix.names }}
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$TARGET"
+          target=$(cygpath -u "$TARGET")
+          stage=$(cygpath -u "$RUNNER_TEMP")/stage
+          mkdir -p "$stage"
+          # Copies $1, beneath the target directory, to its place in the stage.
+          keep() {
+            local file rel
+            file=$(cygpath -u "$1")
+            rel=${file#"$target"/}
+            if [ "$rel" = "$file" ]; then echo "$file is not beneath $target"; exit 1; fi
+            mkdir -p "$stage/$(dirname "$rel")"
+            cp -a "$file" "$stage/$rel"
+          }
+          args=()
+          for name in ${NAMES//,/ }; do args+=("--$KIND" "$name"); done
+          if [ "$KIND" = bench ]; then
+            cargo bench --locked -p shards --no-run --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/built.json"
+          else
+            cargo test --locked -p shards --profile test-release --no-run --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/built.json"
+          fi
+          # Each executable the build made (shards, the bench or test), and the init and
+          # helpers shards' build script made beside them. Windows' jq ends its lines with
+          # CRLF.
+          jq -r 'select(.reason == "compiler-artifact" and .executable != null) | .executable' "$RUNNER_TEMP/built.json" |
+            tr -d '\r' | while read -r exe; do keep "$exe"; echo "built $exe"; done
+          jq -r 'select(.reason == "build-script-executed" and (.package_id | test("/crates/shards#"))) | .out_dir' "$RUNNER_TEMP/built.json" |
+            tr -d '\r' | while read -r out; do keep "$out/shards-init"; keep "$out/helpers"; done
+          if [ "$KIND" = bench ]; then
+            # The test guest, as tests build it (tests/common guest_cargo).
+            ws=$(cygpath -m "$PWD")
+            CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+            CC_x86_64_unknown_linux_musl="sh $ws/scripts/zig-cc" \
+            AR_x86_64_unknown_linux_musl="sh $ws/scripts/zig-ar" \
+            ZIG_TARGET=x86_64-linux-musl \
+              cargo build --locked -p shards-testguest --profile guest --target x86_64-unknown-linux-musl --target-dir "$TARGET/guest"
+            mkdir -p "$stage/test-guests/guest"
+            cp "$target/guest/x86_64-unknown-linux-musl/guest/shards-testguest" "$stage/test-guests/guest/"
+          fi
+          find "$stage" -type f -exec ls -l {} +
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: windows-${{ matrix.kind }}-${{ github.sha }}
+          path: ${{ runner.temp }}/stage
+          retention-days: 7
