@@ -56,7 +56,7 @@ stood alone unseen, each a host's own mechanism (platform-parity.tsv), one of th
 | 7 | `--cgroup-parent` (D183) | closed: macOS and Windows (D183's slice 3) | D183 "Refused before anything starts" |
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | closed: etwlogs on Windows (D198), and macOS's own log (D199) and etwlogs as journald's counterparts; journald is Linux's own | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
-| 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | Windows | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
+| 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | closed: Windows (D180's part 3k) | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
 | 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
 | 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
 | 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | Windows, until gpu-windows lands: its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
@@ -177,3 +177,20 @@ Each lone item is confirmed or closed as its row is worked.
   `a_jwt_svid_is_asked_of_the_workload_api_on_its_named_pipe` and
   `a_named_pipe_is_named_as_go_spiffe_names_it`, beside its socket's twin on Linux and
   macOS. platform-parity.py finds none of the row's items alone.
+- Row 10, a Windows machine serving other machines' clients through a context (D180's part
+  3k): its listener, enrollments and invitations, as a Unix machine's; a client's command
+  started through the daemon's spawner with its streams, signals' pipe, a build's secrets,
+  SSH agents' pipes and a `--cidfile`'s pipe given by number, in a pseudoconsole of its own
+  that starts at its terminal's cursor (PSEUDOCONSOLE_INHERIT_CURSOR, its question answered
+  and kept from the client), so that no command clears its client's screen; a build's
+  context copy kept as a Linux tree on NTFS, as WSL keeps one (crates/ntfs,
+  `apply_layer_lx`), and read back as the client's by the build's walk and the manifest
+  the client compares with, times compared to NTFS's 100 ns; a build's output to a
+  directory asked for as its archive; and Docker's tools through a context, a Windows
+  client's engine a named pipe. Tested with real VMs in tests/context.rs, whole: on CI's
+  windows-2022 and windows-2025 (budget-e2e 41273324343 at 7452404e), and on jupiter
+  (Windows 11 Pro 10.0.26200, 19 of 19 at 341450a4's Rust, Docker's 29.9.1 client among
+  them, built by windows-binaries.yml as kiln's guard there holds builds); a Linux
+  client's tree on a Windows machine by archive's tests/lx.rs and synced's
+  `a_linux_clients_tree_is_its_own_in_a_windows_copy` on both runners (budget-e2e
+  41273319640 and 41262337649). platform-parity.py finds none of the row's items alone.

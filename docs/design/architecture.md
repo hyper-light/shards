@@ -4919,7 +4919,9 @@ descriptors to give, no pseudo-terminal and no file system of Linux's:
 Tested in `tests/context.rs`, whole, on CI's windows-2022 and windows-2025, where the client
 and the machine are the runner's, a Windows client's own context its case (budget-e2e
 41273324343 at 7452404e, the copy a Linux tree: 19 of 19 on each, `SHARDS_REQUIRE_VMS=1`;
-before it, 41242328368 at ca024da3 and 41246900473 at 4c5fa52c). A Linux client's tree on a
+before it, 41242328368 at ca024da3 and 41246900473 at 4c5fa52c), and on jupiter (Windows 11
+Pro 10.0.26200; 19 of 19 at 341450a4's Rust, its engine's part through Docker's 29.9.1
+client, the test built by windows-binaries.yml at jupiter's paths). A Linux client's tree on a
 Windows machine is tested by `crates/archive/tests/lx.rs` (a layer of modes, symlinks of
 0777 and 0755, a hard link, a FIFO, a device, case-distinct names and `a:b` applied and read
 back, its whiteouts, and what reaches past the tree refused: all 8 copies of 41273319640 on
