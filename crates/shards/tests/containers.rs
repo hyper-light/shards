@@ -13956,7 +13956,18 @@ fn stops_beside_a_gigabyte_build() {
             (name, run)
         })
         .collect();
+    // Eight more whose VM processes are killed outright there, as a stop's last step kills
+    // one (LAST_WAIT): how long each takes to end once killed.
+    let killed: Vec<(String, Child, u32)> = (0..8)
+        .map(|i| {
+            let name = format!("m419-kill-{i}");
+            let run = start(&home, &image, &["--name", &name], &["sleep"]);
+            let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", &name]);
+            (name, run, vm.stdout.trim().parse().unwrap_or(0))
+        })
+        .collect();
     let (done, reading) = (AtomicBool::new(false), AtomicBool::new(false));
+    let ends = std::sync::Mutex::new(Vec::new());
     let (beside, as_read, load) = std::thread::scope(|s| {
         let load = s.spawn(|| {
             let ctx = home.join("big");
@@ -13991,6 +14002,23 @@ fn stops_beside_a_gigabyte_build() {
                 std::thread::sleep(Duration::from_millis(100));
             }
             std::thread::sleep(Duration::from_secs(5));
+            let t0 = Instant::now();
+            for &(_, _, vm) in &killed {
+                common::kill_now(i32::try_from(vm).unwrap_or(0));
+            }
+            let mut ended: Vec<f64> = Vec::new();
+            for &(_, _, vm) in &killed {
+                while common::alive(i32::try_from(vm).unwrap_or(0)) && t0.elapsed() < Duration::from_secs(60)
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                ended.push(t0.elapsed().as_secs_f64() * 1e3);
+            }
+            for (name, mut run, _) in killed {
+                let _ = exit(&mut run);
+                let _ = shards_in(&home, &["rm", "-f", &name]);
+            }
+            *ends.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ended;
             std::thread::scope(|s| {
                 let stopping: Vec<_> = idle
                     .into_iter()
@@ -14017,6 +14045,20 @@ fn stops_beside_a_gigabyte_build() {
         sorted[rank - 1]
     };
     eprintln!("M419 the load: {load}");
+    let mut ends = ends
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ends.sort_by(f64::total_cmp);
+    if !ends.is_empty() {
+        eprintln!(
+            "M419 VM processes killed as its image is read, each's end after the kill (the last in turn): n {} p50 {:.1} p90 {:.1} p99 {:.1} max {:.1} ms",
+            ends.len(),
+            quantile(&ends, 0.5),
+            quantile(&ends, 0.9),
+            quantile(&ends, 0.99),
+            quantile(&ends, 1.0)
+        );
+    }
     for (label, (mut took, lost)) in [
         ("alone", alone),
         ("beside the build", beside),

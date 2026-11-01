@@ -16911,3 +16911,13 @@ revision before comparing a changed API/implementation.
   10,035.1, p90 10,611.8, max 10,847.0. None gave up: a run just started stops beside the
   build as it does alone. So the measurement now stops runs idle from before the build
   too (Method).
+- **Found, with the idle runs** (f3760b80, budget-e2e 41292368066): windows-2022, alone n
+  40, p50 10,023.2 ms, max 10,079.2; beside the build (119.4 s) n 24, p50 10,027.0, p90
+  10,349.5, max 19,383.1; idle, stopped as its image is read, n 8, p50 10,292.9, max
+  10,317.8. windows-2025, alone n 40, p50 10,028.6, max 10,083.8; beside n 24, p50 10,058.9,
+  p90 10,217.8, max 14,809.3; idle n 8, p50 10,190.7, max 10,239.5. None gave up, but
+  beside the build a stop's SIGKILL took up to 9.4 s to be heard (19.4 s, less its 10 s of
+  grace), against `KILL_WAIT`'s 10: a guest stalled near the wait whose end is the VM's
+  kill. How long a VM process takes to end once killed there, `LAST_WAIT`'s 2 s, the
+  measurement now times too: eight more runs' VM processes killed outright 5 s into the
+  read, each's end after the kill.
