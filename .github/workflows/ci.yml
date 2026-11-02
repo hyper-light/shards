@@ -113,7 +113,8 @@ jobs:
   # its tests' step has 122 minutes, windows-2025's slowest 90.9, and its job 144, with a
   # third above its other steps' slowest, 16.1. arm64 Windows is built and tested on
   # windows-11-arm, whose image has no hypervisor platform (PM M172), so its VM tests say
-  # SKIP; it has x86_64 Windows' limits until its own runs are measured.
+  # SKIP: its tests' step has 35 minutes, the slowest of its first two runs 26.2, and its job
+  # 52, with a third above its other steps' slowest, 12.5 (M423).
   native:
     name: ${{ matrix.name || matrix.target }}
     timeout-minutes: ${{ matrix.job_minutes || 74 }}
@@ -127,7 +128,7 @@ jobs:
           - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
           - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 122, job_minutes: 144 }
           - { target: x86_64-pc-windows-msvc, runner: windows-2022, test: true, tests_minutes: 122, job_minutes: 144, name: x86_64-pc-windows-msvc (windows-2022) }
-          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, test: true, tests_minutes: 122, job_minutes: 144 }
+          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, test: true, tests_minutes: 35, job_minutes: 52 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7.0.1

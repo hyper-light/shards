@@ -17183,3 +17183,17 @@ revision before comparing a changed API/implementation.
     under it ("Hyp nVHE mode initialized successfully", D154), no `kvm-arm.mode` told.
 - **Consequence.** Whether Windows' hypervisor starts in such a guest is measured by
   booting it there (step 10's host): if it needs VHE, no Mac here can be an arm64 WHP host.
+
+### M423. CI's arm64 Windows lane on windows-11-arm: its steps' times and limits (M245, M420)
+
+- **Method.** `docs/research/measurements/ci-limits/limits.py` over the lane's first two runs
+  on windows-11-arm (41365265628 at ec4ba969, 41370584211 at 48b4e808, whp-arm64,
+  2026-11-02), its tests' limit then x86_64 Windows' 122 minutes: the native build, lints
+  and the workspace's tests, every VM test saying SKIP, the image having no hypervisor
+  platform (M172).
+- **Found.** The tests' step ran through both times: 24.6 and 26.2 minutes (n 2); the job's
+  other steps 11.9 and 12.5. The first run's tests failed (boot.rs's three, of 179 test
+  binaries), the second passed.
+- **Decided.** As M245 sets the native lanes' limits, a third above the slowest: the tests'
+  step 35 minutes, the job 52 (the step's 35 and a third above its other steps' 12.5).
+  Two runs are few: limits.py derives them again over runs.txt as the lane's runs gather.
