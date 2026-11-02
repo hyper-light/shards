@@ -65,6 +65,69 @@ pub fn program(path: &Path, text: &str) {
     assert!(writer.wait().unwrap().success(), "{} not written", path.display());
 }
 
+/// A home whose guest is the test kernel and init, recorded before its daemon starts.
+pub fn home_with(name: &str, timeout: Duration) -> TempDir {
+    let home = TempDir::new(name);
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())], timeout);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    home
+}
+
+/// The pids of the processes whose command line mentions `needle`.
+pub fn processes_with(needle: &str) -> Vec<u32> {
+    commands_with(needle).into_iter().map(|(pid, _)| pid).collect()
+}
+
+/// The processes whose command line mentions `needle`, and the command lines: from /proc
+/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere;
+/// on Windows from its own table of processes (CIM's Win32_Process).
+pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
+    if cfg!(windows) {
+        let listed =
+            r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }"#;
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", listed])
+            .output()
+            .unwrap();
+        return String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(needle))
+            .filter_map(|l| {
+                let (pid, args) = l.trim_start().split_once(' ')?;
+                Some((pid.parse().ok()?, args.to_string()))
+            })
+            .collect();
+    }
+    if cfg!(target_os = "linux") {
+        return std::fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|e| {
+                let e = e.ok()?;
+                let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+                let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
+                let args = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+                args.contains(needle).then_some((pid, args))
+            })
+            .collect();
+    }
+    let out = Command::new("ps").args(["-axo", "pid=,args="]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.contains(needle))
+        .filter_map(|l| {
+            let (pid, args) = l.trim_start().split_once(' ')?;
+            Some((pid.parse().ok()?, args.to_string()))
+        })
+        .collect()
+}
+
 pub fn workspace() -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

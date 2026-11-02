@@ -346,6 +346,9 @@ struct Held {
     /// Whether its last word said its room was short, nothing told it since: it holds
     /// at what it uses, and the host's passes take what it holds cold.
     short: bool,
+    /// The budget it was last told its room under, its cgroup's and its bytes: one set
+    /// anew is said, whether it leaves room or not.
+    under: Option<(PathBuf, u64)>,
     /// A word to it is under way; and another is due once that has ended.
     telling: bool,
     again: bool,
@@ -368,6 +371,7 @@ impl Held {
             dir,
             told: None,
             short: false,
+            under: None,
             telling: false,
             again: false,
             most: resident_file(pid).unwrap_or(0),
@@ -722,9 +726,9 @@ impl<D: Disk> Daemon<D> {
         let Some((id, vm)) = self.run_of_vm(pid) else {
             return;
         };
-        let (had, was_short) = lock(&self.budgets.held)
+        let (had, was_short, was_under) = lock(&self.budgets.held)
             .get(&pid)
-            .map_or((None, false), |h| (h.told, h.short));
+            .map_or((None, false, None), |h| (h.told, h.short, h.under.clone()));
         let evicted = &mut |mapped: &Mapped| self.budgets.evicted(mapped);
         let mut room = room(&dir, Path::new(ROOT), evicted);
         let (mut ended, mut gave, mut asked, mut less) = (0, None, false, 0);
@@ -790,11 +794,20 @@ impl<D: Disk> Daemon<D> {
             }
         };
         let short = told.is_some_and(|r| r < 0);
+        let under = room
+            .as_ref()
+            .and_then(|(_, level)| held_at(level).map(|h| (level.clone(), h.budget)));
+        // A budget set anew, whatever room it leaves: a host's give-back between a budget's
+        // word and the next budget left its microVM within that one with nothing to give
+        // back, and nothing said it (CI 41344493548).
+        let anew = had.is_some() && under.is_some() && under != was_under;
         if let Some(h) = lock(&self.budgets.held).get_mut(&pid) {
             h.told = told;
             h.short = short;
+            h.under = under;
         }
-        // Said as it is first held, as its budget falls short and as it has room again.
+        // Said as it is first held, as its budget is set anew, as it falls short and as it
+        // has room again.
         let parts = || {
             room.as_ref()
                 .and_then(|(_, level)| held_at(level).map(|h| (level, h)))
@@ -845,15 +858,16 @@ impl<D: Disk> Daemon<D> {
         };
         let done_if = || if did { done.as_str() } else { "" };
         match (had, told) {
-            // As it is first held, and as it is held within it again by what it did or asked.
-            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked) => log(format!(
+            // As it is first held, as it is held within it again by what it did or asked, and
+            // as it is set anew.
+            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked || anew) => log(format!(
                 "container {id}: its microVM held within its budget, {} MiB of room{}{}{}",
                 r >> 20,
                 done_if(),
                 least(r),
                 parts()
             )),
-            (_, Some(r)) if r < 0 && (!was_short || did) => log(format!(
+            (_, Some(r)) if r < 0 && (!was_short || did || anew) => log(format!(
                 "container {id}: its microVM's budget is short by {} MiB{done}{}{}",
                 r.unsigned_abs() >> 20,
                 least(r),
@@ -1063,6 +1077,7 @@ mod tests {
                 dir: PathBuf::from("/sys/fs/cgroup/a.slice"),
                 told: None,
                 short: false,
+                under: None,
                 telling: false,
                 again: false,
                 most: 0,
