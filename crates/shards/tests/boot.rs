@@ -441,7 +441,7 @@ fn this_host_has_its_hypervisor_backend() {
     let expected = match (std::env::consts::OS, common::ARCH) {
         ("macos", "aarch64") => Some("hvf"),
         ("linux", "x86_64" | "aarch64") => Some("kvm"),
-        ("windows", "x86_64") => Some("whp"),
+        ("windows", "x86_64" | "aarch64") => Some("whp"),
         _ => None,
     };
     assert_eq!(shards_vmm::hv::BACKEND, expected);
