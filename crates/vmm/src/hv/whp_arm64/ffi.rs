@@ -60,7 +60,6 @@ pub const PSTATE: u32 = 0x0002_0023;
 pub const Q0: u32 = 0x0003_0000;
 pub const MPIDR_EL1: u32 = 0x0004_0001;
 pub const SCTLR_EL1: u32 = 0x0004_0002;
-pub const ACTLR_EL1: u32 = 0x0004_0003;
 pub const CPACR_EL1: u32 = 0x0004_0004;
 pub const TTBR0_EL1: u32 = 0x0004_0005;
 pub const TTBR1_EL1: u32 = 0x0004_0006;

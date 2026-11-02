@@ -999,15 +999,15 @@ impl Vcpu {
 // ---- snapshots ---------------------------------------------------------------------
 
 /// The EL1 and EL0 system registers a snapshot carries, by encoding (op0:op1:CRn:CRm:op2, as
-/// arch/aarch64/state.rs keys them) and WHP's name: the state a guest changes of those
-/// WinHvPlatformDefs.h names, as HVF's backend carries it (SP_EL0, SP_EL1, ELR_EL1 and
-/// SPSR_EL1 among them). The header names no AFSR0, AFSR1 or AMAIR, which are IMPLEMENTATION
-/// DEFINED, and no EL1 physical timer, which a guest at EL1 does not use (it takes the
-/// virtual one: docs/research/hvf-arm64-kvm-ground-truth.md, the timer's PPI); and the guest is given no PMU,
-/// none being in its devicetree, so no register of one is kept.
+/// arch/aarch64/state.rs keys them) and WHP's name: those QEMU's WHPX accelerator syncs
+/// (target/arm/whpx/whpx-all.c), SP_EL0, SP_EL1, ELR_EL1 and SPSR_EL1 among them, as HVF's
+/// backend carries them. Not the IMPLEMENTATION DEFINED ones: AFSR0, AFSR1 and AMAIR, which
+/// WinHvPlatformDefs.h does not name, and ACTLR_EL1, which Linux never writes; nor the EL1
+/// physical timer, which a guest at EL1 does not use, taking the virtual one
+/// (docs/research/hvf-arm64-kvm-ground-truth.md, the timer's PPI); nor a PMU's, as no PMU
+/// is in the guest's devicetree.
 const SYSREGS: &[(u16, u32)] = &[
     (0xc080, SCTLR_EL1),
-    (0xc081, ACTLR_EL1),
     (0xc082, CPACR_EL1),
     (0xc100, TTBR0_EL1),
     (0xc101, TTBR1_EL1),
