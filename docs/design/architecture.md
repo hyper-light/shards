@@ -6576,6 +6576,51 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D209. microVMs on arm64 Windows hosts: WHP's arm64 backend (built, not yet run)
+
+**Why.** The platform parity plan's step 10 (docs/audit/2026-10-27_platform-parity.md): WHP
+has a released arm64 API from Windows 11 24H2's build 26100.3915 (QEMU's
+docs/system/whpx.rst), which says so by WinHvPlatformDefs.h's `Arm64Support` feature, as
+QEMU's whpx_accel_init and shards' `check_host` ask; shards' VMM drives it as it drives
+x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
+
+- **Its types are the header's own.** windows-sys carries none of WHP's arm64 types (its
+  metadata is x64's), so the backend declares them from the Windows SDK 10.0.26100's
+  WinHvPlatformDefs.h, each size held to its C_ASSERT; its functions bound as first called,
+  as x86_64's are (PM M113).
+- **The platform's GICv3, at QEMU virt's places** (arch/aarch64's layout): its distributor
+  and ITS frame given as the partition is set up (WHvPartitionPropertyCodeArm64IcParameters,
+  as QEMU's whpx_accel_init gives them), each vCPU's redistributor by its GICR base register
+  as it is made, the virtual timer's PPI 27 and the PMU's 23. SPIs asked of it
+  (WHvRequestInterrupt); a PCI bus's MSIs through a GICv2m frame the VMM keeps, each an edge
+  on the SPI it names, as the platform's GIC takes no ITS here (QEMU: "ITS not supported on
+  WHPX").
+- **PSCI is the hypervisor's.** A vCPU past the first is held in StartupSuspend until the
+  guest's CPU_ON starts it, and SYSTEM_OFF and SYSTEM_RESET come back as an Arm64Reset exit,
+  as QEMU's target/arm/whpx has them; the guest's devicetree names HVC, the guest having no
+  EL2 (QEMU's `virt` too, without EL2).
+- **MMIO completed from the exit's syndrome**, as KVM completes it (`kvm_handle_mmio_return`):
+  the access's register, size and sign extension, PC past it.
+- **Snapshots** keep each vCPU's registers by their encodings, as HVF's backend keeps them
+  (arch/aarch64/state.rs): the general, SIMD and floating-point registers, the EL1 system
+  registers QEMU's accelerator syncs, the pointer authentication keys and the breakpoint and
+  watchpoint registers its ID registers say the guest has, its OS lock, and its power as
+  StartupSuspend holds it; the GIC's state in the platform's own layouts
+  (WHvGetVirtualProcessorState: the partition's global interrupt state, distributor and
+  SPIs, and each vCPU's interrupt controller state, redistributor and CPU interface, in
+  page-aligned buffers, as their types are page frames'); and the CPU's identity, 17 ID
+  registers Linux takes its errata and features by, read with WHV_ANY_VP, as the header has
+  ID registers read. A guest given SVE or SME, whose vector state none of these keeps, and a
+  vCPU stopped with an event pending take no snapshot. The guest's counter is set through
+  CNTVCT_EL0.
+- **Not yet:** run. Its host is to be Windows 11 arm64 from Microsoft's ISO, nested under
+  QEMU on this Mac (the user's decision, 2026-10-30): no arm64 Windows host here has WHP, nor
+  GitHub's windows-11-arm (PM M172), nor any Arm VM of Azure's. A Hypervisor.framework guest
+  given EL2 has no VHE (M422); whether Windows' hypervisor starts so is to be measured there,
+  then PM M414's probe (the GIC's states set back, CNTVCT_EL0 a vCPU's or the partition's),
+  which `hv::restores` waits for. CI builds and tests the rest of shards natively on
+  windows-11-arm, its VM tests saying SKIP.
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
