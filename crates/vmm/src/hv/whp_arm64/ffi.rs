@@ -50,14 +50,82 @@ pub const EXIT_CANCELED: u32 = 0xFFFF_FFFF;
 pub const RESET_POWER_OFF: u32 = 0;
 pub const RESET_REBOOT: u32 = 1;
 
-// WHV_REGISTER_NAME: X0 to X28 follow one another, then FP (X29) and LR (X30).
+// WHV_REGISTER_NAME: X0 to X28 follow one another, then FP (X29) and LR (X30); Q0 to Q31
+// follow one another too.
 pub const X0: u32 = 0x0002_0000;
+pub const SP_EL0: u32 = 0x0002_0020;
+pub const SP_EL1: u32 = 0x0002_0021;
 pub const PC: u32 = 0x0002_0022;
 pub const PSTATE: u32 = 0x0002_0023;
+pub const Q0: u32 = 0x0003_0000;
 pub const MPIDR_EL1: u32 = 0x0004_0001;
 pub const SCTLR_EL1: u32 = 0x0004_0002;
+pub const ACTLR_EL1: u32 = 0x0004_0003;
+pub const CPACR_EL1: u32 = 0x0004_0004;
+pub const TTBR0_EL1: u32 = 0x0004_0005;
+pub const TTBR1_EL1: u32 = 0x0004_0006;
+pub const TCR_EL1: u32 = 0x0004_0007;
+pub const ESR_EL1: u32 = 0x0004_0008;
+pub const FAR_EL1: u32 = 0x0004_0009;
+pub const PAR_EL1: u32 = 0x0004_000A;
+pub const MAIR_EL1: u32 = 0x0004_000B;
+pub const VBAR_EL1: u32 = 0x0004_000C;
+pub const CONTEXTIDR_EL1: u32 = 0x0004_000D;
+pub const TPIDR_EL1: u32 = 0x0004_000E;
+pub const TPIDRRO_EL0: u32 = 0x0004_0010;
+pub const TPIDR_EL0: u32 = 0x0004_0011;
+pub const FPCR: u32 = 0x0004_0012;
+pub const FPSR: u32 = 0x0004_0013;
+pub const SPSR_EL1: u32 = 0x0004_0014;
+pub const ELR_EL1: u32 = 0x0004_0015;
+pub const APDA_KEY_HI: u32 = 0x0004_0026;
+pub const APDA_KEY_LO: u32 = 0x0004_0027;
+pub const APDB_KEY_HI: u32 = 0x0004_0028;
+pub const APDB_KEY_LO: u32 = 0x0004_0029;
+pub const APGA_KEY_HI: u32 = 0x0004_002A;
+pub const APGA_KEY_LO: u32 = 0x0004_002B;
+pub const APIA_KEY_HI: u32 = 0x0004_002C;
+pub const APIA_KEY_LO: u32 = 0x0004_002D;
+pub const APIB_KEY_HI: u32 = 0x0004_002E;
+pub const APIB_KEY_LO: u32 = 0x0004_002F;
+pub const CSSELR_EL1: u32 = 0x0004_0035;
+/// DBGBCR0_EL1 to DBGBCR15_EL1 follow one another, as do DBGWCRn, DBGBVRn and DBGWVRn.
+pub const DBGBCR0_EL1: u32 = 0x0005_0000;
+pub const DBGWCR0_EL1: u32 = 0x0005_0010;
+pub const DBGBVR0_EL1: u32 = 0x0005_0020;
+pub const DBGWVR0_EL1: u32 = 0x0005_0030;
+pub const MDSCR_EL1: u32 = 0x0005_004D;
+pub const OSLAR_EL1: u32 = 0x0005_0052;
+pub const OSLSR_EL1: u32 = 0x0005_0053;
+pub const CNTKCTL_EL1: u32 = 0x0005_8008;
+pub const CNTV_CTL_EL0: u32 = 0x0005_800E;
+pub const CNTV_CVAL_EL0: u32 = 0x0005_800F;
+pub const CNTVCT_EL0: u32 = 0x0005_8011;
+/// The ID registers (op0 3, op1 0, CRn 0), each at its CRm:op2 from here: partition-wide,
+/// read with [`ANY_VP`] alone.
+pub const ID_REGISTERS: u32 = 0x0002_2000;
 pub const GICR_BASE_GPA: u32 = 0x0006_3000;
 pub const INTERNAL_ACTIVITY_STATE: u32 = 0x0000_0004;
+pub const PENDING_EVENT0: u32 = 0x0001_0004;
+
+/// WHV_ANY_VP: the VP index a partition-wide register, or the partition's own state, is
+/// read and written with.
+pub const ANY_VP: u32 = 0xFFFF_FFFF;
+
+// WHV_VIRTUAL_PROCESSOR_STATE_TYPE on arm64: each of a page frame's (its PFN bit), the
+// global interrupt state any vCPU's.
+const STATE_PFN: u32 = 1 << 31;
+const STATE_ANY_VP: u32 = 1 << 30;
+/// WHV_ARM64_LOCAL_INTERRUPT_CONTROLLER_STATE: a vCPU's redistributor and CPU interface.
+pub const STATE_INTERRUPT_CONTROLLER: u32 = STATE_PFN;
+/// WHV_ARM64_GLOBAL_INTERRUPT_CONTROLLER_STATE: the distributor and each SPI.
+pub const STATE_GLOBAL_INTERRUPT: u32 = 6 | STATE_PFN | STATE_ANY_VP;
+
+/// A page of a state's buffer: the states are page frames' (their PFN bit), so a buffer is
+/// handed over page-aligned, as the probe hands its own (PM M414).
+#[repr(C, align(4096))]
+#[derive(Clone, Copy)]
+pub struct Page(pub [u8; 4096]);
 
 /// WHV_INTERNAL_ACTIVITY_REGISTER's StartupSuspend: a vCPU held until PSCI's CPU_ON starts
 /// it, as QEMU holds one powered off (target/arm/whpx/whpx-all.c, whpx_set_registers).
@@ -254,6 +322,8 @@ winhv! {
     fn WHvCancelRunVirtualProcessor(partition: Partition, index: u32, flags: u32);
     fn WHvGetVirtualProcessorRegisters(partition: Partition, index: u32, names: *const u32, count: u32, values: *mut Value);
     fn WHvSetVirtualProcessorRegisters(partition: Partition, index: u32, names: *const u32, count: u32, values: *const Value);
+    fn WHvGetVirtualProcessorState(partition: Partition, index: u32, kind: u32, buffer: *mut c_void, size: u32, written: *mut u32);
+    fn WHvSetVirtualProcessorState(partition: Partition, index: u32, kind: u32, buffer: *const c_void, size: u32);
     fn WHvRequestInterrupt(partition: Partition, control: *const InterruptControl, size: u32);
 }
 
@@ -272,6 +342,7 @@ mod sizes {
         assert_eq!(size_of::<IcParameters>(), 64);
         assert_eq!(size_of::<InterruptControl>(), 32);
         assert_eq!(size_of::<Value>(), 16);
+        assert_eq!((size_of::<Page>(), align_of::<Page>()), (4096, 4096));
         assert_eq!(std::mem::offset_of!(MemoryAccess, syndrome), 56);
         assert_eq!(std::mem::offset_of!(ExitContext, body), 16);
     }

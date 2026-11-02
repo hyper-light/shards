@@ -9,6 +9,10 @@
 //!   SYSTEM_OFF and SYSTEM_RESET come back as a reset exit, which `run` returns as a
 //!   shutdown or a reset (QEMU's target/arm/whpx/whpx-all.c handles no PSCI call itself).
 //! - `run` returns only for a kick, a shutdown or a reset.
+//! - A snapshot keeps each vCPU's registers, by their encodings as HVF's backend keeps them
+//!   (arch/aarch64/state.rs), and the GIC's state in the platform's own layouts, the
+//!   partition's global interrupt state and each vCPU's interrupt controller state
+//!   (WHvGetVirtualProcessorState); [`restores`] says whether this host restores one.
 //!
 //! Ground truth: WinHvPlatform.h and WinHvPlatformDefs.h (Windows SDK 10.0.26100), and QEMU's
 //! WHPX arm64 accelerator (target/arm/whpx, hw/intc/arm_gicv3_whpx.c), the platform's one
@@ -22,8 +26,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use self::ffi::*;
 use super::{Exit, Io};
+use crate::arch::aarch64::state::Power;
 use crate::arch::aarch64::{Entry, esr, layout, sysreg};
 use crate::devices::get_le;
+use crate::snapshot::codec::{DecodeError, Reader, Writer};
 
 pub use crate::arch::aarch64::state::VcpuState;
 
@@ -124,7 +130,10 @@ pub fn check_host() -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Whether this host sets a vCPU's state back as a restore does: not yet on arm64's WHP.
+/// Whether this host restores snapshots: not until PM M414 has run on an arm64 Windows host,
+/// which measures what a restore rests on here: each vCPU's interrupt controller state and
+/// the partition's global one set back as read, and the guest's counter set (its
+/// CNTVCT_EL0 written, through one vCPU or each).
 pub fn restores() -> bool {
     false
 }
@@ -293,8 +302,9 @@ impl Partition {
         check("WHvUnmapGpaRange", unsafe { WHvUnmapGpaRange(self.0, gpa, len) })
     }
 
-    /// Registers `names` of vCPU `vp`, which is out of the guest.
-    fn registers(&self, vp: u32, names: &[u32]) -> Result<Vec<u64>> {
+    /// Registers `names` of vCPU `vp`, which is out of the guest, whole: a Q register's 128
+    /// bits.
+    fn values(&self, vp: u32, names: &[u32]) -> Result<Vec<Value>> {
         let mut values = vec![Value::default(); names.len()];
         // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
         check("WHvGetVirtualProcessorRegisters", unsafe {
@@ -306,7 +316,12 @@ impl Partition {
                 values.as_mut_ptr(),
             )
         })?;
-        Ok(values.iter().map(|v| v.0[0]).collect())
+        Ok(values)
+    }
+
+    /// Registers `names` of vCPU `vp`, which is out of the guest.
+    fn registers(&self, vp: u32, names: &[u32]) -> Result<Vec<u64>> {
+        Ok(self.values(vp, names)?.iter().map(|v| v.0[0]).collect())
     }
 
     fn register(&self, vp: u32, name: u32) -> Result<u64> {
@@ -316,9 +331,15 @@ impl Partition {
             .ok_or_else(|| Error::Guest(format!("vCPU {vp}'s register {name:#x}: no value")))
     }
 
-    /// Sets registers `names` of vCPU `vp` to `values`, in their order. Where the
-    /// hypervisor refuses them, each is set alone, to name the one it refuses.
+    /// Sets registers `names` of vCPU `vp` to `values`, in their order.
     fn set_registers(&self, vp: u32, names: &[u32], values: &[u64]) -> Result<()> {
+        let values: Vec<Value> = values.iter().map(|&v| Value([v, 0])).collect();
+        self.set_values(vp, names, &values)
+    }
+
+    /// Sets registers `names` of vCPU `vp` to `values`, whole, in their order. Where the
+    /// hypervisor refuses them, each is set alone, to name the one it refuses.
+    fn set_values(&self, vp: u32, names: &[u32], values: &[Value]) -> Result<()> {
         if names.len() != values.len() {
             return Err(Error::Guest(format!(
                 "{} register names, {} values",
@@ -326,7 +347,6 @@ impl Partition {
                 values.len()
             )));
         }
-        let values: Vec<Value> = values.iter().map(|&v| Value([v, 0])).collect();
         let set = |names: &[u32], values: &[Value]| {
             // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
             check("WHvSetVirtualProcessorRegisters", unsafe {
@@ -339,10 +359,10 @@ impl Partition {
                 )
             })
         };
-        let Err(e) = set(names, &values) else {
+        let Err(e) = set(names, values) else {
             return Ok(());
         };
-        for (name, value) in names.iter().zip(&values) {
+        for (name, value) in names.iter().zip(values) {
             if let Err(one) = set(std::slice::from_ref(name), std::slice::from_ref(value)) {
                 return Err(Error::Guest(format!("vCPU {vp}'s register {name:#x}: {one}")));
             }
@@ -360,6 +380,50 @@ impl Partition {
         // SAFETY: a control of its own size.
         check("WHvRequestInterrupt", unsafe {
             WHvRequestInterrupt(self.0, &raw const control, size_of::<InterruptControl>() as u32)
+        })
+    }
+
+    /// State `kind` of vCPU `vp`, or the partition's own for [`ANY_VP`]
+    /// (WHvGetVirtualProcessorState), at most `most` bytes, read into pages of its own.
+    fn state(&self, vp: u32, kind: u32, most: usize) -> Result<Vec<u8>> {
+        let mut pages = vec![Page([0; 4096]); most.div_ceil(4096)];
+        let size = u32::try_from(size_of_val(pages.as_slice()))
+            .map_err(|_| Error::Guest(format!("a state of {most} bytes")))?;
+        let mut written = 0u32;
+        // SAFETY: page-aligned memory of `size` bytes, which the call fills.
+        check("WHvGetVirtualProcessorState", unsafe {
+            WHvGetVirtualProcessorState(
+                self.0,
+                vp,
+                kind,
+                pages.as_mut_ptr().cast(),
+                size,
+                &raw mut written,
+            )
+        })?;
+        let bytes: Vec<u8> = pages.iter().flat_map(|p| p.0).take(written as usize).collect();
+        if bytes.len() != written as usize {
+            return Err(Error::Guest(format!(
+                "state {kind:#x} of vCPU {vp}: {written} bytes written into {size}"
+            )));
+        }
+        Ok(bytes)
+    }
+
+    /// Sets state `kind` of vCPU `vp`, or the partition's own for [`ANY_VP`], to `bytes`
+    /// (WHvSetVirtualProcessorState), handed over in pages of its own.
+    fn set_state(&self, vp: u32, kind: u32, bytes: &[u8]) -> Result<()> {
+        let mut pages = vec![Page([0; 4096]); bytes.len().div_ceil(4096).max(1)];
+        for (page, chunk) in pages.iter_mut().zip(bytes.chunks(4096)) {
+            if let Some(to) = page.0.get_mut(..chunk.len()) {
+                to.copy_from_slice(chunk);
+            }
+        }
+        let len = u32::try_from(bytes.len())
+            .map_err(|_| Error::Guest(format!("a state of {} bytes", bytes.len())))?;
+        // SAFETY: page-aligned memory holding the state's `len` bytes.
+        check("WHvSetVirtualProcessorState", unsafe {
+            WHvSetVirtualProcessorState(self.0, vp, kind, pages.as_ptr().cast(), len)
         })
     }
 }
@@ -631,17 +695,59 @@ impl Vm {
         })
     }
 
-    /// The GIC's state, for a snapshot: not yet on arm64's WHP ([`restores`]).
+    /// The GIC's state, for a snapshot, in the platform's own layouts (WinHvPlatformDefs.h):
+    /// the distributor's and each SPI's (the partition's global interrupt state), then each
+    /// vCPU's redistributor and CPU interface (its interrupt controller state), in vCPU
+    /// order. Every vCPU must be out of the guest.
     pub fn save_gic(&self) -> Result<Vec<u8>> {
-        Err(Error::Guest(NO_SNAPSHOTS.into()))
+        let mut w = Writer::default();
+        w.bytes(
+            &self
+                .partition
+                .state(ANY_VP, STATE_GLOBAL_INTERRUPT, GLOBAL_STATE_MOST)?,
+        );
+        let locals = (0u32..)
+            .take(self.mpidrs.len())
+            .map(|vp| self.partition.state(vp, STATE_INTERRUPT_CONTROLLER, LOCAL_STATE))
+            .collect::<Result<Vec<_>>>()?;
+        w.seq(&locals, |w, local| w.bytes(local));
+        Ok(w.into_bytes())
     }
 
-    pub fn restore_gic(&self, _state: &[u8]) -> Result<()> {
-        Err(Error::Guest(NO_SNAPSHOTS.into()))
+    /// Restores [`save_gic`](Self::save_gic)'s state into this VM's GIC once every vCPU
+    /// exists and before any runs: the distributor's first, then each vCPU's, as QEMU orders
+    /// a GICv3's (distributor control before the redistributors and CPU interfaces). Every
+    /// part is read before any is set.
+    pub fn restore_gic(&self, state: &[u8]) -> Result<()> {
+        let said = |e: DecodeError| Error::Guest(format!("the GIC's state: {e}"));
+        let mut r = Reader::new(state);
+        let global = r.bytes(GLOBAL_STATE_MOST).map_err(said)?;
+        let locals = r
+            .seq(self.mpidrs.len(), 4, |r| r.bytes(LOCAL_STATE))
+            .map_err(said)?;
+        r.finish().map_err(said)?;
+        if locals.len() != self.mpidrs.len() {
+            return Err(Error::Guest(format!(
+                "the GIC's state holds {} vCPUs' and this VM has {}",
+                locals.len(),
+                self.mpidrs.len()
+            )));
+        }
+        self.partition.set_state(ANY_VP, STATE_GLOBAL_INTERRUPT, global)?;
+        for (vp, local) in (0u32..).zip(&locals) {
+            self.partition.set_state(vp, STATE_INTERRUPT_CONTROLLER, local)?;
+        }
+        Ok(())
     }
 }
 
-const NO_SNAPSHOTS: &str = "a microVM on arm64's Windows Hypervisor Platform takes no snapshot yet";
+/// WHV_ARM64_GLOBAL_INTERRUPT_CONTROLLER_STATE's size at most, as WinHvPlatformDefs.h lays it
+/// out: 16 bytes, then 16 for each interrupt, of GICv3's 1,020 INTIDs at most.
+const GLOBAL_STATE_MOST: usize = 16 + 1020 * 16;
+
+/// WHV_ARM64_LOCAL_INTERRUPT_CONTROLLER_STATE's size: 8 bytes, six registers, ICH_AP1Rn_EL2's
+/// four words and the 32 private interrupts' states of 4 bytes each.
+const LOCAL_STATE: usize = 8 + 6 * 8 + 4 * 4 + 32 * 4;
 
 /// A vCPU, owned by the thread that created it.
 #[derive(Debug)]
@@ -764,25 +870,277 @@ impl Vcpu {
         self.advance(access.header.pc, access.syndrome)
     }
 
-    /// The CPU's identity, for a snapshot: not yet on arm64's WHP ([`restores`]).
+    /// The CPU identity the guest sees: [`ID_REGS`] by encoding, the partition's, which
+    /// WinHvPlatformDefs.h has read with [`ANY_VP`] alone.
     pub fn cpu_id(&self) -> Result<Vec<(u16, u64)>> {
-        Err(Error::Guest(NO_SNAPSHOTS.into()))
+        let names: Vec<u32> = ID_REGS.iter().map(|&e| id_register(e)).collect();
+        let values = self.partition.registers(ANY_VP, &names)?;
+        Ok(ID_REGS.iter().copied().zip(values).collect())
     }
 
+    /// Captures the architectural state, with the vCPU out of the guest: its general, SIMD
+    /// and floating-point registers, the system registers its guest has
+    /// ([`Partition::saved_sysregs`]), its OS lock, and its power, held in StartupSuspend
+    /// (powered off, or never started) or not. A vCPU stopped with an event pending, which
+    /// none of these holds, takes no snapshot.
     pub fn save_state(&self) -> Result<VcpuState> {
-        Err(Error::Guest(NO_SNAPSHOTS.into()))
+        let (p, vp) = (&self.partition, self.index);
+        let sys = p.saved_sysregs()?;
+        // EventPending, WHV_ARM64_PENDING_EVENT's first bit.
+        if p.values(vp, &[PENDING_EVENT0])?
+            .first()
+            .is_some_and(|v| v.0[0] & 1 != 0)
+        {
+            return Err(Error::Guest(format!(
+                "vCPU {vp} stopped with an event pending, which a snapshot does not keep"
+            )));
+        }
+        let mut names: Vec<u32> = (0..31).map(|n| X0 + n).collect();
+        names.extend([PC, PSTATE, FPCR, FPSR, INTERNAL_ACTIVITY_STATE, OSLSR_EL1]);
+        names.extend(sys.iter().map(|&(_, name)| name));
+        let values = p.registers(vp, &names)?;
+        let simd = p.values(vp, &(0..32).map(|n| Q0 + n).collect::<Vec<_>>())?;
+        let short = || {
+            Error::Guest(format!(
+                "vCPU {vp}: {} register values for {} names",
+                values.len(),
+                names.len()
+            ))
+        };
+        let x: [u64; 31] = values
+            .get(..31)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(short)?;
+        let fixed: [u64; 6] = values
+            .get(31..37)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(short)?;
+        let [pc, pstate, fpcr, fpsr, activity, oslsr] = fixed;
+        let rest = values
+            .get(37..)
+            .filter(|r| r.len() == sys.len())
+            .ok_or_else(short)?;
+        let mut v = [0u128; 32];
+        if simd.len() != v.len() {
+            return Err(short());
+        }
+        for (q, value) in v.iter_mut().zip(&simd) {
+            *q = u128::from(value.0[0]) | u128::from(value.0[1]) << 64;
+        }
+        let mut saved: Vec<(u16, u64)> = sys.iter().map(|&(e, _)| e).zip(rest.iter().copied()).collect();
+        // OSLSR_EL1's OSLK (bit 1), kept under OSLAR_EL1, whose write sets it back.
+        saved.push((OSLAR, (oslsr >> 1) & 1));
+        Ok(VcpuState {
+            x,
+            pc,
+            pstate,
+            v,
+            fpcr,
+            fpsr,
+            sys: saved,
+            // The CPU interface is the GIC's state here ([`Vm::save_gic`]).
+            icc: Vec::new(),
+            power: if activity & STARTUP_SUSPEND != 0 {
+                Power::Off
+            } else {
+                Power::On
+            },
+        })
     }
 
-    pub fn restore_state(&mut self, _state: &VcpuState) -> Result<()> {
-        Err(Error::Guest(NO_SNAPSHOTS.into()))
+    /// Loads captured state into this freshly created vCPU, its power as it was: a vCPU
+    /// that ran resumes where it stopped, one powered off waits for its CPU_ON. The guest's
+    /// counter is set as the vCPU is released ([`Vcpu::set_counter_offset`]).
+    pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
+        let (p, vp) = (&self.partition, self.index);
+        let activity = match st.power {
+            Power::Off => STARTUP_SUSPEND,
+            Power::On => 0,
+            Power::Pending(_) => {
+                return Err(Error::Guest(
+                    "a CPU_ON pending in the VMM, which arm64's WHP never has: PSCI is its hypervisor's"
+                        .into(),
+                ));
+            }
+        };
+        let mut names: Vec<u32> = (0..31).map(|n| X0 + n).collect();
+        let mut values = st.x.to_vec();
+        names.extend([PC, PSTATE, FPCR, FPSR]);
+        values.extend([st.pc, st.pstate, st.fpcr, st.fpsr]);
+        for &(encoding, value) in &st.sys {
+            let name = name_of(encoding)
+                .ok_or_else(|| Error::Guest(format!("a system register of encoding {encoding:#06x}")))?;
+            names.push(name);
+            values.push(value);
+        }
+        p.set_registers(vp, &names, &values)?;
+        let simd: Vec<Value> =
+            st.v.iter()
+                .map(|&q| Value([q as u64, (q >> 64) as u64]))
+                .collect();
+        p.set_values(vp, &(0..32).map(|n| Q0 + n).collect::<Vec<_>>(), &simd)?;
+        p.set_registers(vp, &[INTERNAL_ACTIVITY_STATE], &[activity])
     }
 
+    /// The guest's virtual counter now (CNTVCT_EL0).
     pub fn guest_counter(&self) -> Result<u64> {
-        Err(Error::Guest(NO_SNAPSHOTS.into()))
+        self.partition.register(self.index, CNTVCT_EL0)
     }
 
-    pub fn set_counter_offset(&mut self, _offset: u64) -> Result<()> {
-        Err(Error::Guest(NO_SNAPSHOTS.into()))
+    /// Sets the guest's virtual counter to `host_counter() - offset`, as each vCPU is
+    /// released, by writing its CNTVCT_EL0. PM M414 measures whether the write is the vCPU's
+    /// or the partition's, which [`restores`] waits for.
+    pub fn set_counter_offset(&mut self, offset: u64) -> Result<()> {
+        self.partition
+            .set_registers(self.index, &[CNTVCT_EL0], &[host_counter().wrapping_sub(offset)])
+    }
+}
+
+// ---- snapshots ---------------------------------------------------------------------
+
+/// The EL1 and EL0 system registers a snapshot carries, by encoding (op0:op1:CRn:CRm:op2, as
+/// arch/aarch64/state.rs keys them) and WHP's name: the state a guest changes of those
+/// WinHvPlatformDefs.h names, as HVF's backend carries it (SP_EL0, SP_EL1, ELR_EL1 and
+/// SPSR_EL1 among them). The header names no AFSR0, AFSR1 or AMAIR, which are IMPLEMENTATION
+/// DEFINED, and no EL1 physical timer, which a guest at EL1 does not use (it takes the
+/// virtual one: docs/research/hvf-arm64-kvm-ground-truth.md, the timer's PPI); and the guest is given no PMU,
+/// none being in its devicetree, so no register of one is kept.
+const SYSREGS: &[(u16, u32)] = &[
+    (0xc080, SCTLR_EL1),
+    (0xc081, ACTLR_EL1),
+    (0xc082, CPACR_EL1),
+    (0xc100, TTBR0_EL1),
+    (0xc101, TTBR1_EL1),
+    (0xc102, TCR_EL1),
+    (0xc200, SPSR_EL1),
+    (0xc201, ELR_EL1),
+    (0xc208, SP_EL0),
+    (0xe208, SP_EL1),
+    (0xc290, ESR_EL1),
+    (0xc300, FAR_EL1),
+    (0xc3a0, PAR_EL1),
+    (0xc510, MAIR_EL1),
+    (0xc600, VBAR_EL1),
+    (0xc681, CONTEXTIDR_EL1),
+    (0xc684, TPIDR_EL1),
+    (0xc708, CNTKCTL_EL1),
+    (0xd000, CSSELR_EL1),
+    (0xde82, TPIDR_EL0),
+    (0xde83, TPIDRRO_EL0),
+    (0xdf19, CNTV_CTL_EL0),
+    (0xdf1a, CNTV_CVAL_EL0),
+    (0x8012, MDSCR_EL1),
+];
+
+/// The pointer authentication keys, which a guest has with FEAT_PAuth alone.
+const PAUTH_KEYS: &[(u16, u32)] = &[
+    (0xc108, APIA_KEY_LO),
+    (0xc109, APIA_KEY_HI),
+    (0xc10a, APIB_KEY_LO),
+    (0xc10b, APIB_KEY_HI),
+    (0xc110, APDA_KEY_LO),
+    (0xc111, APDA_KEY_HI),
+    (0xc112, APDB_KEY_LO),
+    (0xc113, APDB_KEY_HI),
+    (0xc118, APGA_KEY_LO),
+    (0xc119, APGA_KEY_HI),
+];
+
+/// OSLAR_EL1's encoding, under which a snapshot keeps OSLSR_EL1's OSLK: the OS lock, which
+/// a write of OSLAR_EL1 sets (Arm ARM D19.3.29).
+const OSLAR: u16 = 0x8084;
+
+/// The ID registers that define the guest's CPU, by encoding: a restore on a CPU that
+/// reports any of them different is refused. MIDR, which Linux takes its errata by, and the
+/// AArch64 feature registers it patches its own code by as it boots (processor, debug,
+/// instruction set and memory model).
+const ID_REGS: &[u16] = &[
+    0xc000, 0xc020, 0xc021, 0xc022, 0xc024, 0xc025, 0xc028, 0xc029, 0xc030, 0xc031, 0xc032, 0xc033, 0xc038,
+    0xc039, 0xc03a, 0xc03b, 0xc03c,
+];
+const ID_AA64PFR0_EL1: u16 = 0xc020;
+const ID_AA64PFR1_EL1: u16 = 0xc021;
+const ID_AA64DFR0_EL1: u16 = 0xc028;
+const ID_AA64ISAR1_EL1: u16 = 0xc031;
+const ID_AA64ISAR2_EL1: u16 = 0xc032;
+
+/// WHP's name for ID register `encoding`: its CRm:op2 from [`ID_REGISTERS`].
+fn id_register(encoding: u16) -> u32 {
+    ID_REGISTERS + u32::from(encoding & 0x7f)
+}
+
+/// The breakpoint and watchpoint registers ID_AA64DFR0_EL1 says exist, by encoding and
+/// WHP's name.
+fn debug_regs(dfr0: u64) -> Vec<(u16, u32)> {
+    let brps = ((dfr0 >> 12) & 0xf) + 1;
+    let wrps = ((dfr0 >> 20) & 0xf) + 1;
+    let mut regs = Vec::new();
+    for n in 0..16u16 {
+        let base = 0x8004 + (n << 3); // DBGBVRn_EL1; BCR +1, WVR +2, WCR +3
+        let i = u32::from(n);
+        if u64::from(n) < brps {
+            regs.extend([(base, DBGBVR0_EL1 + i), (base + 1, DBGBCR0_EL1 + i)]);
+        }
+        if u64::from(n) < wrps {
+            regs.extend([(base + 2, DBGWVR0_EL1 + i), (base + 3, DBGWCR0_EL1 + i)]);
+        }
+    }
+    regs
+}
+
+/// Whether ID_AA64ISAR1_EL1 and ID_AA64ISAR2_EL1 give the guest pointer authentication: any
+/// of APA, API, GPA, GPI, APA3 or GPA3.
+fn pauth(isar1: u64, isar2: u64) -> bool {
+    (isar1 >> 4) & 0xff != 0 || (isar1 >> 24) & 0xff != 0 || (isar2 >> 8) & 0xff != 0
+}
+
+/// WHP's name for a system register a snapshot may carry, by its encoding.
+fn name_of(encoding: u16) -> Option<u32> {
+    if encoding == OSLAR {
+        return Some(OSLAR_EL1);
+    }
+    // Every breakpoint and watchpoint register, 16 of each.
+    let every_debug = (0xf << 12) | (0xf << 20);
+    SYSREGS
+        .iter()
+        .chain(PAUTH_KEYS)
+        .copied()
+        .chain(debug_regs(every_debug))
+        .find_map(|(e, name)| (e == encoding).then_some(name))
+}
+
+impl Partition {
+    /// The system registers a snapshot of this partition's vCPUs carries: [`SYSREGS`], and
+    /// those its guest's ID registers say it has (the pointer authentication keys, the
+    /// breakpoint and watchpoint registers). A guest given SVE or SME, whose vector state no
+    /// register here holds, is refused.
+    fn saved_sysregs(&self) -> Result<Vec<(u16, u32)>> {
+        let ids = [
+            ID_AA64PFR0_EL1,
+            ID_AA64PFR1_EL1,
+            ID_AA64DFR0_EL1,
+            ID_AA64ISAR1_EL1,
+            ID_AA64ISAR2_EL1,
+        ];
+        let names: Vec<u32> = ids.iter().map(|&e| id_register(e)).collect();
+        let values = self.registers(ANY_VP, &names)?;
+        let [pfr0, pfr1, dfr0, isar1, isar2]: [u64; 5] = values
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Guest(format!("{} ID register values for {}", values.len(), ids.len())))?;
+        // ID_AA64PFR0_EL1.SVE (35:32), ID_AA64PFR1_EL1.SME (27:24).
+        if (pfr0 >> 32) & 0xf != 0 || (pfr1 >> 24) & 0xf != 0 {
+            return Err(Error::Guest(
+                "a guest given SVE or SME takes no snapshot on arm64's WHP: no register of its vector state is kept"
+                    .into(),
+            ));
+        }
+        let mut sys = SYSREGS.to_vec();
+        if pauth(isar1, isar2) {
+            sys.extend_from_slice(PAUTH_KEYS);
+        }
+        sys.extend(debug_regs(dfr0));
+        Ok(sys)
     }
 }
 

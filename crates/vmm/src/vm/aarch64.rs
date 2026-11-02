@@ -485,14 +485,7 @@ fn assemble(
     // Its writable layer after them (D190).
     let (layer, top) = super::layer_layout(hosts.layer, top)?;
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
-    // says (D144, D201).
-    #[cfg(not(any(hv = "hvf", hv = "kvm")))]
-    if gpu.is_some() {
-        return Err("a GPU is given on macOS and Linux hosts alone so far (D144, D201)".into());
-    }
-    #[cfg(not(any(hv = "hvf", hv = "kvm")))]
-    let gpu: Option<((), crate::devices::virtio::ShmRegion)> = None;
-    #[cfg(any(hv = "hvf", hv = "kvm"))]
+    // says (D144, D201, D202).
     let gpu = gpu.map(|saw| super::gpu_layout(saw, top)).transpose()?;
     let top = match &gpu {
         Some((_, r)) => r
@@ -623,9 +616,6 @@ fn assemble(
     debug!("GIC created");
 
     let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
-    #[cfg(not(any(hv = "hvf", hv = "kvm")))]
-    let gpu: Option<Box<dyn crate::devices::virtio::VirtioDevice>> = None;
-    #[cfg(any(hv = "hvf", hv = "kvm"))]
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
