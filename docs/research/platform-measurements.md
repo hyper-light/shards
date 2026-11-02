@@ -17160,3 +17160,26 @@ revision before comparing a changed API/implementation.
   memory file stays sparse, taking the disk its guest used (M345). The restore bench holds
   its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
   `shards restore` finds it.
+
+### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
+
+- **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
+  (QEMU's `virtualization=on`, Hypervisor.framework's nested virtualization), its own
+  hypervisor running there under shards' arm64 WHP backend. A hypervisor that runs with
+  VHE sets HCR_EL2.E2H, which exists only where ID_AA64MMFR1_EL1's VH field says so (the
+  Arm ARM's FEAT_VHE). Does a framework guest at EL2 have VHE?
+- **Method.** `docs/research/measurements/hvf-el2-vhe/run.sh`, on the M5 Max (macOS
+  26.4.1), 2026-11-01: a VM made with EL2 off and one with it on
+  (`hv_vm_config_set_el2_enabled`), each vCPU's ID registers as its guest reads them
+  (`hv_vcpu_get_sys_reg`), and, at EL2, HCR_EL2 written with E2H (bit 34) set and then
+  clear, each read back.
+- **Found.**
+  - EL2 is supported here (`hv_vm_config_get_el2_supported`: 1).
+  - ID_AA64MMFR1_EL1 reads 0x0000100011312000 with EL2 off and on: VH (11:8) 0.
+    ID_AA64MMFR2_EL1 0x1001001102001011, ID_AA64PFR0_EL1 0x1101000010110011, alike. The
+    framework does not offer ID_AA64MMFR4_EL1 (HV_BAD_ARGUMENT, 0xfae94003).
+  - HCR_EL2 is 0x80000000 as made; written with E2H set, it reads back 0x80000000: E2H is
+    RES0. A guest hypervisor here runs without VHE, as the arm64 Linux guest's KVM did
+    under it ("Hyp nVHE mode initialized successfully", D154), no `kvm-arm.mode` told.
+- **Consequence.** Whether Windows' hypervisor starts in such a guest is measured by
+  booting it there (step 10's host): if it needs VHE, no Mac here can be an arm64 WHP host.
