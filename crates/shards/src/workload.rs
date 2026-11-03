@@ -710,7 +710,7 @@ fn end_guest(conn: &UnixStream) {
 
 /// Copies the guest's frames to shards' stdout and stderr until the exit status, and to
 /// `log` if the container's output is kept. Why a command never ran is not its output,
-/// and stays out of the log, as dockerd keeps a failed start out of `docker logs`.
+/// and stays out of the log: `logs` holds what the command wrote.
 fn relay(
     conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
     timing: &Timing,
@@ -1870,8 +1870,8 @@ fn lock_attached() -> std::sync::MutexGuard<'static, Vec<Attacher>> {
     ATTACHED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The workload's output to each client attached, as dockerd's attach streams it: as it
-/// comes, waited for as the run's own client is. One that has gone is let go.
+/// The workload's output to each client attached, as it comes, waited for as the run's own
+/// client is. One that has gone is let go.
 fn fan_out(payload: &[u8], stderr: bool) {
     lock_attached().retain_mut(|a| {
         let to = if stderr { &mut a.err } else { &mut a.out };
@@ -1953,12 +1953,12 @@ pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
 }
 
 /// Forwards the signals shards receives to the workload, through `to`, even those shards
-/// was started ignoring, as the Docker CLI does (shards_ipc::take_forwarded). It blocks
-/// them in the calling thread, which every thread started later inherits, so call it
-/// before the VM starts: then only the forwarder's `sigwait` receives them. A signal that
-/// would end shards, arriving before the workload runs, ends shards as it would have,
-/// unless it was ignored. With `reads_terminal`, the terminal's job control applies to
-/// shards (shards_ipc::forwarded).
+/// was started ignoring: a run a script started in the background still passes them on
+/// (shards_ipc::take_forwarded). It blocks them in the calling thread, which every thread
+/// started later inherits, so call it before the VM starts: then only the forwarder's
+/// `sigwait` receives them. A signal that would end shards, arriving before the workload
+/// runs, ends shards as it would have, unless it was ignored. With `reads_terminal`, the
+/// terminal's job control applies to shards (shards_ipc::forwarded).
 #[cfg(unix)]
 pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(), String> {
     let (set, ignored) =
@@ -1995,7 +1995,7 @@ pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(),
 }
 
 /// [`forward_signals`] on Windows, which sends a console process no signal but its
-/// console's events, taken as Go's os/signal takes them, as the Docker CLI's are: Ctrl+C
+/// console's events, taken as Go's os/signal takes them: Ctrl+C
 /// and Ctrl+Break as SIGINT; the console's close, a logoff and a shutdown as SIGTERM. One
 /// that comes before the workload runs goes on to the default handler, which ends shards,
 /// as Unix's signal would.

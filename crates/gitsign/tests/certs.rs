@@ -2,7 +2,7 @@
 //! x/crypto/ssh v0.55.0 by testdata/certs.json (scripts/gitsign/generate-certs): each
 //! certificate and key ParsePublicKey and ParseAuthorizedKey read, its type, fingerprint and
 //! wire form as x/crypto writes it again, or the error; and verify_git_signature of each
-//! signature made with a certificate, as buildx's gitsign.VerifySignature answers.
+//! signature made with a certificate, as buildx v0.37.1's gitsign.VerifySignature answers.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 

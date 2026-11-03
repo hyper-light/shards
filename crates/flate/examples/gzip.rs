@@ -1,4 +1,4 @@
-//! Standard input gzipped as BuildKit gzips a layer, to standard output:
+//! Standard input gzipped as an image output gzips a layer (D75), to standard output:
 //! `cargo run --release -p shards-flate --example gzip [LEVEL] < layer.tar > layer.tar.gz`.
 
 use std::io::{Read as _, Write as _};

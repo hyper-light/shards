@@ -104,8 +104,8 @@ impl Agentfile {
         Ok(())
     }
 
-    /// The capabilities `run` gives its command: Docker's, as moby tweaks them, less
-    /// Docker's default `CAP_NET_RAW` where the domains' flows cross the command's network
+    /// The capabilities `run` gives its command: the default set images are made for (D115),
+    /// less Docker's default `CAP_NET_RAW` where the domains' flows cross the command's network
     /// namespace; one the run adds itself stays, for [`Agentfile::refuse`] to refuse.
     pub fn caps(&self, run: &shards_ipc::Run) -> u64 {
         let caps = crate::setup::capabilities(run);

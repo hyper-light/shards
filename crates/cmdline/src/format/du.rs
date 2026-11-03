@@ -8,7 +8,7 @@ use shards_template::{Kind, Value};
 use super::units::human_size;
 use super::{Clock, Context, Ctx, Header, Methods, context_format, is_json, is_table, parse, post_format};
 
-/// A build cache record as BuildKit's DiskUsage answers it (client.UsageInfo).
+/// A build cache record as BuildKit v0.33.0's DiskUsage answers it (client.UsageInfo).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Usage {
     pub id: String,
@@ -187,7 +187,7 @@ impl Methods for Row {
     fn get(&self, name: &str) -> Option<Value> {
         let r = &self.r;
         Some(match name {
-            // In UTC, as BuildKit's client makes its times.
+            // In UTC, as BuildKit v0.33.0's client makes its times.
             "CreatedAt" => Value::String(
                 Clock {
                     now: 0,

@@ -308,7 +308,8 @@ impl Call<'_> {
             .map(|(_, v)| v.as_str())
     }
 
-    /// Query parameter `key` as a flag, as dockerd reads one (httputils.BoolValue):
+    /// Query parameter `key` as a flag, in the meaning clients give it (D170, moby's
+    /// httputils.BoolValue):
     /// anything but empty, `0`, `no`, `false` and `none`.
     fn flag(&self, key: &str) -> bool {
         let v = self.query(key).unwrap_or_default().trim().to_ascii_lowercase();
@@ -316,8 +317,8 @@ impl Call<'_> {
     }
 }
 
-/// Whether API version `a` is `b` or later, compared as moby compares them
-/// (api/types/versions): each dot-separated part as a number.
+/// Whether API version `a` is `b` or later, each dot-separated part as a number, as
+/// clients number versions (D170; moby docker-v29.3.1 client/pkg/versions/compare.go).
 pub(super) fn at_least(a: &str, b: &str) -> bool {
     let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
     let (a, b) = (parts(a), parts(b));
@@ -370,9 +371,9 @@ fn parse_query(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The status the API answers an error with, by what it says, as dockerd's error kinds
-/// give each (errdefs; api/server/httpstatus): the first of [`STATUSES`] it says, else
-/// `otherwise`.
+/// The status the API answers an error with, by what it says, the status clients branch on
+/// (D170; moby's errdefs and api/server/httpstatus): the first of [`STATUSES`] it says,
+/// else `otherwise`.
 fn status_of(said: &str, otherwise: u16) -> u16 {
     STATUSES
         .iter()

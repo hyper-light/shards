@@ -79,8 +79,9 @@ impl Failure {
         }
     }
 
-    /// A BuildKit call's error: its status as BuildKit gave it, details and all. A
-    /// frontend's wrapping of it is not said: ToGRPC keeps a status's own message.
+    /// A BuildKit call's error: its status unchanged, details and all. A
+    /// frontend's wrapping of it is not said: ToGRPC
+    /// (util/grpcerrors/grpcerrors.go) keeps a status's own message.
     fn call(e: grpc::Error) -> Failure {
         match e {
             grpc::Error::Status(s) => Failure {
@@ -187,9 +188,9 @@ fn platform_of_json(p: &serde_json::Value) -> Platform {
     }
 }
 
-/// This process's platform as containerd's DefaultSpec says it, normalized: Linux, its
-/// architecture, and on arm64 the variant /proc/cpuinfo's "CPU architecture: 8" gives,
-/// v8, which normalizing leaves out.
+/// This process's platform (containerd/platforms defaults.go `DefaultSpec`), normalized:
+/// Linux, its architecture, and on arm64 the variant /proc/cpuinfo's "CPU architecture:
+/// 8" gives, v8, which normalizing leaves out.
 fn default_spec() -> Platform {
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
@@ -323,6 +324,7 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
     }
     if opts.get("override-copy-image").is_some_and(|v| !v.is_empty()) {
         return Err(Failure::new(
+            // dockerfile/1.27.1 dockerui/config.go's words, pinned by tests/build.rs.
             "support for \"override-copy-image\" was removed in BuildKit 0.11",
         ));
     }
@@ -330,6 +332,7 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         && shards_image::go::parse_bool(v.as_bytes()) == Some(true)
     {
         return Err(Failure::new(
+            // dockerfile/1.27.1 dockerui/config.go's words, pinned by tests/build.rs.
             "support for \"BUILDKIT_DISABLE_FILEOP\" build-arg was removed in BuildKit 0.11",
         ));
     }
@@ -768,7 +771,7 @@ struct Gateway<'c, R, W> {
     /// ResolveImageConfig's answers, by request (builder's withResolveCache).
     resolved: RefCell<BTreeMap<ImageRequest, Result<Resolved, Failure>>>,
     /// SOURCE_DATE_EPOCH's time from each source, once a build, where dockerfile's
-    /// frontend asks for each platform's at once (its steps one in buildx's display, or
+    /// frontend asks for each platform's at once (shown as one step by buildx, or
     /// not, as they happen to overlap) and a source changed between them gives them
     /// different times.
     epochs: RefCell<BTreeMap<EpochSource, Option<plan::Epoch>>>,
@@ -829,7 +832,8 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
         Ok(solved.single)
     }
 
-    /// The capability of `def`'s the worker lacks, refused in BuildKit's client's words, if
+    /// The capability of `def`'s the worker lacks, refused in the words
+    /// BuildKit's client prints (util/apicaps/caps.go), if
     /// any: in one order, where the worker's map order chose which BuildKit's names.
     fn refused(&self, def: &Marshalled) -> Option<String> {
         def.caps
@@ -1509,6 +1513,7 @@ pub(crate) fn frontend(args: impl Iterator<Item = OsString>) -> ExitCode {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         let _ = writeln!(
             std::io::stdout(),
+            // What the command is: the frontend a `# syntax=` line names (D113).
             "Usage:  shards frontend\n\nRun as BuildKit's frontend: the gateway on stdin and stdout, as a `# syntax=` line\nnaming shards' image has BuildKit run it."
         );
         return ExitCode::SUCCESS;
@@ -2477,7 +2482,7 @@ fn check_domains<R: Read, W: Write>(
     Ok(())
 }
 
-/// One of an Agentfile's checks, as BuildKit is asked to run it: its report's name, its
+/// One of an Agentfile's checks, as the frontend asks BuildKit to run it: its report's name, its
 /// op, the step a finding is said of, and the lines it is said on.
 struct Check {
     report: String,

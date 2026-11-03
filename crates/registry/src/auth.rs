@@ -47,7 +47,8 @@ const MAX_TOKEN_RESPONSE: u64 = 1 << 20;
 /// distribution's `minimumTokenLifetimeSeconds`, and the spec's default.
 const MIN_LIFETIME: Duration = Duration::from_secs(60);
 
-/// A challenge's scheme, in containerd's order of preference: bearer, digest, basic.
+/// A challenge's scheme, best first: bearer (a scoped token that expires), digest, basic
+/// (the secret itself, with each request).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scheme {
     Basic,
@@ -843,7 +844,7 @@ struct TokenResponse {
 }
 
 /// Reads a token server's answer. An OAuth2 answer must carry `access_token`; a GET's
-/// carries `token` or `access_token`, and `access_token` wins, as containerd has it.
+/// carries `token` or `access_token`, and `access_token` wins, as containerd v2.4.1 has it.
 fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
     if !(200..400).contains(&response.status) {
         return Err(refused(response));

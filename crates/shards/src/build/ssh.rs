@@ -1375,8 +1375,8 @@ impl<T: Read + Write + Send> AgentStream for T {}
 
 /// A connection to the SSH agent at `path`: its AF_UNIX socket's; a connection asked of the
 /// descriptor `/dev/fd/N` names where that is a socket ([`asked_of`]); on Windows, a named
-/// pipe's where `path` names one (OpenSSH's agent's, as BuildKit dials it with
-/// winio.DialPipe), or an AF_UNIX socket's.
+/// pipe's where `path` names one (OpenSSH's agent's, dialed as agentprovider_windows.go dials
+/// it), or an AF_UNIX socket's.
 pub fn agent_stream(path: &std::path::Path) -> std::io::Result<Box<dyn AgentStream>> {
     if let Some(asked) = asked_of(path)? {
         return Ok(Box::new(asked));
@@ -1492,7 +1492,7 @@ fn asked_of(path: &std::path::Path) -> std::io::Result<Option<shards_ipc::Stream
 /// (sshprovider/agentprovider_windows.go, winio.DialPipe): anonymous to the pipe's server
 /// (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), which cannot impersonate this process; and
 /// opened once an instance is free where all are busy (ERROR_PIPE_BUSY), as winio.DialPipe
-/// waits for one (2 s here, as BuildKit gives an agent's socket to connect).
+/// waits for one (2 s, winio's pipe.go default, which BuildKit's call leaves).
 #[cfg(windows)]
 fn pipe(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::ffi::OsStrExt as _;

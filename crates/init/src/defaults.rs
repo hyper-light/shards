@@ -142,13 +142,14 @@ pub fn rlimit(resource: libc::c_int, cur: libc::rlim_t, max: libc::rlim_t) -> bo
     }
 }
 
-/// The resource limits a container's process starts with, as Docker's runtime gives them,
-/// which it inherits from containerd's (its systemd unit's LimitNOFILE and LimitNPROC
-/// infinity; measured on Docker Desktop 29.3.1, `cat /proc/self/limits`, 2026-10-05):
-/// open files 1048576 (the kernel's nr_open), processes and locked memory unlimited. The
-/// guest kernel's own would be its init's (1024:4096 files, and processes and pending
-/// signals by the VM's small memory). Pending signals stay the kernel's, by the VM's
-/// memory, as Docker's are by its host's. `--ulimit` sets its own over them.
+/// The resource limits a microVM's workload starts with: those its image's programs are
+/// made to meet on a Docker host, whose runtime inherits them from containerd's (its
+/// systemd unit's LimitNOFILE and LimitNPROC infinity; measured on Docker Desktop 29.3.1,
+/// `cat /proc/self/limits`, 2026-10-05): open files 1048576 (the kernel's nr_open),
+/// processes and locked memory unlimited. The guest kernel's own would be its init's
+/// (1024:4096 files, and processes and pending signals by the VM's small memory). Pending
+/// signals stay the kernel's, sized by the microVM's memory. `--ulimit` sets its own over
+/// them.
 pub fn limits() {
     let set = |resource, cur, max| {
         let limit = libc::rlimit {

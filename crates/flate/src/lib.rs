@@ -55,7 +55,7 @@ impl<W: Write> Write for DeflateWriter<W> {
     }
 }
 
-/// `gzip.Writer` as BuildKit makes it: no name, comment or time, and an extra field only
+/// `gzip.Writer` as BuildKit makes it (D75): no name, comment or time, and an extra field only
 /// where one is set (estargz's footer); the OS unknown (255); XFL 2 at level 9, 4 at level
 /// 1, else 0 (RFC 1952).
 #[derive(Debug)]

@@ -398,7 +398,7 @@ impl Output {
     }
 }
 
-/// Where `shards load` reads, as docker/cli's runLoad opens it: `-i`'s file, or stdin,
+/// Where `shards load` reads (runLoad's input): `-i`'s file, or stdin,
 /// unless it is a terminal. What the CLI says instead, in Go's words.
 pub fn input(path: &str) -> Result<Option<File>, String> {
     if path.is_empty() {
@@ -410,7 +410,7 @@ pub fn input(path: &str) -> Result<Option<File>, String> {
     open(path).map(Some)
 }
 
-/// The file `path`, opened to read, as docker/cli opens `load -i`'s and `import`'s; what
+/// The file `path`, opened to read: `load -i`'s and `import`'s; what
 /// failed, in Go's words.
 pub fn open(path: &str) -> Result<File, String> {
     File::open(path).map_err(|e| format!("open {path}: {}", go(&e)))

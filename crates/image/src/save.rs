@@ -162,7 +162,7 @@ fn present(store: &Store, image: &Image) -> Result<Vec<Digest>, Error> {
 fn index_entry(asked: &Asked<'_>) -> Result<String, Error> {
     let t = &asked.image.target;
     let mut annotations: BTreeMap<String, String> = BTreeMap::new();
-    // Each registry's repositories, comma-separated, as containerd labels them.
+    // Each registry's repositories, comma-separated, as containerd v2.4.1 labels them.
     let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for s in &asked.image.sources {
         if let Some((host, path)) = s.split_once('/') {

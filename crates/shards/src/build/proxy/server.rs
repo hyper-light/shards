@@ -20,7 +20,7 @@ use super::capture::{self, Capture};
 use super::head::{self, Framing, Head};
 use super::sniff;
 
-/// A body's digest as BuildKit writes one: `sha256:` and its hex.
+/// A body's digest, as an OCI digest is written: `sha256:` and its hex.
 fn digest_of(hasher: sha2::Sha256) -> String {
     let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
     format!("sha256:{hex}")
@@ -546,7 +546,7 @@ fn pass_on<W: Write>(
     (sent && !close, whole && sent, digest)
 }
 
-/// Writes a response into a tunnel as BuildKit writes one (`prepareMITMResponse`, then
+/// Writes a response into a tunnel as BuildKit v0.33.0 writes one (`prepareMITMResponse`, then
 /// `Response.Write`): the request's version, the upstream's own words, `Connection: close`
 /// where the tunnel ends after it, its length or chunked, then the fields sorted. Whether
 /// the tunnel goes on, whether the body was read whole, and its digest.
@@ -719,7 +719,7 @@ impl Proxy {
 }
 
 /// A question a step's request puts to the build's policies: whether `method` may go to
-/// `url` (redacted, as BuildKit's handler asks it).
+/// `url` (redacted, as BuildKit v0.33.0's handler asks it).
 #[derive(Debug)]
 pub struct Ask {
     pub method: String,

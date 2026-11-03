@@ -146,16 +146,16 @@ pub fn config(opts: &BTreeMap<String, String>) -> Result<Config, String> {
         cert,
         key,
     };
-    // Its files read as its run starts, as go-connections reads them as moby's driver
-    // starts: none sent to that cannot be.
+    // Its files read as its run starts: a run whose TLS files cannot be read is refused, and
+    // nothing sent (D163).
     if matches!(config.to, To::Tls(_)) {
         config.tls_material()?;
     }
     Ok(config)
 }
 
-/// `syslog-address` as moby's parseAddress reads it: `udp`, `tcp` or `tcp+tls` and a
-/// host, its port 514 unless given; or `unix` or `unixgram` and a socket's absolute path,
+/// `syslog-address` as the option means it (parseAddress, D163): `udp`, `tcp` or `tcp+tls`
+/// and a host, its port 514 unless given; or `unix` or `unixgram` and a socket's absolute path,
 /// which is there. Where Go's URL parser would take a `unix://` address's first name for a
 /// host and drop it, this says so.
 fn address(given: &str) -> Result<To, String> {

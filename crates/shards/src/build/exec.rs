@@ -2,7 +2,7 @@
 //! base images and the context as snapshots, file operations as BuildKit's
 //! FileOpSolver runs them (dockerfile/1.27.1 solver/llbsolver/ops/file.go), and merges.
 //! Each committed result is a snapshot and the chain of layers that makes it; a layer
-//! is written to the store as BuildKit's differ writes it (`shards_build::diff`),
+//! is written to the store by `shards_build::diff`, held to BuildKit's differ (its oracle.rs),
 //! uncompressed. Each result follows the tree its layers stack to too
 //! (`shards_build::stack`), so the image's root filesystem is written from the last
 //! snapshot, not stacked again from the layers.
@@ -456,8 +456,8 @@ impl<'a> Exec<'a> {
                 kind: Kind::File { size: d.size, data },
                 meta: Meta {
                     mode: 0o600,
-                    // Without a Last-Modified, the time is 1970's, as BuildKit's save
-                    // leaves it.
+                    // Without a Last-Modified, the time is 1970's, as
+                    // source/http/source.go's `save` leaves it.
                     mtime: d.last_modified.map_or(0, |t| t.0),
                     mtime_nsec: d.last_modified.map_or(0, |t| t.1),
                     ..Meta::default()
@@ -932,8 +932,8 @@ struct Taken {
     writable: bool,
 }
 
-/// A new cache record's id, as BuildKit's identity.NewID makes one: 128 random bits, the
-/// high one set, in base 36, the 25 digits after the first.
+/// A new cache record's id, as BuildKit's identity/randomid.go `NewID` makes one: 128
+/// random bits, the high one set, in base 36, the 25 digits after the first.
 fn record_id() -> Result<String, String> {
     let mut n = [0u8; 17];
     entropy(&mut n)?;
@@ -988,8 +988,8 @@ pub fn cpu_weight(shares: u64) -> u64 {
 
 /// The cgroup v2 files a step's limits are, as runc writes them (opencontainers/cgroups
 /// v0.0.4 fs2/memory.go `setMemory`, fs2/cpu.go `setCPU`, fs2/cpuset.go): the swap first,
-/// memory, the CPU's weight and maximum, the CPUs and memory nodes. A swap past the
-/// memory alone is refused as runc refuses it.
+/// memory, the CPU's weight and maximum, the CPUs and memory nodes. A swap limit without
+/// a memory limit, or below it, means nothing and is refused (cgroups utils.go's words).
 pub fn cgroup_files(r: &shards_agentfile::llb::LinuxResources) -> Result<CgroupFiles, String> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut put = |k: &str, v: String| out.push((k.as_bytes().to_vec(), v.into_bytes()));
@@ -1037,7 +1037,7 @@ pub fn cgroup_files(r: &shards_agentfile::llb::LinuxResources) -> Result<CgroupF
     Ok(out)
 }
 
-/// An SSH mount's agent id: `default` where it names none, as BuildKit's sshforward
+/// An SSH mount's agent id: `default` where it names none, as session/sshforward/ssh.go
 /// reads an empty one (DefaultID).
 fn ssh_id(id: &[u8]) -> String {
     if id.is_empty() {
@@ -1175,8 +1175,9 @@ impl Exec<'_> {
         })
     }
 
-    /// Runs a `RUN` in `builder` as BuildKit runs it (docs/research/buildkit-run.md), its
-    /// output to `out` as it comes; its result is its root mount's.
+    /// Runs a `RUN` in `builder` with what BuildKit gives a step (D33,
+    /// docs/research/buildkit-run.md), its output to `out` as it comes; its result is its
+    /// root mount's.
     ///
     /// Under the build's proxy (D110) its requests are put to `check`, the build's policies,
     /// its log ends with them as BuildKit's does, and what they came to is returned with
@@ -1334,8 +1335,8 @@ impl Exec<'_> {
             if usize::try_from(m.input).is_ok() && held.fresh {
                 let from = input(m.input)?;
                 let image = self.seed_image(&held, &from)?;
-                // Its root as containerd's snapshotter makes a child's: its parent's
-                // owner, mode 0755.
+                // Its root as containerd's snapshots/overlay/overlay.go makes a child's: its
+                // parent's owner, mode 0755.
                 let root = from.fs.tree().node(Tree::ROOT).map(|n| &n.meta);
                 let root = store::MountRoot {
                     mode: 0o755,
@@ -1567,8 +1568,8 @@ impl Exec<'_> {
                 *end = at;
             }
         }
-        // Each cache's changes, kept whatever the step's end, as BuildKit keeps a cache's
-        // writes; every one read, whichever fails.
+        // Each cache's changes, kept whatever the step's end, as a cache mount outlives its
+        // step (D114): every one read, whichever fails.
         let mut kept = Ok(());
         for (t, out) in taken.into_iter().zip(outs) {
             let r = self.keep_cache(builder, t, out);

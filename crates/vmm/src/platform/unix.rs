@@ -55,7 +55,7 @@ pub fn wait_readable(
 }
 
 /// Makes `dir`, and its missing parents, readable by this user alone (0700). An existing
-/// `dir` is made 0700 too, as containerd makes its root.
+/// `dir` is made 0700 too, so that no other user reads what it holds, whoever made it.
 pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()

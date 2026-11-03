@@ -3,7 +3,7 @@
 //! rootfs_linux.go, after specconv's parseMountOptions), its rlimits (setupRlimits), the
 //! root read-only (`readonly`), done by the standby in its own mount namespace; and its
 //! sysctls (internal/sys WriteSysctls), done by init through a `/proc/sys` it opened
-//! before `/proc/sys` was made read-only, as runc writes through an unmasked procfs.
+//! before `/proc/sys` was made read-only, so that the workload's own view stays read-only.
 
 use std::ffi::CString;
 use std::io;
@@ -132,7 +132,8 @@ fn errno_words(e: &io::Error) -> String {
     shards_cmdline::go::linux_error(e.raw_os_error().unwrap_or(libc::EIO))
 }
 
-/// Sets sysctl `key` to `value`, in runc's words when it cannot.
+/// Sets sysctl `key` to `value`; a failure in the words scripts read of a start's
+/// (internal/sys WriteSysctls).
 pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
     let path = key.replace('.', "/");
     let shown = format!("/proc/sys/{path}");
@@ -313,8 +314,8 @@ pub fn endpoint_sysctl(ifname: &str, kv: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A tmpfs's options as runc's parseMountOptions reads them: mount flags, propagation
-/// flags, and the rest as the filesystem's data.
+/// A tmpfs's options as `--tmpfs` takes them (specconv parseMountOptions): mount flags,
+/// propagation flags, and the rest as the filesystem's data.
 pub struct MountOptions {
     pub flags: libc::c_ulong,
     pub propagation: Vec<libc::c_ulong>,
@@ -465,7 +466,7 @@ fn c(s: &str) -> Option<CString> {
     CString::new(s).ok()
 }
 
-/// Makes `path` and its parents, as runc's MkdirAllInRoot makes a mount's destination.
+/// Makes `path` and its parents: a mount's destination (MkdirAllInRoot).
 fn mkdir_all(path: &str) -> io::Result<()> {
     use std::os::unix::fs::DirBuilderExt as _;
     std::fs::DirBuilder::new()

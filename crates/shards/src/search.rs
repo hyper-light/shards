@@ -100,7 +100,7 @@ pub(crate) fn find(term: &str, limit: i64, filters: &Filters, env: Env<'_>) -> R
         text: e.to_string(),
     };
     let http = crate::pull::host_client(at, env).map_err(failed)?;
-    // As a pull finds them; none where none are found, as docker searches without them.
+    // As a pull finds them; none where none are found: the search then asks anonymously.
     let credentials = shards_registry::credentials::lookup(at, env)
         .map(|(c, _)| c)
         .unwrap_or_default();
@@ -199,7 +199,7 @@ fn names_lookups(format: &str) -> bool {
         .any(|m| format.contains(&format!(".{m}")))
 }
 
-/// `text` on stderr, and status 1, as the Docker CLI fails a command; in a panel under
+/// `text` on stderr, and status 1, what scripts read of a failed command; in a panel under
 /// search's head on a colour terminal.
 fn failed(text: &str) -> ExitCode {
     if let Some(p) = crate::cli::look::styled_err() {

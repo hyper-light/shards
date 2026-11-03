@@ -1,4 +1,4 @@
-//! Command lines, NUL-separated words, read as the Docker CLI reads them for each command
+//! Command lines, NUL-separated words, read as docker/cli v29.8.1 reads them for each command
 //! shards serves (shards_cmdline::flags): no panic, and every outcome is one of the three.
 #![no_main]
 

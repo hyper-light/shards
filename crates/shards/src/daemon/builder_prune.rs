@@ -13,8 +13,9 @@ use super::commands::{Asker, Reply, human_duration};
 use super::images::human_size4;
 use crate::build::gc::{self, Filter, Record, Rule};
 
-/// buildx's `toBuildkitPruneInfo` (shards_cmdline::buildcache): `until`, or the older
-/// `unused-for`, as the age a record must reach; the rest as BuildKit's filters.
+/// The prune's filters as buildx v0.37.1 sends them (`toBuildkitPruneInfo`,
+/// shards_cmdline::buildcache): `until`, or the older `unused-for`, as the age a record
+/// must reach; the rest as filters of a record's fields.
 fn prune_info(given: &[String]) -> Result<(Option<Duration>, Vec<Filter>), String> {
     let info = shards_cmdline::buildcache::prune_info(given)?;
     let until = info
@@ -28,9 +29,9 @@ fn prune_info(given: &[String]) -> Result<(Option<Duration>, Vec<Filter>), Strin
     Ok((until, filters))
 }
 
-/// Go's text/tabwriter as buildx sets it for the prune (minwidth 1, tabwidth 8, padding
-/// 1, tabs for padding): each column as wide as its widest cell and one more, up to a
-/// multiple of 8, filled with tabs; the last cell of a line as it is.
+/// The prune's table as scripts read it, buildx v0.37.1's text/tabwriter (minwidth 1,
+/// tabwidth 8, padding 1, tabs for padding): each column as wide as its widest cell and one
+/// more, up to a multiple of 8, filled with tabs; the last cell of a line as it is.
 fn tabs(lines: &[Vec<String>]) -> String {
     let columns = lines.iter().map(|l| l.len().saturating_sub(1)).max().unwrap_or(0);
     let mut widths = vec![0usize; columns];
@@ -57,8 +58,8 @@ fn tabs(lines: &[Vec<String>]) -> String {
     out
 }
 
-/// A removed record as buildx says it: in full with `--verbose`, else a row of the table,
-/// its header first.
+/// A removed record in the form scripts read (buildx v0.37.1): in full with `--verbose`,
+/// else a row of the table, its header first.
 fn said(r: &Record, verbose: bool, first: bool) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let size = human_size4(i64::try_from(r.size).unwrap_or(i64::MAX));
@@ -94,7 +95,7 @@ fn said(r: &Record, verbose: bool, first: bool) -> String {
         return tabs(&lines);
     }
     let size_shown = if r.shared { format!("{size}*") } else { size };
-    // A mutable record's ID is marked, as buildx's table marks it.
+    // A mutable record's ID is marked, in the table's form (buildx v0.37.1).
     let id = if r.mount.is_some() { format!("{id}*") } else { id };
     let row = vec![
         format!("{id:<40}"),
@@ -300,8 +301,8 @@ mod tests {
         );
     }
 
-    /// A cache mount's record said in full, as buildx said one (M141): mutable, described,
-    /// no type.
+    /// A cache mount's record said in full, in the form recorded (PM M141): mutable,
+    /// described, no type.
     #[test]
     fn a_cache_mounts_record_is_said() {
         let mount = Record {

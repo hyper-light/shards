@@ -24,7 +24,7 @@ Everything is denied by default.
 
 - A user writes a fully spec-compliant Dockerfile, and shards ingests it and creates the
   VM from it. Of extreme importance.
-- `shards build` builds microVMs as Docker builds images:
+- `shards build` builds microVMs from them, each image:
   - layered;
   - cacheable, both by layer and as a whole image;
   - over the full Dockerfile vocabulary.
@@ -188,8 +188,7 @@ VOLUME [OPTIONS...] <path> [<dest>] [FOR <agent_name>]
 NETWORK [OPTIONS...] <name> [FOR <agent_name_a> <agent_name_b> ...]
 ```
 
-- It creates a network with the given configuration and name, as Docker Compose creates
-  its networks.
+- It creates a network with the given configuration and name.
 - Its options are every option a Docker Compose network supports: driver, IPv4, IPv6,
   subnet and so on. Each option's default matches Compose's, functionally and in effect.
 - Three more options open ports, on the microVM and on the network:

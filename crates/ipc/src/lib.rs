@@ -276,7 +276,7 @@ pub mod kind {
     /// is told: its ports of the host's let go (`shards_abi::run::HostBind::owner`, a
     /// big-endian u32); answered with the same kind and owner once the daemon's copies and
     /// the network process's are closed, so that the host may bind them again once the
-    /// end is told, as dockerd's may.
+    /// end is told.
     pub const HOST_RELEASE: u8 = 52;
     /// A builder → its VM process (`--attach`, D134): a file for the VM's join disk, its
     /// one descriptor, the guest to read it alone (payload 0) or to write it too (1).
@@ -553,7 +553,7 @@ impl Attach {
 pub struct Command {
     pub argv: Vec<String>,
     /// The client's [`REGISTRY_ENV`]: a registry it reaches is reached with its
-    /// credentials and certificates, as the Docker CLI sends its own with each request.
+    /// credentials and certificates, the client's own, sent with each request (D23).
     pub registry_env: Vec<String>,
     /// The client's locale is East Asian, where the Docker CLI counts ambiguous-width
     /// characters as two columns (shards_cmdline::width::east_asian).
@@ -732,7 +732,7 @@ pub struct Run {
     pub quiet: bool,
     /// `--platform`, as given (or DOCKER_DEFAULT_PLATFORM): the image's to run.
     pub platform: String,
-    /// The resource flags, as docker/cli sends them.
+    /// The resource flags, as docker/cli v29.8.1 sends them.
     pub resources: Resources,
     /// `--read-only`.
     pub read_only: bool,
@@ -744,7 +744,7 @@ pub struct Run {
     pub ulimits: Vec<String>,
     /// `--sysctl`, each `KEY=VALUE`.
     pub sysctls: Vec<String>,
-    /// `--cap-add` and `--cap-drop`, as docker/cli sends them (EffectiveCapAddCapDrop):
+    /// `--cap-add` and `--cap-drop`, as docker/cli v29.8.1 sends them (EffectiveCapAddCapDrop):
     /// `CAP_` names or `ALL`, each once, sorted, an added one not dropped.
     pub cap_add: Vec<String>,
     pub cap_drop: Vec<String>,
@@ -754,7 +754,7 @@ pub struct Run {
     pub oom_score_adj: i64,
     /// `--privileged`.
     pub privileged: bool,
-    /// `--security-opt`, as docker/cli sends them (HostConfig.SecurityOpt): a seccomp
+    /// `--security-opt`, as docker/cli v29.8.1 sends them (HostConfig.SecurityOpt): a seccomp
     /// profile's file read in, `seccomp=` and its JSON compacted; `systempaths=` taken out.
     pub security_opt: Vec<String>,
     /// `--security-opt systempaths=unconfined`: no paths masked or made read-only
@@ -771,7 +771,7 @@ pub struct Run {
     pub volumes_from: Vec<String>,
     /// `--volume-driver`.
     pub volume_driver: String,
-    /// `--restart`, as docker/cli sends it (ParseRestartPolicy): the policy's name, empty
+    /// `--restart`, as docker/cli v29.8.1 sends it (ParseRestartPolicy): the policy's name, empty
     /// where `--restart ""` gave none, and its most retries.
     pub restart_policy: (String, i64),
     /// `--init` where given (HostConfig.Init, a `*bool`): with true, a reaper, docker-init's
@@ -780,7 +780,7 @@ pub struct Run {
     /// `--pid` (HostConfig.PidMode): empty for a PID namespace of the command's own,
     /// `host` for the microVM's own (D115).
     pub pid: String,
-    /// `--device`s, as docker/cli parses them (HostConfig.Devices): each
+    /// `--device`s, as docker/cli v29.8.1 parses them (HostConfig.Devices): each
     /// `PATH_ON_HOST:PATH_IN_CONTAINER:PERMISSIONS`, the host being the VM.
     pub devices: Vec<String>,
     /// `--device-cgroup-rule`s (HostConfig.DeviceCgroupRules).
@@ -971,7 +971,7 @@ impl DeviceRequest {
     }
 }
 
-/// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
+/// `run`'s resource flags as docker/cli v29.8.1 sends them (container.Resources): memory in
 /// bytes, CPUs in billionths, the rest as given; zero, empty or `None` where not given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Resources {
@@ -1663,7 +1663,7 @@ impl Run {
 /// What a registry is reached by (shards_registry's credentials, certs and proxy): the
 /// Docker CLI's config, credential helpers on `PATH`, the homes of `certs.d`, and the
 /// proxies Go's net/http takes from the environment; and the local engine a made microVM
-/// is published to, as the Docker CLI finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
+/// is published to, as docker/cli v29.8.1 finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
 /// (`SHARDS_LOCAL_STORE=none`).
 pub const REGISTRY_ENV: [&str; 18] = [
     "SHARDS_AUTH_CONFIG",

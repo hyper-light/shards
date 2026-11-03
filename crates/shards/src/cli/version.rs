@@ -35,8 +35,8 @@ fn commit() -> String {
         .to_owned()
 }
 
-/// When it was built, where the build said (SHARDS_BUILD_TIME), else as docker/cli says
-/// it knows not: shards' builds are reproducible, and carry no time of their own.
+/// When it was built, where the build said (SHARDS_BUILD_TIME), else the CLI's word for a
+/// time not known: shards' builds are reproducible, and carry no time of their own.
 fn build_time() -> String {
     option_env!("SHARDS_BUILD_TIME")
         .unwrap_or("unknown-buildtime")

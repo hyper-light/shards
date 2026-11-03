@@ -325,8 +325,8 @@ impl Events {
         };
         let mut journal = lock(&self.journal);
         journal.append(&json(&event));
-        // Under the journal's lock, as dockerd publishes under its own: a listener gets
-        // each event once, read from the journal or heard.
+        // Under the journal's lock (D187), so that a listener gets each event once, read
+        // from the journal or heard.
         lock(&self.listeners).retain(|(_, filters, to)| {
             !include(filters, &event) || to.send(Heard::Event(event.clone())).is_ok()
         });

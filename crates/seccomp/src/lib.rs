@@ -1,7 +1,7 @@
 //! Docker's seccomp profiles (`docker run --security-opt seccomp=…`), resolved for a
 //! container and compiled to the BPF filter its workload runs under.
 //!
-//! A profile is read and resolved as dockerd reads and resolves one, refused in its words,
+//! A profile is read and resolved as dockerd docker-v29.8.1 does (D42), refused in its words,
 //! and its rules kept as libseccomp keeps them, so that a profile written for Docker means
 //! the same here; the filter is shards' own, read by the guest kernel's syscall tables and
 //! free of the ways Docker's toolchain gets a profile wrong (compiler.rs). Docker mode, in the

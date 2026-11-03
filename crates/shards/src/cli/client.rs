@@ -9,8 +9,8 @@
 //! status.
 //!
 //! With `-t`, the command's stdio is a pty in the guest. With `-it` the client puts its
-//! terminal in raw mode for the run, as the Docker CLI does, and detaches, exiting 0, when
-//! the detach keys come; a change in its stdout's size resizes the pty
+//! terminal in raw mode for the run, so that every key reaches the command, and detaches,
+//! exiting 0, when the detach keys come; a change in its stdout's size resizes the pty
 //! (docs/research/tty-and-interactive-runs.md).
 //!
 //! It needs only `shards_ipc` and the OS: it is the thin `shards` binary's (main.rs).
@@ -460,7 +460,7 @@ fn hand(current: &Mutex<Current>, linux: u32, ending: Option<Sig>, resize_first:
 /// terminal restored first: SIGINT and SIGTERM with 128 and their number and nothing said
 /// (docker/cli cmd/docker/docker.go, notifyContext); SIGHUP and SIGQUIT as they would have.
 /// On Windows the console's events are SIGINT and SIGTERM alone ([`console_signal`]), and
-/// Go numbers them so there too, as the Docker CLI exits by them.
+/// Go numbers them so there too, and a script reads the exit status by those numbers.
 fn end_by(sig: Sig) -> ! {
     terminal::restore();
     #[cfg(unix)]
@@ -1388,17 +1388,17 @@ fn resize_by(conn: &Says, more: u16) {
 }
 
 /// Takes the signals `docker run` forwards to the command, for [`forward`] to send over the
-/// current connection, even those this process was started ignoring, as the Docker CLI
-/// does (shards_ipc::take_forwarded). They are blocked in the calling thread, which every
-/// thread started later inherits, so only the forwarder's `sigwait` receives them. One that
-/// would end the client, unless it was ignored, goes as INTERRUPT, which its daemon takes
-/// as the client's end before its run is made (D26); with no connection to send it on, the
-/// request yet to go, it ends the client ([`end_by`]). With `reads_terminal`, the
-/// terminal's job control applies to the client (shards_ipc::forwarded). With `resizes`,
-/// SIGWINCH first resizes the command's terminal, then goes to the command too, as both
-/// reach a Docker container's (docker/cli tty.go, signals.go). Without `proxies`, only
-/// SIGWINCH is taken, to resize the command's terminal with `resizes`, and the rest act on
-/// the client as they would.
+/// current connection, even those this process was started ignoring: a run a script started
+/// in the background still passes them on (shards_ipc::take_forwarded). They are blocked in
+/// the calling thread, which every thread started later inherits, so only the forwarder's
+/// `sigwait` receives them. One that would end the client, unless it was ignored, goes as
+/// INTERRUPT, which its daemon takes as the client's end before its run is made (D26); with
+/// no connection to send it on, the request yet to go, it ends the client ([`end_by`]).
+/// With `reads_terminal`, the terminal's job control applies to the client
+/// (shards_ipc::forwarded). With `resizes`, SIGWINCH first resizes the command's terminal,
+/// then goes to the command too, as both reach a Docker container's (docker/cli tty.go,
+/// signals.go). Without `proxies`, only SIGWINCH is taken, to resize the command's terminal
+/// with `resizes`, and the rest act on the client as they would.
 #[cfg(unix)]
 fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Option<Signals>, String> {
     if !proxies {

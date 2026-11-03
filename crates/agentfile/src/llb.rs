@@ -3,7 +3,7 @@
 //! and platform the next step runs with; vertices (image, context and other sources,
 //! commands, file operations, merges) built from them; and the definition that marshals
 //! from a state, each operation once however many vertices make it, in an order where
-//! every input comes first, with its metadata merged as BuildKit merges it.
+//! every input comes first, with its metadata merged as BuildKit merges it (tests/oracle.rs).
 //!
 //! Strings are Go strings, bytes.
 
@@ -620,8 +620,8 @@ impl Graph {
             no_output: false,
         }];
         mounts.extend(run.mounts);
-        // Sorted by target, as BuildKit sorts them; the root, added first, stays first
-        // among equal targets.
+        // Sorted by target, as the oracle's plans have them (tests/oracle.rs); the root,
+        // added first, stays first among equal targets.
         mounts.sort_by(|a, b| a.target.cmp(&b.target));
         // The root's output: its place among the mounts that have one.
         let mut index = 0;
@@ -1062,8 +1062,8 @@ impl<'g> Marshal<'g> {
             .map(|&op| Input { op, index: o.index })
     }
 
-    /// Marshals `v` after what it reads, depth first, as BuildKit's `marshal` does,
-    /// without recursion.
+    /// Marshals `v` after what it reads, depth first, in the order BuildKit's `marshal`
+    /// gives (tests/oracle.rs), without recursion.
     fn visit(&mut self, root: VertexId) {
         // Each entry: a vertex, and whether its inputs are done.
         let mut stack = vec![(root, false)];

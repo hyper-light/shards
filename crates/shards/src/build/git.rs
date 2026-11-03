@@ -97,8 +97,8 @@ pub fn source(identifier: &[u8], attrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<S
     })
 }
 
-/// A subdir as BuildKit cleans it (path.Clean of `/` + it): `dir`, `dir/`, `./dir` and
-/// `/dir` are one; the repository's root is empty.
+/// A subdir as BuildKit v0.28.1's git source cleans it (path.Clean of `/` + it): `dir`,
+/// `dir/`, `./dir` and `/dir` are one; the repository's root is empty.
 fn clean_subdir(s: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for p in s.split('/') {
@@ -328,7 +328,7 @@ pub struct SshAgents<'a> {
 }
 
 /// The transport `url` names: smart HTTP(S), git's own, or SSH with the agent `ssh`
-/// names, as BuildKit's git source mounts it (`no SSH key "ID" forwarded from the
+/// names, as BuildKit v0.28.1's git source mounts it (`no SSH key "ID" forwarded from the
 /// client` where the build has none of that ID).
 fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>, ssh: SshAgents<'_>) -> Result<Wire, String> {
     if url.starts_with("https://") || url.starts_with("http://") {
@@ -610,7 +610,7 @@ const DETACHED_HEAD_ADVICE: [&str; 16] = [
 /// The pack of `wants`, one commit deep; from a server that will not send a commit that
 /// is no ref's tip by its name alone ("not our ref": `uploadpack.allowReachableSHA1InWant`
 /// off, as some hosts keep it), every ref's history whole, as BuildKit then fetches it
-/// (source/git `git fetch --tags origin`). Whether what it holds is shallow.
+/// (v0.28.1 source/git: `git fetch --tags origin`). Whether what it holds is shallow.
 fn fetch_commits<T: Transport>(
     remote: &Remote<T>,
     wants: &[Oid],
@@ -666,7 +666,7 @@ fn commit_of(pack: &Pack, oid: &Oid) -> Result<object::Commit, String> {
     }
 }
 
-/// The tree at `subdir` of `tree`, every part of it a real directory, as BuildKit's
+/// The tree at `subdir` of `tree`, every part of it a real directory, as BuildKit v0.28.1's
 /// validateDirsOnly requires.
 fn subtree(pack: &Pack, tree: &Oid, subdir: &str) -> Result<Oid, String> {
     let mut at = *tree;

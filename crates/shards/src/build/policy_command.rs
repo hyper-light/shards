@@ -1,8 +1,8 @@
 //! `shards buildx policy`: buildx v0.37.1's policy commands (commands/policy, D108): the
 //! group, which says its commands; `eval`, a policy's decision for one source, or the
 //! source's input (`--print`); and `test`, a policy's tests. Each runs here, its sources'
-//! metadata resolved as a build resolves them, unseen, as buildx's resolver shows no
-//! progress; the builder's platform is this host's (`host_platform`).
+//! metadata resolved as a build resolves them, unseen (buildx's resolver shows no
+//! progress there); the builder's platform is this host's (`host_platform`).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -92,7 +92,7 @@ fn error(e: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// logrus as buildx's main formats it: the level, then the message.
+/// logrus as buildx v0.37.1's main formats it: the level, then the message.
 fn log(level: &str, text: &str) {
     let _ = writeln!(std::io::stderr(), "{level}: {text}");
 }

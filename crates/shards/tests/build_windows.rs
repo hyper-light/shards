@@ -345,8 +345,8 @@ fn pipe_agent(name: &str) {
     });
 }
 
-/// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as BuildKit's
-/// steps reach it: one at an AF_UNIX socket, and one at a named pipe, as Windows' OpenSSH
+/// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder (D180 part
+/// 3h): one at an AF_UNIX socket, and one at a named pipe, as Windows' OpenSSH
 /// agent serves (BuildKit's winio.DialPipe). The step sees the agent's key and has it sign,
 /// and cannot have it forget its keys, which BuildKit's read-only agent refuses.
 #[test]

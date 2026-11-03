@@ -10,7 +10,7 @@
 //! the records whose layers are the image's own, under [`INLINE`].
 //!
 //! The records are shards' own: its keys are not BuildKit's, so neither can use the
-//! other's, and none is passed off as BuildKit's (`application/vnd.buildkit.cacheconfig.v0`).
+//! other's, and none claims BuildKit's media type (`application/vnd.buildkit.cacheconfig.v0`).
 //! A cache that cannot be read is skipped, as BuildKit skips one (solver/llbsolver/
 //! bridge.go): the build runs what it would have taken.
 
@@ -221,7 +221,7 @@ impl Imported {
                     }
                 }
                 "s3" => {
-                    // A bucket without the cache is an empty cache, as BuildKit's
+                    // A bucket without the cache is an empty cache, as BuildKit's s3.go
                     // `getManifest` has it; one that cannot be read is skipped.
                     match s3_records(e, &limits, env) {
                         Ok(Some((records, bucket))) => Some((records, Source::S3(Box::new(bucket)))),
@@ -338,8 +338,7 @@ impl Imported {
 }
 
 /// `mode=max` exports every record of the build, `min` (the default, and what an unknown
-/// mode is, as BuildKit's `parseCacheExportMode` has it) those whose layers the image
-/// holds.
+/// mode reads as) those whose layers the image holds.
 fn max(e: &CacheEntry) -> bool {
     e.attrs.get("mode").map(String::as_str) == Some("max")
 }
@@ -679,7 +678,7 @@ fn s3_records(
     Ok(Some((records_of(&bytes)?, bucket)))
 }
 
-/// Writes a cache to S3 as BuildKit's exporter does (`Finalize`): each layer the bucket
+/// Writes a cache to S3 as BuildKit's s3.go exporter does (`Finalize`): each layer the bucket
 /// lacks, `upload_parallelism` at once, one there touched once older than
 /// `touch_refresh`; then `config`, the records, at each of `name`'s names.
 fn write_s3(
@@ -795,7 +794,7 @@ fn at_once<T: Sync>(
     Ok(all)
 }
 
-/// The records of every name of the azblob cache `e` names, as BuildKit's importer reads
+/// The records of every name of the azblob cache `e` names, as azblob's importer.go reads
 /// them (the container made if it is not there), with the container their layers are
 /// in; a name not there is no records.
 fn azblob_records(
@@ -847,7 +846,7 @@ fn azblob_records(
     Ok((all, container))
 }
 
-/// Writes a cache to Azure Blob Storage as BuildKit's exporter does (`Finalize`), in the
+/// Writes a cache to Azure Blob Storage as azblob's exporter.go does (`Finalize`), in the
 /// container, made if it is not there: each layer the container lacks, uploaded only
 /// where none is; then `config`, the records, at each of `name`'s names, in place of what
 /// was there. Unlike BuildKit's, four layers go at once.
@@ -893,7 +892,7 @@ fn write_azblob(
     Ok(())
 }
 
-/// The records of every scope the gha cache's token may read, as BuildKit's importer
+/// The records of every scope the gha cache's token may read, as gha.go's importer
 /// reads them (`loadScope`), with the cache their layers are in; a scope without them is
 /// no records.
 fn gha_records(
@@ -923,7 +922,7 @@ fn gha_records(
     Ok((all, cache))
 }
 
-/// Writes a cache to GitHub's as BuildKit's exporter does (`Finalize`): each layer the
+/// Writes a cache to GitHub's as gha.go's exporter does (`Finalize`): each layer the
 /// cache lacks, an entry of its own (one another export saved meanwhile is the one); then
 /// `config`, the records, as the next number of the written scope's index. Unlike
 /// BuildKit's, four layers go at once.

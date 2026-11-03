@@ -152,8 +152,8 @@ pub fn adopt_release(socket: shards_vmm::platform::UnixStream) -> Result<(), Str
 }
 
 /// Has the network process close the run's published ports, and waits until it has, so
-/// that they are free once the run's end is told, as dockerd frees a container's before
-/// its exit is (`docker run --rm -p 80 …; docker run -p 80 …` finds it free). A network
+/// that they are free once the run's end is told: a script's next run of the same port
+/// finds it free (`run --rm -p 80 …; run -p 80 …`). A network
 /// process that does not answer within a second is ended with the VM, as the daemon ends
 /// one past its grace (`netproc::GRACE`), and frees them then.
 ///
@@ -1619,8 +1619,8 @@ pub fn finish(
             to_daemon(&link.daemon, kind::WORKING_SET, part, &[])
         });
     }
-    // Its ports closed, the daemon frees them before it hears the run is done, as dockerd's
-    // are by the time `docker run` returns.
+    // Its ports closed, the daemon frees them before it hears the run is done, so that they
+    // are free by the time its client returns.
     if release_ports() {
         let _ = to_daemon(&link.daemon, kind::PORTS_FREE, &[], &[]);
     }

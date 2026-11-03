@@ -219,7 +219,8 @@ fn commands_run_in_the_image() {
     );
     assert_eq!((get("cwd"), get("env HOME")), ("/work/dir", "/home/app"), "{out}");
     assert_eq!(get("writable"), "false", "app may not write to /");
-    // A user but root keeps the bounding set alone, as Docker's do.
+    // A user but root keeps the bounding set alone: a change to a nonzero UID clears
+    // the permitted and effective sets (capabilities(7)), the run's default set its bound.
     assert_eq!(
         (get("capprm"), get("capeff"), get("capbnd")),
         ("0000000000000000", "0000000000000000", "00000000a80425fb"),

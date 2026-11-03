@@ -1914,7 +1914,7 @@ mod tests {
         let chain = v.get("chain").filter(|c| !c.is_null()).map(|c| {
             let mut blobs = BTreeMap::new();
             for b in c.get("blobs").and_then(J::as_array).into_iter().flatten() {
-                // shards' chains always describe their blobs, as BuildKit's do: a blob
+                // shards' chains always describe their blobs: a blob
                 // without a descriptor is one buildx skips, as it is one never read.
                 if b.get("noDescriptor").and_then(J::as_bool) == Some(true) {
                     continue;

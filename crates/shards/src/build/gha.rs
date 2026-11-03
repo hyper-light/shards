@@ -88,7 +88,7 @@ pub fn blob_key(digest: &str) -> String {
 }
 
 impl Cache {
-    /// The cache of `e`'s attributes, as BuildKit's `getConfig` reads them, and its
+    /// The cache of `e`'s attributes, as gha.go's `getConfig` reads them, and its
     /// token's scopes, as go-actions-cache's `New` reads them.
     pub fn of(e: &CacheEntry, env: &dyn Fn(&str) -> Option<String>) -> Result<Cache, String> {
         let attr = |k: &str| e.attrs.get(k).map(String::as_str);
@@ -145,7 +145,7 @@ impl Cache {
         })
     }
 
-    /// The records' key for `scope`, as BuildKit's `indexKey` makes it.
+    /// The records' key for `scope`, as BuildKit's gha.go `indexKey` makes it.
     pub fn index_key(&self, scope: &str) -> String {
         let hash = super::sha256(scope.as_bytes());
         format!(
@@ -155,7 +155,7 @@ impl Cache {
         )
     }
 
-    /// The scope an export writes: the last the token may write, as BuildKit takes it.
+    /// The scope an export writes: the last the token may write, as gha.go takes it.
     pub fn write_scope(&self) -> &str {
         self.scopes
             .iter()

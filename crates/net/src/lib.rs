@@ -103,8 +103,8 @@ pub enum Proto {
 }
 
 /// The ports a VM may open flows to (`Policy::Ports`): its image's Agentfile's egress
-/// grants, each a range of one protocol's ports, as Docker writes a port (`443`,
-/// `53/udp`, `8000-8010/tcp`), TCP where none is said.
+/// grants, each a range of one protocol's ports, written as an `EXPOSE` writes them
+/// (`443`, `53/udp`, `8000-8010/tcp`), TCP where none is said.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ports(pub Vec<(Proto, u16, u16)>);
 
@@ -229,9 +229,9 @@ impl Ports {
 /// What a VM may reach.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Policy {
-    /// The Internet and the host's networks, as BuildKit's default network reaches them:
-    /// a build's steps. Not the host itself (the gateway, its loopback); not link-local
-    /// addresses, a cloud's instance metadata (169.254.169.254) among them, which a
+    /// The Internet and the host's networks, which a Dockerfile's `RUN` reaches by
+    /// default (D31): a build's steps. Not the host itself (the gateway, its loopback);
+    /// not link-local addresses, a cloud's instance metadata (169.254.169.254) among them, which a
     /// request made from the host's own stack would reach past the hop limit that keeps
     /// it from Docker's bridged containers (AWS IMDSv2's); and not multicast or broadcast,
     /// which Docker's bridge does not route out.
@@ -3192,7 +3192,7 @@ mod tests {
     }
 
     /// An Agentfile's egress grants: their ports alone, of their protocol, and never
-    /// what `AllowAll` keeps out; written as Docker writes ports, and carried whole.
+    /// what `AllowAll` keeps out; written as an `EXPOSE` writes ports, carried whole.
     #[test]
     fn ports_reach_their_ports_alone() {
         let bridge = bridge::Bridge::elect(&[]).unwrap();

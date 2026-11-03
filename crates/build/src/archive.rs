@@ -225,7 +225,7 @@ pub enum Compression {
     Zstd,
 }
 
-/// go-archive's compression.Detect, over the first bytes of a stream: bzip2's and xz's
+/// go-archive's compression.go `Detect`, over the first bytes of a stream: bzip2's and xz's
 /// magic, or gzip's and zstd's as containerd matches them, which is as Detect does.
 pub fn detect(head: &[u8]) -> Compression {
     use shards_image::store::{self, compression};

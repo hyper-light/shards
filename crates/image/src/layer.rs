@@ -1,21 +1,21 @@
-//! Flattens OCI layers into one tree, as containerd stacks them for its default
-//! (overlayfs) snapshotter and moby for overlay2: each layer applies at its own paths over
-//! the layers below it (containerd v2.4.1 core/diff/apply/apply_linux.go, pkg/archive).
+//! Flattens OCI layers into one tree, a microVM's root: each layer applies at its own
+//! paths over the layers below it, as containerd's overlayfs snapshotter and moby's overlay2
+//! stack them (containerd v2.4.1 core/diff/apply/apply_linux.go, pkg/archive).
 //!
 //! - A layer's whiteouts apply before its other entries, whatever the archive's order, and
 //!   only to lower layers (image-spec layer.md, "Whiteouts" and "Opaque Whiteout").
 //! - An entry over an existing path: two directories merge, the entry's attributes
 //!   replacing the directory's; anything else is replaced (layer.md, "Changeset over
 //!   existing files").
-//! - Missing parent directories are created 0755 and owned by root, as containerd's
+//! - Missing parent directories are created 0755 and owned by root, as pkg/archive/tar.go's
 //!   mkparent creates them, and at time 0. One replaces a lower layer's non-directory in
 //!   its way, as a directory in an upper layer hides it. So lower layers' symlinks are not
 //!   followed, while a layer's own are, as extracting into its own directory follows them.
-//! - Entries for the root itself are ignored, as containerd ignores them.
+//! - Entries for the root itself are ignored, as pkg/archive/tar.go ignores them.
 //! - A hard link may name a file from a lower layer, and its header's attributes apply to
-//!   the file, as containerd applies them after link(2).
+//!   the file, as pkg/archive/tar.go applies them after link(2).
 //! - Attributes are those containerd sets: symlinks are 0777; trusted.* xattrs are
-//!   dropped, as containerd refuses them, and user.* ones on anything but files and
+//!   dropped, as pkg/archive/tar.go refuses them, and user.* ones on anything but files and
 //!   directories, as Linux refuses them; times before 1970 or past Go's range become 0.
 
 use std::collections::{HashMap, HashSet, VecDeque};

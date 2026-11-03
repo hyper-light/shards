@@ -1,6 +1,6 @@
 //! containerd/platforms (as buildx v0.37.1 vendors it): Normalize, the matcher, and
 //! `Only`'s ordered comparer, with which policy-helpers picks an index's manifest for a
-//! platform. Run as buildx's policy runs it, in the client: an empty OS is the host's
+//! platform. Run as buildx v0.37.1's policy runs it, in the client: an empty OS is the host's
 //! (runtime.GOOS), and Windows' version matching applies as on a host that is not
 //! Windows, without Windows' own comparer.
 

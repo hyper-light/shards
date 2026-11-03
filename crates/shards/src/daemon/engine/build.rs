@@ -333,8 +333,8 @@ impl<D: Disk> Daemon<D> {
             Err(e) => return Done::Answer(Answer::error(500, format!("starting the build: {e}"))),
         };
         drop((stdin_r, said_w));
-        // Its context in as it comes, before anything is answered, as dockerd holds its
-        // answer until the call's body is read.
+        // Its context in as it comes, before anything is answered, so that a client
+        // still sending its body reads no answer it would take as the end (D170).
         if !remote {
             let _ = std::io::copy(body, &mut stdin_w);
         }
@@ -467,7 +467,7 @@ impl<D: Disk> Daemon<D> {
             }
         };
         if gone {
-            // Its client has gone: the build ends, as dockerd's ends with its request.
+            // Its client has gone: the build ends, as no one is left to take its result.
             let _ = child.kill(shards_ipc::signal::SIGTERM);
             if let Err(e) = child.wait() {
                 log(format!("a build whose client went: {e}"));

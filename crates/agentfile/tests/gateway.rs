@@ -212,7 +212,7 @@ fn captured_options() -> Options {
     }
 }
 
-/// A file that does not parse fails as docker/dockerfile failed it in the capture: its
+/// A file that does not parse fails with what dockerfile/1.27.1 said in the capture: its
 /// message, and the errdefs.Source detail BuildKit's client prints the excerpt from,
 /// byte for byte (its Go stacks aside, which shards has none of).
 #[test]

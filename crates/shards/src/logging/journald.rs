@@ -5,7 +5,7 @@
 //! its name and a newline, the value's length as a little-endian u64, the value and a
 //! newline. Its priority (6 for stdout, 3 for stderr) and its line first; then the
 //! container's own fields, the attributes asked for, its output's time, a part's place in
-//! its line, and its ordinal in the run's log, as moby's journald.Log makes them. The
+//! its line, and its ordinal in the run's log: the fields journal readers look for (D166). The
 //! journal is Linux's: elsewhere its entries are made by its tests alone, held to
 //! Docker's on every host.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -94,7 +94,7 @@ impl From {
     }
 }
 
-/// An attribute's name as a journal field's, as moby's sanitizeKeyMod makes it: ASCII
+/// An attribute's name as a journal field's, made as sanitizeKeyMod makes it (D166): ASCII
 /// letters in upper case, digits as they are, any other character `_`, none leading.
 pub fn field_name(key: &str) -> String {
     let mut out = String::with_capacity(key.len());

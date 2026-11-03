@@ -471,7 +471,8 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
         unknown.stderr.contains("unknown command: shards frobnicate"),
         "{unknown}"
     );
-    // Piped, as docker/cli lays its version out; the server is this shards too.
+    // Piped, laid out as the scripts that read `version` parse it (cli/version.rs); the
+    // server is this shards too.
     let version = run_shards(&["version"], &none, TIMEOUT);
     assert!(version.stdout.starts_with("Client:\n Version:"), "{version}");
     assert!(

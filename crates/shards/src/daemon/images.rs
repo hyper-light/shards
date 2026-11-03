@@ -13,12 +13,13 @@ use shards_cmdline::width;
 
 use super::filters::Filters;
 
-/// A manifest of an image, as dockerd's containerd store lists it.
+/// A manifest of an image, in the shape `image ls --tree` and inspect answer (D170).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Manifest {
     pub id: String,
     pub kind: Kind,
-    /// `os/arch[/variant]`, as containerd's platforms.Format writes it.
+    /// `os/arch[/variant]`, the OCI platform's name users see (CLAUDE.md; containerd
+    /// platforms.go Format).
     pub platform: String,
     pub available: bool,
     pub content: i64,
@@ -32,7 +33,7 @@ pub(super) enum Kind {
     Attestation,
 }
 
-/// An image as dockerd lists it.
+/// An image as `image ls` and `GET /images/json` answer it (D170).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Summary {
     pub id: String,
@@ -339,8 +340,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 let Ok(r) = Reference::parse_normalized(name) else {
                     continue;
                 };
-                // Every name is one of its RepoTags, by digest too, as dockerd lists them
-                // (tagsByDigest); the table shows only those with a tag.
+                // Every name is one of its RepoTags, by digest too, the list clients parse
+                // (D170, moby's tagsByDigest); the table shows only those with a tag.
                 tags.push(r.familiar());
                 let mut bare = r;
                 bare.tag = None;
@@ -372,7 +373,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 containers,
             });
         }
-        // Newest first, as dockerd lists them (byCreated, reversed).
+        // Newest first, the order scripts that take the first line rely on (D170).
         images.sort_by_key(|i| std::cmp::Reverse(i.created));
         Ok(images)
     }
@@ -1616,7 +1617,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         // `system prune` alone: the build cache, all of it, as `docker system prune` removes
         // all that no build is using; what an image shares stays until the image goes.
-        // Pruning microVMs or images leaves it, as docker's container and image prunes do.
+        // Pruning microVMs or images leaves it: a build's cache is pruned on its own (D65).
         let mut removed_cache: Vec<String> = Vec::new();
         if images
             && containers
@@ -2296,8 +2297,8 @@ mod tests {
     }
 
     /// A manifest is in use while a container runs it, and a run uses the image's
-    /// manifest for our platform: not every manifest here, as dockerd matches each
-    /// container's ImageManifest.
+    /// manifest for our platform: not every manifest here, so that the others can go
+    /// while it runs.
     #[test]
     fn the_manifest_runs_use_is_the_one_in_use() {
         let manifest = |hex: char, attestation: bool| shards_image::store::ImageManifest {
@@ -2317,7 +2318,8 @@ mod tests {
         assert!(manifests(&img, 0).iter().all(|m| !m.in_use));
     }
 
-    /// Images are found as dockerd's containerd store finds them: by digest or ID, by a
+    /// Images are found by every reference clients give (D170, moby's containerd image
+    /// service): by digest or ID, by a
     /// name with a digest only in its repository, by name with `latest` as its tag, and
     /// by an ID's prefix of 4 or more hex digits, refused where it is not one image's.
     #[test]

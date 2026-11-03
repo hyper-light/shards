@@ -2,7 +2,7 @@
 //! architecture.md D37): saved as the container stops, as the OCI layer of its changes
 //! (go-archive's tar of an overlay upper directory, whiteouts made `.wh.` entries), and
 //! put back over a fresh image root before its command runs again (go-archive's
-//! ApplyLayer), as dockerd keeps a stopped container's writable layer for `docker start`.
+//! ApplyLayer), so that a stopped microVM's changes are there as it starts again.
 //! Both travel as [`kind::LAYER`] frames on the workload's connection.
 
 use std::fs::File;

@@ -141,7 +141,7 @@ impl Splunk {
         Ok(())
     }
 
-    /// Posts `body` to `url`, as moby's driver posts a batch: its token, gzip's encoding
+    /// Posts `body` to `url`, as HEC takes a batch (D167): its token, gzip's encoding
     /// where `gzipped`, and with indexer acknowledgment its channel. Its answer's body, at
     /// most `keep` bytes of it, where HEC answers 200; else why not, its answer quoted.
     fn request(&self, url: &Url, body: &[u8], gzipped: bool, keep: usize) -> io::Result<Vec<u8>> {

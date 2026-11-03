@@ -163,7 +163,7 @@ pub struct Connect {
     pub both_ways: bool,
     pub to: Vec<Vec<u8>>,
     pub on: Vec<Vec<u8>>,
-    /// `--port`: each a port or range as Docker writes one (`8080`, `53/udp`,
+    /// `--port`: each a port or range as an `EXPOSE` writes one (`8080`, `53/udp`,
     /// `8000-8010/tcp`), TCP where none is said.
     pub ports: Vec<Vec<u8>>,
 }
@@ -248,7 +248,7 @@ pub enum Directive {
 }
 
 /// What an `AGENT`, `HARNESS` or `MCP` `FROM` names (§12.2), told apart as written: a Git
-/// URL (as BuildKit's git contexts read one), an http(s) URL, a path from the build
+/// URL (as git.rs reads a build context's), an http(s) URL, a path from the build
 /// context (`.`, `./`, `../` or `/` first), or else an OCI reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -849,7 +849,7 @@ impl Declared {
 struct Seen {
     domains: std::collections::BTreeMap<Vec<u8>, (Declared, usize)>,
     networks: std::collections::BTreeMap<Vec<u8>, (Vec<Vec<u8>>, usize)>,
-    /// Where its `VOLUME`s mount, rooted as Docker roots them, and on which line.
+    /// Where its `VOLUME`s mount, rooted as a Dockerfile's mean them (D109), and on which line.
     mounts: std::collections::BTreeMap<Vec<u8>, usize>,
 }
 
@@ -1118,7 +1118,7 @@ pub const HARNESSES_ANNOTATION: &[u8] = b"vnd.osi.agentfile.harnesses";
 /// its own by its microVM's switch.
 pub const EGRESS_LABEL: &[u8] = b"vnd.osi.agentfile.egress";
 
-/// A port as Docker writes one (`443`, `53/udp`, `8000-8010/tcp`): its protocol's IP
+/// A port as an `EXPOSE` writes one (`443`, `53/udp`, `8000-8010/tcp`): its protocol's IP
 /// number (6 TCP, 17 UDP, TCP where none is said) and its range's ends.
 pub fn port_range(s: &[u8]) -> Option<(u8, u16, u16)> {
     let s = std::str::from_utf8(s).ok()?;
@@ -1262,7 +1262,7 @@ pub fn remote_mcp(directives: &[Directive]) -> Vec<Vec<u8>> {
 pub const EGRESS_DECLARED_LABEL: &[u8] = b"vnd.osi.agentfile.egress-declared";
 
 /// The ports an Agentfile declares `EXPOSE ... AS egress` and nowhere both ways or for
-/// ingress, as Docker writes them, each once.
+/// ingress, as an `EXPOSE` writes them, each once.
 pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     let inward: Vec<Vec<u8>> = directives
@@ -1660,7 +1660,7 @@ pub fn ingress(directives: &[Directive]) -> Result<Vec<Receiver>, Vec<u8>> {
 
 /// The ports an Agentfile lets some domain open flows to past its microVM: of each network
 /// a `CONNECT` joins, those it lets cross both boundaries outward ([`boundary`]), each
-/// once, as Docker writes them.
+/// once, as an `EXPOSE` writes them.
 pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
     let mut nets: Vec<&[u8]> = Vec::new();
     for d in directives {

@@ -8,7 +8,8 @@
 pub struct ExecUser {
     pub uid: u32,
     pub gid: u32,
-    /// Supplementary groups: the primary group, then the rest, as moby lists them.
+    /// Supplementary groups: the primary group, then the rest, as moby lists them
+    /// (daemon/oci_linux.go, getUser).
     pub groups: Vec<u32>,
 }
 
@@ -501,7 +502,7 @@ mod tests {
         assert_eq!(user(b"4242", passwd, group), Ok((4242, 0, vec![0])));
         // An explicit group gives no supplementary groups.
         assert_eq!(user(b"app:dev", passwd, group), Ok((1000, 50, vec![50])));
-        // A name not found is an error, worded as moby words it.
+        // A name not found is an error, in moby/sys/user v0.4.1's words.
         assert!(
             user(b"nobody", passwd, group)
                 .unwrap_err()

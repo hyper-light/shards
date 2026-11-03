@@ -1,4 +1,4 @@
-//! A profile, as runc takes it, compiled to the seccomp filter the guest loads.
+//! A profile, as runc v1.3.4 takes it, compiled to the seccomp filter the guest loads.
 //!
 //! How each architecture's rules are kept is libseccomp 2.5.4's (db.rs), so that where a
 //! profile's rules overlap they mean what they mean to Docker. The rest is shards' own:
@@ -161,7 +161,7 @@ fn abi_named(arch: &str) -> Result<Option<Abi>, String> {
     })
 }
 
-/// A rule's add refused, in runc's and libseccomp-golang's words.
+/// A rule's add refused, as runc v1.3.4 and libseccomp-golang word it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
 enum AddError {
@@ -262,7 +262,7 @@ impl Build {
         Ok(())
     }
 
-    /// libseccomp's db_col_rule_add, as runc calls it: the rule by its native number,
+    /// libseccomp's db_col_rule_add, as runc v1.3.4 calls it: the rule by its native number,
     /// translated for each ABI by name (arch_filter_rule_add), and x86's multiplexed
     /// calls rewritten as abi_rule_add rewrites them.
     #[cfg(test)]

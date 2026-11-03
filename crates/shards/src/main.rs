@@ -1,5 +1,6 @@
 //! `shards`: one binary for every command. The command line (cli/) reads `run`, the
-//! container and image commands as the Docker CLI reads them and asks the daemon for
+//! container and image commands with the Docker CLI's meaning (cmdline's commands.rs) and
+//! asks the daemon for
 //! them; everything else is this file's [`shardsd`]: the daemon itself (which this binary
 //! becomes when it starts one), builds, the guest. Each microVM runs in a VM process of
 //! its own (src/bin/shards-vm), which the daemon starts.

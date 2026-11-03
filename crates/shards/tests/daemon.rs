@@ -613,10 +613,10 @@ fn errors_reach_the_client() {
     assert_eq!(not_found.status, Some(127), "{}", not_found.stderr);
 }
 
-/// `stop` ends the runs in progress as dockerd ends its containers when it shuts down:
-/// SIGTERM to the command, whose client gets its status. The pool's waiting VMs end too.
-/// The run is under --init, so that its command, which does not handle SIGTERM, is not
-/// PID 1, which would not hear it and would be killed at the stop timeout instead (D115).
+/// `stop` ends the runs in progress as it shuts down (D26): SIGTERM to the command, whose
+/// client gets its status. The pool's waiting VMs end too. The run is under --init, so that
+/// its command, which does not handle SIGTERM, is not PID 1, which would not hear it and
+/// would be killed at the stop timeout instead (D115).
 #[test]
 fn stop_ends_runs_and_waiting_vms() {
     if cannot_run_vms() {
@@ -648,8 +648,8 @@ fn stop_ends_runs_and_waiting_vms() {
     });
 }
 
-/// `daemon stop` stops each run as dockerd stops each container as it shuts down: with
-/// its own stop signal, and SIGKILL once its own stop timeout is up.
+/// `daemon stop` stops each run as `stop vm` would (D26): with its own stop signal, and
+/// SIGKILL once its own stop timeout is up.
 #[test]
 fn a_stop_gives_each_run_its_own_signal_and_time() {
     if cannot_run_vms() {
@@ -2585,9 +2585,9 @@ fn a_collection_waits_for_the_stores_lease() {
 }
 
 /// What no reference needs is collected (audit A13). `shards pull` moving a tag to another
-/// image leaves the old one dangling, as dockerd leaves it; once `rmi` removes it, the
-/// daemon removes its blobs, root filesystem and template, ending its warm VMs, and keeps
-/// the new one's, which runs from a template of its own.
+/// image leaves the old one dangling, kept for what may still name it by ID; once `rmi`
+/// removes it, the daemon removes its blobs, root filesystem and template, ending its warm
+/// VMs, and keeps the new one's, which runs from a template of its own.
 #[test]
 fn what_a_moved_tag_named_is_collected() {
     if cannot_run_vms() || cannot_pool() {

@@ -274,7 +274,7 @@ fn plain_requests_are_checked_and_passed_on() {
         "HTTP/1.1 200 OK\nContent-Length: 6\nContent-Type: text/plain\nX-A: 1\nX-B: 2\nDate: DATE\nConnection: close\n\nhello"
     );
     assert_eq!(dated(&origin), dated(&hello));
-    // Refused as BuildKit refuses: http.Error's 403, the connection kept.
+    // Refused with http.Error's 403, the connection kept, as BuildKit v0.33.0 refuses.
     assert_eq!(
         dated(&refused),
         "HTTP/1.1 403 Forbidden\nContent-Type: text/plain; charset=utf-8\nX-Content-Type-Options: nosniff\nDate: DATE\nContent-Length: 10\n\nForbidden"
@@ -1102,7 +1102,7 @@ fn requests_are_read() {
 }
 
 /// Each CONNECT is answered, and each request in its tunnel asked of the policies (every
-/// one refused) and answered, as BuildKit's proxy does, byte for byte.
+/// one refused) and answered, as BuildKit v0.33.0's proxy does, byte for byte.
 /// Sends `connect`, reads the proxy's answer to it, and where it established the tunnel,
 /// writes `raw` in TLS to `server_name` (trusting `ca`), ends its writing (close_notify),
 /// and reads until the proxy closes: the answer, whether the handshake was made, what came

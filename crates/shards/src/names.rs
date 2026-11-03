@@ -1,4 +1,4 @@
-//! Names for containers that `--name` did not name, as dockerd makes them by default: an
+//! Names for containers that `--name` did not name, in the form users know: an
 //! adjective and a surname joined by an underscore, from word lists of shards' own. The
 //! procedure is moby's (docker-v29.8.1, internal/namesgenerator/legacy/names-generator.go
 //! and daemon/names.go): from the second try on, a random digit follows; after six names

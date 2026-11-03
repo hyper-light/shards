@@ -3,7 +3,7 @@
 //! `recordRequest`, `recordResponse` and `recordIncomplete`): each request with its status
 //! and where it redirected, which the step's log lists; each GET answered whole with a
 //! 2xx, by its content's digest, a material of the build's provenance; and what could not
-//! be one, and why. URLs are recorded as BuildKit records them: a scheme's default port
+//! be one, and why. URLs are recorded as BuildKit v0.33.0 records them: a scheme's default port
 //! left out, credentials redacted.
 
 use shards_agentfile::url::{self, Url};
@@ -57,7 +57,7 @@ pub const REASONS: [&str; 5] = [
 impl Capture {
     /// `Materials`: each material, then the source of each redirect that leads to one, with
     /// the digest of where it led, as far as redirects chain. A URL recorded twice is known
-    /// by its last digest, and a source redirected twice by its last target, as BuildKit's
+    /// by its last digest, and a source redirected twice by its last target, as BuildKit v0.33.0's
     /// maps keep them; the sources come in their URLs' order (BuildKit's map order varies,
     /// and its provenance sorts them).
     pub fn materials(&self) -> Vec<Material> {
@@ -155,7 +155,7 @@ pub fn redact(s: &str) -> String {
     String::from_utf8_lossy(&u.string()).into_owned()
 }
 
-/// `captureURL`: `s` as BuildKit records it, its scheme's default port (http's 80, https'
+/// `captureURL`: `s` as BuildKit v0.33.0 records it, its scheme's default port (http's 80, https'
 /// 443) left out, then redacted.
 pub fn capture_url(s: &str) -> String {
     if s.is_empty() {
@@ -359,7 +359,7 @@ mod tests {
         );
     }
 
-    /// Each reason, in BuildKit's order of asking.
+    /// Each reason, in BuildKit v0.33.0's order of asking.
     #[test]
     fn incomplete_responses_say_why() {
         assert_eq!(

@@ -365,10 +365,10 @@ pub fn current6() -> Option<(Ipv6Addr, u8, Ipv6Addr)> {
 /// Gives `eth0` IPv6 address `to.0`/`to.1` and a default route through `to.2` (D99): a
 /// run on a network with IPv6, as it starts.
 pub fn address6(to: (Ipv6Addr, u8, Ipv6Addr)) -> io::Result<()> {
-    // The template booted with IPv6 off on eth0, as Docker's containers on a network
-    // without it have it ([`configure`]); a network with IPv6 turns it on, as dockerd
-    // leaves it on for one: the kernel then gives eth0 its link-local address too.
-    // Through the /proc/sys init kept before it was made read-only.
+    // The template booted with IPv6 off on eth0, so that a run on a network without it has
+    // none ([`configure`]); a network with IPv6 turns it on (D99): the kernel then gives
+    // eth0 its link-local address too. Through the /proc/sys init kept before it was made
+    // read-only.
     crate::setup::write_sysctl("net.ipv6.conf.eth0.disable_ipv6", "0").map_err(io::Error::other)?;
     // SAFETY: if_nametoindex(3) with a NUL-terminated name.
     let index = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };

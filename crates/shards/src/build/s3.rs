@@ -26,7 +26,7 @@ use crate::aws::sigv4::{self, Credentials, Request, Rule, Scope, amz_date, uri_e
 use crate::aws::xml_text;
 
 /// The most one PutObject, CopyObject or part takes (S3's limits): a larger layer goes in
-/// parts of this size, as BuildKit's touch copies one (`maxCopyObjectSize`).
+/// parts of this size, as BuildKit's s3.go touch copies one (`maxCopyObjectSize`).
 const MOST_AT_ONCE: u64 = 5 << 30;
 /// The most of an error's body read for its code and message.
 const MOST_OF_AN_ERROR: u64 = 64 << 10;
@@ -86,13 +86,13 @@ pub struct Found {
     pub size: u64,
 }
 
-/// An attribute as BuildKit's `getConfig` reads it: there, even empty, or not.
+/// An attribute as BuildKit's s3.go `getConfig` reads it: there, even empty, or not.
 fn attr<'a>(e: &'a CacheEntry, k: &str) -> Option<&'a str> {
     e.attrs.get(k).map(String::as_str)
 }
 
 impl Bucket {
-    /// The bucket of `e`'s attributes, as BuildKit's `getConfig` reads them, and the
+    /// The bucket of `e`'s attributes, as s3.go's `getConfig` reads them, and the
     /// credentials it is signed for.
     pub fn of(e: &CacheEntry, env: &dyn Fn(&str) -> Option<String>) -> Result<Bucket, String> {
         let bucket = match attr(e, "bucket") {
@@ -113,7 +113,7 @@ impl Bucket {
             Some(n) => n.split(';').map(str::to_string).collect(),
             None => vec!["buildkit".to_string()],
         };
-        // An unreadable duration or flag is the default, as BuildKit's are.
+        // An unreadable duration or flag is the default, as s3.go's `getConfig` has it.
         let touch_refresh = attr(e, "touch_refresh")
             .and_then(shards_cmdline::gotime::parse_duration)
             .map_or(24 * 3600 * 1_000_000_000, i128::from);
@@ -362,7 +362,7 @@ impl Bucket {
     }
 
     /// Copies `key` onto itself, its metadata replaced, so that a bucket's lifecycle rules
-    /// count its age from now, as BuildKit's `touch` does: past [`MOST_AT_ONCE`], in parts.
+    /// count its age from now, as s3.go's `touch` does: past [`MOST_AT_ONCE`], in parts.
     pub fn touch(&self, key: &str, size: u64) -> Result<(), String> {
         let source = escape_path(&format!("{}/{key}", self.bucket));
         if size < self.part {
@@ -515,7 +515,7 @@ fn escape_path(s: &str) -> String {
     s.split('/').map(uri_encode).collect::<Vec<_>>().join("/")
 }
 
-/// The credentials a cache is signed with, as BuildKit's S3 client finds them: the
+/// The credentials a cache is signed with, as BuildKit's s3.go client finds them: the
 /// cache's `access_key_id` and `secret_access_key` (with `session_token`), else the SDK's
 /// default chain's in its region, and with them the environment they are found again by.
 fn credentials(

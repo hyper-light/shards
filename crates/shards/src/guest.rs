@@ -132,8 +132,8 @@ pub fn release(kernel: &Path) -> Option<String> {
     found
 }
 
-/// The kernel and major revision of the kernel image at `path`, as moby's seccomp
-/// profiles read the host's: what a profile's `minKernel` is held to.
+/// The kernel and major revision of the kernel image at `path`: what a seccomp profile's
+/// `minKernel` is held to (D41).
 // Only Unix has the daemon, so far.
 #[cfg_attr(not(unix), allow(dead_code))]
 pub fn version_of(path: &Path) -> Result<shards_seccomp::Kernel, String> {
@@ -146,7 +146,7 @@ pub fn version_of(path: &Path) -> Result<shards_seccomp::Kernel, String> {
     kernel_version(&release).ok_or_else(|| format!("{}: kernel version {release:?}", path.display()))
 }
 
-/// A release's kernel and major revision, as moby's profiles read the host's.
+/// A release's kernel and major revision, read as a profile's `minKernel` is written (D41).
 // Only Unix has the daemon, so far.
 #[cfg_attr(not(unix), allow(dead_code))]
 pub fn kernel_version(release: &str) -> Option<shards_seccomp::Kernel> {

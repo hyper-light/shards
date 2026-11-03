@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A prune's or a listing's filters, as buildx asks BuildKit for them.
+/// A prune's or a listing's filters, as buildx v0.37.1 asks BuildKit for them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PruneInfo {
     /// `until`, or the older `unused-for`, in nanoseconds: the age a record must reach to

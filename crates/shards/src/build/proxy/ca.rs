@@ -86,7 +86,7 @@ impl Authority {
     }
 
     /// `certForHost`: the TLS a tunnel to `host` is served with, its certificate made now
-    /// or kept from before. HTTP/1.1 alone is offered (ALPN), as BuildKit offers it.
+    /// or kept from before. HTTP/1.1 alone is offered (ALPN), as BuildKit v0.33.0 offers it.
     pub fn config_for(&self, host: &str) -> Result<Arc<ServerConfig>, String> {
         let mut leaves = self.leaves.lock().unwrap_or_else(PoisonError::into_inner);
         leaves.tick += 1;
@@ -249,7 +249,7 @@ mod tests {
         assert!(!a.leaves.lock().unwrap().by_host.contains_key("h1.example"));
     }
 
-    /// The certificates as BuildKit makes them (`newCA`, `certForHost`): RSA-2048 keys, a
+    /// The certificates as BuildKit v0.33.0 makes them (`newCA`, `certForHost`): RSA-2048 keys, a
     /// leaf with key encipherment, each made the same way here but for its key. For the
     /// measurement, which runs where a thread's CPU time is read (clock_gettime(2)).
     #[cfg(unix)]

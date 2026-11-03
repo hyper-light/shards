@@ -7895,8 +7895,8 @@ fn a_logs_history_is_what_its_user_set() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
-/// A container's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
-/// SHARDS_LOG_MAX_SIZE bytes, as Docker's `local` driver keeps `max-file` of `max-size`.
+/// A run's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
+/// SHARDS_LOG_MAX_SIZE bytes, its history as its user sets it (D161, D186).
 /// `logs` shows what is kept, `--tail` its last lines, and a follower gets every byte once
 /// as segments come and go under it (audit A12).
 #[test]
@@ -8163,9 +8163,9 @@ fn a_refused_datagram_is_said_refused_at_once() {
     assert!(waited < 2000, "{waited} ms: {ran}");
 }
 
-/// `--network none`: a loopback alone, as dockerd's `none` gives a container. The run
-/// reaches nothing, and its own name is on the loopback, not a bridge's address; it still
-/// has the host's resolvers, as dockerd's does.
+/// `--network none`: a microVM with a loopback alone (D46). The run reaches nothing, and
+/// its own name is on the loopback, not a bridge's address; its resolv.conf still names the
+/// host's resolvers, which it cannot reach (D46).
 #[test]
 fn a_run_on_network_none_reaches_nothing() {
     let Some((home, image)) = home("containers-none") else {
@@ -9011,10 +9011,10 @@ fn stop_sends_a_containers_own_stop_signal() {
     assert_eq!(shards_in(&home, &["ps", "-aq"]).stdout.lines().count(), 2);
 }
 
-/// `exec` runs a command in a running container as `docker exec` does: from the run's
+/// `exec` runs a command in a running microVM (D27): from the run's
 /// environment, user and working directory, which `-e`, `-u` and `-w` change; on its own
-/// stdio, `-i` its stdin, `-t` a terminal of its own; with its own status; refused in
-/// dockerd's words for what the daemon refuses, and in runc's for what cannot start.
+/// stdio, `-i` its stdin, `-t` a terminal of its own; with its own status; refused in the
+/// words scripts match, a command that cannot start in Go's errno texts (D27).
 #[test]
 fn exec_runs_commands_in_a_running_microvm() {
     use std::io::Write as _;
@@ -9067,7 +9067,7 @@ fn exec_runs_commands_in_a_running_microvm() {
     for line in ["uid 0\n", "cwd /\n", "env X=2\n", "env FROMRUN=1\n"] {
         assert!(changed.stdout.contains(line), "{line:?}\n{changed}");
     }
-    // Laid over the container's environment whole, as dockerd lays it: a variable of its
+    // Laid over the run's environment whole (D27): a variable of its
     // name replaced, and one given without a value (none here to take it from) unset.
     let over = exec(&["-e", "FROMRUN=2", "ex", "/bin/testguest", "report"]);
     assert_eq!(over.status, Some(0), "{over}");
@@ -9285,12 +9285,12 @@ fn listeners_of(port: u16) -> String {
         .unwrap_or_default()
 }
 
-/// `-p`: a microVM's ports published on the host as dockerd publishes them. Each
-/// connection reaches the guest from the bridge's gateway, as through dockerd's userland
-/// proxy, and carries what either side sends whole; `ps` and `port` list the bindings as
-/// docker's do; a host port taken is refused in dockerd's words, a container's as its
-/// allocator's, another program's as its bind's; and a run's ports are free again as soon
-/// as it has ended.
+/// `-p`: a microVM's ports published on the host, by host listeners in its network
+/// process (D31). Each connection reaches the guest from the bridge's gateway, and carries
+/// what either side sends whole; `ps` and `port` list the bindings in the columns scripts
+/// read; a host port taken is refused in the words scripts match, one a microVM holds as
+/// held by it, another program's as its bind's (D31); and a run's ports are free again as
+/// soon as it has ended.
 #[test]
 fn published_ports_reach_the_guest() {
     use std::io::{Read as _, Write as _};
@@ -9465,8 +9465,8 @@ fn published_ports_reach_the_guest() {
         ),
         "{late}"
     );
-    // And at one address of the family a running container holds the port at every
-    // address of: refused as dockerd's allocator refuses it, where BSD's SO_REUSEADDR
+    // And at one address of the family a running microVM holds the port at every
+    // address of: refused, the port already the microVM's (D31), where BSD's SO_REUSEADDR
     // would have let the bind in (review 2.7).
     let narrow = run_in(
         &home,
@@ -9710,7 +9710,7 @@ fn children_of(parent: u32) -> Vec<(u32, String)> {
     }
 }
 
-/// `-p PORT/udp`: datagrams reach the guest as dockerd's proxy carries them: each host
+/// `-p PORT/udp`: datagrams reach the guest through the network process (D31): each host
 /// peer from a gateway port of its own, its answers back to that peer from the address
 /// it asked; `port` and `ps` list the port as UDP. The guest answers until it is sent
 /// `bye`: the published port is one of the host's ephemeral ports, which a datagram meant
@@ -9878,8 +9878,8 @@ fn images_lists_what_was_pulled() {
         "{refused}"
     );
     let short = id.strip_prefix("sha256:").and_then(|hex| hex.get(..12)).unwrap();
-    // What is here of it, as dockerd counts it: its manifests' blobs, not the index's; and
-    // its root filesystem.
+    // What is here of it, as `system df` counts it (D27): its manifests' blobs, not the
+    // index's; and its root filesystem.
     let dir_bytes = |dir: &Path| -> u64 {
         std::fs::read_dir(dir)
             .unwrap()
@@ -9891,7 +9891,7 @@ fn images_lists_what_was_pulled() {
         .unwrap()
         .map(|v| dir_bytes(&v.unwrap().path()))
         .sum();
-    // A pull keeps our platform's attestation, as dockerd does, and collections keep it:
+    // A pull keeps our platform's attestation (D22), and collections keep it:
     // the index, our manifest, config and layer, the attestation's manifest, config and
     // statement.
     let blobs = home.join("images/blobs/sha256");
@@ -10019,12 +10019,11 @@ fn images_lists_what_was_pulled() {
     );
 }
 
-/// `shards tag SOURCE TARGET` as `docker tag` names an image again: by name or by a prefix
-/// of its ID, TARGET with `latest` if it names no tag; refused in the Docker client's and
-/// dockerd's words where it cannot.
-/// A name moved to another image leaves the image it named, when that was its last name,
-/// as dockerd leaves it: listed by `images -a` as `<untagged>`, and found by its ID
-/// (measured, Docker 29.3.1).
+/// `shards tag SOURCE TARGET` names an image again: by name or by a prefix of its ID,
+/// TARGET with `latest` if it names no tag; refused in the words scripts match where it
+/// cannot (D27). A name moved to another image leaves the image it named, when that was its
+/// last name, kept for what still names it by ID: listed by `images -a` as `<untagged>`,
+/// and found by its ID (measured, Docker 29.3.1).
 #[test]
 fn an_image_whose_last_name_moves_stays_dangling() {
     let Some((home, image)) = home("containers-dangling") else {
@@ -10203,8 +10202,8 @@ fn rmi_removes_images() {
     });
 }
 
-/// `shards image inspect` as dockerd's containerd store answers `docker image inspect`
-/// (byte for byte against real images: scripts/images/compare-inspect): each image's
+/// `shards image inspect`, each document in the answer shape scripts parse (D27; byte for
+/// byte against real images: scripts/images/compare-inspect): each image's
 /// document in the API's order, its config as Go encodes it, its descriptor what its
 /// reference resolved to, its pull's repository; one array for all, and what was not found
 /// said after.
@@ -10654,7 +10653,7 @@ fn load_reads_archives() {
         (Some(0), format!("Loaded image: {image}\n").as_str(), ""),
         "{loaded}"
     );
-    // Unpacked as it was loaded, as dockerd unpacks: its root filesystem is here.
+    // Unpacked as it was loaded, ready to run (D47): its root filesystem is here.
     let rootfs = |home: &Path| -> usize {
         std::fs::read_dir(home.join("images/rootfs"))
             .into_iter()
@@ -10770,7 +10769,7 @@ fn load_reads_archives() {
     assert_eq!(ran.status, Some(6), "{ran}");
     // A layer the archive holds once, another directory's layer.tar a symlink to it, as
     // Docker's older save writes a layer it has written already: `../abc/layer.tar`,
-    // joined to its directory and cleaned, as containerd's importer resolves it.
+    // joined to its directory and cleaned, never leaving the archive (D41).
     let mut linked = common::tar(&[
         ("cfg.json", 0o644, 0, Some(config.as_slice())),
         ("abc", 0o755, 0, None),
@@ -10842,7 +10841,7 @@ fn load_reads_archives() {
         ),
         "{ran}"
     );
-    // Its manifest as containerd writes one for it, byte for byte: its ID is that.
+    // Its manifest made from the archive byte for byte, so that its ID is the same.
     let manifest = format!(
         r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar","digest":"{}","size":{}}}]}}"#,
         sha256_digest(config),
@@ -10859,7 +10858,7 @@ fn load_reads_archives() {
     );
     assert!(doc[0].get("Identity").is_none(), "no pull, no identity");
     // A layer already here compressed, pulled as gzip: the legacy archive's copy of it,
-    // uncompressed, is that gzip blob, as containerd finds it by its uncompressed digest.
+    // uncompressed, is that gzip blob, found by its uncompressed digest (D41).
     let (_, gz_blobs) = common::test_image_with(Some(b"gzipped"));
     let (gz_config, raw_layer) = (&gz_blobs[0], &gz_blobs[1]);
     let mut gzip = Command::new("gzip")
@@ -11163,8 +11162,8 @@ fn a_run_interrupted_as_it_pulls_ends_at_once() {
     assert_eq!(shards_in(&home, &["images", "-q"]).stdout, "");
 }
 
-/// A push goes with the credentials of the client that asks for it, as the Docker CLI
-/// sends its own with each request: not those of the client that started the daemon.
+/// A push goes with the credentials of the client that asks for it, sent with each
+/// request (D23): not those of the client that started the daemon.
 #[test]
 fn a_push_goes_with_its_clients_credentials() {
     if cannot_run_vms() {
@@ -11227,8 +11226,8 @@ fn a_push_goes_with_its_clients_credentials() {
     let all = shards(&some, &["push", "-a", &format!("127.0.0.1:{port}/team/app")]);
     assert_eq!(all.status, Some(0), "{all}");
     assert!(challenged() - before <= 2, "{:?}", repos.lock().unwrap().log);
-    // Tag 1 named the same manifest already: asked for with a HEAD, and not put again,
-    // as containerd's pusher leaves it.
+    // Tag 1 named the same manifest already: asked for with a HEAD, and not put again:
+    // nothing is sent that the registry holds.
     let puts = repos
         .lock()
         .unwrap()
@@ -11398,7 +11397,7 @@ fn run_mounts_binds_volumes_and_tmpfs() {
     std::fs::write(shared.join("a"), "host").unwrap();
     let file = home.join("one");
     std::fs::write(&file, "alone").unwrap();
-    // A link to it, bound as the file it leads to on the host, as Docker's bind takes it.
+    // A link to it, bound as the file it leads to on the host (D38).
     let link = home.join("link");
     #[cfg(unix)]
     std::os::unix::fs::symlink(&file, &link).unwrap();
@@ -11732,7 +11731,7 @@ fn volume_commands_keep_volumes() {
     assert!(host.join("h").exists(), "a bound directory outlives its volume");
 }
 
-/// `--restart`, as dockerd's restart manager keeps it: `on-failure:N` restarts a failing
+/// `--restart` (D39): `on-failure:N` restarts a failing
 /// command N times; `always` until stopped, a stop ending it for good; as the daemon
 /// starts again, `unless-stopped` and `always` start again what its stop ended, and not
 /// what was stopped by hand.
@@ -12338,7 +12337,7 @@ fn import_makes_images_of_tarballs() {
     for (args, said) in [
         (
             &["import", "nope.tar"][..],
-            // Go's words for the error each OS gives (syscall's Errno), as docker/cli's are.
+            // Go's words for the error each OS gives (syscall's Errno), the CLI's (D41).
             if cfg!(windows) {
                 "open nope.tar: The system cannot find the file specified.\n"
             } else {
@@ -12417,12 +12416,12 @@ fn inspecting_a_run_as_it_ends_never_deadlocks() {
     });
 }
 
-/// `--security-opt` (D42), as Docker's: the default profile's filter on the workload and
+/// `--security-opt` (D42): the default profile's filter on the workload and
 /// its execs, none for `unconfined` or a privileged container (but one it names; here
 /// `builtin` too, which dockerd fails to read), a profile's file read by the CLI and
 /// kept in SecurityOpt, `no-new-privileges`, `systempaths=unconfined` leaving the paths
-/// unmasked, and refusals in dockerd's words: of an option as the container is made, of
-/// a profile as it starts, the container kept, created, with State.Error.
+/// unmasked, and refusals in the words scripts match (D42): of an option as the microVM is
+/// made, of a profile as it starts, the microVM kept, created, with State.Error.
 #[test]
 fn security_opt_confines_the_workload() {
     let Some((home, image)) = home("containers-security-opt") else {
@@ -12540,6 +12539,7 @@ fn security_opt_confines_the_workload() {
         "exit",
         "0",
     ]);
+    // Made, its profile read only as it starts (D42).
     assert_eq!(made.status, Some(0), "made as dockerd makes it: {made}");
     let started = shards(&["start", "bad"]);
     assert_eq!(started.status, Some(1), "{started}");
@@ -12598,7 +12598,7 @@ fn workloads_start_with_high_file_and_process_limits() {
     assert_eq!(shards_in(&home, &["rm", "-f", "limited"]).status, Some(0));
 }
 
-/// `stats` reads each running container's guest as dockerd reads a container's cgroup:
+/// `stats` reads each running microVM's guest, its workload's cgroup (D43):
 /// its CPU over the second between two samples, memory less inactive file pages against
 /// its limit, its processes, and its interfaces' and block devices' bytes, laid out as
 /// docker/cli lays them out, `--format` included; a stopped one's zeros under `-a`.
@@ -12793,7 +12793,7 @@ fn devices_are_given_and_confined() {
             .contains("CDI device injection failed: unresolvable CDI devices vendor.com/gpu=0"),
         "{r}"
     );
-    // What inspect says of them, as Docker's does.
+    // What inspect says of them, in the HostConfig fields scripts read (D44).
     let fields = "{{json .HostConfig.Devices}} {{json .HostConfig.DeviceCgroupRules}} {{json .HostConfig.DeviceRequests}}";
     let made = shards(&[
         "create",
@@ -12963,9 +12963,9 @@ fn block_io_limits_hold() {
 }
 
 /// `shards attach`, as `docker attach` attaches (probed on Docker Engine 29.3.1): to a
-/// running container's command, its stdin where the container reads one, its output from
-/// now, until the command ends, whose status is the client's; refused as docker/cli
-/// refuses it. Its stdin's end leaves a detached container's open and its output still
+/// running microVM's command, its stdin where the command reads one, its output from now,
+/// until the command ends, whose status is the client's; refused in the words scripts
+/// match (D45). Its stdin's end leaves a detached container's open and its output still
 /// coming, where Docker's attach ends with its stdin and loses what follows.
 #[test]
 fn attach_joins_a_running_microvm() {
@@ -13131,7 +13131,7 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
         "lan6",
     ]);
     assert_eq!(members.stdout, "srv6 fd78::50/64\n", "{members}");
-    // An address taken is refused in dockerd's words.
+    // An address taken is refused, in the words scripts match (D99).
     let r = run_in(
         &home,
         &image,
@@ -13149,12 +13149,11 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
     assert_eq!(shards(&["network", "rm", "lan6"]).stdout, "lan6\n");
 }
 
-/// A network's options are what its microVMs do: one made with `enable_icc` false keeps
-/// its members from one another, their names still answered, as dockerd's bridge keeps
-/// them; its ports published with no address are bound at its `host_binding_ipv4` alone,
-/// and reached there; an MTU is kept as given, its members keeping their devices'; a
-/// routed one publishes no port; and each option is read as dockerd reads it. The default
-/// network says what it does.
+/// A network's options are what its microVMs do: one made with `enable_icc` false keeps its
+/// members from one another, their names still answered (D46); its ports published with no
+/// address are bound at its `host_binding_ipv4` alone, and reached there; an MTU is kept as
+/// given, its members keeping their devices'; a routed one publishes no port; and each
+/// option is read with its meaning (D46). The default network says what it does.
 #[test]
 fn a_networks_options_are_what_its_microvms_do() {
     let Some((home, image)) = home("containers-netopts") else {
@@ -13486,9 +13485,9 @@ fn microvms_on_a_network_reach_one_another_by_name() {
 
 /// An image's config as Docker 29.3.1 reads it (shards_image::config, held to Go by its
 /// testdata/image-config.json): a key matches its field exactly or else folded, the last of
-/// those that match winning, so `"User":"root","user":"app"` runs as app, as Docker runs it.
-/// One Go reads into no DockerOCIImage loads, as Docker loads it, and its run, create, tag
-/// and inspect are refused in Docker's words; its history is read as Docker's history reads
+/// those that match winning, so `"User":"root","user":"app"` runs as app (D112).
+/// One Go reads into no DockerOCIImage loads, and its run, create, tag and inspect are
+/// refused in the words scripts match (D112); its history is read as Docker's history reads
 /// its own part of it (each answer measured from Docker 29.3.1, its name ours).
 #[test]
 fn image_configs_run_key_by_key() {
@@ -13530,7 +13529,7 @@ fn image_configs_run_key_by_key() {
     assert_eq!(made.status, Some(0), "{made}");
     let user = shards(&["inspect", "--format", "{{.Config.User}}", "folded-c"]);
     assert_eq!((user.status, user.stdout.as_str()), (Some(0), "app\n"), "{user}");
-    // A config with no time Go reads lists at Go's zero time, as moby's summary has it,
+    // A config with no time Go reads lists at Go's zero time (D112),
     // which the CLI says was made at no time since (its CreatedAt is in the local zone).
     let listed = shards(&["images", "--format", "{{.CreatedSince}}|", "folded"]);
     assert_eq!(
@@ -15228,7 +15227,7 @@ fn a_run_attaches_the_streams_it_asks_for() {
         "made",
     ]);
     assert_eq!(shown.stdout, "false true false\n", "{shown}");
-    // Without `-a`, stdout and stderr, as docker/cli's create keeps them.
+    // Without `-a`, stdout and stderr (D160).
     let plain = shards(&["create", "--pull", "never", "--name", "plain", &image]);
     assert_eq!(plain.status, Some(0), "{plain}");
     let shown = shards(&[
@@ -15242,8 +15241,8 @@ fn a_run_attaches_the_streams_it_asks_for() {
 
 /// A run's log compressed and queued as its options say (D162). Its rotated segments are
 /// compressed, seekably, unless its driver is json-file, which compresses them only when
-/// asked (as Docker's does, though Docker refuses json-file's `compress` without a
-/// `max-size`). `logs` reads them back whole and from their middle (`--tail`). A
+/// asked (D162; shards takes json-file's `compress` without a `max-size` too, where
+/// Docker refuses it). `logs` reads them back whole and from their middle (`--tail`). A
 /// non-blocking log never holds up its run: what it keeps and what it drops add up to the
 /// run's output, and `logs` says what it dropped. Its refusals are in shards' words.
 #[test]
@@ -15929,9 +15928,9 @@ fn gelf_messages(datagrams: &[Vec<u8>]) -> Vec<serde_json::Value> {
 }
 
 /// A run's log sent to a GELF server (D164), from shards' store by the daemon as syslog's
-/// is (D163): over UDP gzipped, as Docker's is unless told, and uncompressed in chunks;
-/// over TCP, each message followed by a NUL. Each message is GELF 1.1 with the container's
-/// own fields and the attributes asked for, as Docker's gelf driver sends it, stamped with
+/// is (D163): over UDP gzipped unless told, and uncompressed in chunks; over TCP, each
+/// message followed by a NUL. Each message is GELF 1.1 with the run's own fields and the
+/// attributes asked for, the fields GELF servers read of Docker's (D164), stamped with
 /// when its output came, to the millisecond.
 #[test]
 fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
@@ -16458,7 +16457,8 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
         ordinals.sort();
         assert_eq!(ordinals, ["1", "2"]);
 
-        // A line of 40,000 bytes in parts of 16 KiB, as moby's copier cuts it.
+        // A line of 40,000 bytes in parts of 16 KiB, the size receivers that join parts
+        // expect.
         journald("parts", &[], &["wide", "40000"]);
         let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal).0).collect();
         let partial = field(&parts[0], "CONTAINER_PARTIAL_ID");

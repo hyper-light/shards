@@ -81,14 +81,15 @@ pub fn vfio_functions(groups: &[VfioGroup]) -> Vec<shards_vmm::vm::Vfio> {
     all
 }
 
-/// The host's VFIO groups among the host paths `paths`, a run's devices' and its CDI
-/// nodes' (D154): a path `/dev/vfio/N` the host has, or each such in `/dev/vfio` where it
-/// names the directory, with the functions of IOMMU group N the host gave vfio-pci or another of
+/// The host's VFIO groups among the host paths `paths`, a run's devices' and its CDI nodes'
+/// (D154): a path `/dev/vfio/N` the host has, or each such in `/dev/vfio` where it names
+/// the directory, with the functions of IOMMU group N the host gave vfio-pci or another of
 /// VFIO's PCI drivers (the group's PCI bridges, which VFIO passes through no guest, and
 /// devices held by none, stay the host's); each group's members as sysfs lists them
 /// (/sys/kernel/iommu_groups/N/devices). A path the host has no group at is no group: the
-/// guest finds no device there either, and says so as dockerd does. A no-IOMMU group is
-/// refused: its DMA reaches all of the host's memory, which no microVM is given.
+/// guest finds no device there either, and says so in the words scripts match (D154). A
+/// no-IOMMU group is refused: its DMA reaches all of the host's memory, which no microVM is
+/// given.
 pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<VfioGroup>, String> {
     let gathering = |host: &str, e: &str| {
         format!("error gathering device information while adding custom device {host:?}: {e}")
@@ -505,8 +506,8 @@ pub fn find_image(
 ) -> Result<(shards_registry::pull::Pulled, Lease), String> {
     let store = crate::pull::store(home)?;
     let lease = store.lease().map_err(|e| e.to_string())?;
-    // An image named by its ID, or a prefix of it, as dockerd's resolveImage takes one: a
-    // name tagged here first, then the ID.
+    // An image named by its ID, or a prefix of it, as the reference means it (resolveImage):
+    // a name tagged here first, then the ID.
     if pull != Pull::Always
         && let Some(found) = by_id(&store, name, targets)?
     {
@@ -528,8 +529,8 @@ pub fn find_image(
                 Err(e) if e.kind() == ErrorKind::Changed => {
                     return Err(format!("{e}; pull '{}' again to mend it", reference.familiar()));
                 }
-                // Here, but not for the platform asked for, as dockerd's lookup finds none
-                // (errPlatformNotFound, a NotFound): pulled for it, where the run may pull.
+                // Here, but not for the platform asked for (errPlatformNotFound, a
+                // NotFound): pulled for it, where the run may pull.
                 Err(e) if e.kind() == ErrorKind::NotFound && pull == Pull::Missing => None,
                 found => found.map_err(|e| e.to_string())?,
             }
@@ -578,9 +579,8 @@ pub fn find_image(
                 "Downloaded newer image for"
             };
             say(&format!("Status: {status} {}", reference.familiar()));
-            // A lone manifest is pulled whatever its platform, as dockerd pulls one; its run
-            // for another platform is refused, as dockerd's lookup of that platform refuses
-            // it.
+            // A lone manifest is pulled whatever its platform, the registry having no other;
+            // a run that asked another platform of it is refused (D179).
             if let Some(asked) = targets.first()
                 && !shards_image::platform::runs(&pulled.platform, targets)
             {
@@ -686,9 +686,9 @@ pub fn prepare(
         }
     };
     let say: &(dyn Fn(&str) + Sync) = &quiet;
-    // `--platform`'s image; else, as dockerd takes one where a run names none, an index's
-    // best for this host's microVMs, and a lone manifest or an image here whatever its
-    // platform, another CPU's run under its emulator (D179).
+    // `--platform`'s image; else, where a run names none, an index's best for this host's
+    // microVMs, and a lone manifest or an image here whatever its platform, another CPU's
+    // run under its emulator (D179).
     let targets = match request.platform.is_empty() {
         true => Vec::new(),
         false => crate::pull::targets(&request.platform)?,
@@ -1241,8 +1241,8 @@ mod tests {
     }
 
     /// `--gpus` asks for a microVM's one GPU with any count but none, or its device 0;
-    /// more, another device, or a driver of its own are refused, a driver in dockerd's
-    /// words; on a host that gives none, every request is.
+    /// more, another device, or a driver of its own are refused, a driver in the words
+    /// scripts match; on a host that gives none, every request is.
     #[test]
     fn gpus_ask_for_the_microvms_one_gpu() {
         let wants = |v: &[&str]| {

@@ -122,8 +122,8 @@ pub fn config(opts: &BTreeMap<String, String>) -> Result<Config, String> {
         gzip: bool_of("splunk-gzip")?.unwrap_or(false).then_some(level),
         index_ack: bool_of("splunk-index-acknowledgment")?.unwrap_or(false),
     };
-    // Its CA read as its run is made, as moby's driver reads it as it starts: none posted
-    // to that cannot be.
+    // Its CA read as its run is made: a run whose CA cannot be read is refused, and nothing
+    // posted (D167).
     config.roots()?;
     Ok(config)
 }
@@ -160,7 +160,7 @@ pub struct From {
 }
 
 /// The event of `line` on `stream`, whose output came at `at` nanoseconds since the epoch,
-/// as moby's driver writes it in `config`'s format; none for a line of whitespace alone in
+/// in `config`'s format (D167); none for a line of whitespace alone in
 /// `raw`, which HEC takes none of.
 pub fn event(config: &Config, from: &From, stream: u8, at: u64, line: &[u8]) -> Option<Vec<u8>> {
     let tag = from.tag.as_deref().filter(|t| !t.is_empty());

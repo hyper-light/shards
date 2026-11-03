@@ -83,7 +83,8 @@ fn logins_are_checked_kept_used_and_forgotten() {
         "{err}"
     );
     assert!(err.contains("unauthorized"), "{err}");
-    // Taken, from stdin, and kept as docker keeps it.
+    // Taken, from stdin, and kept in the config's `auths` (D171), as every client of
+    // that config file reads it.
     let (status, out, err) = shards(
         &home,
         &config,
@@ -177,7 +178,7 @@ fn pids(file: &Path) -> Vec<i32> {
         .collect()
 }
 
-/// A credential helper that never answers (as Docker Desktop's did on 2026-10-17, its
+/// A credential helper that never answers (docker-credential-desktop on 2026-10-17, its
 /// backend gone, for 12 minutes and more) holds no pull from a registry that asks for no
 /// credentials: it is asked, never waited for, and ended with the pull. A pull from one that
 /// asks says what it waits on, and its client's going ends the helper with it (D184).

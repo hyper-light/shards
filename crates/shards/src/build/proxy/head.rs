@@ -441,7 +441,7 @@ impl Head {
         }
     }
 
-    /// The fields a request passes on upstream as BuildKit's handler sends it on:
+    /// The fields a request passes on upstream as BuildKit v0.33.0's handler sends it on:
     /// without the hop-by-hop ones `stripProxyHeaders` takes off, `Accept-Encoding`, or
     /// what the client writes itself (`Host`, `Content-Length`); `Cache-Control: no-cache`
     /// added for `Pragma: no-cache` alone, as Go's `fixPragmaCacheControl` adds it.

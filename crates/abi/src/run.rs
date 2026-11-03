@@ -4,7 +4,7 @@
 //!
 //! Frames have the header of Docker's attach streams (moby api/pkg/stdcopy): a kind byte,
 //! three zero bytes, and the payload's length as a big-endian u32. So output reaches the
-//! host framed as Docker's Engine API sends it.
+//! host already in the frames the Engine API's clients read (D170).
 
 use alloc::vec::Vec;
 
@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 pub const PORT: u32 = 1024;
 /// The host port the guest dials, once the workload runs, for [`kind::SIGNAL`] frames.
 /// They travel apart from the run connection, so that stdin a workload leaves unread
-/// cannot hold them up, as Docker sends them apart from its attach stream.
+/// cannot hold them up.
 pub const SIGNAL_PORT: u32 = 1025;
 /// The host port the guest dials once for each command run beside the workload (`docker
 /// exec`), after the host asks for one with [`kind::EXEC`]. The host takes every
@@ -95,7 +95,7 @@ pub mod kind {
     /// containerd tells dockerd of an OOM.
     pub const OOM: u8 = 28;
     /// Guest to host, after [`SAVE`] and before the [`LAYER`] frames: the disk its
-    /// writable layer uses (a big-endian u64), counted as containerd's snapshots count
+    /// writable layer uses (a big-endian u64), counted as init's layer.rs `usage` counts
     /// it, for inspect's SizeRw once it has stopped.
     pub const USAGE: u8 = 29;
     /// Guest to host, on the workload's connection, as they come: what processes the run's
@@ -337,7 +337,7 @@ pub struct Spec {
     /// the host as [`kind::STDOUT`] alone; `None` for pipes.
     pub tty: Option<Size>,
     /// The bytes of the run's `/etc/resolv.conf`, for a run on a network: the host's
-    /// resolvers as Docker gives a container on its bridge.
+    /// resolvers, made for its network by build/step.rs (`resolv_with`).
     pub resolv: Option<Vec<u8>>,
     /// Docker's `-i`: the workload reads the client's stdin, through a pipe. Without it,
     /// and without a terminal, its stdin is `/dev/null`, as Docker gives a container's

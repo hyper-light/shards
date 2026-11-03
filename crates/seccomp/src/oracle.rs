@@ -212,7 +212,7 @@ fn cases() -> Vec<serde_json::Value> {
     json("cases.json").as_array().unwrap().clone()
 }
 
-/// Docker mode decides as runc's program does, and refuses as runc and dockerd do.
+/// Docker mode decides as runc v1.3.4's program does, and refuses as runc and dockerd do.
 #[test]
 fn profile_mode_decides_each_syscall() {
     for (key, arch) in [("amd64", Arch::Amd64), ("arm64", Arch::Arm64)] {
@@ -280,7 +280,7 @@ fn programs_decide_as_their_graphs() {
 
 const ENOSYS: u32 = 0x0005_0026;
 
-/// Shards decides as Docker does but where it means to do better: a syscall Docker's
+/// shards decides what Docker decides but where it means to do better (D42): a syscall Docker's
 /// tables cannot name but the guest kernel's can, either side's ENOSYS (runc's stub's
 /// line is drawn by Docker's tables, shards' by the kernel's, and shards' answers too for
 /// numbers that are no syscall), and x86's multiplexers.

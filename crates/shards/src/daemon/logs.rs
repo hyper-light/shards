@@ -500,8 +500,8 @@ struct Open {
 
 /// Where a reader of the log is: the next record, the segment it is read from, and each
 /// stream's line in progress. Lines run on from one segment into the next; those whose
-/// segments are gone before it reads them are gone from what it shows, as Docker's
-/// rotated logs lose theirs.
+/// segments are gone before it reads them are gone from what it shows: the log keeps
+/// its newest output alone, within its history (D186).
 #[derive(Debug)]
 pub struct Reader {
     next: Pos,

@@ -1,5 +1,5 @@
 //! TLS for registries (docs/research/registry-pull.md R2): rustls with AWS-LC, verified
-//! as Docker's Go code verifies. On macOS and Windows the OS verifies, as Go delegates to
+//! as Docker's Go code verifies (D19). On macOS and Windows the OS verifies, as Go delegates to
 //! it there; on Linux, webpki checks against the system's bundle. Extra roots are the
 //! per-registry CAs Docker reads from `certs.d`.
 

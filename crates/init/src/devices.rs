@@ -110,8 +110,8 @@ pub fn vm_devices(path: &str) -> Vec<Node> {
         .unwrap_or_default()
 }
 
-/// The devices at `path` and beneath it in `dev`, a `/dev`, as runc finds a host's
-/// (DeviceFromPath, and a directory walked as DevicesFromPath's filepath.WalkDir walks
+/// The devices at `path` and beneath it in `dev`, a `/dev`, found as a `--device` asks (D44:
+/// DeviceFromPath, and a directory walked as DevicesFromPath's filepath.WalkDir walks
 /// one): each node with its numbers, mode and owner, udev's modes over devtmpfs's, sorted
 /// as WalkDir visits a tree, by each path's names in turn. None where `path` is no path of
 /// `/dev` as the kernel names its nodes: no `.`, `..` or empty name in it.
@@ -220,7 +220,8 @@ fn names(dev: &OwnedFd, at: &std::ffi::CStr) -> Vec<String> {
     out
 }
 
-/// dockerd's words for a device it could not gather, `host` as the run named it.
+/// The refusal of a device that cannot be gathered, in the words scripts read (D44), `host`
+/// as the run named it.
 fn gathering(host: &str, e: &str) -> String {
     format!("error gathering device information while adding custom device \"{host}\": {e}")
 }
@@ -496,10 +497,10 @@ pub struct Prepared {
     unowned: Vec<(usize, bool, bool)>,
 }
 
-/// What setup entry `entry` asks, as dockerd makes a spec of it (WithResources, then
-/// WithDevices) and runc prepares a container's root (createDevices): the devices'
-/// numbers found, the CDI devices refused, and the nodes made in the `/dev` init shares
-/// with the workload. What failed, as dockerd or runc says it.
+/// What setup entry `entry` asks, in the order a start meets it (D44: WithResources, then
+/// WithDevices, then createDevices): the devices' numbers found, the CDI devices refused,
+/// and the nodes made in the `/dev` init shares with the workload. What failed, in the
+/// words scripts read (D44).
 ///
 /// `owner` is the process's user and group, which CDI gives a node whose spec gives it none.
 pub fn prepare(entry: &[u8], owner: &dyn Fn() -> Result<(u32, u32), String>) -> Result<Prepared, String> {
@@ -730,7 +731,7 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     })
 }
 
-/// Makes `nodes` in the root this process is in, as runc makes a container's.
+/// Makes `nodes` in the root this process is in: the workload's `/dev` (D44).
 pub fn make_nodes(nodes: &[Node]) -> Result<(), String> {
     for node in nodes {
         make(node).map_err(|e| format!("error creating device nodes: {e}"))?;
@@ -931,7 +932,7 @@ pub fn confine_joiner(cgroup: &str) -> Result<Filter, String> {
     Ok((program, fd))
 }
 
-/// `union bpf_attr` for BPF_PROG_LOAD, as far as runc's load sets it.
+/// `union bpf_attr` for BPF_PROG_LOAD, up to the last field the device filter's load sets.
 #[repr(C)]
 #[derive(Default)]
 struct ProgLoad {
@@ -970,8 +971,8 @@ const BPF_F_REPLACE: u32 = 4;
 
 /// runc's loadAttachCgroupDeviceFilter: `program` loaded and attached to `cgroup`, others
 /// allowed beneath it (BPF_F_ALLOW_MULTI), in place of `replacing` where one is
-/// (BPF_F_REPLACE, as runc replaces its one old program), as cilium/ebpf and runc say it
-/// fails. Its descriptor.
+/// (BPF_F_REPLACE: one program at a time, the old one replaced), its failures in the words
+/// cilium/ebpf and runc give them (D44). Its descriptor.
 fn attach(program: &[u8], cgroup: &str, replacing: Option<&OwnedFd>) -> Result<OwnedFd, String> {
     let err = |what: &str| {
         let e = io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
@@ -1102,8 +1103,8 @@ mod tests {
         );
     }
 
-    /// The devices at a path of `/dev` and beneath it, from a descriptor of it, as runc's
-    /// walk of a host's finds them, in WalkDir's order; none at a path that is no path of
+    /// The devices at a path of `/dev` and beneath it, from a descriptor of it, found as a
+    /// `--device` asks (D44), in WalkDir's order; none at a path that is no path of
     /// `/dev` as the kernel names its nodes, a link, or nothing.
     #[test]
     fn devices_are_found_in_dev_by_name() {

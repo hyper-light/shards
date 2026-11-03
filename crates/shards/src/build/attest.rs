@@ -149,6 +149,7 @@ fn embedded(desc: &Descriptor) -> Result<Option<Vec<u8>>, String> {
 
 fn too_large(digest: &str, size: i64, max: u64) -> String {
     format!(
+        // The receiving side's limit, buildx's policy session (see CHAIN_MAX, grpc-go server.go).
         "attestation chain blob {digest} of {size} bytes: an image's attestation chain may come to {max} bytes, as much as buildx's policy session takes"
     )
 }
@@ -490,6 +491,7 @@ pub(super) mod tests {
         assert_eq!(
             chain_from(&h, &index(), &arm64(), &[]).unwrap_err(),
             format!(
+                // too_large's words (CHAIN_MAX, grpc-go server.go).
                 "attestation chain blob {big} of {} bytes: an image's attestation chain may come to 4194304 bytes, as much as buildx's policy session takes",
                 CHAIN_MAX + 1
             )
@@ -543,7 +545,7 @@ pub(super) mod tests {
     }
 
     /// A digest named twice is read once, counted once, and kept with the descriptor named
-    /// last: as BuildKit keeps it, its second read served from what it buffered.
+    /// last, as BuildKit v0.28.1 keeps it, its second read served from what it buffered.
     #[test]
     fn a_digest_named_again_is_read_once_and_keeps_its_later_descriptor() {
         let bundle = json!({ "mediaType": BUNDLE_TYPE, "digest": BUNDLE, "size": BUNDLE_DATA.len() });
