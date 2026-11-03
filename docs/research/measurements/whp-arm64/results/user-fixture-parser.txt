@@ -1,0 +1,8 @@
+Native PowerShell5.1 syntax validation, before applying any fixture setting.
+prepare-user.ps1 SHA256=7a39c1bb2201c16fc4e321f0973cfcd1fb54aa9f0eee58a17d4a20f598a2845e
+probe-user.ps1 SHA256=496625404ffddcd1d02f7e5f1248424ea7b80e93885bf9dff24e24a2818eef31
+Parsed native Windows PowerShell5.1: prepare-user.ps1
+Parsed native Windows PowerShell5.1: probe-user.ps1
+No fixture settings changed; preparation remains queued behind the active full suite.
+
+scripts/lint: all eight targets, exit0. Native permission preflight and full-suite result still pending.

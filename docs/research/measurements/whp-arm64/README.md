@@ -413,3 +413,35 @@ It also parsed the candidate runner on Windows PowerShell. The result and execut
 hash are in `results/gzip-fixture.txt`. The candidate script was copied under a separate
 name; the active full run keeps its original script and environment. Its archive
 failure remains a failure, and the compressed-image E2E still needs the next full run.
+
+## Standard-user fixture prerequisites
+
+The original `real-03` container binary finished with 126 passed, 14 failed and eight
+ignored. Its bind-mount case failed while creating its host file symlink, with Windows
+error 1314 (required privilege not held). The ETW case returned after its explicit
+trace-session permission skip. Neither result verifies those features. The relevant
+native output is in `results/user-fixture-baseline.txt`; the remaining full suite was
+still running when these prerequisites were prepared.
+
+`nested-host/prepare-user.ps1` runs as the fixture administrator before a reboot. It
+keeps `runner` outside Administrators, enables Developer Mode, and adds that local user
+to Performance Log Users by its well-known group SID. Microsoft documents Developer
+Mode as the prerequisite for
+[unprivileged symbolic-link creation](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createsymboliclinkw),
+provides the
+[registry setting](https://learn.microsoft.com/en-us/windows/advanced-settings/developer-mode),
+and names Performance Log Users as a group allowed to
+[control ETW sessions](https://learn.microsoft.com/en-us/windows/win32/etw/controlling-event-tracing-sessions).
+
+After reboot, a fresh `runner` logon runs `nested-host/probe-user.ps1`. It refuses an
+elevated or unexpected user, verifies the current token's trace group, creates a file
+symlink through the unprivileged Windows API and reads through it, then creates,
+enables and stops a native ETW session for shards' provider. The original mount and
+ETW E2E assertions remain unchanged; this preflight does not replace either test.
+Preparation is deferred until the original full attempt has finished and its complete
+results have been archived. Native permission checks and the next full suite remain
+pending; syntax validation alone does not verify those permissions.
+
+Both scripts parsed on the native Windows PowerShell 5.1 host, and all eight lint
+targets passed. `results/user-fixture-parser.txt` retains the syntax check and source
+hashes. No Rust source or native test assertion changes in this fixture update.
