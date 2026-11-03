@@ -346,6 +346,10 @@ pub fn gpu_paths(paths: &mut Paths) {
         .iter()
         .filter_map(|p| there(p)),
     );
+    // musl's loader's search path, where a musl host names one (musl's ldso/dynlink.c).
+    paths
+        .read
+        .extend(there(&format!("/etc/ld-musl-{}.path", std::env::consts::ARCH)));
     // /dev/dri listed, its render nodes used; NVIDIA's control, GPU, modesetting and
     // unified memory nodes; udmabuf, which Venus makes host memory of where a driver
     // exports none (vkr_physical_device.c).

@@ -69,6 +69,17 @@ pub fn vm_gpu() -> Result<PathBuf, String> {
                 .into(),
         );
     }
+    // musl's GPU's VM process links the host's musl dynamically, to open its Vulkan driver
+    // (D201): a host of glibc's has no musl loader to start it, and exec(2) would say only
+    // that a file it has is not there.
+    if cfg!(all(target_os = "linux", target_env = "musl")) {
+        let loader = format!("/lib/ld-musl-{}.so.1", std::env::consts::ARCH);
+        if !std::path::Path::new(&loader).exists() {
+            return Err(format!(
+                "this shards is built for musl, and its GPU's VM process opens the host's GPU driver through musl's loader, {loader}, which this host has not: on a host of glibc's, shards' glibc build gives a run its GPU (D201)"
+            ));
+        }
+    }
     let dir = dir()?;
     let name = format!("shards-vm-gpu{}", std::env::consts::EXE_SUFFIX);
     let path = dir.join(&name);

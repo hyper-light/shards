@@ -3,7 +3,9 @@
 # (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET. With MUSL_CI=test it
 # runs the tests alone; with MUSL_CI=release (CI's other musl job), the lints, the release
 # build and the tests measured on release; with MUSL_CI=build (.github/workflows/
-# release.yml), the release build alone. Packages are added as root; everything else runs
+# release.yml), the release build alone. Where SHARDS_GPU_LIBS names a directory, the GPU's
+# renderer is built into it first (scripts/gpu-libs, against Alpine's musl), if it holds
+# none, and `shards` carries the GPU's VM process (D201). Packages are added as root; everything else runs
 # as the user that owns the checkout, as shards runs: never as root, which permission bits
 # and much else do not stop.
 #
@@ -13,7 +15,12 @@ set -eu
 # Retried, as the tests' downloads are: eight times, the waits doubling from a second. A
 # runner's DNS failed Alpine's index once ("DNS: transient error", CI run 38329714115).
 tries=0
-until apk add --no-cache build-base curl xz; do
+packages="build-base curl xz"
+# The renderer's build: Python for meson and ninja, and Linux's headers (dma-buf, udmabuf).
+if [ -n "${SHARDS_GPU_LIBS:-}" ]; then
+    packages="$packages python3 linux-headers"
+fi
+until apk add --no-cache $packages; do
     tries=$((tries + 1))
     if [ "$tries" -ge 8 ]; then
         echo "adding Alpine's packages failed $tries times" >&2
@@ -37,6 +44,9 @@ exec su -m shards -s /bin/sh -c '
 	set -eu
 	export HOME=/home/shards CARGO_HOME=/home/shards/.cargo
 	part=${MUSL_CI:-all}
+	if [ -n "${SHARDS_GPU_LIBS:-}" ] && [ ! -f "$SHARDS_GPU_LIBS/libvirglrenderer.a" ]; then
+		scripts/gpu-libs "$SHARDS_GPU_LIBS"
+	fi
 	if [ "$part" = all ] || [ "$part" = release ]; then
 		cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
 	fi

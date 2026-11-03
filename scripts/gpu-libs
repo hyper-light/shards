@@ -90,17 +90,17 @@ if [ "$host" = Windows-x86_64 ]; then
 fi
 
 # meson and ninja, as PyPI published them: ninja's wheels for macOS, for Linux on x86_64
-# and arm64, and for x86_64 Windows.
+# and arm64, with glibc (manylinux) and with musl (musllinux), and for x86_64 Windows.
 cat >"$work/tools.txt" <<'EOF'
 meson==1.11.2 --hash=sha256:7e4f6e83fec83e3eaac928e058b073c7557b282c35b6a2024cea143a39926a39
-ninja==1.13.2 --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b --hash=sha256:65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c --hash=sha256:d775a5e43e9088f507a6250d57fcf5678eb31268c545feb5064ffeee33735622 --hash=sha256:1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118
+ninja==1.13.2 --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b --hash=sha256:65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c --hash=sha256:d775a5e43e9088f507a6250d57fcf5678eb31268c545feb5064ffeee33735622 --hash=sha256:1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118 --hash=sha256:915bd482c4be41c75120fd67a22e0bb3f0fbb3bbc5f95b89787deadd59e27ef2 --hash=sha256:0e083700470c02ca154a855ae6d692d03564f5064cae52e113896f9ccc078418
 EOF
 # virglrenderer 1.3.0 makes its format tables from YAML: PyYAML's wheels for CPython 3.11
-# to 3.14 on Linux, x86_64 and arm64.
+# to 3.14 on Linux, x86_64 and arm64, with glibc and with musl.
 case $host in
 Linux-*)
     cat >>"$work/tools.txt" <<'EOF'
-PyYAML==6.0.3 --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d --hash=sha256:10892704fc220243f5305762e276552a0395f7beb4dbf9b14ec8fd43b57f126c --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc --hash=sha256:9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 --hash=sha256:ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5 --hash=sha256:501a031947e3a9025ed4405a168e6ef5ae3126c59f90ce0cd6f2bfc477be31b7
+PyYAML==6.0.3 --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d --hash=sha256:10892704fc220243f5305762e276552a0395f7beb4dbf9b14ec8fd43b57f126c --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc --hash=sha256:9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 --hash=sha256:ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5 --hash=sha256:501a031947e3a9025ed4405a168e6ef5ae3126c59f90ce0cd6f2bfc477be31b7 --hash=sha256:5e0b74767e5f8c593e8c9b5912019159ed0533c70051e9cce3e8b6aa699fcd69 --hash=sha256:418cf3f2111bc80e0933b2cd8cd04f286338bb88bdc7bc8e6dd775ebde60b5e0 --hash=sha256:37503bfbfc9d2c40b344d06b2199cf0e96e97957ab1c1b546fd4f87e53e5d3e4 --hash=sha256:1d37d57ad971609cf3c53ba6a7e365e40660e3be0e5175fa9f2365a379d6095a --hash=sha256:41715c910c881bc081f1e8872880d3c650acf13dfa8214bad49ed4cede7c34ea --hash=sha256:8dc52c23056b9ddd46818a57b78404882310fb473d63f17b07d5c40421e47f8e --hash=sha256:eda16858a3cab07b80edaf74336ece1f986ba330fdb8ee0d6c0d68fe82bc96be --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 --hash=sha256:5190d403f121660ce8d1d2c1bb2ef1bd05b5f68533fc5c2ea899bd15f4399b35 --hash=sha256:7c6610def4f163542a622a73fb39f534f8c101d690126992300bf3207eab9764
 EOF
     ;;
 # pkg-config, which a Windows host has none of: pkgconf's wheel for x86_64 Windows, and
@@ -211,10 +211,13 @@ elif [ "$host" = Darwin-arm64 ]; then
     libs=(libvirglrenderer.a libepoxy.a libMoltenVK.a)
 else
     # Venus served by the render server, each context a thread of it (not a process forked
-    # from it), and Vulkan's loader opened as it starts, not linked.
+    # from it), and Vulkan's loader opened as it starts, not linked. The server's objects
+    # position-independent (b_pie) whatever the host's compiler defaults to, as the GPU's
+    # VM process links them into a position-independent executable: Fedora's gcc makes
+    # none by default, and its objects' absolute relocations failed that link.
     setup virgl "$work/virgl" "$work/src/$virgl_name" --prefix="$prefix" --libdir=lib \
-        --default-library=static -Dvenus=true -Drender-server-worker=thread -Dvulkan-dload=true \
-        -Dvideo=false -Dtests=false
+        --default-library=static -Db_pie=true -Dvenus=true -Drender-server-worker=thread \
+        -Dvulkan-dload=true -Dvideo=false -Dtests=false
     ninja --quiet -C "$work/virgl" src/libvirglrenderer.a server/virgl_render_server
     # The server's objects, but its `main` and its log (to syslog): the GPU's VM process
     # runs the server, and says what it logs (crates/vmm, gpu/render_log.c).
