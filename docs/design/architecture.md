@@ -14565,6 +14565,55 @@ dropped neighbor discovery, whose multicast destinations lie in no subnet. On a 
 with IPv6, a run whose agents had grants then reached nothing by IPv6, not even its
 network's members. Neighbor discovery now passes it, as ARP passes IPv4's chain below IP.
 
+**Part four: past the microVM on any network** (2026-11-03). Part three's IPv6 reached past
+the microVM only where the microVM's own network had IPv6 (`network create --ipv6`): on the
+default bridge, where most runs are, and on a network without IPv6, eth0 had no IPv6
+address, so an agent with IPv6 and a grant past the microVM reached nothing by IPv6, an
+IPv6-only destination not at all. And a remote MCP server written as an IPv6 address
+(`http://[2001:db8::7]:8080/sse`) was never reachable: the network process read its host
+with the brackets and matched no address, and one without a port was no grant at all, the
+port read inside the brackets.
+- **eth0's IPv6 for the agents.** A run whose image's agents have IPv6 (a `NETWORK --ipv6`
+  a `CONNECT` joins, `agentfile::ipv6`) and grants past the microVM (egress ports or
+  remote MCP servers; `Agentfile::egress6`), on the default bridge or a user network
+  without IPv6, gives eth0 an IPv6 address for their flows: the one the host's network
+  takes (D124), `::2` of the home's ULA /48's last /64, which no network is given, its
+  gateway `::1`. Each run's link to its network process is its own, so every run shares
+  the address, as every run on the default bridge shares its IPv4 one. The daemon tells
+  the network process (`NET_ADDRESS`'s IPv6 part: on the bridge beside the bridge's
+  address, on a user network after the member's) and init (`uplink6=`), which adds it as
+  `address6=` adds a network's, but names it in no file of the run's (`/etc/hosts` keeps
+  Docker's lines for a network without IPv6) and tells no member, and no name resolves to
+  it. Part three's uplink then carries the agents' IPv6 as it did on a network with IPv6.
+- **Default deny kept.** Nothing is granted that was not: the agents' flows pass their
+  gates, the switch and init's IPv6 tables on their grants' ports alone, and the network
+  process's policy is the image's grants, of either version. The run's own command is
+  kept to eth0's subnet (`confine-eth0`), which takes the ip6 family wherever eth0 has
+  IPv6, the address given before it is made, and that /64 holds the gateway alone. An
+  image whose agents have no IPv6, or no grant past the microVM, gives eth0 none, as
+  before; the host's network refuses agents (D115).
+- **An IPv6 address in an MCP URL** is read as RFC 3986 §3.2.2 writes it, in brackets, its
+  port after them or its scheme's (`agentfile::mcp_endpoint`, init's `netplan`), and the
+  network process strips the brackets to match the address. A name's IPv6 addresses were
+  already learned from its AAAA answers (`dns::a_records`), so a server whose name has
+  IPv6 addresses alone is reached by them once it is resolved, and not before.
+- **Decided pending review:** names and ingress past the microVM stay IPv4's, as part
+  three left them: the agents' resolver is reached at its IPv4 gateway (its answers carry
+  AAAA records), and published ports reach an agent by IPv4. Neither is a flow an agent
+  opens past the microVM.
+
+Tested on real microVMs: `agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant`
+now runs one image on three networks, one with IPv6, the default bridge and one without
+IPv6. On each, the agent reaches the host's IPv6 address on the port both boundaries grant
+and not on one only its network grants; a remote MCP server whose name has an IPv6 address
+alone (the test's resolver, `SHARDS_DNS`, answers AAAA alone) is unreached at its address
+before its name is resolved and reached by name after; a server whose URL is an IPv6
+address is reached. The run's own command's datagram to the granted port is refused by its
+own stack (EPERM) on each. Unit tests: `ports_reach_their_ports_alone` (an IPv6 address in
+brackets, and one learned from AAAA, at their ports alone),
+`a_remote_mcp_servers_endpoint_is_its_urls`, `remote_mcp_servers_reach_whom_they_are_for`,
+`agents_have_ipv6_where_a_joined_network_says_so`.
+
 ### D98. Rego as OPA evaluates it, for buildx's build policies
 
 `shards build --policy` (buildx v0.37.1's, in progress) needs OPA v1.14.1's Rego, with
@@ -16624,8 +16673,8 @@ grants, MCP scope) have unit tests. Mutation-checked: the relay granting any nam
 network process passing a named port without a learned address, and the switch ignoring
 a pair's ports, each fail their test.
 
-Open: IPv6; process events; ingress to a network of several members. DNS over TCP is
-D79.
+Open: process events; ingress to a network of several members. DNS over TCP is D79.
+IPv6 is D99's: agents' subnets (part two), past the microVM (parts three and four).
 
 ### A domain sees the image as built (D59, part eight)
 

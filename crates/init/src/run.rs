@@ -787,6 +787,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             crate::dnsrelay::start(gateway).map_err(setup_failed)?;
         } else if entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
+            || entry.starts_with(b"uplink6=")
             || entry == b"confine-eth0"
             || entry == b"init"
             || entry == b"pid=host"
@@ -1832,7 +1833,7 @@ fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Fai
     }
     // Its IPv6 address after its IPv4 one, on a network with IPv6 (D99), each line the
     // same names, as makeHostsRecs writes one per address of the container's.
-    let own6 = crate::net::current6().map(|(addr, _, _)| addr.to_string());
+    let own6 = crate::net::named6().map(|(addr, _, _)| addr.to_string());
     for addr in [
         own.as_deref().map(str::as_bytes).or(Some(OWN_ADDRESS)),
         own6.as_deref().map(str::as_bytes),
@@ -2528,6 +2529,15 @@ impl Standby {
                 .and_then(crate::net::parse6)
                 .ok_or_else(|| setup_failed("a malformed address6 entry"))?;
             crate::net::address6(to).map_err(|e| setup_failed(format!("eth0's IPv6 address: {e}")))?;
+        }
+        // Else its agents' IPv6 past the microVM, on a network without IPv6 (D99): before
+        // eth0's confinement, which takes IPv6's family where eth0 has it, and the domains.
+        else if let Some(to) = spec.setup.iter().find_map(|e| e.strip_prefix(b"uplink6=")) {
+            let to = std::str::from_utf8(to)
+                .ok()
+                .and_then(crate::net::parse6)
+                .ok_or_else(|| setup_failed("a malformed uplink6 entry"))?;
+            crate::net::uplink6(to).map_err(|e| setup_failed(format!("eth0's IPv6 address: {e}")))?;
         }
         // The image's Agentfile, for a run that starts its domains (the daemon sends their
         // filter, D59), read now that eth0 has its address and before the command starts,
@@ -3898,6 +3908,7 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
         } else if entry.starts_with(b"dns=")
             || entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
+            || entry.starts_with(b"uplink6=")
             || entry.starts_with(b"endpoint-sysctl=")
             || entry.starts_with(b"mac=")
             || entry.starts_with(b"link-local=")

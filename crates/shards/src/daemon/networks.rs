@@ -408,6 +408,8 @@ impl<D: Disk> Daemon<D> {
     /// A run on the host's network's IPv6 address and its gateway's (D124): in the pool's
     /// last /64, which no user network is given, `::2` and `::1`, each run's link to its
     /// network process its own. What it sends past its loopback is the host's by them.
+    /// Also eth0's IPv6 for an image's agents' flows past the microVM on a network without
+    /// IPv6 (D99).
     pub(super) fn host_ipv6(&self) -> (Ipv6Addr, Ipv6Addr) {
         let subnet = self.ula_base() | (0xffff << 64);
         (Ipv6Addr::from(subnet | 2), Ipv6Addr::from(subnet | 1))
@@ -906,6 +908,7 @@ impl<D: Disk> Daemon<D> {
         asks: &mut Asks<'_>,
         mac: Option<[u8; 6]>,
         link_local: &[std::net::IpAddr],
+        uplink6: Option<(Ipv6Addr, Ipv6Addr)>,
     ) -> Result<(), String> {
         let _held = nets::lock();
         let Some((network, mut me)) = self.membership(id) else {
@@ -941,6 +944,12 @@ impl<D: Disk> Daemon<D> {
         {
             address.extend_from_slice(&ip6.octets());
             address.push(bits);
+            address.extend_from_slice(&gateway6.octets());
+        } else if let Some((guest6, gateway6)) = uplink6 {
+            // Else eth0's IPv6 for its agents' flows past the microVM alone (D99), which no
+            // member is told of.
+            address.extend_from_slice(&guest6.octets());
+            address.push(64);
             address.extend_from_slice(&gateway6.octets());
         }
         asks.ask("network", shards_ipc::kind::NET_ADDRESS, &address, &[])?;

@@ -3376,6 +3376,27 @@ impl<D: Disk> Daemon<D> {
                     let bits = if a.is_ipv4() { 16 } else { 64 };
                     format!("link-local={a}/{bits}").into_bytes()
                 }));
+                // Its agents' flows past the microVM by IPv6 (D99), on a network that gives
+                // eth0 no IPv6 of its own: eth0's IPv6 address for them, the one the host's
+                // network takes (the home's ULA /48's last /64, which no network is given),
+                // named in none of the run's files. Its command is kept to eth0's subnet as
+                // ever (`confine-eth0`), of IPv6 too, and its network process holds the
+                // agents' grants.
+                if matches!(
+                    start,
+                    network::Start::Attach(network::Net::Bridge | network::Net::User)
+                ) && prepared
+                    .agentfile
+                    .as_ref()
+                    .is_some_and(crate::agentfile::Agentfile::egress6)
+                    && !network_setup.iter().any(|e| e.starts_with(b"address6="))
+                {
+                    let (guest6, gateway6) = self.host_ipv6();
+                    prepared
+                        .spec
+                        .setup
+                        .push(format!("uplink6={guest6}/64,{gateway6}").into_bytes());
+                }
                 // On the host's network (D124): the host's hosts file, and eth0's IPv6, by
                 // which what it sends past its loopback is the host's.
                 if start == network::Start::Attach(network::Net::Host) {
@@ -4859,7 +4880,16 @@ impl<D: Disk> Daemon<D> {
         if let Some(mac) = keep.mac {
             asks.ask("MAC", kind::NET_MAC, &mac, &[])?;
         }
-        if keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..])
+        // eth0's IPv6 for its agents' flows past the microVM (D99), where its network gives
+        // it none, as its init is told (`uplink6=`): on a user network, with its address
+        // there; on the default bridge, beside the bridge's, as the host's network has it.
+        let uplink6 = keep
+            .agentfile
+            .as_ref()
+            .is_some_and(crate::agentfile::Agentfile::egress6)
+            .then(|| self.host_ipv6());
+        let on_bridge = uplink6.is_some() && self.membership(id).is_none();
+        if (keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..]) || on_bridge)
             && let Some(bridge) = self.bridge
         {
             let (guest6, gateway6) = self.host_ipv6();
@@ -4883,7 +4913,7 @@ impl<D: Disk> Daemon<D> {
                 batch.iter().map(|l| crate::netproc::lend(&l.fd)).collect();
             asks.ask("published ports", kind::PUBLISH, &ports, &fds)?;
         }
-        self.give_network(id, &mut asks, keep.mac.or(ready.mac), &keep.link_local)?;
+        self.give_network(id, &mut asks, keep.mac.or(ready.mac), &keep.link_local, uplink6)?;
         if let Some(ports) = &keep.egress {
             asks.ask("egress grants", kind::NET_POLICY, ports, &[])?;
         }

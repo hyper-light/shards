@@ -1212,14 +1212,26 @@ pub fn dns(directives: &[Directive]) -> bool {
     })
 }
 
+/// Whether an Agentfile's agents have IPv6 (D99): a network that says `--ipv6`, which a
+/// `CONNECT` joins, gives its members IPv6 addresses. Where they are granted anything past
+/// the microVM too, its run gives eth0 an IPv6 address for their flows, on a network
+/// without IPv6 of its own (D99 part four).
+pub fn ipv6(directives: &[Directive]) -> bool {
+    directives.iter().any(|d| {
+        matches!(d, Directive::Network(n) if n.ipv6 == Some(true)
+            && directives.iter().any(|c| matches!(c, Directive::Connect(c) if c.on.contains(&n.name))))
+    })
+}
+
 /// The label of an Agentfile's remote MCP servers (§4.4, §9.6), each `host:port`,
 /// comma-separated: its microVM's network process lets a flow to that port reach only the
 /// addresses the host resolves to (or the address it is), for the agents granted it.
 pub const MCP_LABEL: &[u8] = b"vnd.osi.agentfile.mcp";
 
 /// A remote MCP server's host and port, from its URL: the port written, or else its
-/// scheme's own (443 for `https`, 80 for `http`; §4.4, decided 2026-10-02). None for a
-/// source that is no http(s) URL, or one with no host.
+/// scheme's own (443 for `https`, 80 for `http`; §4.4, decided 2026-10-02). An IPv6
+/// address is written in brackets (RFC 3986 §3.2.2, IP-literal), and kept in them. None
+/// for a source that is no http(s) URL, or one with no host.
 pub fn mcp_endpoint(url: &[u8]) -> Option<(Vec<u8>, u16)> {
     let (rest, default) = match url.strip_prefix(b"https://") {
         Some(r) => (r, 443),
@@ -1227,16 +1239,25 @@ pub fn mcp_endpoint(url: &[u8]) -> Option<(Vec<u8>, u16)> {
     };
     let authority = rest.split(|&b| b == b'/' || b == b'?' || b == b'#').next()?;
     let hostport = authority.rsplit(|&b| b == b'@').next()?;
-    let (host, port) = match hostport.iter().rposition(|&b| b == b':') {
+    // Past an IP-literal's closing bracket, whose address holds colons of its own.
+    let after = match hostport.first() {
+        Some(b'[') => hostport.iter().position(|&b| b == b']')? + 1,
+        _ => 0,
+    };
+    let (host, port) = match hostport.get(after..)?.iter().rposition(|&b| b == b':') {
         Some(i) => {
-            let port = std::str::from_utf8(hostport.get(i + 1..)?)
+            let port = std::str::from_utf8(hostport.get(after + i + 1..)?)
                 .ok()?
                 .parse::<u16>()
                 .ok()?;
-            (hostport.get(..i)?, port)
+            (hostport.get(..after + i)?, port)
         }
         None => (hostport, default),
     };
+    // Nothing but a port after an IP-literal.
+    if after > 0 && host.len() != after {
+        return None;
+    }
     (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
 }
 
