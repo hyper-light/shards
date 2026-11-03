@@ -2820,11 +2820,62 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
 - **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
   file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
-  Docker Desktop's file sharing writes (`{"UID":…,"GID":…,"mode":…}`), root's where there
-  is none, and a file the guest makes records its maker (a setgid directory's group).
-  Unlike Docker Desktop (fakeowner), the guest kernel checks permissions against those
-  owners (`default_permissions`): user 1000 cannot write a directory root owns, as on
-  Linux. The owner xattr is hidden from the guest's `listxattr`.
+  Docker Desktop's file sharing writes (`{"UID":…,"GID":…,"mode":…}`), and a file the guest
+  makes records its maker (a setgid directory's group). Unlike Docker Desktop (fakeowner),
+  the guest kernel checks permissions against those owners (`default_permissions`): user
+  1000 cannot write a directory root owns, as on Linux. The owner xattr is hidden from the
+  guest's `listxattr`.
+  - **A file the host made is the run's own user's.** It holds no record, and a bind is
+    handed to a run for that run to write: with root's owner, an unprivileged harness
+    (`--user 1000`, or an image whose `USER` is not root) could not write the folder it was
+    given, nor make anything in it. So the share server gives each file without a record
+    the run's user and group: its `--user`, else its image's `USER`, as init resolved it.
+    - *An agent's.* A volume given one agent or harness alone is that domain's (`200000 +
+      n`): one a `VOLUME … FOR` scopes to it, a bind standing in for it included, or one the
+      run's own root does not mount. Its domains start once the run's own volumes are
+      mounted, so their word comes after the run's. A volume no `VOLUME` scopes (every
+      domain's and the run's own) is the run's user's. One several domains share that the
+      run's root does not mount stays root's.
+    - *A joiner's.* Each volume of a join share is its joiner's user's (D119).
+    - *How init says so.* Init sets `trusted.shards.owner` (`UID:GID`,
+      `shards_abi::SHARE_OWNER_XATTR`) on the share's root, or the join share's volume, as it
+      mounts it, before anything there is looked at, since the guest kernel trusts an
+      attribute for a second (`VALID_S`). The host's setup entry carries the owner
+      (`owner=UID:GID`, `setup::with_owner`, every `volume=` and `join-volume=` entry).
+      - The guest's kernel lets only a process with CAP_SYS_ADMIN set a `trusted.`
+        attribute (fs/xattr.c `xattr_permission`), and the server takes it only from uid 0
+        (the request's header). It refuses it on any other node (EINVAL) and keeps it on no
+        file.
+      - It reaches the server before any confinement, so a file bound alone takes it too.
+        A read-only share takes it too: init mounts each share writable, tells it, then
+        remounts it read-only, as the kernel sets no attribute on a read-only mount.
+      - A snapshot's share tables keep it, at their end, so tables saved before it existed
+        still restore (root's).
+      - A share another server serves (`--slates-fs-fd`) may refuse it. Its files stay
+        owned as that server says.
+    - *What the guest makes is still recorded.* Once init has named an owner, every file
+      the guest makes records its maker, root's too, so it stays its maker's whoever a
+      later run's user is: a root run's directory refuses a later run of user 1000 (it does
+      not turn into theirs). Before that, a root-made file stays unrecorded, as before.
+    - *Root's stays root's.* A root run's host files are root's, as before.
+    - *Device nodes stay root's.* A host device node has no attributes here (V08) and
+      stays root's. The guest kernel opens a device node itself, as its own device of
+      that number, which a shared `/dev` must not open to the run's user.
+    - *Permissions are still checked against owners.* A run of user 2000 sees the host's
+      files as its own, and is refused a directory user 1000 made 0755.
+    - *Tested.* Server unit tests: `the_hosts_files_are_the_owner_init_names` (root's until
+      named; root alone, the root alone, `UID:GID` alone; read-only share and file bound
+      alone; a guest-made file recorded, root's included; a snapshot keeps it, older
+      tables restore root's; a host device node stays root's) and
+      `a_join_shares_volumes_each_have_their_owner`. Init's unit test of the entries told
+      (`a_volume_is_told_its_runs_owner`). E2E on real microVMs:
+      `a_binds_host_files_are_its_runs_users` (uid 1000 writes the bind it was given; the
+      image's `USER` by default; read-only and single-file binds; root's and 1000's files
+      kept as made for a run of 2000, which writes the top but neither's directory; a root
+      run sees root's), `run_mounts_binds_volumes_and_tmpfs` and
+      `a_joiner_takes_volumes_as_a_container_does` (a joiner's user's), and
+      `agentfile_volumes_reach_whom_they_are_for` (a bind standing in for b's volume is b's,
+      and b writes it).
 - **Mounted by init** (`init/src/setup.rs`, `volume`): each share at its destination,
   read-only where asked; with the mounts of `--tmpfs` and `--mount type=tmpfs`, sorted by
   depth (sortMounts). A file bound alone is shared through its directory, the server

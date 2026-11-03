@@ -418,14 +418,15 @@ fn a_joiner_takes_volumes_as_a_container_does() {
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     let host = host_file_mode();
+    // The host's files are the joiner's user's, its image's app (D38).
     assert!(
         ran.stdout
-            .contains(&format!("/data/a file {host} 0:0 4\n= host\n")),
+            .contains(&format!("/data/a file {host} 1000:1000 4\n= host\n")),
         "{ran}"
     );
     assert!(
         ran.stdout
-            .contains(&format!("/etc/one file {host} 0:0 5\n= alone\n")),
+            .contains(&format!("/etc/one file {host} 1000:1000 5\n= alone\n")),
         "{ran}"
     );
     for mount in [
@@ -11661,8 +11662,10 @@ fn run_mounts_binds_volumes_and_tmpfs() {
         ("/etc/one", "5\n= alone"),
         ("/etc/linked", "5\n= alone"),
     ] {
+        // The host's files, which hold no owner, are the run's user's: the image's, app.
         assert!(
-            ran.stdout.contains(&format!("{path} file {host} 0:0 {said}\n")),
+            ran.stdout
+                .contains(&format!("{path} file {host} 1000:1000 {said}\n")),
             "{path}: {ran}"
         );
     }
@@ -11676,32 +11679,34 @@ fn run_mounts_binds_volumes_and_tmpfs() {
         assert!(ran.stdout.contains(mount), "{mount}: {ran}");
     }
     // Written in the guest, there on the host, owned as the guest made it; read-only
-    // where asked; the file alone, nothing else of its directory.
-    let wrote = run_in(
-        &home,
-        &image,
-        &["--rm", "-v", &bind, "-v", &ro, "-u", "1000:1000"],
-        &["fs", "mkdir:/data/d", "write:/data/d/b=guest"],
-    );
-    assert_eq!(
-        wrote.status,
-        Some(1),
-        "a directory root owns refuses user 1000: {wrote}"
-    );
-    // The image's user is `app`; root makes the directory.
+    // where asked; the file alone, nothing else of its directory. Root makes the
+    // directory, recorded root's though the run's user is the host's files' owner.
     let wrote = run_in(
         &home,
         &image,
         &["--rm", "-u", "0", "-v", &bind],
-        &[
-            "fs",
-            "mkdir:/data/d",
-            "write:/data/d/b=guest",
-            "chmod:1777:/data/d",
-        ],
+        &["fs", "mkdir:/data/d", "write:/data/d/b=guest"],
     );
     assert_eq!(wrote.status, Some(0), "{wrote}");
     assert_eq!(std::fs::read_to_string(shared.join("d/b")).unwrap(), "guest");
+    let refused = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &bind, "-v", &ro, "-u", "1000:1000"],
+        &["fs", "write:/data/d/c=user"],
+    );
+    assert_eq!(
+        refused.status,
+        Some(1),
+        "a directory root owns refuses user 1000: {refused}"
+    );
+    let opened = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &["fs", "chmod:1777:/data/d"],
+    );
+    assert_eq!(opened.status, Some(0), "{opened}");
     let user = run_in(
         &home,
         &image,
@@ -11840,6 +11845,121 @@ fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
     assert!(
         imaged.stdout.starts_with("/home/app dir 755 1000:1000 "),
         "{imaged}"
+    );
+}
+
+/// A bind's files the host made, which hold no owner, are the run's own user's in its
+/// microVM (D38): its `--user`, else its image's `USER`, so that an unprivileged run writes
+/// the directory it was given, as uid 1000 here. What the guest makes there is recorded as
+/// its maker's, root's too, and stays so for a run of another user; permissions are still
+/// checked: a run of user 2000 sees the host's files as its, and writes no directory user
+/// 1000 made 0755. A root run sees the host's files as root's.
+#[test]
+fn a_binds_host_files_are_its_runs_users() {
+    let Some((home, image)) = home("containers-bind-owner") else {
+        return;
+    };
+    let given = home.join("given");
+    std::fs::create_dir(&given).unwrap();
+    std::fs::write(given.join("readme"), "host").unwrap();
+    let bind = format!("{}:/work", given.display());
+    let ro = format!("{}:/ro:ro", given.display());
+    let one = format!("{}:/etc/readme:ro", given.join("readme").display());
+    let host = host_file_mode();
+    // User 1000 by --user: the folder and its files are its own, and it writes there.
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "1000:1000", "-v", &bind],
+        &[
+            "fs",
+            "mkdir:/work/out",
+            "write:/work/out/r=done",
+            "write:/work/top=t",
+        ],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(std::fs::read_to_string(given.join("out/r")).unwrap(), "done");
+    // The image's USER (app, 1000:1000) by default; a read-only bind and a file bound alone
+    // alike.
+    let seen = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &bind, "-v", &ro, "-v", &one],
+        &[
+            "stat",
+            "/work",
+            "/work/readme",
+            "/ro/readme",
+            "/etc/readme",
+            "/work/out/r",
+        ],
+    );
+    assert_eq!(seen.status, Some(0), "{seen}");
+    for want in [
+        format!("/work/readme file {host} 1000:1000 4\n"),
+        format!("/ro/readme file {host} 1000:1000 4\n"),
+        format!("/etc/readme file {host} 1000:1000 4\n"),
+        "/work/out/r file 644 1000:1000 4\n".into(),
+    ] {
+        assert!(seen.stdout.contains(&want), "{want:?}: {seen}");
+    }
+    assert!(
+        seen.stdout
+            .lines()
+            .any(|l| l.starts_with("/work dir ") && l.contains(" 1000:1000 ")),
+        "{seen}"
+    );
+    // Root's files recorded as root's, though the host's are the run's user's.
+    let rooted = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &["fs", "mkdir:/work/root-made", "write:/work/root-file=r"],
+    );
+    assert_eq!(rooted.status, Some(0), "{rooted}");
+    // Another user: the host's files its, the others' as they were made, and the
+    // directories it does not own refuse it.
+    let other = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "2000:2000", "-v", &bind],
+        &["stat", "/work/readme", "/work/out/r", "/work/root-file"],
+    );
+    assert_eq!(other.status, Some(0), "{other}");
+    for want in [
+        format!("/work/readme file {host} 2000:2000 4\n"),
+        "/work/out/r file 644 1000:1000 4\n".into(),
+        "/work/root-file file 644 0:0 1\n".into(),
+    ] {
+        assert!(other.stdout.contains(&want), "{want:?}: {other}");
+    }
+    let mine = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "2000:2000", "-v", &bind],
+        &["fs", "write:/work/mine=2"],
+    );
+    assert_eq!(mine.status, Some(0), "the folder it was given: {mine}");
+    for refused in ["write:/work/out/x=2", "write:/work/root-made/x=2"] {
+        let ran = run_in(
+            &home,
+            &image,
+            &["--rm", "-u", "2000:2000", "-v", &bind],
+            &["fs", refused],
+        );
+        assert_eq!(ran.status, Some(1), "{refused}: {ran}");
+    }
+    // A root run: root's.
+    let root = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &["stat", "/work/readme"],
+    );
+    assert!(
+        root.stdout.contains(&format!("/work/readme file {host} 0:0 4\n")),
+        "{root}"
     );
 }
 
