@@ -102,6 +102,7 @@ normal host access; sandbox IPC was denied. This resumed Codex environment still
 needs explicit Git signing settings. Published baseline 9ff73a16 is preserved.
 
 All six final Rust source hashes remain unchanged from the completed checks.
-The combined tree still requires full-workspace scripts/lint on all eight targets
-with CARGO_INCREMENTAL=0 before any push, sequential targets and per-target debug
-cleanup, as agreed with the platform-plan coordinator.
+Publication process updated by the person on 2026-11-03: push win-passthrough
+normally before integration, with no per-branch full lint or wait for gpu. The
+coordinator merges it with win-pools and the twelve parallel branches, then runs
+one combined eight-target lint, CI and real-VM pass.
