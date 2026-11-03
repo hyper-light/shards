@@ -299,3 +299,79 @@ default zero disables those reports. They add no native test filter or timeout; 
 stdout, stderr and exit status are still retained separately. Preflight parses the
 PowerShell runner, checks its hash, requires the full manifest and verifies WHP before
 starting. Only a completed manifest with no failures can qualify Step 10.
+
+## Wide-policy compiler diagnostic
+
+The unchanged 6000-rule compiler test failed its 10 s assertion on Windows. A native
+sample of the same workload found repeated `Node::extent` object construction under
+reference type queries. The candidate obtains string key types without building the
+object and answers dynamic references directly when the fixed values are scalars.
+Function values retain the general path: their union with `any` is not `any`.
+
+`wide-policy.py WORKSPACE BASELINE_REV NEW_SCRATCH --n 30` copies both sources, builds
+isolated production-release binaries, warms their file pages once, and alternates
+before/after execution order. It extracts `host()` and `layers(500,12)` from the
+existing test, keeps its 123 MiB worker stack, and asserts that compilation has no
+errors. Scratch must not exist. Python 3.12+, Cargo and cached dependencies are needed.
+Run it at the user's normal scheduling priority (an Interactive launchd job on this
+Mac). It does not instrument or edit the qualification checkout.
+
+On 2026-11-03, M5 Max, macOS 26.4.1, standalone rustc 1.99.1, fat LTO and one codegen
+unit, against source 360ad0cd and the retained candidate patch (milliseconds):
+
+| Phase/build | n | p50 | p90 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Compile/before | 30 | 757.394 | 782.753 | 801.536 | 801.536 |
+| Compile/after | 30 | 276.298 | 285.846 | 289.854 | 289.854 |
+| Parse + compile/before | 30 | 779.528 | 806.984 | 825.200 | 825.200 |
+| Parse + compile/after | 30 | 299.800 | 308.567 | 313.776 | 313.776 |
+
+The four-CPU Windows fixture and its full suite were running, as were cross-build
+jobs; these are this native workload's measurements under that load. They establish
+neither Windows performance nor a passing Windows deadline. Root Rego tests, including
+the OPA comparisons and a scalar/function reference regression, and all eight matrix
+lint targets passed with rustc 1.98.1. The full suite's deployed binaries remain
+source 360ad0cd; separate candidate checks below do not replace that suite.
+
+Raw rows, source hashes, patch, summaries and corrected compiler metadata are in
+`results/wide-policy/`. The original metadata queried rustc from the parent checkout;
+it is retained beside the correction to both standalone builds' actual rustc 1.99.1.
+
+## Deep-policy bindings and Windows checks
+
+The original Windows deep-`every` test took 63.65 s and failed its 60 s assertion.
+A native sample found binding lookups scanning the whole set after it grew past
+16 variables. The evaluator now adds an index at that threshold, keeping its existing
+iteration order and undo behavior. A regression exercises lookups, middle removals,
+replacement and reinsertion, including after the set shrinks below 16 entries.
+
+`deep-policy.py BEFORE_TEST_BINARY AFTER_TEST_BINARY NEW_OUTPUT --before-source ID
+--after-source ID --rustc VERSION --n 20` runs the exact existing
+`every_statements_nested_deep_answer_in_time` case, one unrecorded warm-up per build,
+then alternates execution order and requires exactly one test to pass each time. It
+retains raw output and binary hashes. Both builds here used rustc 1.98.1 and
+`test-release` (no LTO, 16 codegen units), on the M5 Max/macOS 26.4.1 with the Windows
+fixture and cross-build jobs active. Entire test-process times, milliseconds:
+
+| Build | n | p50 | p90 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Before index | 20 | 3371.999 | 3533.665 | 3598.273 | 3598.273 |
+| After index | 20 | 1735.963 | 1894.770 | 1908.657 | 1908.657 |
+
+`results/deep-policy/` retains the exact measured source patch, rows and outputs.
+Both the scratch prototype and the promoted source passed the Rego tests and OPA
+comparisons. All eight matrix lint targets and the complete arm64 Windows cross-build
+passed. During the already-failing `real-03` run, a separate standard-user kit ran the
+candidate's original Windows assertions: the wide policy passed in 5.28 s (10 s bound),
+the deep policy in 38.47 s (60 s bound), and all ten Rego library tests passed. Raw
+native outputs, selected-test records, executable hashes and source-patch identity are
+in `results/policy-hotpaths-windows/`. These checks overlap the container binary and
+are targeted regressions, not a complete-suite result.
+
+The WHP register hot path now uses aligned stack storage for single-register accesses
+and single/pair writes; an MMIO load sets its destination and PC in one call. The M414
+guest was rebuilt to exercise the paired stack write. As the standard user it returned
+0x5678 from that load, took SPI 33, started its secondary through PSCI, set its GIC
+state back, and powered off through Arm64Reset, with native exit 0. Its raw output is
+`results/mmio-batch.txt`. This probe also overlapped the already-failing full run; its
+latencies are diagnostic and do not establish native performance or qualify all features.

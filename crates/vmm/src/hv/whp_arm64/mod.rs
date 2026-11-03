@@ -304,6 +304,18 @@ impl Partition {
     /// bits.
     fn values(&self, vp: u32, names: &[u32]) -> Result<Vec<Value>> {
         let mut values = vec![Value::default(); names.len()];
+        self.get_values_into(vp, names, &mut values)?;
+        Ok(values)
+    }
+
+    fn get_values_into(&self, vp: u32, names: &[u32], values: &mut [Value]) -> Result<()> {
+        if names.len() != values.len() {
+            return Err(Error::Guest(format!(
+                "{} register names, {} values",
+                names.len(),
+                values.len()
+            )));
+        }
         let get = |names: &[u32], values: &mut [Value]| {
             // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
             check("WHvGetVirtualProcessorRegisters", unsafe {
@@ -316,7 +328,7 @@ impl Partition {
                 )
             })
         };
-        if let Err(batch) = get(names, &mut values) {
+        if let Err(batch) = get(names, values) {
             for name in names {
                 let mut value = [Value::default()];
                 if let Err(one) = get(std::slice::from_ref(name), &mut value) {
@@ -325,7 +337,7 @@ impl Partition {
             }
             return Err(batch);
         }
-        Ok(values)
+        Ok(())
     }
 
     /// Registers `names` of vCPU `vp`, which is out of the guest.
@@ -334,14 +346,20 @@ impl Partition {
     }
 
     fn register(&self, vp: u32, name: u32) -> Result<u64> {
-        self.registers(vp, &[name])?
-            .first()
-            .copied()
-            .ok_or_else(|| Error::Guest(format!("vCPU {vp}'s register {name:#x}: no value")))
+        let mut value = [Value::default()];
+        self.get_values_into(vp, &[name], &mut value)?;
+        Ok(value[0].0[0])
     }
 
     /// Sets registers `names` of vCPU `vp` to `values`, in their order.
     fn set_registers(&self, vp: u32, names: &[u32], values: &[u64]) -> Result<()> {
+        match values {
+            [one] => return self.set_values(vp, names, &[Value([*one, 0])]),
+            [one, two] => {
+                return self.set_values(vp, names, &[Value([*one, 0]), Value([*two, 0])]);
+            }
+            _ => {}
+        }
         let values: Vec<Value> = values.iter().map(|&v| Value([v, 0])).collect();
         self.set_values(vp, names, &values)
     }
@@ -924,8 +942,14 @@ impl Vcpu {
             let data = raw.get_mut(..da.size).ok_or_else(bad_size)?;
             io.mmio_read(access.gpa, data);
             if da.reg != 31 {
-                self.partition
-                    .set_registers(self.index, &[rt], &[da.load_value(get_le(data))])?;
+                return self.partition.set_registers(
+                    self.index,
+                    &[rt, PC],
+                    &[
+                        da.load_value(get_le(data)),
+                        access.header.pc.wrapping_add(esr::instr_len(access.syndrome)),
+                    ],
+                );
             }
         }
         self.advance(access.header.pc, access.syndrome)

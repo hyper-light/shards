@@ -349,7 +349,21 @@ mod probe {
         }
 
         fn put(&self, vp: u32, names: &[u32], values: &[u64]) -> Result<()> {
+            match values {
+                [one] => return self.put_values(vp, names, &[Value([*one, 0])]),
+                [one, two] => {
+                    return self.put_values(vp, names, &[Value([*one, 0]), Value([*two, 0])]);
+                }
+                _ => {}
+            }
             let values: Vec<Value> = values.iter().map(|&v| Value([v, 0])).collect();
+            self.put_values(vp, names, &values)
+        }
+
+        fn put_values(&self, vp: u32, names: &[u32], values: &[Value]) -> Result<()> {
+            if names.len() != values.len() {
+                return Err("register names and values differ in length".to_owned());
+            }
             // SAFETY: as many names as values.
             hr("WHvSetVirtualProcessorRegisters", unsafe {
                 WHvSetVirtualProcessorRegisters(
@@ -770,10 +784,12 @@ mod probe {
                             _ => 0,
                         };
                         if srt != 31 {
-                            vm.put(vp, &[X0 + srt], &[value])?;
+                            vm.put(vp, &[X0 + srt, PC], &[value, access.header.pc + 4])?;
                         }
                     }
-                    vm.put(vp, &[PC], &[access.header.pc + 4])?;
+                    if write || srt == 31 {
+                        vm.put(vp, &[PC], &[access.header.pc + 4])?;
+                    }
                     if lock()?.done {
                         return Ok(());
                     }

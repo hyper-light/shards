@@ -1,0 +1,90 @@
+diff --git a/crates/rego/src/check.rs b/crates/rego/src/check.rs
+index 802e6a6f..309bac55 100644
+--- a/crates/rego/src/check.rs
++++ b/crates/rego/src/check.rs
+@@ -138,6 +138,21 @@ impl Node {
+         out
+     }
+ 
++    /// Keys of this node's extent, without constructing an object for string keys.
++    fn key_type(&self) -> Type {
++        if self.leaf() {
++            return types::keys(&self.value);
++        }
++        if self
++            .children
++            .iter()
++            .all(|(key, _)| matches!(key.value, TermValue::String(_)))
++        {
++            return Type::String;
++        }
++        types::keys(&self.extent())
++    }
++
+     /// getRefRecExtent: a leaf's type, else an object of the children's.
+     fn extent(&self) -> Type {
+         if self.leaf() {
+@@ -459,6 +474,22 @@ impl TypeEnv {
+             return select_ref(&node.value, tail);
+         }
+         if !is_constant(first) {
++            // Nonleaf extents have an any-valued dynamic string field. It absorbs
++            // scalar fixed values; function types must keep the general union path.
++            if matches!(
++                first.value,
++                TermValue::Var(_)
++                    | TermValue::Ref(_)
++                    | TermValue::Array(_)
++                    | TermValue::Object(_)
++                    | TermValue::Set(_)
++            ) && node.children.iter().all(|(_, child)| match &child.value {
++                Type::Null | Type::Boolean | Type::Number | Type::String => true,
++                Type::Any(of) => of.is_empty(),
++                _ => false,
++            }) {
++                return select_ref(&A, rest);
++            }
+             return select_ref(&node.extent(), tail);
+         }
+         match node.child(first) {
+@@ -1460,7 +1491,7 @@ impl RefChecker<'_> {
+             ));
+         }
+         if matches!(head.value, TermValue::Var(_)) && idx != 0 {
+-            let tpe = types::keys(&env.node_at(level, node).map(Node::extent).unwrap_or(Type::Nil));
++            let tpe = env.node_at(level, node).map(Node::key_type).unwrap_or(Type::Nil);
+             let exist = get_value(env, head);
+             if !exist.is_nil() {
+                 if !unifies(&tpe, &exist) {
+@@ -1572,3 +1603,31 @@ impl RefChecker<'_> {
+         self.check_ref_leaf(env, &types::values(tpe), r, idx + 1)
+     }
+ }
++
++#[cfg(test)]
++mod reference_query_tests {
++    use super::{A, Term, Type, TypeEnv, builtin_ref};
++
++    #[test]
++    fn dynamic_references_preserve_scalar_and_function_value_types() {
++        let path = [
++            Term::var("data", None),
++            Term::string("docs", None),
++            Term::var("key", None),
++        ];
++        for scalar in [Type::Null, Type::Boolean, Type::Number, Type::String, A] {
++            let env = TypeEnv::with_builtins(std::iter::once(("data.docs.value", &scalar)));
++            assert!(matches!(env.get_by_ref(&path), Type::Any(of) if of.is_empty()));
++            let mut nested = path.to_vec();
++            nested.push(Term::string("nested", None));
++            assert!(matches!(env.get_by_ref(&nested), Type::Any(of) if of.is_empty()));
++        }
++        let function = Type::function(vec![Type::Number], Type::Number);
++        let env = TypeEnv::with_builtins(std::iter::once(("data.docs.value", &function)));
++        assert!(env.get_by_ref(&path).is_nil());
++        assert!(matches!(
++            env.get_by_ref(&builtin_ref("data.docs.value")),
++            Type::Function { .. }
++        ));
++    }
++}

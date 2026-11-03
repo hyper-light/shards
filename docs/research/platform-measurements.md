@@ -16900,6 +16900,29 @@ revision before comparing a changed API/implementation.
   its native exit 101 (eight snapshot tests passed, two failed, two helper entries
   ignored), and the runner continued to boot tests. This validates progress/exit
   reporting, not qualification. The complete suite must still pass before row 5 closes.
+- **Compiler diagnostic.** The unchanged 6000-rule policy failed its 10 s Windows
+  deadline. Native profiling found repeated construction of whole type extents for
+  reference queries. `whp-arm64/wide-policy.py` compares the original source with a
+  candidate that obtains string keys directly and avoids the extent for scalar-valued
+  dynamic references, retaining the function-type path. On this M5 Max, macOS 26.4.1,
+  standalone rustc 1.99.1, release/fat LTO/codegen-units=1, n=30/build with alternating
+  order, parse plus compile was p50/p90/p99/max 779.528/806.984/825.200/825.200 ms before
+  and 299.800/308.567/313.776/313.776 ms after. The Windows fixture/full suite and
+  cross-build jobs were active. The README and retained rows record that scope and the
+  compiler-metadata correction. Native Rego tests/OPA comparisons and all eight lint
+  targets passed with the candidate. This native comparison does not qualify Windows.
+- **Follow-up regressions.** Indexing the evaluator's binding sets after 16 variables
+  retains iteration/undo order and removes their linear lookup. On the same Mac,
+  rustc 1.98.1/test-release, `deep-policy.py` alternated n=20/build of the unchanged
+  deep-every test: whole-process p50/p90/p99/max 3371.999/3533.665/3598.273/3598.273 ms
+  before and 1735.963/1894.770/1908.657/1908.657 ms after. Rego tests/OPA comparisons,
+  a binding undo regression, all eight lint targets and the Windows cross-build passed.
+  A separate standard-user Windows kit then passed the original wide-policy test
+  in 5.28 s within 10 s, the deep-policy test in 38.47 s within 60 s, and all ten Rego
+  library tests. The M414 guest also passed with aligned stack register writes and its
+  MMIO load result/PC set together. These checks overlapped the already-failing
+  real-03 container binary. The README retains the method, source patches and raw
+  evidence; neither the selected tests nor this API probe qualify the full suite.
 
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 

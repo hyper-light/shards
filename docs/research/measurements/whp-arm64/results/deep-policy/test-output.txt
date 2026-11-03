@@ -1,0 +1,294 @@
+== 000-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.69s
+
+== 000-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.45s
+
+== 001-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.72s
+
+== 001-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.34s
+
+== 002-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.73s
+
+== 002-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.30s
+
+== 003-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.68s
+
+== 003-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.29s
+
+== 004-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.71s
+
+== 004-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.37s
+
+== 005-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.70s
+
+== 005-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.32s
+
+== 006-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.71s
+
+== 006-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.34s
+
+== 007-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.76s
+
+== 007-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.54s
+
+== 008-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.74s
+
+== 008-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.40s
+
+== 009-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.88s
+
+== 009-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.40s
+
+== 010-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.68s
+
+== 010-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.35s
+
+== 011-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.72s
+
+== 011-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.35s
+
+== 012-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.78s
+
+== 012-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.29s
+
+== 013-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.87s
+
+== 013-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.58s
+
+== 014-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.89s
+
+== 014-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.51s
+
+== 015-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.84s
+
+== 015-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.32s
+
+== 016-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.71s
+
+== 016-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.29s
+
+== 017-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.69s
+
+== 017-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.33s
+
+== 018-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.77s
+
+== 018-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.43s
+
+== 019-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.70s
+
+== 019-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.38s
+
+== warm-after.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.83s
+
+== warm-before.stdout.txt
+
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.32s
+

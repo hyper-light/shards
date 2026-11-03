@@ -1,0 +1,30 @@
+{
+  "utc": "2026-11-03T21:31:17.319137+00:00",
+  "archive_sha256": "c06722725316687f4aa17da0fe9741a7668ad88c8fbb20edc13086da1aa28682",
+  "manifest": [
+    {
+      "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+      "name": "compile",
+      "exe": "C:\\shards-step10\\policy-hotpaths02\\compile.exe",
+      "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+      "sha256": "4796c99530281047a09a21cda664dfe38a49b484df2231a20d1f5d2dfc3d46b3"
+    },
+    {
+      "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+      "name": "deep",
+      "exe": "C:\\shards-step10\\policy-hotpaths02\\deep.exe",
+      "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+      "sha256": "231859b28ab2c4a4d99a016ae0bf1ab1b46d25800a62c8b6096075ed28b886c2"
+    },
+    {
+      "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+      "name": "shards_rego",
+      "exe": "C:\\shards-step10\\policy-hotpaths02\\shards_rego.exe",
+      "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+      "sha256": "a8db1299e77c23d1588c66a73523be98ad4fb2308c23900c32f0ef42b6407b79"
+    }
+  ],
+  "source_patch_sha256": "f0e4297db0250de2e27509f5acd1caf0d42afcb53f262f9b95db2b4b387cb561",
+  "profile": "test-release, static CRT, rustc1.98.1",
+  "overlap": "already-failing full-real03, containers6092; native policy tests only"
+}
