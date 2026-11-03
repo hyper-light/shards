@@ -1,0 +1,10 @@
+2026-11-03T13:32:18.6269900-08:00
+Native command quoting diagnostic; overlaps already-failing full-real03; creates no VM.
+credentials raw=false code=Some(0) stdout="{\\\"Version\\\":1,\\\"AccessKeyId\\\":\\\"listed\\\",\\\"SecretAccessKey\\\":\\\"fixture\\\"}\r\n" stderr=""
+credentials raw=true code=Some(0) stdout="{\"Version\":1,\"AccessKeyId\":\"listed\",\"SecretAccessKey\":\"fixture\"}\r\n" stderr=""
+quoted-program raw=false code=Some(1) stdout="" stderr="'\\\"C:\\WINDOWS\\System32\\cmd.exe\\\"' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"
+quoted-program raw=true code=Some(0) stdout="quoted-path\r\n" stderr=""
+exit-status raw=false code=Some(3) stdout="" stderr="no  \r\n"
+exit-status raw=true code=Some(3) stdout="" stderr="no  \r\n"
+NATIVE_EXIT=0
+2026-11-03T13:32:23.0682910-08:00

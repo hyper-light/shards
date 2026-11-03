@@ -1,0 +1,22 @@
+== format
+== aarch64-apple-darwin
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.22s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+== x86_64-apple-darwin
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.64s
+== x86_64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.96s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+== aarch64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.58s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+== x86_64-pc-windows-msvc
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.27s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+== aarch64-pc-windows-msvc
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.55s
+== x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.56s
+== aarch64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.88s
+status=0

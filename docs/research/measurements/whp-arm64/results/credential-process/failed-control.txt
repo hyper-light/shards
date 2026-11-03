@@ -1,0 +1,7 @@
+2026-11-03T13:28:03.0876400-08:00
+Native command quoting diagnostic; overlaps already-failing full-real03; creates no VM.
+credentials raw=false code=Some(1) stdout="" stderr="The system cannot find the path specified.\r\nError occurred while processing: .exe /C echo.\r\nThe filename, directory name, or volume label syntax is incorrect.\r\nError occurred while processing: {\\Version\\:1.\r\nThe filename, directory name, or volume label syntax is incorrect.\r\nError occurred while processing: \\AccessKeyId\\:\\listed\\.\r\nThe filename, directory name, or volume label syntax is incorrect.\r\nError occurred while processing: \\SecretAccessKey\\:\\fixture\\}.\r\n"
+credentials raw=true code=Some(1) stdout="" stderr="The directory or file cannot be created.\r\nError occurred while processing: .exe /D /S /C echo.\r\nThe directory name is invalid.\r\nError occurred while processing: {Version:1.\r\nThe directory name is invalid.\r\nError occurred while processing: AccessKeyId:listed.\r\nThe directory name is invalid.\r\nError occurred while processing: SecretAccessKey:fixture}.\r\n"
+Error: "credentials: raw shell command did not match"
+NATIVE_EXIT=1
+2026-11-03T13:28:06.2760960-08:00

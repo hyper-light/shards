@@ -16923,6 +16923,17 @@ revision before comparing a changed API/implementation.
   MMIO load result/PC set together. These checks overlapped the already-failing
   real-03 container binary. The README retains the method, source patches and raw
   evidence; neither the selected tests nor this API probe qualify the full suite.
+- **Credential commands.** The continuing container run found its CloudWatch fixture's
+  Unix `printf` command unavailable on Windows. A native probe then found normal
+  argument escaping corrupting configured credential commands' JSON and quoted program
+  paths. The provider now passes the configured command literally with `raw_arg`, as
+  Rust documents; the Windows fixture uses `echo`. The existing credential regression,
+  enabled on Windows and extended with a helper filename containing a space, passed
+  there in 1.20 s, including environment, expiry, Version 2 rejection and exit code 3.
+  Native Mac, all eight lint targets and the complete Windows cross-build passed.
+  The README records the raw control's `/D /S /C` versus production's `/C`, an earlier
+  failed probe control, and the exact production regression. These checks overlapped
+  the already-failing full run; the CloudWatch VM E2E and full qualification remain open.
 
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 

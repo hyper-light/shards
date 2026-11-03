@@ -1,0 +1,8 @@
+{
+  "sha256": "1be4ed2bda8f002a4feab188d43dd56162842a2a248c8af152001f25cb00effa",
+  "source": "/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/docs/research/measurements/whp-arm64/target/aarch64-pc-windows-msvc/release/credential-process.exe",
+  "target": "aarch64-pc-windows-msvc",
+  "profile": "release, static CRT",
+  "utc": "2026-11-03T21:32:24.534838+00:00",
+  "overlap": "full-real03, containers6092; no VM created"
+}

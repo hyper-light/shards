@@ -375,3 +375,27 @@ guest was rebuilt to exercise the paired stack write. As the standard user it re
 state back, and powered off through Arm64Reset, with native exit 0. Its raw output is
 `results/mmio-batch.txt`. This probe also overlapped the already-failing full run; its
 latencies are diagnostic and do not establish native performance or qualify all features.
+
+## Credential commands on Windows
+
+The continuing container run reached its CloudWatch fixture and reported that `printf`
+was unavailable. The fixture now uses Windows' `echo` there. A native command probe
+also found a production quoting problem: passing configured shell text through ordinary
+`Command::args` inserted backslashes into its JSON and failed a quoted program path.
+`src/bin/credential-process.rs` compares that call with literal command text; its raw
+control uses `/D /S /C`. Both the JSON and quoted-program controls then succeeded, and
+exit code 3 was preserved. Build with static CRT and `--bin credential-process`, as
+for the main probe. An earlier probe failed its control too; its output is retained
+but supplies no quoting conclusion.
+
+The production provider keeps `/C` and encloses the configured command through
+`CommandExt::raw_arg`, following the
+[Rust documentation](https://doc.rust-lang.org/stable/std/os/windows/process/trait.CommandExt.html#tymethod.raw_arg).
+The previously Unix-only credential regression now also runs on Windows with its own
+shell fixtures. It verifies the listed environment, expiration, rejection of Version 2,
+exit code 3, and a `.cmd` helper with a space in its filename. The exact production path
+passed on this standard-user arm64 Windows host in 1.20 s, with one test run and native
+exit 0. The Mac test and all eight lint targets also passed, as did the complete arm64
+Windows cross-build. Raw output, source patch and hashes are in
+`results/credential-process/`. The selected Windows test overlapped the already-failing
+full run; the corrected CloudWatch VM E2E and the full suite remain to pass.

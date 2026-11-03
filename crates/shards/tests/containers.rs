@@ -16886,9 +16886,14 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
     cloudwatch(listener, seen);
     let (kernel, init) = (kernel(), guest_init());
     let config = home.join("aws-config");
+    let credential_process = if cfg!(windows) {
+        r#"echo {"Version":1,"AccessKeyId":"PROCESS","SecretAccessKey":"process-secret"}"#
+    } else {
+        r#"printf '%s' '{"Version":1,"AccessKeyId":"PROCESS","SecretAccessKey":"process-secret"}'"#
+    };
     std::fs::write(
         &config,
-        "[profile process]\ncredential_process = printf '{\"Version\": 1, \"AccessKeyId\": \"PROCESS\", \"SecretAccessKey\": \"process-secret\"}'\n",
+        format!("[profile process]\ncredential_process = {credential_process}\n"),
     )
     .unwrap();
     let none = home.join("no-aws-credentials");

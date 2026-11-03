@@ -1,0 +1,100 @@
+diff --git a/crates/shards/src/aws/credentials.rs b/crates/shards/src/aws/credentials.rs
+index 0f35b260..0b778f31 100644
+--- a/crates/shards/src/aws/credentials.rs
++++ b/crates/shards/src/aws/credentials.rs
+@@ -1069,9 +1069,12 @@ fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Ve
+ #[cfg(not(unix))]
+ fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Vec<u8>, String> {
+     use std::io::Read as _;
++    use std::os::windows::process::CommandExt as _;
+     let said = |e: &dyn std::fmt::Display| format!("credential_process: {e}");
+     let mut child = std::process::Command::new("cmd.exe")
+-        .args(["/C", command])
++        .arg("/C")
++        // Keep the configured shell text's quotes: cmd.exe does not use CRT escaping.
++        .raw_arg(format!("\"{command}\""))
+         .env_clear()
+         .envs(env.iter().map(|(k, v)| (k, v)))
+         .stdin(std::process::Stdio::null())
+@@ -1749,18 +1752,36 @@ mod tests {
+ 
+     /// A credential process's output, run in the chain's environment; refused for a
+     /// version not 1, or as it fails.
+-    #[cfg(unix)]
+     #[test]
+     fn credential_processes_give_their_credentials() {
+         let dir = shards_testdir::TempDir::new("aws-process").unwrap();
+         let config = dir.join("config");
+-        std::fs::write(
+-            &config,
++        let profiles = if cfg!(windows) {
++            let helper = dir.join("credential helper.cmd");
++            std::fs::write(
++                &helper,
++                "@echo {\"Version\":1,\"AccessKeyId\":\"%AWS_MARK%\",\"SecretAccessKey\":\"s\"}\r\n",
++            )
++            .unwrap();
++            let mut profiles = r#"[profile ok]
++credential_process = echo {"Version":1,"AccessKeyId":"%AWS_MARK%","SecretAccessKey":"s","Expiration":"2099-01-01T00:00:00Z"}
++[profile two]
++credential_process = echo {"Version":2,"AccessKeyId":"a","SecretAccessKey":"s"}
++[profile fails]
++credential_process = echo no >&2 & exit /b 3
++"#
++            .to_owned();
++            profiles.push_str(&format!(
++                "[profile quoted]\ncredential_process = \"{}\"\n",
++                helper.display()
++            ));
++            profiles
++        } else {
+             "[profile ok]\ncredential_process = printf '{\"Version\": 1, \"AccessKeyId\": \"%s\", \"SecretAccessKey\": \"s\", \"Expiration\": \"2099-01-01T00:00:00Z\"}' \"$AWS_MARK\"\n\
+              [profile two]\ncredential_process = printf '{\"Version\": 2, \"AccessKeyId\": \"a\", \"SecretAccessKey\": \"s\"}'\n\
+-             [profile fails]\ncredential_process = echo no >&2; exit 3\n",
+-        )
+-        .unwrap();
++             [profile fails]\ncredential_process = echo no >&2; exit 3\n".to_owned()
++        };
++        std::fs::write(&config, profiles).unwrap();
+         let vars = vec![
+             format!("AWS_CONFIG_FILE={}", config.display()),
+             format!("AWS_SHARED_CREDENTIALS_FILE={}", dir.join("none").display()),
+@@ -1779,7 +1800,17 @@ mod tests {
+             ("listed", rfc3339("2099-01-01T00:00:00Z"))
+         );
+         assert!(run("two").err().unwrap().contains("Version is not 1"));
+-        assert!(run("fails").err().unwrap().contains("exited 3"));
++        let exited = if cfg!(windows) {
++            "it exited exit code: 3"
++        } else {
++            "exited 3"
++        };
++        assert!(run("fails").err().unwrap().contains(exited));
++        if cfg!(windows) {
++            let found = run("quoted").unwrap();
++            assert_eq!(found.creds.access_key.as_str(), "listed");
++            assert_eq!(found.expires, None);
++        }
+     }
+ 
+     /// Over plain HTTP, a full URI's host is to be loopback or the ECS or EKS agent's.
+diff --git a/crates/shards/tests/containers.rs b/crates/shards/tests/containers.rs
+index 8743482c..0022b1ab 100644
+--- a/crates/shards/tests/containers.rs
++++ b/crates/shards/tests/containers.rs
+@@ -16886,9 +16886,14 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
+     cloudwatch(listener, seen);
+     let (kernel, init) = (kernel(), guest_init());
+     let config = home.join("aws-config");
++    let credential_process = if cfg!(windows) {
++        r#"echo {"Version":1,"AccessKeyId":"PROCESS","SecretAccessKey":"process-secret"}"#
++    } else {
++        r#"printf '%s' '{"Version":1,"AccessKeyId":"PROCESS","SecretAccessKey":"process-secret"}'"#
++    };
+     std::fs::write(
+         &config,
+-        "[profile process]\ncredential_process = printf '{\"Version\": 1, \"AccessKeyId\": \"PROCESS\", \"SecretAccessKey\": \"process-secret\"}'\n",
++        format!("[profile process]\ncredential_process = {credential_process}\n"),
+     )
+     .unwrap();
+     let none = home.join("no-aws-credentials");
