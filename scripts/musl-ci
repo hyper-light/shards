@@ -16,9 +16,10 @@ set -eu
 # runner's DNS failed Alpine's index once ("DNS: transient error", CI run 38329714115).
 tries=0
 packages="build-base curl xz"
-# The renderer's build: Python for meson and ninja, and Linux's headers (dma-buf, udmabuf).
+# The renderer's build: bash for its script, Python for meson and ninja, and Linux's
+# headers (dma-buf, udmabuf).
 if [ -n "${SHARDS_GPU_LIBS:-}" ]; then
-    packages="$packages python3 linux-headers"
+    packages="$packages bash python3 linux-headers"
 fi
 until apk add --no-cache $packages; do
     tries=$((tries + 1))

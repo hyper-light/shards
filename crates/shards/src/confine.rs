@@ -252,10 +252,13 @@ const GPU_IOCTL_TYPES: [u8; 3] = *b"Fmd";
 /// NVIDIA's `statfs` of where it keeps files and `sched_get_priority_max` and `_min` of the
 /// threads it starts, the address of a socket it was given (`getsockname`, libGLX_nvidia),
 /// the C library's `getresuid` and `getresgid` as a driver asks whether it runs set-uid or
-/// set-gid, and anonymous
-/// files of memory (`memfd_create`): Mesa's, NVIDIA's and the renderer's own shared memory.
+/// set-gid, anonymous files of memory (`memfd_create`): Mesa's, NVIDIA's and the renderer's
+/// own shared memory, and `sysinfo`, by which the C library's `sysconf(_SC_PHYS_PAGES)`
+/// says the host's memory to Mesa's Intel driver, which sizes an integrated GPU's heap by
+/// it (glibc's and musl's sysconf; Mesa's os_get_total_physical_memory; refused, ANV on
+/// Intel's UHD Graphics ended its VM process before it was ready).
 #[cfg(target_os = "linux")]
-const GPU_SYSCALLS: [libc::c_long; 7] = [
+const GPU_SYSCALLS: [libc::c_long; 8] = [
     libc::SYS_statfs,
     libc::SYS_sched_get_priority_max,
     libc::SYS_sched_get_priority_min,
@@ -263,6 +266,7 @@ const GPU_SYSCALLS: [libc::c_long; 7] = [
     libc::SYS_getresuid,
     libc::SYS_getresgid,
     libc::SYS_memfd_create,
+    libc::SYS_sysinfo,
 ];
 
 /// What a GPU's VM process reads and controls besides a VM process's, on Linux (D201), as
