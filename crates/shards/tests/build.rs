@@ -9684,7 +9684,8 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         &to(granted),
         "unreach",
         &to(other),
-        // The MCP server's address before its name is resolved: none of it is known yet.
+        // The MCP server's address before its name is resolved: refused, as none of it is
+        // known yet.
         "unreach",
         &to(mcp),
         "reach",
@@ -9748,7 +9749,8 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
             format!("[agent a] confined reach {}: ok", to(granted)),
             // A port its network grants, but not the microVM's boundary: dropped.
             format!("[agent a] confined unreach {}: timeout", to(other)),
-            format!("[agent a] confined unreach {}: timeout", to(mcp)),
+            // Refused by its network process, as by IPv4.
+            format!("[agent a] confined unreach {}: errno 111", to(mcp)),
             format!("[agent a] confined reach {mcp_name}: ok"),
             format!("[agent a] confined reach {}: ok", to(literal)),
         ] {
