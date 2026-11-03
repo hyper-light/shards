@@ -2339,8 +2339,9 @@ fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
 /// are charged there from their first page; a second run under the slice is made in that
 /// scope, and a run without one, its template's pool warm, in none of the slice; `inspect`
 /// says it; a joiner names its provider's or none; and the scope goes with the daemon. A
-/// path, which names no slice, is refused, as it is elsewhere than Linux, where a group
-/// shards keeps is named (D183's slice 3, which its groups' tests hold).
+/// path names a cgroup delegated to the user (slice 2, the next test's), refused where none
+/// is, as it is elsewhere than Linux, where a group shards keeps is named (D183's slice 3,
+/// which its groups' tests hold).
 #[test]
 fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
     let Some((home, image)) = home("containers-parent") else {
@@ -2370,7 +2371,8 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     use std::io::Write as _;
     let shards = |args: &[&str]| shards_in(home, args);
     let slice = format!("shardstest{}.slice", std::process::id());
-    assert!(path.stderr.contains("NAME.slice"), "{path}");
+    // A path names a delegated cgroup (slice 2, the next test's): none is at /agents.
+    assert!(path.stderr.contains("no cgroup is there"), "{path}");
     // The user's systemd manager, on its bus: CI's Linux runners have one, and must find it
     // (SHARDS_REQUIRE_USER_MANAGER).
     let bus = std::env::var_os("XDG_RUNTIME_DIR")
@@ -2549,6 +2551,230 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "stop", &slice])
         .status();
+}
+
+/// `--cgroup-parent /PATH` (D183, slice 2): where no user's manager places a process, a
+/// microVM's processes are made in a cgroup delegated to the user, named by its path, by a
+/// spawner the daemon moved once into a leaf of its own there, `shards-PID-N`, and are
+/// charged there from their first page; a second run under it is made in the same leaf, a
+/// run without one in the daemon's own cgroup; `inspect` says it; a path with no cgroup,
+/// and one not delegated, are refused before anything starts; and the leaf goes with the
+/// daemon, as no manager collects it. The delegation an administrator would give is a
+/// scope of the user's manager's with `Delegate=yes`, laid out as a delegated tree is (the
+/// daemon in a leaf of its own, `daemon`, the parent `agents` beside it, the memory
+/// controller enabled for both: cgroup-v2.rst, "No Internal Process Constraint"), and the
+/// daemon, started inside it, is given no bus of the manager's (`XDG_RUNTIME_DIR` a
+/// directory with none in it). A holder process keeps the scope, so that what removes the
+/// leaf is the daemon, not the manager collecting it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_microvm_is_made_in_the_delegated_cgroup_its_cgroup_parent_names() {
+    use std::io::Write as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let delegating = Command::new("systemd-run")
+        .args(["--user", "--scope", "--quiet", "true"])
+        .status();
+    if !delegating.as_ref().is_ok_and(|s| s.success()) {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager to delegate a cgroup with: {delegating:?}"
+        );
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: no user's systemd manager to delegate a cgroup with"
+        );
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-delegated");
+    let no_bus = TempDir::new("nobus");
+    let unit = format!("shardstest-delegated-{}", std::process::id());
+    /// Stops the delegating scope, its holder with it, however the test ends.
+    struct Scope(String);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let _ = Command::new("systemctl")
+                .args(["--user", "stop", &format!("{}.scope", self.0)])
+                .status();
+        }
+    }
+    let _scope = Scope(unit.clone());
+    let script = r#"set -e
+cg=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
+mkdir "$cg/daemon"
+echo $$ > "$cg/daemon/cgroup.procs"
+echo +memory > "$cg/cgroup.subtree_control"
+mkdir "$cg/agents"
+sleep 3600 </dev/null >/dev/null 2>&1 &
+echo "$cg"
+export XDG_RUNTIME_DIR="$1"
+unset DBUS_SESSION_BUS_ADDRESS
+shift
+exec "$@"
+"#;
+    // From a file: systemd-run expands `$` in its command's arguments as a unit's
+    // ExecStart= is (systemd.service(5), "Command lines"; systemd-run(1),
+    // --expand-environment), where the script's are the shell's.
+    let delegate = no_bus.join("delegate.sh");
+    std::fs::write(&delegate, script).unwrap();
+    let mut started = Command::new("systemd-run");
+    started
+        .args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "-p",
+            "Delegate=yes",
+            "--unit",
+            &unit,
+            "--",
+        ])
+        .arg("sh")
+        .arg(&delegate)
+        .arg(no_bus.as_os_str())
+        .arg(common::shards())
+        .args(["pull", "-q", &image])
+        .env("SHARDS_HOME", home.as_os_str())
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::null());
+    common::as_tests_run(&mut started);
+    let pulled = started.output().unwrap();
+    let said = String::from_utf8_lossy(&pulled.stdout).into_owned();
+    assert!(
+        pulled.status.success(),
+        "{said}{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    let delegated = std::path::PathBuf::from(said.lines().next().unwrap());
+    let path_of = |dir: &Path| format!("/{}", dir.strip_prefix("/sys/fs/cgroup").unwrap().display());
+    let agents = path_of(&delegated.join("agents"));
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // The daemon, started in the delegated tree, with no bus of a manager's.
+    let daemon: u32 = std::fs::read_to_string(home.join("daemon.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let cgroup_of = |pid: u32| -> String {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap();
+        text.lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(cgroup_of(daemon), path_of(&delegated.join("daemon")));
+    let environ = std::fs::read(format!("/proc/{daemon}/environ")).unwrap();
+    let runtime = format!("XDG_RUNTIME_DIR={}", no_bus.display());
+    assert!(
+        environ.split(|b| *b == 0).any(|v| v == runtime.as_bytes()),
+        "the daemon's environment has no {runtime}"
+    );
+    // Refused before anything starts: a path with no cgroup, and one not delegated.
+    let none = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroup-parent", &format!("{agents}/none")],
+        &["exit", "0"],
+    );
+    assert!(
+        none.status != Some(0) && none.stderr.contains("no cgroup is there"),
+        "{none}"
+    );
+    let root = run_in(&home, &image, &["--rm", "--cgroup-parent", "/"], &["exit", "0"]);
+    assert!(
+        root.status != Some(0) && root.stderr.contains("not delegated to you"),
+        "{root}"
+    );
+    let placed = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "placed", "--cgroup-parent", &agents],
+        &["sleep"],
+    );
+    assert_eq!(placed.status, Some(0), "{placed}");
+    let pid_of = |name: &str| -> u32 {
+        let pid = shards(&["inspect", "-f", "{{.State.Pid}}", name]);
+        pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"))
+    };
+    let vm = pid_of("placed");
+    let leaf = cgroup_of(vm);
+    assert!(leaf.starts_with(&format!("{agents}/shards-{daemon}-")), "{leaf}");
+    let leaf_dir = Path::new("/sys/fs/cgroup").join(leaf.trim_start_matches('/'));
+    // In it: the VM process, its network process, and the spawner that made them, alone.
+    let procs = std::fs::read_to_string(leaf_dir.join("cgroup.procs")).unwrap();
+    let mut names: Vec<String> = procs
+        .lines()
+        .map(|p| {
+            std::fs::read_to_string(format!("/proc/{p}/comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, ["shards", "shards-net", "shards-vm"], "{procs}");
+    // Charged there from its first page: all the VM process's own memory is the parent's
+    // (read until the parent's statistics have caught up, as the slice's test reads them).
+    let own = || {
+        std::fs::read_to_string(format!("/proc/{vm}/status"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("RssAnon:"))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap()
+    };
+    let agents_dir = delegated.join("agents");
+    let anon = || {
+        std::fs::read_to_string(agents_dir.join("memory.stat"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("anon "))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut own_kib, mut charged) = (own(), anon());
+    while charged < own_kib << 10 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        own_kib = own();
+        charged = anon();
+    }
+    assert!(
+        own_kib > 0 && charged >= own_kib << 10,
+        "the VM's own {own_kib} KiB, the parent's {charged} bytes"
+    );
+    // A second run under it: made in the same leaf, the spawner moved once.
+    let second = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "second", "--cgroup-parent", &agents],
+        &["sleep"],
+    );
+    assert_eq!(second.status, Some(0), "{second}");
+    assert_eq!(cgroup_of(pid_of("second")), leaf);
+    // A run without one: in the daemon's own cgroup.
+    let free = run_in(&home, &image, &["-d", "--name", "free"], &["sleep"]);
+    assert_eq!(free.status, Some(0), "{free}");
+    assert_eq!(cgroup_of(pid_of("free")), cgroup_of(daemon));
+    let inspected = shards(&["inspect", "-f", "{{.HostConfig.CgroupParent}}", "placed"]);
+    assert_eq!(inspected.stdout, format!("{agents}\n"), "{inspected}");
+    // The leaf goes with the daemon, which removes it once its processes have ended.
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let deadline = Instant::now() + TIMEOUT;
+    while leaf_dir.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} outlived the daemon",
+            leaf_dir.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(agents_dir.exists(), "the parent is its user's, not shards'");
 }
 
 /// A microVM held to a budget short of what it holds gives back what it holds cold of its

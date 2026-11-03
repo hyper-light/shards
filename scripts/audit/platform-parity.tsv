@@ -439,3 +439,5 @@ crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	crates/ipc/src/windows.rs	str
 crates/shards/src/confine.rs	const GPU_SYSCALLS	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn gpu_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn library_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/daemon/parents.rs	fn place_delegated	-	none: macos,windows	a spawner moved into a leaf of a cgroup delegated to the user, where no manager of its places one (D183, slice 2): macOS and Windows have no cgroups, their groups the ones shards keeps (slice 3)
+crates/shards/src/daemon/parents.rs	mod delegated	-	none: macos,windows	cgroups delegated to the user, found, checked and their leaves removed (D183, slice 2): macOS and Windows have no cgroups, their groups the ones shards keeps (slice 3)

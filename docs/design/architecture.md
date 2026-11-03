@@ -5366,7 +5366,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   or disconnected, with no grants built again; disconnected keeping its address; its last
   network taken; no way out through its next network.
 
-### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1 and 3 built)
+### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
 
@@ -5404,9 +5404,9 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   microVMs made by that parent's spawner: a warm microVM taken for a run has been its
   parent's from its first page, and none of another parent's is taken.
 - **Refused before anything starts, each with why**: on Linux, a value that is no slice
-  name (a path names a cgroup the user's manager owns, not the user), no user manager on
-  the user's bus, a slice the manager refuses (its own words); on macOS and Windows, a name
-  no group shards keeps may have (slice 3).
+  name nor a path, no user manager on the user's bus for a slice, a slice the manager
+  refuses (its own words), a path naming no cgroup or one not delegated to the user
+  (slice 2); on macOS and Windows, a name no group shards keeps may have (slice 3).
 - **Shown as given**: inspect's `HostConfig.CgroupParent`.
 - **Past a container's cgroup parent.** Rootless with nothing to set up, from an ssh login
   as from a desktop session; the microVM's whole host footprint, guest memory, vCPUs and
@@ -5451,19 +5451,56 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   slice; the Engine API's `CgroupParent` dropped; a microVM engine's container given a
   parent; a group's children made by the process's own spawner; a killed group's spawner
   never found ended.
-- **Where no user's manager is.** A `--cgroup-parent` there is refused before anything is
-  made, naming the bus it looked for (its `XDG_RUNTIME_DIR`'s, or `/run/user/UID`'s): a
-  start would fail with it otherwise.
-- **Slice 2, designed: a cgroup delegated to the user, where no user's manager is.** The
+- **Where no user's manager is.** A slice there is refused before anything is made,
+  naming the bus it looked for (its `XDG_RUNTIME_DIR`'s, or `/run/user/UID`'s): a start
+  would fail with it otherwise. A path is slice 2's, below, and asks no manager.
+- **Slice 2, built: a cgroup delegated to the user, where no user's manager is.** The
   kernel lets a process of the user place one in a cgroup only within a sub-hierarchy
   delegated to it, both of them in it (cgroup-v2.rst, "Model of Delegation", "Delegation
   Containment"): a cgroup namespace's root where the hierarchy is mounted `nsdelegate`
   (a container's own, the hosts of OpenRC, runit and s6 having no per-user delegation),
   or a directory an administrator gave the user, its `cgroup.procs`, `cgroup.threads` and
-  `cgroup.subtree_control` theirs. There `--cgroup-parent PATH` would name a cgroup of
-  that sub-hierarchy, the daemon's own cgroup in it, and the parent's spawner be moved
-  into a leaf of its own there once (a move, PM M248's cost, once per parent), its
-  children born there as slice 1's are. Built once a host needs it.
+  `cgroup.subtree_control` theirs. There `--cgroup-parent PATH` names a cgroup of that
+  sub-hierarchy, the daemon's own cgroup in it, and the parent's spawner is moved into a
+  leaf of its own there once (a move, PM M248's cost, once per parent), its
+  children born there as slice 1's are.
+  - **How it is built.** A value starting `/` names a cgroup by its path from the
+    hierarchy's root, as `/proc/PID/cgroup` says one (a cgroup namespace's root where the
+    daemon has one), on the cgroup v2 hierarchy at `/sys/fs/cgroup`, where D188's budgets
+    read it; asked of no manager, so it serves a host with one too, wherever the kernel lets
+    the user. Refused before anything starts (`parents.rs`, `delegated::check`), each
+    saying why: a `.` or `..` in it; no cgroup v2 hierarchy; no cgroup there (its
+    `cgroup.procs`); a directory the daemon may make no cgroup in (access(2) `W_OK|X_OK`,
+    mkdir(2)'s); and a cgroup the daemon may move none of its processes into, the
+    `cgroup.procs` of the nearest cgroup both are within not the user's to write
+    (cgroup-v2.rst, "Delegation Containment"). The parent's spawner (slice 1's,
+    `shards_ipc::start_group`) is moved, before it makes anything, into a leaf the daemon
+    makes in the cgroup, `shards-PID-N`, by a write of its PID to the leaf's
+    `cgroup.procs`; a refusal there ends it, removes the leaf and says what the kernel
+    said. A leaf, which no manager collects, is removed by its daemon as it exits, its
+    spawners ended and reaped, once its `cgroup.events` says `populated 0`, waiting
+    at most 10 s for the warm VMs it told to end; one left (a daemon killed, or processes
+    that ran on) is removed by the next daemon placing a spawner in the same cgroup, which
+    removes each `shards-PID-N` whose daemon PID no process has (kill(2) `ESRCH`; rmdir(2)
+    refuses one still holding processes). Warm pools, joiners, budgets (D188 watches the
+    leaf as it watches a slice's scope) and `inspect` are slice 1's.
+  - **Tested** on real microVMs on Fedora 44 (kernel 6.19, x86_64), with no bus of a
+    manager's: `a_microvm_is_made_in_the_delegated_cgroup_its_cgroup_parent_names`. The
+    delegation an administrator would give stands in as a scope of the user's manager's
+    with `Delegate=yes`, laid out as a delegated tree is, the daemon in a leaf of its own and
+    the parent beside it with the memory controller (cgroup-v2.rst, "No Internal Process
+    Constraint"), the daemon started there with `XDG_RUNTIME_DIR` a directory with no bus
+    in it; a holder process keeps the scope, so that the daemon, not the manager, removes
+    the leaf.
+    A run under the parent made in a leaf whose processes are its VM process, its network
+    process and the spawner alone; the VM process's own memory charged to the parent from
+    its first page; a second run in the same leaf; a run without one in the daemon's own
+    cgroup; `inspect` saying it; a path with no cgroup, and `/`, not delegated, refused;
+    and the leaf gone once the daemon has stopped, the parent kept. Unit tests: the
+    refusals, the nearest common cgroup, and the sweep of leaves of daemons gone.
+    Mutation-checked on that host, each caught: the spawner never moved into its leaf
+    (the VM process made in the daemon's own cgroup); the leaves never removed as the
+    daemon exits (the leaf outlived it).
 - **Slice 3, built on macOS and Windows: groups shards keeps, where its host has none a
   user's tools cap.**
   macOS has no group of processes a user may make and cap (its jetsam bands and
@@ -5538,7 +5575,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   - Shown as given (inspect's `HostConfig.CgroupParent`); the group's `memory.current`
     file the daemon writes as it sums it, as a cgroup's says what it holds.
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
-  where no user's manager is (designed, above). 3: macOS and Windows, groups shards keeps
+  where no user's manager is (built, above). 3: macOS and Windows, groups shards keeps
   (built, above). 4: the microVM's own engine's members (D181), a cgroup within the
   microVM, refused (501) until a need for it inside a microVM is shown.
 
