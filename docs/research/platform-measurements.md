@@ -16850,6 +16850,40 @@ revision before comparing a changed API/implementation.
   outer host. The nested host was resized to 16 CPUs and 24 GiB for the full suite,
   keeping every assertion and deadline. The full real-VM suite remains to pass before
   step 10 is closed. Raw results and the failure are retained with the harness.
+- **Qualification follow-up, 2026-11-03 UTC.** The 16-CPU run completed 80 of 141
+  binaries, with 76 passing and four failed, then was aborted after more than two hours
+  in the container binary. It is incomplete evidence. Its failures included 64-vCPU
+  storms, boot, the 10 s wide-policy compiler deadline, and both Windows builder memory
+  cases. The arm64 nested-refusal assertion was corrected and passed its next checks.
+  Windows updated to 26300.9711 during shutdown. Subsequent four-CPU, 24 GiB comparisons
+  found no improvement from single-threaded TCG over multithreaded TCG. After returning
+  to multithreaded TCG, maximum-vCPU boot passed in 56.66 s and builder memory growth in
+  149.34 s, but the faster builder memory case still failed its 180 s deadline. These
+  subsets do not qualify the suite, and the OS update confounds comparisons with the
+  16-CPU run. A direct 123-vCPU boot prepared vCPUs in 0.918 s, brought Linux's configured
+  64 CPUs online at guest time 15.723 s and reached the expected VFS reset after 97.523 s
+  wall time; no counter defect follows from those different milestones. The README
+  records exact selections and retained results. Step 10 remains open.
+- **VBS/HVF follow-up.** On a child of the cleanly stopped 26300.9711 disk, first setting
+  `vsmlaunchtype Off`, then also setting the documented DeviceGuard
+  `EnableVirtualizationBasedSecurity=0` system and policy values, each followed by a
+  reboot, left Win32_DeviceGuard's VBS status at 2 with no services running. WHP remained
+  present and partition creation succeeded. These settings did not yield a VBS-off
+  control. An HVF boot of a separate child, with enabled EL2 truthfully advertised,
+  reached the desktop but gave current-boot Hyper-V event 26 (BalStatus 0x19/sub-status
+  0xC), WHP present=0 and CreatePartition=0xC0351000. VBS then reported 0 while the
+  hypervisor had failed. No Windows code/check or locked/signed policy was changed.
+  The README records the settings and full transcripts; there is no VBS performance or
+  VHE causality claim from these experiments.
+- **Emulator profile.** On the restored four-CPU baseline, the faster-growth builder
+  again failed its 180 s deadline. Info logs put vCPU preparation at 0.342 s and the
+  startup marker at 4.898 s. Three five-second QEMU samples include page-table translation
+  and locking; cumulative counters after the test recorded 22,347,718 partial TLB flushes
+  and four translation-buffer flushes since host boot. This is a diagnostic profile,
+  not a performance qualification. A one-CPU child started Hyper-V and ran a real WHP
+  guest, but still failed the selected compiler and maximum-vCPU boot deadlines. A local
+  tag-validation error prevented its other two planned checks from starting. The retained
+  reports distinguish those unrun checks from VM failures. No assertion was relaxed.
 
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 

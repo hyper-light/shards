@@ -1,0 +1,432 @@
+DIRECT DIAGNOSTIC, no init/rootfs; exit 3 is the expected VFS reset.
+Native exit=3 elapsed=97.52255
+
+== stderr
+[2540     917754us INFO] 123 vCPU(s) ready to run after 917717 us
+shards: guest requested a reset
+
+== stdout
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x000f0510]
+[    0.000000] Linux version 6.18.48 (shards@shards) (gcc (Debian 12.2.0-14+deb12u1) 12.2.0, GNU ld (GNU Binutils for Debian) 2.40) #1 SMP 1970-01-01T00:00:00Z
+[    0.000000] random: crng init done
+[    0.000000] Machine model: linux,dummy-virt
+[    0.000000] efi: UEFI not found.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] NUMA: Faking a node at [mem 0x0000000080200000-0x00000000bfffffff]
+[    0.000000] NODE_DATA(0) allocated [mem 0xbfdbd2c0-0xbfde7c3f]
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000080200000-0x00000000bfffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000]   Device   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080200000-0x00000000bfffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080200000-0x00000000bfffffff]
+[    0.000000] On node 0, zone DMA: 512 pages in unavailable ranges
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: MIGRATE_INFO_TYPE not supported.
+[    0.000000] psci: SMC Calling Convention v1.4
+[    0.000000] psci: OSI mode supported.
+[    0.000000] psci: [Firmware Bug]: failed to set PC mode: -1
+[    0.000000] Number of cores (123) exceeds configured maximum of 64 - clipping
+[    0.000000] percpu: Embedded 22 pages/cpu s52312 r8192 d29608 u90112
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: console=ttyS0 panic=-1
+[    0.000000] printk: log_buf_len individual max cpu contribution: 4096 bytes
+[    0.000000] printk: log_buf_len total cpu_extra contributions: 258048 bytes
+[    0.000000] printk: log_buf_len min size: 131072 bytes
+[    0.000000] printk: log buffer data + meta data: 524288 + 1835008 = 2359296 bytes
+[    0.000000] printk: early log buf free: 128400(97%)
+[    0.000000] Dentry cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[    0.000000] software IO TLB: area num 64.
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size roundup to 16MB
+[    0.000000] software IO TLB: mapped [mem 0x00000000bd420000-0x00000000be420000] (16MB)
+[    0.000000] Fallback order for Node 0: 0
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 261632
+[    0.000000] Policy zone: DMA
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=64, Nodes=1
+[    0.000000] rcu: Hierarchical RCU implementation.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.
+[    0.000000] RCU Tasks Trace: Setting shift to 6 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=64.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GICv3: 960 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns
+[    0.000000] arch_timer: cp15 timer running at 1000.00MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0x1fffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+[    0.000042] sched_clock: 61 bits at 1000MHz, resolution 1ns, wraps every 4398046511103ns
+[    0.041613] Console: colour dummy device 80x25
+[    0.051286] Calibrating delay loop (skipped), value calculated using timer frequency.. 2000.00 BogoMIPS (lpj=1000000)
+[    0.051382] pid_max: default: 65536 minimum: 512
+[    0.061662] LSM: initializing lsm=capability,landlock,selinux
+[    0.069416] landlock: Up and running.
+[    0.069452] SELinux:  Initializing.
+[    0.089970] Mount-cache hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[    0.091640] Mountpoint-cache hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[    0.244297] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[    0.300451] rcu: Hierarchical SRCU implementation.
+[    0.300490] rcu: 	Max phase no-delay instances is 400.
+[    0.315273] Timer migration: 2 hierarchy levels; 8 children per group; 2 crossnode level
+[    0.322452] EFI services will not be available.
+[    0.486217] smp: Bringing up secondary CPUs ...
+[    0.508976] Detected PIPT I-cache on CPU1
+[    0.511018] GICv3: CPU1: found redistributor 1 region 0:0x00000000080c0000
+[    0.511405] CPU1: Booted secondary processor 0x0000000001 [0x000f0510]
+[    0.533140] Detected PIPT I-cache on CPU2
+[    0.535277] GICv3: CPU2: found redistributor 2 region 0:0x00000000080e0000
+[    0.535581] CPU2: Booted secondary processor 0x0000000002 [0x000f0510]
+[    0.548908] Detected PIPT I-cache on CPU3
+[    0.553008] GICv3: CPU3: found redistributor 3 region 0:0x0000000008100000
+[    0.553472] CPU3: Booted secondary processor 0x0000000003 [0x000f0510]
+[    0.571434] Detected PIPT I-cache on CPU4
+[    0.576815] GICv3: CPU4: found redistributor 4 region 0:0x0000000008120000
+[    0.577857] CPU4: Booted secondary processor 0x0000000004 [0x000f0510]
+[    0.600064] Detected PIPT I-cache on CPU5
+[    0.606386] GICv3: CPU5: found redistributor 5 region 0:0x0000000008140000
+[    0.606736] CPU5: Booted secondary processor 0x0000000005 [0x000f0510]
+[    0.625007] Detected PIPT I-cache on CPU6
+[    0.632960] GICv3: CPU6: found redistributor 6 region 0:0x0000000008160000
+[    0.633969] CPU6: Booted secondary processor 0x0000000006 [0x000f0510]
+[    0.664763] Detected PIPT I-cache on CPU7
+[    0.673083] GICv3: CPU7: found redistributor 7 region 0:0x0000000008180000
+[    0.673610] CPU7: Booted secondary processor 0x0000000007 [0x000f0510]
+[    0.706459] Detected PIPT I-cache on CPU8
+[    0.718663] GICv3: CPU8: found redistributor 8 region 0:0x00000000081a0000
+[    0.719118] CPU8: Booted secondary processor 0x0000000008 [0x000f0510]
+[    0.767964] Detected PIPT I-cache on CPU9
+[    0.783126] GICv3: CPU9: found redistributor 9 region 0:0x00000000081c0000
+[    0.783570] CPU9: Booted secondary processor 0x0000000009 [0x000f0510]
+[    0.817236] Detected PIPT I-cache on CPU10
+[    0.830918] GICv3: CPU10: found redistributor a region 0:0x00000000081e0000
+[    0.831337] CPU10: Booted secondary processor 0x000000000a [0x000f0510]
+[    0.876028] Detected PIPT I-cache on CPU11
+[    0.897070] GICv3: CPU11: found redistributor b region 0:0x0000000008200000
+[    0.897599] CPU11: Booted secondary processor 0x000000000b [0x000f0510]
+[    0.940147] Detected PIPT I-cache on CPU12
+[    0.967351] GICv3: CPU12: found redistributor c region 0:0x0000000008220000
+[    0.968013] CPU12: Booted secondary processor 0x000000000c [0x000f0510]
+[    1.003605] Detected PIPT I-cache on CPU13
+[    1.032270] GICv3: CPU13: found redistributor d region 0:0x0000000008240000
+[    1.034882] CPU13: Booted secondary processor 0x000000000d [0x000f0510]
+[    1.087468] Detected PIPT I-cache on CPU14
+[    1.114366] GICv3: CPU14: found redistributor e region 0:0x0000000008260000
+[    1.115352] CPU14: Booted secondary processor 0x000000000e [0x000f0510]
+[    1.148732] Detected PIPT I-cache on CPU15
+[    1.187346] GICv3: CPU15: found redistributor f region 0:0x0000000008280000
+[    1.188028] CPU15: Booted secondary processor 0x000000000f [0x000f0510]
+[    1.237677] Detected PIPT I-cache on CPU16
+[    1.265418] GICv3: CPU16: found redistributor 100 region 0:0x00000000082a0000
+[    1.269009] CPU16: Booted secondary processor 0x0000000100 [0x000f0510]
+[    1.309907] Detected PIPT I-cache on CPU17
+[    1.340154] GICv3: CPU17: found redistributor 101 region 0:0x00000000082c0000
+[    1.340735] CPU17: Booted secondary processor 0x0000000101 [0x000f0510]
+[    1.394666] Detected PIPT I-cache on CPU18
+[    1.438015] GICv3: CPU18: found redistributor 102 region 0:0x00000000082e0000
+[    1.438331] CPU18: Booted secondary processor 0x0000000102 [0x000f0510]
+[    1.488734] Detected PIPT I-cache on CPU19
+[    1.539754] GICv3: CPU19: found redistributor 103 region 0:0x0000000008300000
+[    1.540259] CPU19: Booted secondary processor 0x0000000103 [0x000f0510]
+[    1.619355] Detected PIPT I-cache on CPU20
+[    1.663227] GICv3: CPU20: found redistributor 104 region 0:0x0000000008320000
+[    1.663798] CPU20: Booted secondary processor 0x0000000104 [0x000f0510]
+[    1.703342] Detected PIPT I-cache on CPU21
+[    1.748018] GICv3: CPU21: found redistributor 105 region 0:0x0000000008340000
+[    1.750475] CPU21: Booted secondary processor 0x0000000105 [0x000f0510]
+[    1.810441] Detected PIPT I-cache on CPU22
+[    1.876419] GICv3: CPU22: found redistributor 106 region 0:0x0000000008360000
+[    1.880643] CPU22: Booted secondary processor 0x0000000106 [0x000f0510]
+[    1.959174] Detected PIPT I-cache on CPU23
+[    2.015700] GICv3: CPU23: found redistributor 107 region 0:0x0000000008380000
+[    2.016328] CPU23: Booted secondary processor 0x0000000107 [0x000f0510]
+[    2.062132] Detected PIPT I-cache on CPU24
+[    2.122934] GICv3: CPU24: found redistributor 108 region 0:0x00000000083a0000
+[    2.123683] CPU24: Booted secondary processor 0x0000000108 [0x000f0510]
+[    2.182905] Detected PIPT I-cache on CPU25
+[    2.259333] GICv3: CPU25: found redistributor 109 region 0:0x00000000083c0000
+[    2.268010] CPU25: Booted secondary processor 0x0000000109 [0x000f0510]
+[    2.351391] Detected PIPT I-cache on CPU26
+[    2.429318] GICv3: CPU26: found redistributor 10a region 0:0x00000000083e0000
+[    2.430025] CPU26: Booted secondary processor 0x000000010a [0x000f0510]
+[    2.488496] Detected PIPT I-cache on CPU27
+[    2.558402] GICv3: CPU27: found redistributor 10b region 0:0x0000000008400000
+[    2.559053] CPU27: Booted secondary processor 0x000000010b [0x000f0510]
+[    2.632915] Detected PIPT I-cache on CPU28
+[    2.728961] GICv3: CPU28: found redistributor 10c region 0:0x0000000008420000
+[    2.734574] CPU28: Booted secondary processor 0x000000010c [0x000f0510]
+[    2.839070] Detected PIPT I-cache on CPU29
+[    2.910119] GICv3: CPU29: found redistributor 10d region 0:0x0000000008440000
+[    2.914058] CPU29: Booted secondary processor 0x000000010d [0x000f0510]
+[    2.992369] Detected PIPT I-cache on CPU30
+[    3.113667] GICv3: CPU30: found redistributor 10e region 0:0x0000000008460000
+[    3.118006] CPU30: Booted secondary processor 0x000000010e [0x000f0510]
+[    3.212071] Detected PIPT I-cache on CPU31
+[    3.310814] GICv3: CPU31: found redistributor 10f region 0:0x0000000008480000
+[    3.312183] CPU31: Booted secondary processor 0x000000010f [0x000f0510]
+[    3.398843] Detected PIPT I-cache on CPU32
+[    3.488910] GICv3: CPU32: found redistributor 200 region 0:0x00000000084a0000
+[    3.489983] CPU32: Booted secondary processor 0x0000000200 [0x000f0510]
+[    3.555155] Detected PIPT I-cache on CPU33
+[    3.660584] GICv3: CPU33: found redistributor 201 region 0:0x00000000084c0000
+[    3.661644] CPU33: Booted secondary processor 0x0000000201 [0x000f0510]
+[    3.783084] Detected PIPT I-cache on CPU34
+[    3.903570] GICv3: CPU34: found redistributor 202 region 0:0x00000000084e0000
+[    3.904133] CPU34: Booted secondary processor 0x0000000202 [0x000f0510]
+[    4.071039] Detected PIPT I-cache on CPU35
+[    4.221147] GICv3: CPU35: found redistributor 203 region 0:0x0000000008500000
+[    4.221906] CPU35: Booted secondary processor 0x0000000203 [0x000f0510]
+[    4.319777] Detected PIPT I-cache on CPU36
+[    4.485150] GICv3: CPU36: found redistributor 204 region 0:0x0000000008520000
+[    4.491550] CPU36: Booted secondary processor 0x0000000204 [0x000f0510]
+[    4.607133] Detected PIPT I-cache on CPU37
+[    4.727935] GICv3: CPU37: found redistributor 205 region 0:0x0000000008540000
+[    4.729267] CPU37: Booted secondary processor 0x0000000205 [0x000f0510]
+[    4.864455] Detected PIPT I-cache on CPU38
+[    5.013679] GICv3: CPU38: found redistributor 206 region 0:0x0000000008560000
+[    5.014459] CPU38: Booted secondary processor 0x0000000206 [0x000f0510]
+[    5.084378] Detected PIPT I-cache on CPU39
+[    5.236255] GICv3: CPU39: found redistributor 207 region 0:0x0000000008580000
+[    5.242367] CPU39: Booted secondary processor 0x0000000207 [0x000f0510]
+[    5.351455] Detected PIPT I-cache on CPU40
+[    5.565198] GICv3: CPU40: found redistributor 208 region 0:0x00000000085a0000
+[    5.566900] CPU40: Booted secondary processor 0x0000000208 [0x000f0510]
+[    5.717510] Detected PIPT I-cache on CPU41
+[    5.921800] GICv3: CPU41: found redistributor 209 region 0:0x00000000085c0000
+[    5.922606] CPU41: Booted secondary processor 0x0000000209 [0x000f0510]
+[    6.050462] Detected PIPT I-cache on CPU42
+[    6.245164] GICv3: CPU42: found redistributor 20a region 0:0x00000000085e0000
+[    6.245841] CPU42: Booted secondary processor 0x000000020a [0x000f0510]
+[    6.361341] Detected PIPT I-cache on CPU43
+[    6.554923] GICv3: CPU43: found redistributor 20b region 0:0x0000000008600000
+[    6.556195] CPU43: Booted secondary processor 0x000000020b [0x000f0510]
+[    6.672495] Detected PIPT I-cache on CPU44
+[    6.882650] GICv3: CPU44: found redistributor 20c region 0:0x0000000008620000
+[    6.883857] CPU44: Booted secondary processor 0x000000020c [0x000f0510]
+[    7.020845] Detected PIPT I-cache on CPU45
+[    7.224489] GICv3: CPU45: found redistributor 20d region 0:0x0000000008640000
+[    7.225185] CPU45: Booted secondary processor 0x000000020d [0x000f0510]
+[    7.324008] Detected PIPT I-cache on CPU46
+[    7.564335] GICv3: CPU46: found redistributor 20e region 0:0x0000000008660000
+[    7.565762] CPU46: Booted secondary processor 0x000000020e [0x000f0510]
+[    7.689927] Detected PIPT I-cache on CPU47
+[    7.904359] GICv3: CPU47: found redistributor 20f region 0:0x0000000008680000
+[    7.910375] CPU47: Booted secondary processor 0x000000020f [0x000f0510]
+[    8.057763] Detected PIPT I-cache on CPU48
+[    8.366913] GICv3: CPU48: found redistributor 300 region 0:0x00000000086a0000
+[    8.367524] CPU48: Booted secondary processor 0x0000000300 [0x000f0510]
+[    8.530502] Detected PIPT I-cache on CPU49
+[    8.738814] GICv3: CPU49: found redistributor 301 region 0:0x00000000086c0000
+[    8.739538] CPU49: Booted secondary processor 0x0000000301 [0x000f0510]
+[    8.828567] Detected PIPT I-cache on CPU50
+[    9.110538] GICv3: CPU50: found redistributor 302 region 0:0x00000000086e0000
+[    9.113036] CPU50: Booted secondary processor 0x0000000302 [0x000f0510]
+[    9.210572] Detected PIPT I-cache on CPU51
+[    9.455821] GICv3: CPU51: found redistributor 303 region 0:0x0000000008700000
+[    9.465700] CPU51: Booted secondary processor 0x0000000303 [0x000f0510]
+[    9.586525] Detected PIPT I-cache on CPU52
+[    9.849185] GICv3: CPU52: found redistributor 304 region 0:0x0000000008720000
+[    9.850472] CPU52: Booted secondary processor 0x0000000304 [0x000f0510]
+[    9.999258] Detected PIPT I-cache on CPU53
+[   10.280592] GICv3: CPU53: found redistributor 305 region 0:0x0000000008740000
+[   10.288545] CPU53: Booted secondary processor 0x0000000305 [0x000f0510]
+[   10.386761] Detected PIPT I-cache on CPU54
+[   10.667439] GICv3: CPU54: found redistributor 306 region 0:0x0000000008760000
+[   10.674706] CPU54: Booted secondary processor 0x0000000306 [0x000f0510]
+[   10.865194] Detected PIPT I-cache on CPU55
+[   11.164073] GICv3: CPU55: found redistributor 307 region 0:0x0000000008780000
+[   11.164807] CPU55: Booted secondary processor 0x0000000307 [0x000f0510]
+[   11.337606] Detected PIPT I-cache on CPU56
+[   11.628201] GICv3: CPU56: found redistributor 308 region 0:0x00000000087a0000
+[   11.640399] CPU56: Booted secondary processor 0x0000000308 [0x000f0510]
+[   11.813221] Detected PIPT I-cache on CPU57
+[   12.170233] GICv3: CPU57: found redistributor 309 region 0:0x00000000087c0000
+[   12.171281] CPU57: Booted secondary processor 0x0000000309 [0x000f0510]
+[   12.386764] Detected PIPT I-cache on CPU58
+[   12.739231] GICv3: CPU58: found redistributor 30a region 0:0x00000000087e0000
+[   12.752835] CPU58: Booted secondary processor 0x000000030a [0x000f0510]
+[   12.943262] Detected PIPT I-cache on CPU59
+[   13.374203] GICv3: CPU59: found redistributor 30b region 0:0x0000000008800000
+[   13.374767] CPU59: Booted secondary processor 0x000000030b [0x000f0510]
+[   13.588754] Detected PIPT I-cache on CPU60
+[   13.991517] GICv3: CPU60: found redistributor 30c region 0:0x0000000008820000
+[   14.001734] CPU60: Booted secondary processor 0x000000030c [0x000f0510]
+[   14.183975] Detected PIPT I-cache on CPU61
+[   14.614300] GICv3: CPU61: found redistributor 30d region 0:0x0000000008840000
+[   14.615081] CPU61: Booted secondary processor 0x000000030d [0x000f0510]
+[   14.781381] Detected PIPT I-cache on CPU62
+[   15.173177] GICv3: CPU62: found redistributor 30e region 0:0x0000000008860000
+[   15.183142] CPU62: Booted secondary processor 0x000000030e [0x000f0510]
+[   15.325350] Detected PIPT I-cache on CPU63
+[   15.697826] GICv3: CPU63: found redistributor 30f region 0:0x0000000008880000
+[   15.699428] CPU63: Booted secondary processor 0x000000030f [0x000f0510]
+[   15.723242] smp: Brought up 1 node, 64 CPUs
+[   15.723288] SMP: Total of 64 processors activated.
+[   15.723303] CPU: All CPU(s) started at EL1
+[   15.723347] CPU features: detected: 32-bit EL0 Support
+[   15.723361] CPU features: detected: Instruction cache invalidation not required for I/D coherence
+[   15.723370] CPU features: detected: Data cache clean to the PoU not required for I/D coherence
+[   15.723393] CPU features: detected: Common not Private translations
+[   15.723395] CPU features: detected: CRC32 instructions
+[   15.723399] CPU features: detected: Data cache clean to Point of Deep Persistence
+[   15.723401] CPU features: detected: Data cache clean to Point of Persistence
+[   15.723448] CPU features: detected: RCpc load-acquire (LDAPR)
+[   15.723465] CPU features: detected: Privileged Access Never
+[   15.723481] CPU features: detected: PMUv3
+[   15.723504] CPU features: detected: Random Number Generator
+[   15.723506] CPU features: detected: Speculation barrier (SB)
+[   15.723508] CPU features: detected: TLB range maintenance instructions
+[   15.723544] CPU features: detected: Speculative Store Bypassing Safe (SSBS)
+[   16.142607] alternatives: applying system-wide alternatives
+[   16.762149] CPU features: detected: Hardware dirty bit management on CPU0-63
+[   16.973809] Memory: 967524K/1046528K available (12224K kernel code, 1034K rwdata, 2784K rodata, 2368K init, 1108K bss, 64600K reserved, 0K cma-reserved)
+[   17.455208] devtmpfs: initialized
+[   18.629724] posixtimers hash table entries: 32768 (order: 7, 524288 bytes, linear)
+[   19.940077] futex hash table entries: 16384 (1048576 bytes on 1 NUMA nodes, total 1024 KiB, linear).
+[   20.105180] 27824 pages in range for non-PLT usage
+[   20.115032] 519344 pages in range for PLT usage
+[   20.235172] DMI not present or invalid.
+[   21.352931] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[   22.361532] DMA: preallocated 128 KiB GFP_KERNEL pool for atomic allocations
+[   22.373389] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[   22.374256] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[   22.384192] audit: initializing netlink subsys (disabled)
+[   22.475543] audit: type=2000 audit(3.804:1): state=initialized audit_enabled=0 res=1
+[   22.549272] thermal_sys: Registered thermal governor 'fair_share'
+[   22.549353] thermal_sys: Registered thermal governor 'step_wise'
+[   22.549368] thermal_sys: Registered thermal governor 'user_space'
+[   22.604118] cpuidle: using governor menu
+[   22.625853] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[   23.395840] ASID allocator initialised with 65536 entries
+[   24.016630] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[   24.016666] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[   24.017612] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[   24.017632] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[   24.017639] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[   24.017642] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[   24.017647] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[   24.017649] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[   24.921742] ACPI: Interpreter disabled.
+[   24.942498] iommu: Default domain type: Translated
+[   24.942553] iommu: DMA domain TLB invalidation policy: strict mode
+[   28.476721] SCSI subsystem initialized
+[   28.487204] pps_core: LinuxPPS API ver. 1 registered
+[   28.487236] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[   28.487851] PTP clock support registered
+[   29.119977] NetLabel: Initializing
+[   29.120006] NetLabel:  domain hash size = 128
+[   29.120021] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+[   29.134179] NetLabel:  unlabeled traffic allowed by default
+[   29.250524] vgaarb: loaded
+[   29.707856] clocksource: Switched to clocksource arch_sys_counter
+[   29.794359] VFS: Disk quotas dquot_6.6.0
+[   29.795041] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[   29.820016] pnp: PnP ACPI: disabled
+[   30.338068] NET: Registered PF_INET protocol family
+[   30.369653] IP idents hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[   30.440438] tcp_listen_portaddr_hash hash table entries: 512 (order: 1, 8192 bytes, linear)
+[   30.443065] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[   30.443177] TCP established hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[   30.452968] TCP bind hash table entries: 8192 (order: 6, 262144 bytes, linear)
+[   30.481455] TCP: Hash tables configured (established 8192 bind 8192)
+[   30.530729] MPTCP token hash table entries: 1024 (order: 3, 24576 bytes, linear)
+[   30.532045] UDP hash table entries: 512 (order: 3, 32768 bytes, linear)
+[   30.536154] UDP-Lite hash table entries: 512 (order: 3, 32768 bytes, linear)
+[   30.562808] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[   30.639720] RPC: Registered named UNIX socket transport module.
+[   30.639808] RPC: Registered udp transport module.
+[   30.639814] RPC: Registered tcp transport module.
+[   30.639818] RPC: Registered tcp-with-tls transport module.
+[   30.639822] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[   30.639872] NET: Registered PF_XDP protocol family
+[   30.640909] PCI: CLS 0 bytes, default 64
+[   30.810188] Initialise system trusted keyrings
+[   30.821152] workingset: timestamp_bits=36 max_order=18 bucket_order=0
+[   30.853205] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[   30.880589] NFS: Registering the id_resolver key type
+[   30.884416] Key type id_resolver registered
+[   30.884554] Key type id_legacy registered
+[   30.887441] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[   30.888412] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[   30.896448] fuse: init (API version 7.45)
+[   30.903736] SGI XFS with ACLs, security attributes, quota, no debug enabled
+[   31.126373] Key type asymmetric registered
+[   31.126438] Asymmetric key parser 'x509' registered
+[   31.135595] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 247)
+[   31.152612] io scheduler mq-deadline registered
+[   31.152680] io scheduler kyber registered
+[   31.153390] io scheduler bfq registered
+[   31.283801] Serial: 8250/16550 driver, 1 ports, IRQ sharing disabled
+[   31.326156] printk: legacy console [ttyS0] disabled
+[   31.332119] 9000000.uart: ttyS0 at MMIO 0x9000000 (irq = 13, base_baud = 115200) is a 16550A
+[   31.346866] printk: legacy console [ttyS0] enabled
+[   82.267031] loop: module loaded
+[   82.349744] Loading iSCSI transport class v2.0-870.
+[   82.486253] iscsi: registered transport (tcp)
+[   82.611765] tun: Universal TUN/TAP device driver, 1.6
+[   82.748152] rtc-pl031 9010000.rtc: registered as rtc0
+[   82.882000] rtc-pl031 9010000.rtc: setting system clock to 2026-11-03T16:41:46 UTC (1793724106)
+[   83.086700] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[   83.322677] Initializing XFRM netlink socket
+[   83.415150] NET: Registered PF_INET6 protocol family
+[   83.603752] watchdog: NMI not fully supported
+[   83.696768] watchdog: Hard watchdog permanently disabled
+[   83.741798] Segment Routing with IPv6
+[   83.907483] In-situ OAM (IOAM) with IPv6
+[   84.003445] NET: Registered PF_PACKET protocol family
+[   84.113100] Bridge firewalling registered
+[   84.210319] Key type dns_resolver registered
+[   84.306617] NET: Registered PF_VSOCK protocol family
+[   84.498422] registered taskstats version 1
+[   84.753072] Loading compiled-in X.509 certificates
+[   84.963574] Demotion targets for Node 0: null
+[   85.080579] Key type .fscrypt registered
+[   85.169513] Key type fscrypt-provisioning registered
+[   85.343400] Key type encrypted registered
+[   85.968057] clk: Disabling unused clocks
+[   86.151808] check access for rdinit=/init failed: -2, ignoring
+[   86.264028] /dev/root: Can't open blockdev
+[   86.325647] VFS: Cannot open root device "" or unknown-block(0,0): error -6
+[   86.427698] Please append a correct "root=" boot option; here are the available partitions:
+[   86.535497] List of all bdev filesystems:
+[   86.593027]  ext3
+[   86.593073]  ext2
+[   86.627397]  ext4
+[   86.667042]  squashfs
+[   86.699733]  fuseblk
+[   86.742850]  xfs
+[   86.789237]  erofs
+[   86.823435]
+[   86.896953] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+[   87.029219] CPU: 7 UID: 0 PID: 1 Comm: swapper/0 Not tainted 6.18.48 #1 NONE
+[   87.137421] Hardware name: linux,dummy-virt (DT)
+[   87.221050] Call trace:
+[   87.260604]  show_stack+0x14/0x1c (C)
+[   87.329629]  dump_stack_lvl+0x34/0x84
+[   87.395672]  dump_stack+0x14/0x1c
+[   87.456815]  vpanic+0x2c4/0x2f4
+[   87.512097]  nmi_panic+0x0/0x60
+[   87.568048]  mount_root_generic+0x21c/0x350
+[   87.640947]  mount_root+0x184/0x244
+[   87.697689]  prepare_namespace+0x6c/0x2a0
+[   87.758267]  kernel_init_freeable+0x278/0x2a4
+[   87.813097]  kernel_init+0x20/0x1d0
+[   87.870471]  ret_from_fork+0x10/0x20
+[   87.931716] SMP: stopping secondary CPUs
+[   88.006374] Kernel Offset: disabled
+[   88.075290] CPU features: 0x000000,0000e000,42306081,0401fa0b
+[   88.161977] Memory Limit: none

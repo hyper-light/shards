@@ -1,0 +1,125 @@
+DIAGNOSTIC SUBSETS; NOT A COMPLETE SUITE.
+{"tag": "cpu4-00-boot", "binary": "boot", "test": "a_nested_guest_is_a_kvm_host", "exit": 0, "one_pass": true, "time": "2026-11-03T15:22:19.823302+00:00"}
+{"tag": "cpu4-01-compile", "binary": "compile", "test": "a_wide_policy_without_cycles_compiles_in_time", "exit": 1, "one_pass": false, "time": "2026-11-03T15:23:44.524564+00:00"}
+{"tag": "cpu4-02-build_windows", "binary": "build_windows", "test": "run_steps_run_in_a_confined_builder_and_their_changes_are_built", "exit": 0, "one_pass": true, "time": "2026-11-03T15:25:10.225130+00:00"}
+{"tag": "cpu4-03-boot", "binary": "boot", "test": "boots_the_hosts_maximum_vcpu_count", "exit": 1, "one_pass": false, "time": "2026-11-03T15:27:04.890044+00:00"}
+{"tag": "cpu4-04-snapshot", "binary": "snapshot", "test": "storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write", "exit": 1, "one_pass": false, "time": "2026-11-03T15:30:44.921153+00:00"}
+{"tag": "cpu4-05-containers", "binary": "containers", "test": "a_groups_microvms_are_held_to_its_cpu_max_together", "exit": 0, "one_pass": true, "time": "2026-11-03T15:32:57.329860+00:00"}
+
+== cpu4-00-boot.txt
+MANIFEST binaries=141
+START 1/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 boot 2026-11-03T15:22:09.4049481Z
+running 1 test
+test a_nested_guest_is_a_kvm_host ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 4.98s
+
+END 001-boot exit=0 elapsed=7.971886
+COMPLETE binaries=1 manifest=141 failed=0 filter=boot/a_nested_guest_is_a_kvm_host start=0
+
+== cpu4-01-compile.txt
+MANIFEST binaries=141
+START 59/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0 compile 2026-11-03T15:23:28.9986371Z
+failures:
+    a_wide_policy_without_cycles_compiles_in_time
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 10.04s
+
+FAILED 059-compile exit=101
+
+thread 'a_wide_policy_without_cycles_compiles_in_time' (7000) panicked at crates/rego/tests/compile.rs:206:10:
+6000 rules did not compile within 10 s: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END 059-compile exit=101 elapsed=13.369031
+COMPLETE binaries=1 manifest=141 failed=1 filter=compile/a_wide_policy_without_cycles_compiles_in_time start=0
+
+== cpu4-02-build_windows.txt
+MANIFEST binaries=141
+START 75/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 build_windows 2026-11-03T15:24:45.9220101Z
+running 1 test
+test run_steps_run_in_a_confined_builder_and_their_changes_are_built ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 19.40s
+
+END 075-build_windows exit=0 elapsed=22.421818
+COMPLETE binaries=1 manifest=141 failed=0 filter=build_windows/run_steps_run_in_a_confined_builder_and_their_changes_are_built start=0
+
+== cpu4-03-boot.txt
+MANIFEST binaries=141
+START 1/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 boot 2026-11-03T15:26:01.3514921Z
+failures:
+    boots_the_hosts_maximum_vcpu_count
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 60.44s
+
+FAILED 001-boot exit=101
+[    5.890844] Detected PIPT I-cache on CPU42
+[    6.041190] GICv3: CPU42: found redistributor 20a region 0:0x00000000085e0000
+[    6.041793] CPU42: Booted secondary processor 0x000000020a [0x000f0510]
+[    6.137132] Detected PIPT I-cache on CPU43
+[    6.312579] GICv3: CPU43: found redistributor 20b region 0:0x0000000008600000
+[    6.313201] CPU43: Booted secondary processor 0x000000020b [0x000f0510]
+[    6.466924] Detected PIPT I-cache on CPU44
+[    6.665700] GICv3: CPU44: found redistributor 20c region 0:0x0000000008620000
+[    6.674127] CPU44: Booted secondary processor 0x000000020c [0x000f0510]
+[    6.794386] Detected PIPT I-cache on CPU45
+[    6.952425] GICv3: CPU45: found redistributor 20d region 0:0x0000000008640000
+[    6.953055] CPU45: Booted secondary processor 0x000000020d [0x000f0510]
+[    7.039226] Detected PIPT I-cache on CPU46
+[    7.227100] GICv3: CPU46: found redistributor 20e region 0:0x0000000008660000
+[    7.227502] CPU46: Booted secondary processor 0x000000020e [0x000f0510]
+[    7.387608] Detected PIPT I-cache on CPU47
+[    7.568388] GICv3: CPU47: found redistributor 20f region 0:0x0000000008680000
+[    7.568918] CPU47: Booted secondary processor 0x000000020f [0x000f0510]
+[    7.726915] Detected PIPT I-cache on CPU48
+[    7.955674] GICv3: CPU48: found redistributor 300 region 0:0x00000000086a0000
+[    7.956114] CPU48: Booted secondary processor 0x0000000300 [0x000f0510]
+[    8.107363] Detected PIPT I-cache on CPU49
+[    8.302763] GICv3: CPU49: found redistributor 301 region 0:0x00000000086c0000
+[    8.303297] CPU49: Booted secondary processor 0x0000000301 [0x000f0510]
+[    8.430843] Detected PIPT I-cache on CPU50
+[    8.660127] GICv3: CPU50: found redistributor 302 region 0:0x00000000086e0000
+[    8.660508] CPU50: Booted secondary processor 0x0000000302 [0x000f0510]
+[    8.820795] Detected PIPT I-cache on CPU51
+[    9.053203] GICv3: CPU51: found redistributor 303 region 0:0x0000000008700000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END 001-boot exit=101 elapsed=61.262313
+COMPLETE binaries=1 manifest=141 failed=1 filter=boot/boots_the_hosts_maximum_vcpu_count start=0
+
+== cpu4-04-snapshot.txt
+MANIFEST binaries=141
+START 0/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 snapshot 2026-11-03T15:27:56.0441321Z
+failures:
+    storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 165.20s
+
+FAILED 000-snapshot exit=101
+
+thread 'storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write' (6612) panicked at crates/shards/tests/common/mod.rs:2613:17:
+still running after 120s; it said:
+SHARDS-TEST READY
+SHARDS-TEST INFO waiting for the host's stream through the echo: 524288 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 589824 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 655360 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 720896 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 786432 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 851968 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 851968 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 917504 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 983040 bytes echoed
+SHARDS-TEST INFO longest gaps steady: median 0, longest 0 (worker 66), 0 (worker 65), 0 (worker 64); longest turns taken: median 3610500, longest 7459393 (worker 0), 4984069 (worker 15), 4942538 (worker 16)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END 000-snapshot exit=101 elapsed=166.642536
+COMPLETE binaries=1 manifest=141 failed=1 filter=snapshot/storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write start=0
+
+== cpu4-05-containers.txt
+MANIFEST binaries=141
+START 80/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 containers 2026-11-03T15:31:39.9102691Z
+running 1 test
+test a_groups_microvms_are_held_to_its_cpu_max_together ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 147 filtered out; finished in 71.74s
+
+END 080-containers exit=0 elapsed=74.142622
+COMPLETE binaries=1 manifest=141 failed=0 filter=containers/a_groups_microvms_are_held_to_its_cpu_max_together start=0

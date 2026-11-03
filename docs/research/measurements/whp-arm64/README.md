@@ -154,4 +154,111 @@ storm cases, with Linux soft-lockup messages before the snapshot (`results/snaps
 and failed two: the maximum-vCPU boot produced no console before its 60 s deadline, and
 the nested-virtualization refusal test expected x86_64's error text on arm64 Windows.
 The latter assertion has been corrected to require WHP arm64's refusal and exit 1.
-The workspace run is still in progress; no complete-suite success is claimed.
+The 16-CPU workspace diagnostic run completed 80 of 141 binaries: 76 passed and four
+failed (snapshot, boot, Rego's wide-policy compilation deadline and Windows builders).
+It was stopped after more than two hours in the container binary, whose partial failure
+log was retained. This was an aborted, incomplete run, not a qualifying suite. Windows
+then applied updates during shutdown. Targeted checks on a four-CPU, 24 GiB host precede
+another complete run; no complete-suite success is claimed. The completed binary records
+are in `results/full-real-02-partial.jsonl`, with the abort marker in
+`results/full-real-02-aborted.txt`. The unfinished container binary is absent from those
+completed records.
+
+## Fixture comparisons, 2026-11-03 UTC
+
+Windows Update changed the installed host from build 26300.9457 to 26300.9711 during
+that shutdown. The following checks use source `360ad0cd`, four outer CPUs and 24 GiB.
+That OS change prevents attributing a difference from the earlier 16-CPU run solely to
+CPU count. Each command below selects one test, with its original assertions and
+deadlines, through `run-tests.ps1 -Binary BINARY -Test TEST -Tag NAME`.
+
+| Test | Multithreaded TCG | Single-threaded TCG |
+|---|---|---|
+| `boot/a_nested_guest_is_a_kvm_host` (the expected arm64 Windows refusal) | pass | pass |
+| `compile/a_wide_policy_without_cycles_compiles_in_time` | 10 s deadline failure | 10 s deadline failure |
+| `build_windows/run_steps_run_in_a_confined_builder_and_their_changes_are_built` | pass | pass |
+| `boot/boots_the_hosts_maximum_vcpu_count` | 60 s deadline failure | 60 s deadline failure |
+| `snapshot/storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write` | 64-vCPU original timed out before snapshot | the same, with no echo bytes |
+| `containers/a_groups_microvms_are_held_to_its_cpu_max_together` | pass | pass |
+| `build_windows/a_builders_memory_is_plugged_as_its_build_needs_it` | see follow-up below | 180 s deadline failure |
+| `build_windows/a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` | see follow-up below | 180 s deadline failure |
+
+`results/cpu4-checks.txt` and `results/single4-checks.txt` retain these diagnostic
+subsets. Single-threaded TCG provided no improvement, so multithreaded TCG was restored.
+On that next boot, maximum-vCPU boot passed in 56.66 s and the first memory-growth case
+passed in 149.34 s; the faster-growth case still failed its 180 s deadline
+(`results/multi4-followup.txt`). A pass near a deadline does not establish a stable
+qualifying configuration. The basic build was not one of the earlier two failing
+memory-growth cases.
+
+A separate direct boot measured where time went, using the same pinned kernel and
+`SHARDS_LOG=info shards run --kernel KERNEL --cpus 123 --memory 1024 --cmdline
+"console=ttyS0 panic=-1"`, without an init or root disk. All 123 vCPUs were ready after
+917,717 microseconds. Linux brought its configured maximum of 64 CPUs online at guest
+time 15.723242 s and reached its expected VFS panic at 88.161977 s. Native exit was 3
+(guest reset), after 97.52255 s wall time (`results/direct-boot123.txt`). This measures
+quick vCPU preparation and a slow guest boot; it does not establish a counter-frequency
+defect. The guest reported a 1 GHz architectural counter.
+
+## VBS settings and an updated HVF boot, 2026-11-03 UTC
+
+This diagnostic used a sparse child disk made only after cleanly shutting down the
+working TCG host, with a separate copy of its UEFI variables. The baseline disk was
+preserved. First, the documented
+[VSM boot setting](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/bcdedit--set)
+was changed while leaving `hypervisorlaunchtype Auto`:
+
+```powershell
+bcdedit /set '{current}' vsmlaunchtype Off
+```
+
+After a clean reboot, BCD showed `vsmlaunchtype Off`, but Win32_DeviceGuard still
+reported VirtualizationBasedSecurityStatus=2, services configured/running `{0}`. WHP
+reported present=1 and created a partition. A second experiment set
+`EnableVirtualizationBasedSecurity=0` as a DWORD under both
+`HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard` and
+`HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard`, then rebooted again. The
+[documented policy](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-deviceguard)
+value remained zero at both paths; VBS status remained 2 and WHP still worked. No locked,
+mandatory or signed policy was altered. These settings did not provide a measured
+VBS-off/WHP-running control, so they establish no VBS performance result.
+
+The updated disk with these settings was then booted in its own child under HVF, real
+EL2 enabled and truthfully advertised, four CPUs and 24 GiB, using the original EDK2
+firmware. Windows reached the desktop. The current boot's Hyper-V event was 26:
+BalStatus 0x19, sub-status 0xC; WHvGetCapability returned present=0 and
+WHvCreatePartition returned 0xC0351000. Get-ComputerInfo still said HyperVisorPresent=True.
+VBS status was zero on this failed-hypervisor boot; that is not a WHP-running control.
+No EL3 support was fabricated and no Windows binary or check was modified. This measures
+another failed HVF launch, without establishing VHE's absence as its cause. The complete
+settings and host transcripts are retained in `results/vbs-and-hvf-settings.txt`.
+
+## Memory-growth profile
+
+After restoring the preserved multithreaded TCG baseline (four CPUs, 24 GiB,
+26300.9711), the faster-growth builder test was repeated with `SHARDS_LOG=info`. Its
+four vCPUs were ready after 341,920 microseconds and its startup marker arrived after
+4,898,482 microseconds. It again failed its 180 s deadline while running the step that
+writes 1 GiB to tmpfs and allocates/touches 3 GiB. This narrows the elapsed time to after
+guest startup; it does not establish whether the memory-growth mechanism itself is
+incorrect.
+
+The existing selected-test runner drove the workload. At 35, 85 and 145 s after its SSH
+launch, the Mac ran `/usr/bin/sample QEMU_PID 5 10 -file OUTPUT`: five-second samples at
+10 ms intervals. `results/memory-growth-profile.txt` retains the native test report and
+the profiler's stack summaries. Full call graphs remain in the local kit. The later
+samples include address translation (`get_phys_addr`, `arm_cpu_tlb_fill_align`) and
+mutex waits as well as emitted guest code. After this test, QEMU's `info jit` reported
+22,347,718 partial TLB flushes and four translation-buffer flushes, cumulative since
+the Windows host boot. These observations justify testing emulator overhead; they
+do not identify a backend defect or prove which cost caused the timeout. Sampling
+adds overhead, so this run is diagnostic; the uninstrumented failure is retained above.
+
+A separate one-CPU, 24 GiB child of the same baseline started Windows' hypervisor
+(current-boot event 1). Its selected compiler test again failed the 10 s deadline, and
+maximum-vCPU boot failed its 60 s deadline after Linux had started CPU20. That boot
+executed a real WHP guest, but did not complete. A diagnostic tag containing an underscore
+was then refused by the local helper, so the planned memory-growth and storm checks did
+not start. The helper's tag construction was corrected; those unrun checks are not VM
+results. The two completed failures do not provide a qualifying configuration
+(`results/onecpu-checks.txt`).

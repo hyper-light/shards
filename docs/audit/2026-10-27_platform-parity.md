@@ -46,13 +46,13 @@ stood alone unseen, each a host's own mechanism (platform-parity.tsv), one of th
 
 | # | What | Hosts without it | Evidence |
 |---|---|---|---|
-| 1 | The daemon, and all it serves. That is `shards run IMAGE`, containers and their every command (create, start, stop, rm, ps, logs, exec, attach, cp, top, stats, update, wait, kill, inspect), images run, volumes and binds, networks, published ports, log drivers, names, warm pools, the Engine API, compose, events, and the CLI's client, listings, terminal UI, `cp`, `save` and `show` | closed: Windows amd64 (D195); arm64 has no backend (row 5) | main.rs:93-96 "the daemon needs Unix sockets, which shards does not support on this platform yet"; cli/mod.rs:592 "container commands need the daemon"; main.rs:17-66 `containers`, `daemon`, `local_store`, `logging`, `names`, `networks`, `segments`, `share`, `volumes`, `working_set` are `cfg(unix)`; cli/mod.rs:15-29 `client`, `cp`, `listing`, `look`, `screens`, `show` likewise; architecture.md:4282 "No daemon of shards' runs on Windows yet", :9753 "No published ports yet", :7897 "etwlogs ... waits for shards' daemon on Windows" |
+| 1 | The daemon, and all it serves. That is `shards run IMAGE`, containers and their every command (create, start, stop, rm, ps, logs, exec, attach, cp, top, stats, update, wait, kill, inspect), images run, volumes and binds, networks, published ports, log drivers, names, warm pools, the Engine API, compose, events, and the CLI's client, listings, terminal UI, `cp`, `save` and `show` | closed: Windows amd64 (D195); arm64 awaits row 5's qualification | main.rs:93-96 "the daemon needs Unix sockets, which shards does not support on this platform yet"; cli/mod.rs:592 "container commands need the daemon"; main.rs:17-66 `containers`, `daemon`, `local_store`, `logging`, `names`, `networks`, `segments`, `share`, `volumes`, `working_set` are `cfg(unix)`; cli/mod.rs:15-29 `client`, `cp`, `listing`, `look`, `screens`, `show` likewise; architecture.md:4282 "No daemon of shards' runs on Windows yet", :9753 "No published ports yet", :7897 "etwlogs ... waits for shards' daemon on Windows" |
 | 2a | Snapshots and restores: `--snapshot-dir`, `shards restore`, templates (D25), warm pools (D26) | closed: Windows amd64 (D196) | D13 "no snapshots yet (D140)"; grant_answer.rs:406 "a microVM on Windows takes no snapshot yet"; grant.rs:97; vmm platform/windows.rs:559-630 (a snapshot's files, directories, prefetch and working sets "not ... on Windows") |
 | 2b | The same | closed: Linux arm64 (D154) | D13 "no snapshots yet (D154)" |
 | 3 | Host directories shared into a microVM (volumes and binds, D38: the share process and its FUSE server) and their DAX windows (D189) | closed: Windows (D197, D207) | virtio/fs/mod.rs: `server`, `host`, `headroom`, `window` are `cfg(unix)`; window_none.rs and vm/mod.rs:764 "a DAX window is not built on Windows yet (D189)" (slates-d7 holds the WHP window, its step 6) |
 | 4 | Memory a microVM gives back: free page reporting (D151), budgets (D148), the host's pressure watched and given back to (D188) for runs and builders | closed: Windows (D151, D148, D188) | platform/pressure.rs Linux's and macOS's alone; build/mod.rs:48 `give` `cfg(unix)`; D188 "The daemon has no other platform yet" |
-| 5 | A hypervisor backend | Windows arm64 | hv/mod.rs: `whp` is "Windows on x86_64"; D13 "planned" |
-| 6 | A GPU given a microVM (D144, Venus) | Windows arm64, which has no backend (row 5); closed: Linux (D201), Windows x86_64 (D202) | vm/x86_64.rs and vm/aarch64.rs "a GPU is given on macOS and Linux hosts alone so far (D144, D201)"; user decision 2026-10-13 "--gpus Linux YES" |
+| 5 | A hypervisor backend | Windows arm64: implementation and core VM tests measured; full-suite qualification pending (D209, M414) | Windows 11 arm64 from Microsoft's ISO, nested on this Mac under QEMU/TCG and TF-A: real WHP boots, core snapshot restores, working sets, and busy restores at 2 and 8 vCPUs pass. The first full run was aborted after 80 of 141 binaries, with four failed; targeted checks on updated build 26300.9711 still have failures. This row remains open. |
+| 6 | A GPU given a microVM (D144, Venus) | Windows arm64 (row 5 qualification pending); closed: Linux (D201), Windows x86_64 (D202) | vm/x86_64.rs and vm/aarch64.rs "a GPU is given on macOS and Linux hosts alone so far (D144, D201)"; user decision 2026-10-13 "--gpus Linux YES" |
 | 7 | `--cgroup-parent` (D183) | closed: macOS and Windows (D183's slice 3) | D183 "Refused before anything starts" |
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | closed: etwlogs on Windows (D198), and macOS's own log (D199) and etwlogs as journald's counterparts; journald is Linux's own | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
 | 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
@@ -78,8 +78,10 @@ Each lone item is confirmed or closed as its row is worked.
    pressure watcher, budgets, and give-backs for runs and builders.
 5. Row 2b, arm64 Linux snapshots (D154's test path: an arm64 Linux guest with EL2 on an M3
    or later Mac).
-6. Row 5, WHP on arm64. Its real-VM tests need an arm64 Windows host with the hypervisor
-   platform.
+6. Row 5, WHP on arm64. Its host is Microsoft's Windows 11 arm64 ISO nested on this Mac
+   (the user's decision, 2026-10-30). Windows' hypervisor and WHP run under QEMU/TCG with
+   TF-A (M414). Core boots, snapshots and working sets pass; the full real-VM suite must
+   still pass before this row is closed.
 7. Row 6, GPUs on Linux (the GPU desktop, its NVIDIA driver not yet installed), then on
    Windows.
 8. Row 7, `--cgroup-parent` on Windows (job objects) and on macOS: groups shards keeps
