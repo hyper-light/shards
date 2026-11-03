@@ -2454,6 +2454,9 @@ impl<D: Disk> Daemon<D> {
         self.await_removals();
         self.await_recorded();
         self.await_made();
+        // Each parent's spawner ended, and the leaves made in delegated cgroups removed
+        // once empty (D183, slice 2).
+        self.parents.close();
         log("exiting");
         // A home being removed is removed whole, once nothing more is written in it: what
         // this daemon made in it as the removal went kept it before (rmdir(2): ENOTEMPTY),

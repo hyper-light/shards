@@ -194,7 +194,15 @@ shows what they use. Each microVM's memory, its network's process included, is c
 there from its first page, warm starts too, and only the first run under a slice asks
 systemd for anything. It works from an ssh login as from a desktop session, with nothing to
 set up. A container that shares another's network runs in that one's microVM, so it names
-that one's slice or none. A path in place of a slice is refused.
+that one's slice or none.
+
+Where no systemd manager of yours runs (a container, or a host on OpenRC, runit or s6) but
+a cgroup has been delegated to you, name it by its path, as `/proc/self/cgroup` shows one:
+`shards run vm --cgroup-parent /agents IMAGE`. Its microVMs are made in a cgroup of
+their own inside it, counted there from their first page, and held to whatever limits you
+write to `/sys/fs/cgroup/agents`. shards' daemon must be running inside the same delegated
+tree, as the kernel lets you move your processes only within it; a path you may not use is
+refused with why before anything starts.
 
 On macOS, which has no such group, `shards run vm --cgroup-parent agents IMAGE` puts a
 microVM in a group shards keeps for you, a folder of its home, `groups/agents`, with the
@@ -202,6 +210,11 @@ files a Linux cgroup has. Write `4G` to its `memory.high` and its microVMs are h
 together: past it, each gives back what it holds cold. Past its `memory.max`, with nothing
 more to give back, the one that holds the most is stopped, as a cgroup's out-of-memory
 killer stops one, and `inspect` says so. `memory.current` shows what they hold.
+
+On Windows the same folder's microVMs run in one job object of the group's, whose memory
+limit is its `memory.max`: together they never commit past it. On both, `cpu.max` (a quota
+and its period in microseconds, as a cgroup's) holds the group's microVMs to that much CPU
+together.
 
 ### Boot a kernel yourself
 
