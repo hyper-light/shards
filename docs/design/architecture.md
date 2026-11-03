@@ -2830,9 +2830,12 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     (`--user 1000`, or an image whose `USER` is not root) could not write the folder it was
     given, nor make anything in it. So the share server gives each file without a record
     the run's user and group: its `--user`, else its image's `USER`, as init resolved it.
-    - *An agent's.* A volume the run's own root does not mount, given one agent or harness
-      alone (`VOLUME … FOR a`, or a bind standing in for it), is that domain's (`200000 +
-      n`). One several domains share, and no run's user is theirs, stays root's.
+    - *An agent's.* A volume given one agent or harness alone is that domain's (`200000 +
+      n`): one a `VOLUME … FOR` scopes to it, a bind standing in for it included, or one the
+      run's own root does not mount. Its domains start once the run's own volumes are
+      mounted, so their word comes after the run's. A volume no `VOLUME` scopes (every
+      domain's and the run's own) is the run's user's. One several domains share that the
+      run's root does not mount stays root's.
     - *A joiner's.* Each volume of a join share is its joiner's user's (D119).
     - *How init says so.* Init sets `trusted.shards.owner` (`UID:GID`,
       `shards_abi::SHARE_OWNER_XATTR`) on the share's root, or the join share's volume, as it

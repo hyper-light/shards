@@ -1451,10 +1451,16 @@ pub fn start(
         {
             return Err(fail(io::Error::last_os_error().to_string()));
         }
-        // A volume the run's own root does not mount, given one agent or harness alone: the
-        // files the host made there are its (D38), as a run's are its user's. One the run's
-        // root mounts is the run's user's; one several domains share, root's.
-        if !sh.main
+        // A volume given one agent or harness alone, as a `VOLUME … FOR` scopes it, or the
+        // run's own root does not mount: the files the host made there are its (D38), as a
+        // run's are its user's, a bind standing in for its volume too. The domains start
+        // once the run's own volumes are mounted, so this is said after the run's root
+        // said its user's. One no `VOLUME` scopes, the run's own too, stays the run's
+        // user's; one several domains share that the run's root does not mount, root's.
+        let scoped = domains
+            .iter()
+            .any(|d| d.volumes.iter().any(|r| r.path == sh.dest));
+        if (scoped || !sh.main)
             && let [only] = domains
                 .iter()
                 .filter(|d| given_volume(d, &sh.dest))
