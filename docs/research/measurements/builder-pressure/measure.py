@@ -16,7 +16,11 @@ after its word it came, on the build's stderr).
   the inactive pages its kernel keeps beside those, `lru_buffer`), less what its builder
   held cold of its files then (inactive_file, from the builder's last sample before it):
   so the budget is short of the build's peak by what its builder holds cold, and the build
-  fits it where its builder gives that back. Held to its anonymous peak less what its
+  fits it where its builder gives that back. The most of every free arm's so far, the
+  round's own among them where it came first: a build's peak moves from one round to the
+  next (npm's 796 to 815 MiB on Fedora), and a budget from the round before alone, short of
+  the next round's peak by 13 MiB more than its builder held cold, slowed it 3 times
+  (b25d2d05). Held to its anonymous peak less what its
   builder held cold (ac3e9325, run 41292692058), a build had no room for the file pages its
   processes map, the VM process's own text and its builder's disks among them, nor its
   kernel's memory, and crawled under its host's reclaim whatever its builder gave back
@@ -26,8 +30,10 @@ after its word it came, on the build's stderr).
   host's page cache of the build's files no process maps, which the host drops at no stall,
   and a budget of it less what the builder could give back asked the builder for nothing
   (run 40426695726, 0 asks).
-  A round's held arm comes after its free arm where the round is odd, before it where even,
-  with the round before's peak: round 1's free arm alone fills the builds' caches.
+  A round's held arm comes after its free arm where the round is odd, before it where even.
+  A round 0 of free arms alone first fills the builds' caches and pulls their bases, its
+  peaks no budget's: a first build's peak is its downloads' (npm's 688 MiB against 796 to
+  819 after, which held round 2 to 340 s, b25d2d05).
 - macOS, where no unprivileged process may raise the system's pressure: held, the build is
   told every 2 s that its host is short of memory (SHARDS_BUILD_PRESSURE's FIFO), as its
   watcher hears the system's pressure again every 2 s while it stays raised.
@@ -346,6 +352,11 @@ def one(r, name, arm, budget):
 
 header()
 builds = a.builds.split(",")
+for name in builds:
+    if short.is_set() or room() < ROOM:
+        say(f"room {room() >> 20} MiB: ending the run")
+        sys.exit(1)
+    one(0, name, "free", 0)
 seen = {}
 for r in range(1, a.rounds + 1):
     order = builds[(r - 1) % len(builds):] + builds[:(r - 1) % len(builds)]
@@ -358,5 +369,5 @@ for r in range(1, a.rounds + 1):
             budget = seen.get(name, 0) if arm == "held" and not macos else 0
             got = one(r, name, arm, budget)
             if arm == "free":
-                seen[name] = got
+                seen[name] = max(seen.get(name, 0), got)
 say("done")

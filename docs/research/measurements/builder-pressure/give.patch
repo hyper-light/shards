@@ -1,17 +1,16 @@
 diff --git a/crates/shards/src/build/give.rs b/crates/shards/src/build/give.rs
-index 77f52801..1c9f5f19 100644
 --- a/crates/shards/src/build/give.rs
 +++ b/crates/shards/src/build/give.rs
-@@ -19,7 +19,7 @@
- //! says its microVMs'. On Windows its host's word is the system's low memory notification,
- //! as the daemon's is (D188).
+@@ -25,7 +25,7 @@
+ //! apt 219 s held against 31.5 s free, PM M422). On Windows its host's word is the system's
+ //! low memory notification, as the daemon's is (D188).
  
 -use std::io;
 +use std::io::{self, Write as _};
  use std::sync::OnceLock;
  use std::sync::mpsc;
  #[cfg(target_os = "linux")]
-@@ -292,10 +292,25 @@ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsa
+@@ -342,10 +342,25 @@
  fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
      match g.answer(until) {
          Ok(Some(answer)) => {
@@ -37,7 +36,7 @@ index 77f52801..1c9f5f19 100644
              unsaid.unanswered += 1;
              true
          }
-@@ -303,6 +318,11 @@ fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
+@@ -353,6 +368,11 @@
      }
  }
  
