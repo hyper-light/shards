@@ -92,6 +92,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn stage_layer(&self, _file: std::fs::File) -> Result<(), String> {
+        match self.0 {}
+    }
+
     pub fn attach_swap(&self, _file: std::fs::File) -> Result<Option<u64>, String> {
         match self.0 {}
     }

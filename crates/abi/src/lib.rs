@@ -102,9 +102,15 @@ pub mod control {
     /// the virtio-pmem device whose ext4 file system init mounts with DAX under the root's
     /// overlay; 0 where it has none. Init finds the device's region by it.
     pub const LAYER: u64 = 0x40;
+    /// Write [`SWAP_LAYER`]: the guest has let go of its writable layer's file system
+    /// (D190), nothing of it mounted or open, and the VMM puts the file its host readied for
+    /// the run under the device in its place, a stopped container's own (`run::kind::OVER`).
+    /// Read: 1 once one was put there, else 0.
+    pub const LAYER_SWAP: u64 = 0x48;
 
     pub const SNAPSHOT_NOW: u32 = 1;
     pub const SHOW_SWAP: u32 = 1;
+    pub const SWAP_LAYER: u32 = 1;
 }
 
 /// Boot-phase markers written to the control page.

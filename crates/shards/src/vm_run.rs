@@ -1337,6 +1337,7 @@ fn serve_workload(
                                 log: None,
                                 started: Some(&started),
                                 layer_in: None,
+                                layer_over: false,
                                 layer_out: None,
                                 told: None,
                                 saved: None,
@@ -1471,6 +1472,20 @@ fn serve_workload(
                             // command starts.
                             // A run restored from a save of it maps back a copy of the swap its
                             // save kept, which its guest swaps to already (D176).
+                            // Its container's layer kept in its file (D190), readied to go
+                            // under its layer device before its guest hears of the run, which
+                            // lets go of its template's layer and asks for it
+                            // (`run::kind::OVER`).
+                            let (layer_in, layer_over) = match request.layer_in {
+                                Some(file) if request.layer_over => {
+                                    stopper
+                                        .stage_layer(file)
+                                        .map_err(|e| format!("its writable layer: {e}"))
+                                        .inspect_err(|e| report(e))?;
+                                    (None, true)
+                                }
+                                layer_in => (layer_in, false),
+                            };
                             let mut spec = request.spec;
                             match request.swap {
                                 Some(file) if resumed => stopper
@@ -1521,7 +1536,8 @@ fn serve_workload(
                                 detached: request.detached,
                                 log: request.log,
                                 started: Some(&started),
-                                layer_in: request.layer_in,
+                                layer_in,
+                                layer_over,
                                 layer_out: request.layer_out,
                                 told: Some(&finish),
                                 saved: Some(&saved),

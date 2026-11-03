@@ -47,6 +47,8 @@ mod netplan;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod orders;
 #[cfg(target_os = "linux")]
+mod over;
+#[cfg(target_os = "linux")]
 mod plug;
 #[cfg(target_os = "linux")]
 mod pmem;

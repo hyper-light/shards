@@ -243,6 +243,9 @@ pub struct Request {
     /// layer goes once it stops, for a container that stays.
     pub layer_in: Option<File>,
     pub layer_out: Option<File>,
+    /// `layer_in` is the file the container's layer was kept in (D190), to go under the
+    /// microVM's layer device, not an archive to put back.
+    pub layer_over: bool,
     /// The most memory its guest may plug, in bytes: the run's own (D148).
     pub plug: u64,
     /// Its microVM's I/O limits (D178): bytes and requests a second, 0 for none.
@@ -381,6 +384,8 @@ struct Head<'a> {
     cpus: u32,
     /// A group's CPU budget holds it too (D183): its file comes after its swap.
     group: bool,
+    /// Its container's layer from before comes as the file it was kept in (D190).
+    layer_over: bool,
     spec: &'a [u8],
 }
 
@@ -412,6 +417,7 @@ fn head(payload: &[u8]) -> Result<Head<'_>, String> {
         io: (head.io_bytes, head.io_requests),
         cpus: u32::try_from(head.cpus).unwrap_or(u32::MAX),
         group: head.group,
+        layer_over: head.layer_over,
         spec,
     })
 }
@@ -445,6 +451,7 @@ pub fn receive(
         io,
         cpus,
         group,
+        layer_over,
         spec,
     } = head(&request.payload)?;
     let (spec, tokens) = if resumed {
@@ -588,6 +595,7 @@ pub fn receive(
         detached,
         timing: flags & shards_ipc::RUN_TIMING != 0,
         log,
+        layer_over: layer_over && layer_in.is_some(),
         layer_in,
         layer_out,
         tokens,

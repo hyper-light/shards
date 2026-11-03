@@ -171,6 +171,7 @@ impl MmioDevice for Control {
             control::MAC if data.len() == 8 => self.mac.load(Ordering::Acquire),
             control::SWAP if data.len() == 8 => self.swap.get().map_or(0, |w| w.len()),
             control::LAYER if data.len() == 8 => self.layer.get().map_or(0, |&(_, gpa)| gpa),
+            control::LAYER_SWAP => u64::from(self.layer().is_some_and(|l| l.swapped())),
             _ => 0,
         };
         put_le(data, value);
@@ -211,6 +212,17 @@ impl MmioDevice for Control {
                         if let Some(hook) = hook {
                             hook();
                         }
+                    }
+                }
+            }
+            // The guest has let go of its writable layer (D190): the file its run readied
+            // goes under the device, which it then reads back here.
+            control::LAYER_SWAP if value == control::SWAP_LAYER => {
+                if let Some(layer) = self.layer() {
+                    // SAFETY: its guest says it has let go of the layer's file system; one
+                    // that has not harms its own file system alone.
+                    if let Err(e) = unsafe { layer.swap_staged() } {
+                        crate::warn!("its kept layer did not go under its writable layer's device: {e}");
                     }
                 }
             }

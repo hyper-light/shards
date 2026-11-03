@@ -935,3 +935,87 @@ fn a_damaged_journal_is_replayed_without_panic() {
     }
     assert!(replayed > 0, "no damaged journal replayed at all");
 }
+
+/// What `image`'s group descriptors say is free in the groups whose block bitmaps were
+/// written (`bg_free_blocks_count` of each not `BLOCK_UNINIT`), as mke2fs, debugfs and
+/// e2fsck keep them beside the bitmaps.
+fn counted_free(image: &impl read::ReadAt) -> u64 {
+    let mut sb = [0u8; 1024];
+    image.read_exact_at(&mut sb, 1024).unwrap();
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes(b[at..at + 2].try_into().unwrap());
+    let blocks = u64::from(u32_at(&sb, 0x4)) | (u64::from(u32_at(&sb, 0x150)) << 32);
+    let bpg = u64::from(u32_at(&sb, 0x20));
+    let first = u64::from(u32_at(&sb, 0x14));
+    let desc = usize::from(u16_at(&sb, 0xFE));
+    let groups = (blocks - first).div_ceil(bpg) as usize;
+    let mut table = vec![0u8; groups * desc];
+    image.read_exact_at(&mut table, (first + 1) * BLOCK).unwrap();
+    table
+        .chunks_exact(desc)
+        .filter(|d| u16_at(d, 0x12) & 0x2 == 0)
+        .map(|d| u64::from(u16_at(d, 0xC)) | (u64::from(u16_at(d, 0x2C)) << 16))
+        .sum()
+}
+
+/// A file system's free blocks are what its block bitmaps say, as its groups' counts
+/// say, in every group whose bitmap was written; a block a file, a directory or the journal
+/// holds is never among them: in what `format` makes, and in scripts/ext4/generate's tree,
+/// which mke2fs -d filled and e2fsck -D indexed.
+#[test]
+fn free_blocks_are_what_the_bitmaps_and_counts_say() {
+    let fresh = formatted(1 << 30);
+    let v = read::Volume::open(&fresh).unwrap();
+    let runs = v.free_runs().unwrap();
+    assert_eq!(runs.iter().map(|r| r.1).sum::<u64>(), counted_free(&fresh));
+    assert!(runs.windows(2).all(|w| w[0].0 + w[0].1 < w[1].0), "{runs:?}");
+    let image = tree_image();
+    let v = read::Volume::open(image.as_slice()).unwrap();
+    let runs = v.free_runs().unwrap();
+    let free: u64 = runs.iter().map(|r| r.1).sum();
+    assert!(free > 0);
+    assert_eq!(free, counted_free(&image.as_slice()));
+    let is_free = |block: u64| runs.iter().any(|&(at, n)| (at..at + n).contains(&block));
+    let tree: Vec<serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tree.json")).unwrap(),
+    )
+    .unwrap();
+    let mut held = 0;
+    for ino in tree
+        .iter()
+        .map(|e| {
+            v.lookup(e["path"].as_str().unwrap().as_bytes())
+                .unwrap()
+                .unwrap()
+                .ino
+        })
+        .chain([8])
+    {
+        let inode = v.inode(ino).unwrap();
+        if inode.kind == read::Kind::Symlink && inode.size < 60 {
+            continue;
+        }
+        for (_, len, at, _) in v.extent_runs(&inode).unwrap() {
+            for block in at..at + len {
+                assert!(!is_free(block), "inode {ino}'s block {block} is free");
+                held += 1;
+            }
+        }
+    }
+    assert!(held > 1000, "{held}");
+}
+
+/// A block bitmap whose checksum does not hold is refused, not read as free.
+#[test]
+fn a_damaged_block_bitmap_is_refused() {
+    let mut image = tree_image();
+    let desc = (BLOCK as usize) * 1;
+    let bitmap = u32::from_le_bytes(image[desc..desc + 4].try_into().unwrap()) as usize;
+    image[bitmap * BLOCK as usize] ^= 0x1;
+    let refused = read::Volume::open(image.as_slice())
+        .unwrap()
+        .free_runs()
+        .unwrap_err()
+        .0;
+    assert!(refused.contains("block bitmap"), "{refused}");
+}

@@ -145,6 +145,17 @@ impl Handle {
         self.shared.hold.resume();
     }
 
+    /// Readies `file`, a stopped container's writable layer kept in its own file (D190), to
+    /// go under the guest's writable layer's device once its guest lets go of the one its
+    /// template mounted (`run::kind::OVER`, `control::LAYER_SWAP`): before its guest hears of
+    /// the run. An error where the VM has no writable layer, or one of another length.
+    pub fn stage_layer(&self, file: std::fs::File) -> Result<(), String> {
+        self.control
+            .layer()
+            .ok_or("the microVM has no writable layer")?
+            .stage(file)
+    }
+
     /// Maps `file`, a run's swap, into the guest's swap window (D159), writable by the guest;
     /// returns its length, or nothing where a run's is mapped already, which the guest's
     /// members share. An error where the VM has no swap window.

@@ -132,7 +132,23 @@ mod feature {
     pub const INCOMPAT_64BIT: u32 = 0x80;
     pub const INCOMPAT_CSUM_SEED: u32 = 0x2000;
     pub const RO_COMPAT_HUGE_FILE: u32 = 0x8;
+    pub const RO_COMPAT_BIGALLOC: u32 = 0x200;
     pub const RO_COMPAT_METADATA_CSUM: u32 = 0x400;
+}
+
+/// A group descriptor's `bg_flags`' EXT4_BG_BLOCK_UNINIT: its block bitmap never written,
+/// the kernel making it of the group's own metadata as it first allocates there
+/// (balloc.c, ext4_init_block_bitmap).
+const BG_BLOCK_UNINIT: u16 = 0x2;
+
+/// What a group's descriptor says of its block bitmap: where it is, whether it was ever
+/// written, and its checksum (`bg_block_bitmap_csum_lo`, and `_hi` where descriptors hold
+/// it).
+#[derive(Debug, Clone, Copy)]
+struct Bitmap {
+    at: u64,
+    uninit: bool,
+    csum: u32,
 }
 
 /// `s_state`'s EXT4_ERROR_FS: its kernel found it damaged.
@@ -277,6 +293,14 @@ pub struct Volume<F: ReadAt + ?Sized> {
     /// Marked as needing recovery (`needs_recovery`), its journal's inode (0 for none).
     recover: bool,
     journal: u32,
+    /// Blocks to a group, the first group's first block, and whether a block bitmap's
+    /// checksum holds 32 bits (descriptors of 64 bytes or more) rather than 16.
+    bpg: u64,
+    first: u64,
+    wide_bitmap_csum: bool,
+    /// Each group's block bitmap; none where its blocks are clusters (bigalloc), whose
+    /// bitmaps this does not read.
+    bitmaps: Option<Vec<Bitmap>>,
     file: F,
 }
 
@@ -413,6 +437,8 @@ impl<F: ReadAt> Volume<F> {
             .map_err(|e| Error(format!("its group descriptors: {e}")))?;
         let itb = (u64::from(ipg) * u64::from(inode_size)).div_ceil(block);
         let mut tables = Vec::with_capacity(usize::try_from(groups).unwrap_or_default());
+        let mut bitmaps = Vec::with_capacity(tables.capacity());
+        let wide_bitmap_csum = desc >= 0x3C;
         for (group, d) in table.chunks_exact(desc as usize).enumerate() {
             let d = Raw(d);
             if let Some(seed) = csum_seed
@@ -428,6 +454,19 @@ impl<F: ReadAt> Volume<F> {
                 return corrupt(format!("group {group}'s inode table at block {itable}"));
             }
             tables.push(itable);
+            let mut at = u64::from(d.u32(0x0)?);
+            let mut csum = u32::from(d.u16(0x18)?);
+            if bit64 {
+                at |= u64::from(d.u32(0x20)?) << 32;
+            }
+            if wide_bitmap_csum {
+                csum |= u32::from(d.u16(0x38)?) << 16;
+            }
+            bitmaps.push(Bitmap {
+                at,
+                uninit: d.u16(0x12)? & BG_BLOCK_UNINIT != 0,
+                csum,
+            });
         }
         Ok(Volume {
             block,
@@ -440,8 +479,79 @@ impl<F: ReadAt> Volume<F> {
             huge_files: ro_compat & feature::RO_COMPAT_HUGE_FILE != 0,
             recover,
             journal,
+            bpg,
+            first,
+            wide_bitmap_csum,
+            bitmaps: (ro_compat & feature::RO_COMPAT_BIGALLOC == 0).then_some(bitmaps),
             file,
         })
+    }
+
+    /// The runs of blocks its block bitmaps say are free, `(first block, how many)` in
+    /// order: what a host may give back of its file once nothing mounts it (D190), which
+    /// pmem never could while its guest did (drivers/nvdimm/pmem.c takes no discard). Of
+    /// the groups whose bitmaps were written alone: a group still `BLOCK_UNINIT` never had a
+    /// block allocated past its own metadata, whose file holds nothing there to give back.
+    /// Each bitmap read is checked against its descriptor's checksum (metadata_csum), and
+    /// a block past the file system's last, which its last group's bitmap marks in use,
+    /// is never free. None of a file system whose bitmaps count clusters (bigalloc).
+    pub fn free_runs(&self) -> Result<Vec<(u64, u64)>, Error> {
+        let Some(bitmaps) = &self.bitmaps else {
+            return Ok(Vec::new());
+        };
+        // The bits a group's checksum covers: a group's blocks (EXT4_CLUSTERS_PER_GROUP / 8).
+        let bytes =
+            usize::try_from(self.bpg / 8).map_err(|_| Error("groups past this host's memory".into()))?;
+        let mut bitmap = vec![0u8; usize::try_from(self.block).unwrap_or(4096)];
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        for (group, b) in bitmaps.iter().enumerate() {
+            if b.uninit {
+                continue;
+            }
+            if b.at <= self.first || b.at >= self.blocks {
+                return corrupt(format!("group {group}'s block bitmap at block {}", b.at));
+            }
+            self.file
+                .read_exact_at(&mut bitmap, b.at * self.block)
+                .map_err(|e| Error(format!("group {group}'s block bitmap: {e}")))?;
+            let covered = bitmap
+                .get(..bytes)
+                .ok_or_else(|| Error("a block bitmap past its block".into()))?;
+            if let Some(seed) = self.csum_seed {
+                let mut sum = crc32c(seed, covered);
+                if !self.wide_bitmap_csum {
+                    sum &= 0xFFFF;
+                }
+                if sum != b.csum {
+                    return corrupt(format!("group {group}'s block bitmap's checksum"));
+                }
+            }
+            let start = self.first + group as u64 * self.bpg;
+            let end = (start + self.bpg).min(self.blocks);
+            let mut free = |from: u64, len: u64| match runs.last_mut() {
+                Some((first, n)) if *first + *n == from => *n += len,
+                _ => runs.push((from, len)),
+            };
+            for (i, &byte) in covered.iter().enumerate() {
+                let at = start + 8 * i as u64;
+                if at >= end {
+                    break;
+                }
+                // A byte's eight blocks at once where all are in use, or all free.
+                match byte {
+                    0xFF => {}
+                    0 => free(at, (end - at).min(8)),
+                    _ => {
+                        for bit in 0..8u64 {
+                            if byte & (1 << bit) == 0 && at + bit < end {
+                                free(at + bit, 1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(runs)
     }
 
     /// Whether it is marked as needing recovery (`needs_recovery`), as its kernel leaves
