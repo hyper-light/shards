@@ -182,6 +182,21 @@ pub fn confine() -> Result<(), String> {
         // Graphics (vkr_physical_device.c): UDMABUF_CREATE alone, _IOW('u', 0x42, struct
         // udmabuf_create) of linux/udmabuf.h, Landlock's rules giving it /dev/udmabuf.
         rules.push(Rule::with(libc::SYS_ioctl, 1, &[UDMABUF_CREATE]));
+        // musl's GPU's VM process, linked dynamically: musl registers for private expedited
+        // memory barriers as a process starts its first thread, and its loader takes one as
+        // a library it opens brings thread-local storage, the drivers' (musl's
+        // src/linux/membarrier.c and ldso/dynlink.c, install_new_tls). Refused, the first
+        // ended the process before it was ready.
+        if cfg!(target_env = "musl") {
+            rules.push(Rule::with(
+                libc::SYS_membarrier,
+                0,
+                &[
+                    MEMBARRIER_CMD_PRIVATE_EXPEDITED,
+                    MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED,
+                ],
+            ));
+        }
     }
     let commands = [
         libc::F_DUPFD,
@@ -257,6 +272,13 @@ const GPU_IOCTL_TYPES: [u8; 3] = *b"Fmd";
 /// struct udmabuf_create), its 24 bytes a descriptor, flags, an offset and a size.
 #[cfg(target_os = "linux")]
 const UDMABUF_CREATE: u32 = (1 << 30) | (24 << 16) | ((b'u' as u32) << 8) | 0x42;
+
+/// membarrier(2)'s commands musl makes (linux/membarrier.h), which the libc crate names on
+/// Android alone.
+#[cfg(target_os = "linux")]
+const MEMBARRIER_CMD_PRIVATE_EXPEDITED: u32 = 1 << 3;
+#[cfg(target_os = "linux")]
+const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED: u32 = 1 << 4;
 
 /// What else the GPU's VM process's drivers make, every argument allowed (PM M382):
 /// NVIDIA's `statfs` of where it keeps files and `sched_get_priority_max` and `_min` of the
