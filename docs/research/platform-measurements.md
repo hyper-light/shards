@@ -16676,6 +16676,116 @@ revision before comparing a changed API/implementation.
   says the budget short ("its microVM's budget is short by"), then "VM ... ended before its
   command did", and not who ended it.
 
+### M401. Whether Windows 11's hypervisor gives a partition a host's PCI function (D154)
+
+- **Question.** M356 read Microsoft's word that Discrete Device Assignment is Windows Server's
+  alone, and tried nothing. Does Windows 11's hypervisor give a WHP partition a host's
+  function, and where it does not, where does it stop, and in what words?
+- **Method.** docs/research/measurements/whp-passthrough: `probe.ps1`, read-only, and
+  `assign.ps1`, which dismounts a function DDA's own way (Disable-PnpDevice,
+  Dismount-VMHostAssignableDevice), allocates it as a virtual PCI resource by its dismounted
+  instance ID (WHvAllocateVpciResource), asks for it as a partition's device each way WHP
+  offers, then gives it a Hyper-V VM of its own (Add-VMAssignableDevice, Start-VM), and
+  mounts it back whatever happens. jupiter (ASUS ROG Flow Z13 GZ302EA, AMD Ryzen AI Max+
+  395, 32 CPUs, Windows 11 Pro 26200.9711, Hyper-V on, its boot entry's hypervisor settings
+  as installed: hypervisorlaunchtype Auto, no hypervisoriommupolicy), from kiln's elevated
+  runner, 2026-11-01; and the probes the scripts were made from, 2026-10-29, three dismounts
+  in all. Its function to spare: the SD card reader (Genesys Logic GL9755, a PCIe endpoint
+  alone behind its root port, ACS upstream, no reserved memory, no card in it); its other
+  USB controllers carry the keyboard, touchpad, Bluetooth and cameras, and its Wi-Fi is its
+  network. Output: whp-passthrough/jupiter.txt.
+- **Found.**
+  - WHP's features (WHvCapabilityCodeFeatures): 0x2FF, VirtualPciDeviceSupport 1,
+    IommuSupport 0. An empty virtual PCI resource is allocated (S_OK). Hyper-V says the host
+    supports I/O virtualization (Get-VMHost: IovSupport True, no reasons), and Windows its
+    DMA protection (Device Guard's available property 3).
+  - DDA's own first step works: the reader disabled in 0.60 s, dismounted in 1.22 s, its
+    instance ID then `PCIP\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\4&632F499&0&0012`, and
+    allocated by it (S_OK).
+  - No partition is given it. AllowDeviceAssignment set before setup: 0x80070032
+    (ERROR_NOT_SUPPORTED), with SeparateSecurityDomain set too the same; after setup:
+    0x80070057 (E_INVALIDARG); read back, 0. A device physically backed by the resource:
+    0x80070032, the property set or not. One not physically backed is made (S_OK) and reaches
+    nothing of the function: its hardware IDs, its probed BARs, its power state and every
+    register of its configuration space read fail with 0x8007139F (ERROR_INVALID_STATE).
+  - Hyper-V's own Discrete Device Assignment takes the function into a VM's settings
+    (Add-VMAssignableDevice) and refuses the VM as it starts: "Virtual Pci Express Port:
+    Failed to Power on with Error 'A hypervisor feature is not available to the user.'
+    (0xC035001E)", HV_STATUS_FEATURE_UNAVAILABLE.
+  - Mounted back in 0.47 s and enabled in 0.67 s, the reader OK after each of the four runs.
+- **Boot-policy follow-up, 2026-11-03.** One experiment after explicit approval for two
+  reboots of jupiter. `boot-policy.ps1` copied the original loader, enabled
+  `hypervisoriommupolicy` only on that copy, selected it once, then returned to the
+  unchanged original default and removed the copy. Native parse and source-hash checks
+  passed, and all five actions exited 0. The enabled entry booted at 21:39:40.500 UTC;
+  WHP still reported features 0x2FF, IommuSupport 0, and AllowDeviceAssignment
+  0x80070032. The original entry booted again at 21:45:34.500 UTC, with its absent
+  policy and the same WHP refusal. Its full loader and boot-manager listings matched
+  the saved baseline; the temporary GUID was absent. BitLocker protection and Secure
+  Boot stayed on; the reader stayed attached and healthy. No physical function was
+  detached, and no passthrough E2E is claimed. Output, hashes and machine-readable
+  state: whp-passthrough/jupiter-boot-policy.txt and jupiter-boot-policy.json.
+- **Consequence (D154).** Windows 11 Pro's hypervisor assigns no device to any partition,
+  WHP's or Hyper-V's own, on hardware with an IOMMU and a function DDA dismounts: the limit
+  is the hypervisor's, which Microsoft's support statement matches (M356). A Windows host's
+  refusal is therefore its hypervisor's own answer, asked as a function is
+  (`hv::device_assignment_refused`: VirtualPciDeviceSupport, then AllowDeviceAssignment set
+  on a partition of its own, never set up and mapping nothing, so that a process's one
+  mapped partition, M345, is not disturbed): on jupiter, "its hypervisor assigns no device to
+  a partition: WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT 0x80070032
+  (The request is not supported. (os error 50)), and says it has no IOMMU support".
+
+### M402. Whether CI's Windows runners' hypervisors give a partition a host's PCI function (D154)
+
+- **Question.** CI's Windows Server runners are the only Windows Server hosts here, the edition
+  Microsoft supports Discrete Device Assignment on. Do their hypervisors give a partition a
+  function?
+- **Method.** whp-passthrough/probe.ps1 on GitHub's windows-2022, windows-2025 and
+  windows-11-arm (whp-passthrough.yml, CI run 41363714971 at 9ff73a16, 2026-11-01). Output:
+  whp-passthrough/ci.txt.
+- **Found.**
+
+  | runner | Windows | WHP features | AllowDeviceAssignment | Hyper-V's word |
+  |---|---|---|---|---|
+  | windows-2022 | Server 2022 Datacenter 20348.5761 | 0x2FF: virtual PCI 1, IOMMU 0 | 0x80070032 | IovSupport False: no ACS at any root port, PCI Express not Windows' to control, no chipset support for I/O virtualization |
+  | windows-2025 | Server 2025 Datacenter 26100.33650 | 0x2FF: virtual PCI 1, IOMMU 0 | 0x80070032 | the same three |
+  | windows-11-arm | 11 Enterprise 26200.9711 (Cobalt 100) | 0xAD9: virtual PCI 1, IOMMU 0 | no partition: WHvCreatePartition 0xC0351000 | IovSupport False: the Virtualization Infrastructure Driver is not running, and the same two |
+
+  Their only PCI functions are Azure's: a Mellanox ConnectX virtual adapter (and on
+  windows-11-arm an NVMe controller), each a VMBus virtual PCI device, not one of the host's
+  own bus. An empty resource is allocated on both x86_64 runners (S_OK) and not on
+  windows-11-arm (0x80070003), whose WHP runs no hypervisor, as M172 found.
+- **Consequence (D154).** No Windows host here passes a function through: Windows 11 Pro
+  refuses on hardware with an IOMMU (M401); Windows Server, the edition Microsoft supports
+  Discrete Device Assignment on, needs server-class hardware that grants Windows the PCIe
+  fabric's control and ACS at its root complex, forcing a function's traffic through the
+  IOMMU (Microsoft Learn, "Deploy devices by using Discrete Device Assignment", 2025-02-19),
+  which Azure's VMs do not give it, as Hyper-V's reasons say; and windows-11-arm has no
+  hypervisor. Each refusal is the
+  host's own answer (`vm::passthrough_refused`). The refusal tests cover this path; they
+  are not a passthrough E2E. Windows Server DDA implementation and a successful E2E on an
+  assignable physical function remain outstanding for step 13.
+
+### M403. What Hypervisor.framework's API gives a VM of a host's devices (D154)
+
+- **Question.** M356 read Apple's documentation and forums. What does the API itself
+  declare?
+- **Method.** The function declarations of Hypervisor.framework's headers in the macOS 26.4
+  SDK (Command Line Tools 26.4.1; this Mac at macOS 26.4.1, 25E253), arm64's and x86's, every
+  `hv_*(` named; and Virtualization.framework's device classes in the same SDK. 2026-11-01.
+  Reproducible inventory and header hashes: whp-passthrough/macos-api.py and macos-api.txt.
+- **Found.** 162 functions: 68 of vCPUs (`hv_vcpu_*`), 45 of VMs (`hv_vm_*`: memory mapped,
+  unmapped and protected in a VM or its address spaces, its EL2 and IPA configuration, x86's
+  PIC, IOAPIC and local APIC and their MSIs, port I/O notifiers), 35 of arm64's GIC
+  (`hv_gic_*`), 10 of VMX, and `hv_vcpus_exit`, `hv_tsc_clock`,
+  `hv_sme_config_get_max_svl_bytes` and `hv_capability`. None takes a device, and no header
+  names a PCI function, an IOMMU, DMA or an assignment (its one match of "pci", VMX's
+  INVPCID). Virtualization.framework's devices are ones it emulates; of USB, its
+  controllers, mass storage, keyboards and pointing devices, and no passthrough class (M356's
+  `VZUSBPassthroughDeviceConfiguration`, of WWDC26, is in no SDK on this Mac).
+- **Consequence (D154).** macOS's refusal stays Apple's limit, as the API itself has it: a VM
+  maps the process's memory and runs its vCPUs, and is given no device.
+
 ### M411. An open of a name being removed on NTFS, refused as access denied
 
 - **Question.** containers.rs `a_logs_history_is_what_its_user_set` failed once on jupiter

@@ -1179,18 +1179,27 @@ pub struct Vfio {
     pub cdev: Option<PathBuf>,
 }
 
-/// Why this host passes no PCI function through to a microVM (D154, PM M356): VFIO, Linux's,
-/// is how a host gives a process one, its DMA translated by the host's IOMMU. macOS has no
-/// such path: Hypervisor.framework assigns no device to a VM, and a function reaches a
-/// process only through a DriverKit driver Apple has entitled to it. Windows gives a
-/// partition one only once its administrator has dismounted it from the host (Discrete
-/// Device Assignment), which Microsoft supports on Windows Server alone.
+/// Why this host passes no PCI function through to a microVM (D154): VFIO, Linux's, is how a
+/// host gives a process one, its DMA translated by the host's IOMMU. On macOS,
+/// Hypervisor.framework's API assigns no device to a VM (PM M403). Windows gives
+/// a partition one only where its hypervisor assigns devices, as it answers when asked
+/// (`hv::device_assignment_refused`): Windows 11's refuses (PM M401), CI's Windows Server
+/// runners' too (PM M402).
 #[cfg(not(target_os = "linux"))]
-pub const NO_PASSTHROUGH: &str = if cfg!(target_os = "macos") {
-    "this host passes no PCI function through to a microVM: macOS's Hypervisor.framework assigns no device to a VM, and a function reaches a process only through a DriverKit driver Apple entitles to it (D154)"
-} else {
-    "this host passes no PCI function through to a microVM: Windows gives a partition one only once its administrator dismounts it from the host (Discrete Device Assignment), which Microsoft supports on Windows Server alone (D154)"
-};
+pub fn passthrough_refused() -> String {
+    #[cfg(target_os = "macos")]
+    let why = String::from("macOS's Hypervisor.framework assigns no device to a VM (D154)");
+    #[cfg(hv = "whp")]
+    let why = match crate::hv::device_assignment_refused() {
+        Some(said) => format!(
+            "{said}; Microsoft supports Discrete Device Assignment, a function dismounted from its host and assigned to a VM, on Windows Server, on server-class hardware that gives Windows the PCIe fabric's control and whose root complex has Access Control Services, its traffic forced through the IOMMU (D154)"
+        ),
+        None => "its hypervisor allows a partition device assignment, which shards does not use yet: no Windows host it is tested on allows one (D154)".into(),
+    };
+    #[cfg(not(any(target_os = "macos", hv = "whp")))]
+    let why = check_host().err().unwrap_or_default();
+    format!("this host passes no PCI function through to a microVM: {why}")
+}
 
 impl Vfio {
     /// The host's function `name`, by the VFIO group it is in: it must be bound to
@@ -1211,7 +1220,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!("{name}: {NO_PASSTHROUGH}"))
+        Err(format!("{name}: {}", passthrough_refused()))
     }
 
     /// The host's function whose VFIO device node is `cdev` (`/dev/vfio/devices/vfioN`),
@@ -1235,7 +1244,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!("{}: {NO_PASSTHROUGH}", cdev.display()))
+        Err(format!("{}: {}", cdev.display(), passthrough_refused()))
     }
 }
 
@@ -1791,7 +1800,7 @@ fn passed_through(
     _machine: &PciMachine<'_>,
     _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
-    Err(NO_PASSTHROUGH.into())
+    Err(passthrough_refused())
 }
 
 /// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
@@ -2822,23 +2831,38 @@ mod tests {
         }
     }
 
-    /// Off Linux a host's PCI function is refused by name, with the OS's own limit: macOS's
-    /// Hypervisor.framework assigns no device, and Windows assigns one through Discrete Device
-    /// Assignment on Windows Server alone (D154, PM M356).
+    /// Off Linux a host's PCI function is refused by name, with the host's own limit (D154):
+    /// macOS's Hypervisor.framework assigns no device (PM M356, M403); on Windows, what its
+    /// hypervisor answers as a partition is allowed device assignment, which Windows 11's
+    /// and CI's Windows Server runners' refuse (PM M401, M402). Printed: what this host said.
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn a_hosts_pci_function_is_refused_with_its_oss_own_limit() {
+        #[cfg(hv = "whp")]
+        assert!(
+            crate::hv::device_assignment_refused().is_some(),
+            "this host permits PCI device assignment: step 13 needs a passthrough implementation and a successful real hardware E2E here; an implementation refusal is not an OS limit"
+        );
+        let limit = passthrough_refused();
+        eprintln!("{limit}");
         for refused in [
             Vfio::of("0000:01:00.0").unwrap_err(),
             Vfio::of_cdev(std::path::Path::new("/dev/vfio/devices/vfio0")).unwrap_err(),
         ] {
-            assert!(refused.ends_with(NO_PASSTHROUGH), "{refused}");
-            let limit = if cfg!(target_os = "macos") {
-                "Hypervisor.framework assigns no device"
-            } else {
-                "Discrete Device Assignment"
-            };
-            assert!(refused.contains(limit), "{refused}");
+            assert!(refused.ends_with(&limit), "{refused}");
         }
+        let said: &[&str] = if cfg!(target_os = "macos") {
+            &["Hypervisor.framework assigns no device"]
+        } else if cfg!(hv = "whp") {
+            &[
+                "WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT",
+                "VirtualPciDeviceSupport 0",
+                "the Windows Hypervisor Platform is not on this host",
+                "asking the Windows Hypervisor Platform",
+            ]
+        } else {
+            &["no hypervisor backend for this host"]
+        };
+        assert!(said.iter().any(|s| limit.contains(s)), "{limit}");
     }
 }

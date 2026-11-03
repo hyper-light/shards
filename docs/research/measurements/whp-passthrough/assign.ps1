@@ -114,14 +114,18 @@ function Reach($p) {
 }
 $device = Get-PnpDevice -PresentOnly | Where-Object { ($_ | Get-PnpDeviceProperty DEVPKEY_Device_LocationPaths -ErrorAction SilentlyContinue).Data -contains $LocationPath } | Select-Object -First 1
 if (-not $device) { "no present device at $LocationPath"; exit 1 }
+if ($device.Status -ne 'OK') { "device at $LocationPath is not enabled and healthy; leaving it unchanged"; exit 1 }
 $pci = $device.InstanceId
-$vm = 'shards-passthrough-probe'
+$vm = 'shards-passthrough-' + [guid]::NewGuid().ToString('N')
 $vmdir = Join-Path $env:TEMP $vm
+$disabled = $false; $dismounted = $false; $created = $false
 "$(at) $($device.FriendlyName) ($pci): $($device.Status)"
 try {
     Disable-PnpDevice -InstanceId $pci -Confirm:$false -ErrorAction Stop
+    $disabled = $true
     "$(at) disabled"
     Dismount-VMHostAssignableDevice -LocationPath $LocationPath -Force -ErrorAction Stop
+    $dismounted = $true
     "$(at) dismounted"
     $instance = (Get-VMHostAssignableDevice | Where-Object { $_.LocationPath -eq $LocationPath }).InstanceID
     "$(at) dismounted as $instance"
@@ -133,22 +137,26 @@ try {
     "$(at) WHP asked"
     "== Hyper-V's own Discrete Device Assignment"
     New-VM -Name $vm -Generation 2 -MemoryStartupBytes 512MB -NoVHD -Path $vmdir -ErrorAction Stop | Out-Null
+    $created = $true
     Set-VM -Name $vm -AutomaticStopAction TurnOff -StaticMemory -LowMemoryMappedIoSpace 512MB -HighMemoryMappedIoSpace 1GB -ErrorAction Stop
-    try { Add-VMAssignableDevice -VMName $vm -LocationPath $LocationPath -ErrorAction Stop; "$(at) Add-VMAssignableDevice: done" } catch { "$(at) Add-VMAssignableDevice: $($_.Exception.Message)" }
+    Add-VMAssignableDevice -VMName $vm -LocationPath $LocationPath -ErrorAction Stop
+    "$(at) Add-VMAssignableDevice: done"
     try { Start-VM -Name $vm -ErrorAction Stop; Start-Sleep -Seconds 3; "$(at) Start-VM: $((Get-VM -Name $vm).State)" } catch { "$(at) Start-VM: $($_.Exception.Message -replace '\s+', ' ')" }
 } catch {
     "$(at) $($_.Exception.Message)"
 } finally {
-    if (Get-VM -Name $vm -ErrorAction SilentlyContinue) {
+    if ($created) {
         Stop-VM -Name $vm -TurnOff -Force -ErrorAction SilentlyContinue
         Get-VMAssignableDevice -VMName $vm -ErrorAction SilentlyContinue | Remove-VMAssignableDevice -ErrorAction SilentlyContinue
         Remove-VM -Name $vm -Force -ErrorAction SilentlyContinue
         "$(at) VM removed"
     }
     Remove-Item -Recurse -Force $vmdir -ErrorAction SilentlyContinue
-    if (Get-VMHostAssignableDevice | Where-Object { $_.LocationPath -eq $LocationPath }) {
+    if ($dismounted -and (Get-VMHostAssignableDevice | Where-Object { $_.LocationPath -eq $LocationPath })) {
         try { Mount-VMHostAssignableDevice -LocationPath $LocationPath -ErrorAction Stop; "$(at) mounted" } catch { "$(at) mounting: $($_.Exception.Message)" }
     }
-    try { Enable-PnpDevice -InstanceId $pci -Confirm:$false -ErrorAction Stop; "$(at) enabled" } catch { "$(at) enabling: $($_.Exception.Message)" }
+    if ($disabled) {
+        try { Enable-PnpDevice -InstanceId $pci -Confirm:$false -ErrorAction Stop; "$(at) enabled" } catch { "$(at) enabling: $($_.Exception.Message)" }
+    }
     "$(at) $((Get-PnpDevice -InstanceId $pci).Status)"
 }
