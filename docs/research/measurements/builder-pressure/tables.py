@@ -52,6 +52,16 @@ def read(path, run, into):
                 plugged[(f["build"], f["arm"], (run, int(f["round"])))].append((float(f["t"]), int(f["plugged"])))
 
 
+def budget_from(builds, name, r):
+    """The free arm whose peak a held arm of round `r` was budgeted from (measure.py): the
+    round's own where the round is odd (its free arm first), else the round before's."""
+    run, n = r
+    for at in ((run, n), (run, n - 1)) if n % 2 == 1 else ((run, n - 1),):
+        if (name, "free", at) in builds:
+            return (name, "free", at)
+    return None
+
+
 def unplugged(samples, t):
     """What the guest held plugged less, from its last sample before `t` (an answer's) to its
     first a second or more after: what an ask to unplug did."""
@@ -80,9 +90,19 @@ def report(title, into):
             peaks = [int(builds[(name, arm, r)].get("scope_anon_peak", 0)) for r in rounds]
             if any(peaks):
                 print(f"   scope anon peak   {stats(peaks, ' MiB', MIB)}")
+            helds = [int(builds[(name, arm, r)].get("scope_held_peak", 0)) for r in rounds]
+            if any(helds):
+                print(f"   scope held peak   {stats(helds, ' MiB', MIB)}")
             budgets = [int(builds[(name, arm, r)].get("budget", 0)) for r in rounds]
             if any(budgets):
                 print(f"   budget            {stats(budgets, ' MiB', MIB)}")
+                # How far short of what the build held unbudgeted its budget was: the free
+                # arm's held peak each budget was taken from (the round before's free arm) less it.
+                shorts = [int(builds[k]["scope_held_peak"]) - int(builds[(name, arm, r)]["budget"])
+                          for r in rounds for k in [budget_from(builds, name, r)]
+                          if k and int(builds[k].get("scope_held_peak", 0))]
+                if shorts:
+                    print(f"   short of its peak {stats(shorts, ' MiB', MIB)}")
             answers = [g for r in rounds for g in gives.get((name, arm, r), []) if "answered_ms" in g]
             unanswered = [g for r in rounds for g in gives.get((name, arm, r), []) if "unanswered_ms" in g]
             if answers or unanswered:
