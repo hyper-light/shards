@@ -839,6 +839,30 @@ fn a_nested_guest_runs_vms_of_its_own() {
     }
 }
 
+/// Off Linux a host's PCI function asked of a VM by name is refused before the VM starts,
+/// with its host's own limit (D154): macOS's Hypervisor.framework assigns no device (PM
+/// M403); on Windows its hypervisor answers whether it assigns one, by a function's VFIO
+/// name or as Discrete Device Assignment names it, and Windows 11's and CI's Windows Server
+/// runners' refuse (PM M401, M402).
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
+    if cannot_run_vms() {
+        return;
+    }
+    let limit = shards_vmm::vm::passthrough_refused();
+    let k = kernel().to_str().unwrap();
+    let mut named = vec!["0000:01:00.0", "/dev/vfio/devices/vfio0"];
+    if cfg!(windows) {
+        named.push("PCIROOT(0)#PCI(0202)#PCI(0000)");
+    }
+    for name in named {
+        let r = vm_run(&["--kernel", k, "--vfio", name], TIMEOUT);
+        assert_ne!(r.status, Some(0), "{name}: {r}");
+        assert!(r.stderr.contains(&format!("{name}: {limit}")), "{name}: {r}");
+    }
+}
+
 /// A run given a host's VFIO group (`shards run --device /dev/vfio/N`, D154), on a host
 /// that has one to give: a nested guest given test functions, a device of one and a
 /// device of two (as a GPU with its audio function), runs shards as a Linux host does.

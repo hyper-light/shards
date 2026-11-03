@@ -81,6 +81,21 @@ pub fn vfio_functions(groups: &[VfioGroup]) -> Vec<shards_vmm::vm::Vfio> {
     all
 }
 
+/// Whether a run's device's host path names a host's PCI function off Linux, where no host
+/// passes one through (D154): VFIO's nodes, and on Windows a function as Discrete Device
+/// Assignment's cmdlets name it, by its location path (`PCIROOT(0)#PCI(0202)#PCI(0000)`) or
+/// its instance ID, mounted (`PCI\...`) or dismounted from the host (`PCIP\...`).
+#[cfg(not(target_os = "linux"))]
+fn names_a_function(path: &str) -> bool {
+    let named = |prefix: &str| {
+        path.get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    };
+    path == "/dev/vfio"
+        || path.starts_with("/dev/vfio/")
+        || (cfg!(windows) && ["PCIROOT(", "PCI\\", "PCIP\\"].into_iter().any(named))
+}
+
 /// The host's VFIO groups among the host paths `paths`, a run's devices' and its CDI
 /// nodes' (D154): a path `/dev/vfio/N` the host has, or each such in `/dev/vfio` where it
 /// names the directory, with the functions of IOMMU group N the host gave vfio-pci or another of
@@ -88,7 +103,9 @@ pub fn vfio_functions(groups: &[VfioGroup]) -> Vec<shards_vmm::vm::Vfio> {
 /// devices held by none, stay the host's); each group's members as sysfs lists them
 /// (/sys/kernel/iommu_groups/N/devices). A path the host has no group at is no group: the
 /// guest finds no device there either, and says so as dockerd does. A no-IOMMU group is
-/// refused: its DMA reaches all of the host's memory, which no microVM is given.
+/// refused: its DMA reaches all of the host's memory, which no microVM is given. Off Linux
+/// a path that names a host's function is refused with the host's own limit
+/// (`names_a_function`).
 pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<VfioGroup>, String> {
     let gathering = |host: &str, e: &str| {
         format!("error gathering device information while adding custom device {host:?}: {e}")
@@ -104,6 +121,10 @@ pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
     let mut groups: Vec<VfioGroup> = Vec::new();
     for host in paths {
         let clean = host.trim_end_matches('/');
+        #[cfg(not(target_os = "linux"))]
+        if names_a_function(clean) {
+            return Err(gathering(host, &shards_vmm::vm::passthrough_refused()));
+        }
         // A function by its device node: iommufd its DMA's (vfio.rst, "VFIO Device cdev").
         let cdevs: Vec<String> = if clean == "/dev/vfio/devices" {
             let mut names: Vec<String> = std::fs::read_dir(clean)
@@ -1238,6 +1259,28 @@ mod tests {
             shards_vmm::vm::vfio_given(&vfio_functions(&[node("1", "0000:01:00.1"), group])),
             Ok(())
         );
+    }
+
+    /// Off Linux a run's device names a host's function by VFIO's nodes, and on Windows as
+    /// Discrete Device Assignment's cmdlets do, in any case; the VM's own devices it names
+    /// as ever (D154).
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn a_hosts_function_is_named_by_vfios_nodes_and_on_windows_as_dda_names_it() {
+        for path in ["/dev/vfio", "/dev/vfio/1", "/dev/vfio/devices/vfio0"] {
+            assert!(names_a_function(path), "{path}");
+        }
+        for path in ["/dev/fuse", "/dev/vfiox", "/dev/net/tun", "PCI", "C:\\pci\\x"] {
+            assert!(!names_a_function(path), "{path}");
+        }
+        for path in [
+            "PCIROOT(0)#PCI(0202)#PCI(0000)",
+            "pciroot(0)#pci(0202)#pci(0000)",
+            "PCI\\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\\4&632F499&0&0012",
+            "PCIP\\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\\4&632F499&0&0012",
+        ] {
+            assert_eq!(names_a_function(path), cfg!(windows), "{path}");
+        }
     }
 
     /// `--gpus` asks for a microVM's one GPU with any count but none, or its device 0;

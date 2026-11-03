@@ -1,0 +1,28 @@
+name: whp passthrough
+
+# Whether GitHub's Windows runners' hypervisors give a VM a host's PCI function (D154):
+# docs/research/measurements/whp-passthrough/probe.ps1, read-only, for PM M402. Runs when
+# the probe changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/whp-passthrough/probe.ps1
+      - .github/workflows/whp-passthrough.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Probe
+        shell: pwsh
+        run: docs/research/measurements/whp-passthrough/probe.ps1

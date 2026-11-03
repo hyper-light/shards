@@ -292,7 +292,8 @@ it where it was, at the same address on its network.
 | Images, Dockerfiles and Agentfiles | Pulled, pushed and built, every `RUN` step in a microVM of the build's own, for other CPUs too under emulation |
 | Many agents in one microVM, each in its own domain | Works, from an Agentfile: each agent's own processes, files, networks and devices, and nothing it isn't granted |
 | Networks, volumes and devices | Work: a microVM reaches only what you give it, networks deny by default |
-| GPUs | macOS, Linux and Windows (x86_64): your machine's GPU, for Vulkan in the microVM (`--gpus all`), tested on Apple's, NVIDIA's and AMD's. Linux also passes a host's PCI device through to a microVM (VFIO), tested with a test device |
+| GPUs | macOS, Linux and Windows (x86_64): your machine's GPU, for Vulkan in the microVM (`--gpus all`), tested on Apple's, NVIDIA's and AMD's |
+| PCI passthrough | Linux passes a host's function through with VFIO, tested with a test device. macOS's Hypervisor.framework provides no device assignment API. The Windows hosts tested here refuse device assignment and shards reports their answers; DDA on a Windows Server host that permits it remains unimplemented and needs a real hardware E2E (D154) |
 | `docker` command lines, Compose and the Docker Engine API | Work, through shards' Engine API file |
 | Running shards' commands on another machine | Works: `shards create context`, over QUIC |
 

@@ -12659,6 +12659,29 @@ fn stats_read_each_microvms_guest() {
     assert_eq!(shards(&["rm", "-f", "busy", "idle", "asleep"]).status, Some(0));
 }
 
+/// Off Linux a run naming a host's PCI function, by VFIO's nodes or (on Windows) as
+/// Discrete Device Assignment names one, is refused as it starts with its host's own
+/// limit, in dockerd's words for a device it cannot give (D154; PM M401, M402, M403).
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit() {
+    let Some((home, image)) = home("containers-passthrough") else {
+        return;
+    };
+    let limit = shards_vmm::vm::passthrough_refused();
+    let mut named = vec!["/dev/vfio/1", "/dev/vfio/devices/vfio0"];
+    if cfg!(windows) {
+        named.push("PCIROOT(0)#PCI(0202)#PCI(0000):/dev/x");
+    }
+    for device in named {
+        let host = device.split(':').next().unwrap_or_default();
+        let r = run_in(&home, &image, &["--rm", "--device", device], &["exit", "0"]);
+        assert_ne!(r.status, Some(0), "{device}: {r}");
+        let said = format!("error gathering device information while adding custom device {host:?}: {limit}");
+        assert!(r.stderr.contains(&said), "{device}: {r}");
+    }
+}
+
 /// D44: a container reaches Docker's devices and those it is given, as dockerd and runc
 /// confine one (moby's default rules, runc's eBPF device filter), its execs too; `--device`
 /// takes the VM's devices, as Docker's takes its host's; every refusal is Docker's (probed

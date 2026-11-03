@@ -1,0 +1,71 @@
+CI run 41363714971 (whp-passthrough.yml at 9ff73a16), 2026-11-01, probe.ps1 sha256 6047576baa722f0c...,
+each runner's answers as its log has them (colours and timestamps stripped).
+
+#### windows-2022
+== os
+Microsoft Windows Server 2022 Datacenter, build 20348.5761, EditionID ServerDatacenter, ProductType 3
+AMD EPYC 7763 64-Core Processor
+== WHP
+WHvCapabilityCodeFeatures: hr=0x00000000 value=0x2FF VirtualPciDeviceSupport=1 IommuSupport=0
+WHvCapabilityCodeExtendedVmExits: hr=0x00000000 value=0x7FFF RetargetUnknownVpciDevice=1
+WHvAllocateVpciResource(an empty resource): hr=0x00000000
+WHvCreatePartition: hr=0x00000000
+WHvSetPartitionProperty(AllowDeviceAssignment = TRUE): hr=0x80070032
+== Hyper-V
+IovSupport: False
+  Ensure that the system has chipset support for SR-IOV and that I/O virtualization is enabled in the BIOS.
+  To use SR-IOV on this system, the system BIOS must be updated to allow Windows to control PCI Express. Contact your system manufacturer for an update.
+  SR-IOV cannot be used on this system as the PCI Express hardware does not support Access Control Services (ACS) at any root port. Contact your system vendor for further information.
+== boot entry's hypervisor settings
+^[[7mhypervisor^[[0mlaunchtype    Auto
+^[[7mhypervisor^[[0mschedulertype Root
+== device guard
+AvailableSecurityProperties: 1,5,7; SecurityServicesRunning: 0
+== PCI functions (survey-dda.ps1's checks: BIOS-reserved memory, ACS upstream, the device's type)
+Mellanox ConnectX-4 Lx Virtual Ethernet Adapter [Net]: no PCI type, reserved memory , ACS upstream , ACPI(_SB_)#ACPI(VMOD)#ACPI(VMBS)#VMBUS({44c4f61d-4444-4400-9d52-802e27ede19f}#{3efe8a9e-5e2d-44df-a018-8b2edc74f24a})#VPCI(0200)
+
+#### windows-2025
+== os
+Microsoft Windows Server 2025 Datacenter, build 26100.33650, EditionID ServerDatacenter, ProductType 3
+AMD EPYC 7763 64-Core Processor
+== WHP
+WHvCapabilityCodeFeatures: hr=0x00000000 value=0x2FF VirtualPciDeviceSupport=1 IommuSupport=0
+WHvCapabilityCodeExtendedVmExits: hr=0x00000000 value=0x7FFF RetargetUnknownVpciDevice=1
+WHvAllocateVpciResource(an empty resource): hr=0x00000000
+WHvCreatePartition: hr=0x00000000
+WHvSetPartitionProperty(AllowDeviceAssignment = TRUE): hr=0x80070032
+== Hyper-V
+IovSupport: False
+  Ensure that the system has chipset support for SR-IOV and that I/O virtualization is enabled in the BIOS.
+  To use SR-IOV on this system, the system BIOS must be updated to allow Windows to control PCI Express. Contact your system manufacturer for an update.
+  SR-IOV cannot be used on this system as the PCI Express hardware does not support Access Control Services (ACS) at any root port. Contact your system vendor for further information.
+== boot entry's hypervisor settings
+^[[7mhypervisor^[[0mlaunchtype    Auto
+^[[7mhypervisor^[[0mschedulertype Root
+== device guard
+AvailableSecurityProperties: 1,5,7; SecurityServicesRunning: 0
+== PCI functions (survey-dda.ps1's checks: BIOS-reserved memory, ACS upstream, the device's type)
+Mellanox ConnectX-4 Lx Virtual Ethernet Adapter [Net]: no PCI type, reserved memory , ACS upstream , ACPI(_SB_)#ACPI(VMOD)#ACPI(VMBS)#VMBUS({44c4f61d-4444-4400-9d52-802e27ede19f}#{beba92ed-509c-4a68-aaa1-a35fb06fced9})#VPCI(0200)
+
+#### windows-11-arm
+== os
+Microsoft Windows 11 Enterprise, build 26200.9711, EditionID Enterprise, ProductType 1
+Cobalt 100
+== WHP
+WHvCapabilityCodeFeatures: hr=0x00000000 value=0xAD9 VirtualPciDeviceSupport=1 IommuSupport=0
+WHvCapabilityCodeExtendedVmExits: hr=0x00000000 value=0x4C20 RetargetUnknownVpciDevice=1
+WHvAllocateVpciResource(an empty resource): hr=0x80070003
+WHvCreatePartition: hr=0xC0351000
+== Hyper-V
+IovSupport: False
+  The Virtualization Infrastructure Driver (VID) is not running. Ensure that the VID is properly installed and enabled.
+  To use SR-IOV on this system, the system BIOS must be updated to allow Windows to control PCI Express. Contact your system manufacturer for an update.
+  SR-IOV cannot be used on this system as the PCI Express hardware does not support Access Control Services (ACS) at any root port. Contact your system vendor for further information.
+== boot entry's hypervisor settings
+^[[7mhypervisor^[[0mlaunchtype    Auto
+^[[7mhypervisor^[[0mschedulertype Root
+== device guard
+AvailableSecurityProperties: 1,3,5,7; SecurityServicesRunning: 1
+== PCI functions (survey-dda.ps1's checks: BIOS-reserved memory, ACS upstream, the device's type)
+Standard NVM Express Controller [SCSIAdapter]: no PCI type, reserved memory , ACS upstream , ACPI(_SB_)#ACPI(VMOD)#ACPI(VMBS)#VMBUS({44c4f61d-4444-4400-9d52-802e27ede19f}#{cdf9dbec-a8ee-484f-bf0b-37276147de7a})#VPCI(0000)
+Mellanox ConnectX-5 Ex Virtual Adapter [Net]: no PCI type, reserved memory , ACS upstream , ACPI(_SB_)#ACPI(VMOD)#ACPI(VMBS)#VMBUS({44c4f61d-4444-4400-9d52-802e27ede19f}#{628299f2-e0ee-45fc-9ec4-3341954ed6d5})#VPCI(0200)

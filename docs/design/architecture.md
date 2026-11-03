@@ -9903,15 +9903,44 @@ one. So both, in that order.
   it lives: KVM forgets its groups as its descriptor closes (kvm_vfio_release). A machine
   given a function has no memory to plug, no balloon (its DMA mappings pinned; QEMU's
   `ram_block_discard_disable`) and no snapshot.
-- **Where no OS passes one through, refused with its OS's own limit** (the parity plan's
-  step 13, M356). macOS: Hypervisor.framework assigns no device to a VM, Virtualization's
-  passthrough is USB's alone, and a PCI function reaches a process only through a
-  DriverKit driver Apple entitles to it (`com.apple.developer.driverkit.transport.pci`).
-  Windows: a partition is given one only once its administrator dismounts it from the
-  host (Discrete Device Assignment; WHP's `WHvCreateVpciDevice`), which Microsoft supports
-  on Windows Server alone, not on Windows 10 or 11; Windows Server's, on a host with a
-  function to give, is not built. Each refusal says so (`vm::NO_PASSTHROUGH`), held by
-  `a_hosts_pci_function_is_refused_with_its_oss_own_limit`.
+- **Where no host passes one through, refused with its host's own limit** (part of the parity
+  plan's step 13; M356, M401, M402, M403). macOS: Hypervisor.framework's API maps a
+  process's memory into a VM and runs its vCPUs, and none of its 162 functions takes a
+  device (M403); Virtualization's devices are ones it emulates. Windows: a function reaches a
+  partition as a virtual PCI device WHP makes of it once its administrator has dismounted
+  it from the host (Discrete Device Assignment; `WHvAllocateVpciResource`, then
+  `WHvCreateVpciDevice`, physically backed), in a partition allowed device assignment,
+  which only a hypervisor that assigns devices allows: so a host's refusal is its
+  hypervisor's own answer, asked as a function is (`hv::device_assignment_refused`: WHP's
+  VirtualPciDeviceSupport, then `WHvPartitionPropertyCodeAllowDeviceAssignment` set on a
+  partition of its own, never set up and mapping nothing, so that a process's one mapped
+  partition, M345, is not disturbed). Every Windows host here refuses. jupiter's Windows 11
+  Pro, with an IOMMU, dismounts its SD card reader and allocates it, but allows no
+  partition device assignment (ERROR_NOT_SUPPORTED), makes no physically backed device of
+  it (the same), makes one not physically backed that reaches nothing of it, and refuses
+  Hyper-V's own VM given it as it starts (HV_STATUS_FEATURE_UNAVAILABLE), WHP saying it has
+  no IOMMU support (M401). CI's Windows Server 2022 and 2025, the edition Microsoft supports
+  Discrete Device Assignment on, given server-class hardware that grants Windows the PCIe
+  fabric's control and Access Control Services at its root complex, which force a
+  function's traffic through the IOMMU (Microsoft Learn, "Deploy devices by using Discrete
+  Device Assignment"), refuse the property too, inside Azure's VMs, which give them neither,
+  as Hyper-V says, and no function but Azure's own VMBus adapters; windows-11-arm runs no
+  hypervisor at all (M402). A run that names a host's function off Linux, by VFIO's
+  nodes or on Windows as DDA's cmdlets name one (its location path, its instance ID), is
+  refused with those words in dockerd's for a device it cannot give, as is `--vfio NAME`
+  (`vm::passthrough_refused`). Held by `a_hosts_pci_function_is_refused_with_its_oss_own_limit`
+  (vm/mod.rs), `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
+  `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs). Not
+  yet: a Windows host whose hypervisor allows device assignment, Windows Server on hardware
+  with an IOMMU, is told shards does not use it, as no host it is tested on allows one.
+  Jupiter's approved two-reboot experiment with `hypervisoriommupolicy Enable` on
+  2026-11-03 changed neither WHP's IommuSupport 0 nor its assignment refusal
+  0x80070032. The original loader and boot manager were restored exactly, the
+  temporary entry removed, and BitLocker and Secure Boot kept on (M401). Step 13 remains open: a
+  Windows Server host that permits DDA still needs an implementation in shards and an E2E
+  that exercises the assigned function on real hardware. The refused configurations
+  above do not meet that part of the completion criterion. The VMM refusal test fails if
+  WHP accepts device assignment: shards' missing implementation is not an OS limit.
 - **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
   (VFIO_REGION_INFO_FLAG_MMAP: a memory BAR of a page or more, vfio_pci_probe_mmaps) is
   mapped into the VM process, and its pages, but for those of the MSI-X table and pending

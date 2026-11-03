@@ -1,0 +1,70 @@
+jupiter, 2026-11-01: ASUS ROG Flow Z13 GZ302EA, AMD Ryzen AI Max+ 395 (32 CPUs), Windows 11 Pro
+26200.9711, Hyper-V enabled, its boot entry's hypervisor settings at their defaults
+(hypervisorlaunchtype Auto, no hypervisoriommupolicy), run from kiln's elevated runner.
+probe.ps1 sha256 6047576baa722f0c..., assign.ps1 sha256 138fc3768ee447ac...
+
+#### probe.ps1
+== os
+Microsoft Windows 11 Pro, build 26200.9711, EditionID Professional, ProductType 1
+AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+== WHP
+WHvCapabilityCodeFeatures: hr=0x00000000 value=0x2FF VirtualPciDeviceSupport=1 IommuSupport=0
+WHvCapabilityCodeExtendedVmExits: hr=0x00000000 value=0x7FFF RetargetUnknownVpciDevice=1
+WHvAllocateVpciResource(an empty resource): hr=0x00000000
+WHvCreatePartition: hr=0x00000000
+WHvSetPartitionProperty(AllowDeviceAssignment = TRUE): hr=0x80070032
+== Hyper-V
+IovSupport: True
+== boot entry's hypervisor settings
+hypervisorlaunchtype    Auto
+== device guard
+AvailableSecurityProperties: 1,2,3,4,5,7; SecurityServicesRunning: 2,3,4
+== PCI functions (survey-dda.ps1's checks: BIOS-reserved memory, ACS upstream, the device's type)
+AMD PCI [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)#PCI(0000)
+MediaTek Wi-Fi 7 MT7925 Wireless LAN Card [Net]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0203)#PCI(0000)
+Genesys Logic PCIE card reader device [MTD]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0202)#PCI(0000)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0003)
+High Definition Audio Controller [System]: PCIe legacy endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0001)
+AMD Radeon(TM) 8060S Graphics [Display]: PCIe legacy endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0000)
+NPU Compute Accelerator Device [ComputeAccelerator]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)#PCI(0001)
+AMD PSP 11.0 Device [SecurityDevices]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0002)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0000)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0004)
+High Definition Audio Controller [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0006)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0004)
+USB4(TM) Host Router (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0005)
+AMD Sensor Fusion Hub [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0007)
+USB4(TM) Host Router (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0006)
+AMD Audio CoProcessor [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0005)
+Standard NVM Express Controller [SCSIAdapter]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0205)#PCI(0000)
+(and its root ports, host bridges, ISA bridge and SMBus, none of them an endpoint)
+
+#### assign.ps1 -LocationPath 'PCIROOT(0)#PCI(0202)#PCI(0000)'
+The SD card reader, alone behind its root port, no card in it; its other USB controllers carry
+the keyboard, touchpad, Bluetooth and cameras, and the Wi-Fi is the machine's network.
+ 5,888.4 ms Genesys Logic PCIE card reader device (PCI\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\4&632F499&0&0012): OK
+ 6,491.9 ms disabled
+ 7,716.5 ms dismounted
+ 7,745.7 ms dismounted as PCIP\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\4&632F499&0&0012
+== WHP
+  allowed before setup, physically backed: AllowDeviceAssignment before setup 0x80070032; setup 0x00000000; reads back 0x00000000 0; WHvAllocateVpciResource 0x00000000; WHvCreateVpciDevice(flags 1) 0x80070032
+  allowed after setup, physically backed: setup 0x00000000; AllowDeviceAssignment after setup 0x80070057; reads back 0x00000000 0; WHvAllocateVpciResource 0x00000000; WHvCreateVpciDevice(flags 1) 0x80070032
+  not allowed, physically backed: setup 0x00000000; reads back 0x00000000 0; WHvAllocateVpciResource 0x00000000; WHvCreateVpciDevice(flags 1) 0x80070032
+  not allowed, not physically backed: setup 0x00000000; reads back 0x00000000 0; WHvAllocateVpciResource 0x00000000; WHvCreateVpciDevice(flags 0) 0x00000000
+    HardwareIDs 0x8007139F: vendor 0x0000 device 0x0000 class 0x000000
+    configuration space at 0: 0x8007139F 0x00000000
+ 8,196.9 ms WHP asked
+== Hyper-V's own Discrete Device Assignment
+10,759.0 ms Add-VMAssignableDevice: done
+12,180.6 ms Start-VM: 'shards-passthrough-probe' failed to start. Virtual Pci Express Port (Instance ID BBEDF9D3-E721-46F7-A5B3-4B6321C4E646): Failed to Power on with Error 'A hypervisor feature is not available to the user.'. 'shards-passthrough-probe' failed to start. (Virtual machine ID 520ED71C-31FE-4B4A-93E5-956F7A59D570) 'shards-passthrough-probe' Virtual Pci Express Port (Instance ID BBEDF9D3-E721-46F7-A5B3-4B6321C4E646): Failed to Power on with Error 'A hypervisor feature is not available to the user.' (0xC035001E). (Virtual machine ID 520ED71C-31FE-4B4A-93E5-956F7A59D570)
+12,428.2 ms VM removed
+12,902.2 ms mounted
+13,568.1 ms enabled
+13,568.6 ms OK
+
+Here, disabling the reader took 0.60 s and dismounting it 1.22 s; mounting it back 0.47 s and
+enabling it 0.67 s. The same answers from the probes before these scripts (2026-10-29, three
+dismounts of the reader): AllowDeviceAssignment 0x80070032 with SeparateSecurityDomain set too;
+the device not physically backed refusing its probed BARs, its power state and every register
+of its configuration space read with 0x8007139F; disabling and dismounting it 1.61 s and 1.46 s,
+deleting the partition to the reader enabled again 0.71 s and 0.78 s.

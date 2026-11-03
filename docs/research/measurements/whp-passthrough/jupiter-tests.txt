@@ -1,0 +1,66 @@
+jupiter: Windows 11 Pro 26200.9711, amd64; native Rust 1.98.1.
+Refusal-path tests, kiln run r4, exit 0. SHARDS_REQUIRE_VMS=1.
+The Rust sources below match the staged worktree at base 9ff73a16.
+These tests assert refusal; they do not exercise PCI passthrough.
+
+/c/Users/corph/.kiln/reach/adas-macbook-pro-2.local/g121-3f26d91bb1
+Mon Nov  2 06:32:58 UTC 2026
+worktree: /c/Users/corph/.kiln/reach/adas-macbook-pro-2.local/g121-3f26d91bb1
+9ff73a164b8a9ae521f89cbb80da508042ad8861
+327ce26b018a3b4a9c20712aa8ed273232fce5431595574a9c2b4368f8cf9c59 *-
+rustc 1.98.1 (48a229cea 2026-09-01)
+rustc 1.98.1 (48a229cea 2026-09-01)
+running 1 test
+this host passes no PCI function through to a microVM: its hypervisor assigns no device to a partition: WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT 0x80070032 (The request is not supported. (os error 50)), and says it has no IOMMU support (WHvCapabilityCodeFeatures: IommuSupport 0); Microsoft supports Discrete Device Assignment, a function dismounted from its host and assigned to a VM, on Windows Server, on server-class hardware that gives Windows the PCIe fabric's control and whose root complex has Access Control Services, its traffic forced through the IOMMU (D154)
+test vm::tests::a_hosts_pci_function_is_refused_with_its_oss_own_limit ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 324 filtered out; finished in 0.01s
+VMM_REFUSAL_PASS
+running 1 test
+test run::tests::a_hosts_function_is_named_by_vfios_nodes_and_on_windows_as_dda_names_it ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 555 filtered out; finished in 0.00s
+DEVICE_NAMES_PASS
+running 1 test
+test a_hosts_pci_function_is_refused_where_its_os_passes_none ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 3.57s
+VM_REQUEST_REFUSAL_PASS
+running 1 test
+test a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 148 filtered out; finished in 4.77s
+RUN_REQUEST_REFUSAL_PASS
+aa9b7481bba24d42ab4a7cea34cbb376a3dbc3dffbe286c68aed6c5ff96cbbe4 *crates/shards/src/run.rs
+9dd6283db4d54728ddf5376947f41f8c4d0e33c5bd108410815bc431bb7227f2 *crates/shards/src/vm_run.rs
+5c1b8cfe75470dfaf744fd1a081a9e01aa08e5e74926a9c00b393025510280ad *crates/shards/tests/boot.rs
+d867b4a61fb54b852368bda5fc5e0827430def53da3637f99317a9b5199b5355 *crates/shards/tests/containers.rs
+eca46c266bc66d057997567674a95d19f3ceb280b0e81f16e47b6b7ae3f06bff *crates/vmm/src/hv/whp/mod.rs
+814d3af5878759e8fbaf28ee806053c194f9cac525faa615f54bd4c3c42d3082 *crates/vmm/src/vm/mod.rs
+
+
+2026-11-02 UTC: require an OS refusal in the VMM test
+
+The test now fails if WHP accepts AllowDeviceAssignment. This run exercises the
+refusing host; no DDA-capable host or assigned guest device was tested. Its source
+hash is printed below. Later edits narrow the macOS-only message and its comment,
+and apply rustfmt; the Windows code and this test are unchanged.
+
+Mon Nov  2 07:23:59 UTC 2026
+rustc 1.98.1 (48a229cea 2026-09-01)
+0ccb1f6e75ddfdcf86d95ef1d1191bb6b3e78f9b98573b795aa82147e98cd931 *crates/vmm/src/vm/mod.rs
+   Compiling windows-link v0.2.1
+   Compiling shards-abi v0.1.0 (C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-3f26d91bb1\crates\abi)
+   Compiling shards-vmm v0.1.0 (C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-3f26d91bb1\crates\vmm)
+   Compiling shards-testdir v0.1.0 (C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-3f26d91bb1\crates\testdir)
+   Compiling windows-sys v0.61.2
+   Compiling shards-afunix v0.1.0 (C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-3f26d91bb1\crates\afunix)
+   Compiling shards-ipc v0.1.0 (C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-3f26d91bb1\crates\ipc)
+   Compiling shards-ntfs v0.1.0 (C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-3f26d91bb1\crates\ntfs)
+   Compiling shards-netring v0.1.0 (C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-3f26d91bb1\crates\netring)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 52.70s
+     Running unittests src\lib.rs (C:\Users\corph\g121-ef-target\test-release\deps\shards_vmm-7e1b4dbca4aeb34c.exe)
+
+running 1 test
+this host passes no PCI function through to a microVM: its hypervisor assigns no device to a partition: WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT 0x80070032 (The request is not supported. (os error 50)), and says it has no IOMMU support (WHvCapabilityCodeFeatures: IommuSupport 0); Microsoft supports Discrete Device Assignment, a function dismounted from its host and assigned to a VM, on Windows Server, on server-class hardware that gives Windows the PCIe fabric's control and whose root complex has Access Control Services, its traffic forced through the IOMMU (D154)
+test vm::tests::a_hosts_pci_function_is_refused_with_its_oss_own_limit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 324 filtered out; finished in 0.01s
+
+EXIT 0
