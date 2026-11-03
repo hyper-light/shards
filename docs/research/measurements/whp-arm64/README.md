@@ -133,7 +133,8 @@ above and Git for Windows arm64. This run used
 [portable Git 2.56.0.windows.4](https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.4)
 (`PortableGit-2.56.0.4-arm64.7z.exe`, SHA-256
 `044110f9d951858452ddb5e4b5415ea0f2b5b2598e794d6fec77fe28b9aa8cc0`), extracted at
-`C:\shards-step10\git`; only its `cmd` directory is added to PATH.
+`C:\shards-step10\git`. The runner prepends its `cmd` directory and appends `usr\bin`
+to PATH: the archive-loading E2E uses GNU `gzip` to make its independent fixture.
 
 Run `nested-host/run-tests.ps1 -Kernel KERNEL -Tag NAME` as the standard user. It sets
 `SHARDS_REQUIRE_VMS=1`, runs every executable with one test thread, preserves raw stdout,
@@ -399,3 +400,16 @@ exit 0. The Mac test and all eight lint targets also passed, as did the complete
 Windows cross-build. Raw output, source patch and hashes are in
 `results/credential-process/`. The selected Windows test overlapped the already-failing
 full run; the corrected CloudWatch VM E2E and the full suite remain to pass.
+
+## Archive fixture prerequisite
+
+`load_reads_archives` completed its uncompressed load/run phases, then could not start
+the external `gzip` that makes its compressed fixture. The portable Git bundle already
+contains `usr\bin\gzip.exe`; that directory was absent from the runner's PATH. The
+runner now appends it, preserving existing command precedence. No archive test or
+assertion changes. `nested-host/probe-gzip.ps1` resolved the bundled executable, ran it
+with native exit 0 and checked its 39-byte output with .NET's independent decompressor.
+It also parsed the candidate runner on Windows PowerShell. The result and executable
+hash are in `results/gzip-fixture.txt`. The candidate script was copied under a separate
+name; the active full run keeps its original script and environment. Its archive
+failure remains a failure, and the compressed-image E2E still needs the next full run.

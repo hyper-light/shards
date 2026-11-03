@@ -13,7 +13,7 @@ $ProgressPreference = 'SilentlyContinue'
 $env:SHARDS_REQUIRE_VMS = '1'
 $env:SHARDS_TEST_GUESTS = Join-Path $Kit 'test-guests'
 $env:SHARDS_TEST_KERNEL = $Kernel
-$env:PATH = (Join-Path $Kit 'git\cmd') + ';' + $env:PATH
+$env:PATH = (Join-Path $Kit 'git\cmd') + ';' + $env:PATH + ';' + (Join-Path $Kit 'git\usr\bin')
 Remove-Item Env:SHARDS_STORM_CPUS -ErrorAction SilentlyContinue
 $tests = Get-Content (Join-Path $Kit 'test-manifest.json') -Raw | ConvertFrom-Json
 if ($tests.Count -eq 0 -or $tests[0].exe -isnot [string]) { throw 'Malformed test manifest' }
