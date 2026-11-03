@@ -1463,9 +1463,9 @@ pub fn start(
         {
             crate::setup::name_owner_as(&at, only.id, only.id);
         }
-        // SAFETY: mount(2) of NUL-terminated strings: its flags changed, read-only.
-        if sh.ro
-            && unsafe {
+        if sh.ro {
+            // SAFETY: mount(2) of NUL-terminated strings: its flags changed, read-only.
+            let remounted = unsafe {
                 libc::mount(
                     c"".as_ptr(),
                     target.as_ptr(),
@@ -1473,9 +1473,10 @@ pub fn start(
                     libc::MS_BIND | libc::MS_REMOUNT | flags | libc::MS_RDONLY,
                     std::ptr::null(),
                 )
-            } != 0
-        {
-            return Err(fail(io::Error::last_os_error().to_string()));
+            };
+            if remounted != 0 {
+                return Err(fail(io::Error::last_os_error().to_string()));
+            }
         }
         let empty = || -> Result<bool, String> {
             Ok(std::fs::read_dir(&at)
