@@ -1,0 +1,41 @@
+ONE SELECTED TEST, NOT A WORKSPACE QUALIFICATION.
+
+== release-rego-build.json
+{
+  "archive_sha256": "28d7d7b6813ffbe48fda2e58d745f7b46127a691acd84c2f623c5de6420486f7",
+  "manifest": [
+    {
+      "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+      "name": "compile",
+      "exe": "C:\\shards-step10\\release-rego\\compile.exe",
+      "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+      "sha256": "90b8cd28a77ce9fcbd2e97daf912746e5c0e4009c5c74ccf7474c0178ce8a5f4"
+    }
+  ],
+  "profile": "release, fat LTO, codegen-units=1"
+}
+
+== release-rego-result.txt
+WHP before compiler test: hr=0x00000000 present=1
+MANIFEST binaries=1
+START 0/1 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0 compile 2026-11-03T18:24:25.6047202Z
+failures:
+    a_wide_policy_without_cycles_compiles_in_time
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 10.09s
+
+FAILED 000-compile exit=101
+
+thread 'a_wide_policy_without_cycles_compiles_in_time' (3576) panicked at crates/rego/tests/compile.rs:206:10:
+6000 rules did not compile within 10 s: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END 000-compile exit=101 elapsed=13.937722
+COMPLETE binaries=1 manifest=1 failed=1 filter=compile/a_wide_policy_without_cycles_compiles_in_time start=0
+
+== release-rego-result.json
+{
+  "exit": 1,
+  "one_pass": false,
+  "utc": "2026-11-03T18:25:16.239921+00:00",
+  "profile": "release, fat LTO, codegen-units=1"
+}

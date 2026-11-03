@@ -16884,6 +16884,22 @@ revision before comparing a changed API/implementation.
   guest, but still failed the selected compiler and maximum-vCPU boot deadlines. A local
   tag-validation error prevented its other two planned checks from starting. The retained
   reports distinguish those unrun checks from VM failures. No assertion was relaxed.
+- **Additional controls.** The same 6000-rule compiler test, built alone with production
+  `release` (fat LTO, one codegen unit, static CRT), still failed its 10 s assertion
+  after 10.09 s on the verified WHP host. A Cortex-A76 control stopped in TF-A BL1's
+  synchronous EL3 exception/panic path; a `max,pmu=off` control reached Windows Boot
+  Manager but was ended before SSH readiness after more than eight minutes. Neither
+  control ran a WHP probe or VM test, and neither establishes a performance result or
+  the original failure cause. Their retained records distinguish boot controls from
+  VM results.
+- **Complete retry.** `real-03` began 2026-11-03 18:43 UTC on the working four-CPU,
+  24 GiB `max` model, Windows 26300.9711, with all 141 original `test-release` binaries
+  (source 360ad0cd). The runner now has optional heartbeats while waiting for a native
+  binary, with no added test deadline or filter. Windows parsed the script and verified
+  its hash and manifest before launch. The first binary emitted heartbeats, returned
+  its native exit 101 (eight snapshot tests passed, two failed, two helper entries
+  ignored), and the runner continued to boot tests. This validates progress/exit
+  reporting, not qualification. The complete suite must still pass before row 5 closes.
 
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 

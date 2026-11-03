@@ -262,3 +262,40 @@ was then refused by the local helper, so the planned memory-growth and storm che
 not start. The helper's tag construction was corrected; those unrun checks are not VM
 results. The two completed failures do not provide a qualifying configuration
 (`results/onecpu-checks.txt`).
+
+## Further controls and the next complete attempt
+
+The wide-policy compiler test was also built alone with the production `release`
+profile (fat LTO, one codegen unit, static CRT):
+
+```sh
+RUSTFLAGS='-C target-feature=+crt-static' cargo xwin test --locked -p shards-rego \
+  --test compile --release --target aarch64-pc-windows-msvc --no-run
+```
+
+On the restored four-CPU host, WHP returned present=1 immediately before the test.
+The same assertion failed after 10.09 s. This was one selected test, not a production
+release workspace run (`results/release-rego.txt`). Fat LTO did not remove this failure.
+
+A Cortex-A76 CPU-model control kept four CPUs, 24 GiB and the counter at 1 GHz. It
+stopped in TF-A BL1 before Windows: CPU0 was at EL3h PC 0x4b30, which the existing BL1
+ELF resolves to `plat_panic_handler`; LR 0x580c resolves to `SynchronousExceptionSP0`.
+This identifies the exception path, not the original faulting instruction. The serial
+log and symbol resolution are in `results/cpu-model-controls.txt`. The trial was stopped;
+no Windows or WHP test ran.
+
+A separate control used the working `max` model with `pmu=off`, keeping the other CPU
+settings. It reached Windows Boot Manager but had not reached SSH readiness after more
+than eight minutes. Its screen still showed TianoCore/Windows Boot Manager and CPU0's
+PC was 0x63caa5a0c in the loaded boot-manager image, at NS EL2h. It was stopped before
+any WHP probe or test. This incomplete boot control establishes no PMU performance
+result or Windows failure cause. Both controls used disposable child disks; the working
+host's disk was retained.
+
+The complete retry uses the working four-CPU `max` configuration, 24 GiB, build
+26300.9711 and the original 141 `test-release` executables. Use `-HeartbeatSeconds 30`
+with the runner to print the current binary's PID and elapsed time while it runs. The
+default zero disables those reports. They add no native test filter or timeout; native
+stdout, stderr and exit status are still retained separately. Preflight parses the
+PowerShell runner, checks its hash, requires the full manifest and verifies WHP before
+starting. Only a completed manifest with no failures can qualify Step 10.

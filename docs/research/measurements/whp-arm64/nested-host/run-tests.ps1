@@ -5,7 +5,8 @@ param(
     [string]$Tag = 'first',
     [ValidateRange(0,2147483647)][int]$StartAt = 0,
     [string]$Binary = '',
-    [ValidatePattern('^[A-Za-z0-9_:]*$')][string]$Test = ''
+    [ValidatePattern('^[A-Za-z0-9_:]*$')][string]$Test = '',
+    [ValidateRange(0,60)][int]$HeartbeatSeconds = 0
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -46,6 +47,11 @@ for ($i = $StartAt; $i -lt $tests.Count; $i++) {
     try {
         $outCopy = $p.StandardOutput.BaseStream.CopyToAsync($outFile)
         $errCopy = $p.StandardError.BaseStream.CopyToAsync($errFile)
+        if ($HeartbeatSeconds) {
+            while (-not $p.WaitForExit($HeartbeatSeconds * 1000)) {
+                Write-Output "ALIVE $label pid=$($p.Id) elapsed=$(([DateTime]::UtcNow-$start).TotalSeconds)"
+            }
+        }
         $p.WaitForExit()
         $outCopy.Wait()
         $errCopy.Wait()
