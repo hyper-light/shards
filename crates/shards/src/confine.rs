@@ -177,6 +177,11 @@ pub fn confine() -> Result<(), String> {
         // VM process sets no thread's CPUs, which could be another of its user's
         // processes' (PM M384).
         rules.push(Rule::fails(libc::SYS_sched_setaffinity, libc::EPERM as u16));
+        // Venus makes a dma-buf of the renderer's memory files through udmabuf where a
+        // driver exports no host memory it can map, as Mesa's Intel driver on Intel's UHD
+        // Graphics (vkr_physical_device.c): UDMABUF_CREATE alone, _IOW('u', 0x42, struct
+        // udmabuf_create) of linux/udmabuf.h, Landlock's rules giving it /dev/udmabuf.
+        rules.push(Rule::with(libc::SYS_ioctl, 1, &[UDMABUF_CREATE]));
     }
     let commands = [
         libc::F_DUPFD,
@@ -247,6 +252,11 @@ pub fn confine() -> Result<(), String> {
 /// nvidia-modeset's), and DRM's `'d'` (DRM_IOCTL_BASE, every render node's).
 #[cfg(target_os = "linux")]
 const GPU_IOCTL_TYPES: [u8; 3] = *b"Fmd";
+
+/// udmabuf's one request a GPU's VM process makes (linux/udmabuf.h): _IOW('u', 0x42,
+/// struct udmabuf_create), its 24 bytes a descriptor, flags, an offset and a size.
+#[cfg(target_os = "linux")]
+const UDMABUF_CREATE: u32 = (1 << 30) | (24 << 16) | ((b'u' as u32) << 8) | 0x42;
 
 /// What else the GPU's VM process's drivers make, every argument allowed (PM M382):
 /// NVIDIA's `statfs` of where it keeps files and `sched_get_priority_max` and `_min` of the
@@ -681,6 +691,13 @@ mod tests {
         );
         assert_eq!(library_paths(r#"{"library_path": "lib.so"#), Vec::<String>::new());
         assert_eq!(library_paths("{}"), Vec::<String>::new());
+    }
+
+    /// udmabuf's request as Venus made it under Mesa's Intel driver, which the filter
+    /// refused before it was allowed (seccomp's record: ioctl 0x40187542).
+    #[test]
+    fn udmabuf_create_is_the_request_venus_makes() {
+        assert_eq!(UDMABUF_CREATE, 0x4018_7542);
     }
 
     /// In a child process (this test binary, told by `LANDLOCK_CHILD` where its files

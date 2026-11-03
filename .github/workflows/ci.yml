@@ -172,7 +172,7 @@ jobs:
               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
           esac
       # The GPU's renderer (D144, D201, D202), from pinned sources: `shards` then carries
-      # shards-vm-gpu, on macOS, on Linux with glibc and on x86_64 Windows. Built once for
+      # shards-vm-gpu, on macOS, on Linux with glibc (musl's in Alpine, below) and on x86_64 Windows. Built once for
       # each version of its script and patch and of the runner's image, and kept: its
       # sources' hosts answering 502 and 504 for eight minutes (run 39191414199) left a run
       # with none, and none of its macOS tests ran.
@@ -389,8 +389,12 @@ jobs:
             scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
             watcher=$!
           fi
+          # The release build carries the GPU's VM process, linked against Alpine's musl
+          # (D201): its renderer built in the container (scripts/musl-ci).
+          gpu=""
+          if [ "$MUSL_CI" = release ]; then gpu="-e SHARDS_GPU_LIBS=/work/target/gpu-libs"; fi
           status=0
-          docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS=$require \
+          docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS=$require $gpu \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             "$MUSL_IMAGE" scripts/musl-ci || status=$?
