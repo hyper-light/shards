@@ -14609,7 +14609,12 @@ and not on one only its network grants; a remote MCP server whose name has an IP
 alone (the test's resolver, `SHARDS_DNS`, answers AAAA alone) is unreached at its address
 before its name is resolved and reached by name after; a server whose URL is an IPv6
 address is reached. The run's own command's datagram to the granted port is refused by its
-own stack (EPERM) on each. Unit tests: `ports_reach_their_ports_alone` (an IPv6 address in
+own stack (EPERM) on each. Run on an x86_64 Fedora 44 host with KVM and a global IPv6
+address and route (the test skips a host without one). Mutation-checked: eth0 given no IPv6
+for the agents, on the default bridge the agent reaches none of it (each reach waits out
+its 30 s, and the run's wait for it times out); the network process matching an MCP URL's
+address with its brackets, the server at the literal address is unreached. Unit tests:
+`ports_reach_their_ports_alone` (an IPv6 address in
 brackets, and one learned from AAAA, at their ports alone),
 `a_remote_mcp_servers_endpoint_is_its_urls`, `remote_mcp_servers_reach_whom_they_are_for`,
 `agents_have_ipv6_where_a_joined_network_says_so`.
