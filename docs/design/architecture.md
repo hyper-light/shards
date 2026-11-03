@@ -6151,14 +6151,18 @@ through FUSE into its guest's page cache (a file of a window's range or more is 
 page cache, mapped into it: D189) gives back what it holds cold once a `MemoryHigh` of 384
 MiB short of it is set, idle as it is, the daemon's log saying what it gave back and that
 it holds it within its budget, in which it reads a gigabyte, in files of a MiB, to the
-end; a give-back whose answer is lost to the daemon's 10 s, its guest giving back as it
+end; each budget set anew said, whatever room it leaves (its host's give-back between a
+budget's word and the next left its microVM within the next, which nothing said: CI
+41344493548); a give-back whose answer is lost to the daemon's 10 s, its guest giving back as it
 was ended, followed by the budget's word all the same (12 runs of 12 on Fedora, where 3 of
-19 had the daemon say nothing of the budget, PM M391). tests/daemon.rs
+19 had the daemon say nothing of the budget, PM M391). tests/budget.rs
 `a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
 under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
-none took (medians of 3), a run begun under no budget held to one set as it goes within it
-too, and a run alone in the slice, its daemon keeping no warm microVM there, held under a
+none took (medians of 3), alone in its test binary so other daemon tests do not compete
+between its phases (CI 41365265628: 2.06 times beside them), a run begun under no budget
+held to one set as it goes within it too, and a run alone in the slice, its daemon
+keeping no warm microVM there, held under a
 budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
 within the least room a run goes on in and reading within it too (where held at what
 they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside

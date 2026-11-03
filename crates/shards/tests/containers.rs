@@ -2748,6 +2748,14 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         set(&(current() + (1 << 30)).to_string());
         let counted = first(counting, &["held within its budget", "budget is short by"]);
         let held = mib_after(&counted, "MiB, holds ");
+        // A budget set anew is said, room or not: its host's give-back between a budget's
+        // word and the next left its microVM within the next with nothing to give back,
+        // and nothing said it (CI 41344493548).
+        let wider = ((current() >> 20) + 1536) << 20;
+        let anew = said().len();
+        set(&wider.to_string());
+        let word = first(anew, &["held within its budget", "budget is short by"]);
+        assert!(word.contains(&format!("budget, {} MiB", wider >> 20)), "{word}");
         // What its guest's kernel counts of the read as its budget comes, said if nothing is
         // given back: a give-back takes inactive file pages alone, and CI's x86_64 Linux at
         // 05e9cc57 (41273348014) gave back none, short by 42 MiB, its daemon having asked no
