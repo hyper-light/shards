@@ -154,6 +154,12 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
+    /// Whether every byte was consumed: what a format that grew at its end reads its
+    /// older form by.
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     /// Fails unless every byte was consumed.
     pub fn finish(self) -> Result<()> {
         if self.buf.is_empty() {

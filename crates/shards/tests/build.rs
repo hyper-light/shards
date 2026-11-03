@@ -15639,12 +15639,21 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     let before = shown(&std::fs::metadata(&*host).unwrap());
     let bound = run_with(&["-v", &format!("{}:/scratch", host.display())]);
     assert_eq!(shown(&std::fs::metadata(&*host).unwrap()), before, "{bound}");
+    // The host's files there, which hold no owner, are b's, whom alone it is given (D38):
+    // b writes the directory it was given.
     assert!(
         bound
             .lines()
-            .any(|l| l.starts_with("[agent b] confined owner /scratch: ")),
+            .any(|l| l == format!("[agent b] confined owner /scratch: {b}:{b} 755")),
         "{bound}"
     );
+    assert!(
+        bound
+            .lines()
+            .any(|l| l == "[agent b] confined write /scratch/s: ok"),
+        "{bound}"
+    );
+    assert_eq!(std::fs::read(host.join("s")).unwrap(), b"x", "{bound}");
     assert!(
         !bound.contains(&format!("confined owner /scratch: {b}:{b} 700")),
         "{bound}"

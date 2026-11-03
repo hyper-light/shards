@@ -24,6 +24,13 @@ pub const JOIN_DISK_SERIAL: &str = "shards-join";
 /// until a container joining its network brings volumes, which init mounts then.
 pub const JOIN_SHARE_TAG: &str = "shards-join-share";
 
+/// The attribute init sets on a share's root, or a join share's volume, as it mounts it
+/// (D38): its value `UID:GID`, the owner the share's server gives the guest of each file
+/// there that holds no owner of the guest's (the host made it). Its server takes it of the
+/// guest's root alone, as the guest's kernel lets no process without CAP_SYS_ADMIN set a
+/// `trusted.` attribute (fs/xattr.c `xattr_permission`), and keeps it on no file.
+pub const SHARE_OWNER_XATTR: &str = "trusted.shards.owner";
+
 /// The most a share's server reads or writes in one FUSE request, in pages (its INIT
 /// reply's `max_pages`), which the guest's kernel sends no more than: 256, a mebibyte of
 /// 4 KiB pages.
