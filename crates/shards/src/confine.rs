@@ -182,6 +182,15 @@ pub fn confine() -> Result<(), String> {
         // Graphics (vkr_physical_device.c): UDMABUF_CREATE alone, _IOW('u', 0x42, struct
         // udmabuf_create) of linux/udmabuf.h, Landlock's rules giving it /dev/udmabuf.
         rules.push(Rule::with(libc::SYS_ioctl, 1, &[UDMABUF_CREATE]));
+        // A dma-buf's fences as a sync file, out and in (linux/dma-buf.h,
+        // DMA_BUF_IOCTL_EXPORT_SYNC_FILE and _IMPORT_SYNC_FILE), the implicit sync a driver
+        // keeps with what else uses its memory: Mesa 26.1's Intel driver exported one,
+        // Alpine's, and refused, its VM process ended as its guest's vulkaninfo ran.
+        rules.push(Rule::with(
+            libc::SYS_ioctl,
+            1,
+            &[DMA_BUF_IOCTL_EXPORT_SYNC_FILE, DMA_BUF_IOCTL_IMPORT_SYNC_FILE],
+        ));
         // musl's GPU's VM process, linked dynamically: musl registers for private expedited
         // memory barriers as a process starts its first thread, and its loader takes one as
         // a library it opens brings thread-local storage, the drivers' (musl's
@@ -272,6 +281,14 @@ const GPU_IOCTL_TYPES: [u8; 3] = *b"Fmd";
 /// struct udmabuf_create), its 24 bytes a descriptor, flags, an offset and a size.
 #[cfg(target_os = "linux")]
 const UDMABUF_CREATE: u32 = (1 << 30) | (24 << 16) | ((b'u' as u32) << 8) | 0x42;
+
+/// A dma-buf's sync-file requests (linux/dma-buf.h): _IOWR('b', 2, struct
+/// dma_buf_export_sync_file) and _IOW('b', 3, struct dma_buf_import_sync_file), each 8
+/// bytes, flags and a descriptor.
+#[cfg(target_os = "linux")]
+const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: u32 = (3 << 30) | (8 << 16) | ((b'b' as u32) << 8) | 2;
+#[cfg(target_os = "linux")]
+const DMA_BUF_IOCTL_IMPORT_SYNC_FILE: u32 = (1 << 30) | (8 << 16) | ((b'b' as u32) << 8) | 3;
 
 /// membarrier(2)'s commands musl makes (linux/membarrier.h), which the libc crate names on
 /// Android alone.
@@ -720,6 +737,15 @@ mod tests {
     #[test]
     fn udmabuf_create_is_the_request_venus_makes() {
         assert_eq!(UDMABUF_CREATE, 0x4018_7542);
+    }
+
+    /// A dma-buf's sync-file requests as linux/dma-buf.h defines them, the export as Mesa's
+    /// Intel driver made it (seccomp's record: 0xffffffffc0086202, musl's `int` request
+    /// sign-extended, whose low 32 bits the filter compares).
+    #[test]
+    fn dma_buf_sync_file_requests_are_the_kernels() {
+        assert_eq!(DMA_BUF_IOCTL_EXPORT_SYNC_FILE, 0xc008_6202);
+        assert_eq!(DMA_BUF_IOCTL_IMPORT_SYNC_FILE, 0x4008_6203);
     }
 
     /// In a child process (this test binary, told by `LANDLOCK_CHILD` where its files
