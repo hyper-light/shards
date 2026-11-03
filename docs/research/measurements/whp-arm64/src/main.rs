@@ -266,6 +266,61 @@ mod probe {
     }
 
     impl Vm {
+        fn stopped_time(&self) -> Result<()> {
+            // SAFETY: neither of this partition's vCPUs has entered WHvRunVirtualProcessor.
+            let suspended = unsafe { WHvSuspendPartitionTime(self.partition) };
+            println!("time with every vCPU stopped: suspend {:#010x}", suspended as u32);
+            hr("WHvSuspendPartitionTime(stopped)", suspended)?;
+            let before = [self.get(0, &[CNTVCT_EL0])?[0], self.get(1, &[CNTVCT_EL0])?[0]];
+            std::thread::sleep(Duration::from_millis(100));
+            let after = [self.get(0, &[CNTVCT_EL0])?[0], self.get(1, &[CNTVCT_EL0])?[0]];
+            for vp in 0..2 {
+                self.put(vp, &[CNTVCT_EL0], &[1_000_000_000])?;
+            }
+            let reset = [self.get(0, &[CNTVCT_EL0])?[0], self.get(1, &[CNTVCT_EL0])?[0]];
+            std::thread::sleep(Duration::from_millis(100));
+            let held = [self.get(0, &[CNTVCT_EL0])?[0], self.get(1, &[CNTVCT_EL0])?[0]];
+            // SAFETY: resumes time for this partition, whose vCPUs remain stopped.
+            let resumed = unsafe { WHvResumePartitionTime(self.partition) };
+            println!(
+                "stopped counters: before {before:?}, 100 ms later {after:?}; reset to 1000000000: {reset:?}, 100 ms later {held:?}; resume {:#010x}",
+                resumed as u32
+            );
+            hr("WHvResumePartitionTime(stopped)", resumed)?;
+            std::thread::sleep(Duration::from_millis(100));
+            let ticking = [self.get(0, &[CNTVCT_EL0])?[0], self.get(1, &[CNTVCT_EL0])?[0]];
+            println!("resumed counters 100 ms later: {ticking:?}");
+            Ok(())
+        }
+
+        fn populate(&self, write: bool) -> Result<()> {
+            let ranges = [
+                MemoryRange {
+                    gpa: RAM + 0x1_0000,
+                    size: 4096,
+                },
+                MemoryRange {
+                    gpa: RAM + 0x2_0000,
+                    size: 4096,
+                },
+            ];
+            let advice = Populate {
+                flags: 0,
+                access_type: u32::from(write),
+            };
+            // SAFETY: two mapped guest ranges and the populate advice's own layout.
+            hr("WHvAdviseGpaRange(Populate)", unsafe {
+                WHvAdviseGpaRange(
+                    self.partition,
+                    ranges.as_ptr(),
+                    ranges.len() as u32,
+                    0,
+                    (&raw const advice).cast(),
+                    size_of::<Populate>() as u32,
+                )
+            })
+        }
+
         fn set<T>(&self, code: u32, value: &T) -> Result<()> {
             // SAFETY: a property of its own size.
             hr("WHvSetPartitionProperty", unsafe {
@@ -540,6 +595,14 @@ mod probe {
         // (WHV_INTERNAL_ACTIVITY_REGISTER's StartupSuspend).
         vm.put(1, &[INTERNAL_ACTIVITY_STATE], &[1])?;
 
+        vm.stopped_time()?;
+
+        println!(
+            "populate two ranges: read {:?}, write {:?}",
+            vm.populate(false),
+            vm.populate(true)
+        );
+
         println!("== run");
         let said = Mutex::new(Said::default());
         let stop = AtomicBool::new(false);
@@ -569,6 +632,7 @@ mod probe {
         if let Err(e) = &outcome {
             println!("run: {e}");
         }
+        drop(vm);
         println!("== limits");
         limits();
         println!("== dynamic code forbidden once set up (D141, as PM M202 on x86_64)");
@@ -992,15 +1056,16 @@ mod probe {
         Ok(())
     }
 
-    /// The virtual counter as vCPU 0 has it, and set a second back: what a restore's time
-    /// rests on.
+    /// Sets vCPU 0's virtual counter to zero: whether the other vCPU's changes too,
+    /// which distinguishes a partition's counter from one counter per vCPU.
     fn counter(vm: &Vm) -> Result<()> {
         let before = vm.get(0, &[CNTVCT_EL0])?[0];
-        let set = vm.put(0, &[CNTVCT_EL0], &[before.saturating_sub(1)]);
+        let other_before = vm.get(1, &[CNTVCT_EL0])?[0];
+        let set = vm.put(0, &[CNTVCT_EL0], &[0]);
         let after = vm.get(0, &[CNTVCT_EL0])?[0];
         let other = vm.get(1, &[CNTVCT_EL0])?[0];
         println!(
-            "CNTVCT_EL0: vCPU 0 {before:#x}, set one tick back: {}, then {after:#x}; vCPU 1 {other:#x}",
+            "CNTVCT_EL0: vCPU 0 {before:#x}, vCPU 1 {other_before:#x}; set vCPU 0 to zero: {}, then vCPU 0 {after:#x}, vCPU 1 {other:#x}",
             match set {
                 Ok(()) => "taken".to_string(),
                 Err(e) => e,

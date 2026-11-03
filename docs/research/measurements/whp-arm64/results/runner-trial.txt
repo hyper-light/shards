@@ -1,0 +1,16 @@
+MANIFEST binaries=141
+START 2/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/abi#shards-abi@0.1.0 allocations 2026-11-03T13:19:05.6235770Z
+test a_spec_decodes_with_one_allocation_per_list_and_string ... ok
+test a_spec_is_measured_without_encoding_and_encoded_in_one_allocation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+END 002-allocations exit=0 elapsed=0.953664
+START 48/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/image#shards-image@0.1.0 allocations 2026-11-03T13:19:08.0273370Z
+empty files with 1,024-byte xattrs   allocations  10013 | reallocations     31 | peak    2397486 bytes | image 13881344 bytes, 03a223ab06ad2181
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.67s
+
+END 048-allocations exit=0 elapsed=2.317672
+COMPLETE binaries=2 manifest=141 failed=0 filter=allocations/ start=0

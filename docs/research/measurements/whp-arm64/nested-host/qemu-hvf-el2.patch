@@ -1,0 +1,13 @@
+diff --git a/target/arm/hvf/hvf.c b/target/arm/hvf/hvf.c
+index b00a7e1..bb1a019 100644
+--- a/target/arm/hvf/hvf.c
++++ b/target/arm/hvf/hvf.c
+@@ -1226,6 +1226,8 @@ static bool hvf_arm_get_host_cpu_features(ARMHostCPUFeatures *ahcf)
+     }
+ 
+     if (hvf_nested_virt_enabled()) {
++        /* Local experiment: HVF's default ID value hides enabled EL2. */
++        FIELD_DP64_IDREG(&host_isar, ID_AA64PFR0, EL2, 1);
+         /* SME is not implemented with nested virt on the Apple side */
+         FIELD_DP64_IDREG(&host_isar, ID_AA64PFR1, SME, 0);
+     }

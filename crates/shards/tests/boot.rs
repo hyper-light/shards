@@ -15,18 +15,35 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
 
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
-fn machine_lines() -> &'static [&'static str] {
-    match common::ARCH {
+fn machine_lines() -> Vec<String> {
+    let lines: &[&str] = match common::ARCH {
         "aarch64" => &[
             "Machine model: linux,dummy-virt",
             "psci: PSCIv1.1 detected in firmware",
             "GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000",
-            "arch_timer: cp15 timer running at 24.00MHz (virt)",
         ],
         // ACPI is how the x86 guest finds its CPUs and interrupt controller.
         "x86_64" => &["ACPI: RSDP 0x00000000000E0000", "IOAPIC[0]: apic_id 0"],
         other => panic!("no machine expectations for {other}"),
+    };
+    #[cfg(target_arch = "aarch64")]
+    {
+        let frequency: u64;
+        // SAFETY: CNTFRQ_EL0 is the host's counter frequency, readable at EL0, as the
+        // guest reads its frequency. WHP's M414 host has 1 GHz; HVF's has 24 MHz.
+        unsafe {
+            std::arch::asm!("mrs {}, cntfrq_el0", out(reg) frequency, options(nomem, nostack, preserves_flags))
+        };
+        let mut lines: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+        lines.push(format!(
+            "arch_timer: cp15 timer running at {}.{:02}MHz (virt)",
+            frequency / 1_000_000,
+            (frequency % 1_000_000) / 10_000
+        ));
+        lines
     }
+    #[cfg(not(target_arch = "aarch64"))]
+    lines.iter().map(|s| (*s).to_string()).collect()
 }
 
 #[test]
@@ -48,7 +65,7 @@ fn boots_to_root_mount_without_a_root_device() {
     );
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     for line in machine_lines() {
-        assert!(r.stdout.contains(line), "missing {line:?}: {r}");
+        assert!(r.stdout.contains(&line), "missing {line:?}: {r}");
     }
     assert!(
         r.stdout
@@ -510,11 +527,13 @@ fn a_nested_guest_is_a_kvm_host() {
     );
     let Some(nested) = common::nested_kernel() else {
         let r = vm_run(&["--kernel", kernel().to_str().unwrap(), "--nested"], TIMEOUT);
-        assert!(
-            r.stderr
-                .contains("virtualization of a guest's own is not given on x86_64 yet"),
-            "{r}"
-        );
+        let why = match (common::ARCH, std::env::consts::OS) {
+            ("aarch64", "windows") => "Windows' hypervisor platform gives a guest no EL2 on arm64",
+            ("x86_64", _) => "virtualization of a guest's own is not given on x86_64 yet",
+            other => panic!("no nested kernel on {other:?}"),
+        };
+        assert_eq!(r.status, Some(1), "{r}");
+        assert!(r.stderr.contains(why), "{r}");
         return;
     };
     let r = vm_run(

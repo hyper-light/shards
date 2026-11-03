@@ -6576,7 +6576,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D209. microVMs on arm64 Windows hosts: WHP's arm64 backend (built, not yet run)
+### D209. microVMs on arm64 Windows hosts: WHP's arm64 backend (boot measured, E2E pending)
 
 **Why.** The platform parity plan's step 10 (docs/audit/2026-10-27_platform-parity.md): WHP
 has a released arm64 API from Windows 11 24H2's build 26100.3915 (QEMU's
@@ -6608,18 +6608,25 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   StartupSuspend holds it; the GIC's state in the platform's own layouts
   (WHvGetVirtualProcessorState: the partition's global interrupt state, distributor and
   SPIs, and each vCPU's interrupt controller state, redistributor and CPU interface, in
-  page-aligned buffers, as their types are page frames'); and the CPU's identity, 17 ID
-  registers Linux takes its errata and features by, read with WHV_ANY_VP, as the header has
-  ID registers read. A guest given SVE or SME, whose vector state none of these keeps, and a
+  page-aligned buffers, as their types are page frames'); and the CPU's identity, MIDR
+  from its vCPU and 15 global ID registers Linux takes its features by, read with
+  WHV_ANY_VP. A guest given SVE or SME, whose vector state none of these keeps, and a
   vCPU stopped with an event pending take no snapshot. The guest's counter is set through
-  CNTVCT_EL0.
-- **Not yet:** run. Its host is to be Windows 11 arm64 from Microsoft's ISO, nested under
-  QEMU on this Mac (the user's decision, 2026-10-30): no arm64 Windows host here has WHP, nor
-  GitHub's windows-11-arm (PM M172), nor any Arm VM of Azure's. A Hypervisor.framework guest
-  given EL2 has no VHE (M422); whether Windows' hypervisor starts so is to be measured there,
-  then PM M414's probe (the GIC's states set back, CNTVCT_EL0 a vCPU's or the partition's),
-  which `hv::restores` waits for. CI builds and tests the rest of shards natively on
-  windows-11-arm, its VM tests saying SKIP.
+  CNTVCT_EL0. Partition time is suspended before the restored vCPUs are made; each counter
+  is set before its timer registers, and the first run resumes time for them together.
+  Per-thread host-counter samples at release caused a backward clock step in the busy
+  snapshot E2E (M414). Working sets use WHP's Populate advice and the host's mapped pages,
+  as on x86_64 (D196).
+- **Measured boot; feature E2E pending.** Its host is Windows 11 Pro arm64 26300.9457
+  from Microsoft's ISO, nested under QEMU on this Mac (the user's decision, 2026-10-30).
+  M414 records the failed HVF boots and the working TCG host, with TF-A at EL3, pointer
+  authentication off and ACPI describing TF-A's PSCI handler. Windows reports its
+  hypervisor started; the probe ran its real WHP guest, took an SPI, started its secondary
+  through PSCI, and set back the GIC states. CNTVCT_EL0 is set per vCPU. Shards booted its
+  pinned Linux kernel as a standard user through the confined VM process. Core snapshot
+  restores and the busy-machine test at two and eight vCPUs passed. The full snapshot
+  and feature E2E suite must still pass before step 10 is closed. CI's native
+  windows-11-arm image has no WHP (M172); its VM tests saying SKIP remain no VM evidence.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 

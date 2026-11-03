@@ -25,17 +25,13 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Working sets from the pages a restored machine's host maps: KVM's, and the x86_64
-/// machine's on any backend.
-#[cfg(any(hv = "kvm", all(hv, target_arch = "x86_64")))]
+/// Working sets from the pages a restored machine's host maps: KVM's and WHP's, and the
+/// x86_64 machine's on any backend.
+#[cfg(any(hv = "kvm", hv = "whp", all(hv, target_arch = "x86_64")))]
 mod mapped;
 /// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's, on x86_64 and
-/// arm64 (D154), and WHP's on x86_64 (D196); not yet WHP's on arm64.
-pub const SNAPSHOTS: bool = cfg!(any(
-    hv = "hvf",
-    hv = "kvm",
-    all(hv = "whp", target_arch = "x86_64")
-));
+/// arm64 (D154), and WHP's on x86_64 (D196) and arm64 (D209).
+pub const SNAPSHOTS: bool = cfg!(hv);
 
 /// The most vCPUs of VMs booting at once that a host of `cpus` CPUs boots the most VMs a
 /// second with, on this build's backend. WHP's: twice its CPUs, the most boots a second CI's
@@ -99,19 +95,15 @@ pub fn nested_hyperv(top: [u32; 4], info: u32) -> bool {
 }
 
 /// Whether a VM resumed from its snapshot records its working set, for restores to
-/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's and x86_64 WHP's from the pages its
-/// host maps (vm::mapped). Not arm64 WHP's yet, which takes no snapshot.
-pub const WORKING_SETS: bool = cfg!(any(
-    hv = "hvf",
-    hv = "kvm",
-    all(hv = "whp", target_arch = "x86_64")
-));
+/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's and WHP's from the pages its host
+/// maps (vm::mapped).
+pub const WORKING_SETS: bool = cfg!(hv);
 /// Which run records it. HVF's: the one that saves the template, whose command recording
 /// slows sixfold (PM M30), on a run that boots anyway. KVM's and WHP's: the first warm
 /// restore without one, for which recording costs nothing, its host's mapped pages read
 /// after (vm::mapped), and whose pages later restores touch, where the saving run's they
 /// barely do (PM M33).
-pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", all(hv = "whp", target_arch = "x86_64")));
+pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", hv = "whp"));
 
 #[cfg(any(hv, test))]
 mod barrier;

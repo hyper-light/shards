@@ -2,7 +2,9 @@
 # what the platform offers there, whether a partition of two vCPUs runs under its GICv3
 # emulation, what an MMIO exit costs, how PSCI's CPU_ON and SYSTEM_OFF come back, an SPI
 # delivered, and what a snapshot's GIC and timer state rest on (src/main.rs). Built with
-# `cargo xwin build --release --target aarch64-pc-windows-msvc` and run on the host.
+# `RUSTFLAGS='-C target-feature=+crt-static' cargo xwin build --release
+# --target aarch64-pc-windows-msvc` and run on the host. A fresh ISO installation has
+# no VCRUNTIME140.dll; including the CRT lets this probe run before any developer tools.
 [package]
 name = "whp-arm64"
 version = "0.1.0"

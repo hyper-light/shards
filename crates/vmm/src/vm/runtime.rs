@@ -889,7 +889,7 @@ fn launch(
         start,
         config,
         // What a restore's recorder read, which it took before the launch.
-        #[cfg(all(hv = "kvm", target_arch = "aarch64"))]
+        #[cfg(all(any(hv = "kvm", hv = "whp"), target_arch = "aarch64"))]
             pmem: _,
     } = m;
     let vcpus = config.vcpus;

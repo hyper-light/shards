@@ -16788,6 +16788,69 @@ revision before comparing a changed API/implementation.
   `platform::reserve_withheld` makes one) answered as one readable and writable did, in
   every step above.
 
+### M414. WHP on arm64 Windows: a nested host, GICv3, PSCI, MMIO and snapshot state (D209)
+
+- **Method.** `docs/research/measurements/whp-arm64/`, 2026-11-01 to 2026-11-03 UTC, on
+  an M5 Max, macOS 26.4.1. Windows 11 Pro arm64 26300.9457 installed from Microsoft's
+  ISO, its hash verified; HypervisorPlatform, VirtualMachinePlatform and Hyper-V enabled.
+  QEMU 11.1.3, four CPUs and 8 GiB RAM. The harness records the host's events and WHP
+  calls, and runs its own two-vCPU guest independently of shards. The README records the
+  boot matrix, firmware revisions, fixture patches and raw results. No Windows binary or
+  check was patched.
+- **Host found.**
+  - HVF with EL2 off and on both reached the desktop but gave Hyper-V event 43, EL2 not
+    present; WHP's HypervisorPresent was 0. HVF's default PFR0.EL2 field is 0 even with
+    nested virtualization enabled (M422); setting it to 1 changed Windows' failure to
+    event 26, BalStatus 0x19, sub-status 0xC.
+  - TCG with VHE but without EL3 failed the same way. Instrumenting its failure path
+    identified PFR0.EL3=0 as the rejected CPU field. With TF-A at EL3, Windows passed that
+    check but faulted on a pointer authentication key write; disabling that optional CPU
+    feature reached a HAL initialization failure. QEMU's generated FADT described no
+    PSCI when its own handler was disabled for TF-A; describing TF-A's SMC handler fixed
+    that failure.
+  - TCG `max,sve=off,sme=off,pauth=off`, secure and virtualized, TF-A 2.15.0 and EDK2
+    stable202608: Windows reached the desktop, System event 1 said its hypervisor
+    successfully started, WHvGetCapability returned HypervisorPresent=1 and Arm64Support=1,
+    and WHvCreatePartition succeeded. This is software emulation of Windows on this Mac,
+    running Windows' real hypervisor. Its timings are not native hardware timings.
+- **Partition found.**
+  - The guest read back an MMIO answer (0x5678), took SPI INTID 33 and acknowledged it.
+    PSCI_VERSION returned 1.1, CPU_ON started vCPU 1 at its entry with context X0=0x42 and
+    MPIDR=0x80000001, and SYSTEM_OFF returned an Arm64Reset/PowerOff exit.
+  - GICD_TYPER 0x748041e: 960 SPIs. WHvGetVirtualProcessorState returned 200 bytes of
+    interrupt controller state per vCPU and 4096 bytes of global state, all set back with
+    S_OK. Resetting vCPU 0's CNTVCT_EL0 to zero left vCPU 1's counter advancing: one counter
+    per vCPU. SuspendPartitionTime returned WHV_E_INVALID_VP_STATE with vCPU 1 running.
+    With all vCPUs stopped it succeeded: both counters held their values across 100 ms,
+    including after each was set to 1,000,000,000. ResumePartitionTime advanced both.
+    The restore suspends time before making vCPUs, sets each counter before its timer
+    registers, and resumes time through the first WHvRunVirtualProcessor.
+  - WHvAdviseGpaRange's Populate advice on two memory ranges succeeded for read and write
+    access as the standard runner. The backend shares x86_64 WHP's mapped-page recorder
+    and bulk Populate path; the working-set snapshot E2E recorded and prefetched pages.
+  - 64- and 128-vCPU partitions set up and their last vCPU was created; ProcessorCount=256
+    was refused. Shards' redistributor layout holds 123 vCPUs, within the measured limit.
+  - Forbidding dynamic code after setup allowed mapping RAM, making a vCPU and running
+    it. A cancel before a run returned Canceled, then the next run reached the first MMIO
+    write. The probe drops its original mapped partition before this control; while it
+    still held it, the second map returned STATUS_VID_PARTITION_ALREADY_EXISTS.
+  - MMIO write round trips on the emulated host during development: n=999, p50=455,
+    p90=608, p99=900, max=1606 microseconds. This run alone, not a native WHP latency claim.
+- **Shards found.** Its pinned arm64 Linux kernel booted as the standard `runner` user
+  through the confined VM process, finding PSCI 1.1, GICv3 at the expected redistributor
+  and the 1 GHz virtual counter; with no init/root disk it reached the expected VFS panic
+  and requested a reset. The boot test now checks the host's counter frequency rather
+  than assuming HVF's 24 MHz. Boot E2E passed (27.81 s), as did the core snapshot E2E
+  (36.76 s): three independent processes restored one two-vCPU snapshot with its state
+  intact and fresh randomness. Nine tests of the first complete snapshot run passed;
+  the busy-machine test found a 59 microsecond backward clock step from per-thread
+  counter sampling at release. After the suspended-time fix, its two- and eight-vCPU
+  cases passed, including all three restores and clock checks (29.35 and 24.34 s).
+  The 64-vCPU original guest timed out streaming before its snapshot on the four-CPU
+  outer host. The nested host was resized to 16 CPUs and 24 GiB for the full suite,
+  keeping every assertion and deadline. The full real-VM suite remains to pass before
+  step 10 is closed. Raw results and the failure are retained with the harness.
+
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 
 - **Question.** What does a working set mapped ahead buy a Windows restore, as Linux's and
@@ -17181,8 +17244,10 @@ revision before comparing a changed API/implementation.
   - HCR_EL2 is 0x80000000 as made; written with E2H set, it reads back 0x80000000: E2H is
     RES0. A guest hypervisor here runs without VHE, as the arm64 Linux guest's KVM did
     under it ("Hyp nVHE mode initialized successfully", D154), no `kvm-arm.mode` told.
-- **Consequence.** Whether Windows' hypervisor starts in such a guest is measured by
-  booting it there (step 10's host): if it needs VHE, no Mac here can be an arm64 WHP host.
+- **Follow-up.** The expanded probe also reads the vCPU configuration: PFR0.EL2 remains 0
+  with EL2 enabled; writing the vCPU's field to 1 succeeds and reads back 1
+  (`config-result.txt`). VHE's absence alone does not establish why Windows fails to
+  launch. M414 records the measured Windows boots, including the working TCG host.
 
 ### M423. CI's arm64 Windows lane on windows-11-arm: its steps' times and limits (M245, M420)
 

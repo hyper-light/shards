@@ -88,6 +88,7 @@ pub const APIA_KEY_LO: u32 = 0x0004_002D;
 pub const APIB_KEY_HI: u32 = 0x0004_002E;
 pub const APIB_KEY_LO: u32 = 0x0004_002F;
 pub const CSSELR_EL1: u32 = 0x0004_0035;
+pub const MIDR_EL1: u32 = 0x0004_0051;
 /// DBGBCR0_EL1 to DBGBCR15_EL1 follow one another, as do DBGWCRn, DBGBVRn and DBGWVRn.
 pub const DBGBCR0_EL1: u32 = 0x0005_0000;
 pub const DBGWCR0_EL1: u32 = 0x0005_0010;
@@ -100,7 +101,7 @@ pub const CNTKCTL_EL1: u32 = 0x0005_8008;
 pub const CNTV_CTL_EL0: u32 = 0x0005_800E;
 pub const CNTV_CVAL_EL0: u32 = 0x0005_800F;
 pub const CNTVCT_EL0: u32 = 0x0005_8011;
-/// The ID registers (op0 3, op1 0, CRn 0), each at its CRm:op2 from here: partition-wide,
+/// The feature ID registers, each at its CRm:op2 from here: partition-wide,
 /// read with [`ANY_VP`] alone.
 pub const ID_REGISTERS: u32 = 0x0002_2000;
 pub const GICR_BASE_GPA: u32 = 0x0006_3000;
@@ -134,6 +135,22 @@ pub const STARTUP_SUSPEND: u64 = 1;
 pub const MAP_READ: u32 = 1;
 pub const MAP_WRITE: u32 = 2;
 pub const MAP_EXECUTE: u32 = 4;
+
+/// WHV_MEMORY_RANGE_ENTRY.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryRange {
+    pub gpa: u64,
+    pub size: u64,
+}
+
+/// WHV_ADVISE_GPA_RANGE_POPULATE.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Populate {
+    pub flags: u32,
+    pub access_type: u32,
+}
 
 // WHV_ARM64_IC_EMULATION_MODE, WHV_INTERRUPT_TYPE
 pub const IC_EMULATION_GICV3: u32 = 1;
@@ -312,10 +329,12 @@ winhv! {
     fn WHvGetCapability(code: u32, buffer: *mut c_void, size: u32, written: *mut u32);
     fn WHvCreatePartition(partition: *mut Partition);
     fn WHvSetupPartition(partition: Partition);
+    fn WHvSuspendPartitionTime(partition: Partition);
     fn WHvDeletePartition(partition: Partition);
     fn WHvSetPartitionProperty(partition: Partition, code: u32, value: *const c_void, size: u32);
     fn WHvMapGpaRange(partition: Partition, source: *const c_void, gpa: u64, size: u64, flags: u32);
     fn WHvUnmapGpaRange(partition: Partition, gpa: u64, size: u64);
+    fn WHvAdviseGpaRange(partition: Partition, ranges: *const MemoryRange, count: u32, advice: u32, buffer: *const c_void, size: u32);
     fn WHvCreateVirtualProcessor(partition: Partition, index: u32, flags: u32);
     fn WHvRunVirtualProcessor(partition: Partition, index: u32, exit: *mut c_void, size: u32);
     fn WHvCancelRunVirtualProcessor(partition: Partition, index: u32, flags: u32);
@@ -341,6 +360,8 @@ mod sizes {
         assert_eq!(size_of::<IcParameters>(), 64);
         assert_eq!(size_of::<InterruptControl>(), 32);
         assert_eq!(size_of::<Value>(), 16);
+        assert_eq!(size_of::<MemoryRange>(), 16);
+        assert_eq!(size_of::<Populate>(), 8);
         assert_eq!((size_of::<Page>(), align_of::<Page>()), (4096, 4096));
         assert_eq!(std::mem::offset_of!(MemoryAccess, syndrome), 56);
         assert_eq!(std::mem::offset_of!(ExitContext, body), 16);

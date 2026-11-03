@@ -46,8 +46,8 @@ const PPI_VTIMER: u32 = 27;
 const PPI_PMU: u32 = 23;
 /// The first SPI's INTID.
 const SPI_BASE: u32 = 32;
-/// The SPIs GICv3 has at most (ITLinesNumber 31: INTIDs to 1019).
-const SPIS: u32 = 988;
+/// The platform's GIC: M414's GICD_TYPER.ITLinesNumber 30, INTIDs to 991.
+const SPIS: u32 = 960;
 
 /// A failed WHP call, or guest behavior the VMM does not emulate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,12 +130,10 @@ pub fn check_host() -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Whether this host restores snapshots: not until PM M414 has run on an arm64 Windows host,
-/// which measures what a restore rests on here: each vCPU's interrupt controller state and
-/// the partition's global one set back as read, and the guest's counter set (its
-/// CNTVCT_EL0 written, through one vCPU or each).
+/// M414 set back the global GIC state and each vCPU's interrupt controller state, and
+/// reset CNTVCT_EL0 independently on each vCPU: the state a snapshot restores here.
 pub fn restores() -> bool {
-    false
+    check_host().is_ok()
 }
 
 /// The most vCPUs one VM can have: as many as shards' GIC layout has redistributor frames
@@ -306,16 +304,27 @@ impl Partition {
     /// bits.
     fn values(&self, vp: u32, names: &[u32]) -> Result<Vec<Value>> {
         let mut values = vec![Value::default(); names.len()];
-        // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
-        check("WHvGetVirtualProcessorRegisters", unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.0,
-                vp,
-                names.as_ptr(),
-                names.len() as u32,
-                values.as_mut_ptr(),
-            )
-        })?;
+        let get = |names: &[u32], values: &mut [Value]| {
+            // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
+            check("WHvGetVirtualProcessorRegisters", unsafe {
+                WHvGetVirtualProcessorRegisters(
+                    self.0,
+                    vp,
+                    names.as_ptr(),
+                    names.len() as u32,
+                    values.as_mut_ptr(),
+                )
+            })
+        };
+        if let Err(batch) = get(names, &mut values) {
+            for name in names {
+                let mut value = [Value::default()];
+                if let Err(one) = get(std::slice::from_ref(name), &mut value) {
+                    return Err(Error::Guest(format!("vCPU {vp}'s register {name:#x}: {one}")));
+                }
+            }
+            return Err(batch);
+        }
         Ok(values)
     }
 
@@ -534,6 +543,7 @@ impl Gic {
 pub struct Vm {
     partition: Arc<Partition>,
     mpidrs: Vec<u64>,
+    restore_counter: Option<u64>,
 }
 
 impl Vm {
@@ -584,6 +594,7 @@ impl Vm {
         Ok(Vm {
             partition: Arc::new(partition),
             mpidrs: config.mpidrs,
+            restore_counter: None,
         })
     }
 
@@ -644,6 +655,21 @@ impl Vm {
         Ok(())
     }
 
+    /// Prepares a fresh VM to restore, before any vCPU is made: partition time stopped,
+    /// and every vCPU's counter set as it is made, before its timer state is restored.
+    /// M414 measured that every counter then holds the written value until time resumes.
+    /// WHvRunVirtualProcessor resumes it as the first vCPU enters, after all are set up.
+    /// Sampling the host's counter independently at each vCPU's release introduced skew
+    /// and let CLOCK_MONOTONIC go backward between CPUs (the snapshot storm E2E).
+    pub fn for_restore(mut self, counter: u64) -> Result<Self> {
+        // SAFETY: the fresh partition has no running vCPU.
+        check("WHvSuspendPartitionTime", unsafe {
+            WHvSuspendPartitionTime(self.partition.0)
+        })?;
+        self.restore_counter = Some(counter);
+        Ok(self)
+    }
+
     /// The partition's GIC, at the places it was given ([`Vm::new`]): a layout elsewhere, or
     /// one with an ITS, is refused.
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
@@ -688,6 +714,9 @@ impl Vm {
         if index > 0 {
             self.partition
                 .set_registers(vp, &[INTERNAL_ACTIVITY_STATE], &[STARTUP_SUSPEND])?;
+        }
+        if let Some(counter) = self.restore_counter {
+            self.partition.set_registers(vp, &[CNTVCT_EL0], &[counter])?;
         }
         Ok(Vcpu {
             partition: self.partition.clone(),
@@ -742,8 +771,9 @@ impl Vm {
 }
 
 /// WHV_ARM64_GLOBAL_INTERRUPT_CONTROLLER_STATE's size at most, as WinHvPlatformDefs.h lays it
-/// out: 16 bytes, then 16 for each interrupt, of GICv3's 1,020 INTIDs at most.
-const GLOBAL_STATE_MOST: usize = 16 + 1020 * 16;
+/// out: 16 bytes, then 16 for each interrupt, of GICv3's 1,020 INTIDs at most. WHP returns
+/// whole pages for the global state: M414's Linux snapshot is 16,384 bytes, not 16,336.
+const GLOBAL_STATE_MOST: usize = (16_usize + 1020 * 16).div_ceil(4096) * 4096;
 
 /// WHV_ARM64_LOCAL_INTERRUPT_CONTROLLER_STATE's size: 8 bytes, six registers, ICH_AP1Rn_EL2's
 /// four words and the 32 private interrupts' states of 4 bytes each.
@@ -757,6 +787,37 @@ pub struct Vcpu {
 }
 
 impl Vcpu {
+    /// Populates each `(gpa, len)` ahead of the guest, for reading or writing (making the
+    /// private copies of snapshot pages). M414 exercised both kinds on arm64; the advice
+    /// is the same WHvAdviseGpaRange operation as on x86_64.
+    pub fn pre_fault_runs(&self, runs: &[(u64, u64)], write: bool) -> Result<()> {
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let ranges: Vec<MemoryRange> = runs
+            .iter()
+            .map(|&(gpa, size)| MemoryRange { gpa, size })
+            .collect();
+        let populate = Populate {
+            flags: 0,
+            access_type: u32::from(write),
+        };
+        for chunk in ranges.chunks(u32::MAX as usize) {
+            // SAFETY: the chunk's mapped ranges and populate advice of its own layout.
+            check("WHvAdviseGpaRange(Populate)", unsafe {
+                WHvAdviseGpaRange(
+                    self.partition.0,
+                    chunk.as_ptr(),
+                    chunk.len() as u32,
+                    0,
+                    (&raw const populate).cast(),
+                    size_of::<Populate>() as u32,
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn kicker(&self) -> Kicker {
         Kicker {
             partition: self.partition.clone(),
@@ -870,12 +931,15 @@ impl Vcpu {
         self.advance(access.header.pc, access.syndrome)
     }
 
-    /// The CPU identity the guest sees: [`ID_REGS`] by encoding, the partition's, which
-    /// WinHvPlatformDefs.h has read with [`ANY_VP`] alone.
+    /// The CPU identity the guest sees: MIDR_EL1 from this vCPU, then the partition's
+    /// feature ID registers ([`ID_REGS`]), read with [`ANY_VP`]. MIDR is not a global ID
+    /// register (M414's snapshot E2E, as QEMU's whpx_arm_get_host_cpu_features notes).
     pub fn cpu_id(&self) -> Result<Vec<(u16, u64)>> {
         let names: Vec<u32> = ID_REGS.iter().map(|&e| id_register(e)).collect();
         let values = self.partition.registers(ANY_VP, &names)?;
-        Ok(ID_REGS.iter().copied().zip(values).collect())
+        let mut id = vec![(0xc000, self.partition.register(self.index, MIDR_EL1)?)];
+        id.extend(ID_REGS.iter().copied().zip(values));
+        Ok(id)
     }
 
     /// Captures the architectural state, with the vCPU out of the guest: its general, SIMD
@@ -950,7 +1014,7 @@ impl Vcpu {
 
     /// Loads captured state into this freshly created vCPU, its power as it was: a vCPU
     /// that ran resumes where it stopped, one powered off waits for its CPU_ON. The guest's
-    /// counter is set as the vCPU is released ([`Vcpu::set_counter_offset`]).
+    /// counter was set as the vCPU was made, with partition time stopped ([`Vm::for_restore`]).
     pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
         let (p, vp) = (&self.partition, self.index);
         let activity = match st.power {
@@ -985,14 +1049,6 @@ impl Vcpu {
     /// The guest's virtual counter now (CNTVCT_EL0).
     pub fn guest_counter(&self) -> Result<u64> {
         self.partition.register(self.index, CNTVCT_EL0)
-    }
-
-    /// Sets the guest's virtual counter to `host_counter() - offset`, as each vCPU is
-    /// released, by writing its CNTVCT_EL0. PM M414 measures whether the write is the vCPU's
-    /// or the partition's, which [`restores`] waits for.
-    pub fn set_counter_offset(&mut self, offset: u64) -> Result<()> {
-        self.partition
-            .set_registers(self.index, &[CNTVCT_EL0], &[host_counter().wrapping_sub(offset)])
     }
 }
 
@@ -1051,12 +1107,12 @@ const PAUTH_KEYS: &[(u16, u32)] = &[
 const OSLAR: u16 = 0x8084;
 
 /// The ID registers that define the guest's CPU, by encoding: a restore on a CPU that
-/// reports any of them different is refused. MIDR, which Linux takes its errata by, and the
-/// AArch64 feature registers it patches its own code by as it boots (processor, debug,
-/// instruction set and memory model).
+/// reports any of them different is refused. The global AArch64 feature registers it
+/// patches its own code by as it boots (processor, debug, instruction set and memory
+/// model). MIDR is read from the vCPU separately ([`Vcpu::cpu_id`]).
 const ID_REGS: &[u16] = &[
-    0xc000, 0xc020, 0xc021, 0xc022, 0xc024, 0xc025, 0xc028, 0xc029, 0xc030, 0xc031, 0xc032, 0xc033, 0xc038,
-    0xc039, 0xc03a, 0xc03b, 0xc03c,
+    0xc020, 0xc021, 0xc022, 0xc024, 0xc025, 0xc028, 0xc029, 0xc030, 0xc031, 0xc032, 0xc038, 0xc039, 0xc03a,
+    0xc03b, 0xc03c,
 ];
 const ID_AA64PFR0_EL1: u16 = 0xc020;
 const ID_AA64PFR1_EL1: u16 = 0xc021;

@@ -15,6 +15,42 @@ use crate::{debug, platform};
 /// pages of another size records none.
 const PAGE: u64 = 4 << 10;
 
+/// WHP's working set populated in batches, for reading and then writing. Shared by the
+/// two architectures: writing copies snapshot pages in the host kernel. Failed batches
+/// fall back to individual runs; a run that fails faults in when the guest touches it.
+#[cfg(hv = "whp")]
+pub fn populate(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
+    let mut ahead = 0;
+    let mut count = 0;
+    for write in [false, true] {
+        let t0 = crate::log::uptime_us();
+        let runs = runs(working_set.iter().filter(|t| t.written == write).map(|t| t.gpa));
+        let made = runs.len();
+        count += made;
+        let mut done = 0;
+        if vcpu.pre_fault_runs(&runs, write).is_ok() {
+            done = runs.iter().map(|(_, len)| (len / PAGE) as usize).sum();
+        } else {
+            let every = every_run(runs, |gpa, len| {
+                vcpu.pre_fault_runs(&[(gpa, len)], write)
+                    .map(|()| done += (len / PAGE) as usize)
+                    .map_err(|e| e.to_string())
+            });
+            if let Err(e) = every {
+                crate::warn!("mapping the working set ahead {e}: the guest faults those pages in");
+            }
+        }
+        ahead += done;
+        if write && done > 0 {
+            crate::info!(
+                "copied {done} written working-set pages ahead, in {made} runs, in {} us",
+                crate::log::uptime_us().saturating_sub(t0)
+            );
+        }
+    }
+    (ahead, count)
+}
+
 /// Makes the private copies of RAM that the guest wrote while its working set was
 /// recorded, as its writes would make them: KVM then maps these pages writable ahead,
 /// where a write to a page mapped read-only would fault, copy, and fault again. Every run

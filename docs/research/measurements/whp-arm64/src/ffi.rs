@@ -16,6 +16,20 @@ pub type Hresult = i32;
 /// WHV_PARTITION_HANDLE.
 pub type Partition = *mut c_void;
 
+/// WHV_MEMORY_RANGE_ENTRY.
+#[repr(C)]
+pub struct MemoryRange {
+    pub gpa: u64,
+    pub size: u64,
+}
+
+/// WHV_ADVISE_GPA_RANGE_POPULATE, no optional flags and read (0) or write (1).
+#[repr(C)]
+pub struct Populate {
+    pub flags: u32,
+    pub access_type: u32,
+}
+
 // WHV_CAPABILITY_CODE
 pub const CAP_HYPERVISOR_PRESENT: u32 = 0x0000_0000;
 pub const CAP_FEATURES: u32 = 0x0000_0001;
@@ -319,6 +333,7 @@ winhv! {
     fn WHvSuspendPartitionTime(partition: Partition);
     fn WHvResumePartitionTime(partition: Partition);
     fn WHvMapGpaRange(partition: Partition, source: *const c_void, gpa: u64, size: u64, flags: u32);
+    fn WHvAdviseGpaRange(partition: Partition, ranges: *const MemoryRange, count: u32, advice: u32, buffer: *const c_void, size: u32);
     fn WHvCreateVirtualProcessor(partition: Partition, index: u32, flags: u32);
     fn WHvRunVirtualProcessor(partition: Partition, index: u32, exit: *mut c_void, size: u32);
     fn WHvCancelRunVirtualProcessor(partition: Partition, index: u32, flags: u32);
@@ -344,6 +359,8 @@ mod sizes {
         assert_eq!(size_of::<IcParameters>(), 64);
         assert_eq!(size_of::<InterruptControl>(), 32);
         assert_eq!(size_of::<Value>(), 16);
+        assert_eq!(size_of::<MemoryRange>(), 16);
+        assert_eq!(size_of::<Populate>(), 8);
         assert_eq!(std::mem::offset_of!(MemoryAccess, syndrome), 56);
         assert_eq!(std::mem::offset_of!(ExitContext, body), 16);
     }
