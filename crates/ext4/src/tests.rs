@@ -1009,7 +1009,7 @@ fn free_blocks_are_what_the_bitmaps_and_counts_say() {
 #[test]
 fn a_damaged_block_bitmap_is_refused() {
     let mut image = tree_image();
-    let desc = (BLOCK as usize) * 1;
+    let desc = BLOCK as usize;
     let bitmap = u32::from_le_bytes(image[desc..desc + 4].try_into().unwrap()) as usize;
     image[bitmap * BLOCK as usize] ^= 0x1;
     let refused = read::Volume::open(image.as_slice())
