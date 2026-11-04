@@ -16,8 +16,14 @@
 //! (CI's ubuntu-24.04: a build idling under a budget set 256 MiB short gave back nothing
 //! for 126 s, and its read after crawled, throttled, 18 minutes); one that leaves them room,
 //! each told its share. What they gave back is said once a minute at most, as the daemon
-//! says its microVMs'. On Windows its host's word is the system's low memory notification,
-//! as the daemon's is (D188).
+//! says its microVMs'. While a budget holds the build, its builders are told its room again
+//! each pressure window where it has changed: their guests hold the build within what they
+//! were last told, past what it used then, and what their host gets back of them outside the
+//! build (memory they unplug, free pages reported late) the build's growth never shows, so
+//! that a build told 44 MiB of room as its builder's unplug of 128 MiB was still under way
+//! was held within it for 200 s, its host 140 MiB short of its budget throughout (Fedora,
+//! apt 219 s held against 31.5 s free, PM M442). On Windows its host's word is the system's
+//! low memory notification, as the daemon's is (D188).
 
 use std::io;
 use std::sync::OnceLock;
@@ -42,9 +48,10 @@ const SAY_EVERY: Duration = Duration::from_secs(60);
 /// pressure (macOS, Windows).
 const TOLD: &str = "SHARDS_BUILD_PRESSURE";
 
-/// The watcher's channel, down which each builder's giver is sent as the builder starts:
-/// started with the first, none where it could not start.
-static WATCHER: OnceLock<Option<mpsc::Sender<Giver>>> = OnceLock::new();
+/// The watcher's channels: each builder's giver sent down the first as the builder starts,
+/// and its coming said down the second, which wakes the watcher; started with the first,
+/// none where it could not start.
+static WATCHER: OnceLock<Option<(mpsc::Sender<Giver>, mpsc::Sender<Woke>)>> = OnceLock::new();
 
 /// Has the build's memory pressure watcher ask `giver`'s builder to give back at its host's
 /// word, starting the watcher with the first builder; `plain`, whether what they gave back
@@ -55,8 +62,10 @@ pub fn watch(mut giver: Giver, plain: bool) {
     if let Some(r) = room() {
         let _ = giver.tell_first(r);
     }
-    if let Some(sender) = WATCHER.get_or_init(|| start(plain)) {
-        let _ = sender.send(giver);
+    if let Some((sender, word)) = WATCHER.get_or_init(|| start(plain))
+        && sender.send(giver).is_ok()
+    {
+        let _ = word.send(Woke::Builder);
     }
 }
 
@@ -76,25 +85,27 @@ fn room() -> Option<i64> {
     crate::daemon::budget::room(&own_cgroup()?, root, &mut |_| 0).map(|(room, _)| room)
 }
 
-/// What wakes the watcher: its host's word that it is short of memory, or a budget over the
-/// build written.
+/// What wakes the watcher: its host's word that it is short of memory, a budget over the
+/// build written, or a builder come, told its budget's room as it started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Woke {
     Pressure,
     /// Linux's alone, whose budgets are its cgroups' files.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Budget,
+    Builder,
 }
 
 /// The watcher, on a thread of its own: its channel, none where its host's pressure cannot
 /// be watched or its threads cannot start, its builders then asked nothing. Its host's
 /// pressure is heard on a thread of its own, and a budget's writes by the process's watch of
 /// its files, each a word down one channel.
-fn start(plain: bool) -> Option<mpsc::Sender<Giver>> {
+fn start(plain: bool) -> Option<(mpsc::Sender<Giver>, mpsc::Sender<Woke>)> {
     let mut pressure = Pressure::new(TOLD).ok()?.0;
     let (sender, givers) = mpsc::channel();
     let (word, woke) = mpsc::channel();
     let heard = word.clone();
+    let come = word.clone();
     std::thread::Builder::new()
         .name("pressure".into())
         .spawn(
@@ -111,7 +122,7 @@ fn start(plain: bool) -> Option<mpsc::Sender<Giver>> {
         .name("give back".into())
         .spawn(move || watch_words(&woke, &givers, plain))
         .ok()?;
-    Some(sender)
+    Some((sender, come))
 }
 
 /// Where a budget's writes are told the watcher, once it has started ([`watch_budgets`]).
@@ -161,12 +172,13 @@ fn watch_budgets(word: mpsc::Sender<Woke>) {
 /// Asks its builders to give back each time its host is short of memory, and as a budget
 /// over the build is written ([`budget_written`]), until neither can be heard; while an
 /// answer is out past its pass's patience, it looks for it once a pressure window
-/// ([`late`]).
+/// ([`late`]); while a budget holds them, it looks at the room it leaves them once a window
+/// too ([`again`]).
 fn watch_words(woke: &mpsc::Receiver<Woke>, givers: &mpsc::Receiver<Giver>, plain: bool) {
     let mut held: Vec<Giver> = Vec::new();
     let mut unsaid = Unsaid::default();
     loop {
-        let why = if held.iter().any(Giver::awaiting) {
+        let why = if held.iter().any(Giver::awaiting) || unsaid.told.is_some() {
             match woke.recv_timeout(shards_vmm::platform::PRESSURE_WINDOW) {
                 Ok(why) => Some(why),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -184,7 +196,15 @@ fn watch_words(woke: &mpsc::Receiver<Woke>, givers: &mpsc::Receiver<Giver>, plai
         let said = match why {
             Some(Woke::Pressure) => pass(&mut held, &mut unsaid, until, now, &room),
             Some(Woke::Budget) => budget_written(&mut held, &mut unsaid, until, now, &room),
-            None => late(&mut held, &mut unsaid, until, now, &room),
+            // Told its room as it started (`watch`), the room it then had.
+            Some(Woke::Builder) => {
+                if unsaid.told.is_none() {
+                    unsaid.told = room();
+                }
+                None
+            }
+            None => late(&mut held, &mut unsaid, until, now, &room)
+                .or_else(|| again(&mut held, &mut unsaid, until, now, &room)),
         };
         if let (Some(said), true) = (said, plain) {
             use std::io::Write as _;
@@ -275,10 +295,40 @@ fn late(
     unsaid.say(now)
 }
 
+/// The room a budget leaves its builders, looked at again a pressure window after it was
+/// last told them, `now`: where it is short, a word of pressure ([`pass`]), as a budget
+/// written short is; where it has changed, each builder told its share of it, heard by
+/// `until`. A guest holds its build within what it was last told past what the build used
+/// then, and its host's getting back what it holds outside the build (blocks it unplugs,
+/// free pages reported after its answer) makes room the build's own growth never shows:
+/// told 44 MiB as its unplug of 128 MiB was under way, a builder held its build within it
+/// for 200 s while its budget had 140 MiB to spare (PM M442). Nothing where no budget held
+/// them when last told.
+fn again(
+    held: &mut Vec<Giver>,
+    unsaid: &mut Unsaid,
+    until: Instant,
+    now: Instant,
+    room: &dyn Fn() -> Option<i64>,
+) -> Option<String> {
+    let was = unsaid.told?;
+    match room() {
+        Some(r) if r < 0 => pass(held, unsaid, until, now, room),
+        Some(r) if r != was => {
+            tell(held, Some(r), until, unsaid);
+            unsaid.say(now)
+        }
+        // The budget gone is heard as it is written (`budget_written`), the room unchanged
+        // has nothing to say.
+        _ => None,
+    }
+}
+
 /// Tells each builder in `held` its share of the room `r` a budget leaves them, none where
 /// no budget holds them, each answer heard by `until`: those told alone heard, as one whose
-/// give-back is still out was counted unanswered.
+/// give-back is still out was counted unanswered. The room told kept in `unsaid`.
 fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsaid) {
+    unsaid.told = r;
     let n = i64::try_from(held.len().max(1)).unwrap_or(i64::MAX);
     let share = r.map(|r| r / n);
     let mut told = Vec::with_capacity(held.len());
@@ -344,6 +394,9 @@ struct Unsaid {
     /// 40925092313).
     budgeted: bool,
     said: Option<Instant>,
+    /// The room a budget left its builders as they were last told it, all of them together:
+    /// none where no budget held them. Kept past what is said.
+    told: Option<i64>,
 }
 
 impl Unsaid {
@@ -396,6 +449,7 @@ impl Unsaid {
         }
         *self = Unsaid {
             said: Some(now),
+            told: self.told,
             ..Unsaid::default()
         };
         Some(said)
@@ -763,6 +817,79 @@ mod tests {
         (&slow_end).read_exact(&mut room).unwrap();
         assert_eq!(room, (-(64 * MIB as i64)).to_string().as_bytes());
         assert!(!held[0].awaiting());
+    }
+
+    /// While a budget holds its builders, the room it leaves is looked at again each window:
+    /// told them where it has changed since they were last told it, a word of pressure where
+    /// it is short, and nothing where it is unchanged or no budget held them (PM M442).
+    #[test]
+    fn a_budgets_room_is_told_again_where_it_changed() {
+        let read_room = |end: &UnixStream| -> Vec<u8> {
+            let mut h = [0u8; run::HEADER];
+            (&*end).read_exact(&mut h).unwrap();
+            let (kind, len) = run::parse_header(h).unwrap();
+            assert_eq!(kind, build::kind::ROOM);
+            let mut room = vec![0u8; len as usize];
+            (&*end).read_exact(&mut room).unwrap();
+            room
+        };
+        let answer_held = |end: &UnixStream, within: &str| {
+            let len = u32::try_from(within.len()).unwrap();
+            (&*end).write_all(&run::header(build::kind::HELD, len)).unwrap();
+            (&*end).write_all(within.as_bytes()).unwrap();
+        };
+        let nothing_sent = |end: &UnixStream| {
+            end.set_nonblocking(true).unwrap();
+            let mut more = [0u8; 1];
+            assert_eq!(
+                (&*end).read(&mut more).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            end.set_nonblocking(false).unwrap();
+        };
+        let (one, end) = builder();
+        let mut held = vec![one];
+        let mut unsaid = Unsaid::default();
+        let mib = |n: i64| n * i64::try_from(MIB).unwrap();
+        // No budget held it when last told: nothing looked at.
+        assert_eq!(
+            again(&mut held, &mut unsaid, soon(), Instant::now(), &|| Some(mib(64))),
+            None
+        );
+        nothing_sent(&end);
+        // Told 44 MiB; its host then got back what it unplugged: told the room it has now.
+        unsaid.told = Some(mib(44));
+        answer_held(&end, &mib(140).to_string());
+        assert_eq!(
+            again(&mut held, &mut unsaid, soon(), Instant::now(), &|| Some(mib(140))),
+            None
+        );
+        assert_eq!(read_room(&end), mib(140).to_string().as_bytes());
+        assert_eq!(unsaid.told, Some(mib(140)));
+        // Unchanged: nothing told.
+        assert_eq!(
+            again(&mut held, &mut unsaid, soon(), Instant::now(), &|| Some(mib(140))),
+            None
+        );
+        nothing_sent(&end);
+        // Short: asked to give back first, then told the room after.
+        gave(&end, &format!("{} 0", 9 * MIB));
+        answer_held(&end, "0");
+        let said = again(&mut held, &mut unsaid, soon(), Instant::now(), &|| Some(-mib(1))).unwrap();
+        assert!(was_asked(&end), "asked to give back");
+        assert_eq!(read_room(&end), (-mib(1)).to_string().as_bytes());
+        assert!(said.contains("gave back 9 MiB"), "{said}");
+        assert_eq!(unsaid.told, Some(-mib(1)), "kept past what is said");
+        // The budget gone, as its write told them: looked at no more.
+        answer_held(&end, "");
+        budget_written(&mut held, &mut unsaid, soon(), Instant::now(), &|| None);
+        assert_eq!(read_room(&end), b"");
+        assert_eq!(unsaid.told, None);
+        assert_eq!(
+            again(&mut held, &mut unsaid, soon(), Instant::now(), &|| Some(mib(64))),
+            None
+        );
+        nothing_sent(&end);
     }
 
     /// A refusal alone, nothing given back and no ask late, is said all the same.

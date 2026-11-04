@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """measure.py's output as the PM entry's tables, each run alone or with --pool every run given
 as one (runs of one host): for each build and arm (free, held), over the rounds after the
-first (round 1's free arm fills the builds' caches): its time, its scope's anonymous peak and budget
+caches' (round 0's free arms, where a run has one; round 1's before it had): its time, its scope's anonymous peak and budget
 (Linux), and its builder's give-backs, each answer's time from its word, what it freed of
 its files, what it asked to unplug and what its guest then held plugged less (its own samples,
 a second on), and each build's sums; the rooms its budget left told it and what its guest
@@ -35,21 +35,36 @@ def stats(values, unit="", scale=1):
 
 
 def read(path, run, into):
+    """`path`'s lines into `into`, its rounds keyed by `run`; those that filled the builds'
+    caches (round 0, or round 1 where it has no round 0) as round 0."""
+    lines = open(path, errors="replace").read().splitlines()
+    warm = any(l.startswith("build ") and " round=0 " in l for l in lines)
     builds, gives, head = into[:3]
     plugged = into[3]
-    for line in open(path, errors="replace"):
+    for line in lines:
         if line.startswith(("host ", "builds ")) and "=" not in line.split()[1]:
             head.append(line.rstrip())
         elif line.startswith("build "):
             f = fields(line)
-            builds[(f["build"], f["arm"], (run, int(f["round"])))] = f
+            builds[(f["build"], f["arm"], (run, counted(f, warm)))] = f
         elif line.startswith("give "):
             f = fields(line)
-            gives[(f["build"], f["arm"], (run, int(f["round"])))].append(f)
+            gives[(f["build"], f["arm"], (run, counted(f, warm)))].append(f)
         elif line.startswith("guest "):
             f = fields(line)
             if "plugged" in f:
-                plugged[(f["build"], f["arm"], (run, int(f["round"])))].append((float(f["t"]), int(f["plugged"])))
+                plugged[(f["build"], f["arm"], (run, counted(f, warm)))].append((float(f["t"]), int(f["plugged"])))
+
+
+def steps_of(f):
+    """A build line's steps' times, by step number: none where it says none."""
+    return {k: float(v) for k, v in (p.split(":") for p in f.get("steps", "-").split(",") if ":" in p)}
+
+
+def counted(f, warm):
+    """The round of a line's fields, 0 for one that filled the builds' caches."""
+    r = int(f["round"])
+    return r if warm or r > 1 else 0
 
 
 def unplugged(samples, t):
@@ -68,21 +83,32 @@ def report(title, into):
     for h in head:
         print(h)
     for name in sorted({b for b, _, _ in builds}):
-        times = {}
+        times, arm_rounds = {}, {}
         for arm in ("free", "held"):
-            rounds = sorted(r for b, m, r in builds if b == name and m == arm and r[1] > 1
+            rounds = sorted(r for b, m, r in builds if b == name and m == arm and r[1] > 0
                             and builds[(b, m, r)].get("exit") == "0")
             failed = sorted(r for b, m, r in builds if b == name and m == arm and builds[(b, m, r)].get("exit") != "0")
             s = [float(builds[(name, arm, r)]["s"]) for r in rounds]
             times[arm] = s
-            print(f"-- {name} {arm}: rounds 2+ {len(rounds)}, failed {len(failed)}")
+            arm_rounds[arm] = rounds
+            print(f"-- {name} {arm}: rounds past the caches' {len(rounds)}, failed {len(failed)}")
             print(f"   build time        {stats(s, ' s')}")
             peaks = [int(builds[(name, arm, r)].get("scope_anon_peak", 0)) for r in rounds]
             if any(peaks):
                 print(f"   scope anon peak   {stats(peaks, ' MiB', MIB)}")
+            helds = [int(builds[(name, arm, r)].get("scope_held_peak", 0)) for r in rounds]
+            if any(helds):
+                print(f"   scope held peak   {stats(helds, ' MiB', MIB)}")
             budgets = [int(builds[(name, arm, r)].get("budget", 0)) for r in rounds]
             if any(budgets):
                 print(f"   budget            {stats(budgets, ' MiB', MIB)}")
+                # How far short of what the build held unbudgeted its budget was: the held
+                # peak of the round's free arm less it.
+                shorts = [int(builds[k]["scope_held_peak"]) - int(builds[(name, arm, r)]["budget"])
+                          for r in rounds for k in [(name, "free", r)]
+                          if int(builds.get(k, {}).get("scope_held_peak", 0))]
+                if shorts:
+                    print(f"   short of its peak {stats(shorts, ' MiB', MIB)}")
             answers = [g for r in rounds for g in gives.get((name, arm, r), []) if "answered_ms" in g]
             unanswered = [g for r in rounds for g in gives.get((name, arm, r), []) if "unanswered_ms" in g]
             if answers or unanswered:
@@ -102,6 +128,13 @@ def report(title, into):
             refusals = [g for r in rounds for g in gives.get((name, arm, r), []) if "refused_ms" in g]
             if refusals:
                 print(f"   refusals          {len(refusals)}, the last: {refusals[-1]['why'].replace('_', ' ')}")
+        # Each step's time as the build's display says it (`#N DONE`), free against held.
+        for n in sorted({k for arm in ("free", "held") for r in arm_rounds.get(arm, [])
+                         for k in steps_of(builds[(name, arm, r)])}, key=int):
+            took = {arm: [steps_of(builds[(name, arm, r)])[n] for r in arm_rounds.get(arm, [])
+                          if n in steps_of(builds[(name, arm, r)])] for arm in ("free", "held")}
+            if took["free"] and took["held"]:
+                print(f"   step #{n:<3} free {stats(took['free'], ' s')}; held {stats(took['held'], ' s')}")
         free, held = times.get("free", []), times.get("held", [])
         if free and held:
             worse = min(held) > max(free)

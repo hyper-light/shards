@@ -8,18 +8,40 @@ builder's own samples on its console) and give.patch (each give-back's answer, a
 after its word it came, on the build's stderr).
 
 - Linux: each build in a scope of the user's manager (systemd-run --user --scope) that swaps
-  nothing (MemorySwapMax=0). Held, its MemoryHigh is the most anonymous memory the free arm's
-  scope held (memory.stat's anon, each second), in the round before it, less the most its
-  builder held cold of its files (inactive_file), which is guest RAM the host holds: so the
-  build fits its budget where its builder gives that back, and is held to it, stalling as its
-  host reclaims what it cannot swap (PSI), which the build's watcher hears. Not less what lay
+  nothing (MemorySwapMax=0). Held, its MemoryHigh is the least that holds its build where
+  its builder gives back all it holds cold of its files: the most, each second of the free
+  arm in the round before it, of what the scope holds that its host may take back from its
+  processes alone, as the daemon and the build count it (daemon::budget `Holding::held`:
+  its anonymous, shared, kernel and socket memory, the file pages its processes map
+  wherever they are charged, their `Pss_File`, and the inactive pages its kernel keeps
+  beside those charged to it, `lru_buffer`), less what its builder
+  held cold of its files then (inactive_file, from the builder's last sample before it):
+  so the budget is short of the build's peak by what its builder holds cold, and the build
+  fits it where its builder gives that back. The most of every free arm's so far, the
+  round's own among them where it came first: a build's peak moves from one round to the
+  next (npm's 796 to 815 MiB on Fedora), and a budget from the round before alone, short of
+  the next round's peak by 13 MiB more than its builder held cold, slowed it 3 times
+  (b25d2d05). Held to its anonymous peak less what its
+  builder held cold (ac3e9325, run 41292692058), a build had no room for the file pages its
+  processes map, the VM process's own text and its builder's disks among them, nor its
+  kernel's memory, and crawled under its host's reclaim whatever its builder gave back
+  (rust 406 to 913 s against 9 to 10 s, its builder holding 3 MiB cold). Held to that less
+  the file pages its processes map that are charged elsewhere (memory.stat's `file_mapped`
+  alone), its base's root filesystem on the builder's pmem device and the VM process's own
+  text among them, about 100 MiB, the build's own count of its room came out short, and
+  its builder was held at what it used, asked to give back each window, for 246 to 622 s
+  of a 10 s build once on each of CI's runners (573e4bf8, run 41738284986). Not less what lay
   plugged past twice what it used: the guest reports what it frees at once (D151), so its
-  host holds little of that, and a budget less it was none (npm's on Fedora, 512 MiB plugged
-  past its use of 505 MiB held). Not the scope's whole peak, memory.peak: that counts the host's page
-  cache of the build's files, which the host drops at no stall, and a budget of it less what
-  the builder could give back asked the builder for nothing (run 40426695726, 0 asks).
-  A round's held arm comes after its free arm where the round is odd, before it where even,
-  with the round before's peak: round 1's free arm alone fills the builds' caches.
+  host holds little of that. Not the scope's whole peak, memory.peak: that counts the
+  host's page cache of the build's files no process maps, which the host drops at no stall,
+  and a budget of it less what the builder could give back asked the builder for nothing
+  (run 40426695726, 0 asks).
+  A round's held arm comes after its free arm where the round is odd, before it where even.
+  A round 0 of free arms alone first fills the builds' caches and pulls their bases, its
+  peaks no budget's: a first build's peak is its downloads' (npm's 688 MiB against 796 to
+  819 after, which held round 2 to 340 s, b25d2d05).
+- Before each build, what the one before wrote is written out (sync(2)), and how long that
+  took said: no arm starts under another's writeback.
 - macOS, where no unprivileged process may raise the system's pressure: held, the build is
   told every 2 s that its host is short of memory (SHARDS_BUILD_PRESSURE's FIFO), as its
   watcher hears the system's pressure again every 2 s while it stays raised.
@@ -163,10 +185,61 @@ def scope_of(pid):
     return None
 
 
-def sample_host(build_pid, tag, stop, peak):
+def lru_buffer(mapped):
+    """The page cache a cgroup's kernel keeps inactive beside `mapped` bytes its processes
+    map before it takes those (mm/vmscan.c `inactive_is_low`; daemon::budget `lru_buffer`)."""
+    gb = (mapped * 2) >> 30
+    ratio = 1 if gb == 0 else max(int((gb * 10) ** 0.5), 1)
+    return mapped // ratio
+
+
+def mapped_files(scope):
+    """The bytes of files the processes of cgroup `scope` and those below it map, each
+    page once among them, wherever its page is charged (their smaps_rollup's `Pss_File`;
+    daemon::budget `mapped_under`)."""
+    total = 0
+    for d, _, _ in os.walk(scope):
+        try:
+            pids = open(os.path.join(d, "cgroup.procs")).read().split()
+        except OSError:
+            continue
+        for pid in pids:
+            try:
+                for line in open(f"/proc/{pid}/smaps_rollup"):
+                    w = line.split()
+                    if w and w[0] == "Pss_File:":
+                        total += int(w[1]) << 10
+            except (OSError, ValueError):
+                pass
+    return total
+
+
+def holding(scope):
+    """What cgroup `scope` holds that its host may take back from its processes alone, as
+    daemon::budget's `Holding::held` counts it, the files its processes map counted
+    wherever their pages are charged (`mapped_files`), with the inactive pages its kernel
+    keeps beside those charged to it (`lru_buffer`), and memory.stat's fields read for it,
+    with `pss_file` the files they map; none where it cannot be read."""
+    files = mapped_files(scope)
+    current = int(open(f"{scope}/memory.current").read())
+    stat = {k: int(v) for k, v in (l.split() for l in open(f"{scope}/memory.stat") if len(l.split()) == 2)}
+    get = lambda k: stat.get(k, 0)
+    kernel = stat.get("kernel", sum(get(k) for k in ("kernel_stack", "pagetables", "sec_pagetables",
+                                                     "percpu", "vmalloc", "slab")))
+    own = kernel + sum(get(k) for k in ("anon", "shmem", "sock", "zswap"))
+    mapped = get("file_mapped")
+    floor = current - max(get("file") - mapped - get("shmem"), 0)
+    held = min(max(own + mapped, floor), current) + max(files - mapped, 0) + lru_buffer(mapped)
+    stat["pss_file"] = files
+    return held, current, stat
+
+
+def sample_host(build_pid, tag, stop, peak, cold):
     """The builder's VM process's memory each second, and its scope's (Linux), until `stop`;
-    the most anonymous memory the scope held kept in `peak`; the build ended where the room
-    runs short."""
+    in `peak` the most anonymous memory the scope held, the most it held that its host may
+    take back from its processes alone (`holding`), and the most of that less what the
+    builder held cold of its files then (`cold`'s second, its last sample's); the build ended
+    where the room runs short."""
     while not stop.wait(1):
         left = room()
         if left < ROOM:
@@ -183,11 +256,15 @@ def sample_host(build_pid, tag, stop, peak):
         scope = None if macos else scope_of(build_pid)
         if scope:
             try:
-                current = int(open(f"{scope}/memory.current").read())
-                stat = dict(l.split() for l in open(f"{scope}/memory.stat") if len(l.split()) == 2)
-                anon, file = int(stat.get("anon", 0)), int(stat.get("file", 0))
+                held, current, stat = holding(scope)
+                anon = stat.get("anon", 0)
+                need = max(held - cold[1], 0)
                 peak[0] = max(peak[0], anon)
-                fields.append(f"scope_current={current} scope_anon={anon} scope_file={file}")
+                peak[1] = max(peak[1], held)
+                peak[2] = max(peak[2], need)
+                fields.append(f"scope_current={current} scope_held={held} scope_need={need} " + " ".join(
+                    f"scope_{k}={stat.get(k, 0)}" for k in ("anon", "file", "file_mapped", "file_dirty",
+                                                           "file_writeback", "shmem", "kernel", "pss_file")))
             except (OSError, ValueError):
                 pass
         if fields:
@@ -208,12 +285,13 @@ def tell(path, stop):
 GUEST = re.compile(r"builder-cold (.*)$")
 GIVE = re.compile(r"builder-give (.*)$")
 STEP = re.compile(r"^#(\d+) \[")
+DONE = re.compile(r"^#(\d+) DONE (\d+(?:\.\d+)?)s")
 
 
 def tail(path, tag, stop, now_step, held_cold):
     """The builder's console as it is written, each whole line stamped as it is read, until
-    `stop` and the file's end; the most it held cold of its files (inactive_file) kept in
-    `held_cold`."""
+    `stop` and the file's end; what it holds cold of its files (inactive_file) now and the
+    most it held, in `held_cold`."""
     part = ""
     with open(path, errors="replace") as f:
         while True:
@@ -233,7 +311,8 @@ def tail(path, tag, stop, now_step, held_cold):
                 end = words[-1] == "step_end"
                 pairs = dict(zip((words[:-1] if end else words)[::2], (words[:-1] if end else words)[1::2]))
                 try:
-                    held_cold[0] = max(held_cold[0], int(pairs.get("inactive_file", 0)))
+                    held_cold[1] = int(pairs.get("inactive_file", 0))
+                    held_cold[0] = max(held_cold[0], held_cold[1])
                 except ValueError:
                     pass
                 fields = " ".join(f"{k}={v}" for k, v in pairs.items())
@@ -242,7 +321,8 @@ def tail(path, tag, stop, now_step, held_cold):
 
 def one(r, name, arm, budget):
     """A build of `name` in round `r`, `arm` free or held (to `budget` bytes on Linux): the
-    most anonymous memory its scope held and the most its builder held cold of its files."""
+    most its scope held that its host may take back from its processes alone less what its
+    builder held cold then, the budget a held arm after it is given."""
     tag = f"round={r} build={name} arm={arm}"
     ctx = os.path.join(builds_dir, name)
     console = os.path.join(out, "raw", f"{r}-{name}-{arm}-console.txt")
@@ -263,13 +343,19 @@ def one(r, name, arm, budget):
         if arm == "held":
             scope += ["-p", f"MemoryHigh={budget}"]
         cmd = scope + cmd
+    # What the build before wrote reaches its disk first: a held arm after a free one
+    # otherwise began under the free arm's writeback, its base unpacked as 700 MiB of the
+    # free arm's pages went out (CI, 573e4bf8), where a free arm never follows its own.
+    synced = time.time()
+    os.sync()
+    synced = time.time() - synced
     started = time.time()
     raw = open(os.path.join(out, "raw", f"{r}-{name}-{arm}.txt"), "w")
     proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             errors="replace")
     stop = threading.Event()
-    step, peak, held_cold = ["-"], [0], [0]
-    threads = [threading.Thread(target=sample_host, args=(proc.pid, tag, stop, peak)),
+    step, peak, held_cold, took = ["-"], [0, 0, 0], [0, 0], {}
+    threads = [threading.Thread(target=sample_host, args=(proc.pid, tag, stop, peak, held_cold)),
                threading.Thread(target=tail, args=(console, tag, stop, step, held_cold))]
     if told:
         threads.append(threading.Thread(target=tell, args=(told, stop)))
@@ -281,6 +367,9 @@ def one(r, name, arm, budget):
         m = STEP.match(line)
         if m:
             step[0] = m.group(1)
+        m = DONE.match(line)
+        if m:
+            took[m.group(1)] = m.group(2)
         m = GIVE.search(line)
         if m:
             words = m.group(1).split()
@@ -298,14 +387,20 @@ def one(r, name, arm, budget):
         t.join()
     raw.close()
     say(f"build {tag} exit={code} s={time.time() - started:.1f} budget={budget} scope_anon_peak={peak[0]} "
-        f"held_cold={held_cold[0]}")
+        f"scope_held_peak={peak[1]} scope_need_peak={peak[2]} held_cold={held_cold[0]} sync_s={synced:.1f} "
+        f"steps={','.join(f'{k}:{v}' for k, v in took.items()) or '-'}")
     for args in (["rmi", "-f", f"builder-pressure-{name}"], ["image", "prune", "-f"]):
         subprocess.run([shards, *args], env=env, capture_output=True)
-    return peak[0], held_cold[0]
+    return peak[2]
 
 
 header()
 builds = a.builds.split(",")
+for name in builds:
+    if short.is_set() or room() < ROOM:
+        say(f"room {room() >> 20} MiB: ending the run")
+        sys.exit(1)
+    one(0, name, "free", 0)
 seen = {}
 for r in range(1, a.rounds + 1):
     order = builds[(r - 1) % len(builds):] + builds[:(r - 1) % len(builds)]
@@ -315,11 +410,8 @@ for r in range(1, a.rounds + 1):
             if short.is_set() or room() < ROOM:
                 say(f"room {room() >> 20} MiB: ending the run")
                 sys.exit(1)
-            budget = 0
-            if arm == "held" and not macos:
-                peak, cold = seen.get(name, (0, 0))
-                budget = max(peak - cold, 0)
+            budget = seen.get(name, 0) if arm == "held" and not macos else 0
             got = one(r, name, arm, budget)
             if arm == "free":
-                seen[name] = got
+                seen[name] = max(seen.get(name, 0), got)
 say("done")

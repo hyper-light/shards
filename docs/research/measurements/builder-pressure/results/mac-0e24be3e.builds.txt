@@ -1,0 +1,86 @@
+host Adas-Mac-Studio.local; macOS 26.4; kernel 25.4.0; arm64; Apple M3 Ultra; shards 0e24be3e; memory 98304 MiB; cpus 32
+builds rust,npm,apt; rounds 5; home /Users/adalundhe/builder-pressure/home; bases each Dockerfiles own
+build round=0 build=rust arm=free exit=0 s=394.3 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=77824 sync_s=0.0 steps=1:0.0,2:357.2,3:0.0,4:1.4,5:35.0,6:0.2
+build round=0 build=npm arm=free exit=0 s=141.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=106496 sync_s=0.0 steps=1:0.0,2:89.3,3:0.0,4:0.3,5:0.0,6:0.0,7:0.0,8:50.2,9:0.1
+build round=0 build=apt arm=free exit=0 s=795.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=77824 sync_s=0.0 steps=1:0.0,2:76.2,3:0.0,4:0.2,5:0.2,6:712.3,7:0.2
+build round=1 build=rust arm=free exit=0 s=5.1 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2920448 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:3.1,6:0.2
+give t=1793758585.232 round=1 build=rust arm=held answered_ms=4 freed=3244032 unplugging=0
+build round=1 build=rust arm=held exit=0 s=4.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=31227904 sync_s=0.1 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:2.4,6:0.2
+build round=1 build=npm arm=free exit=0 s=5.2 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25161728 sync_s=0.1 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.7,9:0.1
+give t=1793758594.566 round=1 build=npm arm=held answered_ms=2 freed=25174016 unplugging=134217728
+build round=1 build=npm arm=held exit=0 s=4.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25174016 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.0,9:0.1
+build round=1 build=apt arm=free exit=0 s=14.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=86323200 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.5,7:0.2
+give t=1793758613.017 round=1 build=apt arm=held answered_ms=2 freed=27078656 unplugging=0
+give t=1793758615.031 round=1 build=apt arm=held answered_ms=10 freed=5042176 unplugging=268435456
+give t=1793758617.039 round=1 build=apt arm=held answered_ms=17 freed=41181184 unplugging=402653184
+give t=1793758619.031 round=1 build=apt arm=held answered_ms=5 freed=221184 unplugging=268435456
+give t=1793758621.032 round=1 build=apt arm=held answered_ms=0 freed=131072 unplugging=0
+give t=1793758623.037 round=1 build=apt arm=held answered_ms=0 freed=131072 unplugging=0
+give t=1793758625.042 round=1 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+build round=1 build=apt arm=held exit=0 s=14.9 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=34422784 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.9,7:0.2
+give t=1793758628.736 round=2 build=npm arm=held answered_ms=11 freed=25808896 unplugging=134217728
+build round=2 build=npm arm=held exit=0 s=4.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25198592 sync_s=0.1 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.1,9:0.1
+build round=2 build=npm arm=free exit=0 s=4.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25231360 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.0,9:0.1
+give t=1793758637.194 round=2 build=apt arm=held answered_ms=2 freed=27611136 unplugging=0
+give t=1793758639.203 round=2 build=apt arm=held answered_ms=10 freed=11464704 unplugging=134217728
+give t=1793758641.217 round=2 build=apt arm=held answered_ms=23 freed=6041600 unplugging=671088640
+give t=1793758643.203 round=2 build=apt arm=held answered_ms=4 freed=217088 unplugging=268435456
+give t=1793758645.204 round=2 build=apt arm=held answered_ms=0 freed=131072 unplugging=0
+give t=1793758647.204 round=2 build=apt arm=held answered_ms=0 freed=131072 unplugging=0
+give t=1793758649.209 round=2 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+build round=2 build=apt arm=held exit=0 s=14.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=27320320 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.7,7:0.2
+build round=2 build=apt arm=free exit=0 s=14.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=78721024 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.5,7:0.2
+give t=1793758667.584 round=2 build=rust arm=held answered_ms=12 freed=520192 unplugging=0
+build round=2 build=rust arm=held exit=0 s=5.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=8826880 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:3.3,6:0.2
+build round=2 build=rust arm=free exit=0 s=4.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3796992 sync_s=0.1 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:2.4,6:0.2
+build round=3 build=apt arm=free exit=0 s=14.9 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=63336448 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.9,7:0.2
+give t=1793758691.352 round=3 build=apt arm=held answered_ms=2 freed=28524544 unplugging=0
+give t=1793758693.356 round=3 build=apt arm=held answered_ms=0 freed=0 unplugging=402653184
+give t=1793758695.373 round=3 build=apt arm=held answered_ms=14 freed=27316224 unplugging=268435456
+give t=1793758697.362 round=3 build=apt arm=held answered_ms=3 freed=25640960 unplugging=0
+give t=1793758699.391 round=3 build=apt arm=held answered_ms=27 freed=311296 unplugging=1207959552
+give t=1793758701.386 round=3 build=apt arm=held answered_ms=17 freed=0 unplugging=939524096
+give t=1793758703.374 round=3 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+give t=1793758705.379 round=3 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+build round=3 build=apt arm=held exit=0 s=16.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=29786112 sync_s=0.1 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:9.5,7:0.2
+build round=3 build=rust arm=free exit=0 s=3.9 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2940928 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:1.8,6:0.2
+give t=1793758713.052 round=3 build=rust arm=held answered_ms=2 freed=2940928 unplugging=0
+build round=3 build=rust arm=held exit=0 s=4.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2936832 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:1.9,6:0.2
+build round=3 build=npm arm=free exit=0 s=4.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25280512 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.1,9:0.1
+give t=1793758721.231 round=3 build=npm arm=held answered_ms=2 freed=25186304 unplugging=134217728
+build round=3 build=npm arm=held exit=0 s=4.7 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25186304 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.2,9:0.1
+give t=1793758726.411 round=4 build=rust arm=held answered_ms=3 freed=2961408 unplugging=0
+build round=4 build=rust arm=held exit=0 s=4.1 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2940928 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:2.0,6:0.2
+build round=4 build=rust arm=free exit=0 s=4.7 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2940928 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:2.7,6:0.2
+give t=1793758734.908 round=4 build=npm arm=held answered_ms=1 freed=25346048 unplugging=134217728
+build round=4 build=npm arm=held exit=0 s=4.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25223168 sync_s=0.1 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.1,9:0.1
+build round=4 build=npm arm=free exit=0 s=4.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25169920 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.1,9:0.1
+give t=1793758743.420 round=4 build=apt arm=held answered_ms=1 freed=27148288 unplugging=0
+give t=1793758745.434 round=4 build=apt arm=held answered_ms=14 freed=27340800 unplugging=268435456
+give t=1793758747.438 round=4 build=apt arm=held answered_ms=17 freed=38391808 unplugging=402653184
+give t=1793758749.430 round=4 build=apt arm=held answered_ms=4 freed=176128 unplugging=268435456
+give t=1793758751.431 round=4 build=apt arm=held answered_ms=0 freed=131072 unplugging=0
+give t=1793758753.436 round=4 build=apt arm=held answered_ms=0 freed=131072 unplugging=0
+give t=1793758755.441 round=4 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+build round=4 build=apt arm=held exit=0 s=14.8 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=34422784 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.8,7:0.2
+build round=4 build=apt arm=free exit=0 s=14.8 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=63320064 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.8,7:0.2
+build round=5 build=npm arm=free exit=0 s=4.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25206784 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.0,9:0.1
+give t=1793758778.456 round=5 build=npm arm=held answered_ms=2 freed=25255936 unplugging=134217728
+build round=5 build=npm arm=held exit=0 s=4.7 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25227264 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.3,6:0.0,8:2.2,9:0.1
+build round=5 build=apt arm=free exit=0 s=14.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=63315968 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:7.5,7:0.1
+give t=1793758796.974 round=5 build=apt arm=held answered_ms=1 freed=0 unplugging=0
+give t=1793758798.996 round=5 build=apt arm=held answered_ms=22 freed=1777664 unplugging=402653184
+give t=1793758800.979 round=5 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+give t=1793758802.983 round=5 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+give t=1793758804.995 round=5 build=apt arm=held answered_ms=10 freed=0 unplugging=1476395008
+give t=1793758806.991 round=5 build=apt arm=held answered_ms=5 freed=0 unplugging=671088640
+give t=1793758808.997 round=5 build=apt arm=held answered_ms=6 freed=27357184 unplugging=402653184
+give t=1793758811.008 round=5 build=apt arm=held answered_ms=16 freed=20287488 unplugging=671088640
+give t=1793758813.001 round=5 build=apt arm=held answered_ms=4 freed=180224 unplugging=268435456
+give t=1793758815.002 round=5 build=apt arm=held answered_ms=0 freed=262144 unplugging=0
+give t=1793758817.007 round=5 build=apt arm=held answered_ms=0 freed=90112 unplugging=0
+build round=5 build=apt arm=held exit=0 s=24.3 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=41549824 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.2,6:17.3,7:0.1
+build round=5 build=rust arm=free exit=0 s=4.9 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3706880 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:2.9,6:0.2
+give t=1793758827.463 round=5 build=rust arm=held answered_ms=14 freed=389120 unplugging=0
+build round=5 build=rust arm=held exit=0 s=4.8 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3739648 sync_s=0.0 steps=1:0.0,2:0.0,3:0.0,4:1.4,5:2.8,6:0.2
+done

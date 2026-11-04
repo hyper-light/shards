@@ -17496,3 +17496,148 @@ revision before comparing a changed API/implementation.
   100 ms off with no governor, a vCPU waits 100 ms and no more than its host's wake), and
   its tests of a share, a group and a pause as before. Harness: `cpu-elastic/memory.py`,
   `hold-off.patch`, `hold-stats.patch`, `hold-stats2.patch`.
+
+### M442. Builders' give-back under a real budget, against the same builds with none (D188's builders, D133, D75)
+
+- **Question.** The builder give-back plan's step 4: a build held to a user scope whose
+  `MemoryHigh` is short of what it holds at its peak, its builder giving back what it holds
+  cold of its files and unplugging what it holds past twice its use, against the same
+  build with no budget, rounds interleaved: what does its builder give back and unplug,
+  how soon after its word does it answer, and is the held build slower beyond its rounds'
+  spread (its fastest held round slower than its slowest free one)? On the Mac, where no
+  unprivileged process may raise the system's pressure, what a give-back costs and returns
+  when the build is told every 2 s that its host is short.
+- **Method.** `docs/research/measurements/builder-pressure/measure.py SHARDS OUT` over
+  builder-cold's three builds (rust: `cargo install ripgrep` with its registry and target
+  as cache mounts; npm: `npm ci`; apt: `apt-get install build-essential python3 ...` with
+  apt's caches as cache mounts), each built by a release build of the tree with
+  builder-cold's `cold.patch` (the builder's own samples) and this harness's `give.patch`
+  (each answer and how long after its word it came). A round 0 of free builds alone fills
+  the caches and pulls the bases; then 5 rounds, each build free and held, the held arm
+  after the free one in odd rounds and before it in even ones, each build's step run again
+  each round (`ROUND`), each after a sync(2) so that none starts under the one before's
+  writeback. Linux: each build in `systemd-run --user --scope -p MemorySwapMax=0`; held,
+  `-p MemoryHigh=` the most, each second of every free arm so far, of what its scope holds
+  that its host may take back from its processes alone as the build counts it
+  (`daemon::budget`'s `Holding::held`: anonymous, shared, kernel and socket memory, the
+  file pages its processes map wherever charged, their `Pss_File`, and `lru_buffer`), less
+  what its builder held cold of its files then (its last `inactive_file`): the least that
+  holds the build where its builder gives back all it holds cold. macOS: held, the build is
+  told through `SHARDS_BUILD_PRESSURE` every 2 s that its host is short (launchd job,
+  `builder-pressure/mac.sh`, as a user's program runs). `tables.py` gives each build's time,
+  each step's (`#N DONE`), the give-backs' answers, what they freed and asked to unplug,
+  what the guest then held plugged less, and the rule. Hosts: Fedora 44, i9-14900HX, 32
+  CPUs, 64 GiB, NVMe, shared with other agents' work (`fedora.sh`); CI's ubuntu-24.04
+  runners, 4 vCPUs and 16 GiB, Ubuntu 24.04.5, kernel 7.0.0-1017-azure, on AMD EPYC 7763
+  and 9V45 and Intel Xeon 8573C and 6975P-C (`builder-pressure.yml`, four at once); an M3 Ultra Mac Studio, macOS 26.4, 96 GiB. Results under
+  `builder-pressure/results/`.
+- **Found on the way, each fixed before the numbers below.**
+  - *A builder held within a room its host had long since given back* (D188's builders):
+    a guest holds its build within what it was last told past what the build used then,
+    and what its host gets back of it outside the build (blocks it unplugs, free pages
+    reported after its answer) the build's growth never shows. On Fedora an apt build was
+    told 44 MiB of room as its builder's unplug of 128 MiB was under way and held within it
+    for 200 s while its budget had 140 MiB to spare: 219 s against 31.5 s free (b25d2d05).
+    The build now looks at its room each pressure window while a budget holds it, tells it
+    again where it changed and gives a word of pressure where it is short
+    (`build::give::again`); no held build has been held so since.
+  - *A budget short of the build's own count.* Budgeted from its anonymous memory less
+    what its builder held cold (ac3e9325, run 41292692058), a build had no room for its
+    kernel's memory nor the files its processes map, and crawled, rust 406 to 913 s
+    against 9 to 10 s, whatever its builder gave back. Budgeted from memory.stat's
+    `file_mapped` alone, it left out the files its processes map that are charged
+    elsewhere (its base's root filesystem on the builder's pmem device, the VM process's
+    text: about 100 MiB), which the build's own count of its room holds, and its builder
+    was held at what it used, asked to give back each window, for 246 to 622 s of a 10 s
+    build once on each runner (573e4bf8, run 41738284986). The budget is now the build's
+    own count.
+  - *A held arm under the free arm's writeback.* After a free arm, 700 MiB of its pages
+    were still going out as the held arm unpacked its base (CI, 573e4bf8); each build now
+    starts after a sync.
+  - *A build's base decompressed at each build* (D75). Each build decompressed its base's
+    layers into `ingest/` to read their archives' headers, rust:1-slim's 850 MiB written
+    whole and removed, which a budget's host wrote out at its disk's pace: a held build's
+    `FROM` took 4.6 to 6.3 s at p50 on the runners against 1.8 to 2.6 free, 2.7 to 3.0
+    against 1.7 to 1.9 on Fedora (0e24be3e, d1da3382). The archives are now kept as the
+    layers' uncompressed blobs and read from there (`Store::unpack_layers`): `FROM` 0.0 to
+    0.1 s in either arm, and a free rust build 3.0 s at p50 against 4.7 (Fedora,
+    2d168658).
+  - *Free pages reported at each room told.* Each hold flushed page reporting, now told
+    each window, handing its host what the build's steps had just freed and would touch
+    again; a hold now flushes only where it took something (`plug::reclaimed`).
+- **Results** (s, n, p50, p90, p99, max of the rounds past the caches'; the rule: the
+  held arm's fastest round against the free arm's slowest).
+
+  | host | build | free | held | held slower beyond the spread |
+  |---|---|---|---|---|
+  | Fedora | rust | 5, 3.0, 9.2, 9.2, 9.2 | 5, 3.2, 8.9, 8.9, 8.9 | no |
+  | Fedora | npm | 5, 4.3, 4.6, 4.6, 4.6 | 5, 5.1, 15.5, 15.5, 15.5 | by 0.1 s |
+  | Fedora | apt | 5, 17.5, 126.8, 126.8, 126.8 | 5, 19.1, 61.4, 61.4, 61.4 | no |
+  | CI EPYC 7763 | rust | 5, 4.9, 5.0, 5.0, 5.0 | 5, 5.4, 5.7, 5.7, 5.7 | no |
+  | CI EPYC 7763 | npm | 5, 9.2, 9.3, 9.3, 9.3 | 5, 10.1, 10.2, 10.2, 10.2 | by 0.8 s |
+  | CI EPYC 7763 | apt | 5, 36.1, 36.4, 36.4, 36.4 | 5, 39.6, 40.3, 40.3, 40.3 | by 2.5 s |
+  | CI EPYC 9V45 | rust | 5, 6.5, 7.1, 7.1, 7.1 | 5, 8.1, 8.6, 8.6, 8.6 | no |
+  | CI EPYC 9V45 | npm | 5, 7.5, 7.7, 7.7, 7.7 | 5, 8.0, 9.1, 9.1, 9.1 | no |
+  | CI EPYC 9V45 | apt | 5, 31.8, 31.9, 31.9, 31.9 | 5, 36.6, 37.3, 37.3, 37.3 | by 3.3 s |
+  | CI Xeon 8573C | rust | 5, 7.5, 7.7, 7.7, 7.7 | 5, 8.4, 9.3, 9.3, 9.3 | by 0.4 s |
+  | CI Xeon 8573C | npm | 5, 9.4, 9.6, 9.6, 9.6 | 5, 12.6, 18.0, 18.0, 18.0 | by 0.7 s |
+  | CI Xeon 8573C | apt | 5, 33.3, 33.8, 33.8, 33.8 | 5, 50.6, 54.0, 54.0, 54.0 | by 16.0 s |
+  | M3 Ultra | rust | 5, 4.7, 5.1, 5.1, 5.1 | 5, 4.4, 5.4, 5.4, 5.4 | no |
+  | M3 Ultra | npm | 5, 4.5, 5.2, 5.2, 5.2 | 5, 4.6, 4.7, 4.7, 4.7 | no |
+  | M3 Ultra | apt | 5, 14.5, 14.9, 14.9, 14.9 | 5, 14.9, 24.3, 24.3, 24.3 | no |
+
+  Fedora and CI at 2d168658 (CI run 41766390762), the Mac at 0e24be3e (the same give-back;
+  it differs in the base's unpack and the hold's report). The fourth runner, a Xeon 6975P-C,
+  ended its run in round 2 as its volume came within 5 GiB of full (the kept base layers'
+  1.3 GiB among it): 1 or 2 rounds each, held slower in each. Fedora was shared with other
+  agents' builds (load 10 to 90): its apt free arm's 126.8 s and its held arms' 15.5 and
+  61.4 s are rounds under that load.
+
+  What the builders gave back, held:
+
+  | host | build | answered in (ms) | freed a build (MiB) | unplugged at an answer (MiB) | budget short of the free arm's peak (MiB) |
+  |---|---|---|---|---|---|
+  | Fedora | rust | 8, 1, 6, 6, 6 | 5, 2.9, 33.9, 33.9, 33.9 | 6, 0, 0, 0, 0 | 5, 2.7, 45.6, 45.6, 45.6 |
+  | Fedora | npm | 11, 3, 12, 30, 30 | 5, 21.8, 22.5, 22.5, 22.5 | 9, 0, 128, 128, 128 | 5, -1.1, 26.3, 26.3, 26.3 |
+  | Fedora | apt | 20, 4, 32, 372, 372 | 5, 82.2, 83.5, 83.5, 83.5 | 20, 0, 384, 492, 492 | 5, -51.3, 59.9, 59.9, 59.9 |
+  | CI EPYC 7763 | rust | 7, 1, 4, 4, 4 | 5, 2.9, 34.0, 34.0, 34.0 | 2, 0, 0, 0, 0 | 5, 2.8, 3.0, 3.0, 3.0 |
+  | CI EPYC 7763 | npm | 7, 11, 14, 14, 14 | 5, 21.8, 22.9, 22.9, 22.9 | 7, 128, 256, 256, 256 | 5, 19.0, 22.7, 22.7, 22.7 |
+  | CI EPYC 7763 | apt | 5, 8, 11, 11, 11 | 5, 90.8, 101.0, 101.0, 101.0 | 5, 128, 256, 256, 256 | 5, -12.2, 57.5, 57.5, 57.5 |
+  | CI EPYC 9V45 | rust | 18, 2, 4, 5, 5 | 5, 34.1, 34.2, 34.2, 34.2 | 13, 0, 0, 0, 0 | 5, 2.8, 4.2, 4.2, 4.2 |
+  | CI EPYC 9V45 | npm | 9, 8, 12, 12, 12 | 5, 20.4, 23.5, 23.5, 23.5 | 8, 128, 256, 256, 256 | 5, 12.7, 23.1, 23.1, 23.1 |
+  | CI EPYC 9V45 | apt | 7, 7, 430, 430, 430 | 5, 68.8, 288.2, 288.2, 288.2 | 7, 128, 128, 128, 128 | 5, 69.6, 82.9, 82.9, 82.9 |
+  | CI Xeon 8573C | rust | 16, 2, 6, 106, 106 | 5, 33.9, 34.2, 34.2, 34.2 | 12, 0, 0, 0, 0 | 5, -3.0, 2.8, 2.8, 2.8 |
+  | CI Xeon 8573C | npm | 12, 2, 11, 25, 25 | 5, 0.4, 4.7, 4.7, 4.7 | 11, 128, 128, 128, 128 | 5, 18.9, 27.4, 27.4, 27.4 |
+  | CI Xeon 8573C | apt | 6, 6, 383, 383, 383 | 5, 84.9, 134.5, 134.5, 134.5 | 6, 0, 128, 128, 128 | 5, -3.9, 66.5, 66.5, 66.5 |
+  | M3 Ultra | rust | 5, 4, 14, 14, 14 | 5, 2.8, 3.1, 3.1, 3.1 | 1, 0, 0, 0, 0 | - |
+  | M3 Ultra | npm | 5, 2, 11, 11, 11 | 5, 24.1, 24.6, 24.6, 24.6 | 2, 128, 128, 128, 128 | - |
+  | M3 Ultra | apt | 40, 2, 17, 27, 27 | 5, 70.4, 89.0, 89.0, 89.0 | 35, 0, 640, 1152, 1152 | - |
+
+  "Unplugged" is what the guest held plugged less a second after an answer than before it
+  (its own samples). Each step's time, free against held, is in `tables.py`'s output
+  (`results/*.tables.txt`).
+- **Reading.** A give-back costs its build nothing measurable: its answers came within 6 to 11 ms at
+  p50 on every host, 430 ms at most, and on the Mac, where nothing but the build's own word
+  presses its builder, every build held took no longer than free beyond the spread, as did
+  Fedora's rust and apt builds and two of CI's runners' rust builds and one's npm build.
+  What a held build still pays on CI's runners is its host-side writes, not its builder: a
+  step's time held against free is longer where the build writes to its host's disk, an
+  apt build's `RUN` (its apt caches on the join disk) 2 to 9 s at p50 and its export (the
+  new image's root filesystem) 1 to 6 s, an npm build's `RUN` (npm's cache) 0.7 to 2.3 s,
+  while an apt build's guest was held within 300 MiB of room its build never filled; the scope's `memory.current` sat at
+  its budget with 20 to 170 MiB dirty, and the memory controller holds a cgroup's dirty
+  pages to its share of what its budget leaves (mm/page-writeback.c, `balance_dirty_pages`
+  over the cgroup's own domain), which a build with no budget, on a 16 GiB host, left to
+  the writeback after it ended. On Fedora's NVMe the same steps cost 0.1 to 1.3 s more. npm's
+  and rust's builders hold 3 to 25 MiB cold, under their builds' own spread of what they
+  hold (npm 732 to 847 MiB from round to round on Fedora), so their budgets were at most a
+  few MiB short of their peaks, and a budget taken from too few free arms was short of a
+  later round's by more than its builder could give back: npm 114 and 80 s on Fedora at
+  d1da3382, before every free arm's peak so far set it.
+- **Consequence.** Builders give back at their build's word on every host, told their room again each
+  window; a build's base is decompressed once (D75); D133 and D188 say so. The plan's rule
+  holds on the Mac and on Fedora but for npm by 0.1 s, and on CI's runners for rust on two
+  and npm on one: what is left there is the build's own writes under its budget's dirty
+  limit, which no give-back can take, and the root filesystem an image's export writes
+  whole, 850 MiB for rust:1-slim's 7 MiB addition, which a root filesystem made of
+  its base's and its own layers would not.
