@@ -540,6 +540,10 @@ impl Shared {
             }
             return Err(e);
         }
+        // Read at random until its run's command runs, as its own was ([`Layer::read_ahead`],
+        // PM M297): a mapping made anew reads ahead, and the run's first writes into holes of
+        // the file had its host read 4 MiB around each.
+        platform::reads_at_random(self.host, self.len);
         *held = Some(file);
         Ok(())
     }
@@ -1334,7 +1338,8 @@ mod tests {
 
     /// A layer's file is read without readahead until its run's command runs, then with it
     /// (PM M297): its mapping advised random, `rr` among its VmFlags in /proc/self/smaps
-    /// (fs/proc/task_mmu.c, show_smap_vma_flags), and then not.
+    /// (fs/proc/task_mmu.c, show_smap_vma_flags), and then not; so too a file gone under
+    /// it in place of its own (D190, `run::kind::OVER`).
     #[cfg(target_os = "linux")]
     #[test]
     fn a_layer_reads_ahead_once_its_command_runs() {
@@ -1352,6 +1357,15 @@ mod tests {
             flags.split_whitespace().any(|f| f == "rr")
         };
         assert!(random(), "a layer's mapping reads ahead before its command runs");
+        // A file readied for it, gone under the device, read at random as the one before.
+        booted.read_ahead();
+        booted.stage(file(&dir, "kept", 8 * ALIGN)).unwrap();
+        // SAFETY: nothing touches the mapping meanwhile; no hypervisor maps it.
+        unsafe { booted.swap_staged() }.unwrap();
+        assert!(
+            random(),
+            "a kept layer's mapping reads ahead before its command runs"
+        );
         booted.read_ahead();
         assert!(
             !random(),
