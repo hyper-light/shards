@@ -27,6 +27,11 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 
 use shards_abi::control;
 
+/// EXT4_IOC_SHUTDOWN, `_IOR('X', 125, __u32)` (include/uapi/linux/ext4.h), as the generic
+/// ioctl numbering x86_64 and arm64 share makes it, and its EXT4_GOING_FLAGS_NOLOGFLUSH.
+const SHUTDOWN: u32 = 0x8004_587D;
+const GOING_NOLOGFLUSH: u32 = 0x2;
+
 /// Where the template's root has room for the tmpfs that is every process's root
 /// meanwhile: a directory of its own, made in the layer it lets go of.
 const ASIDE: &str = "/.shards-over";
@@ -74,6 +79,23 @@ pub fn go_over() -> Result<(), String> {
         return Err(os("pivot_root onto the tmpfs"));
     }
     chdir(c"/")?;
+    // The template's layer, every process's root no longer, shut down: nothing it would
+    // write as it is unmounted (its journal committed, its superblock) outlives it, and
+    // each such write was the host's to make durable (`Layer::flush`), 7 a restart, 20 to
+    // 38 ms of it on a loaded host (PM M422). EXT4_IOC_SHUTDOWN with
+    // EXT4_GOING_FLAGS_NOLOGFLUSH (fs/ext4/ioctl.c, Linux 4.10): every access fails from
+    // here on, and its journal is aborted unwritten. A kernel without it unmounts it whole.
+    if let Some(fd) = crate::pmem::layer_fd() {
+        let flags: u32 = GOING_NOLOGFLUSH;
+        // SAFETY: EXT4_IOC_SHUTDOWN on a descriptor of the layer's root, which init holds,
+        // reading the flags it points at for the call.
+        if unsafe { libc::ioctl(fd, SHUTDOWN as _, &raw const flags) } != 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ENOTTY) {
+                return Err(format!("shutting the template's layer down: {e}"));
+            }
+        }
+    }
     // The old root's own mounts, by where they are beneath it, before any moves.
     let held = mounts_beneath("/old")?;
     for rel in held
