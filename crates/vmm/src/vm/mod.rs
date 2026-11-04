@@ -114,6 +114,7 @@ mod barrier;
 pub mod group;
 #[cfg(any(hv, test))]
 mod hold;
+pub mod live;
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]
@@ -1956,6 +1957,19 @@ pub struct Save {
     /// Where its DAX windows' heads go (D189), where it has windows.
     pub window_heads: Option<std::fs::File>,
     pub then: AfterSnapshot,
+    /// The last of a live move (D176 part 7): its memory, writable layer and swap written
+    /// only where its guest and devices wrote since the move's last round
+    /// ([`Handle::precopy`]), which stops watching for them.
+    pub delta: bool,
+}
+
+/// What a live move's rounds sent ([`Handle::precopy`]): each round's pages and bytes, and
+/// how long it took, in µs; and how long its first round held the machine paused, to find
+/// what its writable layer and swap hold.
+#[derive(Debug, Clone, Default)]
+pub struct Precopied {
+    pub rounds: Vec<(u64, u64, u128)>,
+    pub paused_us: u128,
 }
 
 /// What the VM does once its snapshot is written.
@@ -1963,6 +1977,10 @@ pub struct Save {
 pub enum AfterSnapshot {
     Resume,
     Stop,
+    /// Neither, yet: its vCPUs parked and devices quiet until its [`Saved`] stops it, as it
+    /// drops, or [`Saved::resume`]s it. A live move's last save holds its microVM so until
+    /// the other machine has taken it (D176 part 7).
+    Hold,
 }
 
 #[derive(Debug, Clone)]

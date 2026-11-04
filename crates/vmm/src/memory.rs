@@ -679,6 +679,108 @@ impl GuestMemory {
         Ok(data)
     }
 
+    /// Writes `pages`, those its guest and devices wrote since a live move's last round
+    /// (D176 part 7), into `file` where [`save`](Self::save) would put them, zeros and all,
+    /// and nothing else: the file as long as a save's, its other pages holes, which the
+    /// other machine fills from what the rounds sent it. A page of the memory to plug that
+    /// is not plugged now is no page of the file.
+    pub fn save_pages(&self, file: &File, pages: &crate::vm::live::Pages) -> io::Result<()> {
+        let _held = self.access().map_err(io::Error::other)?;
+        file.set_len(0)?;
+        platform::sparse(file)?;
+        let mut offset = 0u64;
+        let mut write = |host: *const u8, runs: Vec<(u64, u64)>, offset: u64| -> io::Result<()> {
+            for (at, len) in runs {
+                let n = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                // SAFETY: `at..at+len` lies in the region at `host` (`runs_within`), which
+                // the access held keeps mapped; the kernel reads it.
+                let bytes = unsafe { std::slice::from_raw_parts(host.add(at as usize), n) };
+                platform::write_all_at(file, bytes, offset + at)?;
+            }
+            Ok(())
+        };
+        for r in &self.regions {
+            write(r.host.as_ptr(), pages.runs_within(r.gpa, r.len as u64), offset)?;
+            offset += r.len as u64;
+        }
+        if let Some(h) = &self.hotplug {
+            for (gpa, len) in h.runs(&h.plugged) {
+                write(h.host(gpa), pages.runs_within(gpa, len), offset)?;
+                offset += len;
+            }
+        }
+        file.set_len(offset)
+    }
+
+    /// Each page of its RAM and of the memory plugged that holds anything but zeros, for a
+    /// live move's first round (D176 part 7): `take` given each run of them, its RAM's by
+    /// its offset in a save's file ([`save`](Self::save)), plugged memory's by its address
+    /// (`plugged` true), and the bytes. Read as the guest runs on: what it writes meanwhile
+    /// is noted for the next round.
+    pub fn each_used(&self, take: &mut dyn FnMut(bool, u64, &[u8]) -> io::Result<()>) -> io::Result<()> {
+        let page = crate::vm::live::PAGE as usize;
+        let mut offset = 0u64;
+        let mut runs = |host: *const u8, len: usize, at: u64, plugged: bool| -> io::Result<()> {
+            let mut start = None;
+            for i in (0..len).step_by(page).chain(std::iter::once(len)) {
+                // SAFETY: the page at `i` lies within the region at `host`, page-aligned.
+                let used = i < len && unsafe { !is_zero(host.add(i), page) };
+                match (start, used) {
+                    (None, true) => start = Some(i),
+                    (Some(first), false) => {
+                        // At most a record's worth at once.
+                        let mut from = first;
+                        while from < i {
+                            let to = i.min(from + crate::vm::live::MAX_RECORD);
+                            // SAFETY: within the region, as above.
+                            let bytes = unsafe { std::slice::from_raw_parts(host.add(from), to - from) };
+                            take(plugged, at + from as u64, bytes)?;
+                            from = to;
+                        }
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        };
+        for r in &self.regions {
+            runs(r.host.as_ptr(), r.len, offset, false)?;
+            offset += r.len as u64;
+        }
+        if let Some(h) = &self.hotplug {
+            for (gpa, len) in h.runs(&h.plugged) {
+                let len = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                runs(h.host(gpa), len, gpa, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Where a page its guest wrote at `gpa` is, for a live move's round (D176 part 7): in
+    /// its RAM, by its offset in a save's file, or plugged (true), by its address; and its
+    /// bytes, [`PAGE`](crate::vm::live::PAGE) long. None for an address of neither, or of
+    /// memory to plug that is not plugged now.
+    pub fn page_at(&self, gpa: u64) -> Option<(bool, u64, &[u8])> {
+        let page = crate::vm::live::PAGE;
+        let mut offset = 0u64;
+        for r in &self.regions {
+            if let Some(off) = gpa.checked_sub(r.gpa).filter(|off| off + page <= r.len as u64) {
+                // SAFETY: a page within the region, which this value keeps mapped.
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(r.host.as_ptr().add(off as usize), page as usize) };
+                return Some((false, offset + off, bytes));
+            }
+            offset += r.len as u64;
+        }
+        self.hotplug.as_ref()?.blocks(gpa, page)?;
+        // Plugged now, its blocks the host's to reach.
+        let host = self.host_ptr(gpa, page as usize).ok()?;
+        // SAFETY: a page of plugged blocks of the reservation, which this value keeps.
+        let bytes = unsafe { std::slice::from_raw_parts(host, page as usize) };
+        Some((true, gpa, bytes))
+    }
+
     /// Plugs `runs` again, the memory a snapshot's machine had plugged, and reads each back
     /// from `file`, which holds them in turn after the RAM ([`save`](Self::save)); `map`
     /// gives each to the guest, as a plug does ([`Access::plug`]). Before any vCPU runs:

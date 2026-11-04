@@ -2155,7 +2155,14 @@ pub static MOVE_VM: Command = Command {
     about: "Move a microVM to the machine a context reaches: saved whole here, and resumed there where it was",
     aliases: "shards move vm",
     args: Args::Exactly(2),
-    flags: &[HELP],
+    flags: &[
+        HELP,
+        Flag::bool(
+            "live",
+            None,
+            "Move it as it runs: its memory copied while it runs on, and it held only for what it wrote last",
+        ),
+    ],
     unserved: "",
     interspersed: true,
     error_prefix: "",

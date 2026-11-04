@@ -8,8 +8,9 @@ use std::thread::JoinHandle;
 
 use super::barrier::Barrier;
 use super::hold::Hold;
+use super::live::{self, Pages};
 use super::machine::{self, Machine};
-use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, Save, SnapshotPolicy};
+use super::{AfterSnapshot, Config, ExitReason, Precopied, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
 use crate::devices::serial::Serial;
@@ -199,6 +200,134 @@ impl Handle {
         saved
     }
 
+    /// Copies the running machine's memory, writable layer and run's swap into `out` for a
+    /// live move (D176 part 7), as its guest runs on: everything in a first round, then,
+    /// round after round, what its guest and its devices wrote since the round before,
+    /// until a round has sent no more than `enough` bytes, or `most` rounds. The guest's
+    /// writes are watched from then on, for the [`Save`] with `delta` that ends the move.
+    pub fn precopy(&self, out: std::fs::File, most: u32, enough: u64) -> Result<Precopied, String> {
+        let sh = &self.shared;
+        if !super::SNAPSHOTS {
+            return Err("this host's microVMs take no snapshots yet".into());
+        }
+        let parts = sh.parts.get().ok_or("the microVM has not started")?;
+        if sh.released_at_us.get().is_none() {
+            return Err("the microVM has not started".into());
+        }
+        let vm = parts.vm.upgrade().ok_or("the microVM has stopped")?;
+        let fail = |e: std::io::Error| format!("sending its memory: {e}");
+        let mut w = live::Writer::new(std::io::BufWriter::with_capacity(1 << 20, out)).map_err(fail)?;
+        // Watched first: what the guest writes as a round reads is sent again after it.
+        vm.watch_writes().map_err(|e| e.to_string())?;
+        self.memory.watch_device_writes();
+        let unwatch = || {
+            vm.unwatch_writes();
+            self.memory.unwatch_device_writes();
+        };
+        let sent = self.precopy_rounds(&vm, &mut w, most, enough);
+        let finished = sent.and_then(|precopied| w.finish().map(|()| precopied).map_err(fail));
+        if finished.is_err() {
+            unwatch();
+        }
+        finished
+    }
+
+    fn precopy_rounds<W: std::io::Write>(
+        &self,
+        vm: &hv::Vm,
+        w: &mut live::Writer<W>,
+        most: u32,
+        enough: u64,
+    ) -> Result<Precopied, String> {
+        let fail = |e: std::io::Error| format!("sending its memory: {e}");
+        let mut precopied = Precopied::default();
+        let t0 = crate::log::uptime_us();
+        // Round 0: all its memory holds. Its layer's and swap's data are found as a save
+        // finds them, its machine paused for the moment.
+        self.memory
+            .each_used(&mut |plugged, at, bytes| {
+                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+            })
+            .map_err(fail)?;
+        let layer = self.control.layer().cloned();
+        let swap = self.control.swap().cloned();
+        let paused = crate::log::uptime_us();
+        self.pause()?;
+        // SAFETY: the machine is paused for the both of them.
+        let found = unsafe {
+            (
+                layer.as_ref().map(|l| l.data()).transpose(),
+                swap.as_ref().map(|s| s.run_data()).transpose(),
+            )
+        };
+        self.resume();
+        precopied.paused_us = crate::log::uptime_us().saturating_sub(paused);
+        let (layer_runs, swap_runs) = (found.0?, found.1?);
+        let mut buf = vec![0u8; live::MAX_RECORD];
+        let mut send =
+            |kind: u8, runs: &[(u64, u64)], read: &dyn Fn(u64, &mut [u8]) -> Result<(), String>| {
+                for &(off, len) in runs {
+                    let mut at = off;
+                    let end = off.saturating_add(len);
+                    while at < end {
+                        let n = usize::try_from(end - at).map_or(buf.len(), |rest| rest.min(buf.len()));
+                        let chunk = buf.get_mut(..n).ok_or("a run past its buffer")?;
+                        read(at, chunk)?;
+                        w.record(kind, at, chunk).map_err(fail)?;
+                        at += n as u64;
+                    }
+                }
+                Ok::<(), String>(())
+            };
+        if let (Some(l), Some(runs)) = (&layer, &layer_runs) {
+            send(live::LAYER, runs, &|at, b| l.read_data(at, b))?;
+        }
+        if let (Some(s), Some(runs)) = (&swap, &swap_runs) {
+            send(live::SWAP, runs, &|at, b| s.read_run(at, b))?;
+        }
+        let (pages, bytes) = w.round(0).map_err(fail)?;
+        precopied
+            .rounds
+            .push((pages, bytes, crate::log::uptime_us().saturating_sub(t0)));
+        // Then what was written since, until little is.
+        for n in 1..most.max(1) {
+            let t = crate::log::uptime_us();
+            let mut written = Pages::of(vm.written().map_err(|e| e.to_string())?, machine::PAGE);
+            written.merge(Pages::of(self.memory.device_written(), live::PAGE));
+            for gpa in written.iter() {
+                if let Some((plugged, at, bytes)) = self.memory.page_at(gpa) {
+                    w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+                        .map_err(fail)?;
+                    continue;
+                }
+                let page = &mut buf[..live::PAGE as usize];
+                if let Some((base, len)) = layer.as_ref().and_then(|l| l.data_at())
+                    && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
+                    && let Some(l) = &layer
+                {
+                    l.read_data(off, page)?;
+                    w.record(live::LAYER, off, page).map_err(fail)?;
+                    continue;
+                }
+                if let Some((base, len)) = swap.as_ref().and_then(|s| s.run_at())
+                    && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
+                    && let Some(s) = &swap
+                {
+                    s.read_run(off, page)?;
+                    w.record(live::SWAP, off, page).map_err(fail)?;
+                }
+            }
+            let (pages, bytes) = w.round(n).map_err(fail)?;
+            precopied
+                .rounds
+                .push((pages, bytes, crate::log::uptime_us().saturating_sub(t)));
+            if bytes <= enough {
+                break;
+            }
+        }
+        Ok(precopied)
+    }
+
     /// [`save`](Handle::save)'s snapshot: what it holds of the machine goes before the
     /// machine may be taken apart.
     fn save_parked(&self, parts: &Parts, save: Save) -> Result<Saved, String> {
@@ -232,24 +361,48 @@ impl Handle {
             }
         };
         let swap = cut.swap.filter(|w| w.attached());
-        let written = snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state)
-            .and_then(|()| match (swap, &save.swap) {
-                (None, _) => Ok(()),
-                (Some(window), Some(file)) => window.save_run(file).map(|_| ()),
-                (Some(_), None) => Err("its run's swap has nowhere to go".into()),
-            })
-            .and_then(|()| match (self.control.layer(), &save.layer) {
-                (None, _) => Ok(()),
-                (Some(layer), Some((head, data))) => layer.save(head, data),
-                (Some(_), None) => Err("its writable layer has nowhere to go".into()),
-            })
-            .and_then(|()| match (self.control.window_heads(), &save.window_heads) {
-                (None, _) => Ok(()),
-                (Some(heads), Some(file)) => heads
-                    .save(file)
-                    .map_err(|e| format!("its DAX windows' heads: {e}")),
-                (Some(_), None) => Err("its DAX windows' heads have nowhere to go".into()),
-            });
+        // The last of a live move: what was written since its last round, its guest's and
+        // its devices', the vCPUs parked and the devices quiet now (D176 part 7).
+        let delta = if save.delta {
+            let mut pages = match vm.written() {
+                Ok(written) => Pages::of(written, machine::PAGE),
+                Err(e) => {
+                    cut.go_on();
+                    return Err(e.to_string());
+                }
+            };
+            pages.merge(Pages::of(self.memory.device_written(), live::PAGE));
+            vm.unwatch_writes();
+            self.memory.unwatch_device_writes();
+            Some(pages)
+        } else {
+            None
+        };
+        let written = match &delta {
+            Some(pages) => {
+                snapshot::fill_pages(&save.name, &snap, &self.memory, pages, &save.memory, &save.state)
+            }
+            None => snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state),
+        }
+        .and_then(|()| match (swap, &save.swap, &delta) {
+            (None, _, _) => Ok(()),
+            (Some(window), Some(file), Some(pages)) => window.save_run_pages(file, pages).map(|_| ()),
+            (Some(window), Some(file), None) => window.save_run(file).map(|_| ()),
+            (Some(_), None, _) => Err("its run's swap has nowhere to go".into()),
+        })
+        .and_then(|()| match (self.control.layer(), &save.layer, &delta) {
+            (None, _, _) => Ok(()),
+            (Some(layer), Some((head, data)), Some(pages)) => layer.save_pages(head, data, pages),
+            (Some(layer), Some((head, data)), None) => layer.save(head, data),
+            (Some(_), None, _) => Err("its writable layer has nowhere to go".into()),
+        })
+        .and_then(|()| match (self.control.window_heads(), &save.window_heads) {
+            (None, _) => Ok(()),
+            (Some(heads), Some(file)) => heads
+                .save(file)
+                .map_err(|e| format!("its DAX windows' heads: {e}")),
+            (Some(_), None) => Err("its DAX windows' heads have nowhere to go".into()),
+        });
         if let Err(e) = written {
             // One whose guest lost a mapping taken from it for the save stops.
             if self.control.lost() {
@@ -268,7 +421,7 @@ impl Handle {
                 cut.go_on();
                 Saved(None)
             }
-            AfterSnapshot::Stop => Saved(Some(self.shared.clone())),
+            AfterSnapshot::Stop | AfterSnapshot::Hold => Saved(Some(self.shared.clone())),
         })
     }
 
@@ -436,6 +589,33 @@ impl Drop for Saved {
     fn drop(&mut self) {
         if let Some(sh) = self.0.take() {
             sh.stop(ExitReason::Snapshotted);
+        }
+    }
+}
+
+impl Saved {
+    /// Lets a machine its save holds ([`AfterSnapshot::Hold`]) run on, as a save that leaves
+    /// it running does: its devices resumed and its vCPUs released. A live move the other
+    /// machine could not take leaves its microVM going on here so (D176 part 7).
+    pub fn resume(mut self) -> Result<(), String> {
+        let Some(sh) = self.0.take() else {
+            return Ok(());
+        };
+        let bus = sh
+            .parts
+            .get()
+            .and_then(|p| p.bus.upgrade())
+            .ok_or("the microVM has stopped")?;
+        match bus.resume() {
+            Ok(()) => {
+                sh.snapshot.release();
+                Ok(())
+            }
+            Err(e) => {
+                let why = format!("resuming devices: {e}");
+                sh.stop(ExitReason::Error(why.clone()));
+                Err(why)
+            }
         }
     }
 }

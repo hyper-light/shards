@@ -45,6 +45,10 @@ const CHUNK: usize = 1 << 20;
 /// Where a moved microVM's files that its new machine had none of, or another of, are kept
 /// in its directory: what its snapshot restores against there.
 const BACKING: &str = "backing";
+/// A live move's rounds (D176 part 7): at most so many, the last the first that sends no
+/// more than so many bytes, 8 MiB, what a link of 1 Gb/s carries in 67 ms.
+const LIVE_ROUNDS: u32 = 30;
+const LIVE_ENOUGH: u64 = 8 << 20;
 
 /// What a machine needs to take a microVM moved to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -709,6 +713,9 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn move_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
         let done = match args.first().map(String::as_str) {
             Some("save") => self.move_save(args.get(1).map_or("", String::as_str)),
+            Some("plan") => self.move_plan(args.get(1).map_or("", String::as_str)),
+            Some("live") => self.move_live(args.get(1..).unwrap_or_default(), asker, reply),
+            Some("done") => self.move_done(args.get(1..).unwrap_or_default()),
             Some("ready") => self.move_ready(args.get(1).map_or("", String::as_str), asker, reply),
             Some("export") => self.move_export(args.get(1..).unwrap_or_default(), asker),
             Some("import") => self.move_import(asker),
@@ -746,6 +753,200 @@ impl<D: Disk> Daemon<D> {
         };
         let plan = self.plan(&id, &snapshot)?;
         serde_json::to_string(&plan).map_err(|e| e.to_string())
+    }
+
+    /// `plan NAME`: what another machine needs of the running microVM, before a live move
+    /// (D176 part 7): its image's root filesystem by its digest, the file a save of it
+    /// restores against; any other its last save names is sent as the move ends. The
+    /// snapshot a live move saves it as, by the time.
+    fn move_plan(&self, reference: &str) -> Result<String, String> {
+        let id = self.resolve(reference)?;
+        self.await_start(&id);
+        if !self.running(&id) {
+            return Err(format!(
+                "{reference} is not running: a live move moves a running microVM"
+            ));
+        }
+        let c = lock(&self.containers)
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| format!("no container {id}"))?;
+        let home = std::fs::canonicalize(&self.home).map_err(|e| format!("{}: {e}", self.home.display()))?;
+        let mut files = Vec::new();
+        let cancel = shards_registry::http::Cancel::new();
+        let image = c.image_id.clone().unwrap_or_else(|| c.image.clone());
+        if let Ok((found, _lease)) = crate::run::find_image(
+            &image,
+            shards_ipc::Pull::Never,
+            &[],
+            &[],
+            &self.home,
+            &|_| {},
+            &cancel,
+        ) && let Some(rootfs) = found.rootfs
+        {
+            let resolved = std::fs::canonicalize(&rootfs).unwrap_or(rootfs);
+            if let Some(rel) = rel_of(&home, &resolved) {
+                let (sha256, size) =
+                    digest_of(&resolved).map_err(|e| format!("{}: {e}", resolved.display()))?;
+                files.push(Backing {
+                    path: resolved.to_string_lossy().into_owned(),
+                    rel,
+                    size,
+                    sha256,
+                });
+            }
+        }
+        let mut volumes = Vec::new();
+        let mut binds = Vec::new();
+        for m in &c.mounts {
+            match m.kind.as_str() {
+                "volume" if !m.name.is_empty() => volumes.push(m.name.clone()),
+                "bind" => binds.push(m.source.clone()),
+                _ => {}
+            }
+        }
+        volumes.sort();
+        volumes.dedup();
+        let now = i64::try_from(crate::containers::now() / 1_000_000_000).unwrap_or(i64::MAX);
+        let snapshot = format!(
+            "moved-{}",
+            shards_cmdline::format::rfc3339_at(now, 0).replace(':', "-")
+        );
+        let plan = Plan {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            image: c.image.clone(),
+            image_id: c.image_id.clone().unwrap_or_default(),
+            arch: std::env::consts::ARCH.into(),
+            format: shards_vmm::snapshot::FORMAT,
+            snapshot,
+            home: home.to_string_lossy().into_owned(),
+            files,
+            volumes,
+            binds,
+        };
+        serde_json::to_string(&plan).map_err(|e| e.to_string())
+    }
+
+    /// `live NAME SNAPSHOT [--need FILE]... [--checked FILE]...`: the running microVM moved
+    /// live (D176 part 7), written to the client's descriptor as it goes: its memory, layer
+    /// and swap copied round after round as its guest runs on; then it saved as SNAPSHOT,
+    /// stopping it, those three only where its guest wrote since the last round; then its
+    /// move's stream, as `export`'s, the files the other machine lacks (`--need`) and any its
+    /// last save names that the other machine was not asked of (not `--checked`) with it.
+    /// Says on stderr when its save was asked, as the time since the epoch in ns, and what
+    /// each round sent.
+    fn move_live(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> Result<String, String> {
+        let (Some(reference), Some(snapshot)) = (args.first(), args.get(1)) else {
+            return Err("live: a microVM and its snapshot".into());
+        };
+        let (mut needed, mut checked) = (Vec::new(), BTreeSet::new());
+        let mut rest = args.get(2..).unwrap_or_default().iter();
+        while let Some(flag) = rest.next() {
+            match (flag.as_str(), rest.next()) {
+                ("--need", Some(rel)) => needed.push(rel.clone()),
+                ("--checked", Some(rel)) => {
+                    checked.insert(rel.clone());
+                }
+                _ => return Err(format!("live: {flag:?}")),
+            }
+        }
+        let out = asker
+            .files
+            .first()
+            .ok_or("live: the client sent nowhere to write")?;
+        let id = self.resolve(reference)?;
+        self.await_start(&id);
+        let (inbox, socket) = match lock(&self.runs).get(&id) {
+            Some(super::RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
+            _ => return Err(format!("{reference} is not running")),
+        };
+        if self.joined_run(&id) {
+            return Err(format!(
+                "{reference} runs in another container's microVM: move that microVM"
+            ));
+        }
+        if lock(&inbox).host_net.is_some() {
+            return Err(format!(
+                "{reference} is on the host's network, whose sockets of the host's no snapshot keeps"
+            ));
+        }
+        // The rounds, written by its VM straight into the client's descriptor.
+        let (told, answer) = std::sync::mpsc::channel();
+        {
+            let mut inbox = lock(&inbox);
+            if inbox.ended {
+                return Err(format!("{reference} is not running"));
+            }
+            if inbox.precopying.is_some() || inbox.saving.is_some() {
+                return Err(format!("{reference} is being saved already"));
+            }
+            inbox.precopying = Some(told);
+        }
+        let mut payload = Vec::with_capacity(12);
+        payload.extend_from_slice(&LIVE_ROUNDS.to_be_bytes());
+        payload.extend_from_slice(&LIVE_ENOUGH.to_be_bytes());
+        use shards_ipc::fd::AsFd as _;
+        if let Err(e) = socket.send(shards_ipc::kind::PRECOPY, &payload, &[out.as_fd()]) {
+            lock(&inbox).precopying = None;
+            return Err(format!("asking its microVM: {e}"));
+        }
+        let rounds = answer
+            .recv()
+            .unwrap_or_else(|_| Err("its microVM stopped".into()))?;
+        for line in rounds.lines() {
+            reply.err(&format!("move: round {line}"));
+        }
+        // Its last save, its guest's writes since the last round alone.
+        let asked = crate::containers::now();
+        reply.err(&format!("move: saved at {asked}"));
+        // Held, its vCPUs parked and its devices quiet, until the other machine has it or
+        // has not (`done`).
+        self.save_snapshot_as(reference, Some(snapshot), true, true)
+            .map_err(|e| e.ours(reference).trim_start_matches("shards: ").to_string())?;
+        // Then the rest, after the rounds in the same stream.
+        let plan = self.plan(&id, snapshot)?;
+        let mut send: Vec<String> = needed;
+        send.extend(
+            plan.files
+                .iter()
+                .filter(|f| !checked.contains(&f.rel))
+                .map(|f| f.rel.clone()),
+        );
+        let mut export = vec![reference.clone(), snapshot.clone()];
+        export.extend(send);
+        self.move_export(&export, asker)
+    }
+
+    /// `done NAME SNAPSHOT moved|back`: a live move's end (D176 part 7). Moved, the microVM
+    /// its last save holds stops as saved; back, the other machine did not take it, and it
+    /// goes on here, the snapshot of what its guest wrote since the move's last round, which
+    /// nothing restores, removed.
+    fn move_done(&self, args: &[String]) -> Result<String, String> {
+        let (Some(reference), Some(snapshot), Some(how)) = (args.first(), args.get(1), args.get(2)) else {
+            return Err("done: a microVM, its snapshot, and moved or back".into());
+        };
+        let id = self.resolve(reference)?;
+        let moved = match how.as_str() {
+            "moved" => true,
+            "back" => false,
+            other => return Err(format!("done: {other:?}")),
+        };
+        let socket = match lock(&self.runs).get(&id) {
+            Some(super::RunState::Tracked(t)) => t.socket.clone(),
+            _ => return Err(format!("{reference} is not running")),
+        };
+        socket
+            .send(shards_ipc::kind::MOVED, &[u8::from(moved)], &[])
+            .map_err(|e| format!("telling its microVM: {e}"))?;
+        if !moved {
+            let at = lock(&self.containers).dir(&id).join(SNAPSHOTS).join(snapshot);
+            if at.exists() {
+                shards_vmm::snapshot::remove(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+            }
+        }
+        Ok(String::new())
     }
 
     /// What another machine needs of container `id`, saved as `snapshot`, to take it.
@@ -935,8 +1136,11 @@ impl<D: Disk> Daemon<D> {
         let own = format!("containers/{id}");
         let snapshots = format!("{own}/{SNAPSHOTS}/");
         let keep = format!("{snapshots}{snapshot}");
+        // Its other snapshots stay; so does the writable layer its microVM left it as it
+        // stopped (D190), which its snapshot keeps as it was, and its restore takes.
+        let kept_layer = format!("{own}/{}", super::layers::KEPT);
         w.tree(&dir, &own, &|rel| {
-            rel.strip_prefix(&snapshots).is_some_and(|_| rel != keep)
+            rel == kept_layer || rel.strip_prefix(&snapshots).is_some_and(|_| rel != keep)
         })
         .map_err(fail)?;
         let store = crate::volumes::Store::new(&self.home);
@@ -966,15 +1170,31 @@ impl<D: Disk> Daemon<D> {
             .try_clone()
             .map_err(|e| e.to_string())?;
         let mut input = io::BufReader::with_capacity(CHUNK, File::from(input));
-        let plan = read_plan(&mut input)?;
-        let needed: BTreeSet<String> = plan.files.iter().map(|f| f.rel.clone()).collect();
         let staging = self.private_staging()?;
+        // A live move's rounds first, where it is one (D176 part 7): what its memory, layer
+        // and swap held, kept to be laid under its last save's.
+        let mut magic = [0u8; 8];
+        input
+            .read_exact(&mut magic)
+            .map_err(|e| format!("the move's stream: {e}"))?;
+        let mut rest = io::Cursor::new(magic).chain(&mut input);
+        let precopied = if magic == shards_vmm::vm::live::MAGIC {
+            Some(Precopy::read(&mut rest, staging.path())?)
+        } else {
+            None
+        };
+        let mut rest: Box<dyn Read> = match precopied {
+            Some(_) => Box::new(input),
+            None => Box::new(rest),
+        };
+        let plan = read_plan(&mut rest)?;
+        let needed: BTreeSet<String> = plan.files.iter().map(|f| f.rel.clone()).collect();
         let placer = Placer {
             root: staging.path(),
             allowed: &|rel| allowed(&plan, &needed, rel),
         };
-        read_entries(&mut input, &mut |entry| placer.take(entry))?;
-        self.adopt(&plan, staging.path())
+        read_entries(&mut rest, &mut |entry| placer.take(entry))?;
+        self.adopt(&plan, staging.path(), precopied.as_ref())
     }
 
     /// A directory of a move's own in the home's private one, removed with all it holds as
@@ -997,9 +1217,14 @@ impl<D: Disk> Daemon<D> {
     /// Makes the microVM a move's stream put in `staged` this machine's: its volumes and
     /// the files its snapshot restores against put in place, its snapshot made to restore
     /// against them, its record its own here, and it seen, stopped as saved.
-    fn adopt(&self, plan: &Plan, staged: &Path) -> Result<String, String> {
+    fn adopt(&self, plan: &Plan, staged: &Path, precopied: Option<&Precopy>) -> Result<String, String> {
         let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
         let staged_dir = staged.join("containers").join(&plan.id);
+        // A live move's last save holds what its guest wrote since its last round alone:
+        // what the rounds sent goes under it (D176 part 7).
+        if let Some(precopied) = precopied {
+            precopied.lay_under(&staged_dir.join(SNAPSHOTS).join(&plan.snapshot))?;
+        }
         // The files this machine lacked, kept in its own directory, each by its place in the
         // plan.
         let backing_dir = staged_dir.join(BACKING);
@@ -1111,6 +1336,138 @@ impl<D: Disk> Daemon<D> {
         self.container_event(&plan.id, "create", &[]);
         Ok(plan.name.clone())
     }
+}
+
+/// A run's VM's answer to its live move's rounds (`kind::PRECOPIED`), told to the move that
+/// waits for it.
+pub(super) fn precopied(inbox: &mut super::Inbox, payload: &[u8]) {
+    let Some(told) = inbox.precopying.take() else {
+        return;
+    };
+    let answer = match payload.split_first() {
+        Some((0, why)) => Err(String::from_utf8_lossy(why).into_owned()),
+        _ => Ok(String::from_utf8_lossy(payload).into_owned()),
+    };
+    let _ = told.send(answer);
+}
+
+/// What a live move's rounds sent, kept on the machine moved to (D176 part 7): its memory's
+/// RAM by its offset in a save's file, the memory plugged by its address, its writable
+/// layer's file system and its run's swap by their offsets, each a sparse file of the move's
+/// own.
+struct Precopy {
+    ram: PathBuf,
+    plugged: PathBuf,
+    layer: PathBuf,
+    swap: PathBuf,
+}
+
+impl Precopy {
+    /// Reads the rounds from `r` into files in `dir`.
+    fn read(r: &mut dyn Read, dir: &Path) -> Result<Precopy, String> {
+        use shards_vmm::vm::live;
+        let p = Precopy {
+            ram: dir.join("pre-ram"),
+            plugged: dir.join("pre-plugged"),
+            layer: dir.join("pre-layer"),
+            swap: dir.join("pre-swap"),
+        };
+        let open = |at: &Path| -> Result<File, String> {
+            let file = crate::os::owner_only(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true),
+            )
+            .open(at)
+            .map_err(|e| format!("{}: {e}", at.display()))?;
+            shards_vmm::platform::make_sparse(&file).map_err(|e| format!("{}: {e}", at.display()))?;
+            Ok(file)
+        };
+        let files = [open(&p.ram)?, open(&p.plugged)?, open(&p.layer)?, open(&p.swap)?];
+        live::read(r, &mut |record| {
+            let file = match record.kind {
+                live::RAM => &files[0],
+                live::PLUGGED => &files[1],
+                live::LAYER => &files[2],
+                live::SWAP => &files[3],
+                live::ROUND => return Ok(()),
+                other => return Err(format!("a live move's record of kind {other}")),
+            };
+            shards_vmm::platform::write_all_at(file, record.bytes, record.offset)
+                .map_err(|e| format!("a live move's record: {e}"))
+        })?;
+        Ok(p)
+    }
+
+    /// Lays what the rounds sent under the generation the snapshot in `dir` is at, the last
+    /// save's: wherever its memory, layer or swap holds no page of its own, the rounds' page
+    /// goes in its place. Its memory's plugged runs are where its state says.
+    fn lay_under(&self, dir: &Path) -> Result<(), String> {
+        let generation = shards_vmm::snapshot::generation(dir)?;
+        let (ram, plugged) = shards_vmm::snapshot::layout(dir)?;
+        // Its RAM, by its own offsets, then each run plugged, from its address to its place
+        // after the RAM.
+        let mut moves = vec![(0u64, 0u64, ram)];
+        let mut offset = ram;
+        for (gpa, len) in plugged {
+            moves.push((gpa, offset, len));
+            offset = offset.saturating_add(len);
+        }
+        let memory = generation.join("memory");
+        under(&self.ram, &memory, &moves[..1])?;
+        under(&self.plugged, &memory, moves.get(1..).unwrap_or_default())?;
+        let whole = |file: &Path| -> Result<Vec<(u64, u64, u64)>, String> {
+            let len = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+            Ok(vec![(0, 0, len)])
+        };
+        for (pre, name) in [(&self.layer, "layer"), (&self.swap, "swap")] {
+            let at = generation.join(name);
+            if at.exists() {
+                under(pre, &at, &whole(&at)?)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Copies into `to` each page of `from` that holds data and `to` does not: by `moves`, each
+/// a run of `from` at its first offset, as long as its third, put at its second in `to`.
+fn under(from: &Path, to: &Path, moves: &[(u64, u64, u64)]) -> Result<(), String> {
+    let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
+    let source = File::open(from).map_err(|e| at(from, &e))?;
+    let target = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(to)
+        .map_err(|e| at(to, &e))?;
+    let source_len = source.metadata().map_err(|e| at(from, &e))?.len();
+    let target_len = target.metadata().map_err(|e| at(to, &e))?.len();
+    let theirs = shards_vmm::platform::data_ranges(&source, source_len).map_err(|e| at(from, &e))?;
+    let own = shards_vmm::platform::data_ranges(&target, target_len).map_err(|e| at(to, &e))?;
+    let held = |offset: u64| {
+        own.iter()
+            .any(|&(s, n)| offset >= s && offset < s.saturating_add(n))
+    };
+    let page = shards_vmm::vm::live::PAGE;
+    let mut buf = vec![0u8; page as usize];
+    for &(src, dst, len) in moves {
+        for &(start, n) in &theirs {
+            // The part of this data range within the run.
+            let lo = start.max(src);
+            let hi = start.saturating_add(n).min(src.saturating_add(len));
+            let mut p = lo & !(page - 1);
+            while p < hi {
+                let into = dst + (p - src);
+                if p >= src && !held(into) && into + page <= target_len {
+                    shards_vmm::platform::read_exact_at(&source, &mut buf, p).map_err(|e| at(from, &e))?;
+                    shards_vmm::platform::write_all_at(&target, &buf, into).map_err(|e| at(to, &e))?;
+                }
+                p += page;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A move's staging directory, removed with all it holds as it drops.

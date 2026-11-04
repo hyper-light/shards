@@ -863,6 +863,9 @@ struct Inbox {
     provider: Option<Arc<Mutex<Inbox>>>,
     /// A save its VM was asked for and has yet to answer (D176).
     saving: Option<snapshots::Saving>,
+    /// A live move's rounds its VM was asked for and has yet to answer (D176 part 7): what
+    /// they sent, as its VM says it, or why not.
+    precopying: Option<mpsc::Sender<Result<String, String>>>,
     /// The pauses and resumes its VM was asked for (`PAUSE`) and has yet to answer, each
     /// by its number.
     pausing: Vec<(u64, mpsc::Sender<Result<(), String>>)>,
@@ -5107,6 +5110,7 @@ impl<D: Disk> Daemon<D> {
             joiners: 0,
             provider,
             saving: None,
+            precopying: None,
             pausing: Default::default(),
             saved_as: None,
             engine,
@@ -5183,6 +5187,9 @@ impl<D: Disk> Daemon<D> {
                     // never answered not done.
                     if let Some(saving) = inbox.saving.take() {
                         let _ = saving.told.send(Err("its microVM stopped".into()));
+                    }
+                    if let Some(told) = inbox.precopying.take() {
+                        let _ = told.send(Err("its microVM stopped".into()));
                     }
                     for (_, told) in inbox.pausing.drain(..) {
                         let _ = told.send(Err("its microVM stopped".into()));
@@ -5346,6 +5353,7 @@ impl<D: Disk> Daemon<D> {
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
+                kind::PRECOPIED => moves::precopied(inbox, &m.payload),
                 // Its VM's answer to a pause or resume it was asked for.
                 kind::PAUSED => {
                     if let Some((number, said)) = m.payload.split_first_chunk::<8>()

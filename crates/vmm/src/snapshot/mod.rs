@@ -1015,6 +1015,50 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
     platform::sync_dir(&generation).map_err(|e| at(&e))
 }
 
+/// [`fill`] for the last of a live move (D176 part 7): of its memory, the pages of `pages`
+/// alone, those written since the move's last round, which the other machine lays over
+/// what the rounds sent ([`GuestMemory::save_pages`]); its state saying no runs of data,
+/// as its memory file here holds only those pages: a restore maps it whole.
+pub fn fill_pages(
+    name: &str,
+    snap: &Snapshot,
+    memory: &GuestMemory,
+    pages: &crate::vm::live::Pages,
+    memory_file: &File,
+    state_file: &File,
+) -> Result<(), String> {
+    if !is_generation(name) {
+        return Err(format!("{name:?} names no generation"));
+    }
+    let state = state_of(snap, name)?;
+    memory
+        .save_pages(memory_file, pages)
+        .map_err(|e| format!("its memory: {e}"))?;
+    write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
+}
+
+/// How the memory file of the snapshot in `dir` is laid out, its state read whole and none
+/// of its files looked at: its RAM's bytes, which come first, then the memory plugged, run
+/// by run, each its address and length (D176). What a live move's other machine lays the
+/// memory its rounds sent into (part 7).
+pub fn layout(dir: &Path) -> Result<(u64, Vec<(u64, u64)>), String> {
+    let generation = generation(dir)?;
+    let name = generation
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{}: a generation with no name", generation.display()))?
+        .to_string();
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", generation.join(STATE).display());
+    let bytes = platform::read_beneath(dir, &[name.as_str(), STATE], MAX_STATE)
+        .map_err(|e| at(&e))?
+        .ok_or_else(|| at(&"gone"))?;
+    let decoded = decode(&bytes).map_err(|e| at(&e))?;
+    Ok((
+        decoded.snapshot.config.memory_mib.saturating_mul(1 << 20),
+        decoded.snapshot.plugged,
+    ))
+}
+
 /// The state file of `snap` for generation `name`, with its backing files' identities as
 /// they are now.
 fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {

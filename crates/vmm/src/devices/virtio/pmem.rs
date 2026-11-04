@@ -252,6 +252,57 @@ impl SwapWindow {
         self.map_run(&mut run, file, size).map(|_| ())
     }
 
+    /// Where the run's swap is in its guest, its address and length, where one is mapped:
+    /// what a live move sends of it (D176 part 7).
+    pub fn run_at(&self) -> Option<(u64, u64)> {
+        lock(&self.run).as_ref().map(|m| (self.gpa, m.len as u64))
+    }
+
+    /// The runs of the run's swap that hold data, for a live move's first round (D176 part
+    /// 7), as a save finds them.
+    ///
+    /// # Safety
+    /// Its machine is paused, as a save's is: its mapping may be taken from its guest.
+    pub unsafe fn run_data(&self) -> Result<Vec<(u64, u64)>, String> {
+        let run = lock(&self.run);
+        let Some(mapped) = run.as_ref() else {
+            return Ok(Vec::new());
+        };
+        // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
+        unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(|e| format!("its swap: {e}"))?;
+        let unmap = || self.slots.unmap(RUN_SLOT, self.gpa, mapped.len);
+        // SAFETY: the mapping stays until the window drops, after the VM.
+        let map = || unsafe {
+            self.slots
+                .map(RUN_SLOT, mapped.host(), self.gpa, mapped.len, true)
+        };
+        // SAFETY: the caller's.
+        unsafe { mapped.data_ranges(&unmap, &map) }.map_err(|e| format!("its swap: {e}"))
+    }
+
+    /// Copies `len` bytes at `off` of the run's swap into `buf`.
+    pub fn read_run(&self, off: u64, buf: &mut [u8]) -> Result<(), String> {
+        let run = lock(&self.run);
+        let mapped = run.as_ref().ok_or("no run's swap is mapped")?;
+        mapped.read(off, buf).map_err(|e| format!("its swap: {e}"))
+    }
+
+    /// [`save_run`](Self::save_run) of the pages of `pages` alone, those written since a
+    /// live move's last round (D176 part 7), zeros and all: `to` as long as the run's swap,
+    /// its other pages holes.
+    pub fn save_run_pages(&self, to: &File, pages: &crate::vm::live::Pages) -> Result<u64, String> {
+        let run = lock(&self.run);
+        let at = |e: std::io::Error| format!("its swap: {e}");
+        let Some(mapped) = run.as_ref() else {
+            to.set_len(0).map_err(at)?;
+            return Ok(0);
+        };
+        mapped
+            .write_runs(to, &pages.runs_within(self.gpa, mapped.len as u64))
+            .map_err(at)?;
+        Ok(mapped.len as u64)
+    }
+
     /// Copies the run's swap into `to` (D176), the guest's every write to it flushed to its
     /// file first: the ranges the file holds data in, of them the blocks not all zeros, and
     /// `to` as long as it after. Returns its length, 0 where no run's is mapped. The machine
@@ -403,6 +454,41 @@ unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
 impl Shared {
+    /// Copies `len` bytes at `off` of it into `buf`, from its mapping (D176 part 7).
+    fn read(&self, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        let end = off
+            .checked_add(buf.len() as u64)
+            .filter(|&end| end <= self.len as u64);
+        if self.released() || end.is_none() {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        // SAFETY: within the mapping, which stays until it is released (checked above); the
+        // guest may write it meanwhile, as a live move's rounds expect.
+        unsafe { platform::copy_in(self.host.as_ptr().add(off as usize), buf.as_mut_ptr(), buf.len()) };
+        Ok(())
+    }
+
+    /// Writes `runs` of it, each its offset and length, from its mapping into `to`, zeros
+    /// and all, `to` as long as it after: the pages a live move's guest wrote since its last
+    /// round (D176 part 7).
+    fn write_runs(&self, to: &File, runs: &[(u64, u64)]) -> std::io::Result<()> {
+        to.set_len(0)?;
+        platform::sparse(to)?;
+        let mut buf = vec![0u8; 1 << 20];
+        for &(off, len) in runs {
+            let mut at = off;
+            let end = off.saturating_add(len).min(self.len as u64);
+            while at < end {
+                let n = usize::try_from(end - at).map_or(buf.len(), |rest| rest.min(buf.len()));
+                let chunk = buf.get_mut(..n).ok_or(std::io::ErrorKind::InvalidInput)?;
+                self.read(at, chunk)?;
+                platform::write_all_at(to, chunk, at)?;
+                at += n as u64;
+            }
+        }
+        to.set_len(self.len as u64)
+    }
+
     fn map(file: File, len: usize) -> std::io::Result<Shared> {
         let host = platform::map_file_shared(&file, len)?;
         Ok(Shared {
@@ -738,11 +824,74 @@ impl Layer {
     /// its file holds data in, asked with its guest's mapping and this process's taken away
     /// where a mapping hides them ([`Shared::data_ranges`]).
     pub fn save(&self, head: &File, data: &File) -> Result<(), String> {
+        self.save_with(head, data, None)
+    }
+
+    /// Where its file system is in its guest, its address and length, once placed: what a
+    /// live move sends of it (D176 part 7).
+    pub fn data_at(&self) -> Option<(u64, u64)> {
+        self.guest
+            .get()
+            .map(|(gpa, _)| (gpa + self.head.len() as u64, self.data.len as u64))
+    }
+
+    /// The runs of its file system that hold data, for a live move's first round (D176
+    /// part 7), as a save finds them.
+    ///
+    /// # Safety
+    /// Its machine is paused, as a save's is: its mapping may be taken from its guest.
+    pub unsafe fn data(&self) -> Result<Vec<(u64, u64)>, String> {
+        let at = |e: std::io::Error| format!("its layer: {e}");
+        // SAFETY: the mapping `data` holds, for the layer's life.
+        unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
+        let guest = self
+            .guest
+            .get()
+            .map(|(gpa, mapper)| (gpa + self.head.len() as u64, mapper));
+        let unmap = || {
+            guest
+                .as_ref()
+                .map_or(Ok(()), |(gpa, mapper)| mapper.unmap(*gpa, self.data.len))
+        };
+        let map = || {
+            guest.as_ref().map_or(Ok(()), |(gpa, mapper)| {
+                // SAFETY: the mapping stays for the layer's life, which outlives the VM.
+                unsafe { mapper.map(self.data.host(), *gpa, self.data.len) }
+            })
+        };
+        // SAFETY: the caller's.
+        unsafe { self.data.data_ranges(&unmap, &map) }.map_err(|e| format!("its layer: {e}"))
+    }
+
+    /// Copies `len` bytes at `off` of its file system into `buf`.
+    pub fn read_data(&self, off: u64, buf: &mut [u8]) -> Result<(), String> {
+        self.data.read(off, buf).map_err(|e| format!("its layer: {e}"))
+    }
+
+    /// [`save`](Self::save) of its file system's pages of `pages` alone, those written
+    /// since a live move's last round (D176 part 7), zeros and all; its head whole.
+    pub fn save_pages(&self, head: &File, data: &File, pages: &crate::vm::live::Pages) -> Result<(), String> {
+        self.save_with(head, data, Some(pages))
+    }
+
+    fn save_with(
+        &self,
+        head: &File,
+        data: &File,
+        pages: Option<&crate::vm::live::Pages>,
+    ) -> Result<(), String> {
         if self.data.released() {
             return Err(RELEASED.into());
         }
         let at = |e: std::io::Error| format!("its layer: {e}");
         self.head.save(head).map_err(at)?;
+        if let Some(pages) = pages {
+            let (gpa, len) = self.data_at().ok_or("its layer is not placed in its guest")?;
+            return self
+                .data
+                .write_runs(data, &pages.runs_within(gpa, len))
+                .map_err(at);
+        }
         // SAFETY: the mapping `data` holds, for the layer's life.
         unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
         // The file system's part of the guest's mapping, after the head.

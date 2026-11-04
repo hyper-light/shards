@@ -64,7 +64,7 @@ pub(crate) fn move_vm(parsed: &Parsed, home: &Path, ask: &Ask<'_>) -> ExitCode {
     let (Some(name), Some(to)) = (parsed.args.first(), parsed.args.get(1)) else {
         return failed("shards: move vm: a microVM and a context");
     };
-    match moved(home, name, to, ask) {
+    match moved(home, name, to, parsed.bool("live"), ask) {
         Ok(()) => {
             let _ = writeln!(io::stdout(), "{name}");
             ExitCode::SUCCESS
@@ -109,7 +109,7 @@ impl Times {
     }
 }
 
-fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String> {
+fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result<(), String> {
     let times = Times {
         on: std::env::var_os("SHARDS_MOVE_TIMES").is_some(),
         began: Instant::now(),
@@ -143,17 +143,20 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
     let step = |argv: &[&str]| argv.iter().map(|a| (*a).to_string()).collect::<Vec<String>>();
     let mv = shards_ipc::MOVE_STEP;
 
-    // 1. Saved here.
-    let saved = ask(step(&[mv, "save", name]), &[])?;
+    // 1. Saved here; or, moved live, its plan alone, as it runs on (D176 part 7).
+    let saved = ask(step(&[mv, if live { "plan" } else { "save" }, name]), &[])?;
     if saved.0 != 0 {
-        return Err(said("its save", &saved));
+        return Err(said(if live { "its plan" } else { "its save" }, &saved));
     }
     let plan_json = String::from_utf8(saved.1).map_err(|_| "its plan is not UTF-8".to_string())?;
     let plan_json = plan_json.trim().to_string();
     let plan: Plan = serde_json::from_str(&plan_json).map_err(|e| format!("its plan: {e}"))?;
-    times.step("saved");
-    // From here, what fails leaves it here as it was.
+    times.step(if live { "planned" } else { "saved" });
+    // From here, what fails leaves it here as it was: running on, where it moves live.
     let resume_here = |why: String| -> String {
+        if live {
+            return format!("{why}; {} goes on here", plan.name);
+        }
         let back = crate::cli::request::restore(
             "shards restore vm",
             &[plan.name.clone().into(), plan.snapshot.clone().into()],
@@ -221,11 +224,23 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
     }
     times.step("ready there");
 
-    // 3. Its files, from this daemon to that one.
+    // 3. Its files, from this daemon to that one: moved live, its memory round after round
+    // first, then its last save, which holds it here until that one has it.
+    let checked: Vec<String> = plan.files.iter().map(|f| f.rel.clone()).collect();
+    let mut said_here = Vec::new();
     let imported = (|| -> Result<(), String> {
         let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
-        let mut export = step(&[mv, "export", name, &plan.snapshot]);
-        export.extend(needs.files.iter().cloned());
+        let mut export = step(&[mv, if live { "live" } else { "export" }, name, &plan.snapshot]);
+        if live {
+            for rel in &needs.files {
+                export.extend(["--need".to_string(), rel.clone()]);
+            }
+            for rel in &checked {
+                export.extend(["--checked".to_string(), rel.clone()]);
+            }
+        } else {
+            export.extend(needs.files.iter().cloned());
+        }
         std::thread::scope(|scope| {
             let importing = std::thread::Builder::new()
                 .name("move-import".into())
@@ -239,6 +254,9 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
             );
             drop(writer);
             let taken = importing.join().map_err(|_| "its import failed".to_string())?;
+            if let Ok((_, _, err)) = &sent {
+                said_here.clone_from(err);
+            }
             match (sent, taken) {
                 (Ok((0, _, _)), Ok((0, _, _))) => Ok(()),
                 (Ok(s), _) if s.0 != 0 => Err(said("its export", &s)),
@@ -247,10 +265,23 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
             }
         })
     })();
+    // A live move's microVM is held here, saved, from its last save on, until it runs there.
+    let held = live && String::from_utf8_lossy(&said_here).contains("move: saved at ");
+    let back_here = |why: String| -> String {
+        if held {
+            let _ = ask(step(&[mv, "done", name, &plan.snapshot, "back"]), &[]);
+        }
+        resume_here(why)
+    };
     if let Err(e) = imported {
-        return Err(resume_here(e));
+        return Err(back_here(e));
     }
     times.step("sent");
+    if times.on {
+        for line in String::from_utf8_lossy(&said_here).lines() {
+            let _ = writeln!(io::stderr(), "{line}");
+        }
+    }
 
     // 4. Resumed there, where it was saved.
     let resumed = there(step(&["restore", name, &plan.snapshot]), None);
@@ -263,13 +294,32 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
             };
             // What was made there of it goes, and it goes on here.
             let _ = there(step(&["rm", "-f", name]), None);
-            return Err(resume_here(why));
+            return Err(back_here(why));
         }
     }
     times.step("resumed there");
+    // How long it ran nowhere, as this machine's clock says: from its last save asked,
+    // which held it here, to its restore there said done.
+    if times.on
+        && let Some(asked) = String::from_utf8_lossy(&said_here)
+            .lines()
+            .find_map(|l| l.strip_prefix("move: saved at ")?.trim().parse::<u128>().ok())
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let _ = writeln!(
+            io::stderr(),
+            "move: downtime {} us",
+            now.saturating_sub(asked) / 1000
+        );
+    }
 
-    // 5. Removed here: it runs there now.
-    let removed = ask(step(&["rm", name]), &[])?;
+    // 5. Removed here: it runs there now. One a live move held stops as moved first.
+    if held {
+        let _ = ask(step(&[mv, "done", name, &plan.snapshot, "moved"]), &[]);
+    }
+    let removed = ask(step(&["rm", "-f", name]), &[])?;
     if removed.0 != 0 {
         return Err(format!(
             "{name} runs on {to} now, and its stopped copy here was not removed: {}",
