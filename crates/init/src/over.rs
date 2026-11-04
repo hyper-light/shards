@@ -98,7 +98,11 @@ pub fn go_over() -> Result<(), String> {
         )
     };
     if claimed < 0 {
-        return Err(os("its template's layer is still held"));
+        return Err(format!(
+            "{}; {}",
+            os("its template's layer is still held"),
+            holders(dev)
+        ));
     }
     // SAFETY: a fresh descriptor nothing else owns.
     drop(unsafe { OwnedFd::from_raw_fd(claimed) });
@@ -303,4 +307,45 @@ fn umount(target: &CStr, flags: libc::c_int) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// What may hold the layer's device `dev`, said where its template's layer was not let go
+/// of: each process's root and working directory, the mounts of its file system in each
+/// process's mount namespace, and each process's descriptors.
+fn holders(dev: libc::dev_t) -> String {
+    let (major, minor) = (libc::major(dev), libc::minor(dev));
+    let mut said = Vec::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().filter(|n| n.bytes().all(|b| b.is_ascii_digit())) else {
+            continue;
+        };
+        let link = |what: &str| {
+            std::fs::read_link(format!("/proc/{pid}/{what}"))
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|e| e.to_string())
+        };
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        let mounts: Vec<String> = std::fs::read_to_string(format!("/proc/{pid}/mountinfo"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.split(' ').nth(2) == Some(&format!("{major}:{minor}")))
+            .map(str::to_string)
+            .collect();
+        let fds: Vec<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|f| std::fs::read_link(f.path()).ok())
+            .map(|p| p.display().to_string())
+            .filter(|p| !p.starts_with("/dev/") && !p.contains(':'))
+            .collect();
+        said.push(format!(
+            "{pid} {} root {} cwd {} mounts {mounts:?} fds {fds:?}",
+            comm.trim(),
+            link("root"),
+            link("cwd")
+        ));
+    }
+    said.join("; ")
 }
