@@ -76,12 +76,61 @@ pub fn keep_devtmpfs() -> io::Result<()> {
 /// every later mount of it then too. Through it init gives the functions to vfio-pci.
 static SYSFS: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
 
-/// Keeps [`SYSFS`], where the kernel's command line asks (`shards_vfio`).
+/// Keeps [`SYSFS`]: init's way to the PCI bus, which it rescans for the devices its host
+/// plugs in as the microVM runs and lets them go through (D214), and gives a host's VFIO
+/// functions to vfio-pci through (`shards_vfio`, D154).
 pub fn keep_sysfs() -> io::Result<()> {
-    if std::env::var_os("shards_vfio").is_some() {
-        let _ = SYSFS.set(crate::domains::detached(c"sysfs", &[])?);
-    }
+    let _ = SYSFS.set(crate::domains::detached(c"sysfs", &[])?);
     Ok(())
+}
+
+/// Writes `value` to the attribute at `path` of init's own sysfs ([`SYSFS`]).
+pub fn sysfs_write(path: &str, value: &str) -> io::Result<()> {
+    let sys = SYSFS
+        .get()
+        .ok_or_else(|| io::Error::other("boot kept no sysfs"))?;
+    write_at(sys.as_fd(), path, value).map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))
+}
+
+/// The attribute at `path` of init's own sysfs, where it reads.
+pub fn sysfs_read(path: &str) -> Option<String> {
+    let sys = SYSFS.get()?;
+    let c = CString::new(path).ok()?;
+    // SAFETY: openat(2) of a NUL-terminated path beneath a descriptor of init's.
+    let fd = unsafe { libc::openat(sys.as_raw_fd(), c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: the descriptor openat just made, owned here alone.
+    let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut file, &mut text).ok()?;
+    Some(text)
+}
+
+/// The names in the directory at `path` of init's own sysfs, where it is one.
+pub fn sysfs_list(path: &str) -> Option<Vec<String>> {
+    let sys = SYSFS.get()?;
+    let c = CString::new(path).ok()?;
+    // SAFETY: openat(2) of a NUL-terminated path beneath a descriptor of init's.
+    let fd = unsafe {
+        libc::openat(
+            sys.as_raw_fd(),
+            c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: the descriptor openat just made, owned here alone.
+    let dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    Some(names(&dir, c"."))
+}
+
+/// What the link at `path` of init's own sysfs holds, where it is one.
+pub fn sysfs_link(path: &str) -> Option<PathBuf> {
+    link_at(SYSFS.get()?.as_fd(), path).ok()
 }
 
 /// The VM's device `name` in its devtmpfs, opened `O_PATH`: a handle a process may open

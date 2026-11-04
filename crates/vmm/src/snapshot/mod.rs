@@ -98,7 +98,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     (D189).
 /// 27: and the runs of its memory file's RAM that hold data, which a restore maps from the
 ///     file, the rest zeros (D151).
-const VERSION: u32 = 27;
+/// 28: and its PCI bus's slots for devices plugged in as it runs, 0 for none (D214): a
+///     template's machine has them empty, its restored runs' to plug into.
+const VERSION: u32 = 28;
 /// The oldest format this build reads too where the machine has no DAX windows: for such
 /// a machine each since says what this one says, but for 27's runs of data, which a state
 /// before it holds none of (its restore maps its RAM from the file whole), so that a
@@ -106,6 +108,8 @@ const VERSION: u32 = 27;
 const VERSION_WITHOUT_WINDOWS: u32 = 24;
 /// The first format whose state says which runs of its RAM hold data.
 const VERSION_WITH_DATA: u32 = 27;
+/// The first format whose state says how many PCI slots its machine has (D214).
+const VERSION_WITH_SLOTS: u32 = 28;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -175,6 +179,9 @@ pub struct MachineConfig {
     /// virtio-pmem device after the pmem files, its head and file system kept beside the
     /// snapshot, and a restore's own copy of the file system mapped there.
     pub layer_mib: u64,
+    /// Its PCI bus's slots for devices plugged in as it runs (D214), 0 for none: empty in
+    /// every snapshot, as a machine with a device plugged in saves none.
+    pub pci_slots: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,6 +501,9 @@ fn encode_as(
         w.u64(*gpa);
         w.u64(*len);
     });
+    if version >= VERSION_WITH_SLOTS {
+        w.u8(s.config.pci_slots);
+    }
     if version >= VERSION_WITH_DATA {
         w.bool(s.data.is_some());
         w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
@@ -589,6 +599,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let layer_mib = r.u64()?;
     // At most a run for every other block of the most a guest may plug.
     let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+    let pci_slots = if version >= VERSION_WITH_SLOTS { r.u8()? } else { 0 };
     let data = if version >= VERSION_WITH_DATA {
         let said = r.bool()?;
         let runs = r.seq(MAX_DATA_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
@@ -618,6 +629,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 swap_mib,
                 share_window_mib,
                 layer_mib,
+                pci_slots,
             },
             plugged,
             data,
@@ -1480,6 +1492,7 @@ mod tests {
                 swap_mib: 0,
                 share_window_mib: 0,
                 layer_mib: 0,
+                pci_slots: 0,
             },
             plugged: Vec::new(),
             data: None,

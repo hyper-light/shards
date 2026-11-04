@@ -106,6 +106,26 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "fifo: {said}");
             0
         }
+        // Each path's file system's size: `statfs PATH BYTES`, or the errno that refused it.
+        "statfs" => {
+            for p in args.get(1..).unwrap_or_default() {
+                let said = std::ffi::CString::new(p.as_str()).map_or_else(
+                    |_| "errno 22".to_string(),
+                    |c| {
+                        // SAFETY: an all-zero statvfs is a valid out-parameter.
+                        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+                        // SAFETY: statvfs(3) of a NUL-terminated path into a struct it owns.
+                        if unsafe { libc::statvfs(c.as_ptr(), &raw mut st) } == 0 {
+                            (u64::from(st.f_blocks) * u64::from(st.f_frsize)).to_string()
+                        } else {
+                            format!("errno {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                        }
+                    },
+                );
+                let _ = writeln!(io::stdout(), "statfs {p} {said}");
+            }
+            0
+        }
         "stat" => stat(args.get(1..).unwrap_or_default()),
         // Each path's device: `PATH char MAJOR:MINOR`, `PATH block MAJOR:MINOR`, or
         // `PATH none` (an overlay's whiteout is a character device of 0:0).

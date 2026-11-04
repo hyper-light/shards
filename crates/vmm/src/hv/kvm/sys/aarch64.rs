@@ -153,6 +153,15 @@ pub const VGIC_V3_ADDR_TYPE_REDIST: u64 = 3;
 /// The ITS's register frame, 128 KiB on a 64 KiB boundary (KVM_VGIC_ITS_ADDR_TYPE).
 pub const VGIC_ITS_ADDR_TYPE: u64 = 4;
 pub const VGIC_CTRL_INIT: u64 = 0;
+/// The ITS's registers, 64 bits each by offset (KVM_DEV_ARM_VGIC_GRP_ITS_REGS), and its
+/// controls: its tables written to guest memory and read back, and its reset; and the
+/// GIC's control that writes its LPIs' pending state to guest memory (arm-vgic-its.rst,
+/// arm-vgic-v3.rst).
+pub const VGIC_GRP_ITS_REGS: u32 = 8;
+pub const ITS_SAVE_TABLES: u64 = 1;
+pub const ITS_RESTORE_TABLES: u64 = 2;
+pub const VGIC_SAVE_PENDING_TABLES: u64 = 3;
+pub const ITS_CTRL_RESET: u64 = 4;
 /// Its distributor's frame, and each vCPU's redistributor's two frames.
 pub const VGIC_V3_DIST_SIZE: u64 = 64 << 10;
 pub const VGIC_V3_REDIST_SIZE: u64 = 2 * (64 << 10);

@@ -449,30 +449,62 @@ impl Vm {
 
     /// The GIC's state, its registers as KVM gives them (`gic`): every vCPU must be out of
     /// the guest and out of every other call of KVM's, as KVM takes them all to read it
-    /// (arm-vgic-v3.rst: EBUSY). A machine with an ITS saves none: its tables are in guest
-    /// memory and its state the ITS's own.
+    /// (arm-vgic-v3.rst: EBUSY). Where the machine has an ITS, a PCI bus's (D154, D214),
+    /// its LPIs' pending state and the ITS's tables are written to guest memory first, as
+    /// a snapshot then saves them with it, and its registers kept beside the GIC's.
     pub fn save_gic(&self) -> Result<Vec<u8>> {
-        if self.its.get().is_some() {
-            return Err(Error::Guest(
-                "a machine with an ITS is not snapshotted: its translation tables are the ITS's".into(),
-            ));
-        }
         let gic = self
             .gic
             .get()
             .ok_or_else(|| Error::Guest("the VM has no GIC".into()))?;
-        gic::save(gic, &self.mpidrs)
+        let its = match self.its.get() {
+            Some(its) => {
+                gic.control(sys::VGIC_GRP_CTRL, sys::VGIC_SAVE_PENDING_TABLES)
+                    .map_err(|e| Error::Guest(format!("the GIC's LPIs' pending tables: {e}")))?;
+                Some(gic::its_save(its)?)
+            }
+            None => None,
+        };
+        let regs = gic::save(gic, &self.mpidrs, its.is_some())?;
+        let mut w = crate::snapshot::codec::Writer::default();
+        w.bytes(&regs);
+        w.bool(its.is_some());
+        w.bytes(its.as_deref().unwrap_or_default());
+        Ok(w.into_bytes())
     }
 
     /// Restores [`save_gic`](Self::save_gic)'s state into this VM's GIC, initialized once
     /// every vCPU exists ([`Vm::vcpus_created`]), before any runs the guest, with every vCPU
-    /// out of every call of KVM's.
+    /// out of every call of KVM's: its ITS's after its redistributors', as
+    /// arm-vgic-its.rst's restore sequence has it. A state of an ITS restores only into a
+    /// machine with one, and the other way round.
     pub fn restore_gic(&self, state: &[u8]) -> Result<()> {
         let gic = self
             .gic
             .get()
             .ok_or_else(|| Error::Guest("the VM has no GIC".into()))?;
-        gic::restore(gic, state)
+        let mut r = crate::snapshot::codec::Reader::new(state);
+        let decoded = (|| {
+            let regs = r.bytes(usize::MAX)?.to_vec();
+            let has_its = r.bool()?;
+            let its = r.bytes(usize::MAX)?.to_vec();
+            r.finish()?;
+            Ok((regs, has_its.then_some(its)))
+        })();
+        let (regs, its) = decoded.map_err(|crate::snapshot::codec::DecodeError(e)| {
+            Error::Guest(format!("the snapshot's GIC: {e}"))
+        })?;
+        gic::restore(gic, &regs)?;
+        match (its, self.its.get()) {
+            (Some(state), Some(its)) => gic::its_restore(its, &state),
+            (None, None) => Ok(()),
+            (Some(_), None) => Err(Error::Guest(
+                "the snapshot's GIC has an ITS; this machine's has none".into(),
+            )),
+            (None, Some(_)) => Err(Error::Guest(
+                "this machine's GIC has an ITS; the snapshot's has none".into(),
+            )),
+        }
     }
 
     /// Runs the prefetch program on vCPU 0 over `pages` (`prefetch`), `memory` saying of

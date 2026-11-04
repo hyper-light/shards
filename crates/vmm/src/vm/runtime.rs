@@ -1508,6 +1508,7 @@ mod tests {
                 swap_mib: 0,
                 share_window_mib: 0,
                 layer_mib: 0,
+                pci_slots: 0,
             },
             plugged: Vec::new(),
             data: None,

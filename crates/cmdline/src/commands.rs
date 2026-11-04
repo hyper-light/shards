@@ -2174,6 +2174,76 @@ pub static SNAPSHOT_LS: Command = Command {
     error_prefix: "",
 };
 
+/// `shards plug disk` (D214): a disk plugged into a running microVM, its file system
+/// mounted at PATH in it.
+pub static PLUG_DISK: Command = Command {
+    usage: "[OPTIONS] MICROVM FILE:PATH[:ro]",
+    about: "Plug a disk into a running microVM, its file system mounted at PATH",
+    aliases: "shards plug disk",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::string(
+            "size",
+            None,
+            "",
+            "Make FILE an empty ext4 file system of this size where it is not there (as 4g)",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards plug volume` (D214): a host directory or a named volume plugged into a running
+/// microVM, mounted at PATH in it.
+pub static PLUG_VOLUME: Command = Command {
+    usage: "MICROVM SOURCE:PATH[:ro]",
+    about: "Plug a host directory or a volume into a running microVM, mounted at PATH",
+    aliases: "shards plug volume",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug disk` (D214).
+pub static UNPLUG_DISK: Command = Command {
+    usage: "MICROVM PATH",
+    about: "Unmount the disk plugged into a running microVM at PATH, and unplug it",
+    aliases: "shards unplug disk",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug volume` (D214).
+pub static UNPLUG_VOLUME: Command = Command {
+    usage: "MICROVM PATH",
+    about: "Unmount the volume plugged into a running microVM at PATH, and unplug it",
+    aliases: "shards unplug volume",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards grow disk` (D214): a plugged disk grown online, its file system with it.
+pub static GROW_DISK: Command = Command {
+    usage: "MICROVM PATH SIZE",
+    about: "Grow the disk plugged into a running microVM at PATH, and its ext4 file system, as it runs",
+    aliases: "shards grow disk",
+    args: Args::Exactly(3),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards remove snapshot` (D176): snapshots of a microVM, removed.
 pub static SNAPSHOT_RM: Command = Command {
     usage: "MICROVM SNAPSHOT [SNAPSHOT...]",
@@ -2851,6 +2921,11 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["checkpoint", "ls" | "list", ..] => (&CHECKPOINT_LS, "shards checkpoint ls", 2),
         ["checkpoint", "rm" | "remove", ..] => (&CHECKPOINT_RM, "shards checkpoint rm", 2),
         ["snapshot", "ls" | "list", ..] => (&SNAPSHOT_LS, "shards list snapshots", 2),
+        ["plug", "disk", ..] => (&PLUG_DISK, "shards plug disk", 2),
+        ["plug", "volume", ..] => (&PLUG_VOLUME, "shards plug volume", 2),
+        ["unplug", "disk", ..] => (&UNPLUG_DISK, "shards unplug disk", 2),
+        ["unplug", "volume", ..] => (&UNPLUG_VOLUME, "shards unplug volume", 2),
+        ["grow", "disk", ..] => (&GROW_DISK, "shards grow disk", 2),
         ["snapshot", "rm" | "remove", ..] => (&SNAPSHOT_RM, "shards remove snapshot", 2),
         ["save", ..] => (&SAVE, "shards save", 1),
         ["load", ..] => (&LOAD, "shards load", 1),

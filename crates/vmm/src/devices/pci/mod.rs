@@ -144,9 +144,12 @@ impl MmioDevice for Ecam {
     }
 
     /// A function's state, its device's own (a passed-through device's above all), is not
-    /// in a snapshot: a machine with a PCI bus saves none.
+    /// in a snapshot: a machine with a function on its bus saves none. An empty bus, a
+    /// machine's slots for devices to come (D214), is saved as nothing, and a restore
+    /// makes it again.
     fn unsaved(&self) -> Option<String> {
-        Some("its PCI functions' state is their devices' own".into())
+        let functions = self.functions.read().unwrap_or_else(PoisonError::into_inner);
+        (!functions.is_empty()).then(|| "its PCI functions' state is their devices' own".into())
     }
 }
 
@@ -979,5 +982,6 @@ mod tests {
             assert!(b.iter().all(|&x| x == 0xff), "{addr:#x}+{len}: {b:?}");
         }
         assert!(ecam.unsaved().is_some());
+        assert!(Ecam::new(Vec::new()).unsaved().is_none(), "an empty bus");
     }
 }

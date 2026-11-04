@@ -70,6 +70,24 @@ pub fn log(home: &Path) -> PathBuf {
 pub const COPY_STEP: &str = "\u{0}cp";
 
 /// Message kinds between the daemon, warm VMs and clients.
+/// [`kind::DEVICE`]'s steps (D214), each a byte after the request's number.
+pub mod device {
+    /// A disk plugged in: a flags byte ([`READ_ONLY`]) and its serial; its file a
+    /// descriptor. Answers its place on the PCI bus (`devfn`, decimal) and its guest's
+    /// address of it, a space between.
+    pub const DISK: u8 = 1;
+    /// A shared directory plugged in: its virtio-fs tag; the connection to its server a
+    /// descriptor. Answers as [`DISK`] does.
+    pub const SHARE: u8 = 2;
+    /// The device at a place (`devfn`, a byte) taken off the bus, once its guest let it go.
+    pub const UNPLUG: u8 = 3;
+    /// The disk at a place (`devfn`, a byte) grown to its file's length, its driver told.
+    /// Answers its size in bytes, decimal.
+    pub const GROW: u8 = 4;
+    /// [`DISK`]'s flag of a disk its guest may not write.
+    pub const READ_ONLY: u8 = 1;
+}
+
 pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.
     pub const READY: u8 = 1;
@@ -406,6 +424,14 @@ pub mod kind {
     /// that process goes, which on Windows came 95 ms after a run's end on jupiter and past
     /// 2 s on CI's runners (PM M380): the next program to bind one has it.
     pub const PORTS_FREE: u8 = 79;
+    /// Daemon → a running run's VM: a device plugged into its microVM, let go of, or a disk
+    /// grown (D214): a number its answer ([`DEVICED`]) names (8, big-endian), then a step
+    /// ([`device`]) and what it takes. With [`device::DISK`] the disk's file, and with
+    /// [`device::SHARE`] the connection to its share's server, as descriptors.
+    pub const DEVICE: u8 = 80;
+    /// A run's VM → its daemon: [`DEVICE`]'s answer, by its number (8, big-endian), then 0
+    /// and what the step answers, or 1 and why it failed.
+    pub const DEVICED: u8 = 81;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

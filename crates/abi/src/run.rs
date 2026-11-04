@@ -638,6 +638,10 @@ pub mod builtin {
     /// Without one, it has no budget, is held only as its memory is (D148), and nothing is
     /// answered.
     pub const ROOM: u8 = 16;
+    /// A device plugged into the running microVM, or let go of, or a disk grown (D214;
+    /// shards-init hotplug.rs): `disk ADDR DST [ro]`, `share ADDR TAG DST [ro]`, `unmount
+    /// ADDR DST`, `grow ADDR DST SECTORS`, ADDR the function's PCI address.
+    pub const DEVICE: u8 = 17;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

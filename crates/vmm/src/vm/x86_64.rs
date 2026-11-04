@@ -764,14 +764,18 @@ pub fn restore(
     }
     let (ram, ranges) = ram_ranges(snap.config.memory_mib)?;
     let memory = Arc::new(super::restored_memory(&ranges, memory_file, snap, plug_at(ram))?);
-    // A machine with a PCI bus saves no snapshot, so a restored one has none.
+    // A machine with functions on its PCI bus saves no snapshot, so a restored one has
+    // none; it has the slots its snapshot's had, empty, as every snapshot's are (D214).
     let a = assemble(
         &memory,
         &snap.config,
         console,
         hosts,
         snap.config.gpu,
-        super::Pci::default(),
+        super::Pci {
+            slots: snap.config.pci_slots,
+            ..super::Pci::default()
+        },
     )?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
     let guest: Vec<(u64, u64)> = memory
