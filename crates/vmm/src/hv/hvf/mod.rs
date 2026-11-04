@@ -933,10 +933,13 @@ const SYSREGS: &[u16] = &[
 /// macOS 15.2 additions (SCXTNUM_EL1, SCXTNUM_EL0): saved where the host has them.
 const SYSREGS_15_2: &[u16] = &[0xc687, 0xde87];
 
-/// ID registers that define the guest's CPU. A restore on a CPU that reports different
-/// values is refused.
+/// ID registers that define the guest's CPU, each one Hypervisor.framework says and lets a
+/// VMM set: MIDR, PFR0 and 1, ZFR0, SMFR0, DFR0 and 1, ISAR0 and 1, MMFR0 to 2. It says
+/// none of ISAR2, ISAR3, PFR2, MMFR3 or MMFR4 (HV_BAD_ARGUMENT, M5 Max, macOS 26.5.2, PM
+/// M460). A restore on a CPU short of what they say is refused, and one that has it all is
+/// told them (D176 part 6).
 const ID_REGS: &[u16] = &[
-    0xc000, 0xc020, 0xc021, 0xc028, 0xc029, 0xc030, 0xc031, 0xc038, 0xc039, 0xc03a,
+    0xc000, 0xc020, 0xc021, 0xc024, 0xc025, 0xc028, 0xc029, 0xc030, 0xc031, 0xc038, 0xc039, 0xc03a,
 ];
 const ID_AA64DFR0_EL1: u16 = 0xc028;
 
@@ -1322,24 +1325,19 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 let mut a = vm.create_vcpu(0).unwrap();
-                for r in [
-                    0xc000u16, 0xc005, 0xc006, 0xc020, 0xc021, 0xc022, 0xc024, 0xc025, 0xc028, 0xc029,
-                    0xc02c, 0xc02d, 0xc030, 0xc031, 0xc032, 0xc033, 0xc038, 0xc039, 0xc03a, 0xc03b, 0xc03c,
-                ] {
-                    let got = a.sys.sys_reg(r);
-                    let set = got.as_ref().ok().map(|v| {
-                        let w = *v & !0xf0u64;
-                        let s = a.sys.set_sys_reg(r, w);
-                        let back = a.sys.sys_reg(r);
-                        let _ = a.sys.set_sys_reg(r, *v);
-                        (s.is_ok(), back.ok().map(|b| format!("{b:#x}")))
-                    });
-                    eprintln!(
-                        "PROBE {r:#x}: {:x?} set-low-field-0 {:?}",
-                        got.map_err(|e| e.code),
-                        set
-                    );
-                }
+                // Every ID register a snapshot keeps is one the framework says and lets a
+                // VMM set, as a restore on another CPU tells its guest the CPU it found (D176
+                // part 6): read back as set, a field lowered, and as it was.
+                let id = a.cpu_id().unwrap();
+                assert_eq!(id.len(), ID_REGS.len());
+                let lowered: Vec<(u16, u64)> = id
+                    .iter()
+                    .map(|&(r, v)| (r, if r == 0xc000 { v } else { v & !0xf0 }))
+                    .collect();
+                a.set_cpu_id(&lowered).unwrap();
+                assert_eq!(a.cpu_id().unwrap(), lowered);
+                a.set_cpu_id(&id).unwrap();
+                assert_eq!(a.cpu_id().unwrap(), id);
 
                 // The prefetch touches a page read and a page written, leaves out a page
                 // outside guest memory and a page listed twice, and changes no byte. A

@@ -73,6 +73,112 @@ pub(crate) struct Plan {
     /// The host directories and files it binds, which the other machine must share with
     /// this one at the same paths: a network file system's, served there as here.
     pub binds: Vec<String>,
+    /// This machine's CPU's features, as its OS names them ([`host_cpu`]): the other's must
+    /// have each, as its guest may have found and used any.
+    #[serde(default)]
+    pub cpu: Vec<String>,
+}
+
+/// The features of this machine's CPU a guest may be shown, as its OS names them: on macOS
+/// each `hw.optional.arm.FEAT_*` it has, but those of SVE, SME and MTE, which no guest of
+/// Hypervisor.framework's is shown (D14); on Linux the first CPU's `flags` (x86) or
+/// `Features` (arm64) in /proc/cpuinfo; none elsewhere, which no move checks. Where one
+/// machine's guest found a feature the other's CPU has not (ID_AA64ISAR2_EL1's CSSC and HBC,
+/// an M5's and not an M4's, which Hypervisor.framework neither says nor lets a VMM set, PM
+/// M460), a program that used it would fault there.
+pub(crate) fn host_cpu() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        const FEATURES: &[&str] = &[
+            "FEAT_CRC32",
+            "FEAT_FlagM",
+            "FEAT_FlagM2",
+            "FEAT_FHM",
+            "FEAT_DotProd",
+            "FEAT_SHA3",
+            "FEAT_RDM",
+            "FEAT_LSE",
+            "FEAT_SHA256",
+            "FEAT_SHA512",
+            "FEAT_SHA1",
+            "FEAT_AES",
+            "FEAT_PMULL",
+            "FEAT_SPECRES",
+            "FEAT_SPECRES2",
+            "FEAT_SB",
+            "FEAT_FRINTTS",
+            "FEAT_PACIMP",
+            "FEAT_LRCPC",
+            "FEAT_LRCPC2",
+            "FEAT_FCMA",
+            "FEAT_JSCVT",
+            "FEAT_PAuth",
+            "FEAT_PAuth2",
+            "FEAT_FPAC",
+            "FEAT_FPACCOMBINE",
+            "FEAT_DPB",
+            "FEAT_DPB2",
+            "FEAT_BF16",
+            "FEAT_EBF16",
+            "FEAT_I8MM",
+            "FEAT_WFxT",
+            "FEAT_RPRES",
+            "FEAT_CSSC",
+            "FEAT_HBC",
+            "FEAT_ECV",
+            "FEAT_AFP",
+            "FEAT_LSE2",
+            "FEAT_CSV2",
+            "FEAT_CSV3",
+            "FEAT_DIT",
+            "FEAT_FP16",
+            "FEAT_SSBS",
+            "FEAT_BTI",
+        ];
+        FEATURES
+            .iter()
+            .filter(|f| {
+                let Ok(name) = std::ffi::CString::new(format!("hw.optional.arm.{f}")) else {
+                    return false;
+                };
+                let mut value: libc::c_int = 0;
+                let mut len = size_of::<libc::c_int>();
+                // SAFETY: sysctlbyname writes at most `len` bytes into `value`.
+                let rc = unsafe {
+                    libc::sysctlbyname(
+                        name.as_ptr(),
+                        (&raw mut value).cast(),
+                        &mut len,
+                        std::ptr::null_mut(),
+                        0,
+                    )
+                };
+                rc == 0 && value == 1
+            })
+            .map(|f| (*f).to_string())
+            .collect()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let key = if cfg!(target_arch = "x86_64") {
+            "flags"
+        } else {
+            "Features"
+        };
+        std::fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|info| {
+                info.lines()
+                    .find(|l| l.split(':').next().is_some_and(|k| k.trim() == key))
+                    .and_then(|l| l.split_once(':'))
+                    .map(|(_, v)| v.split_whitespace().map(str::to_string).collect())
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Vec::new()
+    }
 }
 
 /// A file a snapshot restores against, by its name relative to the home, its length and
@@ -829,6 +935,7 @@ impl<D: Disk> Daemon<D> {
             files,
             volumes,
             binds,
+            cpu: host_cpu(),
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -1004,6 +1111,7 @@ impl<D: Disk> Daemon<D> {
             files,
             volumes,
             binds,
+            cpu: host_cpu(),
         })
     }
 
@@ -1026,6 +1134,21 @@ impl<D: Disk> Daemon<D> {
                 plan.name,
                 plan.format,
                 shards_vmm::snapshot::FORMAT
+            ));
+        }
+        // Its CPU: every feature of the machine it ran on, as its guest may have used any.
+        let here = host_cpu();
+        let lacks: Vec<&str> = plan
+            .cpu
+            .iter()
+            .filter(|f| !here.is_empty() && !here.contains(f))
+            .map(String::as_str)
+            .collect();
+        if !lacks.is_empty() {
+            return Err(format!(
+                "this machine's CPU lacks {}, which {}'s guest may have used where it ran",
+                lacks.join(", "),
+                plan.name
             ));
         }
         {
@@ -1515,6 +1638,7 @@ mod tests {
             }],
             volumes: vec!["data".into()],
             binds: Vec::new(),
+            cpu: Vec::new(),
         }
     }
 

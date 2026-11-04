@@ -1147,7 +1147,14 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
             // guest found is told the guest's CPU, which the guest goes on believing; one
             // short of any is refused, naming what it lacks.
             let here = vcpu.cpu_id().map_err(e)?;
-            if here != cpu_id {
+            // By the registers both name: a snapshot of a build that read fewer is of the
+            // registers it read.
+            let differs = cpu_id.iter().any(|&(r, v)| {
+                here.iter()
+                    .find(|(h, _)| *h == r)
+                    .is_none_or(|&(_, now)| now != v)
+            });
+            if differs {
                 aarch64::cpu::covers(&here, &cpu_id)?;
                 vcpu.set_cpu_id(&cpu_id).map_err(|err| {
                     format!("this CPU is not the snapshot's, and is not told its guest's: {err}")

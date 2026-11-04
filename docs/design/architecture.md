@@ -8145,7 +8145,7 @@ real microVMs by `squash_makes_a_builds_layers_one` (tests/build.rs) and
 `the_docker_cli_runs_microvms_through_the_engine` (tests/engine.rs: the API's `squash=1`,
 and the docker CLI's own legacy `build --squash`, which it offers an experimental engine).
 
-### D176. A running microVM saved whole, and resumed (in progress)
+### D176. A running microVM saved whole, and resumed, here or on another machine (in progress)
 
 `shards save vm NAME`, and Docker's `checkpoint`, save a running microVM whole: its
 memory, vCPUs and devices as they are, every process, pty, pipe, socket within it and file
@@ -8375,6 +8375,90 @@ host, is part 6, which checks them. Held, on real microVMs, by
 `checkpoint_command_lines_save_list_and_restore_microvms` (tests/saved.rs) and
 `the_docker_cli_checkpoints_and_restores_microvms` (tests/engine.rs, the docker CLI
 itself), and by docker/cli's own answers to the command lines (oracle_test.go).
+
+**Moved to another machine** (part 6, roadmap item 7a). `shards move vm NAME CONTEXT`
+moves a microVM to the machine a context reaches (D180): saved whole here, as `save vm`
+saves it, and resumed there where it was saved. The context is the fleet: each machine's
+daemon serves the clients it enrolled, and the move is a client of both, asking each for
+its steps as `shards cp` asks for its own (cli/moves.rs; daemon/moves.rs: `save`, `ready`,
+`export`, `import`, through the context's `MOVE_STEP` as its copy steps go), its stream
+from the one daemon to the other through no file. Nothing of the one machine is the
+other's but what the move sends, and what the other takes by content:
+
+- **Its image, by digest.** The other machine finds it by the digest its name resolved to
+  as the microVM was made, or pulls it from its registry by that digest (`repo@sha256:…`),
+  converted as a run converts one; one no registry it reaches holds goes with the move,
+  saved here and loaded there. Its request names it there by that digest, which no tag
+  there can move.
+- **The files its snapshot restores against**, each named relative to the home (its root
+  filesystem by its image's ChainID, D18), checked byte for byte by SHA-256 on both machines
+  before anything moves: those the other machine has alike are its own; those it lacks or
+  has otherwise go with the move, into the microVM's own directory there. Its snapshot is
+  then made to restore against them (`snapshot::relocate`), each file's identity the one
+  there now, as a snapshot's state names its files by absolute path and identity (D14).
+- **Its directory**: its record and request, its log, the snapshot it moves as and none
+  other, its writable layer in the snapshot's generation (D190), never the copy its
+  microVM left beside its log as it stopped.
+- **Its volumes.** A named volume moves with it, its files, modes and extended attributes
+  (the owners its guest gave them, D38) as they are, as sparse as they are, where the
+  other machine has no volume of the name. Its restored share server takes the copy by its
+  paths (`Server::restores_moved`, the share process's `--moved`): each node the file at
+  its path there, whatever device and inode it had here, its guest's open handles and
+  working directory in it going on. A bind's host path is the other machine's to share
+  at the same place, as a network file system shares it, checked there before the move.
+- **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
+  CPU has every feature its guest found: the guest is told the CPU it found, each of its
+  vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
+  and goes on with the features it chose as it booted. One short of any is refused, naming
+  each field it lacks (arm64's ID scheme, signed and unsigned fields as Linux reads them,
+  `arch::aarch64::cpu`; x86's feature leaves, `cpuid::covers`). An M5 Max's ISAR2 has CSSC
+  and HBC, an M4 Max's not: a guest booted on the M4 resumes on the M5, one of the M5 is
+  refused on the M4.
+- **Its connections**, dialed again by its init there as a restore here redials them
+  (part 3), and its address on its network asked for again.
+
+What fails before it runs there leaves it here as it was, resumed from the snapshot it
+was saved as, and what was made of it there removed: a move the other machine refuses
+(another microVM has its name there) goes on here, its every count once. Held, on real
+microVMs of two homes on one machine (one a context's machine to the other, as another
+machine's is), by `a_running_microvm_moves_to_another_machine_and_goes_on_there` (a counter
+appending to a file it holds open in its volume, from the volume's directory: each count
+once there, in order), `a_moved_microvms_log_and_image_go_with_it` (an image no registry
+holds, saved and loaded) and `a_move_refused_leaves_the_microvm_running_here`
+(tests/moved.rs); between two machines by `docs/research/measurements/migrate/two-hosts.sh`
+(PM M460).
+
+**Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
+it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
+memory, writable layer and run's swap copied to the other machine as its guest runs on,
+round after round, each round what its guest and its devices wrote since the last, until a
+round sends no more than 8 MiB, or 30 rounds; then it saved as a save saves it, held, its
+vCPUs parked and devices quiet, those three written only where its guest wrote since the
+last round, which the other machine lays over what the rounds sent; resumed there; and
+stopped here once it runs there.
+
+- **What its guest writes**, watched by the hypervisor as it runs: on KVM its vCPUs' dirty
+  rings (api.rst 8.29; `KVM_CAP_DIRTY_LOG_RING_ACQ_REL`, else `KVM_CAP_DIRTY_LOG_RING`),
+  a page of the host's for each vCPU, each writable memory slot's writes logged while the
+  move watches, each vCPU whose ring fills emptying it as it exits; on Hypervisor.framework
+  its writable memory taken away for writing at stage 2 (`hv_vm_protect`) and each page
+  given back whole as its guest writes it, noted, the working-set recorder's mechanism
+  (D25). Memory plugged and a run's swap mapped while it runs are watched as they are
+  mapped. What its devices write into its memory, which no hypervisor's log sees, is noted
+  as each completes a request, its chain's writable buffers whole, and as the VMM writes
+  through its own accesses (`GuestMemory::device_wrote`).
+- **Its last save holds it** (`AfterSnapshot::Hold`): a move the other machine does not
+  take lets it go on here as a save that leaves a microVM running does, nothing of it lost
+  (its last save, which holds only what its guest wrote last, removed); one taken stops it
+  as saved, and removes it here.
+- **The time it runs nowhere**, from its last save asked to its restore there said done, by
+  the moving machine's clock: PM M461.
+
+Not yet: arm64 KVM's dirty rings, which its GIC's ITS needs a bitmap beside
+(`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and WHP's dirty page tracking
+(`WHvQueryGpaRangeDirtyBitmap`): a live move there is refused, saying so, and a saved one
+moves; a volume's files moved live, which go with its last save, and so lengthen the time
+it runs nowhere by their bytes.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
