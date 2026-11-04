@@ -290,6 +290,9 @@ fn mode_of(meta: &std::fs::Metadata) -> u32 {
     }
 }
 
+/// What reads a file's runs of data into `put`, each at its offset.
+pub(crate) type Runs<'a> = dyn FnMut(&mut dyn FnMut(u64, &[u8]) -> io::Result<()>) -> io::Result<()> + 'a;
+
 /// An entry of a stream, as [`read_entries`] gives it to its taker.
 pub(crate) enum Entry<'a> {
     Dir {
@@ -303,7 +306,7 @@ pub(crate) enum Entry<'a> {
         xattrs: Vec<(Vec<u8>, Vec<u8>)>,
         len: u64,
         /// Its runs of data, each read into `put` at its offset.
-        runs: &'a mut dyn FnMut(&mut dyn FnMut(u64, &[u8]) -> io::Result<()>) -> io::Result<()>,
+        runs: &'a mut Runs<'a>,
     },
     Link {
         rel: String,
@@ -1415,7 +1418,7 @@ impl Precopy {
             offset = offset.saturating_add(len);
         }
         let memory = generation.join("memory");
-        under(&self.ram, &memory, &moves[..1])?;
+        under(&self.ram, &memory, moves.get(..1).unwrap_or_default())?;
         under(&self.plugged, &memory, moves.get(1..).unwrap_or_default())?;
         let whole = |file: &Path| -> Result<Vec<(u64, u64, u64)>, String> {
             let len = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
