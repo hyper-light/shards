@@ -56,6 +56,11 @@ def read(path, run, into):
                 plugged[(f["build"], f["arm"], (run, counted(f, warm)))].append((float(f["t"]), int(f["plugged"])))
 
 
+def steps_of(f):
+    """A build line's steps' times, by step number: none where it says none."""
+    return {k: float(v) for k, v in (p.split(":") for p in f.get("steps", "-").split(",") if ":" in p)}
+
+
 def counted(f, warm):
     """The round of a line's fields, 0 for one that filled the builds' caches."""
     r = int(f["round"])
@@ -78,13 +83,14 @@ def report(title, into):
     for h in head:
         print(h)
     for name in sorted({b for b, _, _ in builds}):
-        times = {}
+        times, arm_rounds = {}, {}
         for arm in ("free", "held"):
             rounds = sorted(r for b, m, r in builds if b == name and m == arm and r[1] > 0
                             and builds[(b, m, r)].get("exit") == "0")
             failed = sorted(r for b, m, r in builds if b == name and m == arm and builds[(b, m, r)].get("exit") != "0")
             s = [float(builds[(name, arm, r)]["s"]) for r in rounds]
             times[arm] = s
+            arm_rounds[arm] = rounds
             print(f"-- {name} {arm}: rounds past the caches' {len(rounds)}, failed {len(failed)}")
             print(f"   build time        {stats(s, ' s')}")
             peaks = [int(builds[(name, arm, r)].get("scope_anon_peak", 0)) for r in rounds]
@@ -122,6 +128,13 @@ def report(title, into):
             refusals = [g for r in rounds for g in gives.get((name, arm, r), []) if "refused_ms" in g]
             if refusals:
                 print(f"   refusals          {len(refusals)}, the last: {refusals[-1]['why'].replace('_', ' ')}")
+        # Each step's time as the build's display says it (`#N DONE`), free against held.
+        for n in sorted({k for arm in ("free", "held") for r in arm_rounds.get(arm, [])
+                         for k in steps_of(builds[(name, arm, r)])}, key=int):
+            took = {arm: [steps_of(builds[(name, arm, r)])[n] for r in arm_rounds.get(arm, [])
+                          if n in steps_of(builds[(name, arm, r)])] for arm in ("free", "held")}
+            if took["free"] and took["held"]:
+                print(f"   step #{n:<3} free {stats(took['free'], ' s')}; held {stats(took['held'], ' s')}")
         free, held = times.get("free", []), times.get("held", [])
         if free and held:
             worse = min(held) > max(free)
