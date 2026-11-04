@@ -10,3 +10,27 @@ PLUG-STATS guest rescan to first read: n 30 p50 7416 p90 11756 p99 13544 max 135
 PLUG-STATS guest remove: n 30 p50 31922 p90 32975 p99 42037 max 42037 us
 PLUG-STATS host unplug: n 30 p50 4 p90 10 p99 13 max 13 us
 test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 7.78s
+
+Second run, a quieter host (load 4.7 at the start, 4.5 at the end), revision f4d29ba7:
+rounds: 100, boots: 40 each
+PLUG-STATS share plug to first write: 15444 us
+PLUG-STATS boot to init, 4 slots: n 40 p50 61932 p90 74337 p99 110857 max 110857 us
+PLUG-STATS boot to init, no PCI bus: n 40 p50 58325 p90 68659 p99 187645 max 187645 us
+PLUG-STATS host plug: n 100 p50 5 p90 7 p99 18 max 31 us
+PLUG-STATS guest rescan: n 100 p50 6720 p90 7286 p99 9905 max 12083 us
+PLUG-STATS guest rescan to first read: n 100 p50 7783 p90 8393 p99 11601 max 13262 us
+PLUG-STATS guest remove: n 100 p50 29106 p90 33041 p99 36146 max 36345 us
+PLUG-STATS host unplug: n 100 p50 5 p90 9 p99 10 max 15 us
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 12.79s
+
+Third run, 0eece65b (the hot-plug let go of at teardown), quiet host (load 1.9 at the start, 5.3 at the end):
+rounds: 100, boots: 40 each
+PLUG-STATS share plug to first write: 14931 us
+PLUG-STATS boot to init, 4 slots: n 40 p50 60251 p90 67715 p99 77743 max 77743 us
+PLUG-STATS boot to init, no PCI bus: n 40 p50 56054 p90 58614 p99 69135 max 69135 us
+PLUG-STATS host plug: n 100 p50 6 p90 8 p99 22 max 1027 us
+PLUG-STATS guest rescan: n 100 p50 6590 p90 7418 p99 9971 max 10833 us
+PLUG-STATS guest rescan to first read: n 100 p50 7611 p90 8434 p99 11256 max 11824 us
+PLUG-STATS guest remove: n 100 p50 29200 p90 35404 p99 36420 max 36440 us
+PLUG-STATS host unplug: n 100 p50 5 p90 9 p99 21 max 22 us
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 12.10s

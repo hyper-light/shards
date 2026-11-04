@@ -111,7 +111,8 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         until(handle, &format!("SHARDS-PLUG WAIT {step}"))
     };
 
-    // The disk it was made with, grown as it runs: its driver told.
+    // The disk it was made with, grown as it runs, once its driver has it: its driver told.
+    until(&handle, "SHARDS-PLUG WAIT 0");
     let grown = std::fs::OpenOptions::new().write(true).open(&boot_disk).unwrap();
     grown.set_len(2 * MIB).unwrap();
     assert_eq!(handle.disk_size(0).unwrap().grow().unwrap(), 2 * MIB);
