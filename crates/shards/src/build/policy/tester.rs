@@ -403,7 +403,7 @@ fn ask(program: &Program, query: &Term, input: Option<&Effective>, fs: &Fs) -> A
 
 /// decodeDecision: the decision as JSON reads it into a map: `allow` where it is a
 /// boolean, `deny_msg` a string or the strings of an array, `caps` the booleans of an
-/// object; written back as buildx's Decision.
+/// object; written back as buildx v0.37.1's Decision.
 fn decision(v: &Value) -> Option<(Json, Option<bool>, Vec<String>)> {
     let Value::Object(o) = v else {
         return None;

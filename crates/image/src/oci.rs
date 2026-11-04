@@ -115,13 +115,13 @@ impl Manifest {
 }
 
 /// An image config: the platform, the runtime defaults, and the layers' DiffIDs, as Docker
-/// reads them ([`crate::config`]).
+/// reads them (D112, [`crate::config`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageConfig {
     pub architecture: String,
     pub os: String,
     pub variant: Option<String>,
-    /// When it was made, as Docker writes it (`Time.Format(time.RFC3339Nano)`).
+    /// When it was made, as written (D112; Go's `Time.Format(time.RFC3339Nano)`).
     pub created: Option<String>,
     pub config: Option<RunConfig>,
     pub rootfs: RootFs,
@@ -173,7 +173,7 @@ pub struct HealthConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootFs {
     pub kind: String,
-    /// Empty where Go's is nil (`null`, as BuildKit writes an image without layers).
+    /// Empty where Go's is nil (`null`, as BuildKit writes an image without layers; D93).
     pub diff_ids: Vec<String>,
 }
 
@@ -232,7 +232,7 @@ pub enum Document {
 
 /// Parses an index or manifest, after checking its size, and that the registry's
 /// `Content-Type` agrees with the document's own `mediaType` and shape (containerd's
-/// `validateMediaType`). Schema 1 is refused, as Docker refuses it.
+/// `validateMediaType`). Schema 1 is refused: it has no config whose DiffIDs check its layers.
 pub fn parse_document(bytes: &[u8], content_type: &str) -> Result<Document, Error> {
     if bytes.len() as u64 > MAX_MANIFEST {
         return bad(format!(
@@ -447,8 +447,8 @@ mod tests {
         assert!(parse_config(json.replace("\"layers\"", "\"other\"").as_bytes()).is_err());
     }
 
-    /// A config read as Docker reads it (crate::config): its keys folded and repeated as
-    /// Go takes them, its ports as a container keeps them, its time as Docker writes it;
+    /// A config read key by key (D112, crate::config): its keys folded and repeated as
+    /// Go's encoding/json takes them, its ports in the config's own shape, its time as written;
     /// one only running fails on stored, with what running it says.
     #[test]
     fn image_configs_are_read_key_by_key() {
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(c.variant, None);
         assert_eq!(c.created.as_deref(), Some("2024-01-02T03:04:05.1+24:00"));
         assert_eq!(c.run_error, None);
-        // Stored, as Docker's load and pull store it; refused to run with Go's words.
+        // Stored, a pull and a load keeping it whole (D112); refused to run with Go's words.
         for (json, said) in [
             (
                 r#"{"config":{"Healthcheck":5},"rootfs":{"type":"layers","diff_ids":[]}}"#,

@@ -1,4 +1,4 @@
-//! `.dockerignore` files as moby/patternmatcher's ignorefile.ReadAll reads them for
+//! `.dockerignore` files as patternmatcher v0.6.1's ignorefile.ReadAll reads them for
 //! BuildKit's frontend: one pattern a line, a UTF-8 byte order mark dropped from the first,
 //! `#` comments and blank lines skipped, each pattern trimmed and cleaned, and a leading
 //! `/` made relative, `!` kept in front. Lines of any length: BuildKit reads the file

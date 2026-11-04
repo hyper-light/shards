@@ -2,8 +2,8 @@
 //! group, which says its commands; `eval`, a policy's decision for one source, or the
 //! source's input (`--print`); and `test`, a policy's tests. Each runs here, of this
 //! host's files, against a builder ([`Builder`]): its sources' metadata resolved as the
-//! builder's builds resolve them, unseen, as buildx's resolver shows no progress, and the
-//! builder's platform. The builder is this host (`host_platform`), or through a context the
+//! builder's builds resolve them, unseen (buildx's resolver shows no progress there), and
+//! the builder's platform. The builder is this host (`host_platform`), or through a context the
 //! machine it reaches (D180), as buildx evaluates a policy against a remote builder: the
 //! policy, its tests and their files this client's, the builder's answers the machine's,
 //! asked of it by the steps [`step`] serves there.
@@ -127,7 +127,7 @@ fn error(e: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// logrus as buildx's main formats it: the level, then the message.
+/// logrus as buildx v0.37.1's main formats it: the level, then the message.
 fn log(level: &str, text: &str) {
     let _ = writeln!(std::io::stderr(), "{level}: {text}");
 }

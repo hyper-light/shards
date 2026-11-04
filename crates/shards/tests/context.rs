@@ -361,10 +361,10 @@ fn a_clients_command_has_the_clients_environment_not_the_owners() {
 }
 
 /// The archives a client saves, exports, loads and imports through a context are its own
-/// files, as Docker's CLI writes and reads its own: an image saved there is written here,
-/// in the client's directory, and loads there from here again; a microVM's files exported
-/// there are written here, and import there from here as an image; an image's Agentfile is
-/// written here. A save that fails leaves nothing here.
+/// files, on the machine its user typed them on (D180 part 3a): an image saved there is
+/// written here, in the client's directory, and loads there from here again; a microVM's
+/// files exported there are written here, and import there from here as an image; an
+/// image's Agentfile is written here. A save that fails leaves nothing here.
 #[test]
 fn a_clients_archives_are_its_own_files() {
     let Some((machine, _listening, laptop, image)) = joined("ctx-files") else {
@@ -422,7 +422,7 @@ fn a_clients_archives_are_its_own_files() {
     assert_ne!(failed.status, Some(0), "{failed}");
     assert_eq!(names(), ["Agentfile", "files.tar", "image.tar"]);
     // From a terminal: the archive is the file's, not the command's terminal's there, which
-    // a save refuses to write to, as Docker's does.
+    // a save refuses to write to: an archive would garble the terminal (D180 part 3a).
     let tty = here.join("tty.tar");
     let mut term = Terminal::run(
         &laptop,
@@ -584,7 +584,8 @@ fn a_build_through_a_context_is_of_the_clients_context_kept_in_step() {
         !copy.join("context/ignored").exists(),
         "an ignored file kept there"
     );
-    // A build arg named alone takes this client's value, as buildx takes it where it runs.
+    // A build arg named alone takes this client's value, from the environment its user
+    // ran the build in (D180).
     std::fs::write(
         app.join("Dockerfile"),
         format!("FROM {image}\nARG MSG\nLABEL msg=$MSG\n"),
@@ -698,7 +699,7 @@ fn a_contexts_engine_is_its_machines() {
         }
     };
     served(&engine);
-    // On Windows, once served, the endpoint names its pipe, as Docker's clients write one.
+    // On Windows, once served, the endpoint names its pipe, as `npipe://` (D180 part 3k).
     #[cfg(windows)]
     {
         let _ = doc;
@@ -893,8 +894,8 @@ fn a_contexts_engine_is_its_machines() {
 /// part 3b): driven here, as this machine's CLI drives one (cli/cp.rs), each step asked of
 /// the machine's daemon. A directory here goes into a microVM there and comes back as it was,
 /// relative paths the client's; a file into a directory there is said with its sizes; an
-/// archive goes to stdout; a file not there is said in Docker's words; and nothing is
-/// written where the command runs.
+/// archive goes to stdout; a file not there is said in the words scripts match; and nothing
+/// is written where the command runs.
 #[test]
 fn a_microvms_files_are_copied_to_and_from_the_client() {
     let Some((machine, _listening, laptop, image)) = joined("ctx-copy") else {
@@ -1104,10 +1105,10 @@ fn a_policy_through_a_context_is_the_clients_its_builder_the_machine() {
     assert!(!log.contains(dir.to_str().unwrap()), "{log}");
 }
 
-/// A client's logins are its own, as Docker's CLI keeps its own: a registry the client logged
-/// in to is reached there with the client's credentials, sent with the command; the machine
-/// owner's reach nothing for a client, logged in there as they are; and a login and a
-/// logout through the context are kept here, the owner's store untouched. Each command's
+/// A client's logins are its own, kept on its machine (D180 part 1): a registry the client
+/// logged in to is reached there with the client's credentials, sent with the command; the
+/// machine owner's reach nothing for a client, logged in there as they are; and a login and
+/// a logout through the context are kept here, the owner's store untouched. Each command's
 /// `PATH` is an empty directory and its docker config its own, so that no login reaches
 /// this host's keychain.
 #[test]
@@ -2382,8 +2383,8 @@ fn tree_of(root: &Path) -> Vec<String> {
     out
 }
 
-/// `--cidfile` through a context is the client's file, as Docker's CLI keeps its own: made
-/// here before the microVM is, named as here (a relative name of this client's working
+/// `--cidfile` through a context is the client's file, on its own machine (D180 part 3j):
+/// made here before the microVM is, named as here (a relative name of this client's working
 /// directory), the ID written as soon as the machine has made it, refused where a file is
 /// there already, and left by no run that was never made; the run records the client's
 /// path.

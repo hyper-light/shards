@@ -1,6 +1,6 @@
 //! An Agentfile's directives as the parser reads them (docs/architecture/AGENTFILE_ARCH.md
 //! §4 and §12): each form the spec gives, each refused with its reason, and a Dockerfile
-//! that reads none of them, as BuildKit reads none.
+//! that reads none of them: to BuildKit they are unknown instructions.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use shards_agentfile::agentfile::{
@@ -342,7 +342,7 @@ fn volumes_take_a_name_options_and_whom_they_are_for() {
     ));
 }
 
-/// A Dockerfile reads none of it, as BuildKit reads none: its words are unknown
+/// A Dockerfile reads none of it, its meaning BuildKit's: its words are unknown
 /// instructions, and `VOLUME`'s options unknown flags.
 #[test]
 fn a_dockerfile_reads_no_agentfile_directive() {

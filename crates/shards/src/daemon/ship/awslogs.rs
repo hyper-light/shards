@@ -44,8 +44,8 @@ pub(super) struct Awslogs {
     /// Events made, not yet in the batch.
     pending: VecDeque<Event>,
     batch: Batch,
-    /// The token the last put was answered with, which the next is sent with, as moby
-    /// sends it (CloudWatch no longer asks for one).
+    /// The token the last put was answered with, which the next is sent with, for endpoints
+    /// that still ask for one (CloudWatch no longer does, D168).
     token: Option<String>,
 }
 
@@ -266,7 +266,7 @@ impl Awslogs {
 
     /// What CloudWatch took and did not store of a put (rejectedLogEventsInfo): events too
     /// old for it or the group's retention, or too far ahead; and an entity it refused,
-    /// left out of the next puts, as moby leaves it out.
+    /// left out of the next puts, which it would refuse again (D168).
     fn rejected(&mut self, answer: &Value) {
         let info = answer.get("rejectedLogEventsInfo").unwrap_or(&Value::Null);
         for (k, what) in [
@@ -317,9 +317,8 @@ impl Awslogs {
         }
     }
 
-    /// How long the lines held, joined, have waited, as moby measures it on its tick
-    /// (collectBatch): from the first's time, in milliseconds, to now's; where now is
-    /// before it, past waiting.
+    /// How long the lines held, joined, have waited (D168): from the first's time, in
+    /// milliseconds, to now's; where now is before it, past waiting.
     fn waited(&self) -> Option<Duration> {
         let (at, _) = self.events.held()?;
         let now = SystemTime::now()
@@ -349,8 +348,8 @@ impl Refused {
 }
 
 impl Driver for Awslogs {
-    /// Lines are cut where an event would be too long, as moby's copier is given awslogs'
-    /// BufSize.
+    /// Lines are cut where an event would be too long for CloudWatch, which refuses one
+    /// past its size (D168).
     fn part(&self) -> usize {
         EVENT
     }
@@ -375,8 +374,8 @@ impl Driver for Awslogs {
         }
         self.drain()?;
         self.put()?;
-        // A run that writes nothing has its stream all the same, as moby's makes it as
-        // the run starts.
+        // A run that writes nothing has its stream all the same, so that its readers find it
+        // (D168).
         self.make()
     }
 

@@ -34,7 +34,7 @@ pub const OPTIONS: [&str; 15] = [
 /// What an event costs a put besides its message (perEventBytes).
 pub const PER_EVENT: usize = 26;
 /// The most of an event's bytes, as CloudWatch counts them (maximumBytesPerEvent): the
-/// longest part of a line its shipper cuts, as moby's copier is given its BufSize.
+/// longest part of a line its shipper cuts (D168).
 pub const EVENT: usize = 262_144 - PER_EVENT;
 /// The most of a put's bytes, each event's counted with [`PER_EVENT`] (maximumBytesPerPut).
 pub const PUT_BYTES: usize = 1_048_576;
@@ -383,7 +383,7 @@ fn csv_record(text: &str) -> Option<Vec<String>> {
     }
 }
 
-/// `awslogs-datetime-format` made a pattern, as moby makes one: each `%` and the
+/// `awslogs-datetime-format` made a pattern, as the option means it (D168): each `%` and the
 /// character after it the strftime table's pattern for it, or nothing where the table has
 /// none (parseMultilineOptions, strftimeToRegex).
 pub fn strftime_pattern(format: &str) -> String {
@@ -475,8 +475,8 @@ pub fn cut(line: &[u8]) -> Vec<(&[u8], usize)> {
     out
 }
 
-/// A run's lines made events, as moby's collectBatch makes them: each line its own; or,
-/// with a multiline pattern, lines joined, each followed by a newline (unless it is an
+/// A run's lines made events, grouped as collectBatch groups them (D168): each line its
+/// own; or, with a multiline pattern, lines joined, each followed by a newline (unless it is an
 /// event's whole), until a line matches the pattern or the event would be too long; the
 /// event's time its first line's.
 pub struct Events {

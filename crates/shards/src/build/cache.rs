@@ -1,8 +1,8 @@
 //! The build cache (docs/design/architecture.md D50, D114): a step whose definition and
 //! inputs a build has met before is not run again; its result is the layers it made then,
-//! as BuildKit's solver reuses a vertex its cache key finds (`#N CACHED`).
+//! and its progress line says `#N CACHED` (D50).
 //!
-//! A step has two keys, as a vertex has in BuildKit's solver: the SHA-256 of shards'
+//! A step has two keys: the SHA-256 of shards'
 //! version, its definition and each input's own key, in its inputs' order (not where they
 //! sit in the plan, which another build lays out otherwise); and the same with what it reads
 //! of an input in place of that input's key, where BuildKit takes a content checksum of
@@ -159,7 +159,7 @@ pub fn decode_proxied(body: &[u8]) -> Result<(Vec<Vec<Layer>>, super::proxy::cap
     Ok((outputs, capture))
 }
 
-/// A step's definition as its keys cover it, as BuildKit's CacheMap digests one: an exec
+/// A step's definition as its keys cover it, (ops/exec.go, file.go `CacheMap`): an exec
 /// without its proxy variables, its extra hosts' addresses, its mounts' selectors (which
 /// what it reads covers), or the id and sharing of a cache mount other than a Dockerfile's
 /// default one (exec.go, `checkShouldClearCacheOpts`); a copy with its source's last name
@@ -209,8 +209,9 @@ pub fn source_key(identifier: &[u8], content: &str) -> String {
     hex(&h.finalize())
 }
 
-/// What a step reads of an input, as BuildKit's content checksum selects it
-/// (opsutils.Selector): a path, which may hold a wildcard, its last symlink followed or
+/// What a step reads of an input, the selector of BuildKit's content checksum
+/// (solver/llbsolver/ops/opsutils/contenthash.go `Selector`): a path, which may
+/// hold a wildcard, its last symlink followed or
 /// not, and the patterns what is under it is taken by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selector {
@@ -271,7 +272,7 @@ fn dedupe(paths: &[Vec<u8>]) -> Vec<Vec<u8>> {
     out
 }
 
-/// What step `op` reads of each input, as BuildKit takes content checksums of it: a file
+/// What step `op` reads of each input, which its second key digests: a file
 /// operation's copy sources, and the passwd and group files a name is looked up in, of
 /// an input no action of it writes on (file.go `CacheMap`, `processOwner`,
 /// `dedupeSelectors`); an exec's mounts of an input none of them may change, the root
@@ -395,7 +396,7 @@ pub fn reads(op: &Op) -> Vec<Option<Vec<Selector>>> {
     out
 }
 
-/// A node's tar header fields as BuildKit's checksum keeps them (contenthash `NewFromStat`,
+/// A node's tar header fields as its digest keeps them (contenthash/filehash.go `NewFromStat`,
 /// tarsum v1): permission and set-id bits (a symlink's always 0777), owner, size, type,
 /// link target, device numbers, and its extended attributes but `security.*` other than
 /// `security.capability`, and `system.*`; not its time.
@@ -453,7 +454,7 @@ fn takes(
     }
 }
 
-/// Each node's digest of the snapshots a build reads, as BuildKit's content checksums take
+/// Each node's digest of the snapshots a build reads, as contenthash/checksum.go takes
 /// them: a file's header and bytes; a directory's header and each entry's name and digest,
 /// in name order. Each is taken once a build.
 #[derive(Debug, Default)]
@@ -543,7 +544,7 @@ impl Digests {
         self.node(fs, Tree::ROOT, sources).map(|d| hex(&d))
     }
 
-    /// What `sel` reads of `fs`, as BuildKit's `Checksum` takes it: a path's digest; a
+    /// What `sel` reads of `fs`, as checksum.go's `Checksum` takes it: a path's digest; a
     /// wildcard's matches, as the copy finds them, each with its digest; under patterns, the
     /// headers of the directories and the files they take, each by its path, with the
     /// headers of the directories above them (contenthash `includedPaths`). None where a
@@ -1061,7 +1062,7 @@ mod tests {
         Rc::new(fs)
     }
 
-    /// What a selector reads changes with what it covers, as BuildKit's checksum does, and
+    /// What a selector reads changes with what it covers, and
     /// with nothing else: not a file beside it, nor a time.
     #[test]
     fn what_is_read_changes_with_what_it_covers() {

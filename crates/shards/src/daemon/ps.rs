@@ -50,7 +50,8 @@ pub(super) struct Listing {
 }
 
 impl<D: crate::containers::Disk> Daemon<D> {
-    /// The microVMs `parsed` (`ps`'s flags) asks for, or dockerd's words for why not.
+    /// The microVMs `parsed` (`ps`'s flags) asks for, or why not, in the words scripts match
+    /// (D27).
     pub(super) fn ps_listing(&self, parsed: &Parsed) -> Result<Listing, String> {
         let filters = Filters::from_flags(parsed.many("filter"));
         filters.validate(&ACCEPTED)?;
@@ -207,7 +208,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// The images `ancestor`s name, and those made from them, and so on (GetImage, then
     /// populateImageFilterByParents over Children: the images whose parent it is). One
-    /// that names nothing is passed over, as dockerd passes it over with a warning.
+    /// that names nothing is passed over: a filter of nothing keeps nothing of it (D27).
     fn ancestors<'a>(&self, given: impl Iterator<Item = &'a str>) -> HashSet<String> {
         let mut found = HashSet::new();
         let Ok(Some(store)) = self.store() else {

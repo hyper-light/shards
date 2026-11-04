@@ -35,8 +35,9 @@ fn show(b: &[u8]) -> String {
 /// Reads the context `dir` as the client sends it and the daemon writes it: a snapshot
 /// whose root BuildKit made at `now`, files owned by root. Each file's bytes are taken
 /// into `stage`, a directory private to the build, as one version no later edit
-/// changes ([`host::snapshot`]): as BuildKit's copy keeps its build from seeing an edit,
-/// without copying where the file system clones. `stage` must outlive `sources`' reads.
+/// changes ([`host::snapshot`]): the build sees one version of each file, whatever is
+/// edited meanwhile, without copying where the file system clones. `stage` must
+/// outlive `sources`' reads.
 pub fn load(
     dir: &Path,
     filters: &Filters,

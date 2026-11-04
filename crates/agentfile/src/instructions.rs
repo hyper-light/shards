@@ -694,7 +694,7 @@ fn parse_healthcheck(req: &mut Req<'_>) -> Result<Health, Vec<u8>> {
     Ok(h)
 }
 
-/// Expands one word of a step, as BuildKit's `SingleWordExpander`.
+/// Expands one word of a step: dockerfile/1.27.1's `SingleWordExpander`.
 pub type Expand<'a> = &'a mut dyn FnMut(&[u8]) -> Result<Vec<u8>, Vec<u8>>;
 
 /// `parseMount`: a `--mount` value, each value expanded by `expand` as the step runs.

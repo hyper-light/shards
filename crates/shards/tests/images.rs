@@ -88,7 +88,7 @@ fn images_run_from_a_registry() {
         "the stored image served the second run"
     );
 
-    // Named by the digest its tag resolved to, as dockerd's store finds one pulled by its
+    // Named by the digest its tag resolved to, the store keeping that digest beside its
     // tag: the stored image, whether the run may pull or not, nothing fetched.
     let digests = run_shards_env(
         &["image"],

@@ -128,7 +128,7 @@ impl<'n> Asks<'n> {
     }
 }
 
-/// A random 64-hex ID, as dockerd's stringid makes a network's.
+/// A random 64-hex ID, the form clients parse and abbreviate (D46).
 fn new_id() -> Result<String, String> {
     crate::containers::new_id().map_err(|e| e.to_string())
 }
@@ -628,8 +628,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `shards network disconnect NETWORK CONTAINER` (NetworkDisconnect): a created or
-    /// stopped microVM's endpoint on the network gone, as dockerd removes it; a running
-    /// one's, shards does not take away live yet.
+    /// stopped microVM's endpoint on the network gone, so that its next start is not on
+    /// it (D46); a running one's, shards does not take away live yet.
     pub(super) fn network_disconnect(&self, parsed: &shards_cmdline::flags::Parsed, reply: &Reply<'_>) -> u8 {
         let (Some(term), Some(given)) = (parsed.args.first(), parsed.args.get(1)) else {
             return 1;
@@ -721,8 +721,9 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Network `id`'s members: those whose runs are going, as dockerd's endpoints last as
-    /// long as their sandboxes. One whose run has gone, however its start ended, is gone.
+    /// Network `id`'s members: those whose runs are going, as a member's link and address
+    /// last as long as its microVM (D46). One whose run has gone, however its start ended,
+    /// is gone.
     pub(super) fn members_of(&self, id: &str) -> Vec<Member> {
         let runs = lock(&self.runs);
         lock(&self.members)
@@ -756,10 +757,9 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// MicroVM `id`'s endpoint on user network `term` (its `--ip`, its aliases), as
-    /// libnetwork makes a container's as it starts: its address the asked one, or the
-    /// lowest free in the network's range; a member until its run ends. dockerd's words
-    /// where the start fails.
+    /// MicroVM `id`'s endpoint on user network `term` (its `--ip`, its aliases), made as
+    /// it starts (D46): its address the asked one, or the lowest free in the network's
+    /// range; a member until its run ends. The words scripts match where the start fails.
     pub(super) fn join_network(
         &self,
         id: &str,
@@ -962,7 +962,7 @@ impl<D: Disk> Daemon<D> {
             )?;
         }
         // A link to each other member, where its network lets them reach one another
-        // (`enable_icc`); none where it does not, as dockerd's bridge keeps them apart.
+        // (`enable_icc`); none where it does not: no link, no flow (D46).
         for peer in self
             .members_of(&network.id)
             .into_iter()
@@ -1431,7 +1431,7 @@ impl<D: Disk> Daemon<D> {
         0
     }
 
-    /// Network `n` as dockerd's network.Inspect says it.
+    /// Network `n` in the shape inspect answers (D46, D170).
     pub(super) fn network_value(&self, n: &Network) -> Value {
         self.network_value_of(n, &self.members_of(&n.id))
     }
@@ -1691,7 +1691,8 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// The networks `filters` keep, in dockerd's terms and words.
+    /// The networks `filters` keep, by the filters clients send and in the words scripts
+    /// match (D46).
     fn networks_by(&self, filters: &Filters) -> Result<Vec<Network>, String> {
         let kind = match filters.get("type").next() {
             None => None,

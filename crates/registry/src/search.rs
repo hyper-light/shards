@@ -123,7 +123,7 @@ fn refused(status: u16, body: &[u8]) -> Error {
 }
 
 /// Docker Hub's index search at `index`, as many as `limit`: what its index finds of
-/// `term`, with `credentials` as dockerd sends them.
+/// `term`, with `credentials` sent as dockerd sends them (D172).
 pub fn hub(
     http: Client,
     index: &Url,
@@ -450,7 +450,7 @@ fn named(p: &Platform) -> String {
 
 /// What an index's images run on, best for `wanted` first, as a pull chooses: the chosen
 /// one, or every platform it has. An entry without a platform, or with `unknown`'s (an
-/// attestation, as BuildKit labels one), names none.
+/// attestation, labelled so by BuildKit), names none.
 fn chosen(index: &Index, wanted: &[Target]) -> Result<Descriptor, Vec<String>> {
     let labelled: Vec<Descriptor> = index
         .manifests

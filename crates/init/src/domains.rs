@@ -1408,10 +1408,9 @@ pub fn start(
             continue;
         }
         let fail = |why: String| format!("the volume at {}: {why}", sh.dest);
-        // Where it lies in the image, as runc finds a mount point in a container's root
-        // (securejoin): the image's symlinks on the way followed in it, `..` never above
-        // it, so that a domain mounts it where the run's root would, and keeps the
-        // image's own symlinks (`/var/run`).
+        // Where it lies in the image, resolved in it (securejoin): the image's symlinks on
+        // the way followed in it, `..` never above it, so that a domain mounts it where the
+        // run's root would, and keeps the image's own symlinks (`/var/run`).
         let real = built
             .resolve(sh.dest.as_bytes(), false)
             .map_err(|e| fail(e.to_string()))
@@ -1491,9 +1490,9 @@ pub fn start(
                 .is_none())
         };
         if !sh.main && sh.copy && !sh.ro && empty()? {
-            // The image's directory there, found in the image as Docker finds a volume's
-            // mount point in the container's root (FollowSymlinkInScope): no symlink of
-            // the image leads the fill out of it, to init's root or another's volume.
+            // The image's directory there, found in the image (FollowSymlinkInScope): no
+            // symlink of the image leads the fill out of it, to init's root or another's
+            // volume.
             match built.open_at(real.as_bytes(), libc::O_PATH | libc::O_DIRECTORY) {
                 Ok(dir) => {
                     // `/.` past the descriptor: the directory's own owner and mode.

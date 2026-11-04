@@ -1,6 +1,7 @@
-//! Build checks, as BuildKit's `frontend/dockerfile/linter` runs them: rules, each skipped
-//! or enabled by the file's `# check=` directive and by a `# check=` comment just before an
-//! instruction, and warnings with BuildKit's names, descriptions, links and messages.
+//! Build checks, as BuildKit's linter runs them (D73, frontend/dockerfile/linter): rules,
+//! each skipped or enabled by the file's `# check=` directive and by a `# check=` comment
+//! just before an instruction, and warnings with BuildKit's names, descriptions, links and
+//! messages.
 
 use std::cell::RefCell;
 

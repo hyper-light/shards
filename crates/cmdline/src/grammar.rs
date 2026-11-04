@@ -126,8 +126,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         // An image goes with the stopped microVMs made from it.
         ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
         // An image not yet a microVM is made one first, as anything but its removal
-        // asked of it does (`--convert`); Docker's own order, `image inspect`, answers
-        // as Docker's does.
+        // asked of it does (`--convert`); Docker's own order, `image inspect`, keeps the
+        // answer its scripts parse.
         ("inspect", Thing::Image) => &["image", "inspect", "--convert"],
         ("inspect", Thing::Disk) => &["system", "df"],
         ("prune", Thing::Vm | Thing::Container) => &["container", "prune"],
@@ -724,7 +724,7 @@ pub fn ours(text: &str) -> String {
         .replace("Container", "MicroVM")
 }
 
-/// What an option does, said as shards does it, where Docker's words for it (`docker`'s),
+/// What an option does, said as shards does it, where the Docker CLI's text (`docker`'s),
 /// made shards' ([`ours`]), would still say what shards does otherwise: a device is its
 /// microVM's, not the host's (D152); an annotation is kept with its microVM, which no OCI
 /// runtime is given; isolation and the runtime are its VM's (D155); privileges and the OOM
@@ -1005,7 +1005,7 @@ mod tests {
         assert_eq!(form("list nothing"), None);
     }
 
-    /// An option Docker's words would misstate for a microVM is said as shards does it;
+    /// An option the Docker CLI's text would misstate for a microVM is said as shards does it;
     /// others are left to [`ours`].
     #[test]
     fn options_are_said_as_microvms_do_them() {

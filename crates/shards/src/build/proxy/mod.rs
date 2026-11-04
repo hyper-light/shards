@@ -9,7 +9,7 @@
 //!   certificate the build's CA signs for the tunnel's host, each request in it checked
 //!   as `https://` and the tunnel's host.
 //!
-//! A refusal is `403 Forbidden` as BuildKit sends it; each request let through goes on
+//! A refusal is `403 Forbidden`, as BuildKit v0.33.0 sends it; each request let through goes on
 //! with the hop-by-hop fields and `Accept-Encoding` taken off, as the client asked it,
 //! through the proxies the build's environment names, trusting what the host trusts
 //! (`tls::client_config`), and its response comes back as it was; a failure is a `502`.
@@ -34,7 +34,7 @@ use shards_agentfile::url as gourl;
 const NO_PROXY: &str = "127.0.0.1,localhost,::1";
 
 /// `network.ProxyEnv`: the eight variables a step under the proxy is given, `proxy` its URL,
-/// in BuildKit's order.
+/// in BuildKit v0.33.0's order.
 pub fn env(proxy: &str) -> Vec<Vec<u8>> {
     [
         ("HTTP_PROXY", proxy),

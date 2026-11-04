@@ -52,9 +52,9 @@ pub(super) struct Held {
     pub listeners: Vec<Sock>,
 }
 
-/// Whether bindings at `a` and `b` would take one another's connections, as dockerd's
-/// allocator counts them (moby daemon/libnetwork/portallocator, RequestPortsInRange): one
-/// port, one family, and either address the family's every one, or both the same.
+/// Whether bindings at `a` and `b` would take one another's connections, on every host
+/// alike whatever its kernel lets in (review 2.7): one port, one family, and either address
+/// the family's every one, or both the same.
 pub(super) fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
     a.port() == b.port()
         && a.is_ipv4() == b.is_ipv4()
@@ -211,8 +211,8 @@ pub(super) fn bind(
                 }
             }
         } else {
-            // An IPv4 address mapped into IPv6's is IPv4's, as dockerd records and binds
-            // it (Go's IP.To4).
+            // An IPv4 address mapped into IPv6's is IPv4's, recorded and bound as the
+            // address it is (RFC 4291 2.5.5.2), so that it overlaps IPv4's own.
             let ip: IpAddr = b
                 .host_ip
                 .parse()
@@ -296,11 +296,11 @@ fn bind_all(
         let mut chosen = port;
         let mut failed = None;
         for ip in ips {
-            // A port this daemon's container holds at the address, or at every address of
-            // its family, is refused before any bind, as dockerd's allocator refuses it,
-            // whether or not the kernel would: BSD's SO_REUSEADDR lets a specific address
-            // in over a listener at the family's every address (review 2.7). One freed as
-            // its run ended is bound.
+            // A port this daemon's microVM holds at the address, or at every address of its
+            // family, is refused before any bind, whether or not the kernel would, so that
+            // no two runs split one port's connections: BSD's SO_REUSEADDR lets a specific
+            // address in over a listener at the family's every address (review 2.7). One
+            // freed as its run ended is bound.
             if chosen != 0 && in_use(SocketAddr::new(*ip, chosen)) == InUse::Allocated {
                 return Err(format!(
                     "{ip}:{chosen}: port is already allocated, to another run"
@@ -459,7 +459,7 @@ fn listen(at: SocketAddr, proto: u8) -> std::io::Result<(OwnedFd, u16)> {
     } else {
         libc::SOCK_STREAM
     };
-    // Close-on-exec from its making where the kernel can (Linux), as dockerd makes it:
+    // Close-on-exec from its making where the kernel can (Linux, SOCK_CLOEXEC):
     // a VM spawned on another thread meanwhile would otherwise have it, ipc's spawn
     // trusting every descriptor to be. macOS cannot, and spawns with
     // POSIX_SPAWN_CLOEXEC_DEFAULT.
@@ -572,9 +572,9 @@ mod tests {
         );
     }
 
-    /// A port in use is refused in dockerd's words, its allocator's for a container's;
-    /// one the kernel picks is the same at IPv4 and IPv6; a range takes its first free
-    /// port.
+    /// A port in use is refused in the words scripts match (moby docker-v29.3.1
+    /// portallocator.go), its allocator's for a microVM's; one the kernel picks is the same
+    /// at IPv4 and IPv6; a range takes its first free port.
     #[test]
     fn ports_bind_on_the_host() {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -631,8 +631,8 @@ mod tests {
     }
 
     /// A port held at an address overlaps it at the family's every address, and that at
-    /// every one of its addresses, as dockerd's allocator counts them; families apart, and
-    /// ports apart, do not.
+    /// every one of its addresses, whatever the host's kernel lets in (review 2.7); families
+    /// apart, and ports apart, do not.
     #[test]
     fn bindings_overlap_across_a_familys_addresses() {
         let at = |s: &str| s.parse::<SocketAddr>().unwrap();
@@ -715,8 +715,8 @@ mod tests {
         assert!(std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, port)).is_ok());
     }
 
-    /// An IPv4 address mapped into IPv6's binds and is recorded as IPv4's, as dockerd
-    /// binds and records it.
+    /// An IPv4 address mapped into IPv6's binds and is recorded as IPv4's, the address it
+    /// is (RFC 4291 2.5.5.2).
     #[test]
     fn a_mapped_address_is_ipv4s() {
         let bound = bind(
@@ -742,8 +742,8 @@ mod tests {
     }
 
     /// A port published at no address is IPv4's every address alone where IPv6 cannot
-    /// listen (a kernel booted with ipv6.disable=1), as dockerd binds it, and IPv6's too
-    /// where it can (review 2.18).
+    /// listen (a kernel booted with ipv6.disable=1), so that the run still starts, and
+    /// IPv6's too where it can (review 2.18).
     #[test]
     fn a_host_without_ipv6_publishes_at_ipv4_alone() {
         let any = Publish {
@@ -857,8 +857,9 @@ mod tests {
         assert!(listen(SocketAddr::new(at.ip(), port), TCP).is_ok());
     }
 
-    /// A UDP port is bound as dockerd binds one: a datagram socket, in use at the same
-    /// port refused in bindTCPOrUDP's words, and apart from TCP's at that port.
+    /// A UDP port is bound as a datagram socket, in use at the same port refused in the
+    /// words scripts match (moby docker-v29.3.1 portmapper's bindTCPOrUDP), and apart from
+    /// TCP's at that port.
     #[test]
     fn udp_ports_bind_apart_from_tcp() {
         let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
@@ -883,8 +884,8 @@ mod tests {
     }
 
     /// A port published at no address on a network with a default one
-    /// (`host_binding_ipv4`) is bound there alone, IPv4's or IPv6's, as dockerd binds it;
-    /// one given an address keeps its own.
+    /// (`host_binding_ipv4`) is bound there alone, IPv4's or IPv6's, so that a network made
+    /// to keep its ports on the host does (D46); one given an address keeps its own.
     #[test]
     fn a_port_at_no_address_takes_its_networks() {
         let at = |host_ip: &str, default: Option<IpAddr>| -> Vec<IpAddr> {

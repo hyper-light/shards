@@ -39,8 +39,7 @@ struct ArchiveManifest {
     layers: Vec<String>,
 }
 
-/// An image the archive names, as containerd's Import makes it: a name and what it
-/// resolved to.
+/// An image the archive names (D100): a name and what it resolved to.
 struct Named {
     name: String,
     target: Descriptor,
@@ -106,8 +105,9 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
         let name = String::from_utf8_lossy(&entry.path).into_owned();
         match entry.kind {
             shards_image::tar::Type::Symlink => {
-                // path.Join(path.Dir(name), link), as containerd's importer resolves one:
-                // cleaned, so that a legacy archive's `../<id>/layer.tar` names its blob.
+                // path.Join(path.Dir(name), link), the link's meaning in the archives
+                // `save` writes (D100): cleaned, so that a legacy archive's
+                // `../<id>/layer.tar` names its blob.
                 let dir = name.rsplit_once('/').map_or("", |(d, _)| d);
                 let joined = shards_agentfile::go::join(&[dir.as_bytes(), &entry.link]);
                 symlinks.push((name, String::from_utf8_lossy(&joined).into_owned()));
@@ -190,8 +190,8 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
                 .ok_or_else(|| format!("failed to resolve layers: layer {l:?} not found"))?;
             let (digest, size) = compressed.get(digest).unwrap_or(&(digest.clone(), *size)).clone();
             let (digest, size) = (&digest, &size);
-            // resolveLayers: its media type, as containerd's DecompressStream tells it from
-            // the first ten bytes.
+            // resolveLayers: its media type, told from its first ten bytes, the magic numbers
+            // of gzip (RFC 1952), zstd (RFC 8878), bzip2 or xz.
             let mut head = Vec::with_capacity(10);
             std::fs::File::open(store.blob_path(digest))
                 .and_then(|f| f.take(10).read_to_end(&mut head))
@@ -332,7 +332,8 @@ fn named(index: &oci::Index) -> Vec<Named> {
 /// itself if it is a manifest for it, as its descriptor labels it or else its config says,
 /// as an unpack checks it; or the best its index offers for it of what the archive holds,
 /// as an index may list platforms it was saved without. An image for another platform
-/// is loaded, not unpacked, and nothing is said of it, as dockerd says nothing.
+/// is loaded, not unpacked, and nothing is said of it: it is kept for a push or a run
+/// that names its platform (D179).
 fn ours(store: &Store, target: &Descriptor) -> Option<Descriptor> {
     let targets = shards_image::platform::guest();
     let held = |d: &Descriptor, limit: u64| match store.held(d, limit) {
@@ -477,8 +478,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 
     /// The images of archive `file` (a `docker save` archive or an OCI image layout, as
-    /// tar, plain or compressed), stored, named, and each made a microVM, as containerd's
-    /// importer and then shards' unpack do: what each is said as, and how its unpack went.
+    /// tar, plain or compressed), stored, named, and each made a microVM by shards' unpack
+    /// (D100): what each is said as, and how its unpack went.
     /// Where `platforms` names some, each image's microVMs of those alone (D179): each must
     /// be in the archive, or nothing is named; the archive's other platforms are not kept,
     /// but for what an image here held before it came. The caller holds the store's lease.

@@ -63,7 +63,7 @@ pub struct Container {
     #[serde(default)]
     pub stop_timeout: Option<i64>,
     /// Its ports while it runs: each published at a host address and port, or exposed
-    /// alone (no address, public port 0), as dockerd lists them.
+    /// alone (no address, public port 0), as `inspect` and listings report them.
     #[serde(default)]
     pub ports: Vec<PortRecord>,
     /// Its image's ID, what its reference resolved to as it was made (`images` counts
@@ -180,9 +180,9 @@ pub struct PortRecord {
 
 pub use crate::spec::now;
 
-/// A new container ID: 32 random bytes in hex, as moby's `stringid.GenerateRandomID`
-/// makes them, drawn again while the first 12 digits are all decimal: the short ID names
-/// the container's host, and a hostname must not look like a number
+/// A new container ID: 32 random bytes in hex, the form clients parse
+/// (`stringid.GenerateRandomID`), drawn again while the first 12 digits are all decimal:
+/// the short ID names the container's host, and a hostname must not look like a number
 /// (moby daemon/internal/stringid/stringid.go).
 pub fn new_id() -> io::Result<String> {
     loop {

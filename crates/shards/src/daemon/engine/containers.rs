@@ -166,8 +166,9 @@ pub(super) fn warnings(said: &str) -> Vec<String> {
         .collect()
 }
 
-/// A list's `filters`, as moby reads them (filters.FromJSON): an object of each key's
-/// values, given as an object of values to `true`, or as a list.
+/// A list's `filters`, as clients send them (D170; moby docker-v29.3.1
+/// daemon/internal/filters/parse.go `FromJSON`): an object of each key's values, given as
+/// an object of values to `true`, or as a list.
 pub(super) fn filters(given: Option<&str>) -> Result<Vec<(String, String)>, String> {
     let Some(given) = given.filter(|g| !g.is_empty()) else {
         return Ok(Vec::new());
@@ -460,8 +461,8 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// `GET /containers/{id}/checkpoints`: its snapshots' names, as moby's
-    /// checkpoint.Summary list.
+    /// `GET /containers/{id}/checkpoints`: its snapshots' names, in the shape clients
+    /// parse (D170, moby's checkpoint.Summary list).
     pub(super) fn engine_checkpoints(&self, given: &str, call: &Call<'_>) -> Answer {
         if call.query("dir").is_some_and(|d| !d.is_empty()) {
             return Answer::error(400, CHECKPOINT_DIR);
@@ -669,7 +670,7 @@ impl<D: Disk> Daemon<D> {
     /// `POST /containers/{id}/wait`: its status once it is not running (`not-running`,
     /// at once if it is not), once it next ends (`next-exit`, though it has yet to start),
     /// or once it is removed (`removed`). Its waiter is registered before its head is
-    /// written, as dockerd's is: a client starts the container once it has the head
+    /// written: a client starts the microVM once it has the head
     /// (`docker run`), and an end that comes then is heard.
     pub(super) fn engine_wait(&self, conn: &UnixStream, given: &str, call: &Call<'_>) -> Done {
         let id = match self.resolve(given) {

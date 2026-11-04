@@ -1143,7 +1143,7 @@ impl Builder {
         }
         let layers: Vec<u32> = step.outputs.iter().map(|o| o.1).collect();
         // Its session, begun before it starts: its requests go upstream through the
-        // proxies the build's environment names, as BuildKit's through its daemon's.
+        // proxies the build's environment names (D110).
         let (session, questions, mut check) = match proxy {
             Some((p, check)) => {
                 let upstream = shards_registry::proxy::Proxies::from_env(&|k| std::env::var(k).ok());
@@ -1306,8 +1306,8 @@ impl Builder {
 /// The longest message an SSH agent takes or sends (OpenSSH's AGENT_MAX_MSGLEN).
 pub(crate) const AGENT_MAX: usize = 256 * 1024;
 
-/// What a step may ask of an agent, as BuildKit's read-only agent lets it
-/// (sshprovider readOnlyAgent): its keys, signatures, and unlocking; adding, removing or
+/// What a step may ask of an agent, read-only as BuildKit's agentprovider.go lets it
+/// (`readOnlyAgent`): its keys, signatures, and unlocking; adding, removing or
 /// locking keys and extensions are refused.
 pub(crate) const AGENT_ALLOWED: [u8; 3] = [11, 13, 23];
 
@@ -1381,7 +1381,7 @@ fn serve_agent(
     };
     let path = match agent {
         Agent::Socket(path) => path,
-        // The keys of files: answered here, as BuildKit's keyring answers, read-only.
+        // The keys of files: answered here, read-only, as agentprovider.go's keyring answers.
         Agent::Keys(keys) => {
             while let Some(request) = read_msg(&mut from)? {
                 write_msg(&mut &conn, &super::sshkey::answer(keys, &request))?;

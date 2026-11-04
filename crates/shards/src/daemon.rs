@@ -6,12 +6,12 @@
 //! the pool refills. A run with no template yet boots a VM that saves one on the way, and
 //! a run with its own kernel and init boots every time.
 //!
-//! Once a warm VM has taken a run, it serves the client directly, and tells the daemon
-//! how the command ended. The daemon follows each run to that end, and can signal its
-//! command meanwhile. It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a
-//! run or a run in progress. `shards daemon stop`, and a client of another build, first
-//! end the runs in progress, as dockerd ends its containers when it shuts down; the next
-//! daemon takes the home once this one has gone.
+//! Once a warm VM has taken a run, it serves the client directly, and tells the daemon how
+//! the command ended. The daemon follows each run to that end, and can signal its command
+//! meanwhile. It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a run or a
+//! run in progress. `shards daemon stop`, and a client of another build, first end the runs
+//! in progress, so that no run outlives the daemon that follows it (D27); the next daemon
+//! takes the home once this one has gone.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -450,8 +450,8 @@ impl Wake {
 #[cfg(unix)]
 type ApiListener = UnixListener;
 
-/// The Engine API's listener on Windows: a named pipe, as Docker's clients reach their
-/// engine there (npipe), each client an instance of its own and this user's alone
+/// The Engine API's listener on Windows: a named pipe, the transport its clients dial
+/// there (npipe, D170), each client an instance of its own and this user's alone
 /// (shards_ipc::Listener).
 #[cfg(windows)]
 type ApiListener = shards_ipc::Listener;
@@ -488,9 +488,9 @@ fn accept_api(api: &ApiListener) -> io::Result<UnixStream> {
 
 /// A listener at `path` that a client finds listening once it finds the name, not blocking:
 /// bound beside it and renamed there once it listens, where a client that found the name
-/// between bind(2) and listen(2) was refused (ECONNREFUSED), as Docker's clients, which do
-/// not ask again, would be as the daemon starts. The rename replaces what was there, in one
-/// step.
+/// between bind(2) and listen(2) was refused (ECONNREFUSED), and the Engine API's clients
+/// do not ask again (D170), so would fail as the daemon starts. The rename replaces what
+/// was there, in one step.
 #[cfg(unix)]
 fn listening_at(path: &Path) -> std::io::Result<UnixListener> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -1102,7 +1102,8 @@ struct Daemon<D: Disk = Real> {
     next_waiter: AtomicU64,
     /// Numbers each exec handed to a VM (`kind::EXEC_RUN`).
     next_exec: AtomicU64,
-    /// Each running container's health, if it has a check: in memory, as dockerd keeps it.
+    /// Each running microVM's health, if it has a check: in memory, as its checks run in
+    /// this daemon and end with it.
     health: Mutex<HashMap<String, health::State>>,
     /// The host addresses runs publish, from their binding until the network process
     /// that took them has gone, and told as each goes.
@@ -1533,8 +1534,9 @@ fn settings() -> Result<Settings, String> {
     })
 }
 
-/// Docker's default bridge, elected as the daemon starts and kept for its life, as dockerd
-/// keeps the one it makes as it starts (shards_net::bridge::elected_here); what it is, in the log.
+/// The default network's bridge, elected as the daemon starts and kept for its life, so
+/// that every run it serves has one subnet (D31, shards_net::bridge::elected_here); what
+/// it is, in the log.
 fn elect_bridge() -> Option<shards_net::bridge::Bridge> {
     let bridge = shards_net::bridge::elected_here(&mut |note| log(note));
     match &bridge {
@@ -2329,7 +2331,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 // The client's descriptors are closed by now: its run goes on in the VM.
                 if let Some((id, inbox)) = handed {
-                    // Its health checks, as dockerd's monitor runs them.
+                    // Its health checks, run by this daemon (health.rs).
                     self.watch_health(threads, &id);
                     self.follow(threads, id, inbox);
                 }
@@ -2730,8 +2732,8 @@ impl<D: Disk> Daemon<D> {
             refused(&e);
             return None;
         }
-        // Its networks as dockerd checks them before it makes the container; what fails
-        // as it starts fails once the container is made.
+        // Its networks checked before its record is made, so that a refused run leaves
+        // none (D46); what fails as it starts fails once the record is made.
         // Connected to one user network from the default bridge: on it alone (D46).
         if let Some(only) = self.connected_network(&run) {
             run.network.clone_from(&only);
@@ -2876,12 +2878,12 @@ impl<D: Disk> Daemon<D> {
                 self.make_spare();
             }
         };
-        // A joiner of a container on the host's network is on it too (D124), as dockerd's
-        // is, in the host's network namespace.
+        // A joiner of a microVM on the host's network is on it too (D124), in the host's
+        // network namespace.
         let joins_host = matches!(&start, network::Start::Join(name) if self.joins_hosts_network(name));
-        // A joiner's names are its provider's, as dockerd gives a joiner the other's
-        // (initializeNetworking): its hostname and domain name; but one its microVM's
-        // engine made on that engine's network has a namespace and names of its own (D181).
+        // A joiner's names are its provider's, as it shares the provider's network (D119):
+        // its hostname and domain name; but one its microVM's engine made on that engine's
+        // network has a namespace and names of its own (D181).
         if let network::Start::Join(name) = &start
             && run.engine_net.is_empty()
             && let Some((hostname, domainname)) = self.names_of(name)
@@ -2927,10 +2929,10 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
-        // The host's resolvers as dockerd gives a container them, on its bridge or on
-        // none (the legacy transform, neither with IPv6), read as the run starts; with
-        // them the command still within a frame (review 1.y), as spec.rs measured it
-        // without.
+        // The host's resolvers, made over for its bridge or for none (moby docker-v29.3.1
+        // libnetwork/resolvconf's legacy transform, neither with IPv6), read as the run
+        // starts; with them the command still within a frame (review 1.y), as spec.rs
+        // measured it without.
         // A joiner's: an Agentfile's agents are not yet taken by a container joining
         // another's network (D119), as the guest refuses them.
         if let network::Start::Join(_) = &start
@@ -2992,8 +2994,8 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         // Its published ports, bound now so that its record lists them; a binding that
-        // fails, fails the start once the container is made, as dockerd's does. On none,
-        // dockerd publishes nothing, and says nothing of it.
+        // fails, fails the start once its record is made, so that `ps -a` shows what was
+        // asked (D27). On `none` there is no interface to publish to: nothing is.
         let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
         // A port its image's Agentfile declares `AS egress`: a destination, not a listener,
         // so none is published (AGENTFILE_ARCH.md §12 answer 6).
@@ -3066,10 +3068,11 @@ impl<D: Disk> Daemon<D> {
         };
         // Its own MAC where it has an interface of its own (D46, PM M173): given
         // (`--mac-address`, its endpoint's `mac-address`), which its VM takes as the run
-        // comes; else made for it, as dockerd makes each endpoint's, so that no two runs of
+        // comes; else made for it, so that no two runs of
         // one template share its MAC: its VM's own, made with the VM, which the VM's guest
         // took before the run came (D31, E1). One that is not a MAC is refused before the
-        // container is made, as dockerd refuses it (validateEndpointSettings).
+        // record is made, in the words clients match (moby docker-v29.3.1
+        // validateEndpointSettings).
         let run_mac: Option<Vec<u8>> = match start {
             network::Start::Attach(network::Net::Bridge | network::Net::User) => {
                 match crate::setup::own_endpoint(&run)
@@ -3170,10 +3173,9 @@ impl<D: Disk> Daemon<D> {
         // is written while a VM is found for it.
         let made = match &again {
             // Its record stays, with the ports it has now. A restart by its policy keeps
-            // its last exit code until it runs (`run_started`), as dockerd's SetRunning
-            // clears it with Restarting, so that it shows `Restarting (N)` meanwhile; one
-            // asked for (`start`) has none from here, so that a `wait` asked after it waits
-            // for this run's, as `docker start` returns once its container runs.
+            // its last exit code until it runs (`run_started`), so that it shows
+            // `Restarting (N)` meanwhile; one asked for (`start`) has none from here, so that
+            // a `wait` asked after it waits for this run's, which the start returns before.
             Some(_) => {
                 let by_policy = lock(&self.restarting_now).contains(&id);
                 let mut registry = lock(&self.containers);
@@ -3966,15 +3968,15 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Whose host address `at`, found in use, is: the host's; a running container's of
-    /// this daemon, as dockerd's allocator knows its own; or a run's that ended, waited
+    /// Whose host address `at`, found in use, is: the host's; a running microVM's of
+    /// this daemon, which knows its own bindings (`published`); or a run's that ended, waited
     /// for until its network process has gone (its grace, `netproc::GRACE`, and as long
     /// again), where that process never said it closed the run's ports. A run's VM says
     /// PORTS_FREE, as that process has, and DONE, before it tells its client (warm.rs
     /// `finish`), whose next program may bind the port at once: what the holder's run has
     /// sent is taken first, as a name's holder's is (`create`), so that a run its client
-    /// has seen end holds the port no longer, as dockerd's has let go of it by the time
-    /// `docker run` returns.
+    /// has seen end holds the port no longer: a script that runs it again at once finds it
+    /// free (PM M134, M158).
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let began = Instant::now();
         let deadline = began + crate::netproc::GRACE.saturating_mul(2);
@@ -4043,14 +4045,14 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// What a run's guest knows of names (`run`'s `--dns*`, `--add-host` and
-    /// `--domainname`): its `/etc/resolv.conf`, the host's made over as dockerd makes it
-    /// for its bridge (the legacy transform, without IPv6), the run's resolvers in place
-    /// of the host's; `/etc/hosts`' extra lines, `host-gateway` the bridge's gateway, as
-    /// dockerd's HostGatewayIPs default to its bridge's; and the domain name.
+    /// `--domainname`): its `/etc/resolv.conf`, the host's made over for its bridge (moby
+    /// docker-v29.3.1 libnetwork/resolvconf's legacy transform, without IPv6), the run's
+    /// resolvers in place of the host's; `/etc/hosts`' extra lines, `host-gateway` the
+    /// bridge's gateway, the host as the microVM reaches it (D31); and the domain name.
     pub(super) fn name_guest(&self, run: &Run, spec: &mut shards_abi::run::Spec) -> Result<(), String> {
         // On the host's network (D124, PM M177): the host's resolvers as they are, loopback
-        // ones too, which are the host's own there; its hosts file, which `--add-host`
-        // adds nothing to, as dockerd's.
+        // ones too, which are the host's own there; its hosts file, the host's own, which
+        // `--add-host` adds nothing to.
         if run.network == "host" {
             spec.resolv = Some(crate::build::step::resolv_host(
                 &crate::build::step::host_resolv(),
@@ -4406,9 +4408,9 @@ impl<D: Disk> Daemon<D> {
         if let Some(a) = &prepared.agentfile {
             a.refuse(run)?;
         }
-        // A name held by a container that ended with `--rm`, its end not yet taken or its
-        // removal not yet durable, is free once that is done, as dockerd's is by the time
-        // `docker run --rm` returns: its end is taken, and its removal waited for.
+        // A name held by a microVM that ended with `--rm`, its end not yet taken or its
+        // removal not yet durable, is free once that is done, so that a script's next
+        // `run --rm --name` finds it free: its end is taken, and its removal waited for.
         if let Some(given) = &run.name {
             let name = given.strip_prefix('/').unwrap_or(given);
             let holder = lock(&self.containers).name_taken(name).map(|c| c.id.clone());
@@ -4706,8 +4708,8 @@ impl<D: Disk> Daemon<D> {
     /// [`container_event`](Self::container_event), of a container named `name` made
     /// from `image`, with `labels`: what clients that follow events filter them by, as
     /// Compose follows its project's (`label=com.docker.compose.project=P`). Its own
-    /// attributes first, its labels over them, then its image and name, in moby's order
-    /// (copyAttributes).
+    /// attributes first, its labels over them, then its image and name, the order clients
+    /// read (moby docker-v29.3.1 daemon/events.go copyAttributes).
     pub(super) fn event_for(
         &self,
         id: &str,
@@ -6096,8 +6098,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Stops serving: ends its offers, ends the runs in progress, and exits once they
-    /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
-    /// build, whose own daemon then takes the home).
+    /// have ended, so that none outlives it (D27; `shards daemon stop`, or a client of
+    /// another build, whose own daemon then takes the home).
     /// Stops serving, for `why`, which its log says: a daemon gone with no word of why
     /// left a test only its absence to go by (a_container_outlives_a_daemon_that_dies, dev
     /// 3c2e3cd3's CI).
@@ -8259,8 +8261,9 @@ fn isolation(run: &Run) -> Result<(), String> {
     }
 }
 
-/// A run's annotations as dockerd keeps them (HostConfig.Annotations, which docker/cli's
-/// MapOpts makes): each key's last value, a key alone given the empty one.
+/// A run's annotations as inspect answers them (HostConfig.Annotations, D66), from
+/// `--annotation` as docker/cli's MapOpts reads it: each key's last value, a key alone
+/// given the empty one.
 pub(crate) fn annotations(run: &Run) -> std::collections::BTreeMap<String, String> {
     run.annotations
         .iter()
@@ -11105,7 +11108,7 @@ mod tests {
         });
     }
 
-    /// A container is found from its creation, as dockerd's is: `exec` right after an
+    /// A microVM is found from its creation: `exec` right after an
     /// attached run starts, while its record is being written, finds it, not "No such
     /// container" (seen 2026-10-02 under the parallel suite).
     #[test]
@@ -12496,8 +12499,8 @@ mod tests {
 
     /// The name a `--rm` container held is free for the next container as soon as its run
     /// has ended: its end is taken, by the followers or by the next container's making,
-    /// and its removal, which the completer makes durable, waited for; as dockerd's name
-    /// is free by the time `docker run --rm` returns.
+    /// and its removal, which the completer makes durable, waited for: a script's next
+    /// `run --rm --name` finds it free.
     #[test]
     fn a_rm_containers_name_is_free_once_its_run_ends() {
         let t = Test::new("rm-name");

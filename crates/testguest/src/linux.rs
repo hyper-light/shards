@@ -2134,7 +2134,7 @@ fn daemon() -> Result<(), String> {
     std::fs::write("/etc/cdi/shards-test-vfio.json", spec).map_err(|e| format!("the CDI spec: {e}"))?;
     let words: Vec<&str> = command.split(',').filter(|a| !a.is_empty()).collect();
     // The runs: given the group by its node, then by a CDI device, then by the directory
-    // of VFIO's nodes, as dockerd walks one; then, where this guest's kernel makes them
+    // of VFIO's nodes, every group in it (D154); then, where this guest's kernel makes them
     // (VFIO_DEVICE_CDEV), each function by its device node and iommufd, and by the
     // directory of the device nodes, its workload taking them so too.
     let cdevs: Vec<String> = functions

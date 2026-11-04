@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use shards_cmdline::mounts::{self, Mount, clean};
 
-/// A mount point of a container, as dockerd keeps one (volumemounts.MountPoint).
+/// A mount point of a container, in the shape `inspect`'s `Mounts` answers
+/// (volumemounts.MountPoint, D38).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MountPoint {
     /// `bind`, `volume` or `tmpfs`.
@@ -62,7 +63,7 @@ pub struct MountPoint {
 /// CDI's mounts (D146), as CDI's Apply adds them to a container's spec: each a bind of
 /// its host path at its container path, read-only with `ro`, of the propagation its
 /// options name (rprivate where none), its `nosuid`, `nodev` and `noexec` the guest's
-/// mount's. A container's record keeps none of them, as dockerd's keeps none.
+/// mount's. A container's record keeps none of them, so `inspect` lists none (D146).
 pub fn cdi_points(given: &[crate::build::cdi::Mount]) -> Result<Vec<MountPoint>, String> {
     given
         .iter()
@@ -559,8 +560,7 @@ impl Volume {
 
 /// The local driver's validateOpts (daemon/volume/local/local_unix.go): `type`, `o`,
 /// `device` and `size`, `device` and `type` given together and with `o`; a size wants
-/// quotas, which shards' volumes have none of, as dockerd's have none on a filesystem
-/// without them.
+/// quotas, which shards' volumes have none of, and is refused.
 pub fn validate_options(opts: &BTreeMap<String, String>) -> Result<(), String> {
     for k in opts.keys() {
         if !matches!(k.as_str(), "type" | "o" | "device" | "size") {
@@ -937,7 +937,7 @@ fn register_into(
                 rw: m.rw && !mode.split(',').any(|o| o == "ro"),
                 copy_data: false,
                 // Whom it was for was that container's image's to say: this run's image
-                // says it here (below), and the volume is mounted, as Docker mounts it.
+                // says it here (below), and the volume is mounted as any other is.
                 domains: false,
                 domains_only: false,
                 ..m
@@ -1070,7 +1070,7 @@ pub struct Opened {
 }
 
 /// Opens `points` for a start, its first where `first`: a `-v` bind's missing source made,
-/// as dockerd makes it (volumemounts.MountPoint.Setup, createSource); a file shared through
+/// as `-v` means it (volumemounts.MountPoint.Setup, createSource); a file shared through
 /// its directory, limited to it; an image's files copied into a volume only as its
 /// container is first started, where dockerd copies them as it is made (populateVolumes).
 /// Each in the guest at `shards{i}`, `i` its place in `dirs`.
@@ -1167,7 +1167,7 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
         if p.domains {
             flags.push("domains");
             // The store's own volume, which an Agentfile's `--chown` and `--chmod` set;
-            // never a host directory, which only its owner changes, as Docker leaves it.
+            // never a host directory, which only its owner changes.
             if p.kind == "volume" && source == Path::new(&p.source) {
                 flags.push("own");
             }

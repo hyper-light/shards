@@ -978,7 +978,7 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     for (tree, target) in &owns {
         put_own(tree, target)?;
     }
-    // Its cgroup, read-only, as Docker's containers see theirs.
+    // Its cgroup, read-only: its limits are its to read, never to change (D156).
     mount(
         "cgroup2",
         "/sys/fs/cgroup",
@@ -1076,8 +1076,8 @@ impl io::Read for DiskRange<'_> {
     }
 }
 
-/// Makes the joiner's `/etc` a directory, as Docker's init layer does over an image that
-/// has anything else there.
+/// Makes the joiner's `/etc` a directory over an image that has anything else there, so
+/// that its hosts, hostname and resolv.conf have a place.
 fn etc_dir() -> Result<(), String> {
     let etc = format!("{ROOT}/etc");
     match std::fs::symlink_metadata(&etc) {

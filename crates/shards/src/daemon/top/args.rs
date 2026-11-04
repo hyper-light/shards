@@ -1327,7 +1327,8 @@ enum ListKind {
     Tty,
 }
 
-/// ps's own terminal: none, as dockerd's child has none.
+/// ps's own terminal: none, as `top`'s ps has none to inherit (procps-ng 4.0.2's output
+/// for one, scripts/top/generate).
 const CACHED_TTY: u32 = 0;
 
 /// display_ps_version.

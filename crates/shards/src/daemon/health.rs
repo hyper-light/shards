@@ -179,8 +179,8 @@ impl State {
     }
 }
 
-/// A probe's output as dockerd keeps it: its first [`MAX_OUTPUT`] bytes, then `...` if it
-/// wrote more (limitedBuffer), as text.
+/// A probe's output as inspect's `Health.Log` answers it (D170, moby's limitedBuffer):
+/// its first [`MAX_OUTPUT`] bytes, then `...` if it wrote more, as text.
 pub(super) fn kept_output(bytes: &[u8], more: bool) -> String {
     let mut out = String::from_utf8_lossy(bytes).into_owned();
     if more {
@@ -190,9 +190,9 @@ pub(super) fn kept_output(bytes: &[u8], more: bool) -> String {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// Checks container `id`'s health while it runs, as dockerd's monitor does: one probe
-    /// at a time, the next an interval after the last ended; on the checks' thread, which
-    /// the first starts. Nothing for a container without a check.
+    /// Checks microVM `id`'s health while it runs: one probe at a time, so that a slow
+    /// probe never piles up beside the next, the next an interval after the last ended; on
+    /// the checks' thread, which the first starts. Nothing for a microVM without a check.
     pub(super) fn watch_health<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
         let Some((cfg, _)) = self.check_of(id) else {
             return;
@@ -289,7 +289,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 
     /// One probe of container `id`, recorded, and the next made due an interval after it
-    /// ends; nothing of one that ends after the run did, as dockerd drops its result.
+    /// ends; nothing of one that ends after the run did, whose result says nothing of a run
+    /// that has gone.
     fn probe_once(&self, id: &str, cfg: &Config, argv: &[String]) {
         let since = self.since_start(id);
         let probe = self.probe(id, argv, cfg);

@@ -1,8 +1,8 @@
 //! `shards search image` (D172) against registries on loopback: a registry's catalog
 //! searched for a term; each result said to run on this machine or not, as a pull chooses
 //! its image, and what its pull takes; Docker's table piped, shards' fields by template;
-//! refusals in dockerd's words; a registry's credentials found as a pull finds them. No
-//! microVM, and no daemon: a search is the CLI's own.
+//! refusals in the words scripts match (D172); a registry's credentials found as a pull finds
+//! them. No microVM, and no daemon: a search is the CLI's own.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -171,7 +171,7 @@ fn a_registrys_images_are_found_and_said_to_run_here_or_not() {
             arch = ours()
         )
     );
-    // As many as the limit; filters as dockerd's: none official, none starred.
+    // As many as the limit; the filters' meanings (D172): none official, none starred.
     let (_, out, _) = shards(
         &dir,
         &config,
@@ -190,7 +190,7 @@ fn a_registrys_images_are_found_and_said_to_run_here_or_not() {
     assert_eq!(status, Some(0), "{err}");
     assert_eq!(out.lines().count(), 1, "{out}");
     assert!(err.contains("the \"is-automated\" filter is deprecated"), "{err}");
-    // Refused in dockerd's words.
+    // Refused in the words scripts match (D172).
     for (args, said) in [
         (
             vec!["search", "--limit", "101", term.as_str()],

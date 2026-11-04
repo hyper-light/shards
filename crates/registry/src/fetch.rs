@@ -12,8 +12,8 @@
 //!   first, as long as that answers: Docker Hub's redirect cost 100 ms a request more
 //!   than asking its CDN directly (p50 151 against 52 ms).
 //! - The connections start at four, and double while that brings at least a tenth more.
-//!   A layer that is not compressed is fetched whole, as containerd fetches it, so that
-//!   the registry may compress it for the transfer.
+//!   A layer that is not compressed is fetched whole, over one connection, so that the
+//!   registry may compress it for the transfer.
 //!
 //! containerd fetches each layer whole over one connection, three layers at a time.
 
@@ -385,7 +385,7 @@ impl<'a> Flows<'a> {
         Some(taken)
     }
 
-    /// Fetches layer `i` whole, as containerd does.
+    /// Fetches layer `i` whole, over one connection.
     fn whole(&self, i: usize) -> Result<(), Error> {
         let layer = self.layers.get(i).ok_or_else(|| Error::new("no such layer"))?;
         let digest = &layer.digest;

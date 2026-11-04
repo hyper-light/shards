@@ -1,6 +1,7 @@
-//! Listings as docker/cli prints them: the daemon sends what it lists as data, and the
-//! client lays it out with `--format` (shards_cmdline::format), in its own clock, zone and
-//! locale, as the Docker CLI formats what dockerd sends it.
+//! Listings, in the text scripts read (held to docker/cli's answers, D157): the daemon
+//! sends what it lists as data, and the client lays it out with `--format`
+//! (shards_cmdline::format), in its own clock, zone and locale, so that times read as its
+//! user's.
 
 use std::sync::OnceLock;
 

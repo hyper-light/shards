@@ -78,8 +78,8 @@ pub struct Registry {
 }
 
 /// A mirror of Docker Hub's a pull asks first, and whether it failed: once it has, the
-/// pull asks it nothing more, as dockerd goes on to its next endpoint after a mirror's
-/// error (`continueOnError`, any error of a mirror's).
+/// pull asks it nothing more and goes to Docker Hub itself, so that a failing mirror costs
+/// a pull one error at most (any error of a mirror's).
 #[derive(Debug)]
 struct Mirror {
     registry: Registry,
@@ -1866,7 +1866,7 @@ mod tests {
         let asked = |api: &'static str, tag: Option<&'static [u8]>| {
             let server = route(None, move |seen| {
                 let reply = if seen.target.contains("/referrers/") {
-                    // A 429 as Docker Hub's for a quota spent, which no wait outlasts.
+                    // Docker Hub's 429 for a quota spent, which no wait outlasts.
                     http(
                         api,
                         &[

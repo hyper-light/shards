@@ -4,8 +4,7 @@
 //! them (docker/cli cli/command/registry/login.go, logout.go). What shards keeps, docker
 //! finds, and what docker keeps, shards finds, as each pull and push reads them; the
 //! daemon keeps none itself. Docker Hub's web login, which is Docker's own OAuth client,
-//! is none of shards': its credentials are asked for at a terminal, as Docker asks them
-//! where that login cannot start.
+//! is none of shards': its credentials are asked for at a terminal instead (D171).
 
 use std::ffi::OsString;
 use std::io::{IsTerminal as _, Read as _, Write as _};
@@ -44,7 +43,7 @@ fn env(k: &str) -> Option<String> {
     std::env::var(k).ok()
 }
 
-/// `text` on stderr, and status 1, as the Docker CLI fails a command; in a panel under
+/// `text` on stderr, and status 1, what scripts read of a failed command; in a panel under
 /// `command`'s head on a colour terminal.
 fn failed(command: &str, text: &str) -> ExitCode {
     if let Some(p) = crate::cli::look::styled_err() {
@@ -75,7 +74,7 @@ fn note(header: &str, text: &str) -> String {
 }
 
 /// DOCKER_AUTH_CONFIG, where it is set, takes the place of what a login keeps
-/// (maybePrintEnvAuthWarning): said, as the Docker CLI says it.
+/// (maybePrintEnvAuthWarning): said, so that no one thinks the login is what is used.
 fn warn_env() {
     if std::env::var_os("DOCKER_AUTH_CONFIG").is_some_and(|v| !v.is_empty()) {
         let _ = write!(
@@ -165,8 +164,8 @@ fn given(parsed: &Parsed) -> Result<(String, String), String> {
 }
 
 /// Why a login did not succeed: its credentials refused by the registry, or anything
-/// else (the registry not reached, the credentials not kept), as docker/cli tells them
-/// apart (`errdefs.IsUnauthorized`). Each says what happened.
+/// else (the registry not reached, the credentials not kept), told apart
+/// (`errdefs.IsUnauthorized`, D171). Each says what happened.
 enum Failure {
     Refused(String),
     Other(String),

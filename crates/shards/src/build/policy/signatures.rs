@@ -182,7 +182,7 @@ impl Trust {
 
     /// The signatures of the chain `key` names for `platform` (parse_signatures), read on
     /// a thread of the stack its documents may need, and kept once the trusted root is in
-    /// hand: a failure to load that is tried again, as buildx tries it.
+    /// hand: a failure to load that is tried again, as buildx v0.37.1 tries it.
     pub fn signatures(
         &self,
         key: &[u8; 32],
@@ -204,7 +204,7 @@ impl Trust {
         read
     }
 
-    /// The verifier's state directory made (getVerifier), as buildx makes it before
+    /// The verifier's state directory made (getVerifier), as buildx v0.37.1 makes it before
     /// each use until one succeeds.
     pub fn verifier(&self) -> Result<(), String> {
         if self.root.get().is_some() {
@@ -727,7 +727,7 @@ mod tests {
     }
 
     /// Before the trusted root is in hand, what is read is not kept: a failure to load it
-    /// is tried again, as buildx tries it.
+    /// is tried again, as buildx v0.37.1 tries it.
     #[test]
     fn readings_without_the_root_are_not_kept() {
         let mut chain = real_chain();

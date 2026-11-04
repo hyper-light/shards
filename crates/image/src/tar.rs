@@ -2,7 +2,7 @@
 //! because Docker, containerd and BuildKit read and write OCI layers with it: V7, ustar,
 //! star and GNU headers, base-256 numbers, GNU long names and links, and local PAX headers
 //! (path, linkpath, uid, gid, mtime, size, and the `SCHILY.xattr.*` records containerd
-//! applies). Global PAX headers are parsed and then ignored, as containerd ignores them.
+//! applies). Global PAX headers are parsed and then ignored, as containerd v2.4.1 ignores them.
 //! Sparse files are refused: layers SHOULD NOT use them (image-spec layer.md), and a
 //! file's data must be one run of the archive.
 //!
@@ -668,10 +668,10 @@ fn pax_time(v: &[u8]) -> Result<(i64, u32), Error> {
     Ok((secs, nsec))
 }
 
-/// Cleans a member path lexically, as containerd's filepath.Clean does before it joins the
-/// path to the root: empty and `.` components go, and `..` removes the component before
-/// it. A `..` at the root of an absolute path stays at the root; one that climbs out of a
-/// relative path is refused, as moby refuses it.
+/// Cleans a member path lexically, as containerd v2.4.1's filepath.Clean does before it
+/// joins the path to the root: empty and `.` components go, and `..` removes the component
+/// before it. A `..` at the root of an absolute path stays at the root; one that climbs out
+/// of a relative path is refused, so that no member lands outside the layer's root.
 fn clean(mut path: Vec<u8>) -> Result<Vec<u8>, Error> {
     // In place: what is kept never runs ahead of what is read, as Go's lazybuf keeps it.
     let rooted = path.first() == Some(&b'/');

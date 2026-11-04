@@ -675,9 +675,8 @@ pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
 
 /// The tests' own docker config, which every command is given unless a test gives its
 /// own: no test, nor any daemon one starts, reads this host's docker config or its
-/// credential helpers. Its `auths` name a host no test reaches, so that, as docker/cli has
-/// it, no platform helper is looked for either (DetectDefaultStore: a config that holds
-/// credentials keeps them itself).
+/// credential helpers. Its `auths` name a host no test reaches, so that no platform helper
+/// is looked for either (D184: a config that holds credentials keeps them itself).
 pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -2439,7 +2438,7 @@ pub fn image_archive(name: &str) -> Vec<u8> {
 
 /// The test image behind an index, as multi-platform images are served: its manifest
 /// for this host's platform, one for another architecture that is never fetched, and an
-/// attestation for ours, as BuildKit writes one. Returns the index and its blobs, the
+/// attestation for ours, as D72's builds write one. Returns the index and its blobs, the
 /// manifests among them: the image's config, layer and manifest first, then the
 /// attestation's manifest, config and statement, then the other platform's attestation.
 pub fn test_index() -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -2448,7 +2447,7 @@ pub fn test_index() -> (Vec<u8>, Vec<Vec<u8>>) {
         "aarch64" => ("arm64", "amd64"),
         _ => ("amd64", "arm64"),
     };
-    // An attestation as BuildKit writes one: an empty config, and an in-toto statement.
+    // An attestation as D72's builds write one: an empty config, and an in-toto statement.
     let (att_config, statement) = (
         b"{}".to_vec(),
         br#"{"_type":"https://in-toto.io/Statement/v0.1"}"#.to_vec(),

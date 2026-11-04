@@ -86,7 +86,7 @@ fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
             shards_cmdline::go::quote(&head)
         ));
     }
-    // The SSH agents, as BuildKit's provider takes them, with no SSH_AUTH_SOCK.
+    // The SSH agents (D51), with no SSH_AUTH_SOCK.
     let ssh = buildflags::parse_ssh(parsed.many("ssh"));
     buildflags::ssh_agents(&ssh, &|_| None, &|_| Ok(()))?;
     for s in &ssh {

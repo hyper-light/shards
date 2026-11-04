@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 /// The service version the SDK asks for.
 const VERSION: &str = "2024-11-04";
-/// What one request uploads of a layer, as BuildKit's `UploadStream` cuts it
+/// What one request uploads of a layer, as BuildKit v0.28.1's `UploadStream` cuts it
 /// (`IOChunkSize`): a smaller layer goes in one.
 const BLOCK: u64 = 32 << 20;
 /// The most of an error's body read for its code and message.
@@ -196,7 +196,7 @@ fn setting(e: &CacheEntry, attr: &str, var: &str, env: &dyn Fn(&str) -> Option<S
 }
 
 impl Container {
-    /// The container of `e`'s attributes, as BuildKit's `getConfig` reads them.
+    /// The container of `e`'s attributes, as BuildKit v0.28.1's `getConfig` reads them.
     pub fn of(e: &CacheEntry, env: &dyn Fn(&str) -> Option<String>) -> Result<Container, String> {
         let account_url = setting(e, "account_url", "BUILDKIT_AZURE_STORAGE_ACCOUNT_URL", env).ok_or(
             "either ${BUILDKIT_AZURE_STORAGE_ACCOUNT_URL} or account_url attribute is required for azblob cache",
@@ -312,7 +312,7 @@ impl Container {
         format!("{}/{}", self.container, path_escape(key))
     }
 
-    /// The container, made if it is not there, as BuildKit's `createContainerClient`
+    /// The container, made if it is not there, as BuildKit v0.28.1's `createContainerClient`
     /// makes it; one made meanwhile by another is the one.
     pub fn ensure(&self) -> Result<(), String> {
         let target = format!("{}?restype=container", self.container);
@@ -374,7 +374,7 @@ impl Container {
         }
     }
 
-    /// Writes `body` at `key`, in place of what was there: a manifest, as BuildKit's
+    /// Writes `body` at `key`, in place of what was there: a manifest, as BuildKit v0.28.1's
     /// `uploadManifest` writes it (last writer wins).
     pub fn put(&self, key: &str, body: Body<'_>) -> Result<(), String> {
         let r = self.send(
@@ -390,7 +390,7 @@ impl Container {
         ok("Upload", r)
     }
 
-    /// Writes `body` at `key` unless a blob is there, as BuildKit's
+    /// Writes `body` at `key` unless a blob is there, as BuildKit v0.28.1's
     /// `uploadBlobIfNotExists` does: in one request below [`BLOCK`], else in blocks of it,
     /// committed together, either only where there is none.
     pub fn put_new(&self, key: &str, file: &std::fs::File, len: u64) -> Result<(), String> {

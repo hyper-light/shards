@@ -5756,13 +5756,20 @@ fn run_caches_are_kept_across_builds() {
         &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
         &[],
     );
-    // The build's collection ran once it was done; the next, within a minute, runs none.
+    // The build grew the cache, and its collection ran once it was done; the same build
+    // again, answered whole from the cache, grows nothing and runs none (D212).
     let collected = || {
         std::fs::metadata(home.join("buildcache-gc"))
             .and_then(|m| m.modified())
             .unwrap()
     };
     let first_collection = collected();
+    let again = ok(
+        &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
+        &[],
+    );
+    assert!(again.contains("CACHED"), "{again}");
+    assert_eq!(collected(), first_collection);
     // What a cache holds is in no layer: the next step, without it, finds none of it.
     let unlayered = build(
         &format!(
@@ -5787,7 +5794,8 @@ fn run_caches_are_kept_across_builds() {
     );
     assert!(seen.contains("/c/one file 644 0:0 1\n"), "{seen}");
     assert!(seen.contains("/c/two file 644 0:0 1\n"), "{seen}");
-    assert_eq!(collected(), first_collection);
+    // Builds that ran steps grew the cache, and collected it.
+    assert_ne!(collected(), first_collection);
     // One id, two targets of one step: one directory; another step's by that id.
     let twice = ok(
         "RUN --mount=type=cache,target=/x,id=both --mount=type=cache,target=/y,id=both,ro [\"/bin/testguest\", \"fs\", \"write:/x/f=3\", \"print:/y/f\"]\n",
@@ -6255,10 +6263,11 @@ fn run_caches_are_shared_among_concurrent_builds() {
 }
 
 /// `buildx du` (and `builder du`) lists the build cache's records as buildx does
-/// (crates/cmdline/tests/buildx-du.json): a step's `regular` record and a cache mount's `exec.cachemount` one, the records `system df`
-/// lists and `builder prune` removes; its table, `--verbose`, `json` and templates, sorted
-/// by size; a filter leaves the totals out; a cache a running step holds is in use, sized
-/// 0B, as BuildKit's DiskUsage sizes a mutable record that is changing.
+/// (crates/cmdline/tests/buildx-du.json): a step's `regular` record and a cache mount's
+/// `exec.cachemount` one, the records `system df` lists and `builder prune` removes; its
+/// table, `--verbose`, `json` and templates, sorted by size; a filter leaves the totals
+/// out; a cache a running step holds is in use, sized 0B, its size still changing (D114,
+/// held to crates/cmdline/tests/buildx-du.json).
 #[test]
 fn build_cache_usage_lists_every_record() {
     if cannot_run_vms() {
@@ -7173,7 +7182,7 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
     assert!(log.lines().any(|l| l.ends_with(" 100663296")), "{log}");
     assert!(log.lines().any(|l| l.ends_with(" 50000 100000")), "{log}");
 
-    // Past its memory, the step is ended, as runc's container would be.
+    // Past its memory, the step is ended: `-m` is its microVM's limit, swap none.
     let hungry = context(
         "build-limits-hungry",
         &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"alloc\", \"256\"]\n"),
@@ -7438,9 +7447,9 @@ fn squash_makes_a_builds_layers_one() {
     assert_eq!(with_layer(&config), 1, "{config}");
 }
 
-/// `shards builder prune` (D65), as buildx's prune: a record no filter keeps goes, said in
-/// buildx's table, and the steps run again; `until` keeps what was used since; a record
-/// whose layer an image holds stays unless `--all`; the totals as buildx says them.
+/// `shards builder prune` (D65): a record no filter keeps goes, said in the table buildx
+/// users read, and the steps run again; `until` keeps what was used since; a record whose
+/// layer an image holds stays unless `--all`; the totals said as D65 records buildx's.
 #[test]
 fn builder_prune_removes_the_build_cache() {
     if cannot_run_vms() {
@@ -7884,9 +7893,9 @@ fn run_steps_reach_the_clients_ssh_agent() {
         .unwrap();
     assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
 
-    // The key file itself, served by the client as BuildKit's keyring serves it: the
-    // step sees the key (its comment dropped, as x/crypto drops it) and has it sign, and
-    // is refused what a read-only agent refuses.
+    // The key file itself, served from the client's own keyring (D68): the step sees the
+    // key (its comment dropped, as x/crypto drops it) and has it sign, and is refused what
+    // a read-only agent refuses.
     let from_file = shards(&[
         "build",
         "--progress=plain",
@@ -7942,8 +7951,8 @@ fn run_steps_reach_the_clients_ssh_agent() {
         mixed.stderr
     );
 
-    // Without --ssh, an optional mount (BuildKit's default) is left out, and a required
-    // one refused in BuildKit's words.
+    // Without --ssh, an optional mount (a Dockerfile's default, D51) is left out, and a
+    // required one refused, its error the text BuildKit users match (D51).
     let required = context(
         "build-ssh-required-ctx",
         &format!(
@@ -8312,10 +8321,10 @@ fn umask() -> u32 {
     0o777 & !(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777)
 }
 
-/// `--build-context` gives a build named contexts as buildx and BuildKit do: a directory
+/// `--build-context` gives a build named contexts (D53): a directory
 /// a `COPY --from` reads (its own .dockerignore heeded), an image a `FROM` names in place
 /// of the one it says, and a stage replaced whole by a directory; a missing directory is
-/// refused in buildx's words.
+/// refused, its error buildx v0.37.1's.
 #[test]
 fn named_contexts_stand_in_for_what_they_name() {
     if cannot_run_vms() {
@@ -8393,11 +8402,10 @@ fn named_contexts_stand_in_for_what_they_name() {
     );
 }
 
-/// An `oci-layout://` context is the image an OCI layout holds, as buildx serves one to
-/// BuildKit: found by its tag (`latest` when none is given) in the layout's index, its
-/// blobs checked and taken into the store, and built on as a base; the layout's only
-/// entry taken for a tag it lacks, as buildx takes it; a directory with no index refused
-/// in buildx's words.
+/// An `oci-layout://` context is the image an OCI layout holds (D53): found by its tag
+/// (`latest` when none is given) in the layout's index, its blobs checked and taken into
+/// the store, and built on as a base; the layout's only entry taken for a tag it lacks, as
+/// buildx v0.37.1 takes it; a directory with no index refused, its error buildx v0.37.1's.
 #[test]
 fn oci_layout_contexts_are_the_images_they_hold() {
     if cannot_run_vms() {
@@ -8447,7 +8455,7 @@ fn oci_layout_contexts_are_the_images_they_hold() {
     assert_eq!(std::fs::read(root.join("more")).unwrap(), b"on top\n");
     assert!(root.join("bin/testguest").exists());
 
-    // A tag the index lacks: its one entry, as buildx's resolveDigest falls back to it.
+    // A tag the index lacks: its one entry, as D53 reads the layout (buildx v0.37.1).
     let single = shards(&[
         "build",
         "--build-context",
@@ -12996,8 +13004,8 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
             built.stderr
         );
     }
-    // A base of another CPU's lone manifest, with no platform asked: taken, as BuildKit
-    // takes one, warned of in its words, its step under its CPU's emulator, and the image
+    // A base of another CPU's lone manifest, with no platform asked: taken (D179), warned
+    // of in BuildKit v0.28.1's words, its step under its CPU's emulator, and the image
     // its base's CPU's (measured: Docker 29.3.1's BuildKit v0.28.1 on linux/arm64).
     let lone = if cfg!(target_arch = "aarch64") {
         "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764"
@@ -13994,7 +14002,7 @@ fn policies_hold_over_remote_contexts() {
         assert_eq!(solve, solve_want, "{name}: {log:#?}");
     }
 
-    // Names that are not files of the context, in buildx's words.
+    // Names that are not files of the context, refused as D101 records buildx's errors.
     for (name, said) in [
         (
             "policies/missing.rego",
@@ -14033,11 +14041,11 @@ fn policies_hold_over_remote_contexts() {
     assert_eq!(near.status, Some(1), "{}", near.stderr);
 }
 
-/// A policy's own error ends a build in the policy's words alone, as BuildKit's gRPC keeps
-/// the status buildx's callback answered with over all that wraps it, and the policies'
-/// step ends done, as buildx fails it for a denial only. An OCI layout given as a named
-/// context is asked of as itself, which buildx builds no input for: refused, never taken
-/// for the registry's image its stand-in name names (D128, measured: PM M186).
+/// A policy's own error ends a build in the policy's words alone, nothing wrapped round it
+/// (D128), and the policies' step ends done, a denial alone failing it (D128). An OCI
+/// layout given as a named context is asked of as itself, which buildx builds no input for:
+/// refused, never taken for the registry's image its stand-in name names (D128, measured:
+/// PM M186).
 #[test]
 fn a_policys_own_error_ends_the_build() {
     let (image, _) = served();
@@ -14245,7 +14253,7 @@ fn builds_heed_their_policies() {
         ]
     );
 
-    // Refused pinned, as BuildKit loads the definition: no Dockerfile lines.
+    // Refused pinned, before any step is solved: no Dockerfile lines to cite (D108).
     let deny_pinned = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.image\n  not input.image.isCanonical\n}\n\ndeny_msg contains \"pinned images are refused\" if input.image.isCanonical\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n";
     let ctx = with_policy(
         "policy-deny-pinned",
@@ -14317,8 +14325,8 @@ fn builds_heed_their_policies() {
     );
 
     // What a decision needs and the input lacks, resolved from the image and asked again;
-    // its print printed twice, as buildx's are, by the partial evaluation that the
-    // provenance and signatures still unknown call for, and by the decision's.
+    // its print printed twice (D98), by the partial evaluation that the provenance and
+    // signatures still unknown call for, and by the decision's.
     let unknown = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.image.checksum != \"\"\n  print(\"checksum\", input.image.checksum, input.image.workingDir)\n}\n\ndecision := {\"allow\": allow}\n";
     let ctx = with_policy("policy-unknown", &format!("FROM {image}\n"), unknown);
     let ok = build(&ctx, &[]);
@@ -14345,7 +14353,7 @@ fn builds_heed_their_policies() {
 
     // --policy: a file of the working directory beside the Dockerfile's own, then a file
     // not there, a policy turned off, the policies before one reset, and policies OPA
-    // refuses, each in buildx's words.
+    // refuses, each refused as D101 records buildx's errors.
     let ctx = with_policy("policy-flags", "FROM scratch\nCOPY Dockerfile /x\n", allow);
     let cwd = TempDir::new("policy-flags-cwd");
     std::fs::write(
@@ -14432,7 +14440,7 @@ fn builds_heed_their_policies() {
         refused.stderr
     );
 
-    // --debug: the input each check is given, as buildx logs it.
+    // --debug: the input each check is given, logged as D101 records buildx's.
     let ctx = with_policy("policy-debug", "FROM scratch\nCOPY Dockerfile /x\n", allow);
     let debug = build(&ctx, &["--debug", "--build-arg", "A=1"]);
     assert_eq!(debug.status, Some(0), "{}", debug.stderr);
@@ -14638,8 +14646,8 @@ fn policies_verify_git_and_http_signatures() {
     );
     assert_eq!(
         decisions(&built.stderr, &http_src),
-        // Its digest is known from the first check, as BuildKit fetches the source for
-        // it; the signature's digest is not, and asks for no field of the input.
+        // Its digest is known from the first check, the source fetched for it (D102);
+        // the signature's digest is not, and asks for no field of the input.
         [
             format!("policy decision for source {http_src}: resolve missing fields []"),
             format!("policy decision for source {http_src}: ALLOW"),
@@ -15007,8 +15015,8 @@ fn policies_check_the_frontend_and_the_default_policy() {
         false,
     );
     assert_eq!(out.status, Some(0), "{}", out.stderr);
-    // The frontend's checks in buildx's order, then each platform's: BuildKit checks the
-    // platforms' at once, so in any order.
+    // The frontend's checks first, in the order D107 records, then each platform's,
+    // checked at once, so in any order.
     let mut multi = want("syntax-multi.txt");
     assert_eq!(checks.get(..8), multi.get(..8), "{}", out.stderr);
     let mut rest = checks.get(8..).unwrap_or_default().to_vec();
@@ -15045,7 +15053,8 @@ fn policies_check_the_frontend_and_the_default_policy() {
 
 /// `shards buildx policy eval` (D108), each answer as buildx v0.37.1's in shards-dind:
 /// a source's input printed, its fields resolved and the rest summarized; a policy's
-/// decision, its refusals in buildx's words; and the sources and flags buildx refuses.
+/// decision, its refusals in the words D108 records; and the sources and flags buildx
+/// refuses.
 #[test]
 fn policy_eval_answers() {
     let home = TempDir::new("policy-eval-home");
@@ -15539,9 +15548,9 @@ fn harnesses_message_their_attached_agents() {
     }
 }
 
-/// An Agentfile's volumes at run (AGENTFILE_ARCH.md §4.5, §12 answers 8 and 9; D111):
+/// An Agentfile's volumes at run (AGENTFILE_ARCH.md §4.5, §12 answers 8 and 9; D109):
 /// `VOLUME data /data FOR a` is the named volume `data`, a's alone, filled from the image
-/// as Docker fills a volume, owned as `--chown` says, kept from run to run; b sees the
+/// where it is empty (D38), owned as `--chown` says, kept from run to run; b sees the
 /// image's `/data` there, never the volume, and the run's own root none of it.
 /// `VOLUME shared /shared`, with no `FOR`, is every agent's and the run's own.
 /// `VOLUME --chown=b --chmod=700 /scratch FOR b` is an anonymous volume, b's, as owned and
@@ -15625,7 +15634,7 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     let has = |all: &str, want: &str| assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
     let first = run();
     for want in [
-        // Filled from the image, as Docker fills a volume where it is empty.
+        // Filled from the image, as every volume is where it is empty (D38).
         "[agent a] confined cat /data/seed: seeded".to_string(),
         "[agent a] confined cat /data/x: errno 2".into(),
         "[agent a] confined write /data/x: ok".into(),
@@ -15637,7 +15646,8 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         "[agent b] confined write /data/b: errno 30".into(),
         "[agent b] confined write /scratch/s: ok".into(),
         format!("[agent b] confined owner /scratch: {b}:{b} 700"),
-        // Mounted where the image's symlink leads, as runc mounts it, the symlink kept.
+        // Mounted where the image's symlink leads, resolved within its root, the symlink
+        // kept.
         "[agent a] confined cat /var/run/marker: image-run".into(),
         "[agent a] confined write /var/run/agentvol/w: ok".into(),
         format!("[agent a] confined owner /run/agentvol: {a}:{a} 755"),

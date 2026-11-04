@@ -75,7 +75,7 @@ pub struct Options {
     pub dialect: parser::Dialect,
     /// The named contexts (`--build-context`): the frontend's `context:KEY` options, each
     /// KEY a name or `NAME::PLATFORM`, each value `docker-image://`, `local:`, a Git or
-    /// HTTP URL, as buildx sends them.
+    /// HTTP URL, as buildx v0.37.1 sends them.
     pub contexts: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Each local named context's `sharedkey:localdir:KEY` option, by KEY.
     pub context_keys: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -184,7 +184,7 @@ pub struct Resolved {
 /// Finds a base image's config: `ResolveImageConfig`; and when a source SOURCE_DATE_EPOCH
 /// names was made: `resolveSourceDateEpochFromState`.
 pub trait Resolver {
-    /// `log` is what the step that resolves it is named, as BuildKit names it; `platform`
+    /// `log` is what the step that resolves it is named (dockerfile2llb/convert.go); `platform`
     /// none where none is asked (dockerui's `ContextOpt{}`), which BuildKit takes as its
     /// own (`platforms.DefaultSpec()`).
     fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>>;
@@ -216,7 +216,7 @@ pub trait Resolver {
         Ok(None)
     }
     /// A check's warning, once the planning finds it: given before the next thing asked of
-    /// the resolver, as BuildKit's frontend sends each as it is found.
+    /// the resolver, as dockerfile/1.27.1's frontend sends each as it is found.
     fn warn(&self, warning: &lint::Warning) {
         let _ = warning;
     }
@@ -652,7 +652,7 @@ pub const SHARDS_FRONTEND: (&str, &str) = ("ghcr.io", "hyper-light/shards");
 
 /// What builder.Build does with the frontend BUILDKIT_SYNTAX or `# syntax=` names, which is
 /// to hand the build to it: the Dockerfile frontend's own is this one, its image asked of
-/// `resolver` as BuildKit asks of it before it runs it (a refusal fails the build where it
+/// `resolver` as dockerfile/1.27.1 asks of it before it runs it (a refusal fails the build where it
 /// is named), and any other, which shards cannot run, fails the build where it is named.
 fn check_frontend(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<(), Fail> {
     // The frontend a `# syntax=` line named, which then names no other (builder.Build).
@@ -788,7 +788,7 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
     done(r, &linter)
 }
 
-/// The outline of the build's target, as BuildKit's frontend answers `--call=outline`
+/// The outline of the build's target, as dockerfile/1.27.1 answers `--call=outline` (D70)
 /// (Dockerfile2Outline): planned as a build is, up to its steps, then its arguments,
 /// secrets and SSH agents, and those of the stages it stands on and reads.
 pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Outline, Error> {
@@ -833,7 +833,7 @@ pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<O
     }
 }
 
-/// The build's checks, as BuildKit's frontend answers `--call=check` (DockerfileLint):
+/// The build's checks, as dockerfile/1.27.1 answers `--call=check` (D70, DockerfileLint):
 /// every stage planned up to its steps, those the target does not reach too when no
 /// target is named, and their warnings in the order they were found, with the error that
 /// ended the planning, if one did, where its locations together say (mergeLocations).
@@ -920,7 +920,7 @@ fn merge_locations(locations: &[instructions::Location]) -> instructions::Locati
     merged
 }
 
-/// The file's stages, as BuildKit's frontend answers `--call=targets` (ListTargets):
+/// The file's stages, as dockerfile/1.27.1 answers `--call=targets` (D70, ListTargets):
 /// each as written, its doc comment, the last the default. Unlike BuildKit's, a stage's
 /// `check=` comment does not take the frontend down (ListTargets parses with no linter,
 /// which that comment dereferences).
@@ -2308,8 +2308,8 @@ impl Planner<'_> {
     }
 
     /// `validateCircularDependency`: a stage that reads itself through others. Depth
-    /// first, as BuildKit's recursion goes, on a stack of our own: a chain of stages as
-    /// long as a Dockerfile can hold exhausts no thread's.
+    /// first, finding the cycle dockerfile/1.27.1's recursion finds, on a stack of our
+    /// own: a chain of stages as long as a Dockerfile can hold exhausts no thread's.
     fn validate_circular_dependency(&self) -> Result<(), Fail> {
         let n = self.states.len();
         let (mut visited, mut path) = (vec![false; n], vec![false; n]);
@@ -4656,7 +4656,7 @@ impl Planner<'_> {
 
     /// The OCI layout a named build context gives an OSI artifact `reference` as (D113): the
     /// client's content store and the digest its tag resolved to, `oci-layout://STORE[:TAG]@DIGEST`
-    /// as buildx hands it on. Another kind of context is refused, an image's or a
+    /// as buildx v0.37.1 hands it on. Another kind of context is refused, an image's or a
     /// directory's being no artifact. Where `reference` pins a digest, the context must name
     /// the same, refused in the words a fetch by digest that got another uses.
     fn artifact_layout_context(reference: &[u8], n: &Named) -> Result<(Vec<u8>, Vec<u8>), Fail> {
@@ -4886,7 +4886,7 @@ impl Planner<'_> {
     }
 
     /// `llb.Git`: the repository as a source, its ID and attributes as BuildKit makes
-    /// them ([`git_identifier`]).
+    /// them ([`git_identifier`]; client/llb/source.go).
     /// An `ADD`'s Git source with `git.advice` where BUILDKIT_GIT_ADVICE asks for it
     /// (convert_copy.go, `llb.GitAdvice`).
     fn advised(&mut self, st: State) -> State {
@@ -6251,7 +6251,7 @@ mod tests {
             Ok(Resolved {
                 reference: name.to_vec(),
                 digest: None,
-                // A layer, or it is scratch, as BuildKit takes an image of none.
+                // A layer: an image of none is planned as scratch (dockerfile/1.27.1).
                 config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d"]}}"#.to_vec(),
             })
         }

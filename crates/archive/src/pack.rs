@@ -30,7 +30,8 @@ use crate::whiteout::{self, Overlay, WhiteoutFormat};
 pub struct PackOptions {
     /// IncludeFiles: paths under the source to archive, `.` for all of it (the default).
     pub include_files: Vec<Vec<u8>>,
-    /// ExcludePatterns, as moby/patternmatcher reads them; `!` makes an exception.
+    /// ExcludePatterns, read as patternmatcher v0.6.1 reads them (the archive oracle's);
+    /// `!` makes an exception.
     pub exclude_patterns: Vec<Vec<u8>>,
     /// ChownOpts: the owner every header gets instead of the file's.
     pub chown: Option<(i64, i64)>,

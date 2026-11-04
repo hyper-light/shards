@@ -1,7 +1,7 @@
 //! Go's text/template (Go 1.26), with the functions the Docker CLI adds
 //! (docker/cli templates/templates.go), as `--format` runs it.
 //!
-//! [`Template::parse`] reads a template as docker/cli's `templates.Parse` does
+//! [`Template::parse`] reads a template as docker/cli v29.8.1's `templates.Parse` does
 //! (`template.New(name).Funcs(basicFunctions).Parse(text)`, missingkey left at its
 //! default), and [`Template::execute`] runs it against a [`Value`] as Go's `Execute`
 //! does. Errors are Go's own texts; the Docker CLI adds its prefixes
@@ -84,7 +84,7 @@ impl Template {
         exec::execute(&self.set, &self.name, data, false, self.missing_key_error, out)
     }
 
-    /// Runs the template against a table's header, as docker/cli's formatter does with
+    /// Runs the template against a table's header, as docker/cli v29.8.1's formatter does with
     /// `tmpl.Funcs(templates.HeaderFunctions).Execute(…)`: `json`, `split`, `join`,
     /// `title`, `lower`, `upper` and `truncate` return their first argument unchanged.
     pub fn execute_header_into(&self, data: &Value, out: &mut String) -> Result<(), String> {

@@ -5,7 +5,8 @@
 //! A record is a reference the store holds, its target what the reference resolved to:
 //! the image's ID. Removal takes records away; the content no record names goes with the
 //! store's next collection, which removal makes due. An image a container still uses
-//! keeps a dangling record, `moby-dangling@<ID>`, as dockerd keeps one.
+//! keeps a dangling record, `moby-dangling@<ID>`, named as moby's store names one
+//! (image_delete.go), so that the store's collection keeps what it runs.
 //!
 //! Unlike dockerd: no image here has a parent or children (only the classic builder made
 //! them), so `--no-prune` changes nothing.

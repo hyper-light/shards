@@ -469,7 +469,8 @@ pub fn fetch(
         Some(_) => reference.to_string(),
         None => reference.tag.clone().unwrap_or_else(|| "latest".into()),
     };
-    // Said once the registry has answered for the reference, as dockerd says it.
+    // Said once the registry has answered for the reference, so that a refused pull says
+    // nothing of pulling.
     let report = |event: Event<'_>| match event {
         Event::Pulling => say(&format!("{object}: Pulling from {}", reference.path)),
         event => report(event),
@@ -491,7 +492,8 @@ pub fn fetch(
             .resolved(&reference.to_string())
             .map_err(|e| e.to_string())?,
     };
-    // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
+    // Layers unpack bounded by the machine alone, unless [`limits`] set one (D18); each is
+    // checked against its DiffID.
     let limits = limits()?;
     let pull = if fresh { pull::pull_again } else { pull::pull };
     let pulled = pull(&registry, &store, reference, targets, &limits, &report).map_err(|e| e.to_string())?;

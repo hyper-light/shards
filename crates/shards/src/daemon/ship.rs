@@ -393,8 +393,8 @@ impl Open {
     }
 }
 
-/// A line's ID for its parts, as moby's copier makes one (stringid.GenerateRandomID): 32
-/// random bytes in hex.
+/// A line's ID for its parts, in the form receivers that join parts read (D163, moby's
+/// stringid.GenerateRandomID): 32 random bytes in hex.
 fn partial_id() -> io::Result<String> {
     let mut b = [0u8; 32];
     shards_vmm::platform::fill_random(&mut b)?;
@@ -895,8 +895,8 @@ impl<D: Disk> Daemon<D> {
             }
             #[cfg(target_os = "linux")]
             crate::logging::Remote::Journald => {
-                // Its epoch, which its ordinals count from: an ID of its own, as moby's
-                // newJournald makes one (stringid.GenerateRandomID).
+                // Its epoch, which its ordinals count from: an ID of its own, the field
+                // journal readers group a run's entries by (CONTAINER_LOG_EPOCH, D166).
                 let epoch = crate::containers::new_id().map_err(|e| e.to_string())?;
                 let from = crate::logging::journald::From::new(
                     &details.id,

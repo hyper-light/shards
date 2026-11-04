@@ -1,4 +1,4 @@
-//! Shell-like word processing, as BuildKit's `frontend/dockerfile/shell` lexer does it:
+//! Shell-like word processing, as BuildKit's lexer does it (frontend/dockerfile/shell/lex.go):
 //! quotes, escapes, `$name` and `${name...}` expansion with the modifiers `:-`, `-`, `:+`,
 //! `+`, `:?`, `?`, `#`, `##`, `%`, `%%`, `/` and `//`, and the splitting of a word into
 //! words after expansion. It reads its input as Go's `text/scanner` does (an invalid byte
@@ -12,7 +12,7 @@
 //!   and `EXPOSE 80${PROTO:-/tcp}` loses its port. Here each level has its own buffer and
 //!   the result is `["abcd"]`. testdata/deviations.json lists each case where this differs.
 //!
-//! Patterns (`#`, `%`, `/`) are matched as BuildKit's regular expressions match them,
+//! Patterns (`#`, `%`, `/`) match what BuildKit's regular expressions match (lex-cases.json),
 //! leftmost first, `*` greedy for `##`, `%%` and `/` and lazy for `#` and `%`, `?` and `*`
 //! never across a newline, but by a matcher over the pattern's few forms in time linear
 //! in the pattern times the value, with no regular-expression engine.
@@ -62,7 +62,7 @@ impl Env for NoEnv {
     }
 }
 
-/// The lexer's settings, as BuildKit's `shell.Lex` fields have them.
+/// The lexer's settings, `shell.Lex`'s fields (shell/lex.go).
 #[derive(Debug, Clone, Copy)]
 pub struct Lex {
     /// `\` or `` ` ``.
@@ -628,7 +628,7 @@ fn trim_prefix(pattern: &[u8], value: &[u8], greedy: bool) -> Result<Vec<u8>, Er
     })
 }
 
-/// `${name%pattern}`: as BuildKit does it, the prefix trim of the reversed value by the
+/// `${name%pattern}`: as shell/lex.go does it, the prefix trim of the reversed value by the
 /// reversed pattern, reversed back, each reversal by runes (an invalid byte becoming
 /// U+FFFD).
 fn trim_suffix(pattern: &[u8], value: &[u8], greedy: bool) -> Result<Vec<u8>, Error> {

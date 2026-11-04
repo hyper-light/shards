@@ -17,8 +17,7 @@ const MIN_MEMORY: i64 = 6_291_456;
 /// (Documentation/scheduler/sched-bwc.rst), in microseconds.
 const CPU_PERIOD: i64 = 100_000;
 
-/// The CPUs a microVM may have, numbered from 0, as dockerd's `runtime.NumCPU()` and
-/// `cpuset.cpus.effective` count the host's.
+/// The CPUs a microVM may have, numbered from 0: every CPU this process may run on (D125).
 pub fn host_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
@@ -289,7 +288,7 @@ pub fn swap_kernel_bytes(device: u64) -> u64 {
     (128 << 10) + device / 16384 * 13
 }
 
-/// MemorySwap as dockerd keeps it (adaptContainerSettings): twice the memory, where a
+/// MemorySwap as `inspect` reports it (adaptContainerSettings, D159): twice the memory, where a
 /// memory limit is set and swap is not.
 pub fn memory_swap(r: &Resources) -> i64 {
     if r.memory > 0 && r.memory_swap == 0 {
@@ -881,7 +880,7 @@ mod tests {
             ..r()
         };
         assert_eq!(held_cpus(&quota, host), 3);
-        // An unlimited quota, as Docker takes -1, and a period alone, hold nothing.
+        // An unlimited quota, -1 as `--cpu-quota` means it, and a period alone, hold nothing.
         let unlimited = Resources { cpu_quota: -1, ..r() };
         assert_eq!(held_cpus(&unlimited, host), 0);
         let period = Resources {

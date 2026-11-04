@@ -223,7 +223,8 @@ fn int(n: i64) -> Value {
     Value::Int(n)
 }
 
-/// A time as dockerd keeps it in a container's state: `time.Time`'s text, in UTC.
+/// A time as inspect's state answers it, the text clients parse (D170): `time.Time`'s
+/// text, in UTC.
 pub(super) fn go_time(ns: Option<u128>) -> String {
     let Some(ns) = ns else {
         return "0001-01-01T00:00:00Z".to_owned();
@@ -505,7 +506,7 @@ fn api_mounts(sent: &[String]) -> Value {
     Value::List(Kind::Any, list)
 }
 
-/// Entrypoint then command, as dockerd runs them.
+/// Entrypoint then command, as an image's config means them (OCI image-spec config.md).
 fn command_words(entrypoint: &Option<Vec<String>>, cmd: &Option<Vec<String>>) -> Vec<String> {
     entrypoint
         .iter()

@@ -90,8 +90,8 @@ fn shown(path: &[Vec<u8>]) -> String {
 
 /// Refuses an image whose `USER` runs its command as one of its domains' uids or gids, or
 /// their in-VM servers' (D115), as the run refuses it: resolved in the image's own
-/// databases, `passwd` and `group`, as its run resolves it; one they do not resolve is the
-/// run's to refuse, as Docker's build leaves it.
+/// databases, `passwd` and `group`, as its run resolves it; one they do not resolve is
+/// left for the run to refuse: a build records the name alone.
 pub fn user(user: &[u8], passwd: Option<&[u8]>, group: Option<&[u8]>, domains: usize) -> Result<(), String> {
     use shards_abi::run::beside;
     let Ok(domains) = u32::try_from(domains) else {

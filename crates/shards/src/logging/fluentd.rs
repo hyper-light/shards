@@ -180,8 +180,8 @@ fn address(given: &str) -> Result<To, String> {
 }
 
 /// What every event of a run carries besides its line: its tag, its container's ID and
-/// name (Docker's, with its `/`), and the attributes asked for, as moby's fluentd.New makes
-/// them.
+/// name (Docker's, with its `/`), and the attributes asked for: the fields receivers read
+/// (fluentd.New, D165).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct From {
     pub tag: String,

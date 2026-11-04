@@ -23,9 +23,10 @@ pub(super) struct Table {
     pub processes: Vec<Vec<String>>,
 }
 
-/// What `ps ARGS` (ARGS as dockerd splits them, on spaces, after its validatePSArgs)
-/// prints of the processes in `dump`, in a zone `utc_offset` seconds east of UTC; or what ps says is
-/// wrong with ARGS, as dockerd says it (`ps: ` and the first line ps wrote to stderr).
+/// What `ps ARGS` (ARGS split on spaces, after validatePSArgs, the meaning `top`'s
+/// arguments have) prints of the processes in `dump`, in a zone `utc_offset` seconds east
+/// of UTC, held to procps-ng 4.0.2 (scripts/top/generate); or what ps says is wrong with
+/// ARGS, in the words scripts match (`ps: ` and the first line ps wrote to stderr).
 pub(super) fn ps(dump: &[u8], args: &[&str], utc_offset: i32) -> Result<String, String> {
     let args = args.to_vec();
     let (system, procs) = dump::parse(dump)?;
@@ -137,7 +138,8 @@ fn fields(s: &str) -> Vec<&str> {
         .collect()
 }
 
-/// `ps`'s output taken apart as dockerd takes it (parsePSOutput): the titles are the
+/// `ps`'s output taken apart into the API's titles and rows (D170, moby's parsePSOutput):
+/// the titles are the
 /// header's fields; each line's fields under them, all past the last title joined by
 /// spaces. A thread's line (PID `-`) follows its process's.
 pub(super) fn table(output: &str) -> Result<Table, String> {

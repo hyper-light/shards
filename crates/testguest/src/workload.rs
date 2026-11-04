@@ -541,7 +541,7 @@ pub fn main() -> ! {
                 unsafe { libc::pause() };
             }
         }
-        // As a nested runtime starts (BuildKit's buildkitd, Docker in Docker's entrypoint):
+        // What a nested runtime does as it starts (buildkitd, an engine of its own; D173):
         // moves itself into a cgroup below its own, and enables a controller for its own
         // cgroup's children, so that cgroup v2 keeps every process out of it from then on
         // (no internal processes); says `nested`, then sleeps.

@@ -89,7 +89,7 @@ pub fn of(architecture: &str) -> Option<&'static Emulator> {
     EMULATORS.iter().find(|e| e.architecture == architecture)
 }
 
-/// Its binfmt_misc register line, as Docker's tool writes it: matched by magic at offset
+/// Its binfmt_misc register line, as binfmt's config.go writes it: matched by magic at offset
 /// 0, the interpreter at `path`, with flags CFP: credentials and security of the program
 /// run, not the emulator's (C, which opens the program for it, O); the emulator opened as
 /// it is registered, so that every root and mount namespace reaches it (F); and argv[0]

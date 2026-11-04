@@ -129,7 +129,8 @@ fn mcp_endpoint(url: &str) -> Option<(String, u16)> {
     (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
 }
 
-/// A port as Docker writes one (`443`, `53/udp`, `8000-8010/tcp`), TCP where none is said.
+/// A port as `EXPOSE` and `CONNECT --port` write one (`443`, `53/udp`, `8000-8010/tcp`),
+/// TCP where none is said.
 fn port_range(s: &str) -> Option<Egress> {
     let (range, proto) = match s.rsplit_once('/') {
         Some((r, "tcp")) => (r, 6),

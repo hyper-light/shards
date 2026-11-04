@@ -577,7 +577,8 @@ fn mounts(host: &Value) -> Result<(Vec<String>, bool), String> {
             continue;
         }
         let object = |k: &str| m.get(k).filter(|o| o.is_object());
-        // Each type's options on its own type alone, as moby takes them, even empty.
+        // Each type's options on its own type alone, even empty, as a mount of one type
+        // has no other's options to take (D170).
         let kind = text(m, "Type");
         for (options, of) in [
             ("BindOptions", "bind"),

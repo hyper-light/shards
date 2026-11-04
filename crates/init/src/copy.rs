@@ -1,8 +1,8 @@
 //! `shards cp`'s work in the guest, as dockerd does it in a container's root (moby
 //! daemon/archive_unix.go: containerStatPath, containerArchivePath, containerExtractToDir;
 //! daemon/containerfs_linux.go, Stat): a path's stat, a tar archive of it, and an
-//! archive unpacked into a directory. Init's built-ins run in the container's root, as
-//! root, as dockerd's RunInFS does.
+//! archive unpacked into a directory. Init's built-ins run in the workload's root, as
+//! root: every file of it is `copy`'s to read and write, whoever owns it.
 //!
 //! Each fails with its status saying how: [`NOT_FOUND`] for a path that is not there
 //! (dockerd's "Could not find the file"), [`INVALID`] for one dockerd calls an invalid
@@ -32,7 +32,7 @@ impl From<io::Error> for Failed {
     }
 }
 
-/// `path`'s stat as dockerd's PathStat has it (container.PathStat), as one JSON line:
+/// `path`'s stat in the shape clients parse (container.PathStat), as one JSON line:
 /// its name, size, Go FileMode, mtime and, for a link, its target resolved in the root.
 pub fn stat(path: &[u8], out: &mut impl Write) -> Result<(), Failed> {
     let p = Path::new(OsStr::from_bytes(path));

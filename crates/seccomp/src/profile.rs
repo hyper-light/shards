@@ -96,8 +96,8 @@ pub const DEFAULT: &[u8] = include_bytes!("../data/default.json");
 /// What Docker's default AppArmor profile (docker-default, `deny mount,`) keeps from a
 /// container where AppArmor is enforced, for guests, which have none: no mount made,
 /// moved, remounted or changed, no new mount API, no pivot_root, each EACCES, as AppArmor
-/// denies them; umount left to it, as docker-default allows it. Installed before Docker's
-/// seccomp profile, so that where that denies too, its errno is the one returned (the
+/// denies them; umount left to it, as docker-default allows it (D121). Installed before
+/// Docker's seccomp profile, so that where that denies too, its errno is the one returned (the
 /// most recent filter's, seccomp_filter.rst).
 pub const MOUNTS: &[u8] = include_bytes!("../data/mounts.json");
 
@@ -258,7 +258,7 @@ fn syscall(j: &Json) -> Result<Option<Syscall>, String> {
     }))
 }
 
-/// A profile as dockerd decodes it (LoadProfile): its refusal is "Decoding seccomp
+/// A profile as dockerd docker-v29.8.1 decodes it (LoadProfile): its refusal is "Decoding seccomp
 /// profile failed: …".
 pub fn decode(bytes: &[u8]) -> Result<Profile, String> {
     let failed = |e: String| format!("Decoding seccomp profile failed: {e}");
@@ -312,7 +312,7 @@ fn go_syntax_error(e: &str) -> String {
     }
 }
 
-/// A rule as moby resolves it for a container: a runtime-spec LinuxSyscall.
+/// A rule as moby docker-v29.8.1 resolves it: a runtime-spec LinuxSyscall.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub names: Vec<String>,
@@ -321,7 +321,7 @@ pub struct Resolved {
     pub args: Vec<Arg>,
 }
 
-/// A profile as moby resolves it for a container: a runtime-spec LinuxSeccomp.
+/// A profile as moby docker-v29.8.1 resolves it: a runtime-spec LinuxSeccomp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub default_action: String,
@@ -473,7 +473,7 @@ pub const FLAG_TSYNC: &str = "SECCOMP_FILTER_FLAG_TSYNC";
 pub const FLAG_LOG: &str = "SECCOMP_FILTER_FLAG_LOG";
 pub const FLAG_SPEC_ALLOW: &str = "SECCOMP_FILTER_FLAG_SPEC_ALLOW";
 
-/// A rule as runc takes it: one syscall name (configs.Syscall).
+/// A rule as runc v1.3.4 takes it: one syscall name (configs.Syscall).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     pub name: String,
@@ -482,7 +482,7 @@ pub struct Rule {
     pub args: Vec<(u64, crate::db::Op, u64, u64)>,
 }
 
-/// A profile as runc takes it (configs.Seccomp).
+/// A profile as runc v1.3.4 takes it (configs.Seccomp).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub default_action: Action,

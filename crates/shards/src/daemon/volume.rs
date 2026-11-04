@@ -101,8 +101,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Volume `v` as the API's volume.Volume holds it (volumeToAPIType): its time in the
-    /// asker's zone, as dockerd's is in its own; labels and options null where it has
-    /// none.
+    /// asker's zone, the time its client reads as its own; labels and options null where
+    /// it has none (D38).
     pub(super) fn volume_value(&self, v: &Volume, offset: i64, usage: Option<(i64, i64)>) -> Value {
         let map = |m: &BTreeMap<String, String>| {
             if m.is_empty() {
@@ -275,8 +275,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `shards volume rm NAME...` (VolumesService.Remove): each removed said by its name;
-    /// one a container mounts is refused, with the containers, `-f` or not, as dockerd
-    /// refuses it; with `-f`, one not there is no error.
+    /// one a microVM mounts is refused, with the microVMs, `-f` or not, so that no microVM
+    /// loses the data it was given (D38); with `-f`, one not there is no error.
     pub(super) fn volume_rm(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
@@ -430,7 +430,7 @@ impl<D: Disk> Daemon<D> {
                 removed.push(v.name);
             }
         }
-        // Said as dockerd says each prune (daemon/volume/service, Prune): what it reclaimed.
+        // Said as each prune is (D187): what it reclaimed.
         self.events.log(
             "volume",
             "prune",

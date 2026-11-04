@@ -2510,7 +2510,7 @@ pub static BUILD: Command = Command {
         // buildx's root flags.
         Flag::string("builder", None, "", "Override the configured builder instance"),
         Flag::bool("debug", Some(b'D'), "Enable debug logging"),
-        // Hidden in buildx: the legacy resource flags, which --resource supersedes, and
+        // Hidden, as buildx v0.37.1 hides them: the legacy resource flags, which --resource supersedes, and
         // the classic builder's, which BuildKit ignores, some with a warning.
         Flag::string("memory", Some(b'm'), "", "Memory limit").hidden(),
         Flag::string(
@@ -2646,7 +2646,7 @@ pub static POLICY: Command = Command {
     error_prefix: "ERROR: ",
 };
 
-/// The commands `shards buildx policy` lists (its `json-schema` is a TODO in buildx).
+/// The commands `shards buildx policy` lists (its `json-schema` is a TODO in buildx v0.37.1).
 pub const POLICY_COMMANDS: &[(&str, &str)] = &[
     ("eval", "Evaluate policy for a source"),
     ("test", "Run policy tests"),
@@ -2960,7 +2960,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
 
 /// `build` if the start of `words` names it, and how many words do: `build`, `builder
 /// build`, `image build`, `buildx build` or `buildx b`. Its path is always `shards buildx
-/// build`, as buildx's is `docker buildx build` however the CLI was asked.
+/// build`, as buildx v0.37.1's is `docker buildx build` however the CLI was asked.
 pub fn build(words: &[&str]) -> Option<usize> {
     match words {
         ["build", ..] => Some(1),

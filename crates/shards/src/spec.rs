@@ -63,7 +63,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
     };
     let mut defaults = vec![format!("PATH={DEFAULT_PATH}"), format!("HOSTNAME={hostname}")];
     // With a terminal, TERM: the environment's (the image's, the user's), and xterm where
-    // neither names it, as Docker's. Where the client said what its terminal is, the
+    // neither names it (D16). Where the client said what its terminal is, the
     // command is told the first of its types its root describes instead, else xterm, which
     // init chooses there (Spec::terms).
     let names_term = |list: &[String]| list.iter().any(|e| e.split('=').next() == Some("TERM"));

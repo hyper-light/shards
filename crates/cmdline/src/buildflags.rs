@@ -115,7 +115,7 @@ fn cache_entry(text: &str) -> Result<CacheEntry, String> {
     Ok(e)
 }
 
-/// `--cache-from` or `--cache-to`'s values, as buildx reads them (`ParseCacheEntry`, then
+/// `--cache-from` or `--cache-to`'s values, as buildx v0.37.1 reads them (`ParseCacheEntry`, then
 /// `CreateCaches`): empty ones skipped; one without `=` a CSV list of registry
 /// references; a GitHub Actions entry given its token and URLs from the environment
 /// (`ACTIONS_RUNTIME_TOKEN`, `ACTIONS_CACHE_URL`, `ACTIONS_RESULTS_URL`, with
@@ -317,7 +317,7 @@ pub enum Dest {
     File(std::path::PathBuf),
 }
 
-/// An output, as buildx's CreateExports makes it of an `--output`.
+/// An output, as buildx v0.37.1's CreateExports makes it of an `--output`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     pub kind: String,
@@ -523,8 +523,8 @@ pub fn canonicalize_attest(kind: &str, value: &str) -> String {
 }
 
 /// `ParseAttests`: each a CSV of `key=value`, `type` and `disabled` its own (any case),
-/// the rest its attributes; a type required; an empty one none at all, as buildx's flag
-/// leaves it.
+/// the rest its attributes; a type required; an empty one none at all, as buildx v0.37.1's
+/// flag leaves it.
 pub fn parse_attests(values: &[String]) -> Result<Vec<Attest>, String> {
     let mut out = Vec::new();
     for v in values.iter().filter(|v| !v.is_empty()) {
@@ -628,7 +628,7 @@ pub enum KeyRefused {
     Add(String),
 }
 
-/// The most of a key file read, as BuildKit reads one.
+/// The most of a key file read, as v0.33.0's agentprovider.go reads one.
 const KEY_FILE_MAX: u64 = 100 * 1024;
 
 /// The SSH agents `specs` forward, by id, as BuildKit's sshprovider takes them
@@ -907,8 +907,9 @@ impl Drop for SecretBytes {
 
 /// The secrets `secrets` name, by id, the last of an id counting, read now: one without
 /// a file or a variable is the variable of its id if there is one, else the file of that
-/// name, as BuildKit's store finds it; a variable's value is empty if unset. A file must
-/// be there, and no secret may hold more than `max` bytes, what a build step can carry.
+/// name, as BuildKit's secretsprovider/store.go finds it; a variable's value is empty if
+/// unset. A file must be there, and no secret may hold more than `max` bytes, what a
+/// build step can carry.
 /// `env` is the client's environment, its values' bytes as they are.
 pub fn store(
     secrets: Vec<Secret>,
@@ -951,7 +952,7 @@ pub fn store(
     Ok(store)
 }
 
-/// BuildKit's words for a secret past the most it takes, with shards' most: go-units'
+/// BuildKit v0.33.0's text for a secret past the most it takes, with shards' most: go-units'
 /// `%#.f` of a size in binary units (`500KiB`, `1MiB`), as secretsprovider prints it.
 fn too_big(id: &str, _len: u64, max: u64) -> String {
     let units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -1001,7 +1002,7 @@ pub struct Entitlements {
 }
 
 impl Entitlements {
-    /// The `device` entitlements merged, as BuildKit's `DevicesConfig.Merge` merges them:
+    /// The `device` entitlements merged, as BuildKit v0.33.0's `DevicesConfig.Merge` merges them:
     /// none where none was given.
     pub fn devices(&self) -> Option<DevicesGrant> {
         let mut out: Option<DevicesGrant> = None;
@@ -1035,7 +1036,7 @@ impl Entitlements {
     }
 }
 
-/// `--allow device` as BuildKit's `DevicesConfig` holds it: every device, or the devices
+/// `--allow device` as BuildKit v0.33.0's `DevicesConfig` holds it: every device, or the devices
 /// named, each by the alias a step asks for it by (`alias=`) or its own name, to the device
 /// it is (empty for itself).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1174,7 +1175,7 @@ pub fn parse_ulimit(value: &str) -> Result<Ulimit, String> {
     })
 }
 
-/// `--ulimit`'s values as docker/cli's UlimitOpt keeps them: the last of each resource,
+/// `--ulimit`'s values as buildx v0.37.1 keeps them (UlimitOpt): the last of each resource,
 /// in the order of their names.
 pub fn ulimits(values: &[String]) -> Result<Vec<Ulimit>, String> {
     let mut by_name = BTreeMap::new();
@@ -1272,8 +1273,8 @@ pub fn parse_policies(values: &[String]) -> Result<Vec<PolicyConfig>, String> {
 pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String> {
     match flag.name {
         "ulimit" => parse_ulimit(value).map(|u| u.to_string()),
-        // opts.MemBytes, as buildx takes --shm-size and prune's sizes: go-units'
-        // RAMInBytes; a filter as docker/cli's FilterOpt.
+        // opts.MemBytes, as buildx v0.37.1 takes --shm-size and prune's sizes: go-units'
+        // RAMInBytes; a filter, docker/cli's FilterOpt.
         _ if flag.kind == crate::flags::Kind::Value("bytes") => {
             crate::resources::ram_in_bytes(value).map(|n| n.to_string())
         }

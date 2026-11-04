@@ -54,8 +54,8 @@ fn time_json(t: SystemTime) -> String {
 }
 
 /// `image`'s InspectResponse, compact: fields in the struct's order, those Go leaves out
-/// when empty left out. Fails as moby's ImageInspect fails where Go reads its config into
-/// no DockerOCIImage.
+/// when empty left out (D112). Fails where Go would read its config into no
+/// DockerOCIImage, as clients would refuse it (moby's ImageInspect).
 pub(super) fn document(image: &Image, record: Option<&str>) -> Result<String, String> {
     let (tags, digests) = tags_and_digests(image);
     let config = match image.config.as_deref() {
@@ -329,8 +329,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         inspected(parsed.string("format"), &documents, errors, styled, reply)
     }
 
-    /// `shards save IMAGE...` (moby ImageExport): every image found first, as dockerd
-    /// finds them all before it streams; then the archive, written to what the client
+    /// `shards save IMAGE...` (moby ImageExport): every image found first, so that one not
+    /// here fails before any byte is written; then the archive, written to what the client
     /// sent (its stdout, or its `-o` file), under a lease, so that no collection takes a
     /// blob meanwhile. With `--platform`, of each image the microVMs of those platforms
     /// alone (D179), each of which must be here.
@@ -845,8 +845,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         })
     }
 
-    /// Container `c`'s SizeRw and SizeRootFs, as containerd's snapshots count them for
-    /// dockerd: the disk its writable layer uses, from its guest while it runs, else as
+    /// MicroVM `c`'s SizeRw and SizeRootFs, inspect's fields (D170): the disk its writable
+    /// layer uses, from its guest while it runs, else as
     /// its last run left it; and that with its image's root filesystem.
     pub(super) fn container_sizes(&self, c: &crate::containers::Container) -> (i64, i64) {
         let running =
@@ -899,8 +899,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         else {
             return (None, None);
         };
-        // Its config as Docker reads it, a DockerOCIImageConfig, written as json.Marshal
-        // writes one: each field once, by its own name.
+        // Its config as clients read it (D112), a DockerOCIImageConfig, written as
+        // json.Marshal writes one: each field once, by its own name.
         let config = image
             .config
             .as_deref()

@@ -2,10 +2,11 @@
 //! {a3693192-9ed6-46d2-a981-f8226c8363bd}, its message as moby's etwlogs writes one
 //! (daemon/logger/etwlogs/etwlogs_windows.go, createLogMessage), EventWriteString of
 //! `container_name: NAME, image_name: IMAGE, container_id: ID, image_id: IMAGE_ID, source:
-//! STREAM, log: LINE` at level 0 and keyword 0, as moby's. An event written is ETW's: each
+//! STREAM, log: LINE` at level 0 and keyword 0, what its consumers parse (D198). An event
+//! written is ETW's: each
 //! session that listens for the provider has it, and none that does not, delivered as soon
 //! as it is written, for every sender alike. The provider is registered once for the
-//! daemon's life, as moby counts its registrations while any of its loggers lives.
+//! daemon's life, so that no run's start or end registers or unregisters it (D198).
 
 use std::io;
 use std::sync::{Mutex, PoisonError};
@@ -22,7 +23,7 @@ pub(crate) const PROVIDER: GUID = GUID::from_u128(0xa3693192_9ed6_46d2_a981_f822
 
 pub(super) struct Etwlogs {
     /// Each event's words before its stream's: its container's and its image's names and
-    /// IDs, as moby's logger.Info gives them.
+    /// IDs, the fields its consumers parse (D198).
     head: String,
 }
 
@@ -30,7 +31,7 @@ impl Etwlogs {
     pub(super) fn new(details: &Details) -> io::Result<Etwlogs> {
         provider()?;
         Ok(Etwlogs {
-            // Its name without inspect's leading slash, as moby's logger.Info.Name gives it.
+            // Its name without inspect's leading slash, as its consumers read it (D198).
             head: format!(
                 "container_name: {}, image_name: {}, container_id: {}, image_id: {}, ",
                 details.name.trim_start_matches('/'),
@@ -98,7 +99,7 @@ mod tests {
 
     /// Each event's words are moby's createLogMessage's, a NUL in its line U+FFFD.
     #[test]
-    fn events_say_what_mobys_do() {
+    fn events_carry_a_runs_line_and_details_as_etw_readers_parse_them() {
         let details = Details {
             id: "0123456789ab".repeat(5) + "cdef",
             name: "/web".into(),

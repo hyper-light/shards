@@ -343,7 +343,7 @@ fn actor_json(a: &Actor) -> Option<Json> {
     (!matches!(&j, Json::Obj(o) if o.is_empty())).then_some(j)
 }
 
-/// A Git object's signature, as buildx summarizes it.
+/// A Git object's signature, as buildx v0.37.1 summarizes it.
 fn signature_json(f: Fields, s: &shards_gitsign::Summary) -> Fields {
     match s {
         shards_gitsign::Summary::None => f,

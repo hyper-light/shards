@@ -52,7 +52,13 @@ EVIDENCE = re.compile(
 )
 
 
+_READ = {}
+
+
 def files():
+    if _READ:
+        yield from _READ
+        return
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         for f in filenames:
@@ -68,10 +74,15 @@ def comment_or_doc(path, line):
 def hits(kind):
     rx = KINDS[kind]
     for path in files():
-        try:
-            lines = open(os.path.join(ROOT, path), encoding="utf-8", errors="replace").read().split("\n")
-        except OSError:
-            continue
+        # Each file read once, for every kind.
+        lines = _READ.get(path)
+        if lines is None:
+            try:
+                with open(os.path.join(ROOT, path), encoding="utf-8", errors="replace") as f:
+                    lines = f.read().split("\n")
+            except OSError:
+                continue
+            _READ[path] = lines
         for n, line in enumerate(lines, 1):
             if not rx.search(line):
                 continue

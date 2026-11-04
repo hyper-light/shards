@@ -1,7 +1,7 @@
-//! Git sources as BuildKit reads them: `gitutil.ParseURL` (http, https, ssh and git URLs,
-//! and scp-style `user@host:path`) and the Dockerfile's `dfgitutil.ParseGitRef`, which
-//! says whether `ADD`'s source is a git repository, and which ref, subdirectory and
-//! options it names.
+//! Git sources as a Dockerfile means them: BuildKit's `gitutil.ParseURL`
+//! (util/gitutil/git_url.go: http, https, ssh and git URLs, and scp-style
+//! `user@host:path`) and the Dockerfile's `dfgitutil.ParseGitRef`, which says whether
+//! `ADD`'s source is a git repository, and which ref, subdirectory and options it names.
 
 use crate::go;
 use crate::url::{self, Userinfo, Values};

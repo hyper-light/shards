@@ -12,7 +12,8 @@
 //!   `%PROGRAMDATA%\docker\config\daemon.json` on Windows.
 //!
 //! A missing file names nothing; one that cannot be read, or whose two keys do not hold
-//! what dockerd takes, is an error that names it, as dockerd would not start with it.
+//! what dockerd takes, is an error that names it: a setting misread would send a pull
+//! where its user did not mean it to go (D194).
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -92,7 +93,7 @@ impl Registries {
     }
 
     /// Whether the registry at `authority` (`host[:port]`, as a reference names it) is
-    /// named insecure: by that name itself, as dockerd keys its index configurations; or
+    /// named insecure: by that name itself, as daemon.json's `insecure-registries` names one (D194); or
     /// by a network one of its addresses is in, a name looked up for it (`isCIDRMatch`),
     /// where any network is named. Loopback's are not looked up for (auth.rs,
     /// `loopback`): a registry is taken for loopback's by its name or address alone.
@@ -121,7 +122,7 @@ impl Registries {
         &self.hosts
     }
 
-    /// The networks named, as dockerd shows them (`InsecureRegistryCIDRs`), loopback's
+    /// The networks named, as `info` answers them (`InsecureRegistryCIDRs`, D194), loopback's
     /// last.
     pub fn networks(&self) -> Vec<String> {
         let mut shown: Vec<String> = self
@@ -326,7 +327,7 @@ mod tests {
     /// hosts and ports as a reference names them; mirrors with a scheme of HTTP's, no
     /// query, fragment or credentials, one slash at their end; repeats once.
     #[test]
-    fn daemon_json_names_registries_as_dockerd_reads_it() {
+    fn daemon_json_names_registries_and_mirrors_normalized() {
         let r = read(
             r#"{"insecure-registries": ["Registry.LAN:5000", "https://other.lan", "10.1.2.3/8",
                 "fd00::1/64", "registry.lan:5000", "[fd00::5]:5000"],

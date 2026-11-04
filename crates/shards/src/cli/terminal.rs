@@ -1,4 +1,4 @@
-//! The client's terminal under `run -t`, kept as the Docker CLI keeps it
+//! The client's terminal under `run -t`, made the command's own
 //! (docs/research/tty-and-interactive-runs.md §2.1): stdin in raw mode with moby/term's
 //! flags, until the client exits by any path but SIGKILL, and the size of its stdout. On
 //! Windows its console, a context's command's terminal (D180): raw as moby/term makes one
@@ -8,8 +8,8 @@
 use std::io;
 use std::sync::{Mutex, PoisonError};
 
-/// A line of stdin, its echo off while it is read, as moby/term's DisableEcho turns it
-/// off for a password (prompt.DisableInputEcho), and on again however the read went; its
+/// A line of stdin, its echo off while it is read, so that a password is not shown
+/// (prompt.DisableInputEcho), and on again however the read went; its
 /// line end left off.
 #[cfg(unix)]
 pub(crate) fn read_without_echo() -> std::io::Result<String> {
@@ -269,8 +269,8 @@ fn raw_mode(was: u32) -> u32 {
 }
 
 /// Puts stdin's console in raw mode ([`raw_mode`]), its keys the escape sequences a
-/// terminal sends where the console gives them (ENABLE_VIRTUAL_TERMINAL_INPUT, as moby/term
-/// asks for it where it is taken), and has stdout take escape sequences, which a terminal's
+/// terminal sends where the console gives them (ENABLE_VIRTUAL_TERMINAL_INPUT, where
+/// the console takes it), and has stdout take escape sequences, which a terminal's
 /// command writes, and its line feeds as a terminal takes them.
 #[cfg(windows)]
 pub fn make_raw() -> io::Result<()> {
@@ -299,7 +299,7 @@ pub fn make_raw() -> io::Result<()> {
     let _ = styles(1);
     // A line feed alone moves down, as a terminal's does, with no carriage return of the
     // console's: moby/term's raw output (SetRawTerminalOutput, DISABLE_NEWLINE_AUTO_RETURN),
-    // which a console without it refuses, passed over as moby/term passes it over.
+    // which a console without it refuses, and is then done without.
     if let Some(h) = console(1) {
         let mut mode = 0;
         // SAFETY: the console's own handle, its mode read into a local and set.
@@ -450,7 +450,7 @@ pub fn styles(fd: i32) -> bool {
 }
 
 /// The size of the console `fd` is, rows then columns, or 0×0 if it is not one: its
-/// window's (GetConsoleScreenBufferInfo, as moby/term's GetWinsize reads it on Windows).
+/// window's (GetConsoleScreenBufferInfo's srWindow).
 #[cfg(windows)]
 pub fn size(fd: i32) -> (u16, u16) {
     use windows_sys::Win32::System::Console::{CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo};

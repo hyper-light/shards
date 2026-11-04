@@ -104,7 +104,8 @@ fn repo_tag(call: &Call<'_>) -> Result<Option<String>, String> {
     Ok(Some(named.tag_name_only().to_string()))
 }
 
-/// A line a pull or push says, as dockerd's JSON message of it (streamformatter): a
+/// A line a pull or push says, as the JSON message clients parse (D170, moby's
+/// streamformatter): a
 /// layer's `ID: STATUS` by its ID, with its progress; a tag's `TAG: Pulling from
 /// REPOSITORY` by the tag; the rest a status alone. None for an empty line.
 fn message(line: &str) -> Option<Value> {
@@ -126,8 +127,8 @@ fn message(line: &str) -> Option<Value> {
     Some(json!({ "status": line }))
 }
 
-/// What a push says, as dockerd's JSON messages of it: each line a [`message`]; a tag's
-/// `TAG: digest: DIGEST size: SIZE` an `aux` too (PushResult); and its note of our
+/// What a push says, as the JSON messages clients parse (D170): each line a [`message`]; a
+/// tag's `TAG: digest: DIGEST size: SIZE` an `aux` too (PushResult); and its note of our
 /// platform's manifest pushed alone the `aux` the docker CLI tells of it by
 /// (auxprogress.ManifestPushedInsteadOfIndex).
 fn push_messages(text: &str) -> Vec<Value> {
@@ -168,8 +169,8 @@ fn push_messages(text: &str) -> Vec<Value> {
 
 /// The answer of command `ipc`, a pull's or push's, as a stream of JSON messages, each
 /// line it says made messages by `made`: its head written with its first, so that one
-/// refused before it says anything is answered by its status, as dockerd answers one
-/// whose stream it has not flushed; a failure after that is the stream's last message.
+/// refused before it says anything is answered by its status, which clients read as
+/// the failure (D170); a failure after that is the stream's last message.
 fn messages(conn: &UnixStream, call: &Call<'_>, ipc: &UnixStream, made: &dyn Fn(&str) -> Vec<Value>) -> Done {
     messages_told(conn, call, ipc, made).0
 }
@@ -246,7 +247,7 @@ fn platform_arg(given: &str) -> String {
 
 impl<D: Disk> Daemon<D> {
     /// `POST /images/create`: `fromImage` pulled as `shards pull` pulls it, each line it
-    /// says a JSON message of the stream, as dockerd's are; with `fromSrc`, an import.
+    /// says a JSON message of the stream (D170, [`message`]); with `fromSrc`, an import.
     pub(super) fn engine_pull<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -310,8 +311,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `POST /auth`: the credentials a client gives, checked with their registry as
-    /// `shards login registry` checks them (dockerd's RegistryLogin, loginV2), and kept by
-    /// no one, as dockerd keeps none: the client keeps them. `Login Succeeded`, and the
+    /// `shards login registry` checks them (D171), and kept by no one: the client keeps
+    /// them, and the daemon holds no secret it was not asked to. `Login Succeeded`, and the
     /// identity token its token server gave in place of the password, where it gave one
     /// (none said where none was, as `AuthResponse` omits it); credentials refused, 401,
     /// which the API's description gives them, by a token server or the registry itself,
@@ -388,8 +389,8 @@ impl<D: Disk> Daemon<D> {
             }
             Err(e) => return Answer::error(400, e),
         };
-        // Credentials a client gives that cannot be read are none, as dockerd ignores
-        // them for a search.
+        // Credentials a client gives that cannot be read are none: a search of public
+        // images needs none (D172).
         let env = with_auth(call, term).unwrap_or_else(|_| shards_ipc::registry_env());
         let lookup = |k: &str| shards_ipc::env_value(&env, k);
         match crate::search::find(term, limit, &filters, &lookup) {
@@ -463,8 +464,8 @@ impl<D: Disk> Daemon<D> {
 
     /// `GET /images/{name}/get`, `GET /images/get`: `shards save image`, the images as one
     /// archive, written onto the connection as it is made, never staged; each found
-    /// before the head, as dockerd finds them all before it streams, so that one not here
-    /// is answered 404, and so is one without a `platform` named (D179).
+    /// before the head, so that one not here is answered 404, not a cut stream, and so is
+    /// one without a `platform` named (D179).
     pub(super) fn engine_save<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -523,8 +524,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `POST /images/load`: `shards load image`, the archive the body holds read as it
-    /// comes, never staged; each image it held said (`stream`), as dockerd's containerd
-    /// store says them, `quiet` or not, its failure the last message.
+    /// comes, never staged; each image it held said (`stream`), the lines clients print
+    /// (D170), `quiet` or not, its failure the last message.
     pub(super) fn engine_load<'s, 'e, R: BufRead>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -757,8 +758,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `GET /images/{name}/history`: `shards history image`, each step the newest first,
-    /// the image's ID and names on the newest, as dockerd's containerd store gives them; a
-    /// layer's size its compressed size, where dockerd's is unpacked.
+    /// the image's ID and names on the newest, the shape clients parse (D170); a layer's
+    /// size its compressed size, what the store holds of it, where dockerd's is unpacked.
     pub(super) fn engine_image_history(&self, name: &str, call: &Call<'_>) -> Answer {
         // One platform's history, where one is named (D179).
         let platform = call.query("platform").filter(|p| !p.is_empty()).map(platform_arg);

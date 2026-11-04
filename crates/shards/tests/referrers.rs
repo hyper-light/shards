@@ -264,7 +264,7 @@ fn policies_hold_an_agent_to_its_signature() {
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
 
     // Only an image's pin converts a source: a policy that pins an OSI artifact is
-    // refused in BuildKit's words.
+    // refused, its error the text buildx users' scripts match (D106).
     std::fs::write(
         ctx.join("Agentfile.rego"),
         format!(
