@@ -1,0 +1,119 @@
+{
+  "capture_utc": "2026-11-04T07:50:33.318260+00:00",
+  "qemu_pid": 22354,
+  "scope": "flushed disk bytes, not an atomic snapshot or native task-state query",
+  "vm_stopped_or_restarted": false,
+  "files": [
+    {
+      "windows_path": "C:/shards-step10/full-real-04/results.jsonl",
+      "bytes": 23309,
+      "sha256": "638e9008656e7b3ede514bee50164ff39756ebe85c26d5596aff8a88b7a35034",
+      "local": "results.jsonl",
+      "native_records": 82,
+      "failed_records": 3,
+      "last_records": [
+        {
+          "index": 76,
+          "name": "build_windows",
+          "exit": 101
+        },
+        {
+          "index": 77,
+          "name": "buildx",
+          "exit": 0
+        },
+        {
+          "index": 78,
+          "name": "commit",
+          "exit": 0
+        },
+        {
+          "index": 79,
+          "name": "compose",
+          "exit": 0
+        },
+        {
+          "index": 80,
+          "name": "confined",
+          "exit": 0
+        },
+        {
+          "index": 81,
+          "name": "containers",
+          "exit": 101
+        }
+      ]
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real04-normal-controller.txt",
+      "bytes": 135966,
+      "sha256": "cc46efea80c818cdb0eb4204a9e93353aa7e123519c1c29a7274b6bb2e7ef527",
+      "local": "full-real04-normal-controller.txt",
+      "last_heartbeats": [
+        "ALIVE 082-context pid=2760 elapsed=363.1611",
+        "ALIVE 082-context pid=2760 elapsed=393.177154",
+        "ALIVE 082-context pid=2760 elapsed=423.197027",
+        "ALIVE 082-context pid=2760 elapsed=453.237371"
+      ]
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real04-normal-child.exit",
+      "error_type": "FileNotFoundError",
+      "error": "File not found: shards-step10/full-real04-normal-child.exit"
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real04-normal-start.json",
+      "bytes": 432,
+      "sha256": "f1344877a767458d1abb98b5f8b469d2e65ddbfb6a97296fa44b21eecbe95635",
+      "local": "full-real04-normal-start.json"
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real-04/081-containers.stdout.txt",
+      "bytes": 9162,
+      "sha256": "f3595ea89ace9498dd43feaf494feae1b6bed0e262863a2edb93744e3ffd972b",
+      "local": "081-containers.stdout.txt"
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real-04/081-containers.stderr.txt",
+      "bytes": 54858,
+      "sha256": "f21668bb4a6c034284feac28a67e017495afbbbe0a334b9fd8d20475f63e1da5",
+      "local": "081-containers.stderr.txt"
+    }
+  ],
+  "export_read_only": true,
+  "export_flags": "0x50f",
+  "disk_size": 103079215104,
+  "partitions": [
+    {
+      "index": 0,
+      "type": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+      "offset": 1048576,
+      "size": 272629760,
+      "name": "EFI system partition"
+    },
+    {
+      "index": 1,
+      "type": "e3c9e316-0b5c-4db8-817d-f92df00215ae",
+      "offset": 273678336,
+      "size": 16777216,
+      "name": "Microsoft reserved partition"
+    },
+    {
+      "index": 2,
+      "type": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+      "offset": 290455552,
+      "size": 101892227072,
+      "name": "Basic data partition"
+    },
+    {
+      "index": 3,
+      "type": "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+      "offset": 102182682624,
+      "size": 894435328,
+      "name": ""
+    }
+  ],
+  "nbd_requests": 74,
+  "nbd_bytes_read": 424960,
+  "export_stopped": true
+}

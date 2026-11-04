@@ -584,7 +584,10 @@ WHP accepting the property returns `None`; its native refusal test then fails so
 unimplemented DDA path cannot become an OS-limit claim. Its targeted arm64 build and
 lint passed; native execution and Server DDA hardware E2E remain open.
 
-Later [SSH observation failures](results/observation-transport/README.md) leave the
-running full task's state unknown. They do not supply a native completion or host
-blocker. The historical [HVF A/B evidence](results/hvf-advertisement/README.md) remains
+Later [SSH observation failures](results/observation-transport/README.md) prevented
+direct task queries. [Read-only disk captures](results/flushed-evidence/README.md)
+then recovered native progress without restarting the VM: 84 completed binaries,
+three failed, with the original controller still reporting an active child. These
+partial results supply no complete-suite pass or general host blocker. The historical
+[HVF A/B evidence](results/hvf-advertisement/README.md) remains
 separate from the later working TCG/TF-A configuration, with VHE causality unresolved.

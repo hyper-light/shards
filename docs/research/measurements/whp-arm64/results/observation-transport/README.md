@@ -27,3 +27,8 @@ the original local capture hashes, view hashes and selection rule. Full raw logs
 and the framebuffer remain local. This is an observation-channel failure, with
 the native host result unresolved. It neither establishes a general WHP host
 blocker nor changes the separate, unresolved HVF/VHE causal investigation.
+
+Subsequent [read-only disk captures](../flushed-evidence/README.md) recovered newer
+native heartbeats and completed results without restoring SSH or restarting the VM.
+They establish continued activity after the failed direct observations; the full
+suite and host-cause investigation remain open.

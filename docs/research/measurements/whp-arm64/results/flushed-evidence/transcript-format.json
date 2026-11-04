@@ -1,0 +1,18 @@
+{
+  "views": [
+    {
+      "capture": "readonly-full04-03/081-containers.stdout.txt",
+      "capture_sha256": "f3595ea89ace9498dd43feaf494feae1b6bed0e262863a2edb93744e3ffd972b",
+      "view": "containers.stdout.txt",
+      "view_sha256": "e43bd4fce6351d7da5e46b2bb41c2a4b8e32897a61f687cdec2cd63b27ff965f",
+      "format": "utf-8-sig decoded to UTF-8; line endings and trailing display whitespace normalized; heartbeat view selects last four ALIVE lines"
+    },
+    {
+      "capture": "readonly-full04-03/full-real04-normal-controller.txt",
+      "capture_sha256": "cc46efea80c818cdb0eb4204a9e93353aa7e123519c1c29a7274b6bb2e7ef527",
+      "view": "controller-heartbeats.txt",
+      "view_sha256": "12c6201f9aa8f781060cb44cb792d2ed6b6cb716ebe9403333a2c876daab3668",
+      "format": "utf-16 decoded to UTF-8; line endings and trailing display whitespace normalized; heartbeat view selects last four ALIVE lines"
+    }
+  ]
+}
