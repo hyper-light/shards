@@ -288,15 +288,15 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     (
         "manage",
-        "invite",
-        "client",
-        "Let another machine run shards here, by an invitation it joins with",
-    ),
-    (
-        "manage",
         "grow",
         "disk",
         "Grow a disk plugged into a running microVM, and its file system, as it runs",
+    ),
+    (
+        "manage",
+        "invite",
+        "client",
+        "Let another machine run shards here, by an invitation it joins with",
     ),
     ("manage", "kill", "vm", "Kill microVMs"),
     ("manage", "pause", "vm", "Freeze microVMs where they are"),
