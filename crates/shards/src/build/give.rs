@@ -62,10 +62,10 @@ pub fn watch(mut giver: Giver, plain: bool) {
     if let Some(r) = room() {
         let _ = giver.tell_first(r);
     }
-    if let Some((sender, word)) = WATCHER.get_or_init(|| start(plain)) {
-        if sender.send(giver).is_ok() {
-            let _ = word.send(Woke::Builder);
-        }
+    if let Some((sender, word)) = WATCHER.get_or_init(|| start(plain))
+        && sender.send(giver).is_ok()
+    {
+        let _ = word.send(Woke::Builder);
     }
 }
 
