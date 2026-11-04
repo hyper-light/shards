@@ -5881,6 +5881,7 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
 /// stays the container's, the same file, with what each run wrote; the microVM's own layer
 /// goes. One that holds little is packed and put back, in another file. What a run's guest
 /// wrote and freed is given back to the host's disk once its microVM has gone.
+#[cfg(unix)]
 #[test]
 fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     use shards_ext4::read::Volume;

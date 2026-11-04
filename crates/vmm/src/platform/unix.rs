@@ -1090,6 +1090,10 @@ pub(super) const PROMPT_SLICE_NS: u64 = 100_000;
 /// thread as it was.
 #[cfg(target_os = "linux")]
 pub(super) fn run_promptly() -> io::Result<()> {
+    // Miri, which checks the memory model of the threads that call this, runs no scheduler.
+    if cfg!(miri) {
+        return Ok(());
+    }
     let size = u32::try_from(std::mem::size_of::<libc::sched_attr>())
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.

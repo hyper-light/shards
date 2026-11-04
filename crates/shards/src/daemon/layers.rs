@@ -604,6 +604,7 @@ mod tests {
     /// What a layer's guest wrote and freed is given back to the host's disk once kept:
     /// the free blocks its file holds data in read as zeros after, take none of its disk,
     /// and the file system reads as it did; what is in use stays.
+    #[cfg(unix)]
     #[test]
     fn a_kept_layers_freed_blocks_go_back_to_its_disk() {
         use std::os::unix::fs::MetadataExt as _;

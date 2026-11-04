@@ -28,7 +28,7 @@ fn until(handle: &Handle, line: &str) -> String {
     loop {
         let said = String::from_utf8_lossy(&handle.console_said()).into_owned();
         if let Some(at) = said.rfind(line) {
-            return said[..at].to_string();
+            return said.get(..at).unwrap_or_default().to_string();
         }
         if Instant::now() > end {
             handle.stop();
@@ -51,14 +51,19 @@ fn answer(said: &str, prefix: &str) -> Vec<String> {
 /// n, p50, p90, p99 and max of `samples`, nearest rank.
 fn stats(name: &str, samples: &mut [u128]) -> String {
     samples.sort_unstable();
-    let rank = |p: usize| samples[(samples.len() * p).div_ceil(100).saturating_sub(1)];
+    let rank = |p: usize| {
+        samples
+            .get((samples.len() * p).div_ceil(100).saturating_sub(1))
+            .copied()
+            .unwrap_or_default()
+    };
     format!(
         "PLUG-STATS {name}: n {} p50 {} p90 {} p99 {} max {} us",
         samples.len(),
         rank(50),
         rank(90),
         rank(99),
-        samples[samples.len() - 1]
+        samples.last().copied().unwrap_or_default()
     )
 }
 
