@@ -17201,6 +17201,19 @@ revision before comparing a changed API/implementation.
     Boot to init, n 40 each: with four slots p50 18.90 ms (p90 19.15, p99 27.39), with no
     bus 18.88 (p90 19.24, p99 20.60): no cost measured at p50, where x86_64's ACPI-described
     bus costs 4 ms.
+  - **Through the CLI** (`cli.py`, a detached busybox run restored from its template,
+    the client's wall clock, n 30, Mac at load 11, fd56a4eb test-release): `plug disk`
+    p50 20.9 ms (p90 27.9, p99 29.9, max 29.9), `unplug disk` 62.5 ms (p90 91.4, p99
+    98.7, max 98.7), `plug volume` 13.9 ms (p90 15.4, p99 16.7, max 16.7), `unplug
+    volume` 7.3 ms (p90 9.1, p99 9.5, max 9.5): each a client's request, the VM's step
+    and init's built-in, an exec of the guest's; a disk's unplug unmounts its ext4 first,
+    whose parts are not split yet.
+  - **What the slots cost a run** (`slots-ab.sh`, build-ab/ab.py: one build, two homes,
+    SHARDS_PCI_SLOTS 0 and 4, each restoring its own template, n 100 paired, Mac at load
+    11): the run's wall clock p50 13.47 ms without, 14.13 with, paired median +0.46 ms,
+    95% [−0.23, +1.02]; the command's time in the guest, request to status, 2.79 against
+    3.11 ms, paired +0.26 ms, 95% [+0.08, +0.44]: a cost measured in the guest, of a
+    quarter of a millisecond, not yet split, and none measured of the run's wall clock.
   - The host's sides are microseconds; the guest's rescan and its remove are the cost: a
     probe of the virtio function and its disk, and a remove of 29 ms whose parts are not
     measured yet.
