@@ -6580,7 +6580,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories on Hypervisor.framework, KVM and WHP; host functions on KVM)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework and KVM, in the VMM on WHP too; host functions in the VMM on KVM)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -6711,7 +6711,19 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   which the teardown's let-go fixes (WHP's run since not repeated: jupiter offline). On Hypervisor.framework (an M5 Max, macOS 26.4.1):
   host plug 11 µs, rescan 2.4 ms, rescan to first read 3.1 ms, remove 7.8 ms, unplug 4 µs
   at p50, n 100. Mutation-checked: with a disk's growth sent no configuration change, its
-  guest never sees it grow, the disk it booted with and the plugged one alike. On arm64
+  guest never sees it grow, the disk it booted with and the plugged one alike. Through
+  the CLI (`devices_are_plugged_into_a_run_and_its_disk_grows`, tests/plug.rs), on a
+  detached run restored from its image's template: a disk made empty ext4 of 64 MiB,
+  written, grown to 128 MiB as it runs (its file, its device and its file system), a
+  shrink refused, unplugged, plugged again read-only with what was written; a host
+  directory read and written through, unplugged; on Hypervisor.framework, KVM x86_64 and,
+  nested, arm64 KVM, whose templates then keep their ITS. With every run's microVM given
+  its slots, the whole workspace's tests pass on KVM x86_64 (2,367), and the nested
+  arm64 KVM suite's daemon, warm, saved, restore, run, vsock, pmem and boot tests. What
+  the slots cost a run (PM M430): on Hypervisor.framework its command +0.26 ms in the
+  guest, 95% [+0.08, +0.44], and nothing measured of its wall clock; on KVM x86_64
+  nothing measured of either. The CLI's steps: a disk's plug 20.9 ms (HVF) and 36.4 ms
+  (KVM) at p50, its unplug 62.5 and 82.6, a volume's 13.9 and 9.1, 7.3 and 4.4. On arm64
   KVM, nested in a guest with EL2 on the M5 Max (boot.rs's L1 harness, `SHARDS_L1_TESTS=
   hotplug`), its MSIs through the GIC's ITS: the same test, and a host's function plugged
   in (`a_hosts_function_is_plugged_into_a_running_microvm`, `SHARDS_L1_PCI_TESTS=01.0`):
