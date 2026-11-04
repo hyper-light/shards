@@ -88,6 +88,20 @@ impl Hasher {
     }
 }
 
+/// Whether this process has grown the build cache: put a record, or kept a cache mount's
+/// content. The cache passes its bounds only as it grows, so a build that grew none has
+/// no collection to run (D212).
+static CACHE_GREW: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process has grown the build cache ([`CACHE_GREW`]).
+pub fn cache_grew() -> bool {
+    CACHE_GREW.load(Ordering::Relaxed)
+}
+
+fn grew() {
+    CACHE_GREW.store(true, Ordering::Relaxed);
+}
+
 /// A file whose lock (flock(2), LockFileEx on Windows) goes as it drops: unlocked, then
 /// closed. A lock is its open file's, which a program another thread starts meanwhile
 /// shares until its exec closes it: closed alone, the lock outlasts its drop that long
@@ -1513,6 +1527,7 @@ impl Store {
     /// it is there (they are its roots, as a reference's are).
     pub fn cache_put(&self, key: &str, blobs: &[Digest], size: u64, body: &str) -> Result<(), Error> {
         let now = unix_now();
+        grew();
         self.write_cache(
             key,
             &CacheRecord {

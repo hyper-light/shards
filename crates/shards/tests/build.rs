@@ -5756,13 +5756,20 @@ fn run_caches_are_kept_across_builds() {
         &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
         &[],
     );
-    // The build's collection ran once it was done; the next, within a minute, runs none.
+    // The build grew the cache, and its collection ran once it was done; the same build
+    // again, answered whole from the cache, grows nothing and runs none (D212).
     let collected = || {
         std::fs::metadata(home.join("buildcache-gc"))
             .and_then(|m| m.modified())
             .unwrap()
     };
     let first_collection = collected();
+    let again = ok(
+        &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
+        &[],
+    );
+    assert!(again.contains("CACHED"), "{again}");
+    assert_eq!(collected(), first_collection);
     // What a cache holds is in no layer: the next step, without it, finds none of it.
     let unlayered = build(
         &format!(
@@ -5787,7 +5794,8 @@ fn run_caches_are_kept_across_builds() {
     );
     assert!(seen.contains("/c/one file 644 0:0 1\n"), "{seen}");
     assert!(seen.contains("/c/two file 644 0:0 1\n"), "{seen}");
-    assert_eq!(collected(), first_collection);
+    // Builds that ran steps grew the cache, and collected it.
+    assert_ne!(collected(), first_collection);
     // One id, two targets of one step: one directory; another step's by that id.
     let twice = ok(
         "RUN --mount=type=cache,target=/x,id=both --mount=type=cache,target=/y,id=both,ro [\"/bin/testguest\", \"fs\", \"write:/x/f=3\", \"print:/y/f\"]\n",

@@ -24,7 +24,6 @@ use std::fs::{self, File, TryLockError};
 use std::io::{self, BufWriter, Write as _};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
@@ -170,10 +169,6 @@ pub struct MountEntry {
     pub in_use: bool,
 }
 
-/// How often a `locked` taker looks again while every record of its key is held, as
-/// BuildKit's does (mount.go, 100 ms).
-const LOOK_AGAIN: Duration = Duration::from_millis(100);
-
 /// What a record's `record.json` is renamed to as it goes ([`Store::remove_mount`]).
 const GONE: &str = "gone";
 
@@ -211,8 +206,8 @@ fn listed_lock(path: &Path) -> Result<Option<Locked>, Error> {
     }
 }
 
-/// A record's id: lowercase letters and digits, as BuildKit's identity.NewID makes them,
-/// so that it is one name of the store's own.
+/// A record's id: lowercase letters and digits (BuildKit's identity.NewID makes them so),
+/// no separator nor dot, so that it is one name of the store's own.
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
@@ -304,7 +299,7 @@ impl Store {
         Ok(ids)
     }
 
-    /// Takes a record of `key` for a step, as BuildKit's `getRefCacheDir` takes one:
+    /// Takes a record of `key` for a step, as mount.go's `getRefCacheDir` takes one:
     /// - `Shared`: the one others share now, else the first no step holds, else a new one;
     /// - `Private`: the first no step holds, else a new one;
     /// - `Locked`: the first no step holds, waited for while each is held, else a new one.
@@ -323,6 +318,8 @@ impl Store {
         let mut keys = self.key_lock(key)?;
         loop {
             let mut held_any = false;
+            // The first record found held, which a `locked` taker waits on.
+            let mut busy: Option<String> = None;
             let mut free: Vec<(String, Locked)> = Vec::new();
             for id in self.mount_ids()? {
                 if self.read_mount(&id)?.is_none_or(|r| r.key != key || r.pruned) {
@@ -343,6 +340,7 @@ impl Store {
                     free.push((id, lock));
                 } else {
                     held_any = true;
+                    busy.get_or_insert_with(|| id.clone());
                     if shared
                         && try_lock(&lock, true)?
                         && let Some(held) = self.held_mount(&id, lock)?
@@ -361,7 +359,16 @@ impl Store {
             }
             if sharing == Sharing::Locked && held_any {
                 drop(keys);
-                std::thread::sleep(LOOK_AGAIN);
+                // Woken as its holder lets go of it, by its lock, where a timer would wake
+                // it up to a period late, or for nothing: then looked through again, as
+                // another taker may have been woken too. With several held, which only
+                // shared and private takers make, the first listed is waited on.
+                if let Some(id) = busy
+                    && let Some(lock) = listed_lock(&self.mount_dir(&id)?.join("lock"))?
+                {
+                    lock.lock()?;
+                    drop(lock);
+                }
                 keys = self.key_lock(key)?;
                 continue;
             }
@@ -477,6 +484,7 @@ impl Store {
     ) -> Result<(), Error> {
         let (part, len) = (image.part, image.len);
         finish(&part, len)?;
+        super::grew();
         let _keys = self.key_lock(key)?;
         let Some(mut record) = self.read_mount(&held.id)? else {
             return bad(format!("cache mount {} is gone", held.id));
@@ -524,6 +532,9 @@ impl Store {
             finish(&c.part, c.len)?;
         }
         let kept = changes.is_some();
+        if kept {
+            super::grew();
+        }
         let _keys = self.key_lock(key)?;
         let Some(mut record) = self.read_mount(&held.id)? else {
             return bad(format!("cache mount {} is gone", held.id));
@@ -801,7 +812,7 @@ impl Store {
     }
 
     /// Lets go of the records of cache `id` before a build whose step mounting it is not to
-    /// be answered from the cache (`--no-cache`, `--no-cache-filter`), as BuildKit's solver
+    /// be answered from the cache (`--no-cache`, `--no-cache-filter`), as BuildKit v0.28.1's solver
     /// does (llbsolver `detectPrunedCacheID`, the worker's `PruneCacheMounts`): those of a
     /// cache mounted from something (`id:` and its source's key) where `from`, else those
     /// of `id` alone. One no step holds goes; one a step holds stays its until it is done,
@@ -896,6 +907,7 @@ fn plan(layers: &[MountLayer]) -> Option<RangeInclusive<usize>> {
 mod tests {
     use super::*;
     use crate::erofs;
+    use std::time::Duration;
 
     /// A store of its own, removed when dropped.
     fn store() -> (shards_testdir::TempDir, Store) {

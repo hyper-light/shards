@@ -1,9 +1,8 @@
 //! The build cache's records pruned as BuildKit's cache manager prunes them (dockerfile/1.27.1
 //! cache/manager.go `prune`, `pruneOnce`, `calculateKeepBytes`, `sortDeleteRecords`): by
-//! `builder prune` (D65), and by the collector each build runs once it is done (D114), with
-//! the default policy dockerd derives from its disk (moby docker-v29.3.1
-//! daemon/internal/builder-next/worker/gc.go `DefaultGCPolicy`), at most once a minute, as
-//! BuildKit's controller throttles it (control/control.go `throttledGC`).
+//! `builder prune` (D65), and by the collector a build runs once it is done where it grew
+//! the cache (D114, D212), by the shares of the disk its user set, else the user's 10%,
+//! 80% and 20% (D186): no record goes for its age alone.
 //!
 //! A record is a step's result (D50), of BuildKit's `regular` type, never mutable nor in
 //! use while no build runs, and shared where an image holds its own layer, which a prune
@@ -33,7 +32,8 @@ pub struct Record {
 }
 
 impl Record {
-    /// Its ID as BuildKit's are, 25 characters: as listings show it and filters match it.
+    /// Its ID, 25 characters, as `builder du` and `builder prune` list it and their filters
+    /// match it (D65).
     pub fn shown_id(&self) -> &str {
         self.id.get(..25).unwrap_or(&self.id)
     }
@@ -205,8 +205,8 @@ pub fn records(store: &Store) -> Result<Vec<(Record, bool)>, String> {
 }
 
 /// What `rule` may remove of `records` (each with whether a step holds it), in the order
-/// it removes them: none a step holds, as BuildKit's `pruneOnce` takes only records nothing
-/// references; under a target (`keep`), the least used first, ranked among those alone.
+/// it removes them: none a step holds, which its step still reads; under a target (`keep`),
+/// the least used first, ranked among those alone (cache/manager.go `pruneOnce`).
 fn removable(records: Vec<(Record, bool)>, rule: &Rule, keep: i64, now: Duration) -> Vec<Record> {
     let chosen: Vec<Record> = records
         .into_iter()
@@ -285,18 +285,16 @@ fn disk_percentage(total: u64, percentage: u64) -> i64 {
     i64::try_from(share).unwrap_or(i64::MAX)
 }
 
-/// `tempCachePercent`, e·π·φ as Go's constant arithmetic rounds it to a float64: the share
-/// of the reserve the easiest to make again may take.
-const TEMP_CACHE_PERCENT: f64 = 13.817_580_227_176_494;
-
-/// The collection policy for a disk of `total` bytes, its reserve, most and free space
-/// as its user set them (`shards configure disk`, D186), else 10%, 80% and 20% of the
-/// disk (the user's call, the shares dockerd's `DefaultGCPolicy` names): what is easiest
-/// to make again (context transfers, Git checkouts, cache mounts) unused for two days, past
-/// a temporary share of the reserve; anything unused for 60 days; the unshared cache under
-/// the cap; then all of it under the cap. A share is that much of the disk's bytes, 0% none;
-/// a size is taken as it is; a reserve is no more than a most. Where the disk cannot be
-/// read, the sizes set alone, else 2 GB reserved and no cap.
+/// The collection policy for a disk of `total` bytes: its reserve, most and free space as
+/// its user set them (`shards configure disk`, D186), else 10%, 80% and 20% of the disk
+/// (the user's call): the unshared cache under the cap, then all of it. A share is that
+/// much of the disk's bytes, 0% none; a size is taken as it is; a reserve is no more than a
+/// most. Where the disk cannot be read, the sizes set alone, and with none set, nothing
+/// goes: a share of a disk of unknown size is no size (D212).
+///
+/// Nothing goes for its age alone, as the disk is what the bounds keep, and the user's
+/// shares say how much of it the cache may hold: a record kept within them costs no disk
+/// the user asked back, and one removed costs its next build the step again (D212).
 pub fn default_policy(total: Option<u64>, settings: &crate::disk::Settings) -> Vec<Rule> {
     use crate::disk::{Amount, CACHE_FREE, CACHE_MAX, CACHE_RESERVE};
     let bytes = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
@@ -314,15 +312,17 @@ pub fn default_policy(total: Option<u64>, settings: &crate::disk::Settings) -> V
             )
         }
         None => {
-            let sized = |a: Option<Amount>, otherwise: i64| match a {
-                Some(Amount::Bytes(b)) => bytes(b),
-                _ => otherwise,
+            let sized = |a: Option<Amount>| match a {
+                Some(Amount::Bytes(b)) => Some(bytes(b)),
+                _ => None,
             };
-            (
-                sized(settings.cache_reserve, 2_000_000_000),
-                sized(settings.cache_max, 0),
-                sized(settings.cache_free, 0),
-            )
+            let set = [settings.cache_reserve, settings.cache_max, settings.cache_free].map(sized);
+            // No size known: a rule of no bounds would take every record.
+            if set.iter().all(Option::is_none) {
+                return Vec::new();
+            }
+            let [r, m, f] = set.map(|b| b.unwrap_or(0));
+            (r, m, f)
         }
     };
     let reserved = if max_used != 0 {
@@ -330,45 +330,23 @@ pub fn default_policy(total: Option<u64>, settings: &crate::disk::Settings) -> V
     } else {
         reserved
     };
-    // The temporary share, 512 MB at least.
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-    let temp = ((reserved as f64 / 100.0 * TEMP_CACHE_PERCENT).round() as i64).max(512_000_000);
-    let types = || {
-        ["source.local", "exec.cachemount", "source.git.checkout"]
-            .into_iter()
-            .filter_map(|t| Filter::parse(&format!("type=={t}")).ok())
-            .collect::<Vec<_>>()
-    };
-    let capped = |all, keep_duration| Rule {
+    let capped = |all| Rule {
         filters: Vec::new(),
         all,
-        keep_duration,
+        keep_duration: None,
         reserved,
         max_used,
         min_free,
     };
-    vec![
-        Rule {
-            filters: types(),
-            keep_duration: Some(Duration::from_secs(48 * 3600)),
-            max_used: temp,
-            ..Rule::default()
-        },
-        capped(false, Some(Duration::from_secs(60 * 24 * 3600))),
-        capped(false, None),
-        capped(true, None),
-    ]
+    vec![capped(false), capped(true)]
 }
 
-/// How long a collection waits after the last, as BuildKit's controller throttles its GC.
-const EVERY: Duration = Duration::from_secs(60);
-
-/// The home's stamp of its last collection.
+/// The home's stamp of its last collection, and the lock one collection at a time holds.
 fn stamp(home: &Path) -> std::path::PathBuf {
     home.join("buildcache-gc")
 }
 
-/// Has the next build collect, however recent the last collection: its policy has changed.
+/// Has the next build collect, though it grow nothing: its policy has changed.
 pub fn collect_next(home: &Path) -> Result<(), String> {
     let stamp = stamp(home);
     match std::fs::remove_file(&stamp) {
@@ -377,28 +355,47 @@ pub fn collect_next(home: &Path) -> Result<(), String> {
     }
 }
 
-/// Collects the build cache of `home`'s store as BuildKit's controller does after a build:
-/// by its policy, as its user set it, unless a collection ran less than a minute ago (the
-/// home's `buildcache-gc`, any process's). Settings that do not read collect nothing, at
-/// every build. What it frees, the store's collector finds due.
+/// Collects the build cache of `home`'s store once a build is done, by its policy as its
+/// user set it, where the build grew the cache ([`shards_image::store::cache_grew`]) or
+/// the policy changed since the last collection (no `buildcache-gc` in the home): the
+/// cache passes its bounds only as it grows, and a collection reads every record, 1.3 ms
+/// for 100 and 86 ms for 10,000 at p50 on a loaded host (PM M426), which a build answered
+/// whole from the cache would pay for nothing (D212). One at a time among the home's
+/// processes, by the stamp's lock: where another holds it, that one collects. Settings
+/// that do not read collect nothing, at every build. What it frees, the store's collector
+/// finds due.
 pub fn after_build(home: &Path, store: &Store) -> Result<(), String> {
     let settings = crate::disk::read(home)?;
     let stamp = stamp(home);
-    let recent = std::fs::metadata(&stamp)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age < EVERY);
-    if recent {
+    if !shards_image::store::cache_grew() && stamp.exists() {
         return Ok(());
     }
-    std::fs::write(&stamp, b"").map_err(|e| format!("{}: {e}", stamp.display()))?;
+    let said = |e: std::io::Error| format!("{}: {e}", stamp.display());
+    let lock = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&stamp)
+        .map_err(said)?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+        Err(std::fs::TryLockError::Error(e)) => return Err(said(e)),
+    }
+    let collected = collect(home, store, &settings);
+    // The stamp says when the last collection ran; unlocked before it closes (PM M244).
+    let stamped = lock.set_modified(SystemTime::now()).map_err(said);
+    let _ = lock.unlock();
+    collected.and(stamped)
+}
+
+fn collect(home: &Path, store: &Store, settings: &crate::disk::Settings) -> Result<(), String> {
     let disk = home.join("images");
     let total = shards_vmm::platform::disk_space(&disk)
         .ok()
         .map(|(_, total)| total);
     let mut freed = 0i64;
-    for rule in default_policy(total, &settings) {
+    for rule in default_policy(total, settings) {
         freed = freed.saturating_add(prune(store, &disk, &rule, &mut |_| Ok(()))?);
     }
     if freed > 0 {
@@ -520,8 +517,51 @@ mod tests {
         assert_eq!(prune(&store, &tmp, &all, &mut |_| Ok(())).unwrap(), 1000);
     }
 
-    /// What a step holds is neither removed nor ranked, as BuildKit ranks only what it may
-    /// delete: ranked with the two held, `c` would go before `a`.
+    /// PM M426's harness: what a build's collection costs the build it ends, by how many
+    /// records the store holds (`SHARDS_GC_RECORDS`, say `100,1000,10000`), when it removes
+    /// nothing, as after most builds: `SHARDS_GC_ROUNDS` collections each, timed whole.
+    #[test]
+    #[ignore = "a measurement: docs/research/measurements/build-gc/"]
+    fn a_collections_cost_by_records() {
+        let counts = std::env::var("SHARDS_GC_RECORDS").unwrap_or_else(|_| "100,1000,10000".into());
+        let rounds: usize = std::env::var("SHARDS_GC_ROUNDS")
+            .ok()
+            .and_then(|r| r.parse().ok())
+            .unwrap_or(101);
+        let settings = crate::disk::Settings::default();
+        for n in counts.split(',').map(|c| c.trim().parse::<usize>().unwrap()) {
+            let tmp = shards_testdir::TempDir::new("gc-cost").unwrap();
+            let store = Store::open(&tmp).unwrap();
+            for i in 0..n {
+                store.cache_put(&format!("{i:064x}"), &[], 1 << 20, "[]").unwrap();
+            }
+            let total = shards_vmm::platform::disk_space(&tmp).ok().map(|(_, t)| t);
+            let mut took: Vec<u128> = (0..rounds)
+                .map(|_| {
+                    let at = std::time::Instant::now();
+                    let mut freed = 0;
+                    for rule in default_policy(total, &settings) {
+                        freed += prune(&store, &tmp, &rule, &mut |_| Ok(())).unwrap();
+                    }
+                    assert_eq!(freed, 0);
+                    at.elapsed().as_micros()
+                })
+                .collect();
+            took.sort_unstable();
+            let at = |p: usize| took[(took.len() - 1) * p / 100];
+            println!(
+                "records {n}: n {rounds} p50 {} p90 {} p99 {} max {} us",
+                at(50),
+                at(90),
+                at(99),
+                took[took.len() - 1]
+            );
+        }
+    }
+
+    /// What a step holds is neither removed nor ranked, so that it moves no other record's
+    /// rank (cache/manager.go `sortDeleteRecords`): ranked with the two held, `c` would go
+    /// before `a`.
     #[test]
     fn what_a_step_holds_is_neither_removed_nor_ranked() {
         let order: Vec<String> = removable(
@@ -558,17 +598,18 @@ mod tests {
     /// The default policy, derived from the disk: on a disk of 2,014 GiB, its reserve, most
     /// and free space exactly 10%, 80% and 20% of it, 201.4GiB, 1.573TiB and 402.8GiB as
     /// go-units says them, where dockerd's rules say 188.1GiB, 1.466TiB and 375.3GiB
-    /// (`docker buildx inspect` in shards-dind, Docker 29.3.1, M141).
+    /// (`docker buildx inspect` in shards-dind, Docker 29.3.1, M141); no rule of an age
+    /// (D212).
     #[test]
     fn the_default_policy_is_derived_from_the_disk() {
         let rules = default_policy(Some(2014 * (1 << 30) + 1), &crate::disk::Settings::default());
-        let shown: Vec<(usize, bool, Option<u64>, i64, i64, i64)> = rules
+        let shown: Vec<(usize, bool, Option<Duration>, i64, i64, i64)> = rules
             .iter()
             .map(|r| {
                 (
                     r.filters.len(),
                     r.all,
-                    r.keep_duration.map(|d| d.as_secs() / 3600),
+                    r.keep_duration,
                     r.reserved,
                     r.max_used,
                     r.min_free,
@@ -581,8 +622,6 @@ mod tests {
         assert_eq!(
             shown,
             [
-                (3, false, Some(48), 0, 29_880_738_786, 0),
-                (0, false, Some(1440), reserved, max, min_free),
                 (0, false, None, reserved, max, min_free),
                 (0, true, None, reserved, max, min_free),
             ]
@@ -590,23 +629,12 @@ mod tests {
         // As go-units' BytesSize says them, the way `buildx inspect` shows them.
         #[allow(clippy::cast_precision_loss)]
         let gib = |b: i64| b as f64 / f64::from(1u32 << 30);
-        assert_eq!(format!("{:.2}", gib(29_880_738_786)), "27.83");
         assert_eq!(format!("{:.1}", gib(reserved)), "201.4");
         assert_eq!(format!("{:.3}", gib(max) / 1024.0), "1.573");
         assert_eq!(format!("{:.1}", gib(min_free)), "402.8");
-        // A small disk: the temporary share at its floor, 512 MB.
-        let none = crate::disk::Settings::default();
-        assert_eq!(
-            default_policy(Some(20 << 30), &none).first().map(|r| r.max_used),
-            Some(512_000_000)
-        );
-        // No disk read: 2 GB reserved, no cap.
-        let unread = default_policy(None, &none);
-        assert_eq!(
-            unread.get(1).map(|r| (r.reserved, r.max_used, r.min_free)),
-            Some((2_000_000_000, 0, 0))
-        );
-        assert_eq!(unread.first().map(|r| r.max_used), Some(512_000_000));
+        // No disk read and no size set: no bound to keep, so no rule, which would take
+        // every record.
+        assert!(default_policy(None, &crate::disk::Settings::default()).is_empty());
     }
 
     /// What a user sets (`shards configure disk`, D186) replaces the default: a share of

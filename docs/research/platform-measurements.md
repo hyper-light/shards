@@ -17160,3 +17160,30 @@ revision before comparing a changed API/implementation.
   memory file stays sparse, taking the disk its guest used (M345). The restore bench holds
   its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
   `shards restore` finds it.
+
+### M426. What a build's collection of its cache costs, by the records it reads (D212)
+
+- **Question.** A build's collection ran at most once a minute in a home, BuildKit's
+  controller's throttle, taken with dockerd's policy (D114), never measured. What does a
+  collection cost the build it ends, and so may every build that grows the cache pay it?
+- **Method.** `docs/research/measurements/build-gc` (`build::gc::tests::a_collections_cost_by_records`):
+  a store of its own with 100, 1,000 and 10,000 build cache records of 1 MiB, collected 101
+  times each by D212's default policy (two rules, each reading every record) where nothing
+  is past its bounds, each collection timed whole. On kiln-a094a12d (Fedora 44, Linux
+  6.19.10, x86_64, 32 CPUs, 62 GiB), the store on btrfs on NVMe, test-release, the tree of
+  de2b1cf5 with D212's policy, 2026-11-03, beside CI jobs and other agents' builds: load
+  average 42.5 as it started, 657.5 (5 minutes) as it ended.
+- **Found** (µs a collection, n=101 each):
+
+  | records | p50 | p90 | p99 | max |
+  |---:|---:|---:|---:|---:|
+  | 100 | 1,323 | 2,156 | 5,571 | 9,299 |
+  | 1,000 | 15,203 | 46,922 | 74,978 | 78,402 |
+  | 10,000 | 85,749 | 152,390 | 172,083 | 187,720 |
+
+  - A collection's cost grows with the records it reads, 9 to 15 µs a record at p50 here:
+    a store of thousands of records costs a build tens of milliseconds to collect, which
+    a build answered whole from the cache would pay for nothing. dockerd's policy read
+    them four times, a rule each.
+- **So** (D212): a build collects where it grew the cache, the only way the cache passes
+  its bounds, and not on a timer; a build answered from the cache collects nothing.

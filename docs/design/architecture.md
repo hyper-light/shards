@@ -984,13 +984,13 @@ for the exit status.
     SIGQUIT, not ignored as it started) as `INTERRUPT`. Until the run is prepared (its
     image pulled), the daemon's watch of the client reads them: an `INTERRUPT` is the
     client's end, which the daemon answers (`INTERRUPTED`), cancelling the prepare and
-    making no container, and the client ends as the Docker CLI does before its container
-    is made (128 and the signal's number, nothing said); the rest are for a command yet to
-    run, and go. After, they wait for the run's VM, which takes an `INTERRUPT` as a signal
-    for the command. Only the daemon knows which side of the run's making a signal came:
-    the command's output reaches the client on a stream of its own, before the client may
-    have heard `CREATED`, which the daemon's slot relay passes on from a thread of its own
-    (PM M332). Once the VM has taken a run, they queue until the command runs.
+    making no microVM, and the client ends with 128 and the signal's number, nothing said,
+    the status a script reads of a command its signal ended; the rest are for a command
+    yet to run, and go. After, they wait for the run's VM, which takes an `INTERRUPT` as a
+    signal for the command. Only the daemon knows which side of the run's making a signal
+    came: the command's output reaches the client on a stream of its own, before the
+    client may have heard `CREATED`, which the daemon's slot relay passes on from a thread
+    of its own (PM M332). Once the VM has taken a run, they queue until the command runs.
   - The exit status goes back the moment the command ends, before the VM is torn down.
     Any error reaches the client's stderr first. The VM lets go of the client's stdio
     before the status, so a pipeline reading it ends with the client, and again when the
@@ -4881,23 +4881,23 @@ descriptors to give, no pseudo-terminal and no file system of Linux's:
   progress follows a resize as docker/cli's MonitorTtySize follows one on Windows, its
   terminal's size asked every quarter second (cli/command/container/tty.go).
 - **A build's context copy is a Linux tree on NTFS**, as D197's shares keep a guest's
-  files, as WSL keeps Linux's (crates/ntfs, `shards_archive::apply_layer_lx`): each name as
-  Linux names it, the characters no NTFS name holds escaped into the Private Use Area; a
-  mode, owner and device in WSL's `$LX` attributes; a symlink, FIFO or device WSL's reparse
-  point, which an unelevated process makes; each directory case-sensitive; an extended
-  attribute an EA of its own; each name opened relative to its directory's handle,
-  following no reparse point, so that no entry of a layer reaches past the copy, and one
-  beneath a symlink is refused, as no client's walk sends one. The copy is marked a Linux
-  tree, and the build's walk of it (shards-build's `host::Tree`), and the manifest the
-  client compares with, read it as fsutil reads a Linux host's: its names, modes, links,
-  devices, inodes and attributes the client's. A tree of the Windows host's own is read as
-  fsutil reads one there, though WSL kept some of its files' metadata, as Docker's builds
-  of it are. Kept as NTFS keeps its own files, a Linux or macOS client's context went to
-  its build with every file 0755, its symlinks only where the machine's user may make one,
-  and two names differing in case alone one file; and a time NTFS keeps to 100 ns, where
-  a Linux or macOS client's is to the nanosecond, is the client's where it is the client's
-  cut to 100 ns (`same_time`), as a copy whose times were never the client's went whole
-  again at each build.
+  files, as WSL keeps Linux's (crates/ntfs, `shards_archive::apply_layer_lx`): each name
+  as Linux names it, the characters no NTFS name holds escaped into the Private Use Area;
+  a mode, owner and device in WSL's `$LX` attributes; a symlink, FIFO or device WSL's
+  reparse point, which an unelevated process makes; each directory case-sensitive; an
+  extended attribute an EA of its own; each name opened relative to its directory's
+  handle, following no reparse point, so that no entry of a layer reaches past the copy,
+  and one beneath a symlink is refused, as no client's walk sends one. The copy is marked
+  a Linux tree, and the build's walk of it (shards-build's `host::Tree`), and the manifest
+  the client compares with, read it as fsutil reads a Linux host's: its names, modes,
+  links, devices, inodes and attributes the client's. A tree of the Windows host's own is
+  read as fsutil reads one there, though WSL kept some of its files' metadata: the tree
+  its user sees on that host, built to the same image from any client. Kept as NTFS keeps
+  its own files, a Linux or macOS client's context went to its build with every file 0755,
+  its symlinks only where the machine's user may make one, and two names differing in case
+  alone one file; and a time NTFS keeps to 100 ns, where a Linux or macOS client's is to
+  the nanosecond, is the client's where it is the client's cut to 100 ns (`same_time`), as
+  a copy whose times were never the client's went whole again at each build.
 - **A build's output to a directory comes as its archive**: the client asks for a
   `type=local` output as `type=tar` and unpacks the archive into its directory, so that the
   output's files never land on the machine's disk, where NTFS would have kept their modes,
@@ -5840,9 +5840,10 @@ configurable".
   more in decimal gigabytes, which keeps 9.3%, 74.5% and 18.6% of a 2 TiB disk where it
   says 10%, 80% and 20%; shards took that from it (D114), and reserved 188.1 GiB of a
   2,014 GiB disk where its 10% is 201.4 GiB. Where the disk's
-  size cannot be read, the sizes set apply, and a share is nothing to reckon, so the
-  default holds: 2 GB reserved, no most. A changed cache setting is the next build's
-  collection's, however recent the last: `configure disk` removes the throttle's stamp.
+  size cannot be read, the sizes set apply, and a share is nothing to reckon (with none
+  set, nothing goes since D212, where dockerd's 2 GB reserve held before). A changed cache
+  setting is the next build's collection's, grown or not: `configure disk` removes the
+  home's `buildcache-gc` (D212).
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.
@@ -5893,6 +5894,53 @@ short passed by; a listener reads what came before and hears what comes after, n
 twice. Mutation-checked, each caught: no trimming; a line cut short written on. E2E
 (tests/containers.rs): `events_outlive_their_daemon`, a run's life read back by the next
 daemon after `daemon stop` (failed with the journal taken out); `events_tell_a_microvms_life`.
+
+### D212. The build cache goes only as its user's shares say, collected where a build grew it (built)
+
+**Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
+past the shares D186 made the user's, the build cache's collection kept dockerd's other
+rules (moby docker-v29.3.1 daemon/internal/builder-next/worker/gc.go `DefaultGCPolicy`):
+records easy to make again (`source.local`, `exec.cachemount`, `source.git.checkout`)
+unused for two days went past a temporary share of the reserve (e·π·φ %, 512 MB at least),
+any record unused for 60 days went past the shares, and where the disk's size could not
+be read, 2 GB were reserved; and a build collected at most once a minute, as BuildKit's
+controller throttles its GC (control/control.go `throttledGC`). Of the three types, a
+shards store has cache mounts alone (D114): the first rule took every cache mount unused
+for two days, its downloads and compilers' caches, whatever room the disk had.
+
+**Decided.**
+- **No record goes for its age.** What a collection protects is the disk, and the user's
+  shares (D186) say how much of it the cache may hold, how much it may always keep and how
+  much stays free: a record kept within them costs no disk the user asked back, and one
+  removed costs its next build the step it saved, a cache mount's every download again.
+  An age protects nothing the shares do not. The policy is the shares' two rules: the
+  records no image shares, then all of them, the least recently and least often used
+  first (cache/manager.go `sortDeleteRecords`, as `builder prune` ranks them).
+- **A disk whose size cannot be read** bounds the cache by the sizes the user set alone,
+  and where none is set, nothing goes: a share of a disk of unknown size is no size, and
+  a rule with no bound would take every record. The store's own room check still keeps
+  every write within the disk's free space (audit A10).
+- **Collected where a build grew the cache**, not on a timer: the cache passes its bounds
+  only as it grows, by a record put or a cache mount's content kept
+  (`shards_image::store::cache_grew`, this process's), and a collection reads every
+  record, 1.3 ms for 100 records and 86 ms for 10,000 at p50, 172 ms at p99, on a loaded
+  host (PM M426): a build answered whole from the cache, the edit-and-rebuild loop's most
+  common, would pay that for nothing, and a build that ran a step has run a microVM. A
+  changed policy is the next build's to collect, grown or not (`configure disk` removes
+  the home's `buildcache-gc`, as since D186). A free space that falls by other programs'
+  writes is the next growing build's to answer.
+- **One collection at a time** among the home's processes: the stamp `buildcache-gc`,
+  locked while it collects, tried; where another holds it, that one collects. Two at once
+  would each count the other's removals as their own still to make, and take past the
+  bounds. The stamp's time says when the last ran.
+
+**Tested.** Unit tests: the default policy is the shares' two rules, no age, and none at
+all where neither the disk nor a size is known; a user's settings as D186's. On real
+microVMs, tests/build.rs `run_caches_are_kept_across_builds`: a build that grew the cache
+collected it; the same build again, answered whole from the cache, collected nothing;
+builds that ran steps did. `a_builds_cache_is_kept_as_its_user_set` (D186): a changed
+policy collected at the next build, which grew nothing. Measured: PM M426's harness,
+`build::gc::tests::a_collections_cost_by_records`.
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
@@ -6608,9 +6656,9 @@ destinations the guest's, Linux's.
   a directory"), shared through its directory as on Unix.
 - **A source cleaned as Go's filepath.Clean cleans one on Windows**, `\` between its names,
   `.` dropped and `..` taken back to its drive's root at most, where lcow turns `/` into `\`
-  and drops one trailing `\`. The CLI makes a relative `-v` source absolute as docker/cli's
-  filepath.Abs does on its host (`.\data` from `C:\work` is `C:\work\data`), where it had
-  cleaned it as a path of slashes.
+  and drops one trailing `\`. The CLI makes a relative `-v` source absolute against its
+  working directory, as Go's filepath.Abs does on its host (`.\data` from `C:\work` is
+  `C:\work\data`), where it had cleaned it as a path of slashes.
 - **Not served, as lcow serves neither**: a network share's path (`\\server\share`; lcow's
   rxHostDir takes drives alone) and a named pipe ("Linux containers on Windows do not
   support named pipe mounts").
@@ -6808,8 +6856,8 @@ every driver's are, from shards' store, by the daemon's shipper (D163).
   the provider has each, `logman start -ets NAME -p {a3693192-...}` and tracerpt among
   them, as for Docker's.
 - **Registered once.** The daemon registers the provider with the first run that asks for
-  it and keeps it for its life, as moby keeps one registration while any of its loggers
-  lives; one that fails is asked for again by the next run.
+  it and keeps it for its life: a registration costs a call to the system, and a provider
+  registered once is every run's; one that fails is asked for again by the next run.
 - **Delivered as written.** An event is ETW's once written: a session that listens has it,
   and none that does not, for every sender alike. Its options are every driver's (tag,
   labels, env, mode, the local copy's); moby's reads none of its own.
@@ -6847,9 +6895,9 @@ did as asked.**
   holds Unix's server.
 - **Owners, modes and device numbers** in WSL's extended attributes, `$LXUID`, `$LXGID`,
   `$LXMOD` and `$LXDEV` ("File Permissions for WSL", Microsoft Learn), set and read
-  unelevated (M362), where Unix's server keeps them in Docker Desktop's
-  `com.docker.grpcfuse.ownership` xattr: a file WSL made reads as WSL made it, and a file
-  with none is root's, as Unix's.
+  unelevated (M362), where Unix's server keeps them in the
+  `com.docker.grpcfuse.ownership` xattr (D38): a file WSL made reads as WSL made it, and
+  a file with none is root's, as Unix's.
 - **Every other kind as WSL makes it.** Regular files and directories are NTFS's; a
   symlink, a FIFO, a character or block device and a Unix socket are reparse points of the
   LX tags, a symlink's buffer as MS-FSCC 2.1.2.7 lays it out, never an NTFS symlink, which
@@ -7384,34 +7432,36 @@ prints.
     alone, and looks a name up only where a network is named; a registry that resolves to
     loopback is named by its name.
 - **Docker Hub's mirrors** (`registry-mirrors`, slice 2): a pull from Docker Hub asks each
-  in order first, as dockerd does (`lookupV2Endpoints`, mirrors for pulls alone), then
-  Docker Hub; pushes, deletes, logins and searches never ask a mirror. A mirror is a
-  registry of its own (`Registry::mirror`): its host's certificates (`certs.d`) and its
-  host's credentials, where its user logged in to it, never Docker Hub's, which dockerd
-  gives a mirror (`newRepository`: one credential store for every endpoint); one in plain
-  HTTP off this machine is asked with none. A request of the repository goes to the first
-  mirror that has not failed; one that cannot give a manifest or a blob, or cannot be
-  reached, is asked nothing more for the pull, as dockerd goes on to its next endpoint
-  after any error of a mirror's (`continueOnError`); one with no list asked for
-  (referrers, tags) is asked the next request still, where dockerd asks none. Tested:
-  `registry`'s `a_pull_asks_its_mirrors_first_and_a_failed_one_nothing_more`
+  in order first (the order `registry-mirrors` names them in, read as daemon.json's key
+  means it), then Docker Hub; pushes, deletes, logins and searches never ask a mirror. A
+  mirror is a registry of its own (`Registry::mirror`): its host's certificates
+  (`certs.d`) and its host's credentials, where its user logged in to it, never Docker
+  Hub's, which dockerd gives a mirror (`newRepository`: one credential store for every
+  endpoint); one in plain HTTP off this machine is asked with none. A request of the
+  repository goes to the first mirror that has not failed; one that cannot give a manifest
+  or a blob, or cannot be reached, is asked nothing more for the pull, so that a broken
+  mirror costs one failed request, not one per blob; one with no list asked for
+  (referrers, tags) is asked the next request still, as the mirror may hold the next.
+  Tested: `registry`'s `a_pull_asks_its_mirrors_first_and_a_failed_one_nothing_more`
   (mutation-checked), and `images`' `a_mirror_daemon_json_names_serves_docker_hubs_pull`:
   `test/image:v1`, a Docker Hub name, pulled from a mirror on loopback, its digest the
   test image's.
-- **`info` says them** as dockerd does: `RegistryConfig`'s `IndexConfigs` (Docker Hub's,
-  with its mirrors, and each named insecure, not secure), its `InsecureRegistryCIDRs` (the
-  networks named, then loopback's) and `Mirrors`; and in its text, as docker/cli lays them
-  out (`prettyPrintServerInfo`), the `Insecure Registries` and `Registry Mirrors` lines,
-  which it left out before.
-- **Tested**: `registries`' (each key read and refused as dockerd reads and refuses it, a
-  registry insecure by its name or its network, every file read together); `registry`'s
-  (a registry at this host's address on its route out answering HTTPS in plain HTTP: asked
-  in HTTPS alone unnamed, in HTTPS once and then in plain HTTP named, its credentials
-  refused there and never sent; where each kind of registry is asked in plain HTTP);
-  `info`'s text and JSON; and `images`' `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`:
-  `shards pull` from such a registry fails, then pulls once the rootless engine's file
-  names it, then fails again, naming the file, once it holds what dockerd refuses. The
-  fallback and the credentials' refusal are mutation-checked.
+- **`info` says them** in the answer shape Engine API clients parse (`SystemInfo`, built
+  in daemon/info.rs): `RegistryConfig`'s `IndexConfigs` (Docker Hub's, with its mirrors,
+  and each named insecure, not secure), its `InsecureRegistryCIDRs` (the networks named,
+  then loopback's) and `Mirrors`; and in its text, laid out as scripts read docker/cli's
+  (cli/command/system/info.go `prettyPrintServerInfo`), the `Insecure Registries` and
+  `Registry Mirrors` lines, which it left out before.
+- **Tested**: `registries`' (each key of daemon.json read with its meaning, and refused
+  where it is malformed, a registry insecure by its name or its network, every file read
+  together); `registry`'s (a registry at this host's address on its route out answering
+  HTTPS in plain HTTP: asked in HTTPS alone unnamed, in HTTPS once and then in plain HTTP
+  named, its credentials refused there and never sent; where each kind of registry is
+  asked in plain HTTP); `info`'s text and JSON; and `images`'
+  `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`: `shards pull` from
+  such a registry fails, then pulls once the rootless engine's file names it, then fails
+  again, naming the file, once it holds what dockerd refuses. The fallback and the
+  credentials' refusal are mutation-checked.
 
 **Next.** A mirror that answers but stalls a blob's body: the pull's resumes go on asking
 it (fetch.rs), where dockerd's pull would fall to its next endpoint.
@@ -8652,9 +8702,10 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   socket, whose group Docker's own post-install guide calls root-level, and no TCP
   listener. Remote use is shards' own, over QUIC (hyper-raft's `hyper-quic` and
   `hyper-tls`).
-- **On Windows, a named pipe** (`npipe`), as Docker's clients reach their engine there
-  (`DOCKER_HOST=npipe:////./pipe/NAME`): its name a fresh one each daemon makes, which the
-  home's `engine.pipe` names once it listens, as Unix's socket is renamed into place.
+- **On Windows, a named pipe** (`npipe`), the transport Engine API clients dial there
+  (`DOCKER_HOST=npipe:////./pipe/NAME`, D170): its name a fresh one each daemon makes,
+  which the home's `engine.pipe` names once it listens, as Unix's socket is renamed
+  into place.
   - Its DACL admits this user alone, and it refuses remote clients. Each client takes an
     instance of its own, one always waiting, whose connect the daemon's loop waits on with
     its others (`shards_ipc::Listener`). Its clients' streams carry bytes alone, no handle
@@ -12933,7 +12984,9 @@ it never reads ran it again; and nothing bounded what the cache kept.
   whichever process runs it: by its key (the id after the Dockerfile's namespace, and `:`
   and its source's key where `from=` gives one); `shared` the one others hold now, else
   the first free, else a new one; `private` the first free, else a new one; `locked` the
-  first free, waited for every 100 ms while each is held. First is by ID, the order
+  first free, waited for while each is held: woken by the held record's lock as its step
+  lets it go, where BuildKit looks again every 100 ms (the audit of copied defaults,
+  2026-11-03). First is by ID, the order
   BuildKit's metadata index looks them up in (cache/metadata `Search`). A lock file per
   record (flock(2)) holds it for its step, shared or alone, unlocked as the step lets it go
   (PM M244); a key's records are looked through and made under the key's lock. A new record's first content is what it is from,
@@ -12985,17 +13038,14 @@ it never reads ran it again; and nothing bounded what the cache kept.
   under include and exclude patterns, the directory headers and files they take with the
   headers above them (`includedPaths`). Each node's digest is taken once a build. Keys
   were never BuildKit's (D62), so a step's key format moved (`shards build cache 2`).
-- **Collection.** Once a build is done, the build cache is pruned by the default policy
-  dockerd gives its builder (moby daemon/internal/builder-next/worker/gc.go
-  `DefaultGCPolicy`), derived from the disk as dockerd derives it: what is easiest to make
-  again unused for two days past e·π·φ % of the reserve (512 MB at least); anything unused
-  for 60 days; the unshared cache under the cap; then all of it under the cap; the
-  reserve, cap and free space 10, 80 and 20 % of the disk's bytes, exactly since D186
-  (dockerd counts a share's whole GiB and one more in decimal gigabytes, which keeps 9.3%,
-  74.5% and 18.6% of a 2 TiB disk, as shards did before), or 2 GB reserved where the disk
-  cannot be read. At most once a minute
-  in a home (its `buildcache-gc`), as BuildKit's controller throttles its GC to a minute
-  after each build. Each rule prunes as `builder prune` does (one module, `build/gc.rs`,
+- **Collection.** Once a build that grew the cache is done, the build cache is pruned by
+  the shares of the disk (D212): the unshared cache under the cap, then all of it under
+  the cap; the reserve, cap and free space 10, 80 and 20 % of the disk's bytes, exactly
+  since D186. Until D212 it was dockerd's default policy (moby
+  daemon/internal/builder-next/worker/gc.go `DefaultGCPolicy`), which also took what is
+  easiest to make again unused for two days and anything unused for 60, and ran at most
+  once a minute, as BuildKit's controller throttles its GC; now no record goes for its
+  age, and one collection at a time runs in a home (its `buildcache-gc`, locked). Each rule prunes as `builder prune` does (one module, `build/gc.rs`,
   for both). The reserve, cap and free space are the user's to set (`shards configure
   disk`, D186), and a set policy is the next build's collection's, however recent the
   last.
@@ -13021,7 +13071,7 @@ it never reads ran it again; and nothing bounded what the cache kept.
   them, in the next build; one id at two targets and in another build; a root's owner and
   mode kept; another namespace another cache; `uid`, `gid`, `mode` and `mode` alone as
   BuildKit makes them; `--no-cache` an empty cache; the records counted and pruned; a
-  collection once a minute),
+  collection where a build grew the cache alone, D212),
   `run_caches_are_shared_among_concurrent_builds` (two builds at
   once under each mode: `shared` takes the record the other holds, `private` makes another
   while it is held, `locked` waits and finds the other's files; both builds' writes in one

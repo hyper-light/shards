@@ -1,0 +1,7 @@
+# kiln-a094a12d (Fedora 44, Linux 6.19.10-300.fc44.x86_64, 32 CPUs, 62 GiB), store on btrfs
+# on NVMe ($HOME), 2026-11-03 15:43-15:59 local; load average 42.5 at the start, 183.8 (1 min)
+# and 657.5 (5 min) at the end: CI jobs and other agents' builds beside it.
+# Tree: de2b1cf5 with D212's policy (two rules, no ages), test-release profile.
+records 100: n 101 p50 1323 p90 2156 p99 5571 max 9299 us
+records 1000: n 101 p50 15203 p90 46922 p99 74978 max 78402 us
+records 10000: n 101 p50 85749 p90 152390 p99 172083 max 187720 us
