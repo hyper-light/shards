@@ -291,7 +291,7 @@ fn mode_of(meta: &std::fs::Metadata) -> u32 {
 }
 
 /// What reads a file's runs of data into `put`, each at its offset.
-pub(crate) type Runs<'a> = dyn FnMut(&mut dyn FnMut(u64, &[u8]) -> io::Result<()>) -> io::Result<()> + 'a;
+pub(crate) type Runs = dyn FnMut(&mut dyn FnMut(u64, &[u8]) -> io::Result<()>) -> io::Result<()>;
 
 /// An entry of a stream, as [`read_entries`] gives it to its taker.
 pub(crate) enum Entry<'a> {
@@ -306,7 +306,7 @@ pub(crate) enum Entry<'a> {
         xattrs: Vec<(Vec<u8>, Vec<u8>)>,
         len: u64,
         /// Its runs of data, each read into `put` at its offset.
-        runs: &'a mut Runs<'a>,
+        runs: &'a mut Runs,
     },
     Link {
         rel: String,
