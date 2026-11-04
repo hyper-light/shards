@@ -4023,7 +4023,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3k)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3l)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -4106,12 +4106,8 @@ local administration is (../focal docs/cluster-admin.md).
 5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
    start, a stream's bytes, and a network change.
 
-**Not yet, and what each needs.**
-- `buildx policy eval` and `test` (refused): to be evaluated here, of the client's files,
-  the builder being the machine (buildx's own split for a remote builder): its platform, and
-  each source's metadata resolved there as a build there resolves it, its store and its
-  network with the client's logins (`policy::Resolve`, whose requests and answers, image
-  configs and attestation chains among them, have no encoding to cross yet).
+**Not yet, and what each needs.** A context refuses no command now: the last it refused,
+`buildx policy eval` and `test`, run here against the machine as their builder (part 3l).
 - Extended attributes in a build's copy beyond `security.capability`.
 - On a macOS machine, two names of a Linux client's context that differ in case alone:
   APFS, case-insensitive as macOS formats it by default, keeps them as one file (part 3k
@@ -4548,7 +4544,8 @@ context refused it.
   command there is hung up.
 - **What a context refuses, now only what needs this machine's files**: `buildx policy eval`
   and `test`, which read a policy of the client's in its own process, and `shards copy vm`
-  from Windows. `buildx du` and `prune`, and `builder`'s, ask the machine's builder alone,
+  from Windows (both since served: a Windows client's copy by part 3k, the policy commands
+  by part 3l). `buildx du` and `prune`, and `builder`'s, ask the machine's builder alone,
   and `compose`, no command of shards' (Compose reaches a context by its Engine socket,
   part 4), is the machine's to say so of, as this machine's would.
 
@@ -4556,7 +4553,8 @@ Tested in `tests/context.rs` (`a_cidfile_through_a_context_is_the_clients`: a re
 name made here, the ID the one `run -d` printed, the client's path recorded; one there
 already refused with a run's words and status, left as it was; a create's; an attached
 run's while it runs, kept once it ends; a run never made leaving none; and
-`a_context_runs_commands_on_its_machine_whole`, `buildx policy eval` refused), and in
+`a_context_runs_commands_on_its_machine_whole`, `buildx policy eval` refused, until part
+3l served it), and in
 context.rs's unit tests (what a context refuses), and in `crates/remote`'s
 (`what_a_command_made_comes_before_its_exit`: an ID told only once its command has exited,
 the order a busy host may run them in, still reaches the client before the exit status).
@@ -4859,6 +4857,49 @@ on, the machine's or the client's; an enrolled key's join refused; the contexts 
 removed socket not bound again; the sockets kept as the daemon closes; the relays not hung
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
+
+**Part 3l, built: a policy command through a context, its builder the machine.** A laptop
+checks its policy against what the GPU machine's builds will see: `shards --context gpu
+buildx policy eval --filename deny docker-image://IMAGE`, or runs its policy's tests
+(`buildx policy test .`). buildx runs both in its own process, of the client's files, and
+asks its builder what it cannot know itself, a remote builder's as a local one's: its
+platform, and each source's metadata, resolved by the builder (buildx v0.37.1
+commands/policy, `runEval`'s and `runTest`'s resolver over the builder's
+ResolveSourceMetadata). A context sent them whole, where the command there would have read
+the machine's files of the client's names, so it refused them. Now (policy_command.rs,
+context.rs `PolicyBuilder`):
+- **Evaluated here, of the client's files.** The command runs in the client's process
+  against a builder (`policy_command::Builder`): its policy file or stdin, its tests and
+  their directory, a local path as its context, its `--debug` lines and the signature
+  verifier's trust roots are the client's, as buildx's are; what it prints is byte for byte
+  what the same command prints on the machine of the same files.
+- **The builder's answers, the machine's.** Its platform, the default of `--platform` and
+  of a test's input; each source's metadata, resolved as the machine's builds resolve it, of
+  its store and its network (an image's digest, its config, its attestation chain with the
+  blobs read on the way; a Git source's ref, checksums and raw objects; an HTTP source's
+  digest, and that of its content and a signature's suffix); and an HTTP source a policy's
+  function reads (`github_attestation`'s bundles), fetched as the machine's build fetches
+  one. Each is a step of the client's command (`\0policy platform|resolve|fetch`), a source
+  and what is asked of it in, what is known out, as JSON, each byte string as base64
+  (`policy::wire`), every field crossing whole. The machine runs a step as a command of its
+  own, through its spawner (`buildx policy`, the step named by a variable that no client's
+  variable may set, `SHARDS_POLICY_STEP`), so that it reaches its registries as a client's
+  command does; its error is the builder's, said in the policy command's words.
+- **With the client's login for the source's registry alone**, found here once a command,
+  as a pull through a context sends one: none of the owner's, logged in there as they are.
+
+Tested in `tests/context.rs`
+(`a_policy_through_a_context_is_the_clients_its_builder_the_machine`): a source's input, its
+checksum resolved there, as the machine prints it itself; a policy of the client's
+allowing that checksum and one denying in its words; a local path the client's context;
+the client's tests, an image's input resolved there, as the machine runs them itself (the
+test failed and the input printed, as buildx fails a test whose input its policy completed,
+the machine's checksum in it); a registry that wants a login refusing the client while
+the owner is logged in there, and answering it once it logs in through the context; the
+machine asked its steps alone, no `buildx policy` command and none of the client's paths. Unit tests: a request and its
+answer crossing whole, a checksum algorithm the client may not name refused
+(`policy::wire`), and which commands run here (`context.rs`). On Windows, client or machine,
+by the same test on CI's Windows runners and jupiter.
 
 **Part 3k, built: a Windows machine serves other machines' clients** (the platform parity
 audit's row 10). Since D195 a Windows host runs shards' daemon; its listener runs there now

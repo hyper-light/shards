@@ -16,6 +16,7 @@ mod signatures;
 mod snappy;
 pub(crate) mod tester;
 mod testinput;
+pub(crate) mod wire;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

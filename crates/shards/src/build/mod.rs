@@ -50,7 +50,7 @@ pub(crate) mod http;
 mod live;
 pub(crate) mod multi;
 mod output;
-mod policy;
+pub(crate) mod policy;
 pub(crate) use policy::gitobject;
 pub(crate) mod policy_command;
 mod provenance;
