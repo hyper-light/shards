@@ -177,6 +177,14 @@ pub fn confine() -> Result<(), String> {
         // VM process sets no thread's CPUs, which could be another of its user's
         // processes' (PM M384).
         rules.push(Rule::fails(libc::SYS_sched_setaffinity, libc::EPERM as u16));
+        // So are a thread's priority and policy, which Venus's ring thread sets as its
+        // guest asks (virglrenderer's vkr_ring.c, setpriority) and Mesa's sets for the
+        // queues it starts at their least (u_queue.c: SCHED_BATCH by pthread_setschedparam,
+        // nice 19): refused with EPERM, which both go on past, as the VM process's threads'
+        // scheduling is shards' (Mesa 26.1's Intel driver, from musl, ended the process
+        // with them, its ring thread blocking the filter's signal).
+        rules.push(Rule::fails(libc::SYS_setpriority, libc::EPERM as u16));
+        rules.push(Rule::fails(libc::SYS_sched_setscheduler, libc::EPERM as u16));
         // Venus makes a dma-buf of the renderer's memory files through udmabuf where a
         // driver exports no host memory it can map, as Mesa's Intel driver on Intel's UHD
         // Graphics (vkr_physical_device.c): UDMABUF_CREATE alone, _IOW('u', 0x42, struct

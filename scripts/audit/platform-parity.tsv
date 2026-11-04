@@ -379,6 +379,11 @@ crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	crates/vmm/src/devices/virtio
 crates/vmm/src/devices/virtio/gpu/virgl.rs	impl Vulkan	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	as fn open
 crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	-	none: macos	the GPU's VM process is signed with every VM process's App Sandbox entitlements and no other (build.rs, resources/vm.entitlements), the sandbox giving it Metal as any sandboxed app's (D144)
 crates/shards/src/confine.rs	const GPU_SYSCALLS	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const UDMABUF_CREATE	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_EXPORT_SYNC_FILE	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_IMPORT_SYNC_FILE	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_PRIVATE_EXPEDITED	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED	-	none: macos	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn gpu_paths	-	none: macos	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn library_paths	-	none: macos	as GPU_IOCTL_TYPES
 crates/shards/src/daemon.rs	mod groups	-	none: linux	the groups shards keeps for --cgroup-parent where a host has no cgroups its user's own tools make and cap (D183, slice 3); on Linux a run's processes are born in a slice of the user's service manager, whose cgroup the kernel holds to its budgets (D183, slice 1)
@@ -436,5 +441,10 @@ crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Drop	-	none: linux,windows	
 crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Send	-	none: linux,windows	macOS' DIR pointer said Send, used by one thread at a time under the server's lock; Linux's descriptor and Windows' handle are Send
 crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	crates/ipc/src/windows.rs	struct Station [windows]	what a GPU's VM process is given beyond a VM process's, for its host's driver: on Linux the drivers' ioctls, syscalls and files past seccomp and Landlock (D201, PM M382); on Windows Win32k's calls and a window station and desktop of its own, granted to its AppContainer, which are all its driver needs to come up there (D202, PM M385)
 crates/shards/src/confine.rs	const GPU_SYSCALLS	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const UDMABUF_CREATE	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_EXPORT_SYNC_FILE	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_IMPORT_SYNC_FILE	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_PRIVATE_EXPEDITED	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn gpu_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn library_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
