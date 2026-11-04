@@ -573,7 +573,7 @@ fn assemble(
     // A PCI bus's MSIs (D154): to the GIC's ITS where the backend has one (KVM's), which
     // translates each by the ID of the function that wrote it, so that they are isolated
     // as a guest's VFIO needs; else to the backend's own GICv2m frame.
-    let msi = (!pci.test.is_empty() || !pci.vfio.is_empty()).then_some(if hv::ITS {
+    let msi = pci.any().then_some(if hv::ITS {
         boot::Msi::Its {
             base: layout::GIC_ITS,
             size: layout::GIC_ITS_SIZE,
@@ -644,7 +644,7 @@ fn assemble(
         .chain(swap_device)
         .chain(iommu_device)
         .collect();
-    let devices = super::virtio_devices(
+    let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,
         layer.as_ref(),
@@ -687,6 +687,7 @@ fn assemble(
     bus.insert(layout::UART, 0x1000, serial.clone())?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
+    control.on_disks(disk_sizes);
     if let Some(window) = swap {
         control.on_swap(window);
     }
@@ -726,6 +727,15 @@ fn assemble(
         iommu: iommu.clone(),
     };
     let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, mem64, pci, config, machine)?.map(|routed| {
+        if let Some(hotplug) = routed.hotplug {
+            control.on_plugs(crate::devices::control::Plugs {
+                hotplug,
+                io: hosts.io,
+                unpinnable: super::unpinnable(config),
+                #[cfg(target_os = "linux")]
+                vfio: vm.vfio_host(),
+            });
+        }
         boot::PciBridge {
             ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
             mem32,
@@ -827,6 +837,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             super::Pci {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,
+                slots: cfg.pci_slots,
             },
         )?;
         a.vmgenid.write_new_id()?;

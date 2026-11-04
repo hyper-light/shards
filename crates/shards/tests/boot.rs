@@ -974,23 +974,33 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     };
     let dir = common::TempDir::new("l1-e2e");
     let read = |p: &std::path::Path| std::fs::read(p).unwrap();
+    // SHARDS_L1_PCI_TESTS gives the guest test functions at those places (`--pci-tests`),
+    // which its tests may pass through to guests of their own (tests/hotplug.rs): its
+    // VFIO told it may take them, whose MSIs its GICv2m frame does not isolate (D154).
+    let pci_tests = std::env::var("SHARDS_L1_PCI_TESTS").ok();
     let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
-        vm_run(
-            &[
-                "--kernel",
-                nested.to_str().unwrap(),
-                "--initrd",
-                initrd.to_str().unwrap(),
-                "--nested",
-                "--cpus",
-                cpus,
-                "--memory",
-                memory,
-                "--cmdline",
-                &format!("console=ttyS0 panic=-1 {cmdline}"),
-            ],
-            timeout,
-        )
+        let unsafe_msis = match &pci_tests {
+            Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1",
+            None => "",
+        };
+        let cmdline = format!("console=ttyS0 panic=-1 {cmdline}{unsafe_msis}");
+        let mut args = vec![
+            "--kernel",
+            nested.to_str().unwrap(),
+            "--initrd",
+            initrd.to_str().unwrap(),
+            "--nested",
+            "--cpus",
+            cpus,
+            "--memory",
+            memory,
+            "--cmdline",
+            &cmdline,
+        ];
+        if let Some(places) = &pci_tests {
+            args.extend(["--pci-tests", places.as_str()]);
+        }
+        vm_run(&args, timeout)
     };
     // Whether this host gives a guest EL2, before the tests are built for one.
     let probe = dir.join("probe.cpio");

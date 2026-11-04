@@ -764,7 +764,7 @@ fn virtio_devices(
     hosts: Hosts<'_>,
     last: Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
     max: u64,
-) -> Result<Vec<Box<dyn crate::devices::virtio::VirtioDevice>>, String> {
+) -> Result<Devices, String> {
     let slots = config.disks.len()
         + usize::from(config.join)
         + regions.len()
@@ -778,11 +778,12 @@ fn virtio_devices(
         return Err(format!("at most {max} virtio devices are supported"));
     }
     let mut devices: Vec<Box<dyn crate::devices::virtio::VirtioDevice>> = Vec::with_capacity(slots);
+    let mut sizes = Vec::with_capacity(config.disks.len());
     for (i, (path, read_only)) in config.disks.iter().enumerate() {
-        devices.push(Box::new(
-            crate::devices::virtio::block::Block::open(path, *read_only, &format!("shards-disk{i}"))?
-                .with_limit(hosts.io),
-        ));
+        let disk = crate::devices::virtio::block::Block::open(path, *read_only, &format!("shards-disk{i}"))?
+            .with_limit(hosts.io);
+        sizes.extend(disk.size());
+        devices.push(Box::new(disk));
     }
     // Its join disk, the virtio-blk device after its disks, which init finds by its
     // serial (D119).
@@ -852,8 +853,16 @@ fn virtio_devices(
         ));
     }
     devices.extend(last);
-    Ok(devices)
+    Ok((devices, sizes))
 }
+
+/// A machine's virtio devices in its guest's probe order, and its file disks' sizes, which
+/// grow as it runs (D214).
+#[cfg(hv)]
+type Devices = (
+    Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
+    Vec<crate::devices::virtio::block::DiskSize>,
+);
 
 /// A GPU's renderer, and the length of the window its blobs are mapped into: what the
 /// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
@@ -1153,6 +1162,20 @@ pub struct Config {
     /// what the guest maps for it alone, pinned as it is mapped, which guest memory keeps
     /// from being given back meanwhile ([`crate::memory::GuestMemory::pin`]).
     pub vfio: Vec<Vfio>,
+    /// Slots of its PCI bus kept free for devices plugged into it as it runs (D214): disks,
+    /// shared directories and, on Linux, host functions, each found by its guest as its
+    /// init rescans the bus. 0 for none; with any, the machine has a PCI bus.
+    pub pci_slots: u8,
+}
+
+/// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
+/// 3 | function), its guest's name for it there, which its init rescans the bus to find and
+/// writes `remove` of to let it go, and, for a disk, what grows it.
+#[derive(Debug, Clone)]
+pub struct Plugged {
+    pub devfn: u8,
+    pub address: String,
+    pub size: Option<crate::devices::virtio::block::DiskSize>,
 }
 
 /// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
@@ -1255,10 +1278,17 @@ pub(crate) struct Pci<'a> {
     /// The test functions' places, `(device, function)`.
     pub test: &'a [(u8, u8)],
     pub vfio: &'a [Vfio],
+    /// Its slots kept for functions plugged in as it runs (D214).
+    pub slots: u8,
 }
 
 #[cfg(hv)]
 impl Pci<'_> {
+    /// Whether the machine has a PCI bus: functions to put on it, or slots to plug into.
+    pub fn any(&self) -> bool {
+        !self.test.is_empty() || !self.vfio.is_empty() || self.slots > 0
+    }
+
     /// What its functions' 64-bit BARs take of the machine's 64-bit window, placed as the
     /// bus places them, the test function's and then each passed-through function's in
     /// order, each at a multiple of its size: the window's length, and the alignment of its
@@ -1303,6 +1333,8 @@ pub(crate) trait PciInterrupts {
 #[derive(Debug, Default)]
 pub(crate) struct PciBus {
     pub intx: Vec<(u8, u8)>,
+    /// What plugs functions into it as it runs, where it has slots for them (D214).
+    pub hotplug: Option<Arc<crate::devices::pci::hotplug::Hotplug>>,
 }
 
 /// What a machine gives its PCI bus: its VM, and its guest memory, which its functions
@@ -1518,9 +1550,14 @@ fn pci_bus(
 ) -> Result<Option<PciBus>, String> {
     use crate::devices::pci;
     let irqs = machine.irqs;
-    if pci.test.is_empty() && pci.vfio.is_empty() {
+    if !pci.any() {
         return Ok(None);
     }
+    // With slots to plug into, the BARs placed now go in the 32-bit window's own bus, which
+    // plugged functions' BARs share wherever their guest places them (D214); else on the
+    // machine's.
+    let mut placed = crate::devices::MmioBus::default();
+    let bars = if pci.slots > 0 { &mut placed } else { &mut *bus };
     let mut routed = PciBus::default();
     let mut window = BarWindow::of(mem32)?;
     let mut window64 = mem64.map(BarWindow::of).transpose()?;
@@ -1553,10 +1590,10 @@ fn pci_bus(
             memory: machine.memory.clone(),
             iommu: machine.iommu.clone().map(|t| (t, u32::from(devfn))),
         };
-        let (edu, bars) = pci::edu::Edu::of(places, lines, Some(dma), role)?;
-        bus.insert(places.registers, pci::edu::BAR_SIZE, bars.registers)?;
-        bus.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars.msix)?;
-        bus.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars.scratch)?;
+        let (edu, bars_of) = pci::edu::Edu::of(places, lines, Some(dma), role)?;
+        bars.insert(places.registers, pci::edu::BAR_SIZE, bars_of.registers)?;
+        bars.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars_of.msix)?;
+        bars.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars_of.scratch)?;
         functions.push((devfn, edu));
     }
     if !pci.vfio.is_empty() {
@@ -1566,7 +1603,7 @@ fn pci_bus(
             return Err("a VM given a host's PCI device outside its own IOMMU has no memory to plug and no balloon: the device's DMA reaches all of guest RAM through mappings the host holds pinned (D154)".into());
         }
         functions.extend(passed_through(
-            bus,
+            bars,
             [
                 &mut window,
                 window64.as_mut().unwrap_or(&mut BarWindow::default()),
@@ -1577,8 +1614,58 @@ fn pci_bus(
             &mut routed,
         )?);
     }
-    bus.insert(ecam, pci::ECAM_SIZE, Arc::new(pci::Ecam::new(functions)))?;
+    let space = Arc::new(pci::Ecam::new(functions));
+    if pci.slots > 0 {
+        let first = vfio_places(pci.vfio, pci.test)
+            .into_iter()
+            .flatten()
+            .map(|(device, _)| device.saturating_add(1))
+            .fold(after_tests(pci.test), u8::max);
+        let irqs =
+            irqs.ok_or("a PCI bus with hot-plug slots needs MSIs, which this machine routes none of")?;
+        let slots = (first..32)
+            .take(usize::from(pci.slots))
+            .map(|device| pci::hotplug::Slot {
+                devfn: device << 3,
+                msi: irqs.msi(u32::from(device) << 3),
+                #[cfg(target_os = "linux")]
+                route: irqs.route(u32::from(device) << 3),
+            })
+            .collect::<Vec<_>>();
+        if slots.len() < usize::from(pci.slots) {
+            return Err(format!(
+                "{} hot-plug slots: bus 0 has room for {} after its other functions",
+                pci.slots,
+                slots.len()
+            ));
+        }
+        // The BARs in the 32-bit window are its own; the rest, 64-bit ones, the machine's.
+        let (base, len) = mem32;
+        let mut fixed = crate::devices::MmioBus::default();
+        for (at, size, device) in placed.into_devices() {
+            if at >= base && at.saturating_add(size) <= base + len {
+                fixed.insert(at, size, device)?;
+            } else {
+                bus.insert(at, size, device)?;
+            }
+        }
+        let window = Arc::new(pci::hotplug::Window::new(base, fixed));
+        bus.insert(base, len, window.clone())?;
+        routed.hotplug = Some(Arc::new(pci::hotplug::Hotplug::new(space.clone(), window, slots)));
+    }
+    bus.insert(ecam, pci::ECAM_SIZE, space)?;
     Ok(Some(routed))
+}
+
+/// Why `config`'s machine may not be given a host's function outside its IOMMU, where it
+/// may not: the function's DMA reaches all of its RAM through mappings the host holds
+/// pinned, which memory to plug would outgrow and a balloon would take from under it
+/// (D154).
+#[cfg(hv)]
+fn unpinnable(config: &crate::snapshot::MachineConfig) -> Option<String> {
+    (config.hotplug_mib > 0 || config.reporting).then(|| {
+        "a microVM with memory to plug or a balloon is given no host's PCI device: the device's DMA reaches all of guest RAM through mappings the host holds pinned (D154)".to_string()
+    })
 }
 
 /// What is left of a PCI memory window, BARs taken from its start.
@@ -1811,6 +1898,26 @@ impl crate::devices::pci::vfio::Host for crate::hv::Vm {
         self.add_vfio_file(file).map_err(|e| e.to_string())
     }
 
+    fn remove_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
+        self.vfio_host().remove_file(file).map_err(|e| e.to_string())
+    }
+
+    fn slots(&self, count: u32) -> Box<dyn crate::devices::pci::vfio::BarSlots> {
+        Box::new(self.device_slots(count))
+    }
+}
+
+/// KVM as the host of a function plugged in as the machine runs (D214).
+#[cfg(all(hv, target_os = "linux"))]
+impl crate::devices::pci::vfio::Host for crate::hv::VfioHost {
+    fn add_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
+        crate::hv::VfioHost::add_file(self, file).map_err(|e| e.to_string())
+    }
+
+    fn remove_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
+        crate::hv::VfioHost::remove_file(self, file).map_err(|e| e.to_string())
+    }
+
     fn slots(&self, count: u32) -> Box<dyn crate::devices::pci::vfio::BarSlots> {
         Box::new(self.device_slots(count))
     }
@@ -1890,6 +1997,7 @@ impl Config {
             layer: None,
             pci_test: Vec::new(),
             vfio: Vec::new(),
+            pci_slots: 0,
         }
     }
 }
@@ -2481,13 +2589,16 @@ mod tests {
         assert_eq!(e, "at most 5 virtio devices are supported");
         let ids: Vec<u32> = virtio_devices(&config, &regions, None, &[], None, hosts, plugging(), 6)
             .unwrap()
+            .0
             .iter()
             .map(|d| d.device_id())
             .collect();
         assert_eq!(ids, [2, 2, 27, 19, 1, mem::DEVICE_ID]);
-        let devices = virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 5).unwrap();
+        let (devices, sizes) =
+            virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 5).unwrap();
         let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
         assert_eq!(ids, [2, 2, 27, 19, 1]);
+        assert_eq!(sizes.len(), 2, "each file disk's size");
         let mut mac = [0u8; 6];
         devices[4].read_config(0, &mut mac);
         assert_eq!(

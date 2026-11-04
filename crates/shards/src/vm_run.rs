@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -53,6 +53,9 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --pci-tests: test functions at each of these places on bus 0, as 01.0,02.0,02.1: a
                device of several a multi-function device, its function 0 alone with an
                INTx pin, and each device given its function 0.
+  --pci-slots: N places on its PCI bus kept free for disks, shared directories and host
+               functions plugged into it as it runs, which its guest finds as its init
+               rescans the bus. Not with --snapshot-dir.
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Or its VFIO device node (/dev/vfio/devices/vfioN), taken
@@ -430,6 +433,12 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--gpu" => cfg.gpu = true,
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
             "--pci-tests" => cfg.pci_test = pci_tests(&text(value("--pci-tests")?)?)?,
+            // Slots of its PCI bus kept for devices plugged into it as it runs (D214).
+            "--pci-slots" => {
+                cfg.pci_slots = text(value("--pci-slots")?)?
+                    .parse()
+                    .map_err(|e| format!("--pci-slots: {e}"))?
+            }
             "--vfio" => cfg.vfio.push(vfio(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
                 iommu: true,
@@ -448,7 +457,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     }
     common.check_workload()?;
     served_shares(&mut cfg, &served, warm.is_some())?;
-    if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
+    if (!cfg.pci_test.is_empty() || cfg.pci_slots > 0) && common.snapshot_dir.is_some() {
         return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
     }
     if !cfg.vfio.is_empty() {

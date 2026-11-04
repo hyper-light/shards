@@ -4,6 +4,7 @@
 //! ACPI host bridge, by MCFG, in an x86_64 guest's.
 
 pub mod edu;
+pub mod hotplug;
 #[cfg(target_os = "linux")]
 pub mod vfio;
 
@@ -55,37 +56,64 @@ impl std::fmt::Debug for Lines {
 /// The ECAM window: an access's offset holds its bus (27:20), device (19:15), function
 /// (14:12) and register (11:0) (§7.2.2, Table 7-1). Only bus 0 is there; a function not
 /// there reads as all ones, as an access that no function claims completes (§2.3.2), and
-/// a write to it goes nowhere.
+/// a write to it goes nowhere. Functions are plugged into it and unplugged from it as the
+/// machine runs (hot-plug), each found by the guest as it next scans the bus.
 pub struct Ecam {
-    functions: Vec<Function>,
+    functions: std::sync::RwLock<Vec<Function>>,
 }
 
 impl std::fmt::Debug for Ecam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let functions = self.functions.read().unwrap_or_else(PoisonError::into_inner);
         f.debug_list()
-            .entries(self.functions.iter().map(|(devfn, _)| (devfn >> 3, devfn & 7)))
+            .entries(functions.iter().map(|(devfn, _)| (devfn >> 3, devfn & 7)))
             .finish()
     }
 }
 
 impl Ecam {
     pub fn new(functions: Vec<Function>) -> Ecam {
-        Ecam { functions }
+        Ecam {
+            functions: std::sync::RwLock::new(functions),
+        }
+    }
+
+    /// Puts `function` at `devfn`: an error where a function is there already.
+    pub fn plug(&self, devfn: u8, function: Arc<dyn PciFunction>) -> Result<(), String> {
+        let mut functions = self.functions.write().unwrap_or_else(PoisonError::into_inner);
+        if functions.iter().any(|(f, _)| *f == devfn) {
+            return Err(format!(
+                "{:02x}.{} holds a function already",
+                devfn >> 3,
+                devfn & 7
+            ));
+        }
+        functions.push((devfn, function));
+        Ok(())
+    }
+
+    /// Takes the function at `devfn` off the bus: from here on its place reads as all
+    /// ones, as no function there.
+    pub fn unplug(&self, devfn: u8) -> Option<Arc<dyn PciFunction>> {
+        let mut functions = self.functions.write().unwrap_or_else(PoisonError::into_inner);
+        let at = functions.iter().position(|(f, _)| *f == devfn)?;
+        Some(functions.swap_remove(at).1)
     }
 
     /// The function and register an access at `offset` of `len` bytes reaches, where it is
     /// one of the bus's functions and the access is whole and aligned.
-    fn decode(&self, offset: u64, len: usize) -> Option<(&dyn PciFunction, u16)> {
+    fn decode(&self, offset: u64, len: usize) -> Option<(Arc<dyn PciFunction>, u16)> {
         let bus = offset >> 20;
         let devfn = u8::try_from((offset >> 12) & 0xff).ok()?;
         let register = u16::try_from(offset & 0xfff).ok()?;
         if bus != 0 || !matches!(len, 1 | 2 | 4) || !(register as usize).is_multiple_of(len) {
             return None;
         }
-        self.functions
+        let functions = self.functions.read().unwrap_or_else(PoisonError::into_inner);
+        functions
             .iter()
             .find(|(f, _)| *f == devfn)
-            .map(|(_, function)| (function.as_ref(), register))
+            .map(|(_, function)| (function.clone(), register))
     }
 }
 
@@ -157,6 +185,8 @@ pub struct Header {
     msi: Option<MsiCap>,
     /// Its MSI-X capability, if it has one.
     msix: Option<MsixCap>,
+    /// Whether the guest places its BARs ([`Header::movable`]).
+    movable: bool,
 }
 
 /// Configuration space registers (§6.1, §6.2).
@@ -490,7 +520,60 @@ impl Header {
             bars,
             msi: interrupts.msi,
             msix: interrupts.msix,
+            movable: false,
         })
+    }
+
+    /// The header of a function plugged into a running machine, whose BARs the guest
+    /// places: Linux assigns a function it finds by a rescan addresses of its own in its
+    /// host bridge's windows, whatever its BARs held (drivers/pci/setup-bus.c,
+    /// pci_assign_unassigned_bus_resources, from pci_rescan_bus), as no firmware placed
+    /// it. A BAR written takes the address written, to its size's alignment; its
+    /// placement starts at 0, unassigned.
+    pub fn movable(mut self) -> Header {
+        self.movable = true;
+        self
+    }
+
+    /// Puts capability bytes `bytes` at `at` of its device-specific space, read-only: a
+    /// capability the list reaches through the next pointers its bytes and the others' hold
+    /// (PCI Local Bus 3.0 §6.7), as virtio's vendor-specific ones (virtio 1.3 §4.1.4).
+    pub fn with_capability(self, at: u16, bytes: &[u8]) -> Result<Header, String> {
+        let end = usize::from(at) + bytes.len();
+        if at < 0x40 || end > 0x100 {
+            return Err(format!(
+                "a capability at {at:#x} of {} bytes: not in the device's space",
+                bytes.len()
+            ));
+        }
+        {
+            let mut space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(d) = space.get_mut(usize::from(at)..end) {
+                d.copy_from_slice(bytes);
+            }
+        }
+        Ok(self)
+    }
+
+    /// Where BAR `index` is now, where it is one: as the guest placed it, for a movable
+    /// header; else where the VMM did.
+    pub fn bar_addr(&self, index: usize) -> Option<u64> {
+        let bar = self.bars.iter().find(|b| b.index == index)?;
+        if !self.movable {
+            return Some(bar.addr);
+        }
+        let space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
+        let register = |i: usize| {
+            let at = usize::from(reg::BAR0) + 4 * i;
+            space.get(at..at + 4).map_or(0, get_le)
+        };
+        let low = register(index) & u64::from(kind_mask(bar.kind));
+        let high = if bar.kind == BarKind::Memory64 {
+            register(index + 1)
+        } else {
+            0
+        };
+        Some((low | (high << 32)) & !(bar.size - 1))
     }
 
     /// Its MSI-X capability, if it has one.
@@ -608,12 +691,42 @@ impl Header {
         if data.len() == 4 && (reg::BAR0..reg::BAR0 + 24).contains(&offset) {
             let register = usize::from((offset - reg::BAR0) / 4);
             let written = get_le(data) as u32;
-            if let Some(value) = self.bar_register(register, written == u32::MAX)
+            let placed = if self.movable {
+                self.moved_register(register, written)
+            } else {
+                self.bar_register(register, written == u32::MAX)
+            };
+            if let Some(value) = placed
                 && let Some(d) = space.get_mut(usize::from(offset)..usize::from(offset) + 4)
             {
                 d.copy_from_slice(&value.to_le_bytes());
             }
         }
+    }
+
+    /// A movable BAR register `register`'s value as `written` leaves it: its size's mask
+    /// where all ones were written, as sizing asks, else the address written, aligned to
+    /// its size; its kind's bits kept; zero where no BAR is.
+    fn moved_register(&self, register: usize, written: u32) -> Option<u32> {
+        for bar in &self.bars {
+            let mask = !(bar.size - 1);
+            if bar.index == register {
+                let value = if written == u32::MAX {
+                    mask as u32
+                } else {
+                    written & mask as u32
+                };
+                return Some((value & kind_mask(bar.kind)) | kind_bits(bar.kind) as u32);
+            }
+            if bar.kind == BarKind::Memory64 && bar.index + 1 == register {
+                return Some(if written == u32::MAX {
+                    (mask >> 32) as u32
+                } else {
+                    written & (mask >> 32) as u32
+                });
+            }
+        }
+        Some(0)
     }
 
     /// BAR register `register`'s value: its size's mask (`sizing`) or its place, with its
@@ -727,6 +840,41 @@ mod tests {
         assert_eq!(h.command(), 0x0407);
         h.write(reg::VENDOR, &0u16.to_le_bytes());
         assert_eq!(read(&h, reg::VENDOR, 2), 0x1234);
+    }
+
+    /// A movable BAR (D214) is sized as any, and placed where the guest writes it, aligned
+    /// to its size; its address read back as it was placed.
+    #[test]
+    fn a_movable_bar_goes_where_the_guest_places_it() {
+        let bars = vec![
+            Bar {
+                index: 0,
+                addr: 0,
+                size: 0x4000,
+                kind: BarKind::Memory32,
+            },
+            Bar {
+                index: 2,
+                addr: 0,
+                size: 1 << 20,
+                kind: BarKind::Memory64,
+            },
+        ];
+        let h = Header::new(id(), bars).unwrap().movable();
+        assert_eq!(h.bar_addr(0), Some(0), "unassigned");
+        h.write(reg::BAR0, &u32::MAX.to_le_bytes());
+        assert_eq!(read(&h, reg::BAR0, 4), 0xffff_c000);
+        h.write(reg::BAR0, &0x1234_5678u32.to_le_bytes());
+        assert_eq!(read(&h, reg::BAR0, 4), 0x1234_4000, "aligned to its size");
+        assert_eq!(h.bar_addr(0), Some(0x1234_4000));
+        h.write(reg::BAR0 + 8, &u32::MAX.to_le_bytes());
+        h.write(reg::BAR0 + 12, &u32::MAX.to_le_bytes());
+        assert_eq!(read(&h, reg::BAR0 + 8, 4), 0xfff0_0004);
+        assert_eq!(read(&h, reg::BAR0 + 12, 4), 0xffff_ffff);
+        h.write(reg::BAR0 + 8, &0x2010_0000u32.to_le_bytes());
+        h.write(reg::BAR0 + 12, &0x8u32.to_le_bytes());
+        assert_eq!(h.bar_addr(2), Some(0x8_2010_0000));
+        assert_eq!(h.bar_addr(1), None, "no BAR");
     }
 
     /// A BAR that is not one is refused: misaligned, not a power of two, past 4 GiB for 32

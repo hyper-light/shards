@@ -10,7 +10,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use shards_abi::{control, marker};
 
+use super::pci::hotplug::Hotplug;
+use super::virtio::block::DiskSize;
 use super::virtio::head::WindowHeads;
+use super::virtio::limit::Limiter;
 use super::virtio::mem::Sizes;
 use super::virtio::pmem::{Layer, SwapWindow};
 use super::{MmioDevice, get_le, put_le};
@@ -44,6 +47,27 @@ pub struct Control {
     window_heads: OnceLock<std::sync::Arc<WindowHeads>>,
     /// What runs as the guest first says its PID 1 runs (`marker::INIT_STARTED`).
     on_init_started: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Its PCI bus's hot-plug, where it has slots (D214).
+    /// Taken as the machine is taken apart: its slots' MSIs reach its VM, which they would
+    /// keep as long as a handle of it lives.
+    plugs: std::sync::Mutex<Option<std::sync::Arc<Plugs>>>,
+    /// Its file disks' sizes, in its disks' order, which grow as it runs (D214).
+    disks: OnceLock<Vec<DiskSize>>,
+}
+
+/// What plugs devices into a running machine's PCI bus (D214), and what they charge: its
+/// I/O limits (D178), as its other disks and shared directories do.
+#[derive(Debug)]
+pub struct Plugs {
+    pub hotplug: std::sync::Arc<Hotplug>,
+    pub io: Option<&'static Limiter>,
+    /// Why a host's function may not be passed through to it as it runs, where it may
+    /// not: its memory to plug or its balloon, which a function's DMA outside its IOMMU,
+    /// reaching all of its RAM pinned, forbids (D154).
+    pub unpinnable: Option<String>,
+    /// What its functions passed through reach of its VM: KVM's.
+    #[cfg(all(hv, target_os = "linux"))]
+    pub vfio: crate::hv::VfioHost,
 }
 
 impl std::fmt::Debug for Control {
@@ -83,6 +107,39 @@ impl Control {
     /// restored from a template takes it (D148). False where it has none to plug.
     pub fn set_plug_most(&self, bytes: u64) -> bool {
         self.hotplug.get().map(|s| s.set_most(bytes)).is_some()
+    }
+
+    /// Its PCI bus's hot-plug (D214), where it has slots to plug devices into.
+    pub fn on_plugs(&self, plugs: Plugs) {
+        *self
+            .plugs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(plugs));
+    }
+
+    /// Its hot-plug, while the machine runs.
+    pub fn plugs(&self) -> Option<std::sync::Arc<Plugs>> {
+        self.plugs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Lets go of its hot-plug, as the machine is taken apart.
+    pub fn take_plugs(&self) -> Option<std::sync::Arc<Plugs>> {
+        self.plugs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// Its file disks' sizes, in order (D214).
+    pub fn on_disks(&self, disks: Vec<DiskSize>) {
+        let _ = self.disks.set(disks);
+    }
+
+    pub fn disks(&self) -> &[DiskSize] {
+        self.disks.get().map_or(&[], Vec::as_slice)
     }
 
     /// The guest's swap window (D159), which the guest is shown here and a run's swap is

@@ -80,7 +80,7 @@ pub struct VmConfig {
 #[derive(Debug)]
 pub struct Vm {
     fd: Arc<sys::VmFd>,
-    pub(super) slots: Slots,
+    pub(super) slots: Arc<Slots>,
     cpuid: Vec<cpuid::Leaf>,
     mmap_size: usize,
     tsc_deadline: bool,
@@ -100,7 +100,7 @@ pub struct Vm {
     /// Held across each pulse's raise and lower, by whichever thread pulses ([`Irqs::pulse`]).
     pulsing: Arc<Mutex<()>>,
     /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
-    pub(super) vfio: OnceLock<sys::DeviceFd>,
+    pub(super) vfio: Arc<OnceLock<sys::DeviceFd>>,
 }
 
 /// An MSI's route: the GSI an irqfd raises it by, and its message.
@@ -159,7 +159,7 @@ impl Vm {
             .map_err(call("KVM_CHECK_EXTENSION"))?
             > 0;
         Ok(Vm {
-            slots: Slots::new(fd.clone()),
+            slots: Arc::new(Slots::new(fd.clone())),
             fd,
             cpuid,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
@@ -171,7 +171,7 @@ impl Vm {
             tsc_offsets,
             routes: Arc::new(Mutex::new(Vec::new())),
             pulsing: Arc::new(Mutex::new(())),
-            vfio: OnceLock::new(),
+            vfio: Arc::new(OnceLock::new()),
         })
     }
 

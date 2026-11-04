@@ -129,6 +129,7 @@ pub struct kvm_create_device {
 pub const DEV_TYPE_VFIO: u32 = 4;
 pub const DEV_VFIO_FILE: u32 = 1;
 pub const DEV_VFIO_FILE_ADD: u64 = 1;
+pub const DEV_VFIO_FILE_DEL: u64 = 2;
 
 pub const IRQFD_FLAG_DEASSIGN: u32 = 1 << 0;
 pub const IRQFD_FLAG_RESAMPLE: u32 = 1 << 1;

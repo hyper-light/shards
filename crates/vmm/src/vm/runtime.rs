@@ -49,6 +49,131 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Plugs `device` into its PCI bus's first free slot (D214), on virtio's PCI
+    /// transport: an error where it has no slots, or none free.
+    fn plug(&self, device: Box<dyn crate::devices::virtio::VirtioDevice>) -> Result<u8, String> {
+        let plugs = self
+            .control
+            .plugs()
+            .ok_or("this microVM has no PCI slots to plug a device into")?;
+        let memory = self.memory.clone();
+        plugs.hotplug.plug(|slot| {
+            let f = crate::devices::virtio::pci::VirtioPci::new(device, memory, slot.msi.clone())?;
+            Ok(Arc::new(f) as Arc<dyn crate::devices::pci::hotplug::Plugged>)
+        })
+    }
+
+    /// Plugs `file` into the running machine as a disk (D214), read-only or not, its serial
+    /// `serial`: its guest finds it as its init rescans its PCI bus. Charged to its I/O
+    /// limits (D178) as its other disks are.
+    pub fn plug_disk(
+        &self,
+        file: std::fs::File,
+        read_only: bool,
+        serial: &str,
+    ) -> Result<super::Plugged, String> {
+        let io = self.control.plugs().and_then(|p| p.io);
+        let disk = crate::devices::virtio::block::Block::of_file(file, read_only, serial)?.with_limit(io);
+        let size = disk.size();
+        let devfn = self.plug(Box::new(disk))?;
+        Ok(super::Plugged {
+            devfn,
+            address: super::guest_address((devfn >> 3, devfn & 7)),
+            size,
+        })
+    }
+
+    /// Plugs a shared directory into the running machine (D214): virtio-fs, mounted by
+    /// `tag`, served by the server its owner puts in `slot`; no DAX window (D189), whose
+    /// guest addresses are given as the machine is made.
+    pub fn plug_share(
+        &self,
+        tag: &str,
+        slot: crate::devices::virtio::fs::Share,
+    ) -> Result<super::Plugged, String> {
+        let io = self.control.plugs().and_then(|p| p.io);
+        let share = crate::devices::virtio::fs::Fs::new(tag, slot)?.with_limit(io);
+        let devfn = self.plug(Box::new(share))?;
+        Ok(super::Plugged {
+            devfn,
+            address: super::guest_address((devfn >> 3, devfn & 7)),
+            size: None,
+        })
+    }
+
+    /// Passes the host's function `f` through to the running machine (D214), outside its
+    /// guest's IOMMU, all of its RAM mapped for the function's DMA, pinned, as one it boots
+    /// with (D154): its guest finds it as its init rescans its PCI bus.
+    #[cfg(target_os = "linux")]
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
+        use crate::devices::pci::{self, vfio as v};
+        let plugs = self
+            .control
+            .plugs()
+            .ok_or("this microVM has no PCI slots to plug a device into")?;
+        if f.iommu {
+            return Err(format!(
+                "{}: a function plugged in as its microVM runs sits outside its guest's IOMMU, whose endpoints are its boot's",
+                f.name
+            ));
+        }
+        if let Some(why) = &plugs.unpinnable {
+            return Err(format!("{}: {why}", f.name));
+        }
+        v::raise_memlock();
+        let (memory, host) = (self.memory.clone(), plugs.vfio.clone());
+        let devfn = plugs.hotplug.plug(|slot| {
+            let named = |e: String| format!("{}: {e}", f.name);
+            let opened = match &f.cdev {
+                Some(cdev) => {
+                    let iommufd = v::Iommufd::open().map_err(named)?;
+                    let ioas = iommufd.ioas().map_err(named)?;
+                    let opened = v::Device::open_cdev(&f.name, cdev, &ioas, &host)?;
+                    ioas.map_ram(&memory).map_err(named)?;
+                    opened
+                }
+                None => {
+                    let mut container = v::Container::open(f.noiommu).map_err(named)?;
+                    v::Device::open(&f.name, &f.group, &mut container, &memory, &host)?
+                }
+            };
+            let bars = opened
+                .bars()
+                .into_iter()
+                .map(|(index, size, kind)| pci::Bar {
+                    index,
+                    addr: 0,
+                    size,
+                    kind,
+                })
+                .collect();
+            let function =
+                v::VfioFunction::plugged(opened, bars, slot.route.clone(), Some(slot.msi.clone()), &host)?;
+            Ok(Arc::new(v::PluggedFunction::new(function, host.clone())) as Arc<dyn pci::hotplug::Plugged>)
+        })?;
+        Ok(super::Plugged {
+            devfn,
+            address: super::guest_address((devfn >> 3, devfn & 7)),
+            size: None,
+        })
+    }
+
+    /// Takes the device plugged at `devfn` off its PCI bus (D214), once its guest has let
+    /// it go: an error, changing nothing, where its guest's driver still drives it.
+    pub fn unplug(&self, devfn: u8) -> Result<(), String> {
+        self.control
+            .plugs()
+            .ok_or("this microVM has no PCI slots")?
+            .hotplug
+            .unplug(devfn)
+    }
+
+    /// What grows its file disk `index` of those it was made with (D214), as its host
+    /// grows the disk's file: none past its disks.
+    pub fn disk_size(&self, index: usize) -> Option<crate::devices::virtio::block::DiskSize> {
+        self.control.disks().get(index).cloned()
+    }
+
     /// The bytes of its memory to plug whose pages this process holds (D133): pages the
     /// guest touched and has not given back. None where it has none, or the host cannot
     /// say which pages it holds.
@@ -629,6 +754,9 @@ impl Running {
             // The device workers go quiet before the VM they raise interrupts in goes.
             self.bus.pause();
         }
+        // No device is plugged in from here on, and its slots' MSIs, which reach the VM,
+        // keep it no longer (D214): a handle outlives its machine.
+        drop(self.control.take_plugs());
         // Nothing of the machine runs now: its writable layer is what its guest left.
         let mut free = Some(free);
         if !platform::LET_GO_WRITES_BACK

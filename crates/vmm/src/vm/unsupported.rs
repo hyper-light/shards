@@ -64,6 +64,31 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn plug_disk(
+        &self,
+        _file: std::fs::File,
+        _read_only: bool,
+        _serial: &str,
+    ) -> Result<super::Plugged, String> {
+        match self.0 {}
+    }
+
+    pub fn plug_share(
+        &self,
+        _tag: &str,
+        _slot: crate::devices::virtio::fs::Share,
+    ) -> Result<super::Plugged, String> {
+        match self.0 {}
+    }
+
+    pub fn unplug(&self, _devfn: u8) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn disk_size(&self, _index: usize) -> Option<crate::devices::virtio::block::DiskSize> {
+        match self.0 {}
+    }
+
     pub fn guest_abi(&self) -> Option<u64> {
         match self.0 {}
     }
