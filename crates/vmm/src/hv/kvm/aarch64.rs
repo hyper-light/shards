@@ -270,7 +270,7 @@ pub struct VmConfig {
 #[derive(Debug)]
 pub struct Vm {
     fd: Arc<sys::VmFd>,
-    pub(super) slots: Slots,
+    pub(super) slots: Arc<Slots>,
     mmap_size: usize,
     mpidrs: Vec<u64>,
     el2: bool,
@@ -281,7 +281,7 @@ pub struct Vm {
     /// Its ITS, where the machine has one.
     its: OnceLock<sys::DeviceFd>,
     /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
-    pub(super) vfio: OnceLock<sys::DeviceFd>,
+    pub(super) vfio: Arc<OnceLock<sys::DeviceFd>>,
     /// Each vCPU, by index, as it is made, not kept by the VM: what a restore reaches from
     /// the thread that finishes the machine, while the vCPUs' own threads wait (the
     /// prefetch, [`Vm::prefetch`]).
@@ -329,7 +329,7 @@ impl Vm {
             *first |= features;
         }
         Ok(Vm {
-            slots: Slots::new(fd.clone()),
+            slots: Arc::new(Slots::new(fd.clone())),
             fd,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
             mpidrs: config.mpidrs,
@@ -337,7 +337,7 @@ impl Vm {
             init,
             gic: OnceLock::new(),
             its: OnceLock::new(),
-            vfio: OnceLock::new(),
+            vfio: Arc::new(OnceLock::new()),
             vcpus: Mutex::new(Vec::new()),
         })
     }

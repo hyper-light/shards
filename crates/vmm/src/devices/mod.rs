@@ -141,6 +141,11 @@ impl MmioBus {
         Ok(())
     }
 
+    /// Its devices, each with its window's base and size, in address order.
+    pub fn into_devices(self) -> Vec<(u64, u64, Arc<dyn MmioDevice>)> {
+        self.devices
+    }
+
     fn find(&self, addr: u64, len: usize) -> Option<(&dyn MmioDevice, u64)> {
         let i = self.devices.partition_point(|d| d.0 <= addr).checked_sub(1)?;
         let (base, size, dev) = self.devices.get(i)?;

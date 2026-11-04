@@ -468,7 +468,7 @@ fn assemble(
     debug!("VM created and RAM mapped");
 
     // A PCI bus takes the last of the virtio devices' GSIs for its INTx (D154).
-    let has_pci = !pci.test.is_empty() || !pci.vfio.is_empty();
+    let has_pci = pci.any();
     let virtio_max = layout::VIRTIO_MMIO_MAX - u64::from(has_pci);
     // The IOMMU of the PCI functions behind it, last of the virtio devices, the local
     // APICs' MSI window bypassed (D154; virtio 1.3 §5.13.3: the x86 MSI range,
@@ -481,7 +481,7 @@ fn assemble(
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
-    let devices = super::virtio_devices(
+    let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,
         layer.as_ref(),
@@ -529,6 +529,7 @@ fn assemble(
         });
     }
     let control = Arc::new(Control::default());
+    control.on_disks(disk_sizes);
     if let Some(window) = swap {
         control.on_swap(window);
     }
@@ -597,13 +598,24 @@ fn assemble(
         config,
         machine,
     )?
-    .map(|routed| acpi::PciBridge {
-        ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
-        mem32,
-        mem64,
-        intx: routed.intx,
-        gsi: layout::GSI_PCI,
-        iommu: behind.iter().filter_map(|&e| u16::try_from(e).ok()).collect(),
+    .map(|routed| {
+        if let Some(hotplug) = routed.hotplug {
+            control.on_plugs(crate::devices::control::Plugs {
+                hotplug,
+                io: hosts.io,
+                unpinnable: super::unpinnable(config),
+                #[cfg(target_os = "linux")]
+                vfio: vm.vfio_host(),
+            });
+        }
+        acpi::PciBridge {
+            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+            mem32,
+            mem64,
+            intx: routed.intx,
+            gsi: layout::GSI_PCI,
+            iommu: behind.iter().filter_map(|&e| u16::try_from(e).ok()).collect(),
+        }
     });
     Ok(Assembled {
         vm,
@@ -678,6 +690,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             super::Pci {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,
+                slots: cfg.pci_slots,
             },
         )?;
         let tables = acpi::build(cfg.vcpus, &a.virtio, a.pci.as_ref())?.blobs;

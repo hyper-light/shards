@@ -273,13 +273,22 @@ impl DeviceSlots {
     }
 }
 
-impl Vm {
+/// What a VM's functions passed through reach of it (D154), held apart from the VM so that
+/// a function plugged in as it runs reaches it too (D214): KVM's VFIO device, and memory
+/// slots of each function's own.
+#[derive(Debug, Clone)]
+pub struct VfioHost {
+    slots: Arc<Slots>,
+    vfio: Arc<OnceLock<sys::DeviceFd>>,
+}
+
+impl VfioHost {
     /// Tells KVM of VFIO's file `file`, a group's or a device's opened by its node, through
     /// KVM's VFIO device (Documentation/virt/kvm/devices/vfio.rst, KVM_DEV_VFIO_FILE_ADD),
     /// before the device is opened or bound, as drivers that need the VM to open a device
     /// ask. The device is made with the first file and kept as long as the VM: KVM forgets
     /// the files as its descriptor closes (virt/kvm/vfio.c, kvm_vfio_release).
-    pub fn add_vfio_file(&self, file: std::os::fd::RawFd) -> Result<()> {
+    pub fn add_file(&self, file: std::os::fd::RawFd) -> Result<()> {
         let device = match self.vfio.get() {
             Some(device) => device,
             None => {
@@ -296,6 +305,18 @@ impl Vm {
             .map_err(call("KVM_SET_DEVICE_ATTR"))
     }
 
+    /// Has KVM forget VFIO's file `file` (KVM_DEV_VFIO_FILE_DEL): a function unplugged
+    /// (D214), whose group or device KVM would otherwise hold as long as the VM, its file's
+    /// reference its own (virt/kvm/vfio.c, kvm_vfio_file_add's get_file).
+    pub fn remove_file(&self, file: std::os::fd::RawFd) -> Result<()> {
+        let Some(device) = self.vfio.get() else {
+            return Ok(());
+        };
+        device
+            .set_attr(sys::DEV_VFIO_FILE, sys::DEV_VFIO_FILE_DEL, &file)
+            .map_err(call("KVM_SET_DEVICE_ATTR"))
+    }
+
     /// `count` memory slots of a device's own.
     pub fn device_slots(&self, count: u32) -> DeviceSlots {
         DeviceSlots {
@@ -303,6 +324,26 @@ impl Vm {
             first: self.slots.next.fetch_add(count, Ordering::Relaxed),
             count,
         }
+    }
+}
+
+impl Vm {
+    /// What its functions passed through reach of it, for one plugged in as it runs (D214).
+    pub fn vfio_host(&self) -> VfioHost {
+        VfioHost {
+            slots: self.slots.clone(),
+            vfio: self.vfio.clone(),
+        }
+    }
+
+    /// [`VfioHost::add_file`].
+    pub fn add_vfio_file(&self, file: std::os::fd::RawFd) -> Result<()> {
+        self.vfio_host().add_file(file)
+    }
+
+    /// `count` memory slots of a device's own.
+    pub fn device_slots(&self, count: u32) -> DeviceSlots {
+        self.vfio_host().device_slots(count)
     }
 
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`, in a new memslot.

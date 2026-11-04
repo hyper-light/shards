@@ -8,7 +8,7 @@
 
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use super::limit::Limiter;
@@ -54,8 +54,17 @@ struct Backend {
 /// What a disk's sectors are.
 #[derive(Debug)]
 enum Store {
-    /// One host file, of a capacity fixed when it was opened, in sectors.
-    File { file: File, capacity: u64 },
+    /// One host file, of the capacity it had when it was opened, in sectors, or that it
+    /// grew to as the machine ran ([`DiskSize::grow`]).
+    File {
+        file: File,
+        capacity: AtomicU64,
+        /// How many times it grew: what its configuration changed by on its own.
+        grown: AtomicU32,
+        /// The device's interrupt while the driver has it, to say the capacity grew, as a
+        /// join disk's ([`Join`]).
+        interrupt: Mutex<Option<Arc<DeviceInterrupt>>>,
+    },
     /// A join disk's ranges.
     Join(&'static Join),
 }
@@ -64,9 +73,61 @@ impl Backend {
     /// The disk's capacity in sectors, as the driver reads it now.
     fn capacity(&self) -> u64 {
         match &self.store {
-            Store::File { capacity, .. } => *capacity,
+            Store::File { capacity, .. } => capacity.load(Ordering::Acquire),
             Store::Join(join) => join.capacity(),
         }
+    }
+}
+
+/// A file disk's size as its machine runs: grown online, its driver told (virtio 1.3
+/// §5.2.4: the capacity may change, and the device then sends a configuration change
+/// notification), as Linux's virtio_blk then reads the new capacity and says so
+/// (virtblk_config_changed_work, set_capacity_and_notify: a uevent with `RESIZE=1`).
+#[derive(Debug, Clone)]
+pub struct DiskSize(Arc<Backend>);
+
+impl DiskSize {
+    /// Takes its file's length now as the disk's capacity, where it grew, and tells the
+    /// driver: what its host made it, `set_len`, before. Returns its capacity in bytes. An
+    /// error, changing nothing, where the file shrank, which would take sectors from under
+    /// a guest's file system, or is not whole sectors.
+    pub fn grow(&self) -> Result<u64, String> {
+        let Store::File {
+            file,
+            capacity,
+            grown,
+            interrupt,
+        } = &self.0.store
+        else {
+            return Err("a join disk grows as it is given files".into());
+        };
+        let bytes = file.metadata().map_err(|e| format!("its file: {e}"))?.len();
+        if bytes % SECTOR != 0 {
+            return Err(format!(
+                "its file of {bytes} bytes: not whole sectors of {SECTOR}"
+            ));
+        }
+        let now = capacity.load(Ordering::Acquire);
+        let sectors = bytes / SECTOR;
+        if sectors < now {
+            return Err(format!(
+                "its file shrank to {bytes} bytes from {}: a disk only grows under its guest",
+                now * SECTOR
+            ));
+        }
+        if sectors > now {
+            capacity.store(sectors, Ordering::Release);
+            grown.fetch_add(1, Ordering::AcqRel);
+            if let Some(interrupt) = interrupt.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                interrupt.config_change();
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// Its capacity in bytes.
+    pub fn bytes(&self) -> u64 {
+        self.0.capacity() * SECTOR
     }
 }
 
@@ -349,24 +410,32 @@ impl Block {
     pub fn open(path: &Path, read_only: bool, id: &str) -> Result<Block, String> {
         let file =
             crate::platform::open_input(path, !read_only).map_err(|e| format!("{}: {e}", path.display()))?;
-        let bytes = file
-            .metadata()
-            .map_err(|e| format!("{}: {e}", path.display()))?
-            .len();
+        Block::of_file(file, read_only, id).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// `file` as a disk, opened for writing unless `read_only`: a disk plugged into a
+    /// running machine (D214), whose VM process is given its file open. Its size must be a
+    /// whole number of 512-byte sectors.
+    pub fn of_file(file: File, read_only: bool, id: &str) -> Result<Block, String> {
+        let bytes = file.metadata().map_err(|e| e.to_string())?.len();
         if bytes % SECTOR != 0 {
-            return Err(format!(
-                "{}: size {bytes} is not a multiple of {SECTOR}",
-                path.display()
-            ));
+            return Err(format!("size {bytes} is not a multiple of {SECTOR}"));
         }
         Ok(Block::of(Backend {
             store: Store::File {
                 file,
-                capacity: bytes / SECTOR,
+                capacity: AtomicU64::new(bytes / SECTOR),
+                grown: AtomicU32::new(0),
+                interrupt: Mutex::new(None),
             },
             read_only,
             id: serial(id),
         }))
+    }
+
+    /// What grows it online, for a file disk; none for a join disk.
+    pub fn size(&self) -> Option<DiskSize> {
+        matches!(self.backend.store, Store::File { .. }).then(|| DiskSize(self.backend.clone()))
     }
 
     /// A join disk (D119), its serial `id`: empty until `disk` is given a range, and
@@ -430,12 +499,14 @@ impl Block {
         self.worker.take()?.stop()
     }
 
-    /// A join disk's interrupt, given at activation and taken at reset: who tells the
+    /// The device's interrupt, given at activation and taken at reset: who tells the
     /// driver its capacity grew.
     fn join_interrupt(&self, interrupt: Option<Arc<DeviceInterrupt>>) {
-        if let Store::Join(join) = &self.backend.store {
-            *join.interrupt.lock().unwrap_or_else(PoisonError::into_inner) = interrupt;
-        }
+        let held = match &self.backend.store {
+            Store::Join(join) => &join.interrupt,
+            Store::File { interrupt, .. } => interrupt,
+        };
+        *held.lock().unwrap_or_else(PoisonError::into_inner) = interrupt;
     }
 }
 
@@ -486,6 +557,15 @@ impl VirtioDevice for Block {
     }
 
     fn write_config(&mut self, _offset: u64, _data: &[u8]) {}
+
+    /// A file disk's growths (virtio 1.3 §4.2.2.1): a driver reading its capacity in two
+    /// accesses sees whether it grew between them.
+    fn config_generation(&self) -> u32 {
+        match &self.backend.store {
+            Store::File { grown, .. } => grown.load(Ordering::Acquire),
+            Store::Join(_) => 0,
+        }
+    }
 
     fn activate(&mut self, activation: Activation) -> Result<(), String> {
         let Activation {
