@@ -62,8 +62,12 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
 /// `configure disk` are said as, and `daemon` how the client starts the daemon.
-const OWN: [&str; 26] = [
+const OWN: [&str; 29] = [
     "system",
+    // Devices plugged into a running microVM, and its disks grown (D214).
+    "plug",
+    "unplug",
+    "grow",
     // Contexts, and the clients and invitations of this machine's (D180).
     "context",
     "client",

@@ -6798,7 +6798,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories on Hypervisor.framework, KVM and WHP; host functions on KVM)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework and KVM, in the VMM on WHP too; host functions in the VMM on KVM)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -6879,7 +6879,43 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   descriptor), so the machine's teardown drops its hot-plug once its devices are quiet: a
   handle that outlived its machine held them, and on WHP the next VM of the process could
   not be made (ERROR_VID_PARTITION_ALREADY_EXISTS).
-- **No snapshot of a machine with a PCI bus**, as D153: a template's machine has no slots.
+- **A user's commands, in the grammar's ACTION THING** (`shards_cmdline::grammar`):
+  `shards plug disk MICROVM FILE:PATH[:ro] [--size SIZE]`, `shards plug volume MICROVM
+  SOURCE:PATH[:ro]`, `shards unplug disk|volume MICROVM PATH` and `shards grow disk
+  MICROVM PATH SIZE`. A device is named by the path the run has it at, as `-v`'s
+  destination names a mount; its source as `-v` gives one (a host file or directory by its
+  absolute path, a Windows drive's included, or a named volume), its mode `ro` or `rw`. A
+  disk is a file holding a file system; `--size` makes one empty, ext4 of that size (shards'
+  own mke2fs, D190's), where FILE is not there. `plug` and `unplug` are actions of their
+  own rather than `attach`, which Docker's `attach` holds, or `update`, whose flags are
+  Docker's.
+- **The daemon asks the run's VM, then its guest's init.** `DEVICE` (shards-ipc) carries the
+  step and, as descriptors, the disk's file or the connection to the share's server (a
+  share process of its own, share.rs, as each run's shares have); the VM plugs it into a
+  slot and answers its place (`DEVICED`, by number, as a pause is answered). Init's DEVICE
+  built-in (init hotplug.rs) rescans the bus through a sysfs of its own, kept from boot
+  now in every microVM, as the run's root's is read-only (D154's `shards_vfio` reason),
+  mounts the disk's file system (ext4, XFS, Btrfs, FAT or EROFS, tried in turn) or the
+  virtio-fs share by the new mount API, attached nowhere, and attaches it at PATH in the
+  workload's mount namespace (move_mount), so nothing of it is init's; a fresh disk's top
+  is given its run's user, as a fresh volume's is (D38). `unplug` unmounts it in the
+  workload first, refused while anything there uses it (EBUSY), writes the function's
+  `remove`, then has the VM take it off the bus. `grow` sets the file longer, has the VM
+  grow its disk, and init grows its ext4 online once the kernel reads the new size
+  (EXT4_IOC_RESIZE_FS, as resize2fs grows a mounted one). What a run has plugged in is the
+  daemon's to know while it runs, and goes with its microVM.
+- **Every run's microVM has four slots, and its template keeps them** (`SHARDS_PCI_SLOTS`,
+  0 for none). Snapshot format 28 records a machine's slots (`MachineConfig::pci_slots`);
+  an empty bus saves as nothing and a restore makes it again; a machine with a device
+  plugged in saves none. On arm64 KVM a machine with slots has the GIC's ITS for its
+  MSIs, so its snapshot now keeps the ITS, in arm-vgic-its.rst's sequences: the LPIs'
+  pending state written to guest memory (KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES) and the
+  ITS's tables (KVM_DEV_ARM_ITS_SAVE_TABLES) before the memory is saved, its registers
+  read (GITS_IIDR, CBASER, BASER0 to 7, CREADR, CWRITER, CTLR); restored after the
+  redistributors, reset, IIDR first, then the rest, its tables read back
+  (KVM_DEV_ARM_ITS_RESTORE_TABLES), its CTLR last; each redistributor's PROPBASER,
+  PENDBASER and then CTLR (EnableLPIs) with the GIC's state, as KVM takes the tables'
+  places only while LPIs are off (vgic-mmio-v3.c).
 - **Verified on real VMs** (`devices_are_plugged_into_a_running_microvm_and_its_disks_grow`,
   in-process; mutation-checked below): the test guest booted with four slots and a disk;
   the disk it booted with grown and seen grown; a disk plugged, its first MiB read as the
@@ -6893,7 +6929,19 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   which the teardown's let-go fixes (WHP's run since not repeated: jupiter offline). On Hypervisor.framework (an M5 Max, macOS 26.4.1):
   host plug 11 µs, rescan 2.4 ms, rescan to first read 3.1 ms, remove 7.8 ms, unplug 4 µs
   at p50, n 100. Mutation-checked: with a disk's growth sent no configuration change, its
-  guest never sees it grow, the disk it booted with and the plugged one alike. On arm64
+  guest never sees it grow, the disk it booted with and the plugged one alike. Through
+  the CLI (`devices_are_plugged_into_a_run_and_its_disk_grows`, tests/plug.rs), on a
+  detached run restored from its image's template: a disk made empty ext4 of 64 MiB,
+  written, grown to 128 MiB as it runs (its file, its device and its file system), a
+  shrink refused, unplugged, plugged again read-only with what was written; a host
+  directory read and written through, unplugged; on Hypervisor.framework, KVM x86_64 and,
+  nested, arm64 KVM, whose templates then keep their ITS. With every run's microVM given
+  its slots, the whole workspace's tests pass on KVM x86_64 (2,367), and the nested
+  arm64 KVM suite's daemon, warm, saved, restore, run, vsock, pmem and boot tests. What
+  the slots cost a run (PM M430): on Hypervisor.framework its command +0.26 ms in the
+  guest, 95% [+0.08, +0.44], and nothing measured of its wall clock; on KVM x86_64
+  nothing measured of either. The CLI's steps: a disk's plug 20.9 ms (HVF) and 36.4 ms
+  (KVM) at p50, its unplug 62.5 and 82.6, a volume's 13.9 and 9.1, 7.3 and 4.4. On arm64
   KVM, nested in a guest with EL2 on the M5 Max (boot.rs's L1 harness, `SHARDS_L1_TESTS=
   hotplug`), its MSIs through the GIC's ITS: the same test, and a host's function plugged
   in (`a_hosts_function_is_plugged_into_a_running_microvm`, `SHARDS_L1_PCI_TESTS=01.0`):
@@ -6903,10 +6951,14 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   go, and it is unplugged, KVM forgetting its group. Its first run found a plugged
   function's BAR windows mapped at 0 as its guest turned decoding on before placing its
   BARs (KVM refused them, EEXIST): a window is mapped only where its BAR is placed.
-- **Not yet:** a daemon's run plugged into (a command that asks for it, its init's rescan
-  and mount, its record kept), so that runs from templates take devices as they run, which
-  needs a template's machine to have slots and so a snapshot of an empty bus (and, on
-  arm64 KVM, of its ITS); a plugged share's DAX window; a plugged function's 64-bit BARs
+- **Not yet:** a host's function plugged into a daemon's run for its workload (`plug
+  device MICROVM /dev/vfio/N`): the workload reaches a function through the guest's VFIO,
+  which takes one only behind the guest's IOMMU (D154), whose endpoints and firmware
+  description (`iommu-map`, VIOT) are its boot's; so a machine with slots would need its
+  virtio-iommu covering the slots' requester IDs from boot, endpoints added to its
+  translation as they are plugged, the group's container and group descriptors handed to
+  the confined VM process by the daemon, and the run's device filter replaced with the
+  group's node allowed. A plugged share's DAX window; a plugged function's 64-bit BARs
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).

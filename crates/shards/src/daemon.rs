@@ -44,6 +44,7 @@ mod commit;
 #[cfg(target_os = "linux")]
 mod cuts;
 mod demand;
+mod devices;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach;
 /// on Windows the file that names its named pipe.
@@ -124,6 +125,15 @@ const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
+
+/// The PCI slots each run's microVM has for devices plugged into it (D214): four, or what
+/// SHARDS_PCI_SLOTS says, 0 for none.
+fn pci_slots() -> u8 {
+    std::env::var("SHARDS_PCI_SLOTS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4)
+}
 /// Warm VMs kept ahead of runs, all pools together, unless `SHARDS_WARM_MAX` says (audit
 /// A13): a warm VM's own memory is 3.4 MiB, the rest of its RSS its template's pages it
 /// shares, so the default holds about 55 MiB (PM M49).
@@ -868,6 +878,9 @@ struct Inbox {
     /// The pauses and resumes its VM was asked for (`PAUSE`) and has yet to answer, each
     /// by its number.
     pausing: Vec<(u64, mpsc::Sender<Result<(), String>>)>,
+    /// The device steps its VM was asked for (`DEVICE`, D214) and has yet to answer, each
+    /// by its number.
+    devices: Vec<(u64, mpsc::Sender<Result<String, String>>)>,
     /// The snapshot it was saved as, where the save stops it: its end is the save's.
     saved_as: Option<String>,
     /// Its microVM's own engine (D181): the connections its VM hands over are its
@@ -1132,6 +1145,9 @@ struct Daemon<D: Disk = Real> {
     /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
+    /// What is plugged into each running microVM (D214), by container ID, then by the path
+    /// its workload has it at.
+    plugged: Mutex<devices::PluggedMap>,
     /// Each running microVM's join share process (D119), by the ID of the container whose
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
     /// Made as the first container joining that microVM's network brings volumes.
@@ -1911,6 +1927,7 @@ impl<D: Disk> Daemon<D> {
             ports_freed: Condvar::new(),
             removing: Mutex::default(),
             paused: Mutex::default(),
+            plugged: Mutex::default(),
             join_shares: Mutex::default(),
             shared_by: Mutex::default(),
             joiner_links: Mutex::default(),
@@ -2575,7 +2592,10 @@ impl<D: Disk> Daemon<D> {
                 };
                 // A stopped container's files are read in a VM booted over them (visit.rs).
                 let visit = self.visit_for(threads, &command.argv);
-                let status = self.command(&command.argv, &asker, &commands::Reply(conn));
+                let status = match self.device_command(threads, &command.argv, &commands::Reply(conn)) {
+                    Some(status) => status,
+                    None => self.command(&command.argv, &asker, &commands::Reply(conn)),
+                };
                 if let Some(id) = visit {
                     self.end_visit(&id);
                 }
@@ -5159,6 +5179,7 @@ impl<D: Disk> Daemon<D> {
             provider,
             saving: None,
             pausing: Default::default(),
+            devices: Default::default(),
             saved_as: None,
             engine,
         }));
@@ -5397,6 +5418,22 @@ impl<D: Disk> Daemon<D> {
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
+                // Its VM's answer to a device step it was asked for (D214).
+                kind::DEVICED => {
+                    if let Some((number, said)) = m.payload.split_first_chunk::<8>()
+                        && let Some(i) = inbox
+                            .devices
+                            .iter()
+                            .position(|(n, _)| *n == u64::from_be_bytes(*number))
+                    {
+                        let (_, told) = inbox.devices.swap_remove(i);
+                        let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
+                        let _ = told.send(match said.first() {
+                            Some(0) => Ok(text),
+                            _ => Err(text),
+                        });
+                    }
+                }
                 // Its VM's answer to a pause or resume it was asked for.
                 kind::PAUSED => {
                     if let Some((number, said)) = m.payload.split_first_chunk::<8>()
@@ -7475,6 +7512,13 @@ impl<D: Disk> Daemon<D> {
         }
         if cfg.share_window_mib > 0 {
             args.extend(["--share-window".into(), cfg.share_window_mib.to_string().into()]);
+        }
+        // PCI slots in every microVM, empty until a device is plugged into its run (D214):
+        // its templates have them, and so every restore of them. SHARDS_PCI_SLOTS gives
+        // another count, 0 for none (PM M430's A/B).
+        let slots = pci_slots();
+        if slots > 0 {
+            args.extend(["--pci-slots".into(), slots.to_string().into()]);
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // container joins its network (D119): its templates have them, and so every restore

@@ -55,7 +55,7 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
                INTx pin, and each device given its function 0.
   --pci-slots: N places on its PCI bus kept free for disks, shared directories and host
                functions plugged into it as it runs, which its guest finds as its init
-               rescans the bus. Not with --snapshot-dir.
+               rescans the bus. A snapshot keeps them, empty.
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Or its VFIO device node (/dev/vfio/devices/vfioN), taken
@@ -457,7 +457,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     }
     common.check_workload()?;
     served_shares(&mut cfg, &served, warm.is_some())?;
-    if (!cfg.pci_test.is_empty() || cfg.pci_slots > 0) && common.snapshot_dir.is_some() {
+    if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
         return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
     }
     if !cfg.vfio.is_empty() {
@@ -684,6 +684,64 @@ pub fn set_plug_most(bytes: u64) -> Result<(), String> {
         .get()
         .ok_or("the microVM has not started")?
         .set_plug_most(bytes)
+}
+
+/// The disks plugged into this VM as it runs (D214), by their place on its PCI bus: what
+/// grows each.
+static PLUGGED_DISKS: std::sync::Mutex<Vec<(u8, shards_vmm::devices::virtio::block::DiskSize)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// What its daemon asks of this VM's devices (`DEVICE`, D214): `payload` the step and what
+/// it takes, `fds` its file or its share's connection. The answer's text, or why not.
+pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<String, String> {
+    use shards_ipc::device;
+    let handle = RUNNING.get().ok_or("the microVM has not started")?;
+    let (&step, rest) = payload.split_first().ok_or("a device step of nothing")?;
+    let placed = |p: &vm::Plugged| format!("{} {}", p.devfn, p.address);
+    let disks = || {
+        PLUGGED_DISKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    match step {
+        device::DISK => {
+            let (&flags, serial) = rest.split_first().ok_or("a disk of no flags")?;
+            let file = fds.into_iter().next().ok_or("a disk of no file")?;
+            let serial = std::str::from_utf8(serial).map_err(|_| "a serial that is not UTF-8")?;
+            let plugged =
+                handle.plug_disk(std::fs::File::from(file), flags & device::READ_ONLY != 0, serial)?;
+            if let Some(size) = &plugged.size {
+                disks().push((plugged.devfn, size.clone()));
+            }
+            Ok(placed(&plugged))
+        }
+        #[cfg(unix)]
+        device::SHARE => {
+            let tag = std::str::from_utf8(rest).map_err(|_| "a tag that is not UTF-8")?;
+            let conn = fds.into_iter().next().ok_or("a share of no server")?;
+            let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
+            slot.attach(std::os::unix::net::UnixStream::from(conn))?;
+            Ok(placed(&handle.plug_share(tag, slot)?))
+        }
+        device::UNPLUG => {
+            let &devfn = rest.first().ok_or("an unplug of no place")?;
+            handle.unplug(devfn)?;
+            disks().retain(|(d, _)| *d != devfn);
+            Ok(String::new())
+        }
+        device::GROW => {
+            let &devfn = rest.first().ok_or("a growth of no place")?;
+            let size = disks()
+                .iter()
+                .find(|(d, _)| *d == devfn)
+                .map(|(_, s)| s.clone())
+                .ok_or("no disk is plugged there")?;
+            Ok(size.grow()?.to_string())
+        }
+        other => Err(format!(
+            "device step {other}, which this VM process does not take"
+        )),
+    }
 }
 
 /// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU

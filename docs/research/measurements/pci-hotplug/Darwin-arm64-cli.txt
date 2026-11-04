@@ -1,0 +1,20 @@
+slots-ab.sh and cli.py, through macos-sched/launchd-run.sh, test-release build of fd56a4eb, busybox:1.36
+host: Darwin Mac 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050 arm64
+revision: fd56a4eb60df2c4db2e7a62870ec98e9dbeb4d7c
+load 10.80 11.11 11.62
+wall     old n 100 p50 13466 p90 17559 p99 28465 max 28465 us
+wall     new n 100 p50 14130 p90 16707 p99 71014 max 71014 us
+wall     new - old, paired: median +457 us, 95% [-233, +1017]
+command  old n 100 p50 2785 p90 3992 p99 6947 max 6947 us
+command  new n 100 p50 3113 p90 4062 p99 6145 max 6145 us
+command  new - old, paired: median +260 us, 95% [+83, +438]
+outside  old n 100 p50 10541 p90 13795 p99 26577 max 26577 us
+outside  new n 100 p50 10814 p90 12991 p99 67699 max 67699 us
+outside  new - old, paired: median +130 us, 95% [-124, +671]
+== ab
+load 11.07 11.16 11.63
+plug disk     n 30 p50 20938 p90 27942 p99 29863 max 29863 us
+unplug disk   n 30 p50 62524 p90 91394 p99 98713 max 98713 us
+plug volume   n 30 p50 13914 p90 15378 p99 16745 max 16745 us
+unplug volume n 30 p50 7299 p90 9090 p99 9509 max 9509 us
+== cli

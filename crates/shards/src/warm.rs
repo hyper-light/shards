@@ -747,6 +747,19 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = writeln!(io::stderr(), "shards: its memory to plug: {e}");
                 }
             }
+            // A device plugged into its microVM, let go of, or a disk grown (D214), answered
+            // at once: what its daemon tells its guest of comes after.
+            kind::DEVICE if matches!(from, From::Daemon(_)) => {
+                if let Some((number, step)) = message.payload.split_first_chunk::<8>() {
+                    let answer = match crate::vm_run::device(step, message.fds) {
+                        Ok(text) => [&number[..], &[0], text.as_bytes()].concat(),
+                        Err(e) => [&number[..], &[1], e.as_bytes()].concat(),
+                    };
+                    if let Err(e) = to_daemon(conn, kind::DEVICED, &answer, &[]) {
+                        let _ = writeln!(io::stderr(), "shards: answering a device step: {e}");
+                    }
+                }
+            }
             // Its run's CPU limits updated (D191): the CPUs its vCPUs are held to, before
             // the exec that writes its cgroup.
             kind::CPUS if matches!(from, From::Daemon(_)) => {

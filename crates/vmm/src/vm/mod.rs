@@ -1059,6 +1059,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         share_window_mib: cfg.share_window_mib,
         // Its file system's length, once its layer is open (`boot_layer`).
         layer_mib: 0,
+        pci_slots: cfg.pci_slots,
     })
 }
 
@@ -2390,6 +2391,7 @@ mod tests {
             swap_mib: 0,
             share_window_mib: 0,
             layer_mib: 0,
+            pci_slots: 0,
         }
     }
 

@@ -27,8 +27,8 @@ fn until(handle: &Handle, line: &str) -> String {
     let end = Instant::now() + TIMEOUT;
     loop {
         let said = String::from_utf8_lossy(&handle.console_said()).into_owned();
-        if let Some(at) = said.rfind(line) {
-            return said.get(..at).unwrap_or_default().to_string();
+        if let Some(before) = said.rsplit_once(line).map(|(before, _)| before) {
+            return before.to_string();
         }
         if Instant::now() > end {
             handle.stop();

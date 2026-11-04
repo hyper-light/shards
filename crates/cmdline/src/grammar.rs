@@ -288,12 +288,24 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     (
         "manage",
+        "grow",
+        "disk",
+        "Grow a disk plugged into a running microVM, and its file system, as it runs",
+    ),
+    (
+        "manage",
         "invite",
         "client",
         "Let another machine run shards here, by an invitation it joins with",
     ),
     ("manage", "kill", "vm", "Kill microVMs"),
     ("manage", "pause", "vm", "Freeze microVMs where they are"),
+    (
+        "manage",
+        "plug",
+        "disk | volume",
+        "Plug a disk or a directory into a running microVM, mounted where it says",
+    ),
     (
         "manage",
         "prune",
@@ -315,6 +327,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     ("manage", "tag", "image", "Name an image again"),
     ("manage", "unpause", "vm", "Let frozen microVMs run on"),
+    (
+        "manage",
+        "unplug",
+        "disk | volume",
+        "Unmount a disk or a directory plugged into a running microVM, and unplug it",
+    ),
     (
         "manage",
         "use",
@@ -560,6 +578,30 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "Copy files out of a microVM, or into one",
     ),
     ("manage", "kill", "vm NAME", "Kill microVMs"),
+    (
+        "manage",
+        "plug",
+        "disk NAME FILE:PATH[:ro] [--size SIZE]",
+        "Plug a disk into a running microVM, its file system mounted at PATH; with --size, FILE made an empty ext4 file system where it is not there",
+    ),
+    (
+        "manage",
+        "plug",
+        "volume NAME SOURCE:PATH[:ro]",
+        "Plug a host directory or a volume into a running microVM, mounted at PATH",
+    ),
+    (
+        "manage",
+        "unplug",
+        "disk | volume NAME PATH",
+        "Unmount what is plugged in at PATH, and unplug it, refused while anything there is in use",
+    ),
+    (
+        "manage",
+        "grow",
+        "disk NAME PATH SIZE",
+        "Grow the disk plugged in at PATH to SIZE, and its ext4 file system, as the microVM runs",
+    ),
     (
         "manage",
         "pause",

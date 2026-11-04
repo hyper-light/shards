@@ -27,6 +27,8 @@ mod frames;
 #[cfg(target_os = "linux")]
 mod hostbind;
 #[cfg(target_os = "linux")]
+mod hotplug;
+#[cfg(target_os = "linux")]
 mod inroot;
 #[cfg(target_os = "linux")]
 mod join;
