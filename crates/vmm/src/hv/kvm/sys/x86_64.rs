@@ -6,13 +6,16 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 use super::{
     KVM_CHECK_EXTENSION, KVM_CREATE_DEVICE, KVM_CREATE_VCPU, KVM_CREATE_VM, KVM_GET_API_VERSION,
-    KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RUN,
+    KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RESET_DIRTY_RINGS, KVM_RUN,
     KVM_SET_DEVICE_ATTR, KVM_SET_GSI_ROUTING, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, KVM_SIGNAL_MSI,
     Kvm, VcpuFd, VmFd, get_attr, ioctl, set_attr,
 };
 
 /// Every ioctl request shards makes of KVM: what its seccomp filter allows
 /// (docs/research/rootless-security.md R3).
+/// _IOW(KVMIO, 0xa3, struct kvm_enable_cap): a VM's dirty rings (D176 part 7).
+pub const KVM_ENABLE_CAP: u64 = 0x4068_AEA3;
+
 pub const IOCTLS: &[u64] = &[
     KVM_GET_API_VERSION,
     KVM_CREATE_VM,
@@ -62,6 +65,8 @@ pub const IOCTLS: &[u64] = &[
     KVM_SIGNAL_MSI,
     KVM_SET_GSI_ROUTING,
     KVM_CREATE_DEVICE,
+    KVM_RESET_DIRTY_RINGS,
+    KVM_ENABLE_CAP,
 ];
 
 pub const KVM_GET_SUPPORTED_CPUID: u64 = 0xC008_AE05;

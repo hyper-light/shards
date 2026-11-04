@@ -38,6 +38,8 @@ pub const KVM_IRQFD: u64 = 0x4020_AE76;
 pub const KVM_CREATE_DEVICE: u64 = 0xC00C_AEE0;
 pub const KVM_SIGNAL_MSI: u64 = 0x4020_AEA5;
 pub const KVM_SET_GSI_ROUTING: u64 = 0x4008_AE6A;
+/// _IO(KVMIO, 0xc7): harvested dirty-ring entries given back to the rings (api.rst 4.137).
+pub const KVM_RESET_DIRTY_RINGS: u64 = 0xAEC7;
 
 /// Each structure is the size its ioctl numbers encode (bits 16-29).
 const _: () = {
@@ -93,6 +95,20 @@ pub const CAP_MP_STATE: u64 = 14;
 pub const CAP_MAX_VCPUS: u64 = 66;
 pub const CAP_IMMEDIATE_EXIT: u64 = 136;
 pub const CAP_READONLY_MEM: u64 = 81;
+/// Per-vCPU rings of the pages its guest dirtied (api.rst 8.29), and their ordered variant,
+/// arm64's only one (8.35). Each reports the most bytes a ring may take.
+pub const CAP_DIRTY_LOG_RING: u64 = 192;
+pub const CAP_DIRTY_LOG_RING_ACQ_REL: u64 = 223;
+/// A memory slot whose guest writes KVM logs (api.rst 4.35, KVM_MEM_LOG_DIRTY_PAGES).
+pub const MEM_LOG_DIRTY_PAGES: u32 = 1 << 0;
+/// A vCPU whose dirty ring is full exits so, until its entries are harvested and reset.
+pub const EXIT_DIRTY_RING_FULL: u32 = 31;
+/// Where a vCPU's dirty ring is in its descriptor's mapping, in pages (KVM_DIRTY_LOG_PAGE_
+/// OFFSET, x86's and arm64's asm/kvm.h).
+const DIRTY_LOG_PAGE_OFFSET: libc::off_t = 64;
+/// struct kvm_dirty_gfn's flags: dirtied by the vCPU, and harvested by its VMM.
+const DIRTY_GFN_DIRTY: u32 = 1 << 0;
+const DIRTY_GFN_RESET: u32 = 1 << 1;
 
 /// A device attribute: `addr` is where its value is read from or written to.
 #[repr(C)]
@@ -397,6 +413,33 @@ impl VmFd {
         unsafe { ioctl(self.fd(), KVM_IRQFD, (&raw const irqfd) as libc::c_ulong) }.map(drop)
     }
 
+    /// Gives each vCPU made after this a dirty ring of `bytes` (api.rst 4.37 and 8.29):
+    /// `cap`, [`CAP_DIRTY_LOG_RING_ACQ_REL`] where KVM has it, else [`CAP_DIRTY_LOG_RING`].
+    pub fn enable_dirty_ring(&self, cap: u64, bytes: u32) -> io::Result<()> {
+        #[repr(C)]
+        struct EnableCap {
+            cap: u32,
+            flags: u32,
+            args: [u64; 4],
+            pad: [u64; 8],
+        }
+        let c = EnableCap {
+            cap: u32::try_from(cap).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+            flags: 0,
+            args: [u64::from(bytes), 0, 0, 0],
+            pad: [0; 8],
+        };
+        // SAFETY: KVM_ENABLE_CAP reads the struct it is given.
+        unsafe { ioctl(self.fd(), KVM_ENABLE_CAP, (&raw const c) as libc::c_ulong) }.map(drop)
+    }
+
+    /// Gives every vCPU's harvested ring entries back to it (KVM_RESET_DIRTY_RINGS): how
+    /// many it reset.
+    pub fn reset_dirty_rings(&self) -> io::Result<u32> {
+        // SAFETY: no argument.
+        unsafe { ioctl(self.fd(), KVM_RESET_DIRTY_RINGS, 0) }.map(|n| n.unsigned_abs())
+    }
+
     pub fn create_vcpu(&self, id: u64, mmap_size: usize) -> io::Result<VcpuFd> {
         // SAFETY: the vCPU id by value; the result is a new fd we own.
         let fd = unsafe { ioctl(self.fd(), KVM_CREATE_VCPU, id as libc::c_ulong) }?;
@@ -482,6 +525,98 @@ impl Drop for RunMap {
     }
 }
 
+/// A vCPU's dirty ring (api.rst 8.29): `struct kvm_dirty_gfn`s, 16 bytes each, which KVM
+/// fills as the vCPU's guest writes pages of a slot whose writes it logs, and which its VMM
+/// harvests in order, each marked harvested, then resets through the VM. Harvested from
+/// any thread, one at a time ([`DirtyRing::harvest`]).
+#[derive(Debug)]
+pub struct DirtyRing {
+    ptr: NonNull<u8>,
+    entries: u32,
+    /// The next entry to harvest.
+    next: std::sync::Mutex<u32>,
+}
+
+// SAFETY: the mapping is shared memory KVM and its harvester exchange through each entry's
+// flags, read with acquire and written with release; the cursor is under its lock.
+unsafe impl Send for DirtyRing {}
+// SAFETY: as above.
+unsafe impl Sync for DirtyRing {}
+
+impl DirtyRing {
+    /// Maps `vcpu`'s ring of `bytes` (a power of two, as enabled).
+    pub fn map(vcpu: &VcpuFd, bytes: u32) -> io::Result<DirtyRing> {
+        let page = page_size()?;
+        // SAFETY: maps the vCPU's ring where KVM documents it, shared and writable, as the
+        // harvest marks entries.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                bytes as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                vcpu.fd(),
+                DIRTY_LOG_PAGE_OFFSET * page,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let ptr = NonNull::new(p.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))?;
+        Ok(DirtyRing {
+            ptr,
+            entries: bytes / 16,
+            next: std::sync::Mutex::new(0),
+        })
+    }
+
+    /// Takes every entry KVM has filled since the last harvest, each given to `take` as its
+    /// slot and its page's index in it, and marks it harvested; how many it took. The VM's
+    /// [`VmFd::reset_dirty_rings`] gives them back to KVM.
+    pub fn harvest(&self, take: &mut dyn FnMut(u32, u64)) -> u32 {
+        let mut next = self.next.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut taken = 0;
+        while taken < self.entries {
+            let at = (*next % self.entries) as usize * 16;
+            // SAFETY: an entry of the mapping, 16 bytes at a 16-byte boundary; its flags
+            // word is 4-aligned, and KVM and this process exchange it atomically.
+            let flags = unsafe { std::sync::atomic::AtomicU32::from_ptr(self.ptr.as_ptr().add(at).cast()) };
+            if flags.load(Ordering::Acquire) & DIRTY_GFN_DIRTY == 0 {
+                break;
+            }
+            // SAFETY: the rest of the entry, KVM's until its flags said it was dirty.
+            let (slot, offset) = unsafe {
+                (
+                    self.ptr.as_ptr().add(at + 4).cast::<u32>().read(),
+                    self.ptr.as_ptr().add(at + 8).cast::<u64>().read(),
+                )
+            };
+            take(slot, offset);
+            flags.store(DIRTY_GFN_RESET, Ordering::Release);
+            *next = next.wrapping_add(1);
+            taken += 1;
+        }
+        taken
+    }
+}
+
+impl Drop for DirtyRing {
+    fn drop(&mut self) {
+        // SAFETY: the mapping made in `map`, used by nothing else now.
+        unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.entries as usize * 16) };
+    }
+}
+
+/// The host's page size.
+fn page_size() -> io::Result<libc::off_t> {
+    // SAFETY: sysconf(3) has no preconditions.
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if n <= 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(n as libc::off_t)
+}
+
 /// Why KVM_RUN returned, decoded from `kvm_run`.
 #[derive(Debug)]
 pub enum RunExit<'a> {
@@ -511,6 +646,8 @@ pub enum RunExit<'a> {
         data: &'a [u8],
     },
     Shutdown,
+    /// The vCPU's dirty ring is full: it may run again once its entries are reset.
+    DirtyRingFull,
     SystemEvent(u32),
     Hlt,
     FailEntry(u64),
@@ -591,6 +728,7 @@ impl VcpuFd {
             EXIT_FAIL_ENTRY => RunExit::FailEntry(run.read(32)),
             EXIT_INTR => RunExit::Interrupted,
             EXIT_INTERNAL_ERROR => RunExit::InternalError(run.read(32)),
+            EXIT_DIRTY_RING_FULL => RunExit::DirtyRingFull,
             #[cfg(target_arch = "aarch64")]
             EXIT_ARM_NISV => RunExit::ArmNisv {
                 esr_iss: run.read(32),

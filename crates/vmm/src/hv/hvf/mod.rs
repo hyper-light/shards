@@ -232,6 +232,23 @@ impl Vm {
         self.watch.clone()
     }
 
+    /// Watches the guest's writes for a live move (D176 part 7): its writable memory taken
+    /// away for writing at stage 2, each page given back as it is written ([`Watch`]).
+    pub fn watch_writes(&self) -> Result<()> {
+        self.watch.watch_writes()
+    }
+
+    /// The pages written since the watch began or was last asked, each taken away for
+    /// writing again first, in order of their addresses.
+    pub fn written(&self) -> Result<Vec<u64>> {
+        self.watch.written()
+    }
+
+    /// Stops watching the guest's writes.
+    pub fn unwatch_writes(&self) {
+        self.watch.unwatch_writes();
+    }
+
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
     ///
     /// # Safety
@@ -417,6 +434,11 @@ impl Region {
 pub struct Watch {
     regions: Mutex<Vec<Region>>,
     recording: Mutex<Option<Recording>>,
+    /// The pages the guest wrote since they were last taken ([`Watch::written`]), while the
+    /// guest's writes are watched for a live move (D176 part 7): its writable memory taken
+    /// away for writing at stage 2 (`hv_vm_protect`), and each page given back whole as the
+    /// guest writes it, noted. Under the recording's lock's order: this one after it.
+    dirty: Mutex<Option<std::collections::BTreeSet<u64>>>,
 }
 
 #[derive(Debug, Default)]
@@ -463,6 +485,59 @@ impl Watch {
         recorded.map(|r| r.touches).unwrap_or_default()
     }
 
+    /// Watches the guest's writes to its writable memory (D176 part 7): each such region
+    /// taken away for writing, and every page written from now on noted, until
+    /// [`unwatch_writes`](Self::unwatch_writes). Callable while vCPUs run.
+    pub fn watch_writes(&self) -> Result<()> {
+        let mut dirty = lock(&self.dirty);
+        *dirty = Some(std::collections::BTreeSet::new());
+        for r in lock(&self.regions).iter().filter(|r| r.perms == sys::Perms::RWX) {
+            if let Err(e) = sys::protect(r.gpa, r.len, sys::Perms::RX) {
+                *dirty = None;
+                drop(dirty);
+                self.unwatch_writes();
+                return Err(e.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// The pages written since the watch began or since this was last asked, each taken away
+    /// for writing again before it is said: a write after it faults and is noted for the
+    /// next ask, and the page's bytes read after this returns hold every write before it.
+    /// In order of their addresses.
+    pub fn written(&self) -> Result<Vec<u64>> {
+        let mut dirty = lock(&self.dirty);
+        let Some(set) = dirty.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let pages: Vec<u64> = std::mem::take(set).into_iter().collect();
+        // Each run of neighbouring pages taken away at once.
+        let mut at = 0;
+        while let Some(&first) = pages.get(at) {
+            let mut n = 1u64;
+            while pages.get(at + n as usize) == Some(&(first + n * PAGE)) {
+                n += 1;
+            }
+            sys::protect(first, n * PAGE, sys::Perms::RX)?;
+            at += n as usize;
+        }
+        Ok(pages)
+    }
+
+    /// Stops watching the guest's writes, and gives it all its memory back.
+    pub fn unwatch_writes(&self) {
+        let recording = lock(&self.recording);
+        let mut dirty = lock(&self.dirty);
+        *dirty = None;
+        if recording.is_none() {
+            for r in lock(&self.regions).iter() {
+                // It fails only once the VM is gone, with nothing left to give back.
+                let _ = sys::protect(r.gpa, r.len, r.perms);
+            }
+        }
+    }
+
     /// Gives `page` back after a fault on it, `write` if a write, in memory the guest may
     /// access with `full`: what it gets back ([`Recording::touched`]), given under the
     /// recording's lock, so that the access each vCPU is given lands in the order it was
@@ -473,11 +548,28 @@ impl Watch {
     /// watch's: none is given then.
     fn give(&self, page: u64, write: bool, full: sys::Perms, again: bool) -> Result<Option<sys::Perms>> {
         let mut recording = lock(&self.recording);
+        let mut dirty = lock(&self.dirty);
         let perms = match recording.as_mut() {
             Some(r) => r.touched(page, write, full),
             None => full,
         };
-        if perms == full && again {
+        // Watched for a live move, a page taken away again since this vCPU had it whole
+        // faults again, rightly: only a write gets it back whole, noted.
+        let watched = match dirty.as_mut() {
+            Some(set) => {
+                if write {
+                    set.insert(page);
+                }
+                true
+            }
+            None => false,
+        };
+        let perms = if watched && !write && perms == full {
+            sys::Perms::RX
+        } else {
+            perms
+        };
+        if perms == full && again && !watched {
             return Ok(None);
         }
         sys::protect(page, PAGE, perms)?;

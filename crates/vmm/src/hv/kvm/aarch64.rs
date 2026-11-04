@@ -329,7 +329,7 @@ impl Vm {
             *first |= features;
         }
         Ok(Vm {
-            slots: Slots::new(fd.clone()),
+            slots: Slots::new(&kvm, fd.clone()),
             fd,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
             mpidrs: config.mpidrs,
@@ -437,11 +437,13 @@ impl Vm {
         }
         lock(&self.vcpus).push(fd.weak());
         let thread = super::this_thread();
+        self.slots.dirty.add_vcpu(&fd)?;
         Ok(Vcpu {
             kicker: Kicker {
                 run: fd.run.clone(),
                 thread: thread.clone(),
             },
+            dirty: self.slots.dirty.clone(),
             fd,
             thread,
         })
@@ -532,6 +534,9 @@ pub struct Vcpu {
     kicker: Kicker,
     /// Cleared on drop, so no kick can signal a thread that no longer runs this vCPU.
     pub(super) thread: Arc<Mutex<Option<Thread>>>,
+    /// Its VM's watch of the guest's writes, which empties its dirty ring as it fills
+    /// (D176 part 7).
+    dirty: Arc<super::Dirty>,
 }
 
 impl Vcpu {
@@ -553,7 +558,7 @@ impl Vcpu {
 
     /// Runs the guest until it powers off, resets, or a kick arrives.
     pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
-        super::run(&mut self.fd, io)
+        super::run(&mut self.fd, io, &self.dirty)
     }
 
     /// The CPU identity the guest sees: ID registers by encoding.

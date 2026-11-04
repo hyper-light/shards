@@ -78,6 +78,8 @@ pub(crate) struct Plan {
 /// its bytes' SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Backing {
+    /// As its snapshot names it, here.
+    pub path: String,
     pub rel: String,
     pub size: u64,
     pub sha256: String,
@@ -727,14 +729,21 @@ impl<D: Disk> Daemon<D> {
         let pinned = shards_vmm::snapshot::read(&dir)?;
         let mut files = Vec::new();
         for (path, _) in shards_vmm::snapshot::backing_of(&pinned) {
-            let rel = rel_of(&home, &path).ok_or_else(|| {
+            // As the home is named, links and all: macOS's /var is /private/var.
+            let resolved = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let rel = rel_of(&home, &resolved).ok_or_else(|| {
                 format!(
                     "{}: its snapshot restores against a file outside this machine's home, which no move takes",
                     path.display()
                 )
             })?;
             let (sha256, size) = digest_of(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            files.push(Backing { rel, size, sha256 });
+            files.push(Backing {
+                path: path.to_string_lossy().into_owned(),
+                rel,
+                size,
+                sha256,
+            });
         }
         drop(pinned);
         let mut volumes = Vec::new();
@@ -1000,12 +1009,12 @@ impl<D: Disk> Daemon<D> {
         }
         let home = std::fs::canonicalize(&self.home).map_err(|e| at(&self.home, &e))?;
         let dir = lock(&self.containers).dir(&plan.id);
-        let from = PathBuf::from(&plan.home);
+        // Each file its snapshot names, by the name the plan gave it there.
         let to = |path: &Path| -> Option<PathBuf> {
-            let rel = rel_of(&from, path)?;
-            match shipped.get(&rel) {
+            let file = plan.files.iter().find(|f| Path::new(&f.path) == path)?;
+            match shipped.get(&file.rel) {
                 Some(i) => Some(dir.join(BACKING).join(i.to_string())),
-                None => Some(home.join(relative(&rel).ok()?)),
+                None => Some(home.join(relative(&file.rel).ok()?)),
             }
         };
         let record = serde_json::to_vec(&c).map_err(|e| e.to_string())?;
@@ -1098,6 +1107,7 @@ mod tests {
             snapshot: "s1".into(),
             home: "/h".into(),
             files: vec![Backing {
+                path: "/h/images/x.erofs".into(),
                 rel: "images/x.erofs".into(),
                 size: 3,
                 sha256: "c".repeat(64),

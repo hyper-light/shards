@@ -318,7 +318,21 @@ pub struct GuestMemory {
     host: Mutex<()>,
     /// That thread's [`token`], or 0.
     holder: AtomicUsize,
+    /// The pages its devices wrote while a live move watches (D176 part 7), which no
+    /// hypervisor's log of the guest's own writes sees.
+    device_writes: DeviceWrites,
 }
+
+/// The pages of guest memory the host's devices write, noted while watched
+/// ([`GuestMemory::watch_device_writes`]): 4 KiB each, by address.
+#[derive(Debug, Default)]
+struct DeviceWrites {
+    on: std::sync::atomic::AtomicBool,
+    pages: Mutex<std::collections::BTreeSet<u64>>,
+}
+
+/// The unit a device's writes are noted in.
+const DEVICE_PAGE: u64 = 4096;
 
 // SAFETY: the reservations are memory this value owns. The host reaches it only through an
 // `Access`, which one thread holds at a time, or through raw pointers handed to the
@@ -362,6 +376,7 @@ impl GuestMemory {
             pins: Mutex::new(Pins::default()),
             devices: OnceLock::new(),
             holder: AtomicUsize::new(0),
+            device_writes: DeviceWrites::default(),
         };
         for &(gpa, len) in ranges {
             if len == 0 || !len.is_multiple_of(page) || !gpa.is_multiple_of(page as u64) {
@@ -686,6 +701,46 @@ impl GuestMemory {
                 .ok_or("memory plugged past what a file can hold")?;
         }
         Ok(())
+    }
+
+    /// Notes the pages its devices write from now on (D176 part 7): a live move sends each
+    /// again, as it sends those its guest writes.
+    pub fn watch_device_writes(&self) {
+        lock(&self.device_writes.pages).clear();
+        self.device_writes.on.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether its devices' writes are noted now.
+    pub fn device_writes_watched(&self) -> bool {
+        self.device_writes.on.load(Ordering::Relaxed)
+    }
+
+    /// Stops noting its devices' writes.
+    pub fn unwatch_device_writes(&self) {
+        self.device_writes.on.store(false, Ordering::SeqCst);
+        lock(&self.device_writes.pages).clear();
+    }
+
+    /// Notes that a device wrote, or may have written, `len` bytes at `gpa`, where they
+    /// are watched.
+    pub fn device_wrote(&self, gpa: u64, len: u64) {
+        if len == 0 || !self.device_writes.on.load(Ordering::Relaxed) {
+            return;
+        }
+        let first = gpa & !(DEVICE_PAGE - 1);
+        let end = gpa.saturating_add(len);
+        let mut pages = lock(&self.device_writes.pages);
+        let mut at = first;
+        while at < end {
+            pages.insert(at);
+            at = at.saturating_add(DEVICE_PAGE);
+        }
+    }
+
+    /// The pages devices wrote since the watch began or this was last asked, each
+    /// [`DEVICE_PAGE`] long, in order of their addresses.
+    pub fn device_written(&self) -> Vec<u64> {
+        std::mem::take(&mut *lock(&self.device_writes.pages)).into_iter().collect()
     }
 
     /// `(gpa, host pointer, len)` for each region of RAM, for stage-2 mapping: not the
@@ -1134,6 +1189,7 @@ impl<'a> Access<'a> {
     /// # Safety
     /// `src` must be valid for reads of `len` bytes of host memory.
     pub unsafe fn write_raw(&self, gpa: u64, src: *const u8, len: usize) -> Result<(), OutOfBounds> {
+        self.mem.device_wrote(gpa, len as u64);
         let dst = match self.mem.host_ptr(gpa, len) {
             Ok(dst) => dst,
             Err(oob) => {
@@ -1164,6 +1220,7 @@ impl<'a> Access<'a> {
     /// Stores `value` at `gpa`, which need not be aligned.
     pub fn write_obj<T: Pod>(&self, gpa: u64, value: T) -> Result<(), OutOfBounds> {
         let dst = self.mem.host_ptr(gpa, size_of::<T>())?;
+        self.mem.device_wrote(gpa, size_of::<T>() as u64);
         // SAFETY: `dst` is valid for `size_of::<T>()` bytes of guest memory, and `value`'s
         // bytes are all initialized (`T: Pod` has no padding).
         unsafe { platform::copy_out(std::ptr::from_ref(&value).cast(), dst, size_of::<T>()) };
@@ -1183,6 +1240,7 @@ impl<'a> Access<'a> {
     /// the guest loads whole.
     pub fn store_u16(&self, gpa: u64, value: u16, order: Ordering) -> Result<(), OutOfBounds> {
         let p = self.aligned_u16(gpa)?;
+        self.mem.device_wrote(gpa, 2);
         // SAFETY: as in `load_u16`.
         unsafe { AtomicU16::from_ptr(p) }.store(value, order);
         Ok(())
