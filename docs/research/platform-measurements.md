@@ -17161,7 +17161,7 @@ revision before comparing a changed API/implementation.
   its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
   `shards restore` finds it.
 
-### M422. A restart over the kept layer file itself, and what the guest freed given back (D190)
+### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
 - **Question.** D190's slices 7 and 8: a stopped container's `start` goes on over the file
   its layer was kept in, where its files were packed on the host and put back into the
@@ -17239,6 +17239,37 @@ revision before comparing a changed API/implementation.
 
     `commit` the same at every size (0 B 24.63 against 23.66, 64 MiB 129.90 against
     128.80). Host kiln-a094a12d, Linux 6.19.10-300.fc44, load 4 to 18 as it ran.
+  - Where packing and going over cross (5b2fd573, going over at every size, against
+    de2b1cf5; `ab.py --sizes 0,1048576,2097152,4194304,8388608,16777216,33554432`, n = 20
+    a side, interleaved), `start -a` ms p50 (p90, p99 = max):
+
+    | written | packed (OLD) | gone over (NEW) | NEW less OLD at p50 |
+    |---|---|---|---|
+    | 0 | 52.55 (189.68, 200.23) | 63.14 (81.30, 89.83) | +10.59 |
+    | 1 MiB | 70.37 (92.91, 280.08) | 75.47 (148.04, 272.18) | +5.10 |
+    | 2 MiB | 76.38 (90.93, 261.56) | 90.44 (100.20, 101.46) | +14.06 |
+    | 4 MiB | 95.90 (120.42, 127.77) | 100.92 (116.58, 120.73) | +5.02 |
+    | 8 MiB | 135.68 (331.54, 360.86) | 122.06 (150.17, 175.20) | -13.62 |
+    | 16 MiB | 259.86 (303.49, 492.14) | 189.81 (260.00, 269.90) | -70.05 |
+    | 32 MiB | 396.48 (546.18, 584.65) | 286.21 (443.36, 455.74) | -110.27 |
+
+    Packing is quicker through 4 MiB, going over from 8 MiB on; the lines between 4 and 8
+    MiB meet at 5.08 MiB. What a written file takes of the layer is its bytes and a few
+    blocks of metadata (its extents, its directory), past what an empty layer of the size
+    holds (`layers::held`).
+  - Chosen per restart (894c2c67: packed below 5 MiB held, gone over from there), against
+    de2b1cf5, n = 20 a side, interleaved, ms p50 (p90, p99 = max):
+
+    | size | `start` OLD | `start` NEW | `diff` OLD | `diff` NEW | `run` OLD | `run` NEW | `commit` OLD | `commit` NEW |
+    |---|---|---|---|---|---|---|---|---|
+    | 0 | 53.63 (59.42, 67.19) | 55.66 (63.04, 64.28) | 54.66 (62.31, 62.47) | 55.65 (63.33, 64.74) | 23.04 (30.91, 32.42) | 20.46 (25.94, 30.13) | 24.37 (32.81, 33.42) | 23.60 (31.48, 122.02) |
+    | 4 MiB | 97.37 (118.61, 121.45) | 95.98 (123.12, 126.78) | 79.87 (92.17, 92.23) | 78.85 (94.61, 111.07) | 50.29 (73.03, 75.25) | 52.63 (76.49, 83.84) | 38.09 (43.20, 45.02) | 35.83 (43.14, 45.51) |
+    | 64 MiB | 576.05 (769.50, 899.66) | 482.05 (502.95, 503.19) | 329.95 (490.96, 1,397.01) | 238.30 (259.90, 374.09) | 361.50 (420.18, 675.33) | 362.38 (381.37, 386.50) | 129.19 (144.70, 151.63) | 131.84 (155.76, 158.15) |
+
+    Load 6 to 19 as it ran. At 0 B and 4 MiB both builds pack: `start` within the spread of
+    each other (0 B +2.03 ms at p50, -2.91 at p99); at 64 MiB going over is 16% quicker at
+    p50 and 44% at p99. A rerun at 0 B, n = 40, came as the host's load rose past 25 to 49
+    and is not kept.
 - **Reading.**
   - A layer's file holds every block its guest ever wrote until its microVM has gone; its
     bitmaps then say what is free, and giving that back costs the host's punch alone, about
@@ -17257,7 +17288,9 @@ revision before comparing a changed API/implementation.
     fs/ext4/super.c ext4_load_journal),
     the two root moves (2.3 and 1.8 ms) and the template layer's detach (2.1 ms).
 - **Consequence.** D190's slices 7 and 8 as built: the daemon gives a restart the kept file
-  where its length is the run's layer's, the VM readies it and swaps it in place of the
+  where its length is the run's layer's and it holds 5 MiB or more (`layers::OVER_FROM`,
+  held to the crossing table by `a_restart_goes_over_from_where_packing_costs_more`; below
+  it the layer is packed and put back as before), the VM readies it and swaps it in place of the
   template's as the guest asks (`control::LAYER_SWAP`), answering that layer's flushes at
   once meanwhile, and init shuts the template's layer down, lets go of it, mounts the
   container's and roots every process there (init `over.rs`); cgroup2 is mounted

@@ -7796,7 +7796,9 @@ the guest keeps their metadata alone.
   `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file` (restored from its
   template): each restart over the container's own file, the same file (its inode), what
   the run before made found, no microVM's own layer left, and 32 MiB written and removed
-  each run given back. shards-ext4's `free_blocks_are_what_the_bitmaps_and_counts_say`
+  each run given back, and a container whose layer holds little packed and put back
+  (another file); `layers`' `what_a_layer_holds_is_its_blocks_past_an_empty_ones` and
+  `a_restart_goes_over_from_where_packing_costs_more`. shards-ext4's `free_blocks_are_what_the_bitmaps_and_counts_say`
   (its free runs the groups' own counts, as mke2fs and e2fsck keep them, in `format`'s file
   system and in scripts/ext4/generate's tree, no block of a file among them) and
   `a_damaged_block_bitmap_is_refused`; `layers`' `a_kept_layers_freed_blocks_go_back_to_its_disk`;
@@ -7826,7 +7828,7 @@ the guest keeps their metadata alone.
   11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel carries it (since
   kernel-6.18.48-8df0015cca35).
 
-- **A restart goes on over the kept file itself** (slice 7, PM M422). A stopped
+- **A restart goes on over the kept file itself** (slice 7, PM M443). A stopped
   container's `start` put its files back: the host packed its kept layer, and its warm
   microVM's guest unpacked the archive into the layer its template mounted, a copy as long
   as the layer's changes. Now the file goes under the microVM's layer device as it is.
@@ -7857,25 +7859,36 @@ the guest keeps their metadata alone.
   committed it, replayed as it is next read. Before it lets go of the template's layer,
   init shuts that file system down unwritten (EXT4_IOC_SHUTDOWN, NOLOGFLUSH), and the VMM
   answers the flushes of a layer whose file is about to be replaced at once: its unmount's
-  writes, each the host's fdatasync, took a restart 21 to 38 ms (PM M422). The new
+  writes, each the host's fdatasync, took a restart 21 to 38 ms (PM M443). The new
   standby moves itself into the workload's cgroup as the template's did before its
   snapshot, which waited for an RCU grace period, 10 to 40 ms on a 32-vCPU guest, until
   cgroup2 was mounted `favordynmods` (Linux 6.0; a kernel without it mounts as before),
   0.3 to 0.9 so. And the file's new mapping reads at random until the command runs, as the
   one before (M297). The guest's part took 13.5 ms at p50 (18.3 at most, n = 41), its
-  container's file system's mount, with its one host flush, 4.1 of it. Against packing
-  (n = 20 a side, interleaved, Fedora's Btrfs, a loaded host), `start` of a container that
-  wrote 0 B is 17.6 ms slower at p50 (79.33 against 61.77), the same at 4 MiB (96.86
-  against 93.55), and 15% quicker at 64 MiB (464.71 against 546.43, p99 497.41 against
-  590.45): its cost is the go-over's, whatever the layer holds, where packing's grew with
-  it; `diff` of the stopped container is quicker at every size (45.61 against 67.38 at 0
-  B), and `run` and `commit` the same (PM M422).
+  container's file system's mount, with its one host flush, 4.1 of it. Going over always,
+  against packing (n = 20 a side, interleaved, Fedora's Btrfs, a loaded host), `start` of a
+  container that wrote 0 B was 17.6 ms slower at p50 (79.33 against 61.77) and 15% quicker
+  at 64 MiB (464.71 against 546.43): its cost is the go-over's, about the same whatever
+  the layer holds, where packing's grows with it. So each restart chooses from what its
+  layer holds (`layers::held`): its blocks in use, as its groups' descriptors count them
+  with its bitmaps (`Volume::free_blocks`), less what an empty layer of its size holds of
+  metadata (`Made::free_blocks`, a format made once a size in memory, nothing written).
+  Below 5 MiB (`layers::OVER_FROM`) it is packed and put back as before; from there on it
+  goes over. 5 MiB is where the measured restarts cross: at 0, 1, 2 and 4 MiB written
+  packing was 5.0 to 14.1 ms quicker at p50, at 8, 16 and 32 MiB going over 13.6, 70.1 and
+  110.3 ms quicker, the lines between 4 and 8 MiB meeting at 5.08 MiB
+  (`a_restart_goes_over_from_where_packing_costs_more` holds the constant to that
+  table). So chosen, against packing always (894c2c67 against de2b1cf5, n = 20 a side,
+  interleaved), `start` at p50 / p99: 0 B 55.66 / 64.28 against 53.63 / 67.19 ms (both
+  packed: within the spread, p90 63.04 against 59.42), 4 MiB 95.98 / 126.78 against
+  97.37 / 121.45, 64 MiB 482.05 / 503.19 against 576.05 / 899.66; `diff` alike at 0 and
+  4 MiB and 28% quicker at 64 MiB; `run` and `commit` the same (PM M443).
   Windows restarts by packing as before: its views of a file are not mapped over in place
   yet (`platform::map_file_shared_at`); nor are visits (`cp`, `diff` and `export` of a
   stopped container) or joiners' runs (D119), which put their layer back as before. On
   macOS the swap and the give-back are held by unit tests (`pmem`'s, `platform`'s); its
   real microVMs have not run it yet.
-- **What the guest freed goes back to the host** (slice 8, PM M422). pmem takes no
+- **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
   discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
   whatever its guest deleted. As a stopped container's layer is kept, its microVM gone,
   the daemon reads its block bitmaps (`Volume::free_runs`: each group's whose bitmap was
@@ -7889,14 +7902,15 @@ the guest keeps their metadata alone.
   1,024.5 MiB on the disk, and now of 0.36 and 0.56 (n = 20 each, alike to the hundredth); the
   give-back took 11.1 and 160.2 ms at p50 (15.3 and 303.8 at most) on Fedora's Btrfs, as
   the daemon keeps the layer, after its run's client is told it ended and before a command
-  that reads the layer goes on (PM M422).
+  that reads the layer goes on (PM M443).
 
 **Next** (the slices after these).
 - Restarts over the kept file on Windows (a view mapped over in place: placeholders,
   MapViewOfFile3's MEM_REPLACE_PLACEHOLDER), and on a Mac's real microVMs, measured; and
   visits and joiners' runs over it too.
-- A restart's fixed cost below packing's at 0 B (17.6 ms more at p50): the mount of the
-  container's file system and its one host flush, and the root's two moves (PM M422).
+- Going over's fixed cost below packing's, so that a layer holding under 5 MiB goes over
+  too: the mount of the container's file system and its one host flush, and the root's two
+  moves (PM M443).
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
