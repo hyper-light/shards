@@ -1243,10 +1243,9 @@ fn one_platforms_microvm_of_an_image_is_chosen_wherever_a_command_names_it() {
         let mut repos = repos.lock().unwrap();
         let oci_manifest = "application/vnd.oci.image.manifest.v1+json".to_string();
         let manifests = repos.manifests.entry("test/multi".into()).or_default();
-        manifests.insert(
-            "v1".into(),
-            ("application/vnd.oci.image.index.v1+json".into(), index.clone()),
-        );
+        let index_kind = "application/vnd.oci.image.index.v1+json".to_string();
+        manifests.insert("v1".into(), (index_kind.clone(), index.clone()));
+        manifests.insert(sha256_digest(&index), (index_kind, index.clone()));
         for m in [&our_manifest, &other_manifest, &attestation] {
             manifests.insert(sha256_digest(m), (oci_manifest.clone(), m.clone()));
         }
