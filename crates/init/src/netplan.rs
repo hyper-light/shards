@@ -104,8 +104,9 @@ pub struct Link {
 }
 
 /// A remote MCP server's host, lowered, and port, from its URL: the port written, or else
-/// its scheme's own (443 for `https`, 80 for `http`; §4.4), as the build's
-/// `agentfile::mcp_endpoint` reads it. None for a source that is no http(s) URL.
+/// its scheme's own (443 for `https`, 80 for `http`; §4.4), an IPv6 address in its
+/// brackets (RFC 3986 §3.2.2), as the build's `agentfile::mcp_endpoint` reads it. None for
+/// a source that is no http(s) URL.
 fn mcp_endpoint(url: &str) -> Option<(String, u16)> {
     let (rest, default) = match url.strip_prefix("https://") {
         Some(r) => (r, 443),
@@ -113,10 +114,18 @@ fn mcp_endpoint(url: &str) -> Option<(String, u16)> {
     };
     let authority = rest.split(['/', '?', '#']).next()?;
     let hostport = authority.rsplit('@').next()?;
-    let (host, port) = match hostport.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().ok()?),
+    // Past an IP-literal's closing bracket, whose address holds colons of its own.
+    let after = match hostport.strip_prefix('[') {
+        Some(inside) => inside.find(']')? + 2,
+        None => 0,
+    };
+    let (host, port) = match hostport.get(after..)?.rsplit_once(':') {
+        Some((h, p)) => (hostport.get(..after + h.len())?, p.parse::<u16>().ok()?),
         None => (hostport, default),
     };
+    if after > 0 && host.len() != after {
+        return None;
+    }
     (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
 }
 
@@ -872,6 +881,7 @@ mod tests {
             br#"{"networks":[],"connections":[],
                 "mcp":[{"name":"web","source":"https://MCP.example/sse","for":{"kind":null,"names":["a"]}},
                        {"name":"all","source":"http://tools.example:8080","for":{"kind":null,"names":[]}},
+                       {"name":"six","source":"https://[2001:DB8::7]/sse","for":{"kind":null,"names":["a"]}},
                        {"name":"local","source":"./files","for":{"kind":null,"names":[]}}]}"#,
         )
         .unwrap();
@@ -883,7 +893,8 @@ mod tests {
             a.mcp,
             vec![
                 ("mcp.example".to_string(), 443),
-                ("tools.example".to_string(), 8080)
+                ("tools.example".to_string(), 8080),
+                ("[2001:db8::7]".to_string(), 443)
             ]
         );
         assert_eq!(a.egress, vec![(6, 443, 443), (6, 8080, 8080)]);

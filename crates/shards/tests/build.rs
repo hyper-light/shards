@@ -9596,9 +9596,13 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
     }
 }
 
-/// Agents reach past their microVM by IPv6 what their networks grant (D99), where the
-/// microVM's own network has IPv6: through the switch's uplink and init's namespace, under
-/// eth0's IPv6 address, the granted port alone, as by IPv4 (D59).
+/// Agents reach past their microVM by IPv6 what their grants name (D99), on any network
+/// their microVM is on: one with IPv6, where eth0 has its address there; the default bridge
+/// and a network without IPv6, where eth0 takes an IPv6 address for the agents alone. Through
+/// the switch's uplink and init's namespace, under eth0's IPv6 address: the port both
+/// boundaries grant and not one only the network grants, as by IPv4 (D59); a remote MCP
+/// server whose name has an IPv6 address alone (AAAA), once its name is resolved and not
+/// before; and one whose URL is an IPv6 address. The run's own command reaches none of it.
 #[test]
 fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     if cannot_run_vms() {
@@ -9616,13 +9620,48 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
             return;
         }
     };
+    // And its IPv4 address, where the host's resolver for the microVM listens.
+    let Ok(std::net::SocketAddr::V4(host4)) = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr())
+    else {
+        eprintln!("SKIP: this host has no IPv4 route for the microVM's resolver");
+        return;
+    };
     let serve = || {
         let server = std::net::TcpListener::bind("[::]:0").unwrap();
         let port = server.local_addr().unwrap().port();
         std::thread::spawn(move || for _ in server.incoming() {});
         port
     };
-    let (granted, other) = (serve(), serve());
+    let (granted, other, mcp, literal) = (serve(), serve(), serve(), serve());
+    // The host's resolver: mcp6.example is this host at its IPv6 address alone (AAAA), and
+    // has no IPv4 address.
+    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let resolver_at = format!("{}:{}", host4.ip(), resolver.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 512];
+        while let Ok((n, from)) = common::recv_from(&resolver, &mut buf) {
+            let q = &buf[..n];
+            let mut at = 12;
+            let mut name = Vec::new();
+            while at < q.len() && q[at] != 0 {
+                let len = usize::from(q[at]);
+                name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
+                at += 1 + len;
+            }
+            let qtype = u16::from_be_bytes([q[at + 1], q[at + 2]]);
+            let count = u8::from(name.join(".") == "mcp6.example" && qtype == 28);
+            let mut r = q[..2].to_vec();
+            r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, count, 0, 0, 0, 0]);
+            r.extend_from_slice(&q[12..at + 5]);
+            if count == 1 {
+                r.extend_from_slice(&[0xc0, 0x0c, 0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
+                r.extend_from_slice(&host.octets());
+            }
+            let _ = resolver.send_to(&r, from);
+        }
+    });
     let (image, _) = served();
     let (port, _repos) = common::writable_registry();
     let home = TempDir::new("egress6-home");
@@ -9630,12 +9669,14 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_DNS", std::ffi::OsStr::new(&resolver_at)),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     let to = |p: u16| format!("[{host}]:{p}");
     let dir = TempDir::new("egress6-agent-a");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    let mcp_name = format!("mcp6.example:{mcp}");
     let command: Vec<String> = [
         "bin/testguest",
         "confined",
@@ -9643,6 +9684,14 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         &to(granted),
         "unreach",
         &to(other),
+        // The MCP server's address before its name is resolved: refused, as none of it is
+        // known yet.
+        "unreach",
+        &to(mcp),
+        "reach",
+        &mcp_name,
+        "reach",
+        &to(literal),
     ]
     .iter()
     .map(|a| format!("{a:?}"))
@@ -9663,7 +9712,9 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         format!(
             "FROM {image}\nAGENT a FROM {tag}\n\
              NETWORK --ipv6 --egress={granted} --egress={other} out\nEXPOSE {granted} AS egress FOR out\n\
-             CONNECT a WITH a ON out\n"
+             CONNECT a WITH a ON out\n\
+             MCP web FROM http://mcp6.example:{mcp}/sse FOR a\n\
+             MCP lit FROM http://[{host}]:{literal}/sse FOR a\n"
         ),
     )
     .unwrap();
@@ -9671,34 +9722,61 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let made = shards(&["network", "create", "--ipv6", "--subnet", "fd7a::/64", "six"]);
     assert_eq!(made.status, Some(0), "{}", made.stderr);
-    let ran = common::run_awaiting(
-        &env,
-        &[
+    let made = shards(&["network", "create", "four"]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    for network in ["six", "bridge", "four"] {
+        let name = format!("aw-egress6-{network}");
+        let ran = common::run_awaiting(
+            &env,
+            &[
+                "run",
+                "--rm",
+                "--name",
+                &name,
+                "--network",
+                network,
+                "egress6:1",
+                "await",
+                "confined-ready",
+                "1",
+            ],
+            &name,
+            ("confined-ready", 1),
+            TIMEOUT,
+        );
+        assert_eq!(ran.status, Some(0), "{network}: {}{}", ran.stdout, ran.stderr);
+        for want in [
+            format!("[agent a] confined reach {}: ok", to(granted)),
+            // A port its network grants, but not the microVM's boundary: dropped.
+            format!("[agent a] confined unreach {}: timeout", to(other)),
+            // Refused by its network process, as by IPv4.
+            format!("[agent a] confined unreach {}: errno 111", to(mcp)),
+            format!("[agent a] confined reach {mcp_name}: ok"),
+            format!("[agent a] confined reach {}: ok", to(literal)),
+        ] {
+            assert!(
+                ran.stderr.lines().any(|l| l == want),
+                "{network}: no {want:?} in:\n{}",
+                ran.stderr
+            );
+        }
+        // The run's own command, from its first instruction: kept to eth0's subnet, of
+        // IPv6 too, its datagram to a port the agents are granted refused by the guest's
+        // own stack (EPERM), not sent.
+        let first = shards(&[
             "run",
             "--rm",
-            "--name",
-            "aw-egress6",
             "--network",
-            "six",
+            network,
             "egress6:1",
-            "await",
-            "confined-ready",
-            "1",
-        ],
-        "aw-egress6",
-        ("confined-ready", 1),
-        TIMEOUT,
-    );
-    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
-    for want in [
-        format!("[agent a] confined reach {}: ok", to(granted)),
-        // A port its network grants, but not the microVM's boundary: dropped.
-        format!("[agent a] confined unreach {}: timeout", to(other)),
-    ] {
+            "udp",
+            &to(granted),
+        ]);
         assert!(
-            ran.stderr.lines().any(|l| l == want),
-            "no {want:?} in:\n{}",
-            ran.stderr
+            first.stdout.contains("udp error Operation not permitted"),
+            "{network}: {}{}",
+            first.stdout,
+            first.stderr
         );
     }
 }

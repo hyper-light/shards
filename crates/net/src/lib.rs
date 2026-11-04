@@ -460,6 +460,8 @@ impl Config {
         let named = proto == Proto::Tcp
             && (self.learned.contains(&(to, port))
                 || self.named.iter().any(|(h, p)| {
+                    // An IPv6 address as a URL writes it, in brackets (RFC 3986 §3.2.2).
+                    let h = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(h);
                     *p == port && h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
                 }));
         match &self.policy {
@@ -3245,6 +3247,18 @@ mod tests {
         assert!(!cfg.allows(learned, Proto::Udp, 443));
         assert!(cfg.allows(IpAddr::from([10, 0, 0, 7]), Proto::Tcp, 8443));
         assert!(!cfg.allows(IpAddr::from([10, 0, 0, 8]), Proto::Tcp, 8443));
+        // An IPv6 address as its URL writes it, in brackets (D99), and an IPv6 address
+        // a name resolved to (AAAA), each at its port alone.
+        cfg.named.push(("[2001:db8::7]".to_string(), 8443));
+        let seven = IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 7]);
+        assert!(cfg.allows(seven, Proto::Tcp, 8443));
+        assert!(!cfg.allows(seven, Proto::Tcp, 443));
+        assert!(!cfg.allows(IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 8]), Proto::Tcp, 8443));
+        let learned6 = IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 9]);
+        assert!(!cfg.allows(learned6, Proto::Tcp, 443), "not yet resolved");
+        cfg.learned.insert((learned6, 443));
+        assert!(cfg.allows(learned6, Proto::Tcp, 443));
+        assert!(!cfg.allows(learned6, Proto::Tcp, 8443));
         assert_eq!(Ports::decode(&[6, 0, 1]), None);
     }
 

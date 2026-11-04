@@ -357,9 +357,29 @@ const IFA_F_NODAD: u8 = 0x02;
 /// The guest's IPv6 address and gateway on its network, once a run has given them.
 static ADDRESS6: std::sync::Mutex<Option<(Ipv6Addr, u8, Ipv6Addr)>> = std::sync::Mutex::new(None);
 
-/// The guest's IPv6 address, prefix and gateway, if its network has IPv6.
+/// Whether eth0's IPv6 address is its agents' alone (`uplink6=`, D99): its network has no
+/// IPv6, and no file of the run's names it.
+static UPLINK6: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The guest's IPv6 address, prefix and gateway, if its network has IPv6, or its agents'
+/// flows past the microVM take one ([`uplink6`]).
 pub fn current6() -> Option<(Ipv6Addr, u8, Ipv6Addr)> {
     *ADDRESS6.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The guest's IPv6 address on its network, which its `/etc/hosts` names: none where eth0's
+/// is its agents' alone.
+pub fn named6() -> Option<(Ipv6Addr, u8, Ipv6Addr)> {
+    current6().filter(|_| !UPLINK6.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Gives `eth0` IPv6 address `to.0`/`to.1` and a default route through `to.2` for its
+/// agents' flows past the microVM alone (D99), on a network without IPv6: as
+/// [`address6`], but named in none of the run's files. The run's command is kept to eth0's
+/// subnet (`confine-eth0`), of IPv6 as of IPv4.
+pub fn uplink6(to: (Ipv6Addr, u8, Ipv6Addr)) -> io::Result<()> {
+    UPLINK6.store(true, std::sync::atomic::Ordering::Relaxed);
+    address6(to)
 }
 
 /// Gives `eth0` IPv6 address `to.0`/`to.1` and a default route through `to.2` (D99): a
