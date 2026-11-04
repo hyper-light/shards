@@ -1508,6 +1508,34 @@ pub fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Gives back the file system's blocks under `len` bytes of `file` from `offset`, on every
+/// host, which read as zeros after and take none of its disk: Linux's
+/// fallocate(FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE), which Btrfs, ext4, XFS and tmpfs
+/// serve, and macOS's F_PUNCHHOLE ([`punch_hole`]). Whole blocks of the file system's are
+/// given back, a part of one at either end zeroed instead (fallocate(2)); APFS takes whole
+/// 4 KiB blocks alone. What a run's writable layer's guest freed (D190), once its microVM
+/// has gone.
+pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if len > 0 {
+        // SAFETY: fallocate(2) on an owned, open descriptor.
+        let rc = unsafe {
+            libc::fallocate(
+                file.as_raw_fd(),
+                libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                file_offset(offset)?,
+                file_offset(len)?,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    punch_hole(file, offset, len)?;
+    Ok(())
+}
+
 /// The names in the directory `dir` holds open, but for `.` and `..`, wherever it has gone
 /// (fdopendir(3), readdir(3)).
 pub fn names_in(dir: &File) -> io::Result<Vec<std::ffi::OsString>> {
@@ -2877,6 +2905,45 @@ mod holes_tests {
         unsafe { unmap_file_shared(mapped, len) };
         assert_eq!(hidden == [(0, len as u64)], MAPPED_HIDES_HOLES, "{hidden:?}");
         assert_eq!(data_ranges(&file, len as u64).unwrap(), alone);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod deallocate_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt as _;
+
+    /// What is given back reads as zeros and takes none of the file's disk, the rest as it
+    /// was, the file as long.
+    #[test]
+    fn what_is_given_back_reads_as_zeros_and_takes_no_disk() {
+        let dir = shards_testdir::TempDir::new("deallocate").unwrap();
+        let path = dir.join("f");
+        let mib = 1u64 << 20;
+        std::fs::write(&path, vec![0xA5u8; (8 * mib) as usize]).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.sync_all().unwrap();
+        let before = file.metadata().unwrap().blocks() * 512;
+        deallocate(&file, 2 * mib, 4 * mib).unwrap();
+        deallocate(&file, 0, 0).unwrap();
+        file.sync_all().unwrap();
+        let meta = file.metadata().unwrap();
+        assert_eq!(meta.len(), 8 * mib);
+        let after = meta.blocks() * 512;
+        assert!(after + 4 * mib <= before, "{before} bytes on disk, then {after}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes[..(2 * mib) as usize].iter().all(|&b| b == 0xA5));
+        assert!(
+            bytes[(2 * mib) as usize..(6 * mib) as usize]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        assert!(bytes[(6 * mib) as usize..].iter().all(|&b| b == 0xA5));
     }
 }
 

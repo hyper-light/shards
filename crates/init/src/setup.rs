@@ -50,6 +50,12 @@ pub fn keep_rw() -> io::Result<()> {
     Ok(())
 }
 
+/// The descriptor [`keep_rw`] kept, where it did: one whose number stays as a stopped
+/// container's layer takes the template's place (D190, over.rs).
+pub fn rw_fd() -> Option<std::os::fd::RawFd> {
+    RW.get().map(std::os::fd::AsRawFd::as_raw_fd)
+}
+
 /// Sizes the run's writable layer, `text` bytes (`--storage-opt size=`, D156): its tmpfs
 /// remounted at that size, which it may not be below what it holds already.
 pub fn rw_size(text: &[u8]) -> Result<(), String> {

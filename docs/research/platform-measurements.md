@@ -17685,3 +17685,139 @@ revision before comparing a changed API/implementation.
   limit, which no give-back can take, and the root filesystem an image's export writes
   whole, 850 MiB for rust:1-slim's 7 MiB addition, which a root filesystem made of
   its base's and its own layers would not.
+
+### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
+
+- **Question.** D190's slices 7 and 8: a stopped container's `start` goes on over the file
+  its layer was kept in, where its files were packed on the host and put back into the
+  warm microVM's own layer; and what its guest freed is given back to the host's disk once
+  its microVM has gone, where its file only grew. What does each cost, against before?
+- **Method.** 2026-11-03, on the Linux runner kiln-a094a12d (32 CPUs, 62 GiB, Fedora
+  44, Linux 6.19.10-300.fc44, KVM, the home on Btrfs; shared with other agents' builds and
+  tests: load 3 to 50 as these ran), release builds of de2b1cf5 (OLD: packs and puts back)
+  and of this slice (NEW), each with a home of its own, interleaved:
+  - `docs/research/measurements/layer-kept/ab.py OLD NEW --runs 20` (M278's harness): a
+    container writes 0, 4 MiB or 64 MiB into its root and ends (`run`), then `start -a`
+    runs it again over its files, `diff` and `commit`; n = 20 after a round not counted.
+  - `docs/research/measurements/layer-give-back/measure.py OLD NEW --runs 20`: a
+    container writes 0, 64 MiB or 1 GiB, syncs, removes it and ends; its layer file's bytes
+    on the disk (st_blocks) once kept, and NEW's daemon's word of what it gave back and in
+    how long.
+  - For diagnosis only (not kept, `p/d190-exp`): the guest's go-over timed step by step
+    (each step's end written into the layer and read with debugfs), and the host's every
+    layer flush and swap timed in the VM's log; 41 restarts of one container, and 12 of
+    containers each restarted once.
+- **Found.**
+  - What the guest freed, given back (n = 20 a side, MiB of the layer's file on the disk
+    once kept, p50 / p90 / p99 / max; NEW's give-back, its bytes and its time):
+
+    | written and removed | OLD on disk | NEW on disk | NEW gave back | NEW's give-back, ms |
+    |---|---|---|---|---|
+    | 0 | 0.31 / 0.31 / 0.31 / 0.31 | 0.31 / 0.31 / 0.31 / 0.31 | 4 KiB at most | 0.64 / 1.61 / 3.92 / 3.92 |
+    | 64 MiB | 64.35 / 64.35 / 64.35 / 64.35 | 0.36 / 0.36 / 0.36 / 0.36 | 64.00 MiB | 11.10 / 15.20 / 15.31 / 15.31 |
+    | 1 GiB | 1,024.53 / 1,024.56 / 1,024.56 / 1,024.56 | 0.56 / 0.56 / 0.56 / 0.56 | 1,024.01 MiB | 160.24 / 225.71 / 303.81 / 303.81 |
+
+  - The restart, the first build as it first went over (65a8c890: the template's layer
+    unmounted whole, each of its flushes the host's), `start -a` ms p50 / p90 / p99 / max,
+    OLD against NEW: 0 B 50.72 / 61.72 / 76.80 / 76.80 against 102.19 / 131.18 / 133.15 /
+    133.15; 4 MiB 100.62 / 140.12 / 151.48 against 140.26 / 198.24 / 291.13; 64 MiB 750.82 /
+    1,806.15 / 2,503.76 against 666.63 / 1,284.43 / 1,656.54.
+  - Where its guest spent the time (diagnosis build): letting go of the template's layer,
+    its unmount, 21 to 38 ms of a 30 to 54 ms go-over (n = 10), its flushes there 2.2 to
+    11.2 ms each, the host's fdatasync of a file the run was about to drop. Shut down first
+    (EXT4_IOC_SHUTDOWN, NOLOGFLUSH), its flushes answered at once while a file is readied
+    to replace it, the go-over's steps, ms, n = 41 restarts of one container (p50 / p90 /
+    p99 / max): the standby ended 0.61 / 0.86 / 1.91 / 1.91; a tmpfs every process's root
+    2.25 / 2.65 / 2.92 / 2.92; the template's layer shut down 1.59 / 2.25 / 2.39 / 2.39; the
+    old root's mounts moved 0.22 / 0.27 / 0.58 / 0.58; it and the layer detached and let go
+    of 2.14 / 2.75 / 3.26 / 3.26; the device claimed exclusively 0.01 / 0.03 / 0.15 / 0.15;
+    the file put under it (the host's swap, 0.05 to 0.2 of it) 0.15 / 0.22 / 0.29 / 0.29;
+    the container's file system mounted, one host fdatasync in it, 4.09 / 4.49 / 6.13 /
+    6.13; its root and the mounts onto it 1.81 / 4.38 / 4.67 / 4.67; the standby forked
+    again 0.45 / 0.63 / 0.93 / 0.93; in all 13.46 / 16.91 / 18.28 / 18.28. In the 12
+    containers each restarted once, the guest started the command 25 to 45 ms after the
+    request where OLD's started it 2.5 to 6.0 ms after (`SHARDS_TIMING`'s markers), its
+    go-over 11 to 20 of it.
+  - The restart so (42a2ea62), OLD against NEW, ms p50 (p90, p99 = max):
+
+    | size | `start` OLD | `start` NEW | `diff` OLD | `diff` NEW |
+    |---|---|---|---|---|
+    | 0 | 83.80 (95.18, 96.04) | 128.35 (159.99, 276.45) | 86.54 (93.41, 101.48) | 57.06 (68.41, 76.19) |
+    | 4 MiB | 123.89 (146.02, 158.03) | 160.71 (180.98, 191.49) | 101.39 (119.21, 131.54) | 82.49 (95.15, 96.19) |
+    | 64 MiB | 589.97 (651.85, 682.66) | 516.49 (551.89, 594.91) | 337.46 (425.24, 463.58) | 266.31 (321.88, 322.75) |
+
+    `run` and `commit` the same within their spread at every size (`run` 0 B 32.33 against
+    27.57, 64 MiB 357.11 against 355.45).
+  - The standby born again (diagnosis build, n = 8 containers each restarted once): from
+    its fork to its first step past moving itself into the workload's cgroup, 10.2 to
+    40.2 ms, where the template's standby had moved before its snapshot; its whole start
+    (`Standby::start`, the command exec'd) 15.0 to 44.1. With cgroup2 mounted
+    `favordynmods`, 0.27 to 0.93 and 4.0 to 8.3.
+  - As committed (5b2fd573: shut down, flushes answered, the mapping read at random until
+    the command runs, `favordynmods`), OLD against NEW, ms p50 (p90, p99 = max), n = 20:
+
+    | size | `start` OLD | `start` NEW | `diff` OLD | `diff` NEW | `run` OLD | `run` NEW |
+    |---|---|---|---|---|---|---|
+    | 0 | 61.77 (79.68, 79.89) | 79.33 (90.67, 100.23) | 67.38 (83.09, 85.02) | 45.61 (53.71, 56.63) | 25.14 (30.18, 51.52) | 24.96 (32.36, 32.92) |
+    | 4 MiB | 93.55 (109.32, 111.86) | 96.86 (114.75, 131.15) | 76.02 (91.80, 106.79) | 54.67 (70.65, 73.73) | 50.94 (60.72, 69.59) | 52.85 (67.05, 69.78) |
+    | 64 MiB | 546.43 (584.95, 590.45) | 464.71 (484.72, 497.41) | 314.90 (338.15, 341.62) | 233.50 (255.64, 273.49) | 347.13 (356.06, 358.86) | 349.71 (372.70, 383.55) |
+
+    `commit` the same at every size (0 B 24.63 against 23.66, 64 MiB 129.90 against
+    128.80). Host kiln-a094a12d, Linux 6.19.10-300.fc44, load 4 to 18 as it ran.
+  - Where packing and going over cross (5b2fd573, going over at every size, against
+    de2b1cf5; `ab.py --sizes 0,1048576,2097152,4194304,8388608,16777216,33554432`, n = 20
+    a side, interleaved), `start -a` ms p50 (p90, p99 = max):
+
+    | written | packed (OLD) | gone over (NEW) | NEW less OLD at p50 |
+    |---|---|---|---|
+    | 0 | 52.55 (189.68, 200.23) | 63.14 (81.30, 89.83) | +10.59 |
+    | 1 MiB | 70.37 (92.91, 280.08) | 75.47 (148.04, 272.18) | +5.10 |
+    | 2 MiB | 76.38 (90.93, 261.56) | 90.44 (100.20, 101.46) | +14.06 |
+    | 4 MiB | 95.90 (120.42, 127.77) | 100.92 (116.58, 120.73) | +5.02 |
+    | 8 MiB | 135.68 (331.54, 360.86) | 122.06 (150.17, 175.20) | -13.62 |
+    | 16 MiB | 259.86 (303.49, 492.14) | 189.81 (260.00, 269.90) | -70.05 |
+    | 32 MiB | 396.48 (546.18, 584.65) | 286.21 (443.36, 455.74) | -110.27 |
+
+    Packing is quicker through 4 MiB, going over from 8 MiB on; the lines between 4 and 8
+    MiB meet at 5.08 MiB. What a written file takes of the layer is its bytes and a few
+    blocks of metadata (its extents, its directory), past what an empty layer of the size
+    holds (`layers::held`).
+  - Chosen per restart (894c2c67: packed below 5 MiB held, gone over from there), against
+    de2b1cf5, n = 20 a side, interleaved, ms p50 (p90, p99 = max):
+
+    | size | `start` OLD | `start` NEW | `diff` OLD | `diff` NEW | `run` OLD | `run` NEW | `commit` OLD | `commit` NEW |
+    |---|---|---|---|---|---|---|---|---|
+    | 0 | 53.63 (59.42, 67.19) | 55.66 (63.04, 64.28) | 54.66 (62.31, 62.47) | 55.65 (63.33, 64.74) | 23.04 (30.91, 32.42) | 20.46 (25.94, 30.13) | 24.37 (32.81, 33.42) | 23.60 (31.48, 122.02) |
+    | 4 MiB | 97.37 (118.61, 121.45) | 95.98 (123.12, 126.78) | 79.87 (92.17, 92.23) | 78.85 (94.61, 111.07) | 50.29 (73.03, 75.25) | 52.63 (76.49, 83.84) | 38.09 (43.20, 45.02) | 35.83 (43.14, 45.51) |
+    | 64 MiB | 576.05 (769.50, 899.66) | 482.05 (502.95, 503.19) | 329.95 (490.96, 1,397.01) | 238.30 (259.90, 374.09) | 361.50 (420.18, 675.33) | 362.38 (381.37, 386.50) | 129.19 (144.70, 151.63) | 131.84 (155.76, 158.15) |
+
+    Load 6 to 19 as it ran. At 0 B and 4 MiB both builds pack: `start` within the spread of
+    each other (0 B +2.03 ms at p50, -2.91 at p99); at 64 MiB going over is 16% quicker at
+    p50 and 44% at p99. A rerun at 0 B, n = 40, came as the host's load rose past 25 to 49
+    and is not kept.
+- **Reading.**
+  - A layer's file holds every block its guest ever wrote until its microVM has gone; its
+    bitmaps then say what is free, and giving that back costs the host's punch alone, about
+    a sixth of a millisecond a MiB on Btrfs, after the run's client has heard it ended.
+  - A restart over the kept file costs what letting go of the template's layer, mounting
+    the container's and rooting every process in it cost, about 13 ms of the guest's, and
+    no more as the layer grows; packing and putting back grew with what the layer holds.
+    At 0 B packing an empty layer was quicker by 17.6 ms at p50; at 4 MiB they are alike;
+    at 64 MiB going over is 82 ms quicker. Its first build was slower at every small size
+    for three costs that were not the layer's mount: the template's layer's unmount, whose
+    writes were each a host fdatasync of a file about to be dropped; a fresh standby's
+    move into its cgroup, an RCU grace period; and none of these is the restart's to pay.
+  - The rest of the go-over is the mount of the container's file system (4.1 ms at p50,
+    one host fdatasync of the superblock's write in it, which a journal commit after would
+    not make up for: ext4 wipes a journal whose superblock does not say it needs recovery,
+    fs/ext4/super.c ext4_load_journal),
+    the two root moves (2.3 and 1.8 ms) and the template layer's detach (2.1 ms).
+- **Consequence.** D190's slices 7 and 8 as built: the daemon gives a restart the kept file
+  where its length is the run's layer's and it holds 5 MiB or more (`layers::OVER_FROM`,
+  held to the crossing table by `a_restart_goes_over_from_where_packing_costs_more`; below
+  it the layer is packed and put back as before), the VM readies it and swaps it in place of the
+  template's as the guest asks (`control::LAYER_SWAP`), answering that layer's flushes at
+  once meanwhile, and init shuts the template's layer down, lets go of it, mounts the
+  container's and roots every process there (init `over.rs`); cgroup2 is mounted
+  `favordynmods` where the kernel has it; and the daemon gives back what a kept layer's
+  bitmaps say is free as it keeps it (`layers::give_back`).

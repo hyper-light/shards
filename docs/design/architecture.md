@@ -2675,8 +2675,8 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   256 MiB written under `--memory 64m`, where a run whose layer was a tmpfs in its memory
   was killed 64 MiB into a 100 MiB `dd` (2026-10-05). A stop keeps that file rather than
   packing it (D190 slice 2), its guest's journal written in place as its run ends;
-  `commit` packs it on the host, and `start` and a visit put back what the host packs of
-  it.
+  `commit` packs it on the host, `start` goes on over the file itself (D190 slice 7), and
+  a visit puts back what the host packs of it.
 - **`cp`.** docker/cli's `cp.go` on shards-archive's port of go-archive's copy rules;
   dockerd's half (stat, archive, extract into a directory, `-a`'s owner) runs as init
   built-ins in the microVM, and the archive passes between it and the client through a
@@ -8020,7 +8020,7 @@ the user told).
   few thousandths of a core by its headroom guard), whether WHP's vCPU threads wait there
   as Linux's did.
 
-### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 6 built)
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 8 built)
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -8226,7 +8226,19 @@ the guest keeps their metadata alone.
   `a_stopped_microvms_layer_stays_in_its_file`: a stopped container's `layer.ext4`, its
   journal written in place, holding its file and its whiteout, put back as it starts
   again; a microVM killed after its guest committed a file, its layer kept with its
-  journal to replay, replayed as `diff` visits it, and the file found.
+  journal to replay, replayed as `diff` visits it, and the file found;
+  `a_stopped_microvms_next_run_goes_on_over_its_kept_file` (booted) and daemon.rs's
+  `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file` (restored from its
+  template): each restart over the container's own file, the same file (its inode), what
+  the run before made found, no microVM's own layer left, and 32 MiB written and removed
+  each run given back, and a container whose layer holds little packed and put back
+  (another file); `layers`' `what_a_layer_holds_is_its_blocks_past_an_empty_ones` and
+  `a_restart_goes_over_from_where_packing_costs_more`. shards-ext4's `free_blocks_are_what_the_bitmaps_and_counts_say`
+  (its free runs the groups' own counts, as mke2fs and e2fsck keep them, in `format`'s file
+  system and in scripts/ext4/generate's tree, no block of a file among them) and
+  `a_damaged_block_bitmap_is_refused`; `layers`' `a_kept_layers_freed_blocks_go_back_to_its_disk`;
+  `pmem`'s `a_readied_file_goes_under_a_layers_device_in_place_of_its_own`; `platform`'s
+  `what_is_given_back_reads_as_zeros_and_takes_no_disk`.
 
 - **Read at random until its command runs** (PM M297). A run's first write into its root
   landed in a hole of its layer's file, a clone made for its warm microVM of whose pages its
@@ -8251,14 +8263,89 @@ the guest keeps their metadata alone.
   11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel carries it (since
   kernel-6.18.48-8df0015cca35).
 
+- **A restart goes on over the kept file itself** (slice 7, PM M443). A stopped
+  container's `start` put its files back: the host packed its kept layer, and its warm
+  microVM's guest unpacked the archive into the layer its template mounted, a copy as long
+  as the layer's changes. Now the file goes under the microVM's layer device as it is.
+  The daemon gives the VM the kept file where it is as long as the run's layer
+  (`--storage-opt size`, which its template is made for; its journal replayed first where
+  its microVM was killed), with `RunHead::layer_over`; the VM readies it
+  (`Layer::stage`) before its guest hears of the run and tells the guest to go on over it
+  (`run::kind::OVER`) where it sent the archive. The root, the image under the template's
+  layer, is every process's and holds that layer's file system, so init (`over.rs`):
+  makes a tmpfs every process's root (pivot_root(2), which moves each process of the
+  namespace rooted at the old root, the memory's grower among them), the old root's
+  mounts moved onto it and the old root detached, the template's standby ended (its own
+  mount namespace's copy holds the layer too) and the layer's own mount detached and its
+  descriptors let go of; opens the device exclusively, which a mounted file system's
+  claim refuses (block/bdev.c, bd_prepare_to_claim), so that nothing of the template's
+  layer is mounted under the file; asks the VMM to put the readied file under the device
+  (`control::LAYER_SWAP`), which maps it where the template's was (`Layer::swap_staged`:
+  `mmap(MAP_FIXED)` over the same host range, so that KVM's memslot, which follows the
+  host's mapping, is unchanged; taken from HVF's stage 2 and given back around it, as a
+  save's data ranges are, PM M285), and reads back that it did; then mounts the device's
+  file system, the container's, the image under it, the mounts moved onto that, makes it
+  every process's root, the tmpfs detached, and forks a standby again. A copy of a
+  descriptor of the layer a process forked before held the layer's file system mounted:
+  the grower closes its copies as it starts (`close_layer_fds`). The file stays the
+  container's, where it is, through the run (`LayerFile::in_place`): its stop keeps it in
+  place, the microVM's own layer, the template's clone, goes as the run is registered, and
+  a daemon or microVM killed meanwhile leaves the container its layer as its guest
+  committed it, replayed as it is next read. Before it lets go of the template's layer,
+  init shuts that file system down unwritten (EXT4_IOC_SHUTDOWN, NOLOGFLUSH), and the VMM
+  answers the flushes of a layer whose file is about to be replaced at once: its unmount's
+  writes, each the host's fdatasync, took a restart 21 to 38 ms (PM M443). The new
+  standby moves itself into the workload's cgroup as the template's did before its
+  snapshot, which waited for an RCU grace period, 10 to 40 ms on a 32-vCPU guest, until
+  cgroup2 was mounted `favordynmods` (Linux 6.0; a kernel without it mounts as before),
+  0.3 to 0.9 so. And the file's new mapping reads at random until the command runs, as the
+  one before (M297). The guest's part took 13.5 ms at p50 (18.3 at most, n = 41), its
+  container's file system's mount, with its one host flush, 4.1 of it. Going over always,
+  against packing (n = 20 a side, interleaved, Fedora's Btrfs, a loaded host), `start` of a
+  container that wrote 0 B was 17.6 ms slower at p50 (79.33 against 61.77) and 15% quicker
+  at 64 MiB (464.71 against 546.43): its cost is the go-over's, about the same whatever
+  the layer holds, where packing's grows with it. So each restart chooses from what its
+  layer holds (`layers::held`): its blocks in use, as its groups' descriptors count them
+  with its bitmaps (`Volume::free_blocks`), less what an empty layer of its size holds of
+  metadata (`Made::free_blocks`, a format made once a size in memory, nothing written).
+  Below 5 MiB (`layers::OVER_FROM`) it is packed and put back as before; from there on it
+  goes over. 5 MiB is where the measured restarts cross: at 0, 1, 2 and 4 MiB written
+  packing was 5.0 to 14.1 ms quicker at p50, at 8, 16 and 32 MiB going over 13.6, 70.1 and
+  110.3 ms quicker, the lines between 4 and 8 MiB meeting at 5.08 MiB
+  (`a_restart_goes_over_from_where_packing_costs_more` holds the constant to that
+  table). So chosen, against packing always (894c2c67 against de2b1cf5, n = 20 a side,
+  interleaved), `start` at p50 / p99: 0 B 55.66 / 64.28 against 53.63 / 67.19 ms (both
+  packed: within the spread, p90 63.04 against 59.42), 4 MiB 95.98 / 126.78 against
+  97.37 / 121.45, 64 MiB 482.05 / 503.19 against 576.05 / 899.66; `diff` alike at 0 and
+  4 MiB and 28% quicker at 64 MiB; `run` and `commit` the same (PM M443).
+  Windows restarts by packing as before: its views of a file are not mapped over in place
+  yet (`platform::map_file_shared_at`); nor are visits (`cp`, `diff` and `export` of a
+  stopped container) or joiners' runs (D119), which put their layer back as before. On
+  macOS the swap and the give-back are held by unit tests (`pmem`'s, `platform`'s); its
+  real microVMs have not run it yet.
+- **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
+  discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
+  whatever its guest deleted. As a stopped container's layer is kept, its microVM gone,
+  the daemon reads its block bitmaps (`Volume::free_runs`: each group's whose bitmap was
+  written, each checked against its descriptor's checksum, a `BLOCK_UNINIT` group's never
+  allocated past its own metadata) and deallocates the free blocks its file holds data in
+  (`platform::deallocate`: fallocate(FALLOC_FL_PUNCH_HOLE) on Linux, F_PUNCHHOLE on macOS,
+  FSCTL_SET_ZERO_DATA on a sparse NTFS file), which read as zeros after, a free block's
+  bytes never read. A layer whose journal is still to replay (its microVM killed) gives
+  nothing back until it is kept again: its bitmaps may not say yet what its journal
+  allocated. A container that wrote 64 MiB or 1 GiB and removed it kept a file of 64.35 and
+  1,024.5 MiB on the disk, and now of 0.36 and 0.56 (n = 20 each, alike to the hundredth); the
+  give-back took 11.1 and 160.2 ms at p50 (15.3 and 303.8 at most) on Fedora's Btrfs, as
+  the daemon keeps the layer, after its run's client is told it ended and before a command
+  that reads the layer goes on (PM M443).
+
 **Next** (the slices after these).
-- A restart that goes on over the kept file itself: today its files are put back, packed
-  on the host, into the warm microVM's own layer, which its template mounted as its root's
-  (a copy, as long as the layer's changes are); a template's root mounted where a run can
-  swap the file under it would make a restart's cost the layer's mount alone.
-- Blocks the guest frees go back to the host: pmem takes no discard
-  (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; its
-  microVM gone, the host could punch out what its bitmaps say is free.
+- Restarts over the kept file on Windows (a view mapped over in place: placeholders,
+  MapViewOfFile3's MEM_REPLACE_PLACEHOLDER), and on a Mac's real microVMs, measured; and
+  visits and joiners' runs over it too.
+- Going over's fixed cost below packing's, so that a layer holding under 5 MiB goes over
+  too: the mount of the container's file system and its one host flush, and the root's two
+  moves (PM M443).
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts

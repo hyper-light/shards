@@ -506,6 +506,48 @@ impl Shared {
         self.released.load(Ordering::Acquire)
     }
 
+    /// Maps `file`, as long as its own, where its own was, in its place: the mapping's
+    /// address stays, so that what maps it there (KVM's memslot, which follows the host's
+    /// mapping) need not change, and its own file is let go of. Where the new could not be
+    /// mapped, its own is mapped back. Under its file's lock, as [`flush`](Self::flush) and
+    /// [`release`](Self::release) take it.
+    ///
+    /// # Safety
+    /// Nothing touches the mapping meanwhile: no hypervisor maps it, or its guest uses
+    /// none of it.
+    unsafe fn replace(&self, file: File) -> std::io::Result<()> {
+        let mut held = lock(&self.file);
+        if held.is_none() || self.released() {
+            return Err(std::io::Error::other(RELEASED));
+        }
+        if file.metadata()?.len() != self.len as u64 {
+            return Err(std::io::Error::other(format!(
+                "a file of {} bytes for a mapping of {}",
+                file.metadata()?.len(),
+                self.len
+            )));
+        }
+        // SAFETY: the caller's contract; the mapping this value made, whose length stays.
+        if let Err(e) = unsafe { platform::map_file_shared_at(&file, self.len, self.host) } {
+            if let Some(own) = held.as_ref() {
+                // SAFETY: as above, its own file again.
+                if let Err(back) = unsafe { platform::map_file_shared_at(own, self.len, self.host) } {
+                    self.lost.store(true, Ordering::Release);
+                    return Err(std::io::Error::other(format!(
+                        "{e}; its own not mapped back: {back}"
+                    )));
+                }
+            }
+            return Err(e);
+        }
+        // Read at random until its run's command runs, as its own was ([`Layer::read_ahead`],
+        // PM M297): a mapping made anew reads ahead, and the run's first writes into holes of
+        // the file had its host read 4 MiB around each.
+        platform::reads_at_random(self.host, self.len);
+        *held = Some(file);
+        Ok(())
+    }
+
     /// Its faults read ahead again ([`platform::reads_ahead`]), while it is mapped: under
     /// the lock [`release`](Self::release) unmaps it under, so that no other mapping that
     /// took its place is advised.
@@ -615,6 +657,11 @@ pub struct Layer {
     guest: OnceLock<(u64, Box<dyn Mapper>)>,
     /// Whether its guest was not given back a mapping taken from it ([`lost`](Self::lost)).
     lost: AtomicBool,
+    /// A file its run readied to go under the device in place of its own ([`stage`](Self::stage)),
+    /// until its guest asks for it.
+    staged: Mutex<Option<File>>,
+    /// Whether a readied file went under the device ([`swap_staged`](Self::swap_staged)).
+    swapped: AtomicBool,
 }
 
 /// Why a layer's mapping is not there to use: let go of as its machine stopped.
@@ -668,7 +715,71 @@ impl Layer {
             data,
             guest: OnceLock::new(),
             lost: AtomicBool::new(false),
+            staged: Mutex::new(None),
+            swapped: AtomicBool::new(false),
         })
+    }
+
+    /// Readies `file`, a stopped container's writable layer kept in its own file (D190), to
+    /// go under the device in place of the file it has, the one its template mounted, once
+    /// its guest has let go of that ([`swap_staged`](Self::swap_staged)): as long as the
+    /// device's file system, whose page structures its guest made as it probed the device
+    /// for that length. One readied before is let go of.
+    pub fn stage(&self, file: File) -> Result<(), String> {
+        let len = file.metadata().map_err(|e| format!("its kept layer: {e}"))?.len();
+        if len != self.data.len as u64 {
+            return Err(format!(
+                "a kept layer of {len} bytes for a writable layer of {}",
+                self.data.len
+            ));
+        }
+        if self.data.released() {
+            return Err(RELEASED.into());
+        }
+        *lock(&self.staged) = Some(file);
+        Ok(())
+    }
+
+    /// Puts the file readied for it ([`stage`](Self::stage)) under the device in place of its
+    /// own, as its guest asks (`control::LAYER_SWAP`) once it has let go of the layer's file
+    /// system: its file system's mapping replaced where it was ([`Shared::replace`]), taken
+    /// from the guest meanwhile where the hypervisor's stage 2 holds the pages it maps
+    /// (HVF, PM M193), and given back after; KVM's follows the host's mapping. From here on
+    /// the guest's writes are the readied file's, which a keep, a save and a flush take,
+    /// and its own is let go of. A guest that could not be given the mapping back has lost
+    /// the layer ([`lost`](Self::lost)).
+    ///
+    /// # Safety
+    /// The guest uses none of the file system's mapping until this returns: it mounts
+    /// nothing of the device, and holds nothing of it open, as it says it has let go.
+    pub unsafe fn swap_staged(&self) -> Result<(), String> {
+        let file = lock(&self.staged)
+            .take()
+            .ok_or("no kept layer was readied for it")?;
+        let guest = self
+            .guest
+            .get()
+            .map(|(gpa, mapper)| (gpa + self.head.len() as u64, mapper));
+        if let Some((gpa, mapper)) = &guest {
+            mapper.unmap(*gpa, self.data.len)?;
+        }
+        // SAFETY: the caller's contract, and no hypervisor maps it now.
+        let replaced = unsafe { self.data.replace(file) }.map_err(|e| format!("its kept layer: {e}"));
+        if let Some((gpa, mapper)) = &guest {
+            // SAFETY: the mapping stays for the layer's life, which outlives the VM.
+            if let Err(e) = unsafe { mapper.map(self.data.host(), *gpa, self.data.len) } {
+                self.lost.store(true, Ordering::Release);
+                return Err(e);
+            }
+        }
+        replaced?;
+        self.swapped.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether a readied file went under the device ([`swap_staged`](Self::swap_staged)).
+    pub fn swapped(&self) -> bool {
+        self.swapped.load(Ordering::Acquire)
     }
 
     /// Says where its VM's guest has it, at `gpa` as [`mappings`](Self::mappings) gave
@@ -779,7 +890,15 @@ impl Layer {
     /// them back. Written back and synced to stable storage ([`Shared::flush`]), as
     /// Firecracker's flush msyncs its device's whole file (docs/pmem.md) and QEMU's fsyncs
     /// it. The guest's root overlay passes its fsyncs on to the layer (init `run.rs`).
+    ///
+    /// Answered at once while a file is readied to go under the device in place of its own
+    /// ([`stage`](Self::stage)): its own, the template's layer, goes as its guest lets go of
+    /// it, and nothing written to it outlives the run, where each flush cost a restart 2.2
+    /// to 11.2 ms of the host's fdatasync (PM M443).
     pub fn flush(&self) -> Result<(), String> {
+        if lock(&self.staged).is_some() {
+            return Ok(());
+        }
         self.data.flush().map_err(|e| format!("its layer: {e}"))
     }
 
@@ -1219,7 +1338,8 @@ mod tests {
 
     /// A layer's file is read without readahead until its run's command runs, then with it
     /// (PM M297): its mapping advised random, `rr` among its VmFlags in /proc/self/smaps
-    /// (fs/proc/task_mmu.c, show_smap_vma_flags), and then not.
+    /// (fs/proc/task_mmu.c, show_smap_vma_flags), and then not; so too a file gone under
+    /// it in place of its own (D190, `run::kind::OVER`).
     #[cfg(target_os = "linux")]
     #[test]
     fn a_layer_reads_ahead_once_its_command_runs() {
@@ -1237,6 +1357,15 @@ mod tests {
             flags.split_whitespace().any(|f| f == "rr")
         };
         assert!(random(), "a layer's mapping reads ahead before its command runs");
+        // A file readied for it, gone under the device, read at random as the one before.
+        booted.read_ahead();
+        booted.stage(file(&dir, "kept", 8 * ALIGN)).unwrap();
+        // SAFETY: nothing touches the mapping meanwhile; no hypervisor maps it.
+        unsafe { booted.swap_staged() }.unwrap();
+        assert!(
+            random(),
+            "a kept layer's mapping reads ahead before its command runs"
+        );
         booted.read_ahead();
         assert!(
             !random(),
@@ -1487,6 +1616,64 @@ mod tests {
             // SAFETY: as above.
             assert_eq!(unsafe { *head.add(HEAD_BLOCK + HEAD_BLOCK - 1) }, 0x40);
         }
+    }
+
+    /// A file readied for a layer goes under its device where its own was once its guest
+    /// asks (D190, `run::kind::OVER`): the mapping's address the same, taken from its
+    /// guest and given back around it; what the mapping holds is the readied file's, both
+    /// ways, and its own file is untouched after. One of another length is refused, and
+    /// none readied swaps nothing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_readied_file_goes_under_a_layers_device_in_place_of_its_own() {
+        type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
+        struct Guest(Calls);
+        impl Mapper for Guest {
+            unsafe fn map(&self, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.0).push(("map", gpa, len));
+                Ok(())
+            }
+            fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.0).push(("unmap", gpa, len));
+                Ok(())
+            }
+        }
+        let dir = shards_testdir::TempDir::new("layer-over").unwrap();
+        let len = 8 * ALIGN;
+        let booted = Layer::boot(file(&dir, "template", len)).unwrap();
+        let [(_, _, head_len), (data_gpa, data, data_len)] = booted.mappings(SECTION).unwrap();
+        let calls = Calls::default();
+        booted.placed(SECTION, Box::new(Guest(calls.clone())));
+        // SAFETY: within the file system's mapping, which the layer holds.
+        unsafe { data.write_bytes(0x11, 4096) };
+        // SAFETY: nothing touches the mapping meanwhile.
+        assert!(unsafe { booted.swap_staged() }.is_err());
+        assert!(booted.stage(file(&dir, "short", len - ALIGN)).is_err());
+        let kept = file(&dir, "kept", len);
+        platform::write_all_at(&kept, &[0x22; 4096], 4096).unwrap();
+        booted.stage(kept).unwrap();
+        assert!(!booted.swapped() && lock(&calls).is_empty());
+        // SAFETY: as above.
+        unsafe { booted.swap_staged() }.unwrap();
+        assert!(booted.swapped());
+        assert_eq!(data_gpa, SECTION + head_len as u64);
+        assert_eq!(
+            *lock(&calls),
+            [("unmap", data_gpa, data_len), ("map", data_gpa, data_len)]
+        );
+        assert_eq!(booted.mappings(SECTION).unwrap()[1].1, data);
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!((*data, *data.add(4096)), (0, 0x22));
+            data.add(8192).write_bytes(0x33, 4096);
+        }
+        booted.flush().unwrap();
+        let mut byte = [0u8; 1];
+        platform::read_exact_at(&std::fs::File::open(dir.join("kept")).unwrap(), &mut byte, 8192).unwrap();
+        assert_eq!(byte, [0x33]);
+        let template = std::fs::read(dir.join("template")).unwrap();
+        assert!(template[..4096].iter().all(|&b| b == 0x11));
+        assert!(template[4096..3 * 4096].iter().all(|&b| b == 0));
     }
 
     /// A layer's save asks where its file holds data with no mapping of the file left

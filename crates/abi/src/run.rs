@@ -146,6 +146,12 @@ pub mod kind {
     /// or thread past its limit (its `pids.events` counts a `max`, cgroup-v2.rst), with what
     /// its cgroup was allowed and held: as [`OOM`] says memory's (D193).
     pub const PIDS: u8 = 41;
+    /// Host to guest, in a [`LAYER`]'s place before [`SPEC`], empty: a stopped container's
+    /// writable layer kept in its file (D190, [`KEEP`]) is the microVM's layer device's
+    /// from here on, its host having it ready (`control::LAYER_SWAP`): the guest lets go of
+    /// the layer its template mounted, has its host put the container's file under the
+    /// device, mounts it and makes its root the image under it, as the container left it.
+    pub const OVER: u8 = 42;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its

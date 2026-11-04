@@ -1802,7 +1802,9 @@ pub const RUN_DETACHED: u8 = 8;
 /// (`kind::UNPUBLISH`).
 pub const RUN_PUBLISHED: u8 = 16;
 /// A `kind::RUN` flag: a stopped container's writable layer comes with the run, read
-/// from a descriptor after the log's, to put back before the command runs (D37).
+/// from a descriptor after the log's, to put back before the command runs (D37); or, where
+/// its head says so ([`RunHead::layer_over`]), the file the layer was kept in (D190), to go
+/// under the microVM's layer device.
 pub const RUN_LAYER_IN: u8 = 32;
 /// A `kind::RUN` flag: the container stays once it stops, and its writable layer goes to
 /// a descriptor after those, told by `kind::LAYER_SAVED` once whole.
@@ -1817,8 +1819,9 @@ pub const RUN_SWAP: u8 = 128;
 /// (each segment's most bytes, how many segments it keeps), its log's first segment, the
 /// most memory its guest may plug in bytes (D148), its log's queue (D162): none where
 /// the run's output is kept as it comes, else the most bytes queued for its log; its I/O
-/// limits (D178); the CPUs its microVM is held to (D191); and whether a group's CPU
-/// budget holds it too (D183).
+/// limits (D178); the CPUs its microVM is held to (D191); whether a group's CPU budget
+/// holds it too (D183); and whether its stopped container's layer comes as the file it was
+/// kept in (D190).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunHead {
     pub flags: u8,
@@ -1837,6 +1840,10 @@ pub struct RunHead {
     /// Its microVM is held by its group's CPU budget too (D183, slice 3): the budget's
     /// file comes after its swap among the request's files.
     pub group: bool,
+    /// Its container's writable layer from before ([`RUN_LAYER_IN`]) comes as the file it
+    /// was kept in (D190), which goes under its microVM's layer device, its root then over
+    /// it (`run::kind::OVER`), rather than as an archive to put back.
+    pub layer_over: bool,
 }
 
 /// The big-endian u64 `rest` begins with, `rest` then past it.
@@ -1848,9 +1855,9 @@ fn take_u64(rest: &mut &[u8]) -> Option<u64> {
 
 impl RunHead {
     /// Its length: the flags, four big-endian u64s, the queue's mode (0 blocking, 1
-    /// non-blocking), the queue's, the I/O limits' two, the CPUs held to, then whether a
-    /// group's budget holds it (0 or 1).
-    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1;
+    /// non-blocking), the queue's, the I/O limits' two, the CPUs held to, whether a
+    /// group's budget holds it (0 or 1), then whether its layer comes as its file (0 or 1).
+    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1 + 1;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);
@@ -1863,6 +1870,7 @@ impl RunHead {
         out.extend(self.io_requests.to_be_bytes());
         out.extend(self.cpus.to_be_bytes());
         out.push(u8::from(self.group));
+        out.push(u8::from(self.layer_over));
     }
 
     /// The head `payload` begins with, and what follows it; why not, where it holds none.
@@ -1889,6 +1897,12 @@ impl RunHead {
             1 => true,
             g => return Err(format!("a request whose group's mark is {g}")),
         };
+        let (&over, rest) = rest.split_first().ok_or(SHORT)?;
+        let layer_over = match over {
+            0 => false,
+            1 => true,
+            o => return Err(format!("a request whose layer's mark is {o}")),
+        };
         let head = RunHead {
             flags,
             log_size,
@@ -1900,6 +1914,7 @@ impl RunHead {
             io_requests,
             cpus,
             group,
+            layer_over,
         };
         Ok((head, rest))
     }
@@ -2243,6 +2258,7 @@ mod tests {
                 io_requests: 100,
                 cpus: 2,
                 group: queue.is_some(),
+                layer_over: queue.is_none(),
             };
             let mut bytes = Vec::new();
             head.encode_into(&mut bytes);
@@ -2260,10 +2276,17 @@ mod tests {
         );
         let mut bytes = Vec::new();
         RunHead::default().encode_into(&mut bytes);
-        bytes[RunHead::LEN - 1] = 2;
+        bytes[RunHead::LEN - 2] = 2;
         assert_eq!(
             RunHead::decode(&bytes),
             Err("a request whose group's mark is 2".to_string())
+        );
+        let mut bytes = Vec::new();
+        RunHead::default().encode_into(&mut bytes);
+        bytes[RunHead::LEN - 1] = 2;
+        assert_eq!(
+            RunHead::decode(&bytes),
+            Err("a request whose layer's mark is 2".to_string())
         );
     }
 

@@ -2699,7 +2699,8 @@ fn addrs() -> i32 {
     0
 }
 
-/// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
+/// File operations, in order: `mkdir:P`, `write:P=DATA`, `fill:BYTES:P`, `link:OLD:NEW`,
+/// `symlink:T:P`,
 /// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `chown:UID:GID:P` (not
 /// followed), `mknod:b|c:MAJOR:MINOR:P`, `open:r|w:P`, `dev:P`, which prints a device
 /// node's type, numbers and mode, `ino:P`, which prints P's device and inode numbers (not
@@ -2728,6 +2729,21 @@ fn fs(ops: &[String]) -> i32 {
                 std::os::unix::fs::symlink(t, p)
             }
             "rm" => std::fs::remove_file(rest),
+            // BYTES:P, a file of that many bytes, none of them zeros, written a MiB at a time.
+            "fill" => {
+                let (n, p) = rest.split_once(':').unwrap_or((rest, ""));
+                n.parse::<usize>().map_err(io::Error::other).and_then(|n| {
+                    let mut f = std::fs::File::create(p)?;
+                    let chunk = vec![0x5Au8; 1 << 20];
+                    let mut left = n;
+                    while left > 0 {
+                        let k = left.min(chunk.len());
+                        f.write_all(chunk.get(..k).unwrap_or_default())?;
+                        left -= k;
+                    }
+                    Ok(())
+                })
+            }
             "rename" => {
                 let (a, b) = rest.split_once(':').unwrap_or((rest, ""));
                 std::fs::rename(a, b)

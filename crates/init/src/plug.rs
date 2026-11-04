@@ -468,6 +468,9 @@ impl Plug {
             )));
         }
         if pid == 0 {
+            // Nothing of the run's writable layer held past what it needs: a stopped
+            // container's layer takes the template's place (D190, over.rs).
+            crate::over::close_layer_fds();
             grow(*self, &events, &notes);
         }
         let _ = GROWER.set(pid);

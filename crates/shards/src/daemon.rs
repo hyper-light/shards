@@ -712,6 +712,9 @@ struct Keep<'a> {
     restarted: bool,
     /// Its VM saves its writable layer as it stops (`RUN_LAYER_OUT`).
     layer_pending: bool,
+    /// Where its container's layer was kept, which goes under its microVM's layer device as
+    /// it starts (D190): its VM's layer from then on, which stays where it is.
+    layer_over: Option<PathBuf>,
     /// How many segments its log keeps (D161): its own, else the daemon's.
     log_files: u64,
     /// Its log's rotated segments are compressed (D162).
@@ -3615,8 +3618,23 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         };
-        // What it changed before, to put back (D37); a resumed one's is in its memory.
-        let layer_in = match again.as_ref().filter(|_| resuming.is_none()) {
+        // What it changed before (D37); a resumed one's is in its memory. Its layer kept in
+        // its file goes under its microVM's layer device as it is, where the microVM's is of
+        // its length (D190); else it is put back.
+        let over = match again.as_ref().filter(|_| resuming.is_none() && !joining) {
+            Some(_) => match self.layer_over(&id, &run) {
+                Ok(over) => over,
+                Err(e) => {
+                    fails(&format!(
+                        "{}: its writable layer: {e}",
+                        id.get(..12).unwrap_or(&id)
+                    ));
+                    return None;
+                }
+            },
+            None => None,
+        };
+        let layer_in = match again.as_ref().filter(|_| resuming.is_none() && over.is_none()) {
             Some(_) => match self.layer_in(threads, &id, joining) {
                 Ok(file) => file,
                 Err(e) => {
@@ -3629,7 +3647,7 @@ impl<D: Disk> Daemon<D> {
             },
             None => None,
         };
-        if let Some(file) = &layer_in {
+        if let Some(file) = layer_in.as_ref().or(over.as_ref().map(|(file, _)| file)) {
             flags |= shards_ipc::RUN_LAYER_IN;
             fds.push(file.as_fd());
         }
@@ -3741,6 +3759,8 @@ impl<D: Disk> Daemon<D> {
             )),
             // And its group's budget (D183).
             group: group_cpu.is_some(),
+            // Its layer as its file (D190).
+            layer_over: over.is_some(),
         }
         .encode_into(&mut payload);
         // A resumed run's command runs already: its request brings its save's tokens instead,
@@ -3770,6 +3790,7 @@ impl<D: Disk> Daemon<D> {
                 named: again.clone().filter(|_| run.detach && !run.silent),
                 restarted: restarting,
                 layer_pending: layer_out.is_some(),
+                layer_over: over.as_ref().map(|(_, at)| at.clone()),
                 log_files: kept.map_or(DEFAULT_LOGS.files, |k| k.files),
                 log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
@@ -5049,6 +5070,7 @@ impl<D: Disk> Daemon<D> {
             named,
             restarted,
             layer_pending,
+            layer_over,
             log_files,
             log_compress,
             visit,
@@ -5098,7 +5120,13 @@ impl<D: Disk> Daemon<D> {
         });
         // Its writable layer's file, for a container that stays; another's goes now, its VM
         // holding it.
-        let layer = if layer_pending { ready.layer } else { None };
+        // A layer that went under its device in place of the VM's own (D190) is the
+        // container's file, where it stays: the VM's own goes now, the VM holding it.
+        let layer = match (layer_pending, layer_over) {
+            (true, Some(at)) => Some(layers::LayerFile::in_place(at)),
+            (true, None) => ready.layer,
+            (false, _) => None,
+        };
         // A joiner's provider (D119), which follows its microVM on for it.
         let provider = ready.joined.as_deref().and_then(|p| self.inbox_of(p));
         if let Some(p) = &provider {
@@ -5471,6 +5499,41 @@ impl<D: Disk> Daemon<D> {
         Ok(Some(File::from(OwnedFd::from(reader))))
     }
 
+    /// Container `id`'s writable layer kept in its file (D190), to go under its next run's
+    /// microVM's layer device as it is, with where it is kept: where the run's layer is of the
+    /// file's length (`--storage-opt size`, which its template is made for), and its host
+    /// remaps a file under a mapping in place (not Windows yet: `platform::map_file_shared_at`).
+    /// Its journal replayed first where its microVM was killed ([`layers::open_kept`]). None
+    /// where it has none, or where it is to be put back instead ([`layer_in`](Self::layer_in)).
+    fn layer_over(&self, id: &str, run: &Run) -> Result<Option<(File, PathBuf)>, String> {
+        if !cfg!(unix) {
+            return Ok(None);
+        }
+        let at = lock(&self.containers).dir(id).join(layers::KEPT);
+        let Ok(meta) = std::fs::metadata(&at) else {
+            return Ok(None);
+        };
+        let holds = crate::setup::storage_size(run)?.unwrap_or(crate::run::LAYER_HOLDS);
+        if meta.len() != layers::size(holds)? {
+            return Ok(None);
+        }
+        let kept = layers::open_kept(&at)?;
+        // One that holds little is packed and put back: quicker, below what it holds at
+        // [`layers::OVER_FROM`] (PM M443).
+        match layers::held(&kept, meta.len()) {
+            Ok(Some(held)) if held < layers::OVER_FROM => return Ok(None),
+            Ok(_) => {}
+            Err(e) => log(format!("container {id}: what its writable layer holds: {e}")),
+        }
+        drop(kept);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&at)
+            .map_err(|e| format!("{}: {e}", at.display()))?;
+        Ok(Some((file, at)))
+    }
+
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
     /// else what came of it goes, and the layer it had before stays.
     /// What container `id`'s writable layer uses as its last run left it, where its VM said
@@ -5515,11 +5578,26 @@ impl<D: Disk> Daemon<D> {
         if let Some(layer) = inbox.layer.take()
             && inbox.container.is_dir()
         {
+            let at = inbox.container.join(layers::KEPT);
             let kept = layer
-                .keep_at(&inbox.container.join(layers::KEPT))
+                .keep_at(&at)
                 .and_then(|()| remove_if_there(&inbox.container.join(LAYER)));
-            if let Err(e) = kept {
-                log(format!("container {id}: keeping its writable layer: {e}"));
+            match kept {
+                // What its guest freed goes back to the host's disk, its microVM gone.
+                Ok(()) => {
+                    let began = Instant::now();
+                    match layers::give_back(&at) {
+                        Ok(Some(given)) if given > 0 => log(format!(
+                            "container {id}: gave back {given} bytes its writable layer's guest freed, in {} us",
+                            began.elapsed().as_micros()
+                        )),
+                        Ok(_) => {}
+                        Err(e) => log(format!(
+                            "container {id}: giving back what its writable layer's guest freed: {e}"
+                        )),
+                    }
+                }
+                Err(e) => log(format!("container {id}: keeping its writable layer: {e}")),
             }
         }
         if let Err(e) = remove_if_there(&inbox.container.join(LAYER_NEW)) {
@@ -9222,6 +9300,7 @@ mod tests {
                         named: None,
                         restarted: false,
                         layer_pending: false,
+                        layer_over: None,
                         log_files: DEFAULT_LOGS.files,
                         log_compress: false,
                         visit: false,
@@ -9535,6 +9614,7 @@ mod tests {
                             named: None,
                             restarted: false,
                             layer_pending: false,
+                            layer_over: None,
                             log_files: DEFAULT_LOGS.files,
                             log_compress: false,
                             visit: false,
@@ -11649,6 +11729,7 @@ mod tests {
                 named: None,
                 restarted: false,
                 layer_pending: false,
+                layer_over: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -11698,6 +11779,7 @@ mod tests {
                 named: None,
                 restarted: false,
                 layer_pending: false,
+                layer_over: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -12250,6 +12332,7 @@ mod tests {
                     named: None,
                     restarted: false,
                     layer_pending: false,
+                    layer_over: None,
                     log_files: DEFAULT_LOGS.files,
                     log_compress: false,
                     visit: false,

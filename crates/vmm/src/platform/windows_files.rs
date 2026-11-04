@@ -736,6 +736,12 @@ pub fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
     control(file, FSCTL_SET_ZERO_DATA, &zero)
 }
 
+/// Gives back the file system's clusters under `len` bytes of `file` from `offset`, which
+/// read as zeros after (unix.rs `deallocate`): [`punch_hole`], the file made sparse.
+pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    punch_hole(file, offset, len)
+}
+
 /// Makes `file` sparse (FSCTL_SET_SPARSE), so that what it holds past what is written takes
 /// none of its disk, as a Unix file's holes take no blocks: NTFS takes every cluster up to a
 /// file's end as it is extended unless the file is sparse (PM M349: a file set to 10 GiB

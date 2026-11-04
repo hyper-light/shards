@@ -201,7 +201,7 @@ pub fn main(device: &str, template: bool) -> ! {
     // the relay finishes the connection while the workload runs.
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
-        let spec = receive(&conn)?;
+        let (spec, standby) = receive(&conn, standby)?;
         // What processes the run's members start and end (D123), listened to before any
         // starts; none of a visit to a stopped container's files, which runs nothing.
         let procs = (spec.builtin != run::builtin::HOLD)
@@ -1009,13 +1009,28 @@ pub fn workload_headroom() -> u64 {
 /// shared, so that what init mounts later reaches the workload's mount namespace.
 fn cgroups() -> Result<(), Failure> {
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
-    mount(
+    // favordynmods (Linux 6.0, Documentation/admin-guide/cgroup-v2.rst): a process moving
+    // into a cgroup takes the hierarchy's threadgroup lock for writing, which waits for an
+    // RCU grace period unless the lock is held in its slow mode (kernel/cgroup/cgroup.c,
+    // cgroup_attach_lock; kernel/rcu/sync.c), as favordynmods holds it; there each fork and
+    // exit pays a full barrier more (kernel/locking/percpu-rwsem.c, __percpu_down_read_trylock).
+    // A standby born after the snapshot, as one going on over a stopped container's layer
+    // is (over.rs), moved itself into the workload's cgroup in 10 to 40 ms on a 32-vCPU
+    // guest, and in 0.3 to 0.9 favored (PM M443), as an exec's standby moves itself into
+    // its workload's. A kernel without it refuses the option, and the hierarchy is mounted
+    // without it.
+    let flags = nosuid | noexec | nodev;
+    if mount(
         "cgroup2",
         "/sys/fs/cgroup",
         "cgroup2",
-        nosuid | noexec | nodev,
-        "nsdelegate",
-    )?;
+        flags,
+        "nsdelegate,favordynmods",
+    )
+    .is_err()
+    {
+        mount("cgroup2", "/sys/fs/cgroup", "cgroup2", flags, "nsdelegate")?;
+    }
     // One at a time: a controller the kernel lacks stays off, and a limit of it then
     // fails where it is asked for. The root's, and the run's below it (D148).
     let enable = |dir: &str| {
@@ -2034,18 +2049,33 @@ fn shutdown_and_wait(conn: &File) -> io::Result<()> {
 }
 
 /// The workload the host sends; first, if it sends one, the container's writable layer
-/// from before, put over the root (layer.rs).
-fn receive(conn: &File) -> Result<Spec, Failure> {
+/// from before, put over the root (layer.rs), or kept in its file and gone on over in the
+/// template's layer's place (over.rs, D190), `standby` born again over it: the standby to
+/// start the workload.
+fn receive(conn: &File, standby: Standby) -> Result<(Spec, Standby), Failure> {
     let mut r = conn;
     let mut h = [0u8; run::HEADER];
     r.read_exact(&mut h)
         .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    if let Some((kind::LAYER, first)) = run::parse_header(h) {
-        crate::layer::apply(conn, first)
-            .map_err(|e| setup_failed(format!("putting back the container's files: {e}")))?;
-        r.read_exact(&mut h)
-            .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    }
+    let standby = match run::parse_header(h) {
+        Some((kind::LAYER, first)) => {
+            crate::layer::apply(conn, first)
+                .map_err(|e| setup_failed(format!("putting back the container's files: {e}")))?;
+            r.read_exact(&mut h)
+                .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
+            standby
+        }
+        Some((kind::OVER, 0)) => {
+            // Its own mount namespace's copy of the root holds the template's layer too.
+            standby.end();
+            crate::over::go_over()
+                .map_err(|e| setup_failed(format!("going on over the container's layer: {e}")))?;
+            r.read_exact(&mut h)
+                .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
+            Standby::fork(Born::Own)?
+        }
+        _ => standby,
+    };
     let len = match run::parse_header(h) {
         Some((kind::SPEC, len)) => len,
         _ => return Err(setup_failed("the host sent no workload")),
@@ -2053,7 +2083,8 @@ fn receive(conn: &File) -> Result<Spec, Failure> {
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload)
         .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    Spec::decode(&payload).ok_or_else(|| setup_failed("malformed workload"))
+    let spec = Spec::decode(&payload).ok_or_else(|| setup_failed("malformed workload"))?;
+    Ok((spec, standby))
 }
 
 fn pipe() -> Result<(OwnedFd, OwnedFd), Failure> {
@@ -2283,6 +2314,18 @@ impl Standby {
             std::fs::read("/etc/group").ok(),
         );
         Standby::forked(born, users)
+    }
+
+    /// Ends it, killed with its reaper and waited for: nothing of it, its mount namespace
+    /// included, is left once this returns.
+    fn end(self) {
+        for pid in [Some(self.pid), self.reaper].into_iter().flatten() {
+            // SAFETY: kill(2) and waitpid(2) of init's own child, not yet waited for.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+        }
     }
 
     /// Its place taken by a standby born as `born`, with the user database it read: it

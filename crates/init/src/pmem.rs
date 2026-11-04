@@ -11,12 +11,18 @@
 
 use std::ffi::CString;
 use std::io;
-use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::OnceLock;
 
 /// The run's writable layer as it was mounted (D190): its root, opened, for its checkpoint.
+/// One descriptor for the microVM's life, whose number stays as a stopped container's
+/// layer takes the template's place (over.rs).
 static LAYER: OnceLock<OwnedFd> = OnceLock::new();
+
+/// The layer's block device's number (D190), for a stopped container's layer mounted on it
+/// in the template's place (over.rs).
+static DEVICE: OnceLock<libc::dev_t> = OnceLock::new();
 
 /// EXT4_IOC_CHECKPOINT, `_IOW('f', 43, __u32)` (include/uapi/linux/ext4.h, Linux 5.13), as
 /// the generic ioctl numbering x86_64 and arm64 share makes it: no libc of the guest's
@@ -80,6 +86,17 @@ pub fn mount_layer(target: &str) -> Result<bool, String> {
     let disk = found?;
     let c = |s: &str| CString::new(s).map_err(|_| format!("{s:?}: a NUL in it"));
     let (device, target_c) = (c(&format!("/dev/{disk}"))?, c(target)?);
+    if let Ok(meta) = std::fs::metadata(format!("/dev/{disk}")) {
+        let _ = DEVICE.set(std::os::unix::fs::MetadataExt::rdev(&meta) as libc::dev_t);
+    }
+    mount_ext4(&device, &target_c)?;
+    let root = std::fs::File::open(target).map_err(|e| format!("{target}: {e}"))?;
+    let _ = LAYER.set(root.into());
+    Ok(true)
+}
+
+/// Mounts the writable layer's ext4 file system on `device` at `target`, with DAX (D190).
+pub fn mount_ext4(device: &std::ffi::CStr, target: &std::ffi::CStr) -> Result<(), String> {
     // noinit_itable: its host made every inode table zeros as it made the file system
     // (shards-ext4, EXT4_BG_INODE_ZEROED), which nothing need write again.
     // no_prefetch_block_bitmaps: ext4lazyinit reads every group's block bitmap and builds
@@ -92,7 +109,7 @@ pub fn mount_layer(target: &str) -> Result<bool, String> {
     let mounted = unsafe {
         libc::mount(
             device.as_ptr(),
-            target_c.as_ptr(),
+            target.as_ptr(),
             c"ext4".as_ptr(),
             0,
             c"dax=always,noinit_itable,no_prefetch_block_bitmaps"
@@ -102,13 +119,23 @@ pub fn mount_layer(target: &str) -> Result<bool, String> {
     };
     if mounted != 0 {
         return Err(format!(
-            "mounting /dev/{disk} on {target}: {}",
+            "mounting {} on {}: {}",
+            device.to_string_lossy(),
+            target.to_string_lossy(),
             io::Error::last_os_error()
         ));
     }
-    let root = std::fs::File::open(target).map_err(|e| format!("{target}: {e}"))?;
-    let _ = LAYER.set(root.into());
-    Ok(true)
+    Ok(())
+}
+
+/// The descriptor of the writable layer's root, where it has one.
+pub fn layer_fd() -> Option<std::os::fd::RawFd> {
+    LAYER.get().map(AsRawFd::as_raw_fd)
+}
+
+/// The writable layer's block device's number, where it has one.
+pub fn layer_device() -> Option<libc::dev_t> {
+    DEVICE.get().copied()
 }
 
 /// Writes `bytes` as file `name` at the writable layer's root, beside its overlay's
