@@ -387,6 +387,9 @@ const STATUSES: &[(&str, u16)] = &[
     ("No such ", 404),
     ("Could not find the file", 404),
     ("no network is named", 404),
+    // An image here without a platform asked for (D179; daemon/containerd/image.go,
+    // errPlatformNotFound: NotFound).
+    ("does not provide the specified platform", 404),
     // A reference a registry has not, or will not show (daemon/containerd/image_pull.go:
     // containerd's NotFound kept, and "pull access denied for" made one).
     (": not found", 404),
@@ -765,14 +768,14 @@ impl<D: Disk> Daemon<D> {
                 self.engine_image_tag(threads, &name.join("/"), call)
             }
             ("GET", ["images", name @ .., "history"]) if !name.is_empty() => {
-                self.engine_image_history(threads, &name.join("/"), call)
+                self.engine_image_history(&name.join("/"), call)
             }
             ("DELETE", ["images", name @ ..]) if !name.is_empty() => {
                 self.engine_image_remove(threads, &name.join("/"), call)
             }
             ("GET", ["system", "df"]) => self.engine_df(call),
             ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
-                self.engine_image_inspect(&name.join("/"))
+                self.engine_image_inspect(&name.join("/"), call)
             }
             _ => Answer::error(
                 404,

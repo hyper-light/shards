@@ -263,9 +263,30 @@ fn record_name(given: &str) -> Option<String> {
     }
 }
 
+/// The image `named` names (asked for as `given`) as its document describes it: as its
+/// record names it, or, where `platform` is asked, as that platform's microVM of it (D179):
+/// its config, size and layers that platform's, and its descriptor that platform's
+/// manifest, labelled with it; its ID the image's.
+fn inspected_image(
+    store: &shards_image::store::Store,
+    named: &shards_image::store::Named,
+    given: &str,
+    platform: Option<&shards_image::platform::Target>,
+) -> Result<Image, String> {
+    let Some(target) = platform else {
+        return store.image(named).map_err(|e| e.to_string());
+    };
+    let manifest = super::images::platform_manifest(store, named, given, target)?;
+    let mut image = store.image_as(named, &manifest).map_err(|e| e.to_string())?;
+    image.target = manifest;
+    image.targets.clear();
+    Ok(image)
+}
+
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards image inspect IMAGE...` (docker/cli inspect.Inspect): the documents of the
-    /// images found, as one array, then what could not be found.
+    /// images found, as one array, then what could not be found; each of the platform
+    /// `--platform` names, where it names one (D179).
     pub(super) fn image_inspect(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
@@ -286,15 +307,19 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 return 1;
             }
         };
+        let platform = match super::images::asked_platform(parsed.string("platform")) {
+            Ok(p) => p,
+            Err(e) => {
+                reply.err(&format!("shards: {e}"));
+                return 1;
+            }
+        };
         let (mut documents, mut errors) = (Vec::new(), Vec::new());
         for given in &parsed.args {
             // Only what is asked for is read.
             let read = super::images::resolve(&images, given).and_then(|named| {
-                store
-                    .as_ref()
-                    .ok_or_else(|| super::images::not_found(given))?
-                    .image(named)
-                    .map_err(|e| e.to_string())
+                let store = store.as_ref().ok_or_else(|| super::images::not_found(given))?;
+                inspected_image(store, named, given, platform.as_ref())
             });
             match read.and_then(|image| document(&image, record_name(given).as_deref())) {
                 Ok(d) => documents.push(super::inspect_doc::image_value(&d)),
@@ -307,10 +332,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards save IMAGE...` (moby ImageExport): every image found first, as dockerd
     /// finds them all before it streams; then the archive, written to what the client
     /// sent (its stdout, or its `-o` file), under a lease, so that no collection takes a
-    /// blob meanwhile.
+    /// blob meanwhile. With `--platform`, of each image the microVMs of those platforms
+    /// alone (D179), each of which must be here.
     pub(super) fn save(
         &self,
         args: &[String],
+        platforms: &[String],
         asker: &super::commands::Asker,
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
@@ -319,6 +346,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             reply.err(said);
             1
         };
+        let mut targets = Vec::new();
+        for given in platforms {
+            match super::images::asked_platform(given) {
+                Ok(Some(t)) if !targets.contains(&t) => targets.push(t),
+                Ok(_) => {}
+                Err(e) => return refuse(&format!("shards: {e}")),
+            }
+        }
         let Some(out) = asker.files.first() else {
             return refuse("shards: save: the client sent nowhere to write");
         };
@@ -389,26 +424,59 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             };
             asked.push((image, name));
         }
-        // Each image asked for, read once, however often it was asked for.
-        let mut read: std::collections::BTreeMap<
-            &shards_image::reference::Digest,
-            shards_image::store::Image,
-        > = std::collections::BTreeMap::new();
-        for (named, _) in &asked {
-            if !read.contains_key(&named.id) {
-                match store.image(named) {
-                    Ok(image) => {
-                        read.insert(&named.id, image);
-                    }
-                    Err(e) => return refuse(&format!("shards: {e}")),
+        // Each image asked for, read once, however often it was asked for: as its record
+        // names it, or as the best for this host of the platforms asked, with their
+        // manifests, each of which must be here.
+        type Read = (shards_image::store::Image, Vec<shards_image::oci::Descriptor>);
+        let mut read: std::collections::BTreeMap<&shards_image::reference::Digest, Read> =
+            std::collections::BTreeMap::new();
+        for (named, name) in &asked {
+            if read.contains_key(&named.id) {
+                continue;
+            }
+            let shown = name
+                .as_deref()
+                .and_then(|n| shards_image::reference::Reference::parse_normalized(n).ok())
+                .map_or_else(|| named.id.to_string(), |r| r.familiar());
+            let manifests = targets
+                .iter()
+                .map(|t| super::images::platform_manifest(&store, named, &shown, t))
+                .collect::<Result<Vec<_>, _>>();
+            let manifests = match manifests {
+                Ok(m) => m,
+                Err(e) => return refuse(&format!("shards: {e}")),
+            };
+            let as_read = match &manifests[..] {
+                [] => store.image(named),
+                _ => {
+                    let chosen = shards_image::oci::Index {
+                        schema_version: 2,
+                        media_type: None,
+                        manifests: manifests.clone(),
+                    };
+                    let best = shards_image::platform::select(&chosen, &shards_image::platform::pullable())
+                        .or(manifests.first())
+                        .cloned()
+                        .unwrap_or_else(|| named.manifest.clone());
+                    store.image_as(named, &best)
                 }
+            };
+            match as_read {
+                Ok(image) => {
+                    read.insert(&named.id, (image, manifests));
+                }
+                Err(e) => return refuse(&format!("shards: {e}")),
             }
         }
         let asked: Vec<shards_image::save::Asked<'_>> = asked
             .into_iter()
             .filter_map(|(named, name)| {
                 read.get(&named.id)
-                    .map(|image| shards_image::save::Asked { image, name })
+                    .map(|(image, manifests)| shards_image::save::Asked {
+                        image,
+                        name,
+                        manifests: manifests.clone(),
+                    })
             })
             .collect();
         let written = out.try_clone().map_err(|e| e.to_string()).and_then(|fd| {
@@ -418,7 +486,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         match written {
             Ok(()) => {
                 // moby daemon/containerd/image_exporter.go: each image's digest, named so.
-                for image in read.values() {
+                for (image, _) in read.values() {
                     self.image_event(&image.target.digest, &image.target.digest, "save");
                 }
                 0
@@ -950,13 +1018,22 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// Image `given`'s InspectResponse, or why not.
     pub(super) fn image_doc(&self, given: &str) -> Result<shards_template::Value, Missing> {
+        self.image_doc_of(given, None)
+    }
+
+    /// Image `given`'s InspectResponse, of `platform` where one is asked (D179), or why not.
+    pub(super) fn image_doc_of(
+        &self,
+        given: &str,
+        platform: Option<&shards_image::platform::Target>,
+    ) -> Result<shards_template::Value, Missing> {
         let store = self
             .store()
             .map_err(Missing::Not)?
             .ok_or_else(|| Missing::Not(super::images::not_found(given)))?;
         let images = store.named().map_err(|e| Missing::Not(e.to_string()))?;
         let named = super::images::resolve(&images, given).map_err(Missing::Not)?;
-        let image = store.image(named).map_err(|e| Missing::Not(e.to_string()))?;
+        let image = inspected_image(&store, named, given, platform).map_err(Missing::Not)?;
         let doc = document(&image, record_name(given).as_deref()).map_err(Missing::Failed)?;
         Ok(super::inspect_doc::image_value(&doc))
     }

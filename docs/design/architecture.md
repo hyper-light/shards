@@ -8034,7 +8034,7 @@ the guest keeps their metadata alone.
   M277): a layer's file, as a swap file and a template's memory, takes more of a Mac's disk
   than it was written.
 
-### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
+### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built; one platform wherever a command names it)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
@@ -8244,6 +8244,68 @@ and `a_builds_platform_defaults_to_the_default_platforms` (an index of two platf
 default's stored and built, shards' variable before Docker's, a named platform over both).
 Mutation-checked: pull's default not taken, Docker's variable read first, build's default
 not taken, build's default kept with a platform named.
+
+**One platform's microVM of an image, wherever a command names it (2026-11-03).** The
+microVM need: an image here keeps each platform pulled (part 2), and each platform is a
+microVM of its own, this host's run natively and another CPU's under its emulator. Someone
+who builds on an arm64 Mac for amd64 hosts keeps both, runs the amd64 one emulated to test
+it, and then has to look at that one (its config is what its microVM boots with, its layers
+what its disk is made of), carry it alone to the host that runs it natively, publish it
+alone, or free the disk the emulated one takes once done: its root filesystem, its layers,
+the templates of its microVMs. Until now only a pull, a run, a create and an import took a
+platform; every other command saw the platform the image's name names, this host's best,
+and refused `--platform` as unserved. Now each of them takes one (`--platform`, which
+Docker's CLI sends too), read as a pull reads it (`os[/arch[/variant]]`, normalized), and
+chooses that platform's manifest of the image, here whole (manifest, config, layers), or
+refuses in the words a script reads where the image has none ("image with reference … was
+found but does not provide the specified platform (…)"; the Engine API's 404):
+
+- **Inspection** (`image inspect`, `GET /images/{name}/json?platform=`) shows that
+  platform's microVM: its config, architecture, size and layers, and as its descriptor its
+  manifest, labelled with its platform; its ID the image's.
+- **History** (`history`, `GET /images/{name}/history?platform=`) is that platform's
+  config's steps, each layer's size from its manifest. The Engine API refused both.
+- **A save** of some platforms (`save --platform`, `GET /images/get?platform=`) holds theirs
+  alone, each one's manifest, config, layers and attestations. Of one, the archive is that
+  platform's microVM alone: `index.json` names its manifest, labelled with its platform,
+  and holds no index, so a load on any host takes it as the one image it is (a lone
+  manifest runs whatever its platform, part 2); of several, the index, its other platforms
+  not here, as a pull of some of them leaves it.
+- **A load** of some platforms (`load --platform`, `POST /images/load?platform=`) keeps
+  theirs alone of an archive's images: each must be in the archive, or nothing is named;
+  the archive's other platforms leave the store at once, but what an image here held before
+  the archive came, which a load never takes away.
+- **A push** of one platform (`push --platform`) pushes that platform's manifest alone
+  under the tag, with its config and layers, as an image of one platform; the image's other
+  platforms, its index and attestations stay here.
+- **A removal** of some platforms (`rmi --platform`, `DELETE /images/{name}?platforms=`)
+  takes those platforms' microVMs alone, and their attestations: their manifests leave the
+  store, and what they alone held (config, layers, root filesystem, and the templates made
+  of it) goes with the next collection. The image stays with its names, and a name that
+  named a platform taken comes to name the best left for this host's microVMs, or, with
+  none left, the index itself, which a run pulls again; each platform's manifest is said
+  deleted (`Deleted: sha256:…`, the line scripts and the Engine API's answer read). An image
+  of one platform named with its platform is removed whole, as `rmi` removes it.
+  Refused, the image left as it was: a platform another image is made of too (content is
+  shared by digest; taking it would take it from that image), and one a microVM made of it
+  holds, a running one whatever `-f` says, a stopped one unless forced. So a microVM keeps
+  the platform it was made from: its record now names the manifest it was made of
+  (`image_manifest`), and one from before names none, so is taken as made of the
+  platform the image's name names. The microVMs of its other platforms hold only theirs:
+  the emulated platform goes while this host's microVMs run.
+
+Tested: `crates/image` `one_platform_of_an_image_is_found_read_and_taken_away_alone` (found
+where whole, read with its own config, held by another image of it, taken with its
+attestation, the record naming the platform left, then the index; the collection taking
+what it alone held), `daemon::rmi` `a_platform_goes_unless_a_microvm_of_it_holds_it`, and
+`tests/images.rs`
+`one_platforms_microvm_of_an_image_is_chosen_wherever_a_command_names_it`, on real
+microVMs, from a loopback registry that takes pushes, no Docker Hub image but the
+emulator: an index of the test guest for this host and a program of the other 64-bit CPU
+for the other, with an attestation of the other's, pulled for both; each command names each
+platform and one the image has not; the other's run emulated and this host's natively,
+before and after its platform's removal; a removal refused while a microVM made of it
+stays; a load of the other alone from an archive of both, run emulated.
 
 ### D178. A microVM's I/O limits, kept outside it
 

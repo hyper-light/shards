@@ -376,6 +376,15 @@ pub struct ImageManifest {
     pub unpacked: u64,
 }
 
+/// Whether an index's entry is an attestation's manifest (BuildKit's provenance and SBOMs),
+/// which no microVM runs.
+fn is_attestation(desc: &Descriptor) -> bool {
+    desc.annotations
+        .get("vnd.docker.reference.type")
+        .map(String::as_str)
+        == Some("attestation-manifest")
+}
+
 /// A platform as containerd's platforms.Format writes it (D74).
 fn platform_string(p: &oci::Platform) -> String {
     let mut s = format!("{}/{}", p.os, p.architecture);
@@ -1904,6 +1913,198 @@ impl Store {
         Some((desc, index))
     }
 
+    /// Whether the manifest `desc` describes is here whole: itself, its config and each of
+    /// its layers, as a microVM of its platform needs them.
+    pub fn whole(&self, desc: &Descriptor) -> bool {
+        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
+            return false;
+        };
+        let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return false;
+        };
+        std::iter::once(&m.config)
+            .chain(&m.layers)
+            .all(|part| part.digest().is_ok_and(|d| self.has(&d)))
+    }
+
+    /// The platform the manifest `desc` describes is for: its descriptor's label, else its
+    /// config's, where that is here.
+    fn platform_of(&self, desc: &Descriptor) -> Option<oci::Platform> {
+        if let Some(p) = &desc.platform {
+            return Some(p.clone());
+        }
+        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
+            return None;
+        };
+        let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return None;
+        };
+        let Ok(Held::Whole(config)) = self.held(m.image_config(), oci::MAX_CONFIG) else {
+            return None;
+        };
+        let config = oci::parse_config(&config).ok()?;
+        Some(oci::Platform {
+            architecture: config.architecture,
+            os: config.os,
+            variant: config.variant,
+            os_features: Vec::new(),
+        })
+    }
+
+    /// The manifest of image `named` for `target` that is here whole (D179): of its index,
+    /// the first entry for it, attestations passed over; or its lone manifest, where that is
+    /// for it. None where the image has no such platform here: one platform's microVM of a
+    /// multi-platform image, as a command that names a platform takes it.
+    pub fn manifest_for(&self, named: &Named, target: &crate::platform::Target) -> Option<Descriptor> {
+        let candidates = match self.index(&named.id) {
+            Some((_, index)) => index.manifests,
+            None => vec![named.manifest.clone()],
+        };
+        self.first_for(candidates, target)
+    }
+
+    /// [`manifest_for`](Self::manifest_for) of what a reference resolved to, `resolved`:
+    /// an index, or a lone manifest.
+    pub fn manifest_of(&self, resolved: &Descriptor, target: &crate::platform::Target) -> Option<Descriptor> {
+        let candidates = match resolved.digest().ok().and_then(|d| self.index(&d)) {
+            Some((_, index)) => index.manifests,
+            None => vec![resolved.clone()],
+        };
+        self.first_for(candidates, target)
+    }
+
+    /// Of `candidates`, the first for `target` here whole, attestations passed over.
+    fn first_for(&self, candidates: Vec<Descriptor>, target: &crate::platform::Target) -> Option<Descriptor> {
+        let wanted = std::slice::from_ref(target);
+        candidates.into_iter().filter(|d| !is_attestation(d)).find(|d| {
+            self.platform_of(d)
+                .is_some_and(|p| crate::platform::runs(&p, wanted))
+                && self.whole(d)
+        })
+    }
+
+    /// The image `named` names, read as its platform `manifest`'s ([`manifest_for`]): its
+    /// config, size and layers that platform's.
+    ///
+    /// [`manifest_for`]: Self::manifest_for
+    pub fn image_as(&self, named: &Named, manifest: &Descriptor) -> Result<Image, Error> {
+        self.image(&Named {
+            manifest: manifest.clone(),
+            ..named.clone()
+        })
+    }
+
+    /// Each manifest here whole that an image's record holds, and the first reference (in
+    /// name order) that holds it: its record's manifest, and each entry here of the index
+    /// it resolved to. Images resolved to `except` are left out.
+    pub fn manifests_held(&self, except: Option<&Digest>) -> Result<HashMap<String, String>, Error> {
+        let mut held: HashMap<String, String> = HashMap::new();
+        let mut records = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            if let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) {
+                records.push(tag);
+            }
+        }
+        records.sort_by(|a, b| a.reference.cmp(&b.reference));
+        for tag in records {
+            let id = tag
+                .resolved
+                .clone()
+                .unwrap_or_else(|| tag.manifest.digest.clone());
+            if except.is_some_and(|e| e.to_string() == id) {
+                continue;
+            }
+            let mut listed = vec![tag.manifest.clone()];
+            if let Some((_, index)) = Digest::parse(&id).ok().and_then(|d| self.index(&d)) {
+                listed.extend(index.manifests);
+            }
+            for desc in listed {
+                if !held.contains_key(&desc.digest) && self.whole(&desc) {
+                    held.insert(desc.digest.clone(), tag.reference.clone());
+                }
+            }
+        }
+        Ok(held)
+    }
+
+    /// Takes the platforms whose manifests are `manifests` from image `id`, an index (D179):
+    /// each manifest, and the attestations of it, goes from the store, so that what only
+    /// they held (their configs, layers and root filesystems, and the microVM templates made
+    /// of them) goes with the next collection; the index stays, listing them as not here, as
+    /// a pull of some of its platforms leaves it. A record of the image that names one of
+    /// them comes to name the best of its platforms left here for this host's microVMs, or,
+    /// with none left, the index itself, as a load names one with none of this host's. The
+    /// records are written before anything goes, so that no crash leaves one naming what is
+    /// gone. The caller has checked that no other image holds them ([`manifests_held`]).
+    ///
+    /// [`manifests_held`]: Self::manifests_held
+    pub fn remove_platforms(&self, id: &Digest, manifests: &[Digest]) -> Result<(), Error> {
+        // Records are written through `ingest/`, which a collection empties.
+        let _lease = self.lease()?;
+        let Some((index_desc, index)) = self.index(id) else {
+            return bad(format!(
+                "{id}: an image of one platform has no platform to take from it"
+            ));
+        };
+        let named: Vec<String> = manifests.iter().map(Digest::to_string).collect();
+        let gone: Vec<&Descriptor> = index
+            .manifests
+            .iter()
+            .filter(|d| {
+                named.contains(&d.digest)
+                    || (is_attestation(d)
+                        && d.annotations
+                            .get("vnd.docker.reference.digest")
+                            .is_some_and(|of| named.contains(of)))
+            })
+            .collect();
+        let left = oci::Index {
+            manifests: index
+                .manifests
+                .iter()
+                .filter(|d| !is_attestation(d) && !gone.iter().any(|g| g.digest == d.digest) && self.whole(d))
+                .cloned()
+                .collect(),
+            ..index.clone()
+        };
+        let next = crate::platform::select(&left, &crate::platform::pullable())
+            .or(left.manifests.first())
+            .cloned()
+            .unwrap_or(index_desc);
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(mut tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            if tag.resolved.as_deref() == Some(id.to_string().as_str())
+                && gone.iter().any(|g| g.digest == tag.manifest.digest)
+            {
+                tag.manifest = next.clone();
+                self.write_record(&tag)?;
+            }
+        }
+        let mut dirs = Vec::new();
+        for desc in gone {
+            let digest = desc.digest()?;
+            match fs::remove_file(self.blob_path(&digest)) {
+                Ok(()) => dirs.push(self.root.join("blobs").join(digest.algorithm().name())),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        dirs.sort();
+        dirs.dedup();
+        for dir in &dirs {
+            sync_dir(dir)?;
+        }
+        Ok(())
+    }
+
     fn tag_record(&self, reference: &str) -> Result<Option<Tag>, Error> {
         let bytes = match fs::read(self.tag_path(reference)) {
             Ok(bytes) => bytes,
@@ -3087,6 +3288,157 @@ mod tests {
         fs::remove_file(store.blob_path(&sha256(&layer))).unwrap();
         let images = store.images().unwrap();
         assert!(!images.iter().find(|i| i.id == new_digest).unwrap().manifests[0].available);
+    }
+
+    /// One platform of a multi-platform image is found, read and taken away alone (D179):
+    /// found where it is here whole, read with its own config, held by another image that
+    /// names it too, and taken away with its attestation, the records that named it naming
+    /// the platform left, then the index; what it alone held goes with the collection.
+    #[test]
+    fn one_platform_of_an_image_is_found_read_and_taken_away_alone() {
+        let root = temp("platforms");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let platform = |arch: &str| {
+            crate::platform::normalize(&oci::Platform {
+                architecture: arch.into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            })
+        };
+        // Each platform's own layer, config and manifest.
+        let mut made = Vec::new();
+        for arch in ["arm64", "amd64"] {
+            let layer = format!("{arch} layer").into_bytes();
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes();
+            let manifest = format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(&config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes();
+            let (layer_d, config_d, manifest_d) = (put(&layer), put(&config), put(&manifest));
+            made.push((arch, layer_d, config_d, manifest_d, manifest.len()));
+        }
+        // amd64's attestation, a manifest of its own.
+        let statement = b"statement".to_vec();
+        let statement_d = put(&statement);
+        let attestation = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{statement_d}","size":{}}},"layers":[]}}"#,
+            statement.len()
+        )
+        .into_bytes();
+        let attestation_d = put(&attestation);
+        let entry = |(arch, _, _, d, len): &(&str, Digest, Digest, Digest, usize)| {
+            format!(
+                r#"{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{d}","size":{len},"platform":{{"architecture":"{arch}","os":"linux"}}}}"#
+            )
+        };
+        let (arm, amd) = (&made[0], &made[1]);
+        let index = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{},{},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{attestation_d}","size":{},"annotations":{{"vnd.docker.reference.digest":"{}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+            entry(arm),
+            entry(amd),
+            attestation.len(),
+            amd.3
+        )
+        .into_bytes();
+        let index_d = put(&index);
+        let named_by = |manifest: &(&str, Digest, Digest, Digest, usize)| Descriptor {
+            platform: Some(oci::Platform {
+                architecture: manifest.0.into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            }),
+            ..described(&manifest.3, manifest.4)
+        };
+        // The record names the platform this host's microVMs run best.
+        let best = if crate::platform::pullable()
+            .iter()
+            .position(|t| *t == platform("arm64"))
+            < crate::platform::pullable()
+                .iter()
+                .position(|t| *t == platform("amd64"))
+        {
+            (arm, amd)
+        } else {
+            (amd, arm)
+        };
+        store
+            .tag("docker.io/library/a:1", &named_by(best.0), &index_d, &[])
+            .unwrap();
+        let named = || {
+            store
+                .named()
+                .unwrap()
+                .into_iter()
+                .find(|n| n.id == index_d)
+                .unwrap()
+        };
+        for m in [arm, amd] {
+            let found = store.manifest_for(&named(), &platform(m.0)).unwrap();
+            assert_eq!(found.digest, m.3.to_string());
+            let image = store.image_as(&named(), &found).unwrap();
+            assert_eq!(
+                (image.id.clone(), image.manifest.clone()),
+                (index_d.clone(), m.3.clone())
+            );
+            let config = String::from_utf8(image.config.unwrap()).unwrap();
+            assert!(config.contains(&format!("\"{}\"", m.0)), "{config}");
+        }
+        assert_eq!(store.manifest_for(&named(), &platform("riscv64")), None);
+        // Another image that is amd64's manifest alone holds it.
+        assert!(store.manifests_held(Some(&index_d)).unwrap().is_empty());
+        store
+            .tag("docker.io/library/b:1", &named_by(amd), &amd.3, &[])
+            .unwrap();
+        assert_eq!(
+            store
+                .manifests_held(Some(&index_d))
+                .unwrap()
+                .get(&amd.3.to_string()),
+            Some(&"docker.io/library/b:1".to_string())
+        );
+        store.untag("docker.io/library/b:1").unwrap();
+        // The platform the record names goes: the record names the other.
+        store
+            .remove_platforms(&index_d, std::slice::from_ref(&best.0.3))
+            .unwrap();
+        assert_eq!(store.manifest_for(&named(), &platform(best.0.0)), None);
+        assert_eq!(named().manifest.digest, best.1.3.to_string());
+        let (_, whole) = store.collect().unwrap();
+        drop(whole);
+        for d in [&best.0.1, &best.0.2, &best.0.3] {
+            assert!(!store.has(d), "{d} went with it");
+        }
+        for d in [&best.1.1, &best.1.2, &best.1.3, &index_d] {
+            assert!(store.has(d), "{d} stays");
+        }
+        // amd64's attestation goes with it, whichever goes first.
+        assert_eq!(store.has(&attestation_d), best.0.0 != "amd64");
+        // The last platform goes: the record names the index itself.
+        store
+            .remove_platforms(&index_d, std::slice::from_ref(&best.1.3))
+            .unwrap();
+        assert_eq!(named().manifest.digest, index_d.to_string());
+        assert!(!store.has(&attestation_d));
+        assert!(
+            store
+                .images()
+                .unwrap()
+                .iter()
+                .all(|i| i.manifests.iter().all(|m| !m.available))
+        );
     }
 
     /// A record whose descriptor nothing can be held by, its size not its blob's,
