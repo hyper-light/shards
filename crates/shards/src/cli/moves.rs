@@ -48,6 +48,8 @@ fn taken(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
 #[derive(serde::Deserialize)]
 struct Plan {
     name: String,
+    #[serde(default)]
+    image: Option<String>,
     image_id: String,
     snapshot: String,
     files: Vec<PlanFile>,
@@ -217,6 +219,14 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         })();
         if let Err(e) = loaded {
             return Err(resume_here(format!("its image: {e}")));
+        }
+        // Saved by its digest, it is loaded with no name: given the one it has here, where
+        // nothing there has it.
+        if let Some(named) = &plan.image
+            && !named.is_empty()
+            && there(step(&["image", "inspect", "-f", "{{.Id}}", named]), None).is_ok_and(|r| r.0 != 0)
+        {
+            let _ = there(step(&["tag", &plan.image_id, named]), None);
         }
         times.step("image loaded there");
         needs = match ready("its check") {

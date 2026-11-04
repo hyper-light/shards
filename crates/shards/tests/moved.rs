@@ -317,7 +317,7 @@ fn a_running_microvm_moves_live_and_goes_on_there() {
         daemon_log(&here),
         daemon_log(&there)
     );
-    assert!(moved.stderr.contains("move: round 0 "), "{moved}");
+    assert!(moved.stderr.contains("move: round 0: "), "{moved}");
     let downtime = downtime.unwrap_or_else(|| panic!("no downtime said: {moved}"));
     eprintln!("downtime {downtime} us");
     let gone = shards_in(&here, &["inspect", "counter"]);

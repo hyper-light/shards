@@ -1006,8 +1006,17 @@ impl<D: Disk> Daemon<D> {
         let rounds = answer
             .recv()
             .unwrap_or_else(|_| Err("its microVM stopped".into()))?;
-        for line in rounds.lines() {
-            reply.err(&format!("move: round {line}"));
+        let mut lines = rounds.lines();
+        if let Some(paused) = lines.next() {
+            reply.err(&format!(
+                "move: paused {paused} us to find its layer's and swap's data"
+            ));
+        }
+        for (n, line) in lines.enumerate() {
+            let said: Vec<&str> = line.split_whitespace().collect();
+            if let [pages, bytes, us] = said.as_slice() {
+                reply.err(&format!("move: round {n}: {pages} pages, {bytes} bytes, {us} us"));
+            }
         }
         // Its last save, its guest's writes since the last round alone.
         let asked = crate::containers::now();
