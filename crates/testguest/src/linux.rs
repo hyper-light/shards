@@ -38,6 +38,7 @@ pub fn main() {
             "profile" => profile_report(),
             "limits" => limits(),
             "pci" => pci(),
+            "pci-plug" => pci_plug(),
             "pci-irq" => pci_irq(),
             "pci-dma" => pci_dma(),
             "host" => host(),
@@ -1399,6 +1400,158 @@ fn work() -> Result<(), String> {
     let hash = shards_testguest::pattern_hash(1, mib << 20);
     let _ = writeln!(io::stdout(), "SHARDS-TEST HASH {hash:016x}");
     Ok(())
+}
+
+/// Devices plugged into the running microVM (D214), each as its host's test says on the
+/// console, a line at a time, after the guest asks for it (`SHARDS-PLUG WAIT n`):
+///
+/// - `disk ADDR SALT`: rescans the bus as shards-init does, waits for the disk at PCI
+///   address ADDR to have a block device, reads its first MiB, which must hold pattern
+///   SALT, writes pattern SALT+1 over its second, synced, and says `SHARDS-PLUG DISK NAME
+///   RESCAN_US READY_US`: the rescan's time, and from its start to the disk read.
+/// - `grow NAME SECTORS`: waits for the disk's size to read SECTORS, its driver told by a
+///   configuration change, reads its last sector, and says `SHARDS-PLUG GREW NAME US`.
+/// - `share ADDR TAG`: rescans, mounts virtiofs TAG once its driver has the function,
+///   reads `/hello`, writes `/from-guest` synced, unmounts, says `SHARDS-PLUG SHARE US`.
+/// - `remove ADDR`: lets the function go as shards-init does, its `remove` written, and
+///   says `SHARDS-PLUG REMOVED US`.
+/// - `done`: the test passes.
+fn pci_plug() -> Result<(), String> {
+    use std::io::BufRead as _;
+    const MIB: usize = 1 << 20;
+    // Its PID 1 runs: what its host times its boot to, with a PCI bus and without.
+    ControlPage::map()?.write(shards_abi::control::MARKER, shards_abi::marker::INIT_STARTED);
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+    let rescan = || std::fs::write("/sys/bus/pci/rescan", "1").map_err(|e| format!("rescan: {e}"));
+    let us = |since: u128| (monotonic_ns() - since) / 1000;
+    for round in 0.. {
+        let _ = writeln!(io::stdout(), "SHARDS-PLUG WAIT {round}");
+        let line = lines
+            .next()
+            .ok_or("the console ended")?
+            .map_err(|e| format!("the console: {e}"))?;
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words.as_slice() {
+            ["disk", addr, salt] => {
+                let salt: u64 = salt.parse().map_err(|e| format!("salt {salt:?}: {e}"))?;
+                let t0 = monotonic_ns();
+                rescan()?;
+                let rescanned = us(t0);
+                // Its block device, under its virtio device's directory.
+                let dir = format!("/sys/bus/pci/devices/{addr}");
+                let name = wait_for(Duration::from_secs(10), || {
+                    let virtio = std::fs::read_dir(&dir).ok()?.flatten().find_map(|e| {
+                        let n = e.file_name().into_string().ok()?;
+                        n.starts_with("virtio").then_some(n)
+                    })?;
+                    std::fs::read_dir(format!("{dir}/{virtio}/block"))
+                        .ok()?
+                        .flatten()
+                        .find_map(|e| e.file_name().into_string().ok())
+                })
+                .ok_or_else(|| format!("no block device at {addr} after a rescan"))?;
+                let mut disk = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(format!("/dev/{name}"))
+                    .map_err(|e| format!("/dev/{name}: {e}"))?;
+                let mut buf = vec![0u8; MIB];
+                use std::io::{Read as _, Seek as _};
+                disk.read_exact(&mut buf)
+                    .map_err(|e| format!("reading {name}: {e}"))?;
+                let ready = us(t0);
+                if let Some(at) = first_mismatch(salt, 0, &buf) {
+                    return Err(format!("{name} differs from pattern {salt} at byte {at}"));
+                }
+                fill(salt + 1, MIB as u64, &mut buf);
+                disk.seek(io::SeekFrom::Start(MIB as u64))
+                    .map_err(|e| e.to_string())?;
+                disk.write_all(&buf).map_err(|e| format!("writing {name}: {e}"))?;
+                disk.sync_all().map_err(|e| format!("syncing {name}: {e}"))?;
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG DISK {name} {rescanned} {ready}");
+            }
+            ["grow", name, sectors] => {
+                let t0 = monotonic_ns();
+                let size = format!("/sys/block/{name}/size");
+                wait_for(Duration::from_secs(10), || {
+                    (std::fs::read_to_string(&size).ok()?.trim() == *sectors).then_some(())
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "{name} reads {:?} sectors, not {sectors}",
+                        std::fs::read_to_string(&size).unwrap_or_default().trim()
+                    )
+                })?;
+                let grew = us(t0);
+                let sectors: u64 = sectors.parse().map_err(|e| format!("{sectors:?}: {e}"))?;
+                let disk =
+                    std::fs::File::open(format!("/dev/{name}")).map_err(|e| format!("/dev/{name}: {e}"))?;
+                use std::os::fd::AsRawFd as _;
+                let mut last = [0u8; 512];
+                pread_exact(disk.as_raw_fd(), &mut last, (sectors - 1) * 512)?;
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG GREW {name} {grew}");
+            }
+            ["share", addr, tag] => {
+                let t0 = monotonic_ns();
+                rescan()?;
+                let driver = format!("/sys/bus/pci/devices/{addr}/driver");
+                wait_for(Duration::from_secs(10), || {
+                    std::fs::metadata(&driver).ok().map(|_| ())
+                })
+                .ok_or_else(|| format!("no driver has {addr} after a rescan"))?;
+                std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
+                let (src, target, fs) = (cstr(tag)?, cstr("/mnt")?, cstr("virtiofs")?);
+                // The tag's virtio device comes as its driver probes it: retried a while.
+                wait_for(Duration::from_secs(10), || {
+                    // SAFETY: NUL-terminated strings and no data argument.
+                    (unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) }
+                        == 0)
+                        .then_some(())
+                })
+                .ok_or_else(|| format!("mount {tag} (virtiofs): {}", io::Error::last_os_error()))?;
+                let hello = std::fs::read_to_string("/mnt/hello").map_err(|e| format!("/mnt/hello: {e}"))?;
+                if hello != "hello from a plugged share\n" {
+                    return Err(format!("/mnt/hello read {hello:?}"));
+                }
+                let mut file =
+                    std::fs::File::create("/mnt/from-guest").map_err(|e| format!("/mnt/from-guest: {e}"))?;
+                file.write_all(b"written through a plugged share\n")
+                    .and_then(|()| file.sync_all())
+                    .map_err(|e| format!("/mnt/from-guest: {e}"))?;
+                drop(file);
+                let target = cstr("/mnt")?;
+                // SAFETY: a NUL-terminated path.
+                if unsafe { libc::umount(target.as_ptr()) } != 0 {
+                    return Err(format!("umount /mnt: {}", io::Error::last_os_error()));
+                }
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG SHARE {}", us(t0));
+            }
+            ["remove", addr] => {
+                let t0 = monotonic_ns();
+                std::fs::write(format!("/sys/bus/pci/devices/{addr}/remove"), "1")
+                    .map_err(|e| format!("removing {addr}: {e}"))?;
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG REMOVED {}", us(t0));
+            }
+            ["done"] => return Ok(()),
+            other => return Err(format!("unknown step {other:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// What `found` finds, asked again every millisecond until `within` has passed.
+fn wait_for<T>(within: Duration, mut found: impl FnMut() -> Option<T>) -> Option<T> {
+    let end = Instant::now() + within;
+    loop {
+        if let Some(t) = found() {
+            return Some(t);
+        }
+        if Instant::now() >= end {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// A PCI bus's test function (D153): QEMU edu's IDs at 0000:00:01.0, and through its BAR
