@@ -704,34 +704,140 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
     }
 }
 
-/// What a command needs that a context does not carry yet: files of the client's that
-/// Docker's CLI sends where shards would read the other machine's. The command is read as
-/// shards reads it, its own grammar said as the command it runs, and its flags by its
-/// parser.
-fn not_carried(args: &[OsString]) -> Option<String> {
-    let words: Vec<String> = args
+/// `buildx policy ARGS…`'s ARGS, where `args` is that command: run here, of this client's
+/// files, against the machine as its builder ([`PolicyBuilder`]), as buildx evaluates a
+/// policy against a remote builder. Every other `buildx` and `builder` command asks the
+/// machine's builder alone, and `compose`, which is no command of shards', is the
+/// machine's to say so of, as this one's would.
+fn policy_args(args: &[OsString]) -> Option<Vec<OsString>> {
+    let words = args
         .iter()
-        .map_while(|a| a.to_str().map(str::to_string))
-        .collect();
-    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
-    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
-    // `cp` is driven here, step by step, as this client's CLI drives one (cli/cp.rs); a
-    // build's context is kept in step on the machine ([`building`]), and all else a build
-    // names of this client's crosses with it ([`build_there`]).
-    if shards_cmdline::commands::build(&refs).is_some() {
-        return None;
+        .map(|a| a.to_str().map(str::to_string))
+        .collect::<Option<Vec<String>>>()?;
+    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or(words);
+    match said.as_slice() {
+        [buildx, policy, rest @ ..] if buildx == "buildx" && policy == "policy" => {
+            Some(rest.iter().map(OsString::from).collect())
+        }
+        _ => None,
     }
-    // `buildx policy eval` and `test` read a policy of this client's files here, against
-    // the machine as its builder: not carried yet. Every other
-    // `buildx` and `builder` command asks the machine's builder alone, and `compose`,
-    // which is no command of shards', is the machine's to say so of, as this one's would.
-    if matches!(refs.as_slice(), ["buildx", "policy", "eval" | "test", ..]) {
-        let named = refs.get(..3).unwrap_or_default().join(" ");
-        return Some(format!(
-            "{named} over a context reads this machine's files, which shards does not carry yet: run it on the machine itself"
-        ));
+}
+
+/// A context's machine as the builder of a policy command run here (D180): its platform,
+/// a source's metadata as its builds resolve it, of its store and its network, with this
+/// client's login for the source's registry alone, and an HTTP source a policy's function
+/// reads, each asked of it as a step ([`crate::build::policy_command::POLICY_STEP`]).
+struct PolicyBuilder<'a> {
+    identity: &'a Identity,
+    context: &'a Context,
+    platform: std::cell::OnceCell<shards_agentfile::platform::Platform>,
+    /// Each registry's login, as `SHARDS_AUTH_CONFIG`'s value, found once.
+    logins: std::cell::RefCell<std::collections::BTreeMap<String, Option<String>>>,
+}
+
+impl PolicyBuilder<'_> {
+    /// What the step `words` says on its stdout, given `input`; what it says on its
+    /// stderr, the builder's error, where it fails.
+    fn asked(&self, words: &[&str], input: Vec<u8>, env: Vec<(String, Vec<u8>)>) -> Result<Vec<u8>, String> {
+        let (out_tx, out_rx) = std::sync::mpsc::channel();
+        let (err_tx, err_rx) = std::sync::mpsc::channel();
+        let request = Request {
+            args: std::iter::once(crate::build::policy_command::POLICY_STEP)
+                .chain(words.iter().copied())
+                .map(|a| a.as_bytes().to_vec())
+                .collect(),
+            env,
+            terminal: None,
+        };
+        let ran = client::exec(
+            self.identity,
+            self.context.remote(),
+            request,
+            Some(Box::new(io::Cursor::new(input))),
+            Taken(out_tx),
+            Taken(err_tx),
+            |_| {},
+        );
+        let said = || String::from_utf8_lossy(&err_rx.try_iter().flatten().collect::<Vec<u8>>()).into_owned();
+        match ran {
+            Ok(Ok(0)) => Ok(out_rx.try_iter().flatten().collect()),
+            Ok(Ok(1)) => Err(said()),
+            Ok(Ok(status)) => Err(format!("{}: exit status {status}: {}", self.context.name, said())),
+            Ok(Err(why)) => Err(format!("{}: {why}", self.context.name)),
+            Err(e) => Err(format!("{}: {e}", self.context.name)),
+        }
     }
-    None
+
+    /// This client's login for the registry `source` names, as `SHARDS_AUTH_CONFIG`'s
+    /// value; none for a source of no registry's, or a registry it has no login for.
+    fn login(&self, source: &crate::build::policy::Source) -> Result<Option<String>, String> {
+        let id = &source.identifier;
+        let Some(name) = id
+            .strip_prefix("docker-image://")
+            .or_else(|| id.strip_prefix("osi-artifact://"))
+        else {
+            return Ok(None);
+        };
+        let Ok(reference) = shards_image::reference::Reference::parse(name) else {
+            return Ok(None);
+        };
+        if let Some(found) = self.logins.borrow().get(&reference.domain) {
+            return Ok(found.clone());
+        }
+        let (credentials, warnings) =
+            shards_registry::credentials::lookup(&reference.domain, &|name| std::env::var(name).ok())
+                .map_err(|e| e.to_string())?;
+        for warning in warnings {
+            let _ = writeln!(io::stderr(), "{warning}");
+        }
+        let found = (credentials != shards_registry::auth::Credentials::Anonymous)
+            .then(|| shards_registry::credentials::env_config_of(&[(reference.domain.clone(), credentials)]));
+        self.logins.borrow_mut().insert(reference.domain, found.clone());
+        Ok(found)
+    }
+}
+
+impl crate::build::policy_command::Builder for PolicyBuilder<'_> {
+    fn platform(&self) -> Result<shards_agentfile::platform::Platform, String> {
+        if let Some(p) = self.platform.get() {
+            return Ok(p.clone());
+        }
+        let said = self.asked(&["platform"], Vec::new(), Vec::new())?;
+        let p = crate::build::policy::wire::read_platform(&said)?;
+        Ok(self.platform.get_or_init(|| p).clone())
+    }
+
+    fn resolving(
+        &self,
+        f: &dyn Fn(&dyn crate::build::policy::Resolve) -> Result<(), String>,
+    ) -> Result<(), String> {
+        f(self)
+    }
+
+    fn fetch(&self, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
+        self.asked(
+            &["fetch", url, accept.unwrap_or_default()],
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+}
+
+impl crate::build::policy::Resolve for PolicyBuilder<'_> {
+    fn resolve(
+        &self,
+        source: &crate::build::policy::Source,
+        request: &crate::build::policy::MetaRequest,
+    ) -> Result<crate::build::policy::Meta, String> {
+        let asked = crate::build::policy::wire::ask(source, request)?;
+        let env = self
+            .login(source)?
+            .map(|login| ("SHARDS_AUTH_CONFIG".to_string(), login.into_bytes()))
+            .into_iter()
+            .collect();
+        let said = self.asked(&["resolve"], asked, env)?;
+        crate::build::policy::wire::read_known(&said)
+    }
 }
 
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
@@ -2463,13 +2569,19 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         let _ = writeln!(io::stderr(), "shards: {why}");
         ExitCode::from(NOT_RUN)
     };
-    if let Some(why) = not_carried(&args) {
-        return fail(why);
-    }
     let identity = match identity(home) {
         Ok(identity) => identity,
         Err(e) => return fail(e),
     };
+    if let Some(rest) = policy_args(&args) {
+        let builder = PolicyBuilder {
+            identity: &identity,
+            context,
+            platform: std::cell::OnceCell::new(),
+            logins: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+        };
+        return crate::build::policy_command::command_with(rest.into_iter(), &builder);
+    }
     let mut words = Vec::with_capacity(args.len());
     for arg in &args {
         match arg.to_str() {
@@ -3549,107 +3661,38 @@ mod tests {
         assert_eq!(dirs, [true, false, true]);
     }
 
+    /// A context refuses nothing of its own now: a policy command runs here, against the
+    /// machine as its builder; every other command crosses, carrying what it names of the
+    /// client's.
     #[test]
-    fn a_context_refuses_what_it_does_not_carry() {
+    fn a_policy_command_runs_here_its_builder_the_machine() {
         let args = |s: &str| s.split(' ').map(OsString::from).collect::<Vec<_>>();
-        assert!(not_carried(&args("ps -a")).is_none());
-        assert!(not_carried(&args("run --rm alpine echo hi")).is_none());
-        // The client's terminal crosses (part 2).
-        assert!(not_carried(&args("run -it alpine sh")).is_none());
-        assert!(not_carried(&args("exec -it web sh")).is_none());
-        assert!(not_carried(&args("attach web")).is_none());
-        // A copy is driven here a step at a time, on every host (cli/cp.rs).
-        assert!(not_carried(&args("cp web:/a b")).is_none());
-        assert!(not_carried(&args("cp b web:/a")).is_none());
-        // No command of shards', said so there as here.
-        assert!(not_carried(&args("compose up")).is_none());
-        // The builder's own, asked of the machine's; a policy's files here, not yet.
-        for builder in [
+        let rest = |s: &str| {
+            policy_args(&args(s)).map(|r| {
+                r.into_iter()
+                    .map(|a| a.into_string().unwrap())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            rest("buildx policy eval --filename p alpine").unwrap(),
+            ["eval", "--filename", "p", "alpine"]
+        );
+        assert_eq!(rest("buildx policy test .").unwrap(), ["test", "."]);
+        assert_eq!(rest("buildx policy").unwrap(), Vec::<String>::new());
+        // The builder's own, asked of the machine's; and every other command, sent.
+        for there in [
             "buildx du",
             "builder du",
             "buildx prune -f",
             "builder prune -a",
-            "buildx policy",
-        ] {
-            assert!(not_carried(&args(builder)).is_none(), "{builder}");
-        }
-        for policy in ["buildx policy eval alpine", "buildx policy test ."] {
-            assert!(not_carried(&args(policy)).is_some(), "{policy}");
-        }
-        // An artifact's directory is kept in step there ([`artifact_building`]), and its
-        // signature made here ([`artifact_sign_there`]).
-        for carried in [
-            "build agent dir -t a",
-            "agent build dir -t a",
-            "sign agent a",
-            "harness sign h --key k",
-        ] {
-            assert!(not_carried(&args(carried)).is_none(), "{carried}");
-        }
-        // A build's context is kept in step there ([`building`]); what else it names here,
-        // not yet.
-        for carried in [
-            "build .",
-            "image build .",
-            "builder build .",
-            "build image .",
-            "build -t a -f d/Dockerfile .",
-        ] {
-            assert!(not_carried(&args(carried)).is_none(), "{carried}");
-        }
-        // Its secrets cross in memory, read here; its outputs come back as it ends.
-        for carried in [
-            "build --secret id=a,src=f .",
-            "build -o out .",
-            "build -o type=local,dest=out .",
-            "build --iidfile i .",
-            "build --metadata-file m .",
-        ] {
-            assert!(not_carried(&args(carried)).is_none(), "{carried}");
-        }
-        // Its named contexts, local caches and policies' files, kept in step or carried.
-        for carried in [
-            "build --cache-to type=local,dest=c .",
-            "build --build-context base=../dir .",
+            "ps -a",
+            "compose up",
             "build --policy filename=p.rego .",
+            "cp web:/a b",
         ] {
-            assert!(not_carried(&args(carried)).is_none(), "{carried}");
+            assert!(rest(there).is_none(), "{there}");
         }
-        assert!(not_carried(&args("build --ssh default .")).is_none());
-        for remote in [
-            "build -o type=registry .",
-            "build -o - .",
-            "build --build-context base=docker-image://alpine .",
-        ] {
-            assert!(not_carried(&args(remote)).is_none(), "{remote}");
-        }
-        // A copy is driven here, as cli/cp.rs drives one, on every host.
-        for copy in ["cp web:/x .", "container cp web:/x .", "copy vm web:/x ."] {
-            assert!(not_carried(&args(copy)).is_none(), "{copy}");
-        }
-        assert!(not_carried(&args("agent ls")).is_none());
-        // A file a command writes or reads whole crosses as its output or input ([`here_files`]).
-        for whole in [
-            "save -o x.tar alpine",
-            "save image alpine -o x.tar",
-            "export -o x.tar web",
-            "load -i x.tar",
-            "load image -i x.tar",
-            "import x.tar",
-            "image import x.tar",
-        ] {
-            assert!(not_carried(&args(whole)).is_none(), "{whole}");
-        }
-        // A run's `--cidfile` is made here ([`here_cidfile`]).
-        for cid in [
-            "run --cidfile c alpine",
-            "create --cidfile c alpine",
-            "run vm --cidfile c alpine sh",
-        ] {
-            assert!(not_carried(&args(cid)).is_none(), "{cid}");
-        }
-        // What the client's files hold crosses ([`here_values`]).
-        assert!(not_carried(&args("run --env-file e alpine")).is_none());
         assert!(kept_here(&args("context ls")));
         assert!(kept_here(&args("list contexts")));
         assert!(!kept_here(&args("ps")));
