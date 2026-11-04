@@ -691,7 +691,7 @@ fn launch(
     })
     .map_err(|e| format!("starting the builder: {e}"))?;
     // Ended with the suspended VM, a Job's, where its network process does not start.
-    let net = crate::netproc::start(ready, &vm)?;
+    let net = crate::netproc::start(ready, &vm, None)?;
     let giver = vm.giver().map_err(|e| format!("answering the builder: {e}"))?;
     let vm = vm.resume().map_err(|e| format!("starting the builder: {e}"))?;
     // Its ends are the VM's now: its exit ends its requests, and its network process,

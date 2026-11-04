@@ -45,9 +45,9 @@ use crate::pipe::Message;
 use crate::signal::SIGKILL;
 
 use windows_sys::Win32::Foundation::{
-    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, GENERIC_ALL,
-    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA,
+    GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
@@ -66,8 +66,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
@@ -232,6 +233,55 @@ impl GroupJob {
             return Err(last());
         }
         Ok(())
+    }
+
+    /// The IDs of the processes in it now, its nested jobs' among them
+    /// (JobObjectBasicProcessIdList), as a cgroup's `cgroup.procs` says its own.
+    pub fn processes(&self) -> io::Result<Vec<u32>> {
+        // The list's two counts, then an ID a word: asked again with room for as many as
+        // it said it had, while more join between the asks.
+        let head = size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() - size_of::<usize>();
+        let mut room = 16usize;
+        loop {
+            let words = head.div_ceil(size_of::<usize>()).saturating_add(room);
+            let mut list = vec![0usize; words];
+            let bytes = u32::try_from(words.saturating_mul(size_of::<usize>()))
+                .map_err(|_| io::Error::other("a job's process list past 4 GiB"))?;
+            // SAFETY: a buffer of `bytes`, aligned for the list, this function holds.
+            let asked = unsafe {
+                QueryInformationJobObject(
+                    self.0.as_raw_handle(),
+                    JobObjectBasicProcessIdList,
+                    list.as_mut_ptr().cast(),
+                    bytes,
+                    std::ptr::null_mut(),
+                )
+            };
+            let more = if asked == 0 {
+                let e = last();
+                if e.raw_os_error() != i32::try_from(ERROR_MORE_DATA).ok() {
+                    return Err(e);
+                }
+                true
+            } else {
+                false
+            };
+            // SAFETY: the list's head, which the call wrote, read from an aligned buffer
+            // at least its size.
+            let said = unsafe { std::ptr::read(list.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()) };
+            let assigned = said.NumberOfAssignedProcesses as usize;
+            let listed = said.NumberOfProcessIdsInList as usize;
+            if !more && listed >= assigned {
+                let at = head / size_of::<usize>();
+                return Ok(list
+                    .get(at..at.saturating_add(listed))
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|id| u32::try_from(*id).ok())
+                    .collect());
+            }
+            room = assigned.max(room.saturating_mul(2));
+        }
     }
 
     /// The same job again, a handle of its own.

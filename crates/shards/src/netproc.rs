@@ -530,9 +530,14 @@ pub type NetProcess = shards_ipc::Child;
 
 /// Starts `ready`, the network process of the VM `vm`, made and not yet running: given a
 /// handle to it that may only wait for its end, in an AppContainer holding the network's
-/// capabilities (PM M204).
+/// capabilities (PM M204), and in `group`'s job where its microVM is under a group shards
+/// keeps (D183, slice 3), as its VM process is.
 #[cfg(windows)]
-pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, String> {
+pub fn start(
+    ready: Ready,
+    vm: &shards_ipc::Suspended,
+    group: Option<&shards_ipc::GroupJob>,
+) -> Result<NetProcess, String> {
     use std::os::windows::io::AsHandle as _;
     let binary = crate::helpers::net()?;
     let container = crate::helpers::containers().and_then(|records| {
@@ -590,7 +595,7 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         env: &env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Network,
-        group: None,
+        group,
         graphics: false,
     })
     .map_err(|e| format!("starting {}: {e}", binary.display()))?;

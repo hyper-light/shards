@@ -410,6 +410,24 @@ impl<D: Disk> Daemon<D> {
         let sum = |held: &[(usize, u64)]| held.iter().fold(0u64, |s, (_, b)| s.saturating_add(*b));
         let current = sum(&held);
         let _ = std::fs::write(dir.join("memory.current"), format!("{current}\n"));
+        // Its processes, a line each, as a cgroup's `cgroup.procs` lists its own: on Windows
+        // its job's, every process of its microVMs; on macOS, which has no group of
+        // processes, its microVMs' VM processes, whose footprints it holds.
+        #[cfg(windows)]
+        let procs = lock(&self.groups.jobs)
+            .get(name)
+            .map(|(job, _)| job.processes())
+            .transpose()
+            .unwrap_or_else(|e| {
+                log(format!("group {name}: its job's processes: {e}"));
+                None
+            });
+        #[cfg(target_os = "macos")]
+        let procs = Some(members.iter().map(|m| m.pid).collect::<Vec<_>>());
+        if let Some(procs) = procs {
+            let listed: String = procs.iter().map(|p| format!("{p}\n")).collect();
+            let _ = std::fs::write(dir.join("cgroup.procs"), listed);
+        }
         let Some(limit) = budget.memory() else {
             return;
         };
