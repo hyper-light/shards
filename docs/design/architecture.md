@@ -5632,7 +5632,18 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`a_groups_job_holds_its_microvms_to_its_memory_max`, budget-e2e run 40624202863):
     under a `memory.max` of 1 GiB, a run that allocates 2 GiB never holds it, where one
     that allocates 2 GiB under no group, and one that allocates 128 MiB under it, run to
-    their ends. `cpu.max` is not the job's CPU rate (below).
+    their ends. `cpu.max` is not the job's CPU rate (below). The microVM's network process
+    is made in the group's job too, its own AppContainer's job nested under it
+    (`netproc::start`), so that the group holds the microVM's whole host footprint, as a
+    slice's scope does on Linux (slice 1): before, its VM process alone was. The group's
+    `cgroup.procs` lists the job's processes, a line each, as a cgroup's lists its own,
+    written by the daemon from the job (JobObjectBasicProcessIdList, `GroupJob::processes`)
+    each pressure window while the group has a microVM; on macOS, which has no group of
+    processes, it lists the group's microVMs' VM processes, whose footprints it holds.
+    Tested on Windows by `a_groups_microvm_is_made_in_its_job_its_network_process_too`: a
+    run under a group, its `cgroup.procs` its VM process and its network process alone
+    (`shards-vm.exe`, `shards-net.exe`, as tasklist names them), and a run under no group's
+    VM process not in it.
   - **CPU, on both** (built): a group's microVMs hold themselves to its `cpu.max`
     together, as CFS bandwidth control holds a cgroup's threads
     (Documentation/scheduler/sched-bwc.rst), where macOS has no mechanism to cap a group

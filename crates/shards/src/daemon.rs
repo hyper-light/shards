@@ -7767,7 +7767,7 @@ impl<D: Disk> Daemon<D> {
         // daemon's, where the run's published ports go; the VM holds its release.
         let (net_process, net_control) = match network {
             Some((ready, side)) => {
-                let started = crate::netproc::start(ready, &suspended)?;
+                let started = crate::netproc::start(ready, &suspended, group.as_ref())?;
                 let control = crate::netproc::Control {
                     socket: side.control,
                     pid: started.id(),

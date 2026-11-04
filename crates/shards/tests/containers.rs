@@ -3296,6 +3296,78 @@ fn a_groups_cpu_held_each_second() {
     }
 }
 
+/// A group shards keeps on Windows (D183, slice 3): every process of a microVM under it is
+/// made in the group's job, its VM process and its network process, as a slice's scope holds
+/// both on Linux, and the group's `cgroup.procs`, which the daemon writes from the job
+/// (JobObjectBasicProcessIdList), lists them, and no process of a run under no group.
+#[test]
+fn a_groups_microvm_is_made_in_its_job_its_network_process_too() {
+    if !cfg!(windows) {
+        return;
+    }
+    let Some((home, image)) = home("containers-group-procs") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let placed = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "jobbed", "--cgroup-parent", "jobbed"],
+        &["sleep"],
+    );
+    assert_eq!(placed.status, Some(0), "{placed}");
+    let free = run_in(&home, &image, &["-d", "--name", "free"], &["sleep"]);
+    assert_eq!(free.status, Some(0), "{free}");
+    let pid_of = |name: &str| -> u32 {
+        let pid = shards(&["inspect", "-f", "{{.State.Pid}}", name]);
+        pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"))
+    };
+    let (vm, other) = (pid_of("jobbed"), pid_of("free"));
+    // Each process's image, as Windows' own tasklist names it.
+    let image_of = |pid: u32| -> String {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.lines()
+            .find_map(|l| {
+                l.strip_prefix('"')
+                    .and_then(|l| l.split_once('"'))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_default()
+    };
+    // Written each pressure window while the group has a microVM: read until it lists both.
+    let file = home.join("groups").join("jobbed").join("cgroup.procs");
+    let deadline = Instant::now() + TIMEOUT;
+    let (procs, names) = loop {
+        let procs: Vec<u32> = std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        let mut names: Vec<String> = procs.iter().map(|p| image_of(*p)).collect();
+        names.sort();
+        if (procs.contains(&vm) && names == ["shards-net.exe", "shards-vm.exe"]) || Instant::now() >= deadline
+        {
+            break (procs, names);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(
+        procs.contains(&vm),
+        "the VM process {vm} not in {procs:?} ({names:?})"
+    );
+    assert_eq!(names, ["shards-net.exe", "shards-vm.exe"], "{procs:?}");
+    assert!(
+        !procs.contains(&other),
+        "a run under no group, {other}, in {procs:?}"
+    );
+    stop_run(&home, "jobbed");
+    stop_run(&home, "free");
+}
+
 /// A group shards keeps on Windows (D183, slice 3, PM M359): its microVMs' VM processes made
 /// in the group's job, whose memory limit is the group's `memory.max`, so that what they
 /// commit together stays under it: a run under a group of 1 GiB that allocates 2 GiB has
