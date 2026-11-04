@@ -334,6 +334,10 @@ struct DeviceWrites {
 /// The unit a device's writes are noted in.
 const DEVICE_PAGE: u64 = 4096;
 
+/// What [`GuestMemory::each_used`] gives each run of used pages to: whether plugged, its
+/// place, and its bytes.
+pub type UsedTaker<'a> = dyn FnMut(bool, u64, &[u8]) -> io::Result<()> + 'a;
+
 // SAFETY: the reservations are memory this value owns. The host reaches it only through an
 // `Access`, which one thread holds at a time, or through raw pointers handed to the
 // kernel and the hypervisor; volatile and atomic accesses tolerate the guest's and the
@@ -689,7 +693,7 @@ impl GuestMemory {
         file.set_len(0)?;
         platform::sparse(file)?;
         let mut offset = 0u64;
-        let mut write = |host: *const u8, runs: Vec<(u64, u64)>, offset: u64| -> io::Result<()> {
+        let write = |host: *const u8, runs: Vec<(u64, u64)>, offset: u64| -> io::Result<()> {
             for (at, len) in runs {
                 let n = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
                 // SAFETY: `at..at+len` lies in the region at `host` (`runs_within`), which
@@ -717,7 +721,7 @@ impl GuestMemory {
     /// its offset in a save's file ([`save`](Self::save)), plugged memory's by its address
     /// (`plugged` true), and the bytes. Read as the guest runs on: what it writes meanwhile
     /// is noted for the next round.
-    pub fn each_used(&self, take: &mut dyn FnMut(bool, u64, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    pub fn each_used(&self, take: &mut UsedTaker<'_>) -> io::Result<()> {
         let page = crate::vm::live::PAGE as usize;
         let mut offset = 0u64;
         let mut runs = |host: *const u8, len: usize, at: u64, plugged: bool| -> io::Result<()> {

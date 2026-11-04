@@ -40,6 +40,9 @@ pub fn max_vcpus() -> Result<u32, String> {
     hv::max_vcpus().map_err(|e| e.to_string())
 }
 
+/// What reads a run of a live move's layer or swap into a buffer (D176 part 7).
+type Reader<'a> = dyn Fn(u64, &mut [u8]) -> Result<(), String> + 'a;
+
 /// A running VM's handle for host-side control.
 #[derive(Debug, Clone)]
 pub struct Handle {
@@ -264,21 +267,20 @@ impl Handle {
         precopied.paused_us = crate::log::uptime_us().saturating_sub(paused);
         let (layer_runs, swap_runs) = (found.0?, found.1?);
         let mut buf = vec![0u8; live::MAX_RECORD];
-        let mut send =
-            |kind: u8, runs: &[(u64, u64)], read: &dyn Fn(u64, &mut [u8]) -> Result<(), String>| {
-                for &(off, len) in runs {
-                    let mut at = off;
-                    let end = off.saturating_add(len);
-                    while at < end {
-                        let n = usize::try_from(end - at).map_or(buf.len(), |rest| rest.min(buf.len()));
-                        let chunk = buf.get_mut(..n).ok_or("a run past its buffer")?;
-                        read(at, chunk)?;
-                        w.record(kind, at, chunk).map_err(fail)?;
-                        at += n as u64;
-                    }
+        let mut send = |kind: u8, runs: &[(u64, u64)], read: &Reader<'_>| {
+            for &(off, len) in runs {
+                let mut at = off;
+                let end = off.saturating_add(len);
+                while at < end {
+                    let n = usize::try_from(end - at).map_or(buf.len(), |rest| rest.min(buf.len()));
+                    let chunk = buf.get_mut(..n).ok_or("a run past its buffer")?;
+                    read(at, chunk)?;
+                    w.record(kind, at, chunk).map_err(fail)?;
+                    at += n as u64;
                 }
-                Ok::<(), String>(())
-            };
+            }
+            Ok::<(), String>(())
+        };
         if let (Some(l), Some(runs)) = (&layer, &layer_runs) {
             send(live::LAYER, runs, &|at, b| l.read_data(at, b))?;
         }
@@ -300,7 +302,9 @@ impl Handle {
                         .map_err(fail)?;
                     continue;
                 }
-                let page = &mut buf[..live::PAGE as usize];
+                let page = buf
+                    .get_mut(..live::PAGE as usize)
+                    .ok_or("a page past its buffer")?;
                 if let Some((base, len)) = layer.as_ref().and_then(|l| l.data_at())
                     && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
                     && let Some(l) = &layer

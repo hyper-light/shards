@@ -89,6 +89,7 @@ impl Pages {
 }
 
 /// Writes a live move's stream (the module's words) into `out`.
+#[derive(Debug)]
 pub struct Writer<W: Write> {
     out: W,
     /// The pages and bytes of records written since the round began.
@@ -144,6 +145,7 @@ impl<W: Write> Writer<W> {
 }
 
 /// A record [`read`] gives its taker: its kind, offset and bytes.
+#[derive(Debug)]
 pub struct Record<'a> {
     pub kind: u8,
     pub offset: u64,
