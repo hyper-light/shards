@@ -1,0 +1,22 @@
+{
+  "baseline-compose.stdout.txt": {
+    "capture_sha256": "098dbfc91fa376705b7d5916570517dfc6c2a11da1d687c1ae8510abcf77c8c2",
+    "display_sha256": "098dbfc91fa376705b7d5916570517dfc6c2a11da1d687c1ae8510abcf77c8c2"
+  },
+  "baseline-compose.stderr.txt": {
+    "capture_sha256": "b955750c5c397062acc41b5964e3298079bb5f7e0f1119261f8e0cdf23af4333",
+    "display_sha256": "b955750c5c397062acc41b5964e3298079bb5f7e0f1119261f8e0cdf23af4333"
+  },
+  "native-runner-parse.txt": {
+    "capture_sha256": "b2f102bb1dd0434ef356061e493633477d2852f2c6b59e412b9e721ad18c8b75",
+    "display_sha256": "4f759060b53fecee893127cd7ad0dab7732952037bd1a1507177c4bb5abc090f"
+  },
+  "native-missing-client.txt": {
+    "capture_sha256": "08510d1693de9ddb3f1272fc60794993254a0541f949f4811070b43ff33dfc05",
+    "display_sha256": "8f19f4791e4ba22b66fe15b07001d1478db2bf6467a19f019a06929791bc7cfa"
+  },
+  "docker-build-info.txt": {
+    "capture_sha256": "4818a12fdcc7bd38ad4ecdea26856cd927bfcc50422e606cfe3da891a7249e55",
+    "display_sha256": "0a910959b242c1d39bddda89f12747600e55cc07cd8d27f176b91df23dab51da"
+  }
+}

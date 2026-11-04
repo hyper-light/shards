@@ -14,6 +14,20 @@ $env:SHARDS_REQUIRE_VMS = '1'
 $env:SHARDS_TEST_GUESTS = Join-Path $Kit 'test-guests'
 $env:SHARDS_TEST_KERNEL = $Kernel
 $env:PATH = (Join-Path $Kit 'git\cmd') + ';' + $env:PATH + ';' + (Join-Path $Kit 'git\usr\bin')
+$clients = Join-Path $Kit 'clients'
+if (Test-Path $clients) { $env:PATH = $clients + ';' + $env:PATH }
+# Qualification must exercise Docker's clients: their tests otherwise return SKIP and
+# count as green. Selected snapshot/builder diagnostics do not need those clients.
+if (-not $Binary -or $Binary -in @('compose', 'engine', 'buildx')) {
+    foreach ($client in @('docker.exe', 'docker-compose.exe', 'docker-buildx.exe')) {
+        $command = Get-Command $client -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $command) { throw "Missing qualification client: $client" }
+        Write-Output "CLIENT $client path=$($command.Source) sha256=$((Get-FileHash $command.Source -Algorithm SHA256).Hash)"
+        if ($client -eq 'docker.exe') { & $command.Source --version }
+        else { & $command.Source version }
+        if ($LASTEXITCODE -ne 0) { throw "Qualification client failed: $client" }
+    }
+}
 Remove-Item Env:SHARDS_STORM_CPUS -ErrorAction SilentlyContinue
 $tests = Get-Content (Join-Path $Kit 'test-manifest.json') -Raw | ConvertFrom-Json
 if ($tests.Count -eq 0 -or $tests[0].exe -isnot [string]) { throw 'Malformed test manifest' }

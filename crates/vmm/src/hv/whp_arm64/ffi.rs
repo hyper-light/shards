@@ -31,8 +31,11 @@ pub const CAP_PHYSICAL_ADDRESS_WIDTH: u32 = 0x0000_100A;
 /// where 24H2 builds before 26100.3915 shipped a pre-release one (QEMU's
 /// docs/system/whpx.rst, which asks for it as shards does).
 pub const FEATURE_ARM64_SUPPORT: u64 = 1 << 11;
+pub const FEATURE_VIRTUAL_PCI_DEVICES: u64 = 1 << 7;
+pub const FEATURE_IOMMU_SUPPORT: u64 = 1 << 8;
 
 // WHV_PARTITION_PROPERTY_CODE
+pub const PROP_ALLOW_DEVICE_ASSIGNMENT: u32 = 0x0000_000c;
 pub const PROP_ARM64_IC_PARAMETERS: u32 = 0x0000_1012;
 pub const PROP_PROCESSOR_COUNT: u32 = 0x0000_1fff;
 

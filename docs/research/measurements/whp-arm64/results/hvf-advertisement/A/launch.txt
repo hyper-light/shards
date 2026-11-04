@@ -1,0 +1,15 @@
+2026-11-02T07:58:02.344358+00:00
+NESTED=1 CPUS=4 MEM=8G ./launch.sh (installed disk; no ISO)
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.hyperlight.shards.winarm</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>/Users/adalundhe/g121-a4-winarm/start.sh</string></array>
+<key>WorkingDirectory</key><string>/Users/adalundhe/g121-a4-winarm</string>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+<key>NESTED</key><string>1</string>
+<key>CPUS</key><string>4</string>
+<key>MEM</key><string>8G</string>
+</dict>
+<key>ProcessType</key><string>Interactive</string><key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>/Users/adalundhe/g121-a4-winarm/qemu.log</string><key>StandardErrorPath</key><string>/Users/adalundhe/g121-a4-winarm/qemu.log</string>
+</dict></plist>

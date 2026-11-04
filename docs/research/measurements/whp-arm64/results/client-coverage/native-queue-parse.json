@@ -1,0 +1,44 @@
+{
+  "queue_sha256": "b9266ee4f413bf3c462537503d5771768d51e2cabf2a31d38353dc3ecddb49ff",
+  "blocks": [
+    {
+      "block": 1,
+      "source_sha256": "fb34f9c28a1b64d1f75fbd17c3eb42e4f87bbd990d83565cb5656d29b6e3e791",
+      "exit": 0
+    },
+    {
+      "block": 2,
+      "source_sha256": "6bae1764d482a12232f5ad00b90ec6d9c6a86444c3694b2bdeb28d4924f5cfe3",
+      "exit": 0
+    },
+    {
+      "block": 3,
+      "source_sha256": "e162647de7b5a6adef71c2099cd187b21e3b763e3637cbccc2830f3f70e56b24",
+      "exit": 0
+    },
+    {
+      "block": 4,
+      "source_sha256": "146c70a9e59e0544c1d4d5da7902979e52c67158bf2e27288fa24282aba88544",
+      "exit": 0
+    },
+    {
+      "block": 5,
+      "source_sha256": "0bffe5bf48f92fe5124668d0b75821ac31083632fd79f7b8c606a78fd38b488c",
+      "exit": 0
+    },
+    {
+      "block": 6,
+      "source_sha256": "c5b437313c43c38aed789d8d91fe5298785569dff6079eb4a6641b6b28e4306a",
+      "exit": 0
+    },
+    {
+      "block": 7,
+      "source_sha256": "2bb6cbc088f0d1021490525ee27ed0ea9aa886f60ec5ac542673acd182d6be23",
+      "exit": 0
+    }
+  ],
+  "all_passed": true,
+  "scope": "syntax only; no native test or VM launched",
+  "python_only_update": "SSH255 retry backoff 300s; one prerequisite SSH observer at a time",
+  "native_ps_literals_unchanged_from": "client-queue-parse01.json"
+}

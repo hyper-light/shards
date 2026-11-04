@@ -1,0 +1,95 @@
+diff --git a/crates/vmm/src/hv/whp_arm64/ffi.rs b/crates/vmm/src/hv/whp_arm64/ffi.rs
+index 07707132..2a2325e2 100644
+--- a/crates/vmm/src/hv/whp_arm64/ffi.rs
++++ b/crates/vmm/src/hv/whp_arm64/ffi.rs
+@@ -31,8 +31,11 @@ pub const CAP_PHYSICAL_ADDRESS_WIDTH: u32 = 0x0000_100A;
+ /// where 24H2 builds before 26100.3915 shipped a pre-release one (QEMU's
+ /// docs/system/whpx.rst, which asks for it as shards does).
+ pub const FEATURE_ARM64_SUPPORT: u64 = 1 << 11;
++pub const FEATURE_VIRTUAL_PCI_DEVICES: u64 = 1 << 7;
++pub const FEATURE_IOMMU_SUPPORT: u64 = 1 << 8;
+ 
+ // WHV_PARTITION_PROPERTY_CODE
++pub const PROP_ALLOW_DEVICE_ASSIGNMENT: u32 = 0x0000_000c;
+ pub const PROP_ARM64_IC_PARAMETERS: u32 = 0x0000_1012;
+ pub const PROP_PROCESSOR_COUNT: u32 = 0x0000_1fff;
+ 
+diff --git a/crates/vmm/src/hv/whp_arm64/mod.rs b/crates/vmm/src/hv/whp_arm64/mod.rs
+index 0c2de49c..eb91c6f3 100644
+--- a/crates/vmm/src/hv/whp_arm64/mod.rs
++++ b/crates/vmm/src/hv/whp_arm64/mod.rs
+@@ -130,6 +130,52 @@ pub fn check_host() -> std::result::Result<(), String> {
+     Ok(())
+ }
+ 
++/// This host's refusal to assign a device, as the x86_64 WHP backend asks it: the
++/// capability and AllowDeviceAssignment on a temporary, unconfigured partition with
++/// no memory or device. `None` means WHP accepted the property; an implementation gap
++/// must not be reported as the host's limit.
++pub fn device_assignment_refused() -> Option<String> {
++    if !ffi::loaded() {
++        return Some("the Windows Hypervisor Platform is not on this host".into());
++    }
++    let asked = |e: Error| Some(format!("asking the Windows Hypervisor Platform: {e}"));
++    let features = match capability(CAP_FEATURES) {
++        Ok(words) => words.first().copied().unwrap_or(0),
++        Err(e) => return asked(e),
++    };
++    if features & FEATURE_VIRTUAL_PCI_DEVICES == 0 {
++        return Some(
++            "its Windows Hypervisor Platform makes no virtual PCI device of a host's (WHvCapabilityCodeFeatures: VirtualPciDeviceSupport 0)"
++                .into(),
++        );
++    }
++    let mut handle: ffi::Partition = 0;
++    // SAFETY: a handle for the call to fill. No vCPU, mapping or device is created.
++    if let Err(e) = check("WHvCreatePartition", unsafe {
++        WHvCreatePartition(&raw mut handle)
++    }) {
++        return asked(e);
++    }
++    let partition = Partition(handle);
++    // WHV_PARTITION_PROPERTY's AllowDeviceAssignment is a Windows BOOL (32 bits).
++    let allowed: i32 = 1;
++    let refused = partition
++        .set(
++            PROP_ALLOW_DEVICE_ASSIGNMENT,
++            &allowed,
++            "WHvSetPartitionProperty(AllowDeviceAssignment)",
++        )
++        .err()?;
++    let iommu = if features & FEATURE_IOMMU_SUPPORT == 0 {
++        ", and says it has no IOMMU support (WHvCapabilityCodeFeatures: IommuSupport 0)"
++    } else {
++        ""
++    };
++    Some(format!(
++        "its hypervisor assigns no device to a partition: {refused}{iommu}"
++    ))
++}
++
+ /// M414 set back the global GIC state and each vCPU's interrupt controller state, and
+ /// reset CNTVCT_EL0 independently on each vCPU: the state a snapshot restores here.
+ pub fn restores() -> bool {
+@@ -224,6 +270,21 @@ pub const ITS: bool = false;
+ /// Why a guest is given no EL2 here.
+ pub const NO_EL2: &str = "Windows' hypervisor platform gives a guest no EL2 on arm64";
+ 
++#[cfg(test)]
++mod tests {
++    /// WHP accepting the property exposes the missing DDA implementation; it is not an
++    /// OS refusal. This test asks the actual host and creates no mapped VM or device.
++    #[test]
++    fn device_assignment_requires_an_actual_host_refusal() {
++        let refused = super::device_assignment_refused();
++        eprintln!("WHP arm64 device-assignment probe: {refused:?}");
++        assert!(
++            refused.is_some(),
++            "WHP accepted AllowDeviceAssignment; DDA implementation and hardware E2E remain open"
++        );
++    }
++}
++
+ /// Whether this process forbids itself dynamic code once a partition is set up
+ /// ([`forbid_dynamic_code_once_set_up`]).
+ static FORBID_DYNAMIC_CODE: AtomicBool = AtomicBool::new(false);

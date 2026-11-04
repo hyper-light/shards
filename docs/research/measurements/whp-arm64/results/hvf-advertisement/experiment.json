@@ -1,0 +1,69 @@
+{
+  "scope": "historical EL2-advertisement A/B only; host cause and Step10 unresolved",
+  "qemu_tag": "v11.1.3",
+  "correction_base_revision": "005c61c0ef6f6ae615283440b4bb7be51b2c6ddd",
+  "qemu_upstream": "https://gitlab.com/qemu-project/qemu/-/tree/005c61c0ef6f6ae615283440b4bb7be51b2c6ddd",
+  "patch_sha256": "d8fa6012453afd5d1c43378378bcbc7d75e968252c1a4e2b2f4c1fea0dffde55",
+  "base_hvf_blob_sha1": "b00a7e1a8450efcfdbf6c3c3fcdb1f6d02373f1a",
+  "corrected_hvf_blob_sha1": "bb1a019ac55428914149975c94417701140df7c6",
+  "original_start_sha256": "6a7895c362db916e2e4481dab6272173e0198e358db53a0eb6d0bb432d691fee",
+  "clock_note": "Old Windows RTC was interpreted eight hours ahead. Preserve raw guest times; Mac launch UTC is separate.",
+  "transcript_note": "Each Windows transcript appends prior boots. Results above use its last transcript block and matching boot.",
+  "arms": [
+    {
+      "arm": "A",
+      "source_capture_directory": "evidence/el2-on",
+      "launch_capture_utc": "2026-11-02T07:58:02.344358+00:00",
+      "program_arguments_recorded": [
+        "/bin/sh",
+        "/Users/adalundhe/g121-a4-winarm/start.sh"
+      ],
+      "environment_recorded": {
+        "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+        "NESTED": "1",
+        "CPUS": "4",
+        "MEM": "8G"
+      },
+      "working_directory_recorded": "/Users/adalundhe/g121-a4-winarm",
+      "windows_boot_time_raw": "11/2/2026 7:58:03 AM",
+      "current_boot_first_hyperv_event": 43,
+      "whp_present": 0,
+      "whp_features": "0x0000000000000AD9",
+      "create_partition_hresult": "0xC0351000",
+      "vhe_cause": "unestablished",
+      "expanded_qemu_argv": "not captured historically; do not treat reconstructed flags as observed argv",
+      "historical_binary_sha256": "not captured; current binaries are not historical substitutes"
+    },
+    {
+      "arm": "B",
+      "source_capture_directory": "evidence/el2-id",
+      "launch_capture_utc": "2026-11-02T08:23:19.726030+00:00",
+      "program_arguments_recorded": [
+        "/bin/sh",
+        "/Users/adalundhe/g121-a4-winarm/start.sh"
+      ],
+      "environment_recorded": {
+        "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+        "NESTED": "1",
+        "CPUS": "4",
+        "MEM": "8G",
+        "ACCEL": "hvf",
+        "CPU": "host",
+        "QEMU_BIN": "/Users/adalundhe/g121-a4-winarm/qemu-build/qemu-system-aarch64",
+        "VM_DISK": "win-el2-id.qcow2",
+        "VARS": "vars-el2-id.fd"
+      },
+      "working_directory_recorded": "/Users/adalundhe/g121-a4-winarm",
+      "windows_boot_time_raw": "11/2/2026 8:23:21 AM",
+      "current_boot_first_hyperv_event": 26,
+      "whp_present": 0,
+      "whp_features": "0x0000000000000AD9",
+      "create_partition_hresult": "0xC0351000",
+      "vhe_cause": "unestablished",
+      "expanded_qemu_argv": "not captured historically; do not treat reconstructed flags as observed argv",
+      "historical_binary_sha256": "not captured; current binaries are not historical substitutes"
+    }
+  ],
+  "reboot_or_vm_launch_for_this_preservation": false,
+  "native_e2e_qualification": "not established by either HVF arm"
+}

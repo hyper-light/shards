@@ -1,0 +1,7 @@
+{
+  "snapshot_native_result": "9passed1failed2ignored401.06s",
+  "literal_completion_marker_in_payload": false,
+  "split_completion_marker_present": true,
+  "host_assertions_unchanged": true,
+  "candidate_native_result": "not run yet; waits behind complete original suite"
+}

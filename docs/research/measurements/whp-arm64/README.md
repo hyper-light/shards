@@ -35,6 +35,16 @@ refused a request; no bot check was bypassed.
 | TCG, TF-A, pointer authentication disabled | HAL initialization bugcheck 0x5C: ACPI advertises no PSCI |
 | TCG, TF-A, pointer authentication disabled, ACPI describes TF-A's PSCI | Desktop; event 1, hypervisor successfully started; WHP present 1 and partition creation succeeds |
 
+The HVF advertisement A/B is preserved in
+[`results/hvf-advertisement/`](results/hvf-advertisement/README.md): the exact correction
+patch and base revision, recorded launch environments, and complete Windows events and
+WHP outputs. Each result is paired with its own boot; the appended older events remain
+visible. The expanded historical process argv and executable hashes were not captured,
+and those provenance gaps are explicit. Both HVF configurations failed to start WHP;
+the cause remains unresolved. The PFR0 finding and corrected run do not establish VHE
+as the cause. TCG/TF-A's successful host result is a separate configuration, and Step 10
+still requires full real-VM qualification.
+
 The successful CPU is `max,sve=off,sme=off,pauth=off`, accelerator `tcg,thread=multi`,
 machine `virt,gic-version=3,highmem=on,secure=on,virtualization=on`. This is software
 emulation of the Windows host. It is Windows' real hypervisor and WHP partition, not a
@@ -557,3 +567,24 @@ after 39.018 ms, below the existing 40 ms lower-bound assertion. That assertion 
 unchanged. The isolated run is a diagnostic, not a continuation or completion of
 the original full attempt. The complete updated 142-binary real-VM suite must pass
 before step 10 closes.
+
+## Coverage and assignment handoff
+
+The prepared [client coverage candidate](results/client-coverage/README.md) enables
+the existing Buildx VM case on Windows and makes qualification require the native
+Docker, Compose and Buildx clients. The earlier Compose results were client-related
+skips. The [storm reporting candidate](results/storm-report/README.md) addresses the
+captured interleaving of a completion marker with kernel diagnostics, with the
+original workload and assertions unchanged. Both candidates still need their native
+regressions and the complete real-WHP suite.
+
+The arm64 module also retains the passthrough branch's
+[`device_assignment_refused()` contract](results/arm64-device-assignment/README.md).
+WHP accepting the property returns `None`; its native refusal test then fails so an
+unimplemented DDA path cannot become an OS-limit claim. Its targeted arm64 build and
+lint passed; native execution and Server DDA hardware E2E remain open.
+
+Later [SSH observation failures](results/observation-transport/README.md) leave the
+running full task's state unknown. They do not supply a native completion or host
+blocker. The historical [HVF A/B evidence](results/hvf-advertisement/README.md) remains
+separate from the later working TCG/TF-A configuration, with VHE causality unresolved.

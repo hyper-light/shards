@@ -17349,6 +17349,11 @@ revision before comparing a changed API/implementation.
   with EL2 enabled; writing the vCPU's field to 1 succeeds and reads back 1
   (`config-result.txt`). VHE's absence alone does not establish why Windows fails to
   launch. M414 records the measured Windows boots, including the working TCG host.
+  The [HVF advertisement A/B evidence](measurements/whp-arm64/results/hvf-advertisement/README.md)
+  retains the default run's event 43 and the corrected run's event 26, paired with their
+  own boots, with WHP present 0 in both; the exact patch/base and recorded launch settings
+  are retained. Missing historical expanded argv and executable hashes are stated
+  explicitly. This remains an unresolved HVF host result, not a VHE causal finding.
 
 ### M423. CI's arm64 Windows lane on windows-11-arm: its steps' times and limits (M245, M420)
 

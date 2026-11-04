@@ -1,0 +1,22 @@
+{
+  "utc": "2026-11-04T05:12:55.803161+00:00",
+  "source_parent": "b5b18c946c60e84f7daaa3231dd8a9fa291703c9",
+  "source_patch_sha256": "9b76ac44fe33ab971b6a5407639dbf32ba1de55bf65afe91f2f5461013b1b3cb",
+  "all_eight_lint_targets_exit": 0,
+  "fresh_guest_build_exit": 0,
+  "fresh_windows_build_exit": 0,
+  "native_powershell_parse_exit": 0,
+  "host_executables_unchanged": 141,
+  "changed_host_binary": {
+    "name": "buildx",
+    "file": "buildx-7a1ee85fab2eaab0.exe",
+    "sha256": "48c1b6e04e223a74feeb43a69b76551ec9a4fcd8393c95acefa7550a9aaaaea0"
+  },
+  "guest_candidate_sha256": "75de46532db18cd812b9606a4508408ef9c7cf75bfa17555542f7267b0fe39c5",
+  "guest_original_sha256": "b556a34a41734afc5b579fc77bc76152f030087c21f8afee8eb427715ddf8465",
+  "runner_sha256": "442b5b05c587ce811c3557c7b8425ed7ae8a7e8b209eb220d5a7cdfdd9c3263d",
+  "manifest_sha256": "11cb720016bfde8a2affdc49865afa751b29993089432287828b06e250bc1520",
+  "deployed": false,
+  "native_result": "pending; current full and both diagnostics are unchanged",
+  "scope": "client-required Compose/Engine and Windows Buildx coverage; not a full-suite pass"
+}

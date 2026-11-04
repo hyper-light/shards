@@ -1,0 +1,20 @@
+{
+  "utc": "2026-11-04T03:51:20.445115+00:00",
+  "source_parent": "b5b18c946c60e84f7daaa3231dd8a9fa291703c9",
+  "source_patch_sha256": "c4c7cbe5fe93d88126d277cb7f363634a5ae7fac392b4295a115f7671abbc951",
+  "guest_original_sha256": "b556a34a41734afc5b579fc77bc76152f030087c21f8afee8eb427715ddf8465",
+  "guest_candidate_sha256": "75de46532db18cd812b9606a4508408ef9c7cf75bfa17555542f7267b0fe39c5",
+  "runner_sha256": "625ca393dc009efdc67dcf9f9f70118db04c2de1d7fd99de92fa6aa1b0440e11",
+  "manifest_sha256": "530e0fe8fd5a74fca3a5663d81bf4f65f0e90e7f8d6974acd8d5d10fbf227b75",
+  "all_eight_lint_targets_exit": 0,
+  "fresh_guest_build_exit": 0,
+  "fresh_windows_build_exit": 0,
+  "host_executables_unchanged": 142,
+  "target": "aarch64-unknown-linux-musl",
+  "profile": "guest",
+  "scope": "selected original busy-restore test, default2/8/max64CPUs and3restores each; not full qualification",
+  "native_candidate_result": "pending",
+  "deployed": false,
+  "full_real04_guest_untouched": true,
+  "note": "Candidate built on Mac while already-failing real04 continues; no additional Windows VM tests launched."
+}

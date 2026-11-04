@@ -1,0 +1,3 @@
+SKIP: no docker compose on this host
+SKIP: no docker compose on this host
+SKIP: no docker compose on this host
