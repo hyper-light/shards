@@ -31,6 +31,24 @@ use shards_abi::control;
 /// meanwhile: a directory of its own, made in the layer it lets go of.
 const ASIDE: &str = "/.shards-over";
 
+/// Closes, in a process init forks that has no use for them, the descriptors init holds
+/// of its writable layer (D190): a copy of one would hold the template's layer's file
+/// system mounted after init lets go of it ([`go_over`]).
+pub fn close_layer_fds() {
+    for fd in [
+        crate::pmem::layer_fd(),
+        crate::setup::rw_fd(),
+        crate::changes::upper_fd(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        // SAFETY: close(2) of this process's copy of a descriptor init owns for its life,
+        // which this process, a fork of init's, never uses.
+        unsafe { libc::close(fd) };
+    }
+}
+
 /// Goes on over the container's layer its host readied (module docs). An error leaves the
 /// microVM unable to run the container: its run fails.
 pub fn go_over() -> Result<(), String> {
