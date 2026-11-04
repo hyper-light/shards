@@ -343,6 +343,10 @@ fn holders(dev: libc::dev_t) -> String {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|e| e.to_string())
         };
+        // Kernel threads, which run no program, hold no file system.
+        if std::fs::read_link(format!("/proc/{pid}/exe")).is_err() {
+            continue;
+        }
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
         let mounts: Vec<String> = std::fs::read_to_string(format!("/proc/{pid}/mountinfo"))
             .unwrap_or_default()
