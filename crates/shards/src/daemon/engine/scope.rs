@@ -467,7 +467,7 @@ impl<D: Disk> Daemon<D> {
             ("DELETE", ["volumes", name]) => self.scoped_volume_remove(name, call, scope),
             ("GET", ["images", "json"]) => self.scoped_images(call, scope),
             ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
-                self.scoped_image(threads, &name.join("/"), scope)
+                self.scoped_image(threads, &name.join("/"), call, scope)
             }
             (_, ["containers", given, rest @ ..]) => {
                 self.settle();
@@ -709,13 +709,19 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `GET /images/{name}/json` of a microVM's own engine: one of its own images.
-    fn scoped_image<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, name: &str, scope: &Scope) -> Answer {
+    fn scoped_image<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        name: &str,
+        call: &Call<'_>,
+        scope: &Scope,
+    ) -> Answer {
         let ours = lock(&self.containers)
             .get(&scope.provider)
             .map(images_of)
             .unwrap_or_default();
         match self.image_id_of(threads, name) {
-            Some(id) if ours.contains(&id) => self.engine_image_inspect(name),
+            Some(id) if ours.contains(&id) => self.engine_image_inspect(name, call),
             _ => Answer::error(404, format!("No such image: {name}")),
         }
     }
@@ -794,6 +800,7 @@ mod tests {
             stop_timeout: None,
             ports: Vec::new(),
             image_id: None,
+            image_manifest: None,
             labels: Default::default(),
             annotations: Default::default(),
             oom_killed: false,

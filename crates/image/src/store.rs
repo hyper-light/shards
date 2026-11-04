@@ -3411,7 +3411,7 @@ mod tests {
         );
         store.untag("docker.io/library/b:1").unwrap();
         // The platform the record names goes: the record names the other.
-        store.remove_platforms(&index_d, &[best.0.3.clone()]).unwrap();
+        store.remove_platforms(&index_d, std::slice::from_ref(&best.0.3)).unwrap();
         assert_eq!(store.manifest_for(&named(), &platform(best.0.0)), None);
         assert_eq!(named().manifest.digest, best.1.3.to_string());
         let (_, whole) = store.collect().unwrap();
@@ -3425,7 +3425,7 @@ mod tests {
         // amd64's attestation goes with it, whichever goes first.
         assert_eq!(store.has(&attestation_d), best.0.0 != "amd64");
         // The last platform goes: the record names the index itself.
-        store.remove_platforms(&index_d, &[best.1.3.clone()]).unwrap();
+        store.remove_platforms(&index_d, std::slice::from_ref(&best.1.3)).unwrap();
         assert_eq!(named().manifest.digest, index_d.to_string());
         assert!(!store.has(&attestation_d));
         assert!(
