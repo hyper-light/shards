@@ -886,7 +886,15 @@ impl Layer {
     /// them back. Written back and synced to stable storage ([`Shared::flush`]), as
     /// Firecracker's flush msyncs its device's whole file (docs/pmem.md) and QEMU's fsyncs
     /// it. The guest's root overlay passes its fsyncs on to the layer (init `run.rs`).
+    ///
+    /// Answered at once while a file is readied to go under the device in place of its own
+    /// ([`stage`](Self::stage)): its own, the template's layer, goes as its guest lets go of
+    /// it, and nothing written to it outlives the run, where each flush cost a restart 2 to
+    /// 16 ms of the host's fdatasync (PM M422).
     pub fn flush(&self) -> Result<(), String> {
+        if lock(&self.staged).is_some() {
+            return Ok(());
+        }
         self.data.flush().map_err(|e| format!("its layer: {e}"))
     }
 
