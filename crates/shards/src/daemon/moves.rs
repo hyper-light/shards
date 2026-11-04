@@ -205,8 +205,39 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The SHA-256 of `path`'s bytes, in hex, and its length.
+/// The SHA-256 of `path`'s bytes, in hex, and its length: read once for each file as it
+/// is, by its device, inode, length and time of change, as a live move's last plan reads its
+/// files' again as its microVM runs nowhere.
 fn digest_of(path: &Path) -> io::Result<(String, u64)> {
+    type Seen = std::collections::HashMap<(u64, u64, u64, i64, i64), String>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let meta = std::fs::metadata(path)?;
+    #[cfg(unix)]
+    let key = {
+        use std::os::unix::fs::MetadataExt as _;
+        Some((
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+        ))
+    };
+    #[cfg(not(unix))]
+    let key: Option<(u64, u64, u64, i64, i64)> = None;
+    if let Some(key) = key
+        && let Some(sha) = lock(&SEEN).as_ref().and_then(|s| s.get(&key))
+    {
+        return Ok((sha.clone(), meta.len()));
+    }
+    let (sha, len) = digest_read(path)?;
+    if let Some(key) = key {
+        lock(&SEEN).get_or_insert_with(Seen::new).insert(key, sha.clone());
+    }
+    Ok((sha, len))
+}
+
+fn digest_read(path: &Path) -> io::Result<(String, u64)> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; CHUNK];
@@ -1023,8 +1054,13 @@ impl<D: Disk> Daemon<D> {
         reply.err(&format!("move: saved at {asked}"));
         // Held, its vCPUs parked and its devices quiet, until the other machine has it or
         // has not (`done`).
+        let t0 = std::time::Instant::now();
         self.save_snapshot_as(reference, Some(snapshot), true, true)
             .map_err(|e| e.ours(reference).trim_start_matches("shards: ").to_string())?;
+        reply.err(&format!(
+            "move: its last save took {} us",
+            t0.elapsed().as_micros()
+        ));
         // Then the rest, after the rounds in the same stream.
         let plan = self.plan(&id, snapshot)?;
         let mut send: Vec<String> = needed;
@@ -1036,7 +1072,13 @@ impl<D: Disk> Daemon<D> {
         );
         let mut export = vec![reference.clone(), snapshot.clone()];
         export.extend(send);
-        self.move_export(&export, asker)
+        let t1 = std::time::Instant::now();
+        let sent = self.move_export(&export, asker);
+        reply.err(&format!(
+            "move: its last stream took {} us",
+            t1.elapsed().as_micros()
+        ));
+        sent
     }
 
     /// `done NAME SNAPSHOT moved|back`: a live move's end (D176 part 7). Moved, the microVM
@@ -1545,34 +1587,53 @@ impl Precopy {
     fn lay_under(&self, dir: &Path) -> Result<(), String> {
         let generation = shards_vmm::snapshot::generation(dir)?;
         let (ram, plugged) = shards_vmm::snapshot::layout(dir)?;
-        // Its RAM, by its own offsets, then each run plugged, from its address to its place
-        // after the RAM.
-        let mut moves = vec![(0u64, 0u64, ram)];
+        // The rounds' files become the generation's, the last save's pages laid over them:
+        // what this takes, as its microVM runs nowhere, is what its guest wrote last and its
+        // memory plugged, never the whole of its memory.
+        let memory = generation.join("memory");
+        let delta = memory.with_extension("last");
+        let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
+        std::fs::rename(&memory, &delta).map_err(|e| at(&memory, &e))?;
+        std::fs::rename(&self.ram, &memory).map_err(|e| at(&self.ram, &e))?;
+        let len = std::fs::metadata(&delta).map_err(|e| at(&delta, &e))?.len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&memory)
+            .and_then(|f| f.set_len(len))
+            .map_err(|e| at(&memory, &e))?;
+        // Each run plugged, from its address in the rounds' file to its place after the
+        // RAM; then the last save's pages over all of it.
+        let mut moves = Vec::new();
         let mut offset = ram;
         for (gpa, len) in plugged {
             moves.push((gpa, offset, len));
             offset = offset.saturating_add(len);
         }
-        let memory = generation.join("memory");
-        under(&self.ram, &memory, moves.get(..1).unwrap_or_default())?;
-        under(&self.plugged, &memory, moves.get(1..).unwrap_or_default())?;
-        let whole = |file: &Path| -> Result<Vec<(u64, u64, u64)>, String> {
-            let len = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
-            Ok(vec![(0, 0, len)])
-        };
+        over(&self.plugged, &memory, &moves, false)?;
+        over(&delta, &memory, &[(0, 0, len)], true)?;
+        std::fs::remove_file(&delta).map_err(|e| at(&delta, &e))?;
         for (pre, name) in [(&self.layer, "layer"), (&self.swap, "swap")] {
-            let at = generation.join(name);
-            if at.exists() {
-                under(pre, &at, &whole(&at)?)?;
+            let kept = generation.join(name);
+            if !kept.exists() {
+                continue;
             }
+            let len = std::fs::metadata(&kept).map_err(|e| at(&kept, &e))?.len();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(pre)
+                .and_then(|f| f.set_len(len))
+                .map_err(|e| at(pre, &e))?;
+            over(&kept, pre, &[(0, 0, len)], true)?;
+            std::fs::rename(pre, &kept).map_err(|e| at(pre, &e))?;
         }
         Ok(())
     }
 }
 
-/// Copies into `to` each page of `from` that holds data and `to` does not: by `moves`, each
-/// a run of `from` at its first offset, as long as its third, put at its second in `to`.
-fn under(from: &Path, to: &Path, moves: &[(u64, u64, u64)]) -> Result<(), String> {
+/// Copies into `to` each page of `from` that holds data, by `moves`, each a run of `from` at
+/// its first offset, as long as its third, put at its second in `to`: over what `to` holds
+/// there where `over`, else only where `to` holds nothing.
+fn over(from: &Path, to: &Path, moves: &[(u64, u64, u64)], over: bool) -> Result<(), String> {
     let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
     let source = File::open(from).map_err(|e| at(from, &e))?;
     let target = std::fs::OpenOptions::new()
@@ -1583,7 +1644,11 @@ fn under(from: &Path, to: &Path, moves: &[(u64, u64, u64)]) -> Result<(), String
     let source_len = source.metadata().map_err(|e| at(from, &e))?.len();
     let target_len = target.metadata().map_err(|e| at(to, &e))?.len();
     let theirs = shards_vmm::platform::data_ranges(&source, source_len).map_err(|e| at(from, &e))?;
-    let own = shards_vmm::platform::data_ranges(&target, target_len).map_err(|e| at(to, &e))?;
+    let own = if over {
+        Vec::new()
+    } else {
+        shards_vmm::platform::data_ranges(&target, target_len).map_err(|e| at(to, &e))?
+    };
     let held = |offset: u64| {
         own.iter()
             .any(|&(s, n)| offset >= s && offset < s.saturating_add(n))
