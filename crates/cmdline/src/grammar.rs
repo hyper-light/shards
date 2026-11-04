@@ -237,14 +237,14 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Make a microVM without starting it, a volume, an Agentfile of an image, or a context",
     ),
     ("run", "exec", "vm", "Run a command in a running microVM"),
-    ("run", "restart", "vm", "Stop microVMs, and start them again"),
-    ("run", "restore", "vm", "Resume a microVM from a snapshot"),
     (
         "run",
         "move",
         "vm",
         "Move a microVM to another machine, as it runs",
     ),
+    ("run", "restart", "vm", "Stop microVMs, and start them again"),
+    ("run", "restore", "vm", "Resume a microVM from a snapshot"),
     (
         "run",
         "run",
