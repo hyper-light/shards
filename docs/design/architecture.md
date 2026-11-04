@@ -6672,7 +6672,7 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   6.19): host plug 6 µs, the guest's rescan 6.6 ms, rescan to first read 7.6 ms, its
   remove 29.2 ms, host unplug 5 µs, at p50 (PM M430). On WHP (jupiter, Ryzen AI Max+ 395,
   Windows 11): the disk's steps passed, then the next VM of the process could not be made,
-  which the teardown's let-go fixed. On Hypervisor.framework (an M5 Max, macOS 26.4.1):
+  which the teardown's let-go fixes (WHP's run since not repeated: jupiter offline). On Hypervisor.framework (an M5 Max, macOS 26.4.1):
   host plug 11 µs, rescan 2.4 ms, rescan to first read 3.1 ms, remove 7.8 ms, unplug 4 µs
   at p50, n 100. Mutation-checked: with a disk's growth sent no configuration change, its
   guest never sees it grow, the disk it booted with and the plugged one alike. On arm64
