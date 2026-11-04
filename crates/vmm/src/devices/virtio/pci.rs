@@ -720,7 +720,10 @@ mod tests {
         assert_eq!(*sent.0.lock().unwrap(), [(0xfee0_0000, 0x41)]);
         assert_eq!(bar(&f, MSIX_PBA, 8), 0);
         // Let go as Linux lets it go: reset, acknowledged again, bus mastering off.
-        f.config_write(reg::COMMAND, &(reg::COMMAND_MEMORY | reg::COMMAND_MASTER).to_le_bytes());
+        f.config_write(
+            reg::COMMAND,
+            &(reg::COMMAND_MEMORY | reg::COMMAND_MASTER).to_le_bytes(),
+        );
         put(&f, common::DEVICE_STATUS, 0, 1);
         put(&f, common::DEVICE_STATUS, 1, 1);
         assert!(f.held().is_some(), "bus mastering on");
