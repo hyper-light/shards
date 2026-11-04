@@ -7492,7 +7492,7 @@ on a network whose members' images have agents with grants of their own, held ap
 the address its flows come from; a run's own grant on the default bridge, if one is
 asked for beside a network's.
 
-### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built)
+### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built, its contended start and hold mended)
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -7525,10 +7525,10 @@ the user told).
   ms period's share is spent holds every vCPU out of its guest, by the same kick a
   snapshot uses, until the period ends; what a period overran comes off the next. The
   governor runs as it wakes, however busy its vCPUs keep the CPUs they may use: on macOS
-  at the vCPUs' real-time policy (M8, M10), on Windows at THREAD_PRIORITY_TIME_CRITICAL,
-  above them, where at their priority three spinning threads of a process held to two CPUs
-  kept it from running and used up to 1.58 s in a second held to one (PM M294). This
-  bounds the whole guest — kernel threads, interrupts, and any escaped workload — to what
+  at the vCPUs' real-time policy (M8, M10), on Linux at their 100 µs slice (below), on
+  Windows at THREAD_PRIORITY_TIME_CRITICAL, above them, where at their priority three
+  spinning threads of a process held to two CPUs kept it from running and used up to 1.58
+  s in a second held to one (PM M294). This bounds the whole guest — kernel threads, interrupts, and any escaped workload — to what
   a microVM of those CPUs alone could use, where the cpuset alone bounds only a workload
   that stays in its cgroup. It comes with the run (the `RUN` head's `cpus`), before the
   guest hears of the run, and `update` moves it (below).
@@ -7556,7 +7556,8 @@ the user told).
   what one without pays: 5 MiB more of its VM process's footprint at `--cpus 1` (Linux 8.4
   of Pss), and its start, 2.5 ms more at p50 paced on macOS (12.73 against 10.23 ms), 2.6
   back to back on Linux; on a contended host 22 ms more (PM M292: 17.9 against 39.7 ms at
-  p50, a `--cpus 1` run on 4 CPUs that 4 busy loops hold), slice 1's own. The host's hold
+  p50, a `--cpus 1` run on 4 CPUs that 4 busy loops hold), slice 1's own, until its vCPUs
+  woke at the shortest slice (below, PM M440). The host's hold
   (PM M289, n 10 a side): an escaped workload of a `--cpus 1` run uses 1.02 CPUs held, 3.99
   where only its microVM's cgroups hold it; on an idle host it costs a run nothing
   measurable.
@@ -7577,13 +7578,44 @@ the user told).
   cpuset given none fails resources' test, the CPUs test and the update test; a microVM of
   its run's CPUs alone fails the limits test and the CPUs test; the host hold removed, the
   escaped workload's four threads use four CPUs' time (11.41 s of CPU in 3.03 s, PM M289).
-- **Next.**
-  - A start on a contended host, this slice's regression (PM M292: 22 ms more at p50 on
-    4 busy CPUs, 2 to 3 idle, M288): where a microVM's vCPUs, one for each host CPU, spend
-    it, and taking off what is not its guest's own. Every run without a limit pays it
-    too. Its timing line (`SHARDS_TIMING`) splits a start's phases.
-  - What the hold costs a memory-heavy run on a contended host: fills 9 and 16% longer
-    there (PM M292, n 8, its load rising). Repeated before it is read, and then why.
+- **Its vCPUs wake as they are woken** (Linux, 2026-11-03). A start on a contended host
+  was slice 1's regression (PM M292: 22 ms more at p50 on 4 busy CPUs, 2 to 3 idle,
+  M288), in the guest's own start of the run, at each hand-off from one vCPU to another:
+  a woken vCPU thread waited for the busy thread on its host CPU to run its slice out,
+  2.8 ms on a host of 8 CPUs or more (EEVDF's RUN_TO_PARITY, `base_slice_ns`), where a
+  microVM of one vCPU hands nothing off. So on Linux every vCPU thread, device worker and
+  hold governor asks for the fair scheduler's shortest slice, 100 µs, as it starts
+  (sched_setattr(2), SCHED_OTHER with `sched_runtime`, Linux 6.12 on;
+  `platform::run_promptly` through `prioritize_vcpu_thread`), its nice value kept: woken,
+  it preempts a thread of a longer slice at once (PREEMPT_SHORT), its share of the CPU
+  its weight's as before. It needs no privilege, and the VM process's seccomp filter
+  allows sched_getattr(2) and sched_setattr(2) of the calling thread alone; a thread at a
+  policy its user chose is left at it. On macOS the vCPUs' real-time policy (M8, M10) has
+  them preempt timeshare threads already. Measured (PM M440, 4 CPUs that 4 busy loops
+  hold, n 100 a side): the guest's part of a `--cpus 1` start 9.24 ms at p50 where 20.82
+  (p90 15.05 where 45.16), the wall 37.66 where 46.64; on 16 CPUs and 16 loops 7.90 where
+  24.71; idle, alike (3.18 both, n 200). Against the build before slice 1 (1468f07d), a
+  start is now 8.3 ms sooner contended and 4.7 sooner idle, where de2b1cf5's was 7.0 ms
+  later contended and 5.8 sooner idle: contention costs slice 1's start no more than
+  idleness does. Tested: platform's `a_prompt_thread_has_the_shortest_slice_at_its_own_weight`,
+  and on real microVMs `a_microvms_vcpus_and_governor_wake_at_the_shortest_slice`.
+- **A held vCPU goes on as its period ends, by itself** (2026-11-03). The hold's cost to a
+  memory-heavy run on a contended host (PM M292: fills 9 and 16% longer, n 8) did not
+  repeat (PM M441: n 16, the held arm the quicker in 9 rounds of 16, the host's drift
+  larger than either): there the host gives the vCPUs less than the run's share, and the
+  hold holds in one run in four or five, for a few milliseconds. Its cost was its end: a
+  held vCPU waited for the governor to wake at the period's end and let it go, and on a
+  host overloaded (its load near 1,000) a governor 57.4 s late held one fill 333 s of the
+  625 it took. Now the governor holds them until the period's end (`Hold::set_held`), and
+  each held vCPU waits no longer than that (`Hold::wait`), however late the governor
+  wakes; what they ran meanwhile is the governor's to count, as before, and comes off the
+  next period. With the governor at the vCPUs' slice too, held vCPUs went on at most 3.2
+  ms past their period on 4 busy CPUs (PM M441). Tested: hold's
+  `a_held_vcpu_goes_on_at_its_periods_end_without_its_governor`, its other tests as
+  before.
+- **Next.** Windows' vCPUs on a contended host: unmeasured (jupiter's runs are held to a
+  few thousandths of a core by its headroom guard), whether WHP's vCPU threads wait there
+  as Linux's did.
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 6 built)
 

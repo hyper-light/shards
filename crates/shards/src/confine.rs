@@ -191,6 +191,12 @@ pub fn confine() -> Result<(), String> {
     // SAFETY: getpid(2) has no preconditions.
     let pid = unsafe { libc::getpid() };
     rules.push(Rule::with(libc::SYS_tgkill, 0, &[pid as u32]));
+    // A thread's own scheduling slice, read and set (pid 0, the calling thread alone): a
+    // vCPU's, a device worker's and the hold's governor's, which run as they wake on a
+    // busy host (platform `prioritize_vcpu_thread`, PM M440). Unprivileged, the kernel
+    // refuses it a higher priority or a real-time policy.
+    rules.push(Rule::with(libc::SYS_sched_getattr, 0, &[0]));
+    rules.push(Rule::with(libc::SYS_sched_setattr, 0, &[0]));
     // A pidfd of this process alone: what a run's client waits on for its VM process's end
     // where the VM holds a host's devices (warm.rs, `finish`).
     rules.push(Rule::with(libc::SYS_pidfd_open, 0, &[pid as u32]));

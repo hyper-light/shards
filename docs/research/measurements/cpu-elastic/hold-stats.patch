@@ -1,0 +1,57 @@
+diff --git a/crates/vmm/src/vm/hold.rs b/crates/vmm/src/vm/hold.rs
+index bec6fd08..c9ef9337 100644
+--- a/crates/vmm/src/vm/hold.rs
++++ b/crates/vmm/src/vm/hold.rs
+@@ -227,6 +227,20 @@ impl Hold {
+         let mut busy = true;
+         let mut start = Instant::now();
+         let mut last = None;
++        // hold-stats.patch (PM M441): what the hold did, logged as the governor ends.
++        struct Stats { cpus: u32, periods: u64, held: u64, held_ns: u128, used_ns: u64, late_us: Vec<u64> }
++        impl Drop for Stats {
++            fn drop(&mut self) {
++                self.late_us.sort_unstable();
++                let at = |q: usize| self.late_us.get(self.late_us.len() * q / 100).copied().unwrap_or(0);
++                crate::warn!(
++                    "hold-stats: cpus {} periods {} held {} held_ms {:.1} used_ms {:.1} late_us p50 {} p90 {} p99 {} max {}",
++                    self.cpus, self.periods, self.held, self.held_ns as f64 / 1e6, self.used_ns as f64 / 1e6,
++                    at(50), at(90), at(99), self.late_us.last().copied().unwrap_or(0)
++                );
++            }
++        }
++        let mut st = Stats { cpus: 0, periods: 0, held: 0, held_ns: 0, used_ns: 0, late_us: Vec::new() };
+         loop {
+             let (cpus, generation) = {
+                 let mut s = lock(&self.state);
+@@ -251,10 +265,14 @@ impl Hold {
+             let allowed = share.saturating_sub(debt);
+             let mut holding = false;
+             let mut changed = false;
++            let mut held_at = None;
++            st.cpus = cpus;
+             while let Some(left) = PERIOD.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) {
+                 let used = self.used().saturating_sub(base);
+                 if !holding && used >= allowed {
+                     holding = true;
++                    held_at = Some(Instant::now());
++                    st.held += 1;
+                     self.set_held(true);
+                     kick();
+                 }
+@@ -288,6 +306,16 @@ impl Hold {
+                     holding || used.saturating_mul(2) >= share,
+                 )
+             };
++            let now = Instant::now();
++            if !changed {
++                st.periods += 1;
++                st.used_ns = st.used_ns.saturating_add(used);
++                let late = now.saturating_duration_since(start + PERIOD);
++                st.late_us.push(u64::try_from(late.as_micros()).unwrap_or(u64::MAX));
++            }
++            if let Some(at) = held_at {
++                st.held_ns += now.saturating_duration_since(at).as_nanos();
++            }
+             start += PERIOD;
+             self.set_held(false);
+         }

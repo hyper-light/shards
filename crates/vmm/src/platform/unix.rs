@@ -1071,6 +1071,57 @@ pub unsafe fn clean_dcache(ptr: *const u8, len: usize) {
     let _ = (ptr, len);
 }
 
+/// The slice a thread that must run as it wakes asks of Linux's fair scheduler: the least
+/// it grants (100 µs, kernel/sched/fair.c `__setparam_fair`), where every other thread's is
+/// `base_slice_ns`, 2.8 ms on a host of 8 CPUs or more (0.7 ms times 1 + ilog2 of up to 8
+/// CPUs, `get_update_sysctl_factor`; Linux 6.18).
+#[cfg(target_os = "linux")]
+pub(super) const PROMPT_SLICE_NS: u64 = 100_000;
+
+/// Gives the calling thread [`PROMPT_SLICE_NS`] as its slice under EEVDF (sched_setattr(2),
+/// SCHED_OTHER with `sched_runtime`; Linux 6.12 and later, Documentation/scheduler/
+/// sched-eevdf.rst), keeping its nice value, so that as it wakes it takes its CPU at once
+/// from a thread of a longer slice (PREEMPT_SHORT, kernel/sched/fair.c
+/// `check_preempt_wakeup_fair`), which would otherwise run to its slice's end first
+/// (RUN_TO_PARITY). Its share of the CPU is its weight's as before, only when it gets it
+/// changes, and what it may run ahead after a sleep is still bounded by the longest slice
+/// beside it (`entity_lag`; PM M440). A thread of a policy its user chose (SCHED_BATCH,
+/// SCHED_IDLE, real-time) is left as it is; an older kernel takes the slice and leaves the
+/// thread as it was.
+#[cfg(target_os = "linux")]
+pub(super) fn run_promptly() -> io::Result<()> {
+    let size = u32::try_from(std::mem::size_of::<libc::sched_attr>())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.
+    let mut attr: libc::sched_attr = unsafe { std::mem::zeroed() };
+    // SAFETY: sched_getattr(2) of the calling thread (0) writes at most `size` bytes into
+    // `attr`, which has them.
+    let got = unsafe {
+        libc::syscall(
+            libc::SYS_sched_getattr,
+            0,
+            &mut attr as *mut libc::sched_attr,
+            size,
+            0,
+        )
+    };
+    if got != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if attr.sched_policy != libc::SCHED_OTHER as u32 {
+        return Ok(());
+    }
+    attr.size = size;
+    attr.sched_flags = 0;
+    attr.sched_runtime = PROMPT_SLICE_NS;
+    // SAFETY: sched_setattr(2) of the calling thread reads `attr.size` bytes from `attr`.
+    let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &attr as *const libc::sched_attr, 0) };
+    if set != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Fills `buf` from the kernel CSPRNG, blocking only until it is first seeded.
 #[cfg(target_os = "linux")]
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
@@ -2695,6 +2746,62 @@ mod usage_tests {
             assert!(spun <= wall + wall / 10, "{spun} ns of CPU in {wall} ns");
             assert!(spun >= wall / 10, "{spun} ns of CPU in {wall} ns");
         });
+    }
+
+    /// A thread made to run promptly has the fair scheduler's shortest slice where its
+    /// kernel takes one (Linux 6.12 and later), at its own nice value and policy; a thread
+    /// of another policy its user chose is left as it is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_prompt_thread_has_the_shortest_slice_at_its_own_weight() {
+        fn attr() -> libc::sched_attr {
+            // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.
+            let mut attr: libc::sched_attr = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of::<libc::sched_attr>();
+            // SAFETY: the calling thread's attributes, into `attr`, which has `size` bytes.
+            let got =
+                unsafe { libc::syscall(libc::SYS_sched_getattr, 0, &mut attr as *mut _, size as u32, 0) };
+            assert_eq!(got, 0, "{}", io::Error::last_os_error());
+            attr
+        }
+        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+        let mut numbers = release
+            .split(|c: char| !c.is_ascii_digit())
+            .map(|n| n.parse::<u32>().unwrap_or(0));
+        let version = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
+        let takes_slices = version >= (6, 12);
+        std::thread::spawn(move || {
+            // A weight of its own first, which an unprivileged thread may take.
+            // SAFETY: gettid(2) has no preconditions.
+            let tid = unsafe { libc::gettid() };
+            // SAFETY: setpriority(2) of the calling thread, by its ID.
+            let set = unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, 5) };
+            assert_eq!(set, 0);
+            run_promptly().unwrap();
+            let prompt = attr();
+            assert_eq!(prompt.sched_policy, libc::SCHED_OTHER as u32);
+            assert_eq!(prompt.sched_nice, 5);
+            if takes_slices {
+                assert_eq!(prompt.sched_runtime, PROMPT_SLICE_NS, "Linux {release}");
+            }
+        })
+        .join()
+        .unwrap();
+        std::thread::spawn(|| {
+            let mut batch = attr();
+            batch.sched_policy = libc::SCHED_BATCH as u32;
+            batch.sched_runtime = 0;
+            // SAFETY: sched_setattr(2) of the calling thread from `batch`.
+            let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &batch as *const _, 0) };
+            assert_eq!(set, 0);
+            run_promptly().unwrap();
+            // Its slice the kernel's default, which 6.12 and later report.
+            let left = attr();
+            assert_eq!(left.sched_policy, libc::SCHED_BATCH as u32);
+            assert_ne!(left.sched_runtime, PROMPT_SLICE_NS);
+        })
+        .join()
+        .unwrap();
     }
 }
 

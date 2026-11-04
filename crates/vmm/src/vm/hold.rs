@@ -47,7 +47,9 @@ struct State {
     cpus: u32,
     /// Bumped by each new limit, which begins a period of its own.
     generation: u64,
-    held: bool,
+    /// Held by its share until its period ends, as the governor said as it held them: a
+    /// vCPU goes on at that end by itself, however late the governor wakes to let it go.
+    held: Option<Instant>,
     /// Held by its group's budget, past which its group runs (D183).
     group_held: bool,
     /// Held whatever the share: the machine paused, until it goes on.
@@ -90,6 +92,9 @@ impl Hold {
 
     /// On a vCPU's thread, before it enters its guest: waits while the vCPUs are held,
     /// and returns at once once `stop` says so (the machine ends, or a snapshot needs it).
+    /// Held by its share, it waits no longer than its period: a governor that wakes late
+    /// on a busy host held its vCPUs as late, up to 57 s past their period on an overloaded
+    /// one (PM M441).
     pub(super) fn wait(&self, stop: &dyn Fn() -> bool) {
         if !self.held.load(Ordering::Acquire) {
             return;
@@ -97,8 +102,19 @@ impl Hold {
         let mut s = lock(&self.state);
         s.waiting = s.waiting.saturating_add(1);
         self.waited.notify_all();
-        while (s.held || s.group_held || s.paused) && !stop() {
-            s = wait(&self.released, s);
+        while !stop() {
+            if s.group_held || s.paused {
+                s = wait(&self.released, s);
+                continue;
+            }
+            let Some(until) = s.held else {
+                break;
+            };
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            s = wait_timeout(&self.released, s, left);
         }
         s.waiting = s.waiting.saturating_sub(1);
     }
@@ -129,7 +145,8 @@ impl Hold {
     pub(super) fn resume(&self) {
         let mut s = lock(&self.state);
         s.paused = false;
-        self.held.store(s.held || s.group_held, Ordering::Release);
+        self.held
+            .store(s.held.is_some() || s.group_held, Ordering::Release);
         drop(s);
         self.released.notify_all();
     }
@@ -147,7 +164,7 @@ impl Hold {
     pub(super) fn end(&self) {
         let mut s = lock(&self.state);
         s.ended = true;
-        s.held = false;
+        s.held = None;
         s.group_held = false;
         s.paused = false;
         self.held.store(false, Ordering::Release);
@@ -157,13 +174,14 @@ impl Hold {
         self.waited.notify_all();
     }
 
-    fn set_held(&self, held: bool) {
+    /// Holds the vCPUs by their share until `until`, the period's end; `None` lets them go.
+    fn set_held(&self, until: Option<Instant>) {
         let mut s = lock(&self.state);
-        s.held = held && !s.ended;
+        s.held = until.filter(|_| !s.ended);
         self.held
-            .store(s.held || s.group_held || s.paused, Ordering::Release);
+            .store(s.held.is_some() || s.group_held || s.paused, Ordering::Release);
         drop(s);
-        if !held {
+        if until.is_none() {
             self.released.notify_all();
         }
     }
@@ -175,7 +193,7 @@ impl Hold {
         let newly = held && !s.group_held && !s.ended;
         s.group_held = held && !s.ended;
         self.held
-            .store(s.held || s.group_held || s.paused, Ordering::Release);
+            .store(s.held.is_some() || s.group_held || s.paused, Ordering::Release);
         drop(s);
         if !held {
             self.released.notify_all();
@@ -255,7 +273,7 @@ impl Hold {
                 let used = self.used().saturating_sub(base);
                 if !holding && used >= allowed {
                     holding = true;
-                    self.set_held(true);
+                    self.set_held(Some(start + PERIOD));
                     kick();
                 }
                 let next = if holding || !busy {
@@ -289,7 +307,7 @@ impl Hold {
                 )
             };
             start += PERIOD;
-            self.set_held(false);
+            self.set_held(None);
         }
     }
 
@@ -648,7 +666,7 @@ mod tests {
     #[test]
     fn the_end_lets_a_held_vcpu_go() {
         let hold = Hold::new(1);
-        hold.set_held(true);
+        hold.set_held(Some(Instant::now() + Duration::from_secs(3600)));
         std::thread::scope(|s| {
             let waiting = s.spawn(|| hold.wait(&|| false));
             std::thread::sleep(Duration::from_millis(50));
@@ -656,5 +674,24 @@ mod tests {
             hold.end();
             waiting.join().unwrap();
         });
+    }
+
+    /// A vCPU held by its share goes on as its period ends by itself, its governor never
+    /// waking to let it go (one starved on a busy host, PM M441), and held no longer than
+    /// that: it waits the period out, no less.
+    #[test]
+    fn a_held_vcpu_goes_on_at_its_periods_end_without_its_governor() {
+        let hold = Hold::new(1);
+        let t = Instant::now();
+        hold.set_held(Some(t + Duration::from_millis(100)));
+        hold.wait(&|| false);
+        let waited = t.elapsed();
+        assert!(waited >= Duration::from_millis(100), "{waited:?}");
+        // Its thread woken on time, but on a busy host.
+        assert!(waited < Duration::from_secs(2), "{waited:?}");
+        // Still held by the governor's word, a later look returns at once.
+        let t = Instant::now();
+        hold.wait(&|| false);
+        assert!(t.elapsed() < Duration::from_millis(100));
     }
 }

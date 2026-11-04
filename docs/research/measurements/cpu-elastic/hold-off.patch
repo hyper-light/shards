@@ -1,0 +1,15 @@
+diff --git a/crates/vmm/src/vm/hold.rs b/crates/vmm/src/vm/hold.rs
+index bec6fd08..c09d963c 100644
+--- a/crates/vmm/src/vm/hold.rs
++++ b/crates/vmm/src/vm/hold.rs
+@@ -82,7 +82,9 @@ impl Hold {
+     /// many as there are vCPUs, lets them be.
+     pub(super) fn set(&self, cpus: u32) {
+         let mut s = lock(&self.state);
+-        s.cpus = cpus;
++        // hold-off.patch (PM M292's next item): no hold, every vCPU free of it.
++        let _ = cpus;
++        s.cpus = 0;
+         s.generation = s.generation.wrapping_add(1);
+         drop(s);
+         self.changed.notify_all();
