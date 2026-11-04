@@ -669,7 +669,7 @@ pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
 }
 
 /// Copies this VM's memory for a live move into `out` (D176 part 7, `PRECOPY`).
-pub fn precopy(out: File, most: u32, enough: u64) -> Result<vm::Precopied, String> {
+pub fn precopy(out: std::fs::File, most: u32, enough: u64) -> Result<vm::Precopied, String> {
     RUNNING
         .get()
         .ok_or("the microVM has not started")?

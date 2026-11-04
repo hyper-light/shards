@@ -10,7 +10,10 @@
     clippy::panic,
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
 )]
 
 mod common;
@@ -266,4 +269,140 @@ fn a_move_refused_leaves_the_microvm_running_here() {
     let all = counts(&log());
     assert_eq!(all, (1..=all.len() as u64).collect::<Vec<_>>());
     assert_eq!(shards_in(&here, &["rm", "-f", "counter"]).status, Some(0));
+}
+
+/// `shards move vm --live NAME lab` with what it reports of its rounds and its downtime
+/// (`SHARDS_MOVE_TIMES`): the run, and the downtime in µs where it said one.
+fn move_live(here: &Path, name: &str) -> (Run, Option<u64>) {
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", here.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_MOVE_TIMES", OsStr::new("1")),
+    ];
+    let moved = run_shards_env(&[], &["move", "vm", "--live", name, "lab"], &env, TIMEOUT);
+    let downtime = moved.stderr.lines().find_map(|l| {
+        l.strip_prefix("move: downtime ")?
+            .strip_suffix(" us")?
+            .parse()
+            .ok()
+    });
+    (moved, downtime)
+}
+
+/// A running microVM moved live goes on there where it was, as it ran on here while its
+/// memory was copied: its counter counts on, each count once, through rounds that sent what
+/// it wrote as it ran; held here only for its last save, the time it ran nowhere said. A
+/// move the other machine cannot take leaves it running here, its last save let go.
+#[test]
+fn a_running_microvm_moves_live_and_goes_on_there() {
+    let Some((here, there, _listening, image)) = machines("live") else {
+        return;
+    };
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--pull", "never", "--name", "counter", &image, "counter", "20",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log_here = || logs(&here, "counter");
+    until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
+    let (moved, downtime) = move_live(&here, "counter");
+    assert_eq!(
+        (moved.status, moved.stdout.as_str()),
+        (Some(0), "counter\n"),
+        "{moved}\nhere:\n{}\nthere:\n{}",
+        daemon_log(&here),
+        daemon_log(&there)
+    );
+    assert!(moved.stderr.contains("move: round 0 "), "{moved}");
+    let downtime = downtime.unwrap_or_else(|| panic!("no downtime said: {moved}"));
+    eprintln!("downtime {downtime} us");
+    let gone = shards_in(&here, &["inspect", "counter"]);
+    assert_eq!(gone.status, Some(1), "{gone}");
+    let log_there = || logs(&there, "counter");
+    let n = counts(&log_there()).len();
+    until(
+        "counting there",
+        &mut || counts(&log_there()).len() >= n + 10,
+        &log_there,
+    );
+    let all = counts(&log_there());
+    assert_eq!(
+        all,
+        (1..=all.len() as u64).collect::<Vec<_>>(),
+        "each count once, from here on to there"
+    );
+    assert_eq!(shards_in(&there, &["rm", "-f", "counter"]).status, Some(0));
+
+    // Refused there: it runs on here, as it was.
+    let taken = shards_in(&there, &["create", "--name", "busy", &image, "counter", "20"]);
+    assert_eq!(taken.status, Some(0), "{taken}");
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--pull", "never", "--name", "busy", &image, "counter", "20",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&here, "busy");
+    until("counting", &mut || counts(&log()).len() >= 5, &log);
+    let (refused, _) = move_live(&here, "busy");
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(refused.stderr.contains("busy goes on here"), "{refused}");
+    let n = counts(&log()).len();
+    until("counting on here", &mut || counts(&log()).len() >= n + 5, &log);
+    assert_eq!(shards_in(&here, &["rm", "-f", "busy"]).status, Some(0));
+}
+
+/// The downtime of live moves, measured (PM, D176 part 7): `SHARDS_MOVES` microVMs, each
+/// writing memory as it counts, moved live from here to there and back, one at a time; each
+/// move's downtime, from its last save asked to its restore there said done, by this
+/// machine's clock, in µs, with n, p50, p90, p99 and max. Ignored: run by the harness
+/// (docs/research/measurements/migrate).
+#[test]
+#[ignore = "a measurement, run by docs/research/measurements/migrate"]
+fn live_move_downtime() {
+    let Some((here, there, _listening, image)) = machines("live-n") else {
+        return;
+    };
+    let n: usize = std::env::var("SHARDS_MOVES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(20);
+    let mut downtimes = Vec::new();
+    for i in 0..n {
+        let name = format!("m{i}");
+        let run = shards_in(
+            &here,
+            &[
+                "run", "-d", "--pull", "never", "--name", &name, &image, "counter", "20",
+            ],
+        );
+        assert_eq!(run.status, Some(0), "{run}");
+        let log = || logs(&here, &name);
+        until("counting", &mut || counts(&log()).len() >= 5, &log);
+        let (moved, downtime) = move_live(&here, &name);
+        assert_eq!(moved.status, Some(0), "{moved}");
+        let rounds: Vec<&str> = moved
+            .stderr
+            .lines()
+            .filter(|l| l.starts_with("move: round"))
+            .collect();
+        eprintln!("move {i}: {downtime:?} us; {rounds:?}");
+        downtimes.extend(downtime);
+        assert_eq!(shards_in(&there, &["rm", "-f", &name]).status, Some(0));
+    }
+    downtimes.sort_unstable();
+    let at = |q: f64| downtimes[((downtimes.len() as f64 - 1.0) * q).round() as usize];
+    eprintln!(
+        "live move downtime (us): n {} p50 {} p90 {} p99 {} max {}",
+        downtimes.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        downtimes.last().copied().unwrap_or(0)
+    );
 }
