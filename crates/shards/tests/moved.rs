@@ -357,6 +357,55 @@ fn a_running_microvm_moves_live_and_goes_on_there() {
     assert_eq!(shards_in(&here, &["rm", "-f", "busy"]).status, Some(0));
 }
 
+/// A microVM writing its memory as fast as its workload stamps it moves live with none of
+/// it lost: every page holds its last write there, its guest checking each after every
+/// sweep (testguest's `scribble`), as the rounds chased its writes and its last save held
+/// what they had not.
+#[test]
+fn a_microvm_writing_its_memory_moves_live_with_none_of_it_lost() {
+    let Some((here, there, _listening, image)) = machines("live-mem") else {
+        return;
+    };
+    let run = shards_in(
+        &here,
+        &[
+            "run",
+            "-d",
+            "--pull",
+            "never",
+            "--name",
+            "scribbler",
+            &image,
+            "scribble",
+            "64",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log_here = || logs(&here, "scribbler");
+    until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
+    let (moved, downtime) = move_live(&here, "scribbler");
+    assert_eq!(
+        (moved.status, moved.stdout.as_str()),
+        (Some(0), "scribbler\n"),
+        "{moved}\nhere:\n{}\nthere:\n{}",
+        daemon_log(&here),
+        daemon_log(&there)
+    );
+    eprintln!("downtime {downtime:?} us: {}", moved.stderr);
+    let log_there = || logs(&there, "scribbler");
+    let n = counts(&log_there()).len();
+    until(
+        "sweeping there",
+        &mut || counts(&log_there()).len() >= n + 3 || log_there().contains("BAD"),
+        &log_there,
+    );
+    let said = log_there();
+    assert!(!said.contains("BAD"), "a page lost its last write: {said}");
+    let all = counts(&said);
+    assert_eq!(all, (1..=all.len() as u64).collect::<Vec<_>>(), "{said}");
+    assert_eq!(shards_in(&there, &["rm", "-f", "scribbler"]).status, Some(0));
+}
+
 /// The downtime of live moves, measured (PM, D176 part 7): `SHARDS_MOVES` microVMs, each
 /// writing memory as it counts, moved live from here to there and back, one at a time; each
 /// move's downtime, from its last save asked to its restore there said done, by this
