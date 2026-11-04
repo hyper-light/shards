@@ -1543,7 +1543,8 @@ mod tests {
             let skip_from = format!("{rel}/snapshots/");
             let keep = format!("{skip_from}s1");
             w.tree(&own, &rel, &|r| {
-                r.strip_prefix(&skip_from).is_some_and(|_| r != keep)
+                r.strip_prefix(&skip_from)
+                    .is_some_and(|rest| !rest.contains('/') && r != keep)
             })
             .unwrap();
             w.finish().unwrap();
