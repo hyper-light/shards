@@ -62,7 +62,7 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
 /// `configure disk` are said as, and `daemon` how the client starts the daemon.
-const OWN: [&str; 26] = [
+const OWN: [&str; 27] = [
     "system",
     // Contexts, and the clients and invitations of this machine's (D180).
     "context",
@@ -93,6 +93,8 @@ const OWN: [&str; 26] = [
     "-h",
     "--help",
     "restore",
+    // A microVM moved to another machine (`move vm`, D176 part 6).
+    "move",
 ];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {

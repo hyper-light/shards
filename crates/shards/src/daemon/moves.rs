@@ -1144,7 +1144,10 @@ impl<D: Disk> Daemon<D> {
         // stopped (D190), which its snapshot keeps as it was, and its restore takes.
         let kept_layer = format!("{own}/{}", super::layers::KEPT);
         w.tree(&dir, &own, &|rel| {
-            rel == kept_layer || rel.strip_prefix(&snapshots).is_some_and(|_| rel != keep)
+            rel == kept_layer
+                || rel
+                    .strip_prefix(&snapshots)
+                    .is_some_and(|rest| !rest.contains('/') && rel != keep)
         })
         .map_err(fail)?;
         let store = crate::volumes::Store::new(&self.home);
