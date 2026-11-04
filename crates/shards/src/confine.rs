@@ -224,6 +224,13 @@ pub fn confine() -> Result<(), String> {
         libc::F_SETFL,
     ];
     rules.push(Rule::with(libc::SYS_fcntl, 1, &commands.map(|c| c as u32)));
+    // musl 1.2.6's pwrite(3) is pwritev2 of its one buffer with RWF_NOAPPEND, which writes
+    // at the offset as pwrite64 does, an O_APPEND file's too (musl's src/unistd/pwrite.c):
+    // the GPU's VM process, linked to a musl host's musl (D208), makes it as it saves a
+    // snapshot; Rust's own musl, which the other helpers link, is older.
+    if cfg!(target_env = "musl") {
+        rules.push(Rule::with(libc::SYS_pwritev2, 5, &[libc::RWF_NOAPPEND as u32]));
+    }
     // Signals to this process's own threads alone: a vCPU's kick, and glibc's raise(3).
     // SAFETY: getpid(2) has no preconditions.
     let pid = unsafe { libc::getpid() };
