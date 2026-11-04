@@ -6580,7 +6580,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories on Hypervisor.framework and KVM; host functions on KVM, untested on hardware)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories on Hypervisor.framework, KVM and WHP; host functions on KVM)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -6675,13 +6675,23 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   which the teardown's let-go fixed. On Hypervisor.framework (an M5 Max, macOS 26.4.1):
   host plug 11 µs, rescan 2.4 ms, rescan to first read 3.1 ms, remove 7.8 ms, unplug 4 µs
   at p50, n 100. Mutation-checked: with a disk's growth sent no configuration change, its
-  guest never sees it grow, the disk it booted with and the plugged one alike.
+  guest never sees it grow, the disk it booted with and the plugged one alike. On arm64
+  KVM, nested in a guest with EL2 on the M5 Max (boot.rs's L1 harness, `SHARDS_L1_TESTS=
+  hotplug`), its MSIs through the GIC's ITS: the same test, and a host's function plugged
+  in (`a_hosts_function_is_plugged_into_a_running_microvm`, `SHARDS_L1_PCI_TESTS=01.0`):
+  the L1 guest's QEMU edu test function bound to its vfio-pci, plugged into a microVM of
+  its own twice, whose guest rescans, finds 1234:11e8 where it was plugged and reads its
+  identification register and liveness check through its BAR 0 where it placed it, lets it
+  go, and it is unplugged, KVM forgetting its group. Its first run found a plugged
+  function's BAR windows mapped at 0 as its guest turned decoding on before placing its
+  BARs (KVM refused them, EEXIST): a window is mapped only where its BAR is placed.
 - **Not yet:** a daemon's run plugged into (a command that asks for it, its init's rescan
   and mount, its record kept), so that runs from templates take devices as they run, which
-  needs a template's machine to have slots and so a snapshot of an empty bus; a plugged
-  share's DAX window; a plugged function's 64-bit BARs past the 32-bit window; a host's
-  function plugged on real hardware (no host here has a spare one bound to vfio-pci: the
-  path is held by unit tests of its parts and the code shared with D154's tested one).
+  needs a template's machine to have slots and so a snapshot of an empty bus (and, on
+  arm64 KVM, of its ITS); a plugged share's DAX window; a plugged function's 64-bit BARs
+  past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
+  has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
+  remove's 29 ms on KVM x86_64, not yet split (PM M430).
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
