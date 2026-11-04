@@ -329,7 +329,7 @@ impl Vm {
             *first |= features;
         }
         Ok(Vm {
-            slots: Slots::new(fd.clone()),
+            slots: Slots::new(kvm, fd.clone()),
             fd,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
             mpidrs: config.mpidrs,
@@ -437,11 +437,13 @@ impl Vm {
         }
         lock(&self.vcpus).push(fd.weak());
         let thread = super::this_thread();
+        self.slots.dirty.add_vcpu(&fd)?;
         Ok(Vcpu {
             kicker: Kicker {
                 run: fd.run.clone(),
                 thread: thread.clone(),
             },
+            dirty: self.slots.dirty.clone(),
             fd,
             thread,
         })
@@ -532,6 +534,9 @@ pub struct Vcpu {
     kicker: Kicker,
     /// Cleared on drop, so no kick can signal a thread that no longer runs this vCPU.
     pub(super) thread: Arc<Mutex<Option<Thread>>>,
+    /// Its VM's watch of the guest's writes, which empties its dirty ring as it fills
+    /// (D176 part 7).
+    dirty: Arc<super::Dirty>,
 }
 
 impl Vcpu {
@@ -553,7 +558,7 @@ impl Vcpu {
 
     /// Runs the guest until it powers off, resets, or a kick arrives.
     pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
-        super::run(&mut self.fd, io)
+        super::run(&mut self.fd, io, &self.dirty)
     }
 
     /// The CPU identity the guest sees: ID registers by encoding.
@@ -565,6 +570,25 @@ impl Vcpu {
                 Ok((r, value))
             })
             .collect()
+    }
+
+    /// Tells the guest the CPU `id` describes, each ID register set and read back (KVM takes
+    /// its writable fields, api.rst 4.68, "Writable ID registers"): a guest resumed on another
+    /// CPU than its snapshot's goes on with the one it found (D176 part 6).
+    pub fn set_cpu_id(&mut self, id: &[(u16, u64)]) -> Result<()> {
+        for &(r, v) in id {
+            self.fd
+                .set_reg(sys::sysreg(r), v)
+                .map_err(call("KVM_SET_ONE_REG"))?;
+            let now = self.fd.get_reg(sys::sysreg(r)).map_err(call("KVM_GET_ONE_REG"))?;
+            if now != v {
+                return Err(Error::Guest(format!(
+                    "{} stays {now:#x} where its guest's is {v:#x}",
+                    crate::arch::aarch64::cpu::name(r)
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Captures the vCPU's state (`state`). Call on the owning thread, with the vCPU out of

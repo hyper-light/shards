@@ -203,11 +203,164 @@ impl Stage2 {
 struct Slots {
     fd: Arc<sys::VmFd>,
     next: AtomicU32,
+    /// What watches its guest's writes for a live move (D176 part 7).
+    dirty: Arc<Dirty>,
+}
+
+/// The bytes of each vCPU's dirty ring (D176 part 7): 256 entries, a page of the host's
+/// memory for each vCPU, all the time; KVM fills one only while its VMM watches the guest's
+/// writes, and a vCPU whose ring fills exits for it to be emptied ([`Dirty::collect`]).
+const DIRTY_RING_BYTES: u32 = 4096;
+
+/// A VM's watch of its guest's writes (D176 part 7): its writable slots, which KVM logs the
+/// writes of while it watches, each vCPU's dirty ring, and the pages written since they
+/// were last asked for.
+#[derive(Debug)]
+pub(super) struct Dirty {
+    fd: Arc<sys::VmFd>,
+    /// Each vCPU's ring's bytes: none where KVM has no dirty rings, or not this VM's.
+    ring: u32,
+    slots: Mutex<Vec<sys::kvm_userspace_memory_region>>,
+    rings: Mutex<Vec<sys::DirtyRing>>,
+    written: Mutex<Option<std::collections::BTreeSet<u64>>>,
+}
+
+impl Dirty {
+    /// Gives `fd`'s vCPUs dirty rings where KVM has them: before any vCPU is made.
+    #[cfg(target_arch = "x86_64")]
+    fn enable(kvm: &sys::Kvm, fd: Arc<sys::VmFd>) -> Dirty {
+        let mut ring = 0;
+        for cap in [sys::CAP_DIRTY_LOG_RING_ACQ_REL, sys::CAP_DIRTY_LOG_RING] {
+            let most = kvm.check_extension(cap).unwrap_or(0);
+            if u32::try_from(most).is_ok_and(|most| most >= DIRTY_RING_BYTES)
+                && fd.enable_dirty_ring(cap, DIRTY_RING_BYTES).is_ok()
+            {
+                ring = DIRTY_RING_BYTES;
+                break;
+            }
+        }
+        Dirty::with_ring(fd, ring)
+    }
+
+    /// arm64's vCPUs get none: its GIC's ITS writes guest memory with no vCPU's ring to
+    /// note it in, which needs KVM's bitmap beside the rings (api.rst 8.40,
+    /// KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP), and no arm64 host here has KVM to hold it to.
+    #[cfg(target_arch = "aarch64")]
+    fn enable(_kvm: &sys::Kvm, fd: Arc<sys::VmFd>) -> Dirty {
+        Dirty::with_ring(fd, 0)
+    }
+
+    fn with_ring(fd: Arc<sys::VmFd>, ring: u32) -> Dirty {
+        Dirty {
+            fd,
+            ring,
+            slots: Mutex::new(Vec::new()),
+            rings: Mutex::new(Vec::new()),
+            written: Mutex::new(None),
+        }
+    }
+
+    /// Maps vCPU `vcpu`'s ring, where the VM gives each one.
+    fn add_vcpu(&self, vcpu: &sys::VcpuFd) -> Result<()> {
+        if self.ring == 0 {
+            return Ok(());
+        }
+        let ring = sys::DirtyRing::map(vcpu, self.ring).map_err(call("mmap of a vCPU's dirty ring"))?;
+        lock(&self.rings).push(ring);
+        Ok(())
+    }
+
+    /// Notes slot `r`, writable by its guest, for its writes to be logged as they are
+    /// watched; logged from now on where they are.
+    fn add_slot(&self, r: &sys::kvm_userspace_memory_region) -> Result<()> {
+        let watching = lock(&self.written).is_some();
+        lock(&self.slots).push(*r);
+        if watching {
+            let mut logged = *r;
+            logged.flags |= sys::MEM_LOG_DIRTY_PAGES;
+            // SAFETY: the slot as it was just made, its host range the caller's to keep.
+            unsafe { self.fd.set_user_memory_region(&logged) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))?;
+        }
+        Ok(())
+    }
+
+    /// Forgets slot `slot`, deleted: its pages already noted stay noted.
+    fn remove_slot(&self, slot: u32) {
+        // The rings may hold its pages yet: taken while its place is known.
+        let _ = self.collect();
+        lock(&self.slots).retain(|r| r.slot != slot);
+    }
+
+    /// Starts watching the guest's writes: every writable slot's logged from now on.
+    pub(super) fn watch(&self) -> Result<()> {
+        if self.ring == 0 {
+            return Err(Error::Guest(
+                "this host's KVM keeps no dirty rings (KVM_CAP_DIRTY_LOG_RING), which a live move reads"
+                    .into(),
+            ));
+        }
+        *lock(&self.written) = Some(std::collections::BTreeSet::new());
+        for r in lock(&self.slots).iter() {
+            let mut logged = *r;
+            logged.flags |= sys::MEM_LOG_DIRTY_PAGES;
+            // SAFETY: a slot the VM made, re-registered at the same range with logging on.
+            if let Err(e) = unsafe { self.fd.set_user_memory_region(&logged) } {
+                self.unwatch();
+                return Err(call("KVM_SET_USER_MEMORY_REGION")(e));
+            }
+        }
+        Ok(())
+    }
+
+    /// Empties every vCPU's ring into the pages written, and gives the rings back to KVM,
+    /// which takes each page harvested away for writing again as it does: a vCPU whose ring
+    /// is full runs again after. What is read of a page after this holds every write noted.
+    pub(super) fn collect(&self) -> Result<()> {
+        let slots = lock(&self.slots).clone();
+        let mut written = lock(&self.written);
+        let page = crate::platform::page_size().map_err(call("sysconf(_SC_PAGESIZE)"))? as u64;
+        let mut taken = 0;
+        for ring in lock(&self.rings).iter() {
+            taken += ring.harvest(&mut |slot, index| {
+                let Some(set) = written.as_mut() else { return };
+                if let Some(r) = slots.iter().find(|r| r.slot == slot) {
+                    set.insert(r.guest_phys_addr.saturating_add(index.saturating_mul(page)));
+                }
+            });
+        }
+        if taken > 0 {
+            self.fd
+                .reset_dirty_rings()
+                .map_err(call("KVM_RESET_DIRTY_RINGS"))?;
+        }
+        Ok(())
+    }
+
+    /// The pages written since the watch began or since this was last asked, in order of
+    /// their addresses: each taken away for writing again before it is said.
+    pub(super) fn written(&self) -> Result<Vec<u64>> {
+        self.collect()?;
+        Ok(lock(&self.written)
+            .as_mut()
+            .map(|set| std::mem::take(set).into_iter().collect())
+            .unwrap_or_default())
+    }
+
+    /// Stops watching: no slot's writes logged, and the rings emptied.
+    pub(super) fn unwatch(&self) {
+        for r in lock(&self.slots).iter() {
+            // SAFETY: a slot the VM made, re-registered as it was made.
+            let _ = unsafe { self.fd.set_user_memory_region(r) };
+        }
+        let _ = self.collect();
+        *lock(&self.written) = None;
+    }
 }
 
 impl Slots {
-    fn new(fd: Arc<sys::VmFd>) -> Slots {
+    fn new(kvm: &sys::Kvm, fd: Arc<sys::VmFd>) -> Slots {
         Slots {
+            dirty: Arc::new(Dirty::enable(kvm, fd.clone())),
             fd,
             next: AtomicU32::new(0),
         }
@@ -227,7 +380,11 @@ impl Slots {
             userspace_addr: host as u64,
         };
         // SAFETY: forwarded caller contract.
-        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
+        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))?;
+        if !readonly {
+            self.dirty.add_slot(&region)?;
+        }
+        Ok(())
     }
 }
 
@@ -238,6 +395,8 @@ pub struct DeviceSlots {
     fd: Arc<sys::VmFd>,
     first: u32,
     count: u32,
+    /// Its VM's watch of the guest's writes: a writable slot's (a run's swap) logged too.
+    dirty: Arc<Dirty>,
 }
 
 impl DeviceSlots {
@@ -261,19 +420,42 @@ impl DeviceSlots {
             userspace_addr: host as u64,
         };
         // SAFETY: forwarded caller contract.
-        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
+        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))?;
+        if writable {
+            self.dirty.add_slot(&region)?;
+        }
+        Ok(())
     }
 
     /// Unmaps slot `i`, at `gpa` for `len` bytes as it was mapped: the guest reaches its
     /// addresses as MMIO again.
     pub fn unmap(&self, i: u32, _gpa: u64, _len: usize) -> Result<()> {
+        let slot = self.slot(i)?;
+        self.dirty.remove_slot(slot);
         self.fd
-            .delete_user_memory_region(self.slot(i)?)
+            .delete_user_memory_region(slot)
             .map_err(call("KVM_SET_USER_MEMORY_REGION"))
     }
 }
 
 impl Vm {
+    /// Watches the guest's writes for a live move (D176 part 7): every writable slot's
+    /// logged into its vCPUs' dirty rings (api.rst 8.29).
+    pub fn watch_writes(&self) -> Result<()> {
+        self.slots.dirty.watch()
+    }
+
+    /// The pages written since the watch began or was last asked, each taken away for
+    /// writing again first, in order of their addresses.
+    pub fn written(&self) -> Result<Vec<u64>> {
+        self.slots.dirty.written()
+    }
+
+    /// Stops watching the guest's writes.
+    pub fn unwatch_writes(&self) {
+        self.slots.dirty.unwatch();
+    }
+
     /// Tells KVM of VFIO's file `file`, a group's or a device's opened by its node, through
     /// KVM's VFIO device (Documentation/virt/kvm/devices/vfio.rst, KVM_DEV_VFIO_FILE_ADD),
     /// before the device is opened or bound, as drivers that need the VM to open a device
@@ -302,6 +484,7 @@ impl Vm {
             fd: self.slots.fd.clone(),
             first: self.slots.next.fetch_add(count, Ordering::Relaxed),
             count,
+            dirty: self.slots.dirty.clone(),
         }
     }
 
@@ -353,9 +536,11 @@ impl Vm {
 
 /// Runs the vCPU of `fd` until a kick, power-off or reset; device accesses complete
 /// through `io` on the way.
-fn run(fd: &mut sys::VcpuFd, io: &dyn Io) -> Result<Exit> {
+fn run(fd: &mut sys::VcpuFd, io: &dyn Io, dirty: &Dirty) -> Result<Exit> {
     loop {
         match fd.run().map_err(call("KVM_RUN"))? {
+            // Its dirty ring full, as the guest's writes are watched: emptied, and on.
+            sys::RunExit::DirtyRingFull => dirty.collect()?,
             sys::RunExit::Interrupted => {
                 fd.clear_immediate_exit();
                 return Ok(Exit::Canceled);

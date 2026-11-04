@@ -195,6 +195,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         // A running microVM saved whole, to restore later (D176): shards' own, as Docker's
         // `checkpoint create` is its own command.
         ("save", Thing::Vm | Thing::Container) => &["save", "vm"],
+        // A microVM moved to another machine whole, through its context (D176 part 6).
+        ("move", Thing::Vm | Thing::Container) => &["move", "vm"],
         (action @ ("push" | "tag" | "save"), _) if !thing_first => {
             let mut out = once(action, &[]);
             out.push("--convert".into());
@@ -235,6 +237,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Make a microVM without starting it, a volume, an Agentfile of an image, or a context",
     ),
     ("run", "exec", "vm", "Run a command in a running microVM"),
+    (
+        "run",
+        "move",
+        "vm",
+        "Move a microVM to another machine, as it runs",
+    ),
     ("run", "restart", "vm", "Stop microVMs, and start them again"),
     ("run", "restore", "vm", "Resume a microVM from a snapshot"),
     (
@@ -401,6 +409,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "restore",
         "vm NAME [SNAPSHOT]",
         "Resume a stopped microVM where it was saved, from its newest snapshot unless SNAPSHOT names one",
+    ),
+    (
+        "run",
+        "move",
+        "vm NAME CONTEXT",
+        "Move a microVM to the machine a context reaches: saved whole here, its files, volumes and image sent, and resumed there where it was",
     ),
     (
         "run",
@@ -888,6 +902,9 @@ mod tests {
             Some("save vm web first --leave-running")
         );
         assert_eq!(said("save container web").as_deref(), Some("save vm web"));
+        // A microVM moved to another machine (D176 part 6).
+        assert_eq!(said("move vm web lab").as_deref(), Some("move vm web lab"));
+        assert_eq!(said("move microvm web lab").as_deref(), Some("move vm web lab"));
         assert_eq!(said("pull image alpine").as_deref(), Some("pull alpine"));
         assert_eq!(
             said("run vm --kernel k --cpus 2").as_deref(),

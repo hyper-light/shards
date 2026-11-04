@@ -1581,6 +1581,7 @@ mod tests {
                 },
                 size_rw: None,
                 saved: None,
+                moved: false,
                 engine_made: None,
                 engine_images: Vec::new(),
                 engine_networks: Vec::new(),

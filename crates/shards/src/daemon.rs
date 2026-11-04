@@ -67,6 +67,7 @@ mod inspect_doc;
 mod layers;
 mod load;
 mod logs;
+mod moves;
 mod network;
 mod networks;
 mod packed;
@@ -862,6 +863,9 @@ struct Inbox {
     provider: Option<Arc<Mutex<Inbox>>>,
     /// A save its VM was asked for and has yet to answer (D176).
     saving: Option<snapshots::Saving>,
+    /// A live move's rounds its VM was asked for and has yet to answer (D176 part 7): what
+    /// they sent, as its VM says it, or why not.
+    precopying: Option<mpsc::Sender<Result<String, String>>>,
     /// The pauses and resumes its VM was asked for (`PAUSE`) and has yet to answer, each
     /// by its number.
     pausing: Vec<(u64, mpsc::Sender<Result<(), String>>)>,
@@ -3505,7 +3509,9 @@ impl<D: Disk> Daemon<D> {
                     return Ok(None);
                 }
                 crate::spec::fits(&prepared.spec)?;
-                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent)?;
+                // Copies of the volumes a microVM moved here was saved with (D176 part 6).
+                let moved = lock(&self.containers).made(&id).is_some_and(|c| c.moved);
+                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent, moved)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
             });
@@ -4212,11 +4218,12 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
+        moved: bool,
     ) -> Result<Option<ShareEnds>, String> {
         if dirs.is_empty() {
             return Ok(None);
         }
-        let (ends, child) = self.started_shares(threads, dirs, parent)?;
+        let (ends, child) = self.started_shares(threads, dirs, parent, moved)?;
         let mut shared = lock(&self.shared_by);
         let children = shared.entry(id.to_string()).or_default();
         children.retain(|c| !c.has_ended());
@@ -4249,6 +4256,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
+        moved: bool,
     ) -> Result<(ShareEnds, Arc<shards_ipc::Child>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let group = if parent.is_empty() {
@@ -4262,6 +4270,9 @@ impl<D: Disk> Daemon<D> {
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        if moved {
+            args.push(OsStr::new(crate::share::MOVED));
+        }
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -4296,10 +4307,14 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
+        moved: bool,
     ) -> Result<(UnixStream, Arc<shards_ipc::Child>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        if moved {
+            args.push(OsStr::new(crate::share::MOVED));
+        }
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -4476,6 +4491,7 @@ impl<D: Disk> Daemon<D> {
             },
             size_rw: None,
             saved: None,
+            moved: false,
             engine_images: Vec::new(),
             engine_networks: Vec::new(),
             // Made through a microVM's own engine (D181): its name there, or the one it was
@@ -5094,6 +5110,7 @@ impl<D: Disk> Daemon<D> {
             joiners: 0,
             provider,
             saving: None,
+            precopying: None,
             pausing: Default::default(),
             saved_as: None,
             engine,
@@ -5170,6 +5187,9 @@ impl<D: Disk> Daemon<D> {
                     // never answered not done.
                     if let Some(saving) = inbox.saving.take() {
                         let _ = saving.told.send(Err("its microVM stopped".into()));
+                    }
+                    if let Some(told) = inbox.precopying.take() {
+                        let _ = told.send(Err("its microVM stopped".into()));
                     }
                     for (_, told) in inbox.pausing.drain(..) {
                         let _ = told.send(Err("its microVM stopped".into()));
@@ -5333,6 +5353,7 @@ impl<D: Disk> Daemon<D> {
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
+                kind::PRECOPIED => moves::precopied(inbox, &m.payload),
                 // Its VM's answer to a pause or resume it was asked for.
                 kind::PAUSED => {
                     if let Some((number, said)) = m.payload.split_first_chunk::<8>()
@@ -5666,8 +5687,10 @@ impl<D: Disk> Daemon<D> {
         let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
-            // Running again, as a snapshot resumes it or not: no save stopped it (D176).
+            // Running again, as a snapshot resumes it or not: no save stopped it (D176), and
+            // one moved here runs here now (part 6).
             c.saved = None;
+            c.moved = false;
             c.exit_code = None;
             c.oom_killed = false;
             c.error.clear();
