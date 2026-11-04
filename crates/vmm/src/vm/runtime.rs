@@ -754,6 +754,9 @@ impl Running {
             // The device workers go quiet before the VM they raise interrupts in goes.
             self.bus.pause();
         }
+        // No device is plugged in from here on, and its slots' MSIs, which reach the VM,
+        // keep it no longer (D214): a handle outlives its machine.
+        drop(self.control.take_plugs());
         // Nothing of the machine runs now: its writable layer is what its guest left.
         let mut free = Some(free);
         if !platform::LET_GO_WRITES_BACK

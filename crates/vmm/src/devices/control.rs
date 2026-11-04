@@ -48,7 +48,9 @@ pub struct Control {
     /// What runs as the guest first says its PID 1 runs (`marker::INIT_STARTED`).
     on_init_started: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Its PCI bus's hot-plug, where it has slots (D214).
-    plugs: OnceLock<Plugs>,
+    /// Taken as the machine is taken apart: its slots' MSIs reach its VM, which they would
+    /// keep as long as a handle of it lives.
+    plugs: std::sync::Mutex<Option<std::sync::Arc<Plugs>>>,
     /// Its file disks' sizes, in its disks' order, which grow as it runs (D214).
     disks: OnceLock<Vec<DiskSize>>,
 }
@@ -109,11 +111,26 @@ impl Control {
 
     /// Its PCI bus's hot-plug (D214), where it has slots to plug devices into.
     pub fn on_plugs(&self, plugs: Plugs) {
-        let _ = self.plugs.set(plugs);
+        *self
+            .plugs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(plugs));
     }
 
-    pub fn plugs(&self) -> Option<&Plugs> {
-        self.plugs.get()
+    /// Its hot-plug, while the machine runs.
+    pub fn plugs(&self) -> Option<std::sync::Arc<Plugs>> {
+        self.plugs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Lets go of its hot-plug, as the machine is taken apart.
+    pub fn take_plugs(&self) -> Option<std::sync::Arc<Plugs>> {
+        self.plugs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Its file disks' sizes, in order (D214).
