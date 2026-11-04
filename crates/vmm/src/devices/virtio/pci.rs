@@ -544,11 +544,19 @@ impl Plugged for VirtioPci {
         }
     }
 
+    /// Driven while its driver has it, as its status says (DRIVER, DRIVER_OK), or its bus
+    /// mastering is on: Linux's virtio core acknowledges a device again once its driver let
+    /// it go (drivers/virtio/virtio.c, virtio_dev_remove: ACKNOWLEDGE after the driver's
+    /// reset), and virtio_pci's remove then disables the function, its bus mastering off
+    /// (pci_disable_device).
     fn held(&self) -> Option<String> {
+        use super::status::{DRIVER, DRIVER_OK};
         let status = self.status();
-        (status != 0).then(|| {
+        let master = self.signals.header.command() & reg::COMMAND_MASTER != 0;
+        (status & (DRIVER | DRIVER_OK) != 0 || master).then(|| {
             format!(
-                "its guest's driver still drives it (device status {status:#x}): its guest lets it go first (`remove` in sysfs)"
+                "its guest's driver still drives it (device status {status:#x}, bus mastering {}): its guest lets it go first (`remove` in sysfs)",
+                if master { "on" } else { "off" }
             )
         })
     }
@@ -711,8 +719,12 @@ mod tests {
         put(&f, MSIX_TABLE + 12, 0, 4);
         assert_eq!(*sent.0.lock().unwrap(), [(0xfee0_0000, 0x41)]);
         assert_eq!(bar(&f, MSIX_PBA, 8), 0);
-        // A reset lets it go.
+        // Let go as Linux lets it go: reset, acknowledged again, bus mastering off.
+        f.config_write(reg::COMMAND, &(reg::COMMAND_MEMORY | reg::COMMAND_MASTER).to_le_bytes());
         put(&f, common::DEVICE_STATUS, 0, 1);
+        put(&f, common::DEVICE_STATUS, 1, 1);
+        assert!(f.held().is_some(), "bus mastering on");
+        f.config_write(reg::COMMAND, &reg::COMMAND_MEMORY.to_le_bytes());
         assert!(f.held().is_none());
         assert_eq!(bar(&f, common::QUEUE_SIZE, 2), 256);
     }
