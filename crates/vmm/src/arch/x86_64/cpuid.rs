@@ -455,7 +455,10 @@ pub fn covers(host: &[[u32; 7]], guest: &[[u32; 7]]) -> Result<(), String> {
             let (gv, hv) = (g.get(r).copied().unwrap_or(0), h.get(r).copied().unwrap_or(0));
             let missing = gv & !hv;
             if missing != 0 {
-                let name = ["", "", "", "eax", "ebx", "ecx", "edx"].get(r).copied().unwrap_or("?");
+                let name = ["", "", "", "eax", "ebx", "ecx", "edx"]
+                    .get(r)
+                    .copied()
+                    .unwrap_or("?");
                 short.push(format!("leaf {f:#x}.{i} {name} bits {missing:#x}"));
             }
         }
@@ -463,7 +466,10 @@ pub fn covers(host: &[[u32; 7]], guest: &[[u32; 7]]) -> Result<(), String> {
     if short.is_empty() {
         Ok(())
     } else {
-        Err(format!("this CPU lacks what its guest uses: {}", short.join(", ")))
+        Err(format!(
+            "this CPU lacks what its guest uses: {}",
+            short.join(", ")
+        ))
     }
 }
 

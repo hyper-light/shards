@@ -493,7 +493,9 @@ fn rekey(root: host::Raw, nodes: &mut HashMap<u64, Node>) -> Result<(), String> 
         let mut names = Vec::new();
         let mut at = id;
         while at != ROOT {
-            let n = nodes.get(&at).ok_or("a share's saved tables name a node they do not hold")?;
+            let n = nodes
+                .get(&at)
+                .ok_or("a share's saved tables name a node they do not hold")?;
             names.push(n.name.clone());
             at = n.parent;
             if names.len() > nodes.len() {

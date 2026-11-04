@@ -52,18 +52,34 @@ fn machines(name: &str) -> Option<(TempDir, TempDir, Listening, String)> {
     let (image, _) = served();
     let here = TempDir::new(&format!("{name}-h"));
     let there = TempDir::new(&format!("{name}-t"));
-    let started = shards_in(&there, &["run", "daemon", "--detached", "--listen", "127.0.0.1:0"]);
+    let started = shards_in(
+        &there,
+        &["run", "daemon", "--detached", "--listen", "127.0.0.1:0"],
+    );
     assert_eq!(started.status, Some(0), "{started}");
     let listening = Listening(there.to_path_buf());
     let invite = there.join("here.invite");
     let invited = shards_in(
         &there,
-        &["invite", "client", "--name", "here", "--output", invite.to_str().unwrap()],
+        &[
+            "invite",
+            "client",
+            "--name",
+            "here",
+            "--output",
+            invite.to_str().unwrap(),
+        ],
     );
     assert_eq!(invited.status, Some(0), "{invited}");
     let joined = shards_in(
         &here,
-        &["create", "context", "lab", "--invite-file", invite.to_str().unwrap()],
+        &[
+            "create",
+            "context",
+            "lab",
+            "--invite-file",
+            invite.to_str().unwrap(),
+        ],
     );
     assert_eq!(joined.status, Some(0), "{joined}");
     let pulled = shards_in(&here, &["pull", "-q", &image]);
@@ -109,8 +125,20 @@ fn a_running_microvm_moves_to_another_machine_and_goes_on_there() {
     let run = shards_in(
         &here,
         &[
-            "run", "-d", "--pull", "never", "--name", "counter", "-u", "0", "-v", "kept:/kept", &image,
-            "appender", "/kept/counts", "20",
+            "run",
+            "-d",
+            "--pull",
+            "never",
+            "--name",
+            "counter",
+            "-u",
+            "0",
+            "-v",
+            "kept:/kept",
+            &image,
+            "appender",
+            "/kept/counts",
+            "20",
         ],
     );
     assert_eq!(run.status, Some(0), "{run}");
@@ -146,8 +174,16 @@ fn a_running_microvm_moves_to_another_machine_and_goes_on_there() {
     );
     let counts_there = written(&file_there);
     let wanted: Vec<u64> = (1..=counts_there.len() as u64).collect();
-    assert_eq!(counts_there, wanted, "each count once, in order: {}", said_there());
-    let ps = shards_in(&there, &["ps", "--filter", "name=counter", "--format", "{{.Status}}"]);
+    assert_eq!(
+        counts_there,
+        wanted,
+        "each count once, in order: {}",
+        said_there()
+    );
+    let ps = shards_in(
+        &there,
+        &["ps", "--filter", "name=counter", "--format", "{{.Status}}"],
+    );
     assert!(ps.stdout.starts_with("Up "), "{ps}");
     assert_eq!(shards_in(&there, &["rm", "-f", "counter"]).status, Some(0));
 }
@@ -165,7 +201,9 @@ fn a_moved_microvms_log_and_image_go_with_it() {
     assert_eq!(shards_in(&here, &["tag", &image, local]).status, Some(0));
     let run = shards_in(
         &here,
-        &["run", "-d", "--pull", "never", "--name", "counter", local, "counter", "20"],
+        &[
+            "run", "-d", "--pull", "never", "--name", "counter", local, "counter", "20",
+        ],
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, "counter");
@@ -180,7 +218,11 @@ fn a_moved_microvms_log_and_image_go_with_it() {
     );
     let log_there = || logs(&there, "counter");
     let n = counts(&log_there()).len();
-    until("counting there", &mut || counts(&log_there()).len() >= n + 10, &log_there);
+    until(
+        "counting there",
+        &mut || counts(&log_there()).len() >= n + 10,
+        &log_there,
+    );
     let all = counts(&log_there());
     assert_eq!(
         all,
@@ -205,7 +247,9 @@ fn a_move_refused_leaves_the_microvm_running_here() {
     assert_eq!(taken.status, Some(0), "{taken}");
     let run = shards_in(
         &here,
-        &["run", "-d", "--pull", "never", "--name", "counter", &image, "counter", "20"],
+        &[
+            "run", "-d", "--pull", "never", "--name", "counter", &image, "counter", "20",
+        ],
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&here, "counter");

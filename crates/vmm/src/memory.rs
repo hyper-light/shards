@@ -740,7 +740,9 @@ impl GuestMemory {
     /// The pages devices wrote since the watch began or this was last asked, each
     /// [`DEVICE_PAGE`] long, in order of their addresses.
     pub fn device_written(&self) -> Vec<u64> {
-        std::mem::take(&mut *lock(&self.device_writes.pages)).into_iter().collect()
+        std::mem::take(&mut *lock(&self.device_writes.pages))
+            .into_iter()
+            .collect()
     }
 
     /// `(gpa, host pointer, len)` for each region of RAM, for stage-2 mapping: not the

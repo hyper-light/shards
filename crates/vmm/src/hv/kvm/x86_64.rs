@@ -159,7 +159,7 @@ impl Vm {
             .map_err(call("KVM_CHECK_EXTENSION"))?
             > 0;
         Ok(Vm {
-            slots: Slots::new(&kvm, fd.clone()),
+            slots: Slots::new(kvm, fd.clone()),
             fd,
             cpuid,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,

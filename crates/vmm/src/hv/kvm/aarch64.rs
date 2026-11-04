@@ -329,7 +329,7 @@ impl Vm {
             *first |= features;
         }
         Ok(Vm {
-            slots: Slots::new(&kvm, fd.clone()),
+            slots: Slots::new(kvm, fd.clone()),
             fd,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
             mpidrs: config.mpidrs,

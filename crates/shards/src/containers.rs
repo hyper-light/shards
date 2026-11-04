@@ -531,7 +531,10 @@ impl Registry {
     /// place already (D176 part 6): refused where its ID or its name is another's. Its record
     /// is behind until it is written.
     pub fn adopt(&mut self, c: Container) -> Result<(), String> {
-        if self.by_id.contains_key(&c.id) || self.arriving.contains_key(&c.id) || self.leaving.contains_key(&c.id) {
+        if self.by_id.contains_key(&c.id)
+            || self.arriving.contains_key(&c.id)
+            || self.leaving.contains_key(&c.id)
+        {
             return Err(format!("a microVM with {}'s ID is here already", c.name));
         }
         if self.name_taken(&c.name).is_some() {

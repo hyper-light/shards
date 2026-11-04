@@ -161,7 +161,10 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
         if back == ExitCode::SUCCESS {
             format!("{why}; {} goes on here", plan.name)
         } else {
-            format!("{why}; and {} could not be resumed here: shards restore vm {} {}", plan.name, plan.name, plan.snapshot)
+            format!(
+                "{why}; and {} could not be resumed here: shards restore vm {} {}",
+                plan.name, plan.name, plan.snapshot
+            )
         }
     };
 
@@ -191,7 +194,9 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
                     &[crate::cli::Stream::To(shards_ipc::fd::AsFd::as_fd(&writer))],
                 );
                 drop(writer);
-                let loaded = loading.join().map_err(|_| "loading its image failed".to_string())?;
+                let loaded = loading
+                    .join()
+                    .map_err(|_| "loading its image failed".to_string())?;
                 match (saved, loaded) {
                     (Ok((0, _, _)), Ok((0, _, _))) => Ok(()),
                     (Ok(s), _) if s.0 != 0 => Err(said("its image's save", &s)),
@@ -206,7 +211,11 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
         times.step("image loaded there");
         needs = match ready("its check") {
             Ok(needs) if !needs.image => needs,
-            Ok(_) => return Err(resume_here(format!("{to} has its image loaded and still finds none"))),
+            Ok(_) => {
+                return Err(resume_here(format!(
+                    "{to} has its image loaded and still finds none"
+                )));
+            }
             Err(e) => return Err(resume_here(e)),
         };
     }
@@ -220,7 +229,9 @@ fn moved(home: &Path, name: &str, to: &str, ask: &Ask<'_>) -> Result<(), String>
         std::thread::scope(|scope| {
             let importing = std::thread::Builder::new()
                 .name("move-import".into())
-                .spawn_scoped(scope, move || there(step(&[mv, "import"]), Some(Box::new(reader))))
+                .spawn_scoped(scope, move || {
+                    there(step(&[mv, "import"]), Some(Box::new(reader)))
+                })
                 .map_err(|e| e.to_string())?;
             let sent = ask(
                 export,

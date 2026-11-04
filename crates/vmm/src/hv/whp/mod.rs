@@ -824,7 +824,8 @@ impl Vm {
     /// tracking would (WHvQueryGpaRangeDirtyBitmap) and shards does not ask yet.
     pub fn watch_writes(&self) -> Result<()> {
         Err(Error::Guest(
-            "this host's microVMs move only saved, not live: WHP's dirty page tracking is not asked yet".into(),
+            "this host's microVMs move only saved, not live: WHP's dirty page tracking is not asked yet"
+                .into(),
         ))
     }
 

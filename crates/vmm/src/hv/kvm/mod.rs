@@ -284,11 +284,19 @@ impl Dirty {
         Ok(())
     }
 
+    /// Forgets slot `slot`, deleted: its pages already noted stay noted.
+    fn remove_slot(&self, slot: u32) {
+        // The rings may hold its pages yet: taken while its place is known.
+        let _ = self.collect();
+        lock(&self.slots).retain(|r| r.slot != slot);
+    }
+
     /// Starts watching the guest's writes: every writable slot's logged from now on.
     pub(super) fn watch(&self) -> Result<()> {
         if self.ring == 0 {
             return Err(Error::Guest(
-                "this host's KVM keeps no dirty rings (KVM_CAP_DIRTY_LOG_RING), which a live move reads".into(),
+                "this host's KVM keeps no dirty rings (KVM_CAP_DIRTY_LOG_RING), which a live move reads"
+                    .into(),
             ));
         }
         *lock(&self.written) = Some(std::collections::BTreeSet::new());
@@ -321,7 +329,9 @@ impl Dirty {
             });
         }
         if taken > 0 {
-            self.fd.reset_dirty_rings().map_err(call("KVM_RESET_DIRTY_RINGS"))?;
+            self.fd
+                .reset_dirty_rings()
+                .map_err(call("KVM_RESET_DIRTY_RINGS"))?;
         }
         Ok(())
     }
@@ -385,6 +395,8 @@ pub struct DeviceSlots {
     fd: Arc<sys::VmFd>,
     first: u32,
     count: u32,
+    /// Its VM's watch of the guest's writes: a writable slot's (a run's swap) logged too.
+    dirty: Arc<Dirty>,
 }
 
 impl DeviceSlots {
@@ -408,14 +420,20 @@ impl DeviceSlots {
             userspace_addr: host as u64,
         };
         // SAFETY: forwarded caller contract.
-        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
+        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))?;
+        if writable {
+            self.dirty.add_slot(&region)?;
+        }
+        Ok(())
     }
 
     /// Unmaps slot `i`, at `gpa` for `len` bytes as it was mapped: the guest reaches its
     /// addresses as MMIO again.
     pub fn unmap(&self, i: u32, _gpa: u64, _len: usize) -> Result<()> {
+        let slot = self.slot(i)?;
+        self.dirty.remove_slot(slot);
         self.fd
-            .delete_user_memory_region(self.slot(i)?)
+            .delete_user_memory_region(slot)
             .map_err(call("KVM_SET_USER_MEMORY_REGION"))
     }
 }
@@ -466,6 +484,7 @@ impl Vm {
             fd: self.slots.fd.clone(),
             first: self.slots.next.fetch_add(count, Ordering::Relaxed),
             count,
+            dirty: self.slots.dirty.clone(),
         }
     }
 

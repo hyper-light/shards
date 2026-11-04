@@ -125,7 +125,10 @@ mod tests {
     fn a_host_runs_a_guest_whose_every_field_it_has() {
         let isar2 = 0xc032;
         // CSSC [55:52] and HBC... as levels 1; the rest alike.
-        let m5 = [(MIDR_EL1, 0x612f_0390), (isar2, 0x0010_0000_0000_1000 | (1 << 52))];
+        let m5 = [
+            (MIDR_EL1, 0x612f_0390),
+            (isar2, 0x0010_0000_0000_1000 | (1 << 52)),
+        ];
         let m4 = [(MIDR_EL1, 0x612f_0280), (isar2, 0x0000_0000_0000_1000)];
         assert!(covers(&m5, &m4).is_ok());
         let refused = covers(&m4, &m5).unwrap_err();

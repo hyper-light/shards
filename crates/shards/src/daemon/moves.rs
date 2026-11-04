@@ -26,9 +26,6 @@ use super::snapshots::SNAPSHOTS;
 use super::{Daemon, lock};
 use crate::containers::{Container, Disk};
 
-/// The first word of `shards move vm`'s steps, which no command line has (cli/moves.rs).
-pub(crate) use shards_ipc::MOVE_STEP;
-
 /// The stream's first bytes, then its version.
 const MAGIC: &[u8; 8] = b"SHRDMOVE";
 const VERSION: u32 = 1;
@@ -281,7 +278,11 @@ fn mode_of(meta: &std::fs::Metadata) -> u32 {
     }
     #[cfg(not(unix))]
     {
-        if meta.permissions().readonly() { 0o444 } else { 0o644 }
+        if meta.permissions().readonly() {
+            0o444
+        } else {
+            0o644
+        }
     }
 }
 
@@ -379,7 +380,10 @@ pub(crate) fn read_plan(r: &mut dyn Read) -> Result<Plan, String> {
 /// Reads the entries of a stream after its plan ([`read_plan`]) from `r`, each given to
 /// `take` in order, a file's runs read as `take` asks for them. One that ends before its
 /// end, or holds what no writer writes, is refused.
-pub(crate) fn read_entries(r: &mut dyn Read, take: &mut dyn FnMut(Entry<'_>) -> Result<(), String>) -> Result<(), String> {
+pub(crate) fn read_entries(
+    r: &mut dyn Read,
+    take: &mut dyn FnMut(Entry<'_>) -> Result<(), String>,
+) -> Result<(), String> {
     let io = |e: io::Error| format!("the move's stream: {e}");
     let mut kind = [0u8; 1];
     loop {
@@ -483,9 +487,8 @@ mod xattrs {
             let mut value = vec![0u8; 1024];
             let got = loop {
                 // SAFETY: lgetxattr(2) writes at most `value.len()` bytes into it.
-                let got = unsafe {
-                    sys::get(c.as_ptr(), cname.as_ptr(), value.as_mut_ptr().cast(), value.len())
-                };
+                let got =
+                    unsafe { sys::get(c.as_ptr(), cname.as_ptr(), value.as_mut_ptr().cast(), value.len()) };
                 if got >= 0 {
                     break Some(got as usize);
                 }
@@ -533,11 +536,21 @@ mod xattrs {
             // SAFETY: the caller's.
             unsafe { libc::listxattr(path, buf, size, libc::XATTR_NOFOLLOW) }
         }
-        pub(super) unsafe fn get(path: *const c_char, name: *const c_char, buf: *mut c_void, size: size_t) -> ssize_t {
+        pub(super) unsafe fn get(
+            path: *const c_char,
+            name: *const c_char,
+            buf: *mut c_void,
+            size: size_t,
+        ) -> ssize_t {
             // SAFETY: the caller's.
             unsafe { libc::getxattr(path, name, buf, size, 0, libc::XATTR_NOFOLLOW) }
         }
-        pub(super) unsafe fn set(path: *const c_char, name: *const c_char, value: *const c_void, size: size_t) -> i32 {
+        pub(super) unsafe fn set(
+            path: *const c_char,
+            name: *const c_char,
+            value: *const c_void,
+            size: size_t,
+        ) -> i32 {
             // SAFETY: the caller's.
             unsafe { libc::setxattr(path, name, value, size, 0, libc::XATTR_NOFOLLOW) }
         }
@@ -550,11 +563,21 @@ mod xattrs {
             // SAFETY: the caller's.
             unsafe { libc::llistxattr(path, buf, size) }
         }
-        pub(super) unsafe fn get(path: *const c_char, name: *const c_char, buf: *mut c_void, size: size_t) -> ssize_t {
+        pub(super) unsafe fn get(
+            path: *const c_char,
+            name: *const c_char,
+            buf: *mut c_void,
+            size: size_t,
+        ) -> ssize_t {
             // SAFETY: the caller's.
             unsafe { libc::lgetxattr(path, name, buf, size) }
         }
-        pub(super) unsafe fn set(path: *const c_char, name: *const c_char, value: *const c_void, size: size_t) -> i32 {
+        pub(super) unsafe fn set(
+            path: *const c_char,
+            name: *const c_char,
+            value: *const c_void,
+            size: size_t,
+        ) -> i32 {
             // SAFETY: the caller's.
             unsafe { libc::lsetxattr(path, name, value, size, 0) }
         }
@@ -584,7 +607,9 @@ struct Placer<'a> {
 impl Placer<'_> {
     fn path(&self, rel: &str) -> Result<PathBuf, String> {
         if !(self.allowed)(rel) {
-            return Err(format!("the move's stream holds {rel}, which its plan does not name"));
+            return Err(format!(
+                "the move's stream holds {rel}, which its plan does not name"
+            ));
         }
         Ok(self.root.join(relative(rel)?))
     }
@@ -612,9 +637,14 @@ impl Placer<'_> {
             } => {
                 let path = self.path(&rel)?;
                 make_parent(&path)?;
-                let file = crate::os::owner_only(std::fs::OpenOptions::new().read(true).write(true).create_new(true))
-                    .open(&path)
-                    .map_err(|e| at(&path, &e))?;
+                let file = crate::os::owner_only(
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create_new(true),
+                )
+                .open(&path)
+                .map_err(|e| at(&path, &e))?;
                 shards_vmm::platform::make_sparse(&file).map_err(|e| at(&path, &e))?;
                 file.set_len(len).map_err(|e| at(&path, &e))?;
                 runs(&mut |offset, bytes| {
@@ -675,7 +705,7 @@ fn allowed(plan: &Plan, needed: &BTreeSet<String>, rel: &str) -> bool {
 
 impl<D: Disk> Daemon<D> {
     /// `shards move vm`'s steps (D176 part 6), for its client (cli/moves.rs) or a context's
-    /// (remote.rs): `args` after [`MOVE_STEP`].
+    /// (remote.rs): `args` after [`shards_ipc::MOVE_STEP`].
     pub(super) fn move_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
         let done = match args.first().map(String::as_str) {
             Some("save") => self.move_save(args.get(1).map_or("", String::as_str)),
@@ -828,7 +858,9 @@ impl<D: Disk> Daemon<D> {
         for file in &plan.files {
             let here = self.home.join(relative(&file.rel)?);
             let same = match std::fs::metadata(&here) {
-                Ok(m) if m.len() == file.size => digest_of(&here).is_ok_and(|(sha256, _)| sha256 == file.sha256),
+                Ok(m) if m.len() == file.size => {
+                    digest_of(&here).is_ok_and(|(sha256, _)| sha256 == file.sha256)
+                }
                 _ => false,
             };
             if !same {
@@ -861,9 +893,8 @@ impl<D: Disk> Daemon<D> {
         let mut reference =
             shards_image::reference::Reference::parse(&plan.image).map_err(|e| e.to_string())?;
         reference.tag = None;
-        reference.digest = Some(
-            shards_image::reference::Digest::parse(&plan.image_id).map_err(|e| e.to_string())?,
-        );
+        reference.digest =
+            Some(shards_image::reference::Digest::parse(&plan.image_id).map_err(|e| e.to_string())?);
         crate::run::find_image(
             &reference.to_string(),
             shards_ipc::Pull::Missing,
@@ -892,7 +923,12 @@ impl<D: Disk> Daemon<D> {
         let id = self.resolve(reference)?;
         let plan = self.plan(&id, snapshot)?;
         let home = PathBuf::from(&plan.home);
-        let wanted: BTreeSet<&str> = args.get(2..).unwrap_or_default().iter().map(String::as_str).collect();
+        let wanted: BTreeSet<&str> = args
+            .get(2..)
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str)
+            .collect();
         let fail = |e: io::Error| format!("writing the move: {e}");
         let mut w = Writer::new(io::BufWriter::with_capacity(CHUNK, File::from(out)), &plan).map_err(fail)?;
         let dir = lock(&self.containers).dir(&id);
@@ -911,7 +947,8 @@ impl<D: Disk> Daemon<D> {
         }
         for file in &plan.files {
             if wanted.contains(file.rel.as_str()) {
-                w.file(&home.join(relative(&file.rel)?), &file.rel).map_err(fail)?;
+                w.file(&home.join(relative(&file.rel)?), &file.rel)
+                    .map_err(fail)?;
             }
         }
         w.finish().map_err(fail)?;
@@ -1141,8 +1178,10 @@ mod tests {
             let rel = format!("containers/{}", p.id);
             let skip_from = format!("{rel}/snapshots/");
             let keep = format!("{skip_from}s1");
-            w.tree(&own, &rel, &|r| r.strip_prefix(&skip_from).is_some_and(|_| r != keep))
-                .unwrap();
+            w.tree(&own, &rel, &|r| {
+                r.strip_prefix(&skip_from).is_some_and(|_| r != keep)
+            })
+            .unwrap();
             w.finish().unwrap();
         }
         // Far less than the file's length: its hole is not sent.
@@ -1195,7 +1234,10 @@ mod tests {
             assert!(relative(bad).is_err(), "{bad:?}");
         }
         assert_eq!(relative("a/b").unwrap(), Path::new("a").join("b"));
-        assert_eq!(rel_of(Path::new("/h"), Path::new("/h/images/x")), Some("images/x".into()));
+        assert_eq!(
+            rel_of(Path::new("/h"), Path::new("/h/images/x")),
+            Some("images/x".into())
+        );
         assert_eq!(rel_of(Path::new("/h"), Path::new("/other/x")), None);
         assert_eq!(rel_of(Path::new("/h"), Path::new("/h")), None);
     }

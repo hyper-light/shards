@@ -574,7 +574,10 @@ impl DirtyRing {
     /// slot and its page's index in it, and marks it harvested; how many it took. The VM's
     /// [`VmFd::reset_dirty_rings`] gives them back to KVM.
     pub fn harvest(&self, take: &mut dyn FnMut(u32, u64)) -> u32 {
-        let mut next = self.next.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = self
+            .next
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut taken = 0;
         while taken < self.entries {
             let at = (*next % self.entries) as usize * 16;
