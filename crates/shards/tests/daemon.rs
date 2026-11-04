@@ -613,6 +613,65 @@ fn errors_reach_the_client() {
     assert_eq!(not_found.status, Some(127), "{}", not_found.stderr);
 }
 
+/// A stopped container's next run, served by a microVM its image's template restored, goes
+/// on over the file its layer was kept in (D190): the template's own layer let go of, the
+/// container's file under the device, what its run before made there, and the file the
+/// container's still, the same one, once it stops again.
+#[cfg(unix)]
+#[test]
+fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
+    use std::os::unix::fs::MetadataExt as _;
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-over", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let first = run_shards_env(
+        &["run"],
+        &[
+            "--pull",
+            "never",
+            "--name",
+            "over",
+            "-u",
+            "0",
+            &image,
+            "fs",
+            "write:/kept=one",
+            "mkdir:/made",
+        ],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    let id = run_shards_env(&["inspect"], &["-f", "{{.Id}}", "over"], &env, TIMEOUT);
+    let dir = home.join("containers").join(id.stdout.trim());
+    let kept = dir.join("layer.ext4");
+    let settled = || {
+        eventually("no layer kept", || {
+            kept.exists() && !dir.join("layer.new").exists()
+        })
+    };
+    settled();
+    let ino = std::fs::metadata(&kept).unwrap().ino();
+    for n in 0..2 {
+        let again = run_shards_env(&["start"], &["-a", "over"], &env, TIMEOUT);
+        assert_eq!(again.status, Some(1), "run {n}: {}", again.stderr);
+        assert!(
+            again.stderr.contains("mkdir:/made: File exists"),
+            "run {n}: {}",
+            again.stderr
+        );
+        settled();
+        assert_eq!(
+            std::fs::metadata(&kept).unwrap().ino(),
+            ino,
+            "run {n}: another file in its place"
+        );
+    }
+}
+
 /// `stop` ends the runs in progress as dockerd ends its containers when it shuts down:
 /// SIGTERM to the command, whose client gets its status. The pool's waiting VMs end too.
 /// The run is under --init, so that its command, which does not handle SIGTERM, is not
