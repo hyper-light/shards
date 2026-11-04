@@ -51,7 +51,14 @@ pub fn close_layer_fds() {
 
 /// Goes on over the container's layer its host readied (module docs). An error leaves the
 /// microVM unable to run the container: its run fails.
+pub static MARKS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+pub static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+pub fn mark(what: &str) {
+    let t = T0.get_or_init(std::time::Instant::now).elapsed().as_micros();
+    if let Ok(mut m) = MARKS.lock() { m.push_str(&format!("{what} {t}\n")); }
+}
 pub fn go_over() -> Result<(), String> {
+    mark("begin");
     let os = |what: &str| format!("{what}: {}", io::Error::last_os_error());
     // Moves between mounts of a shared tree are refused (fs/namespace.c, do_move_mount):
     // private until the new root is, then shared again as a boot leaves it (run.rs
@@ -74,6 +81,7 @@ pub fn go_over() -> Result<(), String> {
         return Err(os("pivot_root onto the tmpfs"));
     }
     chdir(c"/")?;
+    mark("pivot1");
     // The old root's own mounts, by where they are beneath it, before any moves.
     let held = mounts_beneath("/old")?;
     for rel in held
@@ -84,6 +92,7 @@ pub fn go_over() -> Result<(), String> {
     {
         move_mount(&format!("/old{rel}"), rel)?;
     }
+    mark("moves1");
     umount(&path("/old")?, libc::MNT_DETACH).map_err(|e| format!("detaching the template's root: {e}"))?;
     let _ = std::fs::remove_dir("/old");
     // The layer's own mount, unreachable now but through what init holds of it, and then
@@ -101,6 +110,7 @@ pub fn go_over() -> Result<(), String> {
         reopen_as(fd, c"/", libc::O_PATH | libc::O_DIRECTORY)
             .map_err(|e| format!("letting go of the template's layer: {e}"))?;
     }
+    mark("detached");
     let dev = crate::pmem::layer_device().ok_or("no writable layer of its own")?;
     // SAFETY: mknod(2) of a NUL-terminated path, the layer's block device.
     if unsafe { libc::mknod(c"/layer".as_ptr(), libc::S_IFBLK | 0o600, dev) } != 0 {
@@ -124,6 +134,7 @@ pub fn go_over() -> Result<(), String> {
     }
     // SAFETY: a fresh descriptor nothing else owns.
     drop(unsafe { OwnedFd::from_raw_fd(claimed) });
+    mark("excl");
     crate::linux::control_write(control::LAYER_SWAP, control::SWAP_LAYER)
         .and_then(|()| crate::linux::control_read64(control::LAYER_SWAP))
         .map_err(|e| format!("the control page: {e}"))
@@ -131,8 +142,10 @@ pub fn go_over() -> Result<(), String> {
             1 => Ok(()),
             _ => Err("its host did not put the container's layer under its device".to_string()),
         })?;
+    mark("swap");
     mkdir("/rw")?;
     crate::pmem::mount_ext4(c"/layer", c"/rw")?;
+    mark("ext4");
     for dir in ["/rw/upper", "/rw/work"] {
         mkdir(dir)?;
     }
@@ -173,6 +186,7 @@ pub fn go_over() -> Result<(), String> {
     {
         move_mount(rel, &format!("/new{rel}"))?;
     }
+    mark("overlay+moves2");
     // The new root every process's, the tmpfs under it detached (pivot_root(2), NOTES).
     chdir(c"/new")?;
     // SAFETY: pivot_root(2) of NUL-terminated paths.

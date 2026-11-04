@@ -2051,12 +2051,18 @@ fn receive(conn: &File, standby: Standby) -> Result<(Spec, Standby), Failure> {
         }
         Some((kind::OVER, 0)) => {
             // Its own mount namespace's copy of the root holds the template's layer too.
+            crate::over::mark("start");
             standby.end();
+            crate::over::mark("ended");
             crate::over::go_over()
                 .map_err(|e| setup_failed(format!("going on over the container's layer: {e}")))?;
             r.read_exact(&mut h)
                 .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-            Standby::fork(Born::Own)?
+            let s = Standby::fork(Born::Own)?;
+            crate::over::mark("forked");
+            let m = crate::over::MARKS.lock().map(|m| m.clone()).unwrap_or_default();
+            let _ = crate::pmem::write_in_layer("over-timing", m.as_bytes());
+            s
         }
         _ => standby,
     };

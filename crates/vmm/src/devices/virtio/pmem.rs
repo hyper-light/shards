@@ -749,6 +749,12 @@ impl Layer {
     /// The guest uses none of the file system's mapping until this returns: it mounts
     /// nothing of the device, and holds nothing of it open, as it says it has let go.
     pub unsafe fn swap_staged(&self) -> Result<(), String> {
+        let t = std::time::Instant::now();
+        let r = unsafe { self.swap_staged_x() };
+        crate::warn!("EXP layer swap {} us", t.elapsed().as_micros());
+        r
+    }
+    unsafe fn swap_staged_x(&self) -> Result<(), String> {
         let file = lock(&self.staged)
             .take()
             .ok_or("no kept layer was readied for it")?;
@@ -887,7 +893,10 @@ impl Layer {
     /// Firecracker's flush msyncs its device's whole file (docs/pmem.md) and QEMU's fsyncs
     /// it. The guest's root overlay passes its fsyncs on to the layer (init `run.rs`).
     pub fn flush(&self) -> Result<(), String> {
-        self.data.flush().map_err(|e| format!("its layer: {e}"))
+        let t = std::time::Instant::now();
+        let r = self.data.flush().map_err(|e| format!("its layer: {e}"));
+        crate::warn!("EXP layer flush {} us swapped={} staged={}", t.elapsed().as_micros(), self.swapped(), lock(&self.staged).is_some());
+        r
     }
 
     /// Maps its head back from `kept`, the copy a save has just written of it
