@@ -245,6 +245,67 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+/// What a kept layer holds past which its container's next run goes on over its file rather
+/// than having it packed and put back (D190, PM M443): packing costs a restart as the layer
+/// holds more, going over about the same whatever it holds (its guest's let-go of the
+/// template's layer and mount of the container's). Where the two cost the same, as
+/// measured ([`CROSSOVER_BASIS`]), to the MiB.
+pub(super) const OVER_FROM: u64 = 5 << 20;
+
+/// PM M443's restarts, `start -a` of a container that wrote that many bytes, n = 20 a side
+/// interleaved, ms at p50: packed and put back, then gone over (Fedora, Btrfs). Packing was
+/// quicker up to 4 MiB and going over from 8; they cross where the two lines between those
+/// meet.
+#[cfg(test)]
+const CROSSOVER_BASIS: [(u64, f64, f64); 7] = [
+    (0, 52.55, 63.14),
+    (1 << 20, 70.37, 75.47),
+    (2 << 20, 76.38, 90.44),
+    (4 << 20, 95.90, 100.92),
+    (8 << 20, 135.68, 122.06),
+    (16 << 20, 259.86, 189.81),
+    (32 << 20, 396.48, 286.21),
+];
+
+/// The bytes the layer kept in `file`, `len` bytes long, holds past what an empty one of its
+/// size holds of metadata alone: its blocks in use, as its groups' counts say
+/// ([`Volume::free_blocks`]), less a fresh file system's ([`shards_ext4::Made::free_blocks`],
+/// made once a size in memory, nothing written). None where its blocks are not counted so.
+pub(super) fn held(file: &std::fs::File, len: u64) -> Result<Option<u64>, String> {
+    let volume = Volume::open(file).map_err(|e| e.to_string())?;
+    let (Some(free), Some(fresh)) = (volume.free_blocks(), fresh_free(len)?) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        fresh.saturating_sub(free).saturating_mul(volume.block_size()),
+    ))
+}
+
+/// The blocks a file system of `len` bytes as [`LayerFile::made`] makes holds free, each
+/// size's counted once, by a format whose writes go nowhere.
+fn fresh_free(len: u64) -> Result<Option<u64>, String> {
+    static FRESH: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+    let mut fresh = FRESH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(&(_, free)) = fresh.iter().find(|(l, _)| *l == len) {
+        return Ok(Some(free));
+    }
+    struct Nowhere;
+    impl shards_ext4::Sink for Nowhere {
+        fn write_at(&mut self, _: u64, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let options = shards_ext4::Options {
+        bytes: len,
+        uuid: [0; 16],
+        hash_seed: [0; 16],
+        time: 0,
+    };
+    let made = shards_ext4::format(&mut Nowhere, &options).map_err(|e| e.to_string())?;
+    fresh.push((len, made.free_blocks));
+    Ok(Some(made.free_blocks))
+}
+
 /// Gives the host's disk back what the writable layer kept at `at` holds of blocks its
 /// guest freed (D190), its microVM gone: pmem takes no discard (drivers/nvdimm/pmem.c), so
 /// a layer's file only grew while its guest wrote, deletes and all. Of the blocks its block
@@ -594,6 +655,68 @@ mod tests {
             ),
             vec![(4096, 4096), (20480, 4096)]
         );
+    }
+
+    /// A restart goes over its kept file from where the measured restarts cross: below the
+    /// first size whose restart went over quicker, past the last whose packing was quicker,
+    /// within a MiB of where the two lines between them meet (PM M443).
+    #[test]
+    fn a_restart_goes_over_from_where_packing_costs_more() {
+        let first_over = CROSSOVER_BASIS
+            .iter()
+            .position(|&(_, pack, over)| over < pack)
+            .unwrap();
+        assert!(
+            CROSSOVER_BASIS[first_over..]
+                .iter()
+                .all(|&(_, pack, over)| over < pack)
+        );
+        let (b, pb, ob) = CROSSOVER_BASIS[first_over - 1];
+        let (a, pa, oa) = CROSSOVER_BASIS[first_over];
+        let (db, da) = (ob - pb, pa - oa);
+        let crossing = b as f64 + (a - b) as f64 * db / (db + da);
+        assert!(
+            (OVER_FROM as f64 - crossing).abs() <= f64::from(1u32 << 20),
+            "{crossing}"
+        );
+        assert!(b < OVER_FROM && OVER_FROM < a);
+    }
+
+    /// A layer made empty holds nothing past what any of its size holds; one whose blocks a
+    /// guest took holds them.
+    #[test]
+    fn what_a_layer_holds_is_its_blocks_past_an_empty_ones() {
+        let home = shards_testdir::TempDir::new("layers-held").unwrap();
+        let made = LayerFile::made(&home, 256 << 20).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(made.path())
+            .unwrap();
+        let len = file.metadata().unwrap().len();
+        assert_eq!(held(&file, len).unwrap(), Some(0));
+        // 3 blocks of the first group taken, as its descriptor counts them: its free count
+        // less 3, its checksum made again.
+        let mut sb = [0u8; 1024];
+        shards_vmm::platform::read_exact_at(&file, &mut sb, 1024).unwrap();
+        let desc = usize::from(u16::from_le_bytes([sb[0xFE], sb[0xFF]]));
+        let mut d = vec![0u8; desc];
+        shards_vmm::platform::read_exact_at(&file, &mut d, 4096).unwrap();
+        let free = u16::from_le_bytes([d[0xC], d[0xD]]) - 3;
+        d[0xC..0xE].copy_from_slice(&free.to_le_bytes());
+        let incompat = u32::from_le_bytes(sb[0x60..0x64].try_into().unwrap());
+        let seed = if incompat & 0x2000 != 0 {
+            u32::from_le_bytes(sb[0x270..0x274].try_into().unwrap())
+        } else {
+            shards_ext4::crc32c(!0, &sb[0x68..0x78])
+        };
+        let mut c = shards_ext4::crc32c(seed, &0u32.to_le_bytes());
+        c = shards_ext4::crc32c(c, &d[..0x1E]);
+        c = shards_ext4::crc32c(c, &[0, 0]);
+        c = shards_ext4::crc32c(c, &d[0x20..]);
+        d[0x1E..0x20].copy_from_slice(&((c & 0xFFFF) as u16).to_le_bytes());
+        shards_vmm::platform::write_all_at(&file, &d, 4096).unwrap();
+        assert_eq!(held(&file, len).unwrap(), Some(3 * 4096));
     }
 
     /// A restore's file is a clone of its generation's layer, said to be that generation's,

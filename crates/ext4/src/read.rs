@@ -149,6 +149,8 @@ struct Bitmap {
     at: u64,
     uninit: bool,
     csum: u32,
+    /// `bg_free_blocks_count`: what the group's bitmap leaves free.
+    free: u64,
 }
 
 /// `s_state`'s EXT4_ERROR_FS: its kernel found it damaged.
@@ -462,10 +464,15 @@ impl<F: ReadAt> Volume<F> {
             if wide_bitmap_csum {
                 csum |= u32::from(d.u16(0x38)?) << 16;
             }
+            let mut free = u64::from(d.u16(0xC)?);
+            if desc >= 64 {
+                free |= u64::from(d.u16(0x2C)?) << 16;
+            }
             bitmaps.push(Bitmap {
                 at,
                 uninit: d.u16(0x12)? & BG_BLOCK_UNINIT != 0,
                 csum,
+                free,
             });
         }
         Ok(Volume {
@@ -485,6 +492,16 @@ impl<F: ReadAt> Volume<F> {
             bitmaps: (ro_compat & feature::RO_COMPAT_BIGALLOC == 0).then_some(bitmaps),
             file,
         })
+    }
+
+    /// How many blocks its groups' descriptors say are free, each group's count of its
+    /// bitmap's (`bg_free_blocks_count`, which ext4 keeps with the bitmap in one
+    /// transaction, fs/ext4/mballoc.c), every group's, an uninitialized one's too: what the
+    /// file system holds is its blocks less these, which a fresh one of the same size holds
+    /// of metadata alone ([`crate::Made::free_blocks`]). None of a file system whose groups
+    /// count clusters (bigalloc).
+    pub fn free_blocks(&self) -> Option<u64> {
+        self.bitmaps.as_ref().map(|b| b.iter().map(|g| g.free).sum())
     }
 
     /// The runs of blocks its block bitmaps say are free, `(first block, how many)` in

@@ -5576,11 +5576,12 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
     assert_eq!(shards(&["rm", "-f", "kept", "killed"]).status, Some(0));
 }
 
-/// A stopped container's next run goes on over the file its layer was kept in (D190): the
+/// A stopped container's next run goes on over the file its layer was kept in (D190), where
+/// the layer holds past what packing it costs less below (`layers::OVER_FROM`, 5 MiB): the
 /// file goes under its microVM's layer device as it is, its root the image over it, and
-/// stays the container's, the same file, with what each run wrote; the microVM's own
-/// layer goes. What a run's guest wrote and freed is given back to the host's disk once
-/// its microVM has gone.
+/// stays the container's, the same file, with what each run wrote; the microVM's own layer
+/// goes. One that holds little is packed and put back, in another file. What a run's guest
+/// wrote and freed is given back to the host's disk once its microVM has gone.
 #[test]
 fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     use shards_ext4::read::Volume;
@@ -5590,8 +5591,8 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     };
     let shards = |args: &[&str]| shards_in(&home, args);
     let big = 32u64 << 20;
-    // Each run writes a file, and 32 MiB it removes, and makes a directory: a later run
-    // finds it made.
+    // Each run writes a file, 8 MiB it keeps and 32 MiB it removes, and makes a directory: a
+    // later run finds it made.
     let first = run_in(
         &home,
         &image,
@@ -5599,6 +5600,7 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
         &[
             "fs",
             "write:/kept=one",
+            &format!("fill:{}:/held", 8 << 20),
             &format!("fill:{big}:/big"),
             "sync",
             "rm:/big",
@@ -5665,12 +5667,45 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
             "run {n}: the container's own file, not another in its place"
         );
     }
+    // One that holds little packed and put back: its file another once it stops again.
+    let small = run_in(
+        &home,
+        &image,
+        &["--name", "small", "-u", "0"],
+        &["fs", "write:/kept=one"],
+    );
+    assert_eq!(small.status, Some(0), "{small}");
+    let id = shards(&["inspect", "-f", "{{.Id}}", "small"])
+        .stdout
+        .trim()
+        .to_string();
+    let small_dir = home.join("containers").join(&id);
+    let small_settled = || {
+        let deadline = Instant::now() + TIMEOUT;
+        while !(small_dir.join("layer.ext4").exists() && !small_dir.join("layer.new").exists()) {
+            assert!(
+                Instant::now() < deadline,
+                "no layer kept in {}",
+                small_dir.display()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    small_settled();
+    let before = std::fs::metadata(small_dir.join("layer.ext4")).unwrap().ino();
+    let again = shards(&["start", "-a", "small"]);
+    assert_eq!(again.status, Some(0), "{again}");
+    small_settled();
+    assert_ne!(
+        std::fs::metadata(small_dir.join("layer.ext4")).unwrap().ino(),
+        before
+    );
     // Nothing of the microVMs' own layers left once they have gone.
     let layers: Vec<_> = std::fs::read_dir(home.join("layers"))
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
     assert!(layers.is_empty(), "{layers:?}");
-    assert_eq!(shards(&["rm", "-f", "over"]).status, Some(0));
+    assert_eq!(shards(&["rm", "-f", "over", "small"]).status, Some(0));
 }
 
 #[test]

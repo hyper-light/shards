@@ -5481,7 +5481,15 @@ impl<D: Disk> Daemon<D> {
         if meta.len() != layers::size(holds)? {
             return Ok(None);
         }
-        drop(layers::open_kept(&at)?);
+        let kept = layers::open_kept(&at)?;
+        // One that holds little is packed and put back: quicker, below what it holds at
+        // [`layers::OVER_FROM`] (PM M443).
+        match layers::held(&kept, meta.len()) {
+            Ok(Some(held)) if held < layers::OVER_FROM => return Ok(None),
+            Ok(_) => {}
+            Err(e) => log(format!("container {id}: what its writable layer holds: {e}")),
+        }
+        drop(kept);
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

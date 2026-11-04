@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """What a stopped container's writable layer takes of its host's disk once its microVM has
-gone, with what its guest freed given back (D190, PM M422) and without: two builds of
+gone, with what its guest freed given back (D190, PM M443) and without: two builds of
 shards, each with a home of its own, interleaved. For each size, a container that stays
 writes `size` bytes into its root, syncs, removes them and ends; once its layer is kept,
 the bytes its file takes on the disk (st_blocks) are read, and NEW's daemon log says what

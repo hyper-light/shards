@@ -639,6 +639,8 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
             &image,
             "fs",
             "write:/kept=one",
+            // Past what packing it costs less below (`layers::OVER_FROM`).
+            "fill:8388608:/held",
             "mkdir:/made",
         ],
         &env,

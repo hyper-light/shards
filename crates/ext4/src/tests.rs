@@ -964,10 +964,14 @@ fn counted_free(image: &impl read::ReadAt) -> u64 {
 /// which mke2fs -d filled and e2fsck -D indexed.
 #[test]
 fn free_blocks_are_what_the_bitmaps_and_counts_say() {
-    let fresh = formatted(1 << 30);
+    let (made, image) = made(1 << 30);
+    let fresh = Formatted(image, 1 << 30);
     let v = read::Volume::open(&fresh).unwrap();
     let runs = v.free_runs().unwrap();
     assert_eq!(runs.iter().map(|r| r.1).sum::<u64>(), counted_free(&fresh));
+    // Every group's count, the uninitialized ones' too, as `format` made them.
+    assert_eq!(v.free_blocks(), Some(made.free_blocks));
+    assert!(made.free_blocks > counted_free(&fresh));
     assert!(runs.windows(2).all(|w| w[0].0 + w[0].1 < w[1].0), "{runs:?}");
     let image = tree_image();
     let v = read::Volume::open(image.as_slice()).unwrap();

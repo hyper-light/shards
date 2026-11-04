@@ -1015,7 +1015,7 @@ fn cgroups() -> Result<(), Failure> {
     // exit pays a full barrier more (kernel/locking/percpu-rwsem.c, __percpu_down_read_trylock).
     // A standby born after the snapshot, as one going on over a stopped container's layer
     // is (over.rs), moved itself into the workload's cgroup in 10 to 40 ms on a 32-vCPU
-    // guest, and in 0.3 to 0.9 favored (PM M422), as an exec's standby moves itself into
+    // guest, and in 0.3 to 0.9 favored (PM M443), as an exec's standby moves itself into
     // its workload's. A kernel without it refuses the option, and the hierarchy is mounted
     // without it.
     let flags = nosuid | noexec | nodev;
