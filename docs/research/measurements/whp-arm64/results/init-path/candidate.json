@@ -1,0 +1,24 @@
+{
+  "compiled_parent": "f405988436c9e0bec1dcb3bc1f5e53213f9dd0e0",
+  "workspace_patch_sha256": "136098d3fd741986e95dbc78ba8af6682843937a61a3accc056c9994eb5c00c8",
+  "archive_sha256": "4e0834c4c91c94230225bdeb93fe72889a78512e05d02f43b4200930d81e1581",
+  "binaries": 142,
+  "utc": "2026-11-04T02:40:54.515891+00:00",
+  "deployed": false,
+  "auto_launch": false,
+  "engine_exe": {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "engine",
+    "exe": "C:\\shards-step10\\tests\\engine-46f70c7fbde736eb.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "cacd0de25d2e47893dc52fbc9b80d63dbf3a321cd28422e05e15f20c11b2c38c"
+  },
+  "main_exe": {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "shards",
+    "exe": "C:\\shards-step10\\tests\\shards-666bfae7608c3fb4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "6a55af726f2f3b162ef8350578fe938b491cbad245a74109a800a8e0ad7cdfae"
+  },
+  "scope": "candidate only; full gate still requires fresh complete unfiltered142"
+}

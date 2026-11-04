@@ -438,9 +438,10 @@ elevated or unexpected user, verifies the current token's trace group, creates a
 symlink through the unprivileged Windows API and reads through it, then creates,
 enables and stops a native ETW session for shards' provider. The original mount and
 ETW E2E assertions remain unchanged; this preflight does not replace either test.
-Preparation is deferred until the original full attempt has finished and its complete
-results have been archived. Native permission checks and the next full suite remain
-pending; syntax validation alone does not verify those permissions.
+After the original attempt ended in a host bugcheck, its partial results were archived
+before these settings were applied and the host rebooted. The native checks below
+verify the permissions in a dedicated standard logon. The complete suite remains
+outstanding.
 
 Both scripts parsed on the native Windows PowerShell 5.1 host, and all eight lint
 targets passed. `results/user-fixture-parser.txt` retains the syntax check and source
@@ -492,3 +493,67 @@ Windows remains build 26300.9711. The crash's cause is not yet attributed. The
 integrated file-observer checks above ran after this reboot; the earlier independent
 controls overlapped the already-failing attempt. The crash dump is kept locally for
 diagnosis, and is not a repository artifact.
+
+## Resolving the cross-built init path
+
+The original Engine binary failed 19 cases with an HTTP 500 naming `SHARDS_INIT`:
+the Mac build's `/Users/.../out/shards-init` was rooted on Windows but lacked a drive.
+The engine requires an absolute path for its daemon's init. The unchanged
+`a_command_runs_in_a_running_container_by_exec` case reproduced this failure alone
+in 3.01 s, with the original executable hash recorded in `results/init-path/`.
+
+`common::guest_init` now resolves that existing file on the executing host, once.
+The native Windows path includes its drive; the engine's validation and every test
+assertion remain unchanged. All eight lint targets and a fresh build of all 142
+Windows executables passed. The candidate archive records source parent `f4059884`
+plus its exact compiled patch. Windows verified every executable's hash after
+installation. The same Engine case then passed, running its real WHP guest, in
+29.25 s as the standard user described below. The file-observer regression also
+passed, one case in 0.13 s. These selected checks do not qualify the full suite.
+
+## A standard logon for the Windows suite
+
+Developer Mode and trace-group membership were applied after preserving the original
+interrupted attempt. After reboot, WHP reported present=1 and partition creation
+succeeded. The original SSH `runner` could now create its own file symlink but could
+not read through it: error 448, untrusted mount point, in both its temporary directory
+and the test kit. A corrected native `GetProcessMitigationPolicy` query reported
+RedirectionGuard enforcement, flags=1. Microsoft documents this policy's
+[enforcement bit](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process-mitigation-redirection-trust-policy).
+The first probe's PowerShell `UIntPtr` argument conversion failed; its unexecuted
+query is not evidence of any policy value.
+
+Passwordless scheduled-task registration was denied in the tested contexts. A
+separate process created with the existing runner token still reported enforcement
+and failed the same link read. Neither control changed a mitigation policy. The
+fixture therefore uses a dedicated local standard account, `shards-e2e`, in Users
+and Performance Log Users, outside Administrators. Its generated credential stays
+inside Windows, protected with SYSTEM's DPAPI and an administrator-only directory.
+It is not a repository or result artifact. A protected SYSTEM launcher uses
+`LogonUserW` with batch logon, loads that user's profile and starts the test process
+with `CreateProcessAsUserW` and that user's environment. Only the launcher is SYSTEM;
+the tests, daemon and VM processes run as the standard user. No Windows binary,
+check or mitigation policy was changed.
+
+The new user reported RedirectionGuard flags=0 and passed the actual symlink
+create/read, ETW provider session create/enable/stop, native gzip round trip and
+test-output-directory write checks. The initial provisioning attempt stopped on a
+long build-cache path in recursive `icacls`; the resumed probe verified the required
+permissions directly without resetting the account. The standard user also reported
+WHP present=1, created and deleted a partition, and passed the selected Engine and
+file-observer regressions above. `results/normal-logon/` records the method, failed
+controls and native permission results. These are functional checks, with no native
+host performance claim.
+
+For a future crash, the fixture's original CrashControl settings were backed up and
+the documented
+[kernel-memory dump setting](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/configure-system-failure-and-recovery-options)
+enabled before the controlled reboot. The system-managed page file then allocated
+24,576 MiB. The old crash's small dump lacked the file and device objects needed to
+assign its cause; that cause remains unresolved. Running the exact interrupted unit
+binary alone subsequently completed 551 passed, one failed and three ignored in
+974.86 s without another host crash. Its failure was a 50 ms read timeout returning
+after 39.018 ms, below the existing 40 ms lower-bound assertion. That assertion is
+unchanged. The isolated run is a diagnostic, not a continuation or completion of
+the original full attempt. The complete updated 142-binary real-VM suite must pass
+before step 10 closes.

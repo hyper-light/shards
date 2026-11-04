@@ -1,0 +1,14 @@
+{
+  "all_eight_lint_targets_exit": 0,
+  "fresh_windows_build_exit": 0,
+  "fresh_windows_executables": 142,
+  "profile": "test-release; static CRT; rustc1.98.1",
+  "source_parent": "f405988436c9e0bec1dcb3bc1f5e53213f9dd0e0",
+  "source_patch_sha256": "136098d3fd741986e95dbc78ba8af6682843937a61a3accc056c9994eb5c00c8",
+  "build_metadata_sha256": "1bab852ff0704f3ba746a327cc5b14445a77a35551234ee7f803684244176c7f",
+  "original_engine_sha256": "14227587f8a980061497ea263b286f23ae5ba5116367d6d9ac5717803162b6a0",
+  "original_engine_native_result": "0passed1failed28filtered;3.01s;500instead201;drive-relativeSHARDS_INIT",
+  "native_candidate_result": "Engine1/1passed29.25s;file-observer1/1passed0.13s;bothstandardshards-e2e;actualWHP1/CreatePartitionS_OK;full142outstanding",
+  "native_candidate_task_priority": 7,
+  "scope": "functional selected checks only; full qualification must use normal process priority"
+}

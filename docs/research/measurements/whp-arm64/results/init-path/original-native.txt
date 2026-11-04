@@ -1,0 +1,29 @@
+#< CLIXML
+
+running 1 test
+test a_command_runs_in_a_running_container_by_exec ... FAILED
+
+failures:
+
+failures:
+    a_command_runs_in_a_running_container_by_exec
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 3.01s
+
+
+thread 'a_command_runs_in_a_running_container_by_exec' (2500) panicked at crates/shards/tests/engine.rs:1275:5:
+assertion `left == right` failed: {"message":"SHARDS_INIT: \"/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/target/aarch64-pc-windows-msvc/test-release/build/shards-4052f755f382dfb8/out/shards-init\": the daemon's is absolute, as no directory of a client's makes it one"}
+
+  left: 500
+ right: 201
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\1600\eng-exec-0\daemon.log, its last 3 lines
+shards daemon 1656: the default bridge is 172.17.0.0/16
+shards daemon 1656: serving C:\Users\runner\AppData\Local\Temp\shards-tests\1600\eng-exec-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\1600\eng-exec-0\requests, with up to 16777216 descriptors open
+shards daemon 1656: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\1600\eng-exec-0\daemon.log, its last 433 of 433 bytes
+shards daemon 1656: the default bridge is 172.17.0.0/16
+shards daemon 1656: serving C:\Users\runner\AppData\Local\Temp\shards-tests\1600\eng-exec-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\1600\eng-exec-0\requests, with up to 16777216 descriptors open
+shards daemon 1656: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+
+<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj></Objs>

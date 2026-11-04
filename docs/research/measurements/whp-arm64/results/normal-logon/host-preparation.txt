@@ -1,0 +1,42 @@
+2026-11-03T18:22:29.7513674-08:00
+The operation completed successfully.
+
+{
+    "utc":  "2026-11-04T02:22:33.5454874Z",
+    "boot":  "2026-11-04T00:34:58.6888310Z",
+    "userSid":  "S-1-5-21-4187853375-3986741409-3176094604-1002",
+    "developerModeValueExisted":  false,
+    "developerModeValue":  null,
+    "traceMember":  false,
+    "automaticManagedPagefile":  true,
+    "crashControl":  {
+                         "CrashDumpEnabled":  3,
+                         "DumpFile":  "C:\\WINDOWS\\MEMORY.DMP",
+                         "MinidumpDir":  "C:\\WINDOWS\\Minidump",
+                         "Overwrite":  1,
+                         "LogEvent":  1,
+                         "AlwaysKeepMemoryDump":  null
+                     },
+    "pagefiles":  [
+                      {
+                          "Name":  "C:\\pagefile.sys",
+                          "AllocatedBaseSize":  3968,
+                          "CurrentUsage":  0,
+                          "PeakUsage":  0
+                      }
+                  ],
+    "diskFree":  64695926784
+}
+Fixture prepared: user=runner SID=S-1-5-21-4187853375-3986741409-3176094604-1002; Developer Mode=1; trace group=S-1-5-32-559
+Reboot, then verify the fixture with probe-user.ps1 in a fresh standard-user logon.
+
+
+CrashDumpEnabled : 2
+DumpFile         : C:\WINDOWS\MEMORY.DMP
+MinidumpDir      : C:\WINDOWS\Minidump
+Overwrite        : 1
+LogEvent         : 1
+
+
+
+PREPARED: kernel dump2 and standard-user prerequisites; controlled reboot still required; no tests started.

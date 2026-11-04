@@ -631,7 +631,14 @@ pub fn linux_tests(tests: &[&str]) -> LinuxTests {
 
 /// The production guest init (PID 1): the one `shardsd` carries, as build.rs made it.
 pub fn guest_init() -> &'static Path {
-    Path::new(concat!(env!("OUT_DIR"), "/shards-init"))
+    static INIT: OnceLock<PathBuf> = OnceLock::new();
+    // Resolve the build's path on this host: a Unix cross-build's rooted path needs a
+    // drive on Windows before the daemon can use it as an absolute init path.
+    INIT.get_or_init(|| {
+        Path::new(concat!(env!("OUT_DIR"), "/shards-init"))
+            .canonicalize()
+            .unwrap()
+    })
 }
 
 /// The E2E test agent (PID 1 of test VMs).

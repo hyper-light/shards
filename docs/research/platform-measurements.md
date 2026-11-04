@@ -16790,7 +16790,7 @@ revision before comparing a changed API/implementation.
 
 ### M414. WHP on arm64 Windows: a nested host, GICv3, PSCI, MMIO and snapshot state (D209)
 
-- **Method.** `docs/research/measurements/whp-arm64/`, 2026-11-01 to 2026-11-03 UTC, on
+- **Method.** `docs/research/measurements/whp-arm64/`, 2026-11-01 to 2026-11-04 UTC, on
   an M5 Max, macOS 26.4.1. Windows 11 Pro arm64 26300.9457 installed from Microsoft's
   ISO, its hash verified; HypervisorPlatform, VirtualMachinePlatform and Hyper-V enabled.
   QEMU 11.1.3, four CPUs and 8 GiB RAM. The harness records the host's events and WHP
@@ -16934,6 +16934,23 @@ revision before comparing a changed API/implementation.
   The README records the raw control's `/D /S /C` versus production's `/C`, an earlier
   failed probe control, and the exact production regression. These checks overlapped
   the already-failing full run; the CloudWatch VM E2E and full qualification remain open.
+
+- **Cross-built init and user logon.** The original Engine E2E reproduced an HTTP 500
+  in 3.01 s: its Mac `OUT_DIR` init path lacked a Windows drive. Resolving that file on
+  the executing host fixed the fixture; the unchanged case passed on a real WHP guest
+  in 29.25 s after a fresh 142-binary build and native verification of every executable
+  hash. All eight lint targets passed. The dedicated standard user also passed the
+  file-observer regression (one case, 0.13 s), actual unprivileged symlink create/read,
+  ETW session control, gzip and output-directory writes, and WHP capability/partition
+  checks. SSH's original user reported RedirectionGuard enforcement and refused its
+  own link traversal; the normal batch logon reported flags=0 without any policy
+  override. The README and `results/init-path/` and `results/normal-logon/` record the
+  original failure, compiled patch, hashes, launch method and failed controls. The
+  original unit binary, run alone after enabling kernel-dump capture, finished 551
+  passed, one failed and three ignored without reproducing the host crash. It failed
+  the existing minimum-wait assertion at 39.018 ms. The cause of the earlier bugcheck
+  remains unresolved. These selected checks do not replace the outstanding complete
+  142-binary real-VM suite or close step 10.
 
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 

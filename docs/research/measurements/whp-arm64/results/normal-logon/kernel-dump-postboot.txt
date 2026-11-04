@@ -1,0 +1,43 @@
+#< CLIXML
+2026-11-03T18:26:25.1319412-08:00
+
+
+Caption        : Microsoft Windows 11 Pro
+Version        : 10.0.26300
+LastBootUpTime : 11/3/2026 6:23:59 PM
+
+
+
+
+
+CrashDumpEnabled : 2
+DumpFile         : C:\WINDOWS\MEMORY.DMP
+Overwrite        : 1
+LogEvent         : 1
+
+
+
+
+
+Name              : C:\pagefile.sys
+AllocatedBaseSize : 24576
+CurrentUsage      : 0
+
+
+
+
+
+TimeCreated : 11/3/2026 4:35:06 PM
+Id          : 162
+Message     : Dump file generation succeded.
+
+
+
+
+
+Used : 58773700608
+Free : 43118522368
+
+
+
+<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj><Obj S="progress" RefId="1"><TNRef RefId="0" /><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj><Obj S="progress" RefId="2"><TNRef RefId="0" /><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj><Obj S="progress" RefId="3"><TNRef RefId="0" /><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj></Objs>
