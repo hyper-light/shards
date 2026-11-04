@@ -17160,3 +17160,47 @@ revision before comparing a changed API/implementation.
   memory file stays sparse, taking the disk its guest used (M345). The restore bench holds
   its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
   `shards restore` finds it.
+
+### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
+
+- **Question.** What does a disk plugged into a running microVM cost, from the host's call to
+  its guest's first read of it, and its unplug, from the guest's remove to the host's? And
+  what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
+  boot?
+- **Method.** `docs/research/measurements/pci-hotplug/run.sh`, tests/hotplug.rs: the test
+  guest (`shards_test=pci-plug`, 512 MiB, 1 vCPU) booted in the test's process with four
+  slots and a disk; a 4 MiB disk plugged (`Handle::plug_disk`, timed by the host), the
+  guest told on its console, then timed by itself: `/sys/bus/pci/rescan` (rescan), and from
+  its start to the first MiB read from the disk's block device (first read); it writes its
+  second MiB, the host's unplug is refused while its driver has it, the guest writes the
+  function's `remove` (timed), and the host unplugs it (timed); ROUNDS times. Then BOOTS
+  boots each with four slots and with no PCI bus, alternated, each timed from its vCPUs'
+  release to its PID 1's INIT_STARTED marker. Each sample set as n, p50, p90, p99 and max,
+  nearest rank.
+- **Found.**
+  - KVM, x86_64 (kiln-a094a12d: Intel Core i9-14900HX, 32 CPUs, Fedora 44, Linux
+    6.19.10; guest Linux 6.18.48, HZ 250), f4d29ba7, a quiet host (load 4.7), n 100:
+    host plug p50 5 µs (p90 7, p99 18, max 31); guest rescan p50 6.7 ms (p90 7.3, p99
+    9.9, max 12.1); rescan to first read p50 7.8 ms (p90 8.4, p99 11.6, max 13.3); guest
+    remove p50 29.1 ms (p90 33.0, p99 36.1, max 36.3); host unplug p50 5 µs (p90 9, p99 10,
+    max 15). A share plugged, its rescan to its first synced write through virtiofs: 15.4
+    ms (n 1). Boot to init, n 40 each: with four slots p50 61.9 ms (p90 74.3, p99 110.9),
+    with no bus p50 58.3 ms (p90 68.7, p99 187.6): a bus of slots costs a boot some 3.6 ms
+    at p50 there, which is why a machine has one only where asked for (`--pci-slots`).
+    Again at 0eece65b (load 1.9), n 100 and 40: plug p50 6 µs (p99 22, max 1,027: one
+    plug of a hundred took a millisecond, not yet split), rescan 6.6 ms, first read 7.6
+    ms, remove 29.2 ms, unplug 5 µs at p50; boots 60.3 ms with slots, 56.1 without (p90
+    67.7 and 58.6): a bus of slots costs 4 ms. A first run on a busy host (load 34, n 30
+    and 15): plug 10 µs, rescan 6.1 ms, first read 7.4 ms, remove 31.9 ms, unplug 4 µs at
+    p50; boots 97.2 and 95.6 ms, within their spread.
+  - Hypervisor.framework, arm64 (an Apple M5 Max, 18 CPUs, macOS 26.4.1; same guest),
+    3edf11d3, through macos-sched/launchd-run.sh, load 8 to 9, n 100: host plug p50 11 µs
+    (p90 15, p99 29, max 391); guest rescan p50 2.4 ms (p90 2.9, p99 3.1, max 3.2); rescan
+    to first read p50 3.1 ms (p90 3.8, p99 4.0, max 4.1); guest remove p50 7.8 ms (p90 8.1,
+    p99 8.3, max 8.3); host unplug p50 4 µs (p90 5, p99 36, max 42). Share: 11.4 ms (n 1).
+    Boot to init, n 40 each: with four slots p50 18.90 ms (p90 19.15, p99 27.39), with no
+    bus 18.88 (p90 19.24, p99 20.60): no cost measured at p50, where x86_64's ACPI-described
+    bus costs 4 ms.
+  - The host's sides are microseconds; the guest's rescan and its remove are the cost: a
+    probe of the virtio function and its disk, and a remove of 29 ms whose parts are not
+    measured yet.

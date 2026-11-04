@@ -6580,6 +6580,109 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories on Hypervisor.framework and KVM; host functions on KVM, untested on hardware)
+
+**Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
+given what it needs as it goes, not only what it booted with. Every shards device was a
+virtio-mmio one, placed in the devicetree or the kernel's command line as the machine was
+made, which no guest can be told of later (D119 worked around it with a join disk and a join
+share made ahead), and a disk's capacity was fixed when its file was opened.
+
+**Decided** (`devices/pci/hotplug.rs`, `devices/virtio/pci.rs`, `vm::Handle::plug_*`):
+
+- **Slots kept at boot.** A machine made with `pci_slots` N (`run --kernel … --pci-slots N`)
+  has a PCI bus (D153) with N places on bus 0 after its other functions, each a device's
+  function 0 with the MSIs of its requester ID made ahead (a GICv2m frame's on
+  Hypervisor.framework, the ITS on arm64 KVM, the local APICs on x86_64). A device plugged
+  takes the first free one; a machine with none refuses. Its interrupts are MSI-X alone: a
+  slot has no INTx line its firmware tables route.
+- **Found by a rescan, let go by a remove; no hot-plug controller.** The guest's init writes
+  `/sys/bus/pci/rescan`, which scans the bus, assigns the new function's BARs in its host
+  bridge's window and binds its driver (drivers/pci/probe.c, pci_rescan_bus), and lets a
+  device go by writing its `remove` (pci_stop_and_remove_bus_device: its driver's remove, a
+  virtio device's reset). PCIe's native hot-plug was the alternative: a root port with a
+  slot for each device, whose controller Linux's pciehp drives, and which waits 20 ms and
+  then 100 ms for the link of each function it adds (drivers/pci/pci.c,
+  pcie_wait_for_link_delay; PCIe 6.0 §6.7.3.3), 5 s after an attention button
+  (pciehp_ctrl.c, pciehp_handle_button_press), and 1 s after powering a slot off; ACPI's
+  hot-plug is x86_64's alone, and arm64's guests here are told of their machine by a
+  devicetree. A rescan costs what the probe does: a disk's rescan 6.6 ms and its first read
+  7.6 ms at p50 on KVM, 2.4 and 3.1 ms on Hypervisor.framework (PM M430). Every shards guest's PID 1 is
+  shards' own, which is told; a guest of another init rescans as its owner does.
+- **BARs where the guest places them.** Linux assigns a function found by a rescan BAR
+  addresses of its own in the bridge's window, whatever its BARs held, as no firmware
+  placed it (setup-bus.c, pci_assign_unassigned_bus_resources; Linux 6.18 and 7.2 alike,
+  `linux,pci-probe-only` or not), so a plugged function's header is movable
+  (`pci::Header::movable`): a BAR written takes the address written, aligned to its size.
+  The bus's 32-bit window is one device of the machine's (`hotplug::Window`), which holds the
+  BARs placed at boot and reaches each plugged function's BARs where its header says, while
+  its memory decoding is on; an access nothing claims reads all ones (PCIe 6.0 §2.3.2).
+  Plugged functions' BARs share the 32-bit window (752 MiB on arm64, 496 MiB on x86_64).
+- **virtio over PCI** (virtio 1.3 §4.1): a modern, non-transitional function (1af4:1040+ID,
+  revision 1), one 32-bit BAR of 16 KiB holding the common configuration, the ISR status,
+  the device's configuration, the notifications (each queue's at four times its index) and
+  the MSI-X table and pending bits, found by virtio's vendor capabilities after MSI-X's.
+  Its registers are its device's MMIO transport's, read and written for it
+  (`MmioTransport::with_interrupt`): one state machine, feature negotiation, activation and
+  reset for every virtio device of shards'. Two MSI-X vectors, one for configuration
+  changes and one its queues share, as Linux then takes them (virtio_pci_common.c,
+  vp_find_vqs_msix: one a queue where the table has room, else one shared), held pending
+  while masked and sent as unmasked (§6.8.2). No VIRTIO_PCI_CAP_PCI_CFG, which Linux's
+  driver never reads.
+- **Disks** (`Handle::plug_disk`: an open file, as a confined VM process is handed one) and
+  **shared directories** (`Handle::plug_share`: a share's slot, its server put in by its
+  owner, mounted by its tag), each charged to the microVM's I/O limits (D178) as its others
+  are. A plugged share has no DAX window (D189): a window's guest addresses are laid out as
+  the machine is made.
+- **Taken off once its guest let it go.** `Handle::unplug` refuses, changing nothing, while
+  the guest's driver still drives the device (its virtio status not 0; a passed-through
+  function's bus mastering on, which pci_disable_device turns off), and then takes it off
+  the bus, its BARs out of the window, its workers stopped by a reset.
+- **A disk grown online** (`DiskSize::grow`, for a disk the machine was made with and a
+  plugged one): its host grows its file, then the device takes the file's length as its
+  capacity and sends a configuration change (virtio 1.3 §5.2.4), its configuration
+  generation counting growths, so a driver reading the 64-bit capacity in two accesses sees
+  a growth between them (§4.1.4.3.1). Linux's virtio_blk reads it and says so
+  (virtblk_config_changed_work, set_capacity_and_notify: a uevent with `RESIZE=1`). A file
+  that shrank is refused: it would take sectors from under the guest's file system.
+- **A host's function plugged in** (`Handle::plug_vfio`, Linux): opened as D154 opens one,
+  through its group or its device node, all of guest RAM mapped for its DMA, pinned, outside
+  the guest's IOMMU, whose endpoints are its boot's; refused where the machine has memory to
+  plug or a balloon (D154). Its BAR windows, the memory slots the guest reaches it through
+  without exits, follow its BARs as the guest places and moves them, and leave as it is
+  unplugged; KVM forgets its file then (KVM_DEV_VFIO_FILE_DEL, virt/kvm/vfio.c), which it
+  would otherwise hold as long as the VM. KVM's VFIO device and memory slots are reached
+  apart from the VM (`hv::VfioHost`), which the running machine owns.
+- **Slots only where asked for.** A bus of four empty slots costs an x86_64 boot on KVM
+  4 ms at p50, 60.3 ms against 56.1 (PM M430), where an arm64 boot on Hypervisor.framework
+  pays nothing measured (18.90 against 18.88 ms): x86_64's guest finds its bus through
+  ACPI, arm64's through its devicetree. So a machine has one only where its maker asks.
+- **Let go of with its machine.** The slots' MSIs reach its VM (WHP's partition, KVM's VM
+  descriptor), so the machine's teardown drops its hot-plug once its devices are quiet: a
+  handle that outlived its machine held them, and on WHP the next VM of the process could
+  not be made (ERROR_VID_PARTITION_ALREADY_EXISTS).
+- **No snapshot of a machine with a PCI bus**, as D153: a template's machine has no slots.
+- **Verified on real VMs** (`devices_are_plugged_into_a_running_microvm_and_its_disks_grow`,
+  in-process; mutation-checked below): the test guest booted with four slots and a disk;
+  the disk it booted with grown and seen grown; a disk plugged, its first MiB read as the
+  pattern its file holds, its second written and found in the file after, grown from 4 to
+  8 MiB and seen so, shrunk and refused, its unplug refused while its driver had it, then
+  removed by its guest and unplugged, a hundred times; a shared directory plugged, mounted,
+  read and written through, removed and unplugged. On KVM, x86_64 (an i9-14900HX, Linux
+  6.19): host plug 6 µs, the guest's rescan 6.6 ms, rescan to first read 7.6 ms, its
+  remove 29.2 ms, host unplug 5 µs, at p50 (PM M430). On WHP (jupiter, Ryzen AI Max+ 395,
+  Windows 11): the disk's steps passed, then the next VM of the process could not be made,
+  which the teardown's let-go fixed. On Hypervisor.framework (an M5 Max, macOS 26.4.1):
+  host plug 11 µs, rescan 2.4 ms, rescan to first read 3.1 ms, remove 7.8 ms, unplug 4 µs
+  at p50, n 100. Mutation-checked: with a disk's growth sent no configuration change, its
+  guest never sees it grow, the disk it booted with and the plugged one alike.
+- **Not yet:** a daemon's run plugged into (a command that asks for it, its init's rescan
+  and mount, its record kept), so that runs from templates take devices as they run, which
+  needs a template's machine to have slots and so a snapshot of an empty bus; a plugged
+  share's DAX window; a plugged function's 64-bit BARs past the 32-bit window; a host's
+  function plugged on real hardware (no host here has a spare one bound to vfio-pci: the
+  path is held by unit tests of its parts and the code shared with D154's tested one).
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
