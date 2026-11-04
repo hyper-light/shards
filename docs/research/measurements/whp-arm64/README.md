@@ -445,3 +445,50 @@ pending; syntax validation alone does not verify those permissions.
 Both scripts parsed on the native Windows PowerShell 5.1 host, and all eight lint
 targets passed. `results/user-fixture-parser.txt` retains the syntax check and source
 hashes. No Rust source or native test assertion changes in this fixture update.
+
+## Observing files as the standard user
+
+The continuing original run finished its daemon binary with 28 passed, nine failed and
+three ignored. `a_pool_of_none_serves_every_run` failed in the Windows file-usage
+observer after its three command runs and their existing timing checks. Its
+`RmGetList` result was error 5, not a count of processes holding the snapshot file.
+
+`src/bin/file-users.rs` isolates the observer from any VM. It queries a temporary file
+closed, open, mapped, mapped with its file handle closed, and released; a child process
+also holds a mapping until the parent tells it to release it. Build this standalone
+probe with the same static-CRT `cargo xwin build` command as M414, adding
+`--bin file-users`. It creates and removes only its own temporary directory; optional
+path arguments are inspected without modification.
+
+On this Windows 26300.9711 host, in SSH session 0, `RmStartSession` and
+`RmRegisterResources` succeeded as `runner`, but `RmGetList` returned 5 even for its
+own ordinary file. The elevated control succeeded. A direct
+`NtQueryInformationFile(FileProcessIdsUsingFileInformation)` query succeeded without
+elevation and found both an open file and a mapping after its file handle closed.
+It found the child's PID while held and stopped reporting that PID after release.
+The elevated Restart Manager control missed the mapped-only state. These are
+functional controls, not a performance measurement or a complete-suite result.
+
+The Windows test observer now uses the file query, grows its buffer on the API's
+size errors, and still fails the test on other errors. Its regression checks the
+closed, open, mapped-only and released states through the actual observer. The daemon
+E2E assertions and deadlines remain unchanged. Microsoft's
+[information-class reference](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ne-wdm-_file_information_class)
+identifies class 47 and marks it reserved for system use; this dependency is confined
+to the test observer. The shipped VMM and daemon acquire no new native API dependency.
+The complete updated real-VM suite remains outstanding.
+
+All eight lint targets and the fresh 142-binary Windows cross-build passed. The
+integrated probe passed as both the standard user and the elevated control. The new
+regression ran one case and passed as `runner`; its raw output, hashes and the
+independent controls are in `results/file-users/`. These checks exercised file
+observation and created no VM.
+
+The original full attempt was interrupted by a Windows host bugcheck, `0x3B` with an
+access violation, followed by reboot at 2026-11-04 00:34:58 UTC (System event 1001).
+Its native result file contains 101 of 141 binaries, through index 100 (`search`);
+index 101 (`shards`) was in progress. It is incomplete and already had test failures.
+Windows remains build 26300.9711. The crash's cause is not yet attributed. The
+integrated file-observer checks above ran after this reboot; the earlier independent
+controls overlapped the already-failing attempt. The crash dump is kept locally for
+diagnosis, and is not a repository artifact.

@@ -93,9 +93,10 @@ cc = "1.5"
 [target.'cfg(windows)'.dev-dependencies]
 # What tests/confined.rs reads of a running VM process; how tests/daemon.rs interrupts a
 # client (Console), takes a slot (Storage_FileSystem), reads the daemon's threads' cycles
-# (WindowsProgramming) and the files it holds (RestartManager); how tests/containers.rs
-# holds a run pending (Ioctl's oplocks).
+# (WindowsProgramming) and the files it holds (FileProcessIdsUsingFileInformation); how
+# tests/containers.rs holds a run pending (Ioctl's oplocks).
 windows-sys = { workspace = true, features = [
+  "Wdk_Storage_FileSystem",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Security_Isolation",
@@ -105,9 +106,9 @@ windows-sys = { workspace = true, features = [
   "Win32_System_IO",
   "Win32_System_Ioctl",
   "Win32_System_JobObjects",
+  "Win32_System_Memory",
   "Win32_System_Pipes",
   "Win32_System_ProcessStatus",
-  "Win32_System_RestartManager",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_System_WindowsProgramming",

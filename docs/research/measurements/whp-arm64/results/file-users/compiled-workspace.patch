@@ -1,0 +1,177 @@
+diff --git a/crates/shards/Cargo.toml b/crates/shards/Cargo.toml
+index 6981428e..acef292e 100644
+--- a/crates/shards/Cargo.toml
++++ b/crates/shards/Cargo.toml
+@@ -93,9 +93,10 @@ cc = "1.5"
+ [target.'cfg(windows)'.dev-dependencies]
+ # What tests/confined.rs reads of a running VM process; how tests/daemon.rs interrupts a
+ # client (Console), takes a slot (Storage_FileSystem), reads the daemon's threads' cycles
+-# (WindowsProgramming) and the files it holds (RestartManager); how tests/containers.rs
+-# holds a run pending (Ioctl's oplocks).
++# (WindowsProgramming) and the files it holds (FileProcessIdsUsingFileInformation); how
++# tests/containers.rs holds a run pending (Ioctl's oplocks).
+ windows-sys = { workspace = true, features = [
++  "Wdk_Storage_FileSystem",
+   "Win32_Security",
+   "Win32_Security_Authorization",
+   "Win32_Security_Isolation",
+@@ -105,9 +106,9 @@ windows-sys = { workspace = true, features = [
+   "Win32_System_IO",
+   "Win32_System_Ioctl",
+   "Win32_System_JobObjects",
++  "Win32_System_Memory",
+   "Win32_System_Pipes",
+   "Win32_System_ProcessStatus",
+-  "Win32_System_RestartManager",
+   "Win32_System_SystemInformation",
+   "Win32_System_Threading",
+   "Win32_System_WindowsProgramming",
+diff --git a/crates/shards/tests/daemon.rs b/crates/shards/tests/daemon.rs
+index 6d9cce74..bcb916fa 100644
+--- a/crates/shards/tests/daemon.rs
++++ b/crates/shards/tests/daemon.rs
+@@ -141,7 +141,7 @@ fn daemon_pid(home: &Path) -> Option<i32> {
+ /// The files under `dir` whose names `named` takes that process `pid` holds open: of those
+ /// it lists open, from /proc on Linux and lsof elsewhere; on Windows, which lists no
+ /// process's files, of the files under `dir`, those its Restart Manager says the process
+-/// uses (RmGetList: a file open or mapped).
++/// uses (FileProcessIdsUsingFileInformation: a file open or mapped).
+ fn held_under(pid: i32, dir: &Path, named: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+     let named = |p: &Path| p.file_name().and_then(|n| n.to_str()).is_some_and(&named);
+     #[cfg(windows)]
+@@ -178,52 +178,97 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
+     files
+ }
+ 
+-/// The processes that use `file`, open or mapped, as Windows' Restart Manager says
+-/// (RmStartSession, RmRegisterResources, RmGetList).
++/// The processes that use `file`, open or mapped. The file query works as a standard
++/// user; Restart Manager's RmGetList returned access denied even for that user's own
++/// file on the arm64 Windows test host (PM M414's file-users probe).
+ #[cfg(windows)]
+ fn users(file: &Path) -> Vec<u32> {
+-    use std::os::windows::ffi::OsStrExt as _;
+-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+-    use windows_sys::Win32::System::RestartManager::{
+-        CCH_RM_SESSION_KEY, RM_PROCESS_INFO, RmEndSession, RmGetList, RmRegisterResources, RmStartSession,
++    use std::os::windows::io::AsRawHandle as _;
++    use windows_sys::Wdk::Storage::FileSystem::{FileProcessIdsUsingFileInformation, NtQueryInformationFile};
++    use windows_sys::Win32::Foundation::{
++        STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
+     };
+-    let mut session = 0u32;
+-    let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
+-    // SAFETY: a session's handle and key, into locals of their size.
+-    let started = unsafe { RmStartSession(&mut session, 0, key.as_mut_ptr()) };
+-    assert_eq!(started, ERROR_SUCCESS);
+-    let wide: Vec<u16> = file.as_os_str().encode_wide().chain([0]).collect();
+-    let names = [wide.as_ptr()];
+-    // SAFETY: one file's NUL-terminated name, for the session just started.
+-    let registered = unsafe {
+-        RmRegisterResources(
+-            session,
+-            1,
+-            names.as_ptr(),
+-            0,
++    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
++    let handle = std::fs::File::open(file).unwrap();
++    // FILE_PROCESS_IDS_USING_FILE_INFORMATION: a ULONG count, padded to a pointer's
++    // alignment, then that many ULONG_PTR process IDs. Both Windows targets are 64-bit.
++    let mut buffer = vec![0usize; 65];
++    loop {
++        let mut io = IO_STATUS_BLOCK::default();
++        let bytes = u32::try_from(buffer.len().checked_mul(size_of::<usize>()).unwrap()).unwrap();
++        // SAFETY: an open synchronous file, its status block, and `bytes` writable,
++        // pointer-aligned bytes for the header and the IDs that follow it.
++        let status = unsafe {
++            NtQueryInformationFile(
++                handle.as_raw_handle(),
++                &mut io,
++                buffer.as_mut_ptr().cast(),
++                bytes,
++                FileProcessIdsUsingFileInformation,
++            )
++        };
++        if matches!(
++            status,
++            STATUS_BUFFER_OVERFLOW | STATUS_BUFFER_TOO_SMALL | STATUS_INFO_LENGTH_MISMATCH
++        ) {
++            buffer.resize(buffer.len().checked_mul(2).unwrap(), 0);
++            continue;
++        }
++        assert_eq!(status, 0, "file users of {}: {status:#x}", file.display());
++        // SAFETY: a successful query wrote the ULONG header into this initialized buffer.
++        let count = unsafe { *buffer.as_ptr().cast::<u32>() } as usize;
++        assert!(count < buffer.len());
++        return buffer[1..=count]
++            .iter()
++            .map(|&pid| u32::try_from(pid).unwrap())
++            .collect();
++    }
++}
++
++#[cfg(windows)]
++#[test]
++fn windows_sees_a_files_users_until_its_last_mapping_is_closed() {
++    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
++    use windows_sys::Win32::System::Memory::{
++        CreateFileMappingW, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_READONLY,
++        UnmapViewOfFile,
++    };
++    struct View(MEMORY_MAPPED_VIEW_ADDRESS);
++    impl Drop for View {
++        fn drop(&mut self) {
++            // SAFETY: this view's mapping, released once before its section handle.
++            unsafe { UnmapViewOfFile(self.0) };
++        }
++    }
++    let home = TempDir::new("file-users");
++    let path = home.join("memory");
++    std::fs::File::create(&path).unwrap().set_len(65536).unwrap();
++    let pid = std::process::id();
++    assert!(!users(&path).contains(&pid), "closed file");
++    let file = std::fs::File::open(&path).unwrap();
++    assert!(users(&path).contains(&pid), "open file");
++    // SAFETY: the open file's read-only section; no name or security attributes.
++    let section = unsafe {
++        CreateFileMappingW(
++            file.as_raw_handle(),
+             std::ptr::null(),
++            PAGE_READONLY,
++            0,
+             0,
+             std::ptr::null(),
+         )
+     };
+-    let mut found = vec![RM_PROCESS_INFO::default(); 64];
+-    let (mut needed, mut listed, mut reasons) = (0u32, found.len() as u32, 0u32);
+-    // SAFETY: room for `listed` entries, which it says how many it filled.
+-    let got = unsafe {
+-        RmGetList(
+-            session,
+-            &mut needed,
+-            &mut listed,
+-            found.as_mut_ptr(),
+-            &mut reasons,
+-        )
+-    };
+-    // SAFETY: the session started above, ended once.
+-    unsafe { RmEndSession(session) };
+-    assert_eq!(registered, ERROR_SUCCESS, "{}", file.display());
+-    assert_eq!(got, ERROR_SUCCESS, "{} processes use {}", needed, file.display());
+-    found.truncate(listed as usize);
+-    found.iter().map(|p| p.Process.dwProcessId).collect()
++    assert!(!section.is_null(), "{}", std::io::Error::last_os_error());
++    // SAFETY: the new section handle, now owned until this test ends.
++    let section = unsafe { OwnedHandle::from_raw_handle(section) };
++    // SAFETY: a read-only view of the whole section; no requested address.
++    let view = View(unsafe { MapViewOfFile(section.as_raw_handle(), FILE_MAP_READ, 0, 0, 0) });
++    assert!(!view.0.Value.is_null(), "{}", std::io::Error::last_os_error());
++    drop(file);
++    assert!(users(&path).contains(&pid), "mapped with its file handle closed");
++    drop(view);
++    drop(section);
++    assert!(!users(&path).contains(&pid), "unmapped and closed");
+ }
+ 
+ /// The files process `pid` holds open, by path: from /proc on Linux, from lsof elsewhere.

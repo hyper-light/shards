@@ -1,0 +1,51 @@
+2026-11-03T16:15:36.4311110-08:00
+user=WINARM\shards SID=S-1-5-21-4187853375-3986741409-3176094604-1000 elevated=True session=0
+observer_pid=3420
+closed: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+closed: register=0 get=0 needed=0 listed=0 reasons=0 struct_size=668 users=[]
+closed: end=0
+closed: NT status=0x00000000 info=8 count=0 list_offset=8
+closed: NT users=[]; query itself holds a handle in observer PID3420
+open: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+open: register=0 get=0 needed=1 listed=1 reasons=16 struct_size=668 users=[3420]
+open: end=0
+open: NT status=0x00000000 info=16 count=1 list_offset=8
+open: NT users=[3420]; query itself holds a handle in observer PID3420
+open-and-mapped: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+open-and-mapped: register=0 get=0 needed=1 listed=1 reasons=16 struct_size=668 users=[3420]
+open-and-mapped: end=0
+open-and-mapped: NT status=0x00000000 info=16 count=1 list_offset=8
+open-and-mapped: NT users=[3420]; query itself holds a handle in observer PID3420
+mapped-only: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+mapped-only: register=0 get=0 needed=0 listed=0 reasons=0 struct_size=668 users=[]
+mapped-only: end=0
+mapped-only: NT status=0x00000000 info=16 count=1 list_offset=8
+mapped-only: NT users=[3420]; query itself holds a handle in observer PID3420
+unmapped: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+unmapped: register=0 get=0 needed=0 listed=0 reasons=0 struct_size=668 users=[]
+unmapped: end=0
+unmapped: NT status=0x00000000 info=8 count=0 list_offset=8
+unmapped: NT users=[]; query itself holds a handle in observer PID3420
+child-open-and-mapped: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+child-open-and-mapped: register=0 get=0 needed=1 listed=1 reasons=0 struct_size=668 users=[7832]
+child-open-and-mapped: end=0
+child-open-and-mapped: NT status=0x00000000 info=16 count=1 list_offset=8
+child-open-and-mapped: NT users=[7832]; query itself holds a handle in observer PID3420
+child-mapped-only: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+child-mapped-only: register=0 get=0 needed=0 listed=0 reasons=0 struct_size=668 users=[]
+child-mapped-only: end=0
+child-mapped-only: NT status=0x00000000 info=16 count=1 list_offset=8
+child-mapped-only: NT users=[7832]; query itself holds a handle in observer PID3420
+child-ended: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420\memory metadata=Ok((true, false, 1048576)) start=0
+child-ended: register=0 get=0 needed=0 listed=0 reasons=0 struct_size=668 users=[]
+child-ended: end=0
+child-ended: NT status=0x00000000 info=8 count=0 list_offset=8
+child-ended: NT users=[]; query itself holds a handle in observer PID3420
+directory-control: file=C:\Users\shards\AppData\Local\Temp\shards-restart-manager-3420 metadata=Ok((false, true, 0)) start=0
+directory-control: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+directory-control: end=0
+directory-control: NT query open failed: Access is denied. (os error 5)
+extra-read-only: file=C:\Users\runner\AppData\Local\Temp\shards-tests\128\daemon-pool-none-23\templates\20529155976c21a8e48f158129a9049eb63ee43643adcd55e809d0b28a04f3e4\g-0000000018e4ad906f93a8dc-11c0-0\memory metadata=Err(Os { code: 3, kind: NotFound, message: "The system cannot find the path specified." }) start=0
+extra-read-only: register=0 get=0 needed=0 listed=0 reasons=0 struct_size=668 users=[]
+extra-read-only: end=0
+extra-read-only: NT query open failed: The system cannot find the path specified. (os error 3)

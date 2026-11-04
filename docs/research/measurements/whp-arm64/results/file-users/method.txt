@@ -1,0 +1,17 @@
+Functional diagnosis, Windows11 arm64 26300.9711 under real TF-A/TCG Hyper-V on this Mac.
+Independent scratch controls: one execution per account, SSHsession0, runner standard
+and shards elevated. Static CRT/windows-sys0.61.2, nativeexit0 peraccount, SHA256
+5d145c9ea23479bc3f314eba28d7da9616a2666972f54b4a9f480f52fb4a1ec3. Those short controls
+overlap the already-failing real-03 attempt; no additional VM was created.
+
+Promoted src/bin/file-users.rs adds an assertion for the child mapped-only state.
+Integrated probe nativeexit0 as standardrunner and elevatedcontrol; actual daemon.rs
+observer regression ran1case and passed as standardrunner (0.10s reported by libtest).
+See candidate.json for exact executable and workspace-patch hashes. All8lint and the
+complete142-binary ARM64 Windows cross-build passed. Runtime VMM/daemon code unchanged.
+
+These integrated checks ran AFTER real-03 was interrupted by a host bugcheck/reboot
+at2026-11-04T00:34:58Z, with101/141native resultrecords. This corrects the candidate's
+initial overlap note: the earlier scratch controls overlap; the integrated unit/probes
+do not. No timing performance or complete VM qualification is inferred.
+Directory and missing-extra-path controls make no claim about an existing snapshot.
