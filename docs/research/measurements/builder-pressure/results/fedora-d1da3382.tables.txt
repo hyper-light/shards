@@ -1,0 +1,95 @@
+== /home/adalundhe/builder-pressure/run/out.txt
+host kiln-a094a12d; Fedora Linux 44 (KDE Plasma Desktop Edition); kernel 6.19.10-300.fc44.x86_64; x86_64; Intel(R) Core(TM) i9-14900HX; shards d1da3382; memory 64018 MiB; cpus 32
+builds rust,npm,apt; rounds 5; home /home/adalundhe/builder-pressure/home; bases each Dockerfiles own
+-- apt free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 18.6 p90 20.2 p99 20.2 max 20.2 s
+   scope anon peak   n 5 p50 957.4 p90 1038.1 p99 1038.1 max 1038.1 MiB
+   scope held peak   n 5 p50 1027.1 p90 1102.3 p99 1102.3 max 1102.3 MiB
+   answers           12, unanswered 0
+   answered in       n 12 p50 2 p90 6 p99 6 max 6 ms
+   freed an answer   n 12 p50 26.1 p90 66.5 p99 68.7 max 68.7 MiB
+   unplug asked      n 12 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 12 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 57.3 p90 93.0 p99 93.0 max 93.0 MiB
+-- apt held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 19.6 p90 20.4 p99 20.4 max 20.4 s
+   scope anon peak   n 5 p50 930.7 p90 943.5 p99 943.5 max 943.5 MiB
+   scope held peak   n 5 p50 996.4 p90 1008.3 p99 1008.3 max 1008.3 MiB
+   budget            n 5 p50 1052.2 p90 1052.2 p99 1052.2 max 1052.2 MiB
+   short of its peak n 5 p50 -25.1 p90 50.1 p99 50.1 max 50.1 MiB
+   answers           12, unanswered 0
+   answered in       n 12 p50 3 p90 8 p99 10 max 10 ms
+   freed an answer   n 12 p50 28.1 p90 70.5 p99 76.9 max 76.9 MiB
+   unplug asked      n 12 p50 0.0 p90 384.0 p99 384.0 max 384.0 MiB
+   unplug done       n 12 p50 0.0 p90 0.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 71.1 p90 105.0 p99 105.0 max 105.0 MiB
+   rooms told        51, held within n 51 p50 202.6 p90 600.8 p99 867.9 max 867.9 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s
+   step #5   free n 5 p50 0.3 p90 0.4 p99 0.4 max 0.4 s; held n 5 p50 0.3 p90 0.4 p99 0.4 max 0.4 s
+   step #6   free n 5 p50 9.1 p90 10.9 p99 10.9 max 10.9 s; held n 5 p50 10.8 p90 11.4 p99 11.4 max 11.4 s
+   step #7   free n 5 p50 0.4 p90 0.5 p99 0.5 max 0.5 s; held n 5 p50 0.5 p90 0.6 p99 0.6 max 0.6 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 19.1 s, free's slowest 20.2 s)
+-- npm free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 5.6 p90 5.8 p99 5.8 max 5.8 s
+   scope anon peak   n 5 p50 764.1 p90 801.4 p99 801.4 max 801.4 MiB
+   scope held peak   n 5 p50 791.1 p90 828.7 p99 828.7 max 828.7 MiB
+   answers           9, unanswered 0
+   answered in       n 9 p50 2 p90 11 p99 11 max 11 ms
+   freed an answer   n 9 p50 0.2 p90 24.2 p99 24.2 max 24.2 MiB
+   unplug asked      n 9 p50 0.0 p90 512.0 p99 512.0 max 512.0 MiB
+   unplug done       n 8 p50 0.0 p90 512.0 p99 512.0 max 512.0 MiB
+   freed a build     n 5 p50 20.4 p90 24.2 p99 24.2 max 24.2 MiB
+-- npm held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.3 p90 118.2 p99 118.2 max 118.2 s
+   scope anon peak   n 5 p50 768.3 p90 785.7 p99 785.7 max 785.7 MiB
+   scope held peak   n 5 p50 794.9 p90 815.0 p99 815.0 max 815.0 MiB
+   budget            n 5 p50 804.7 p90 807.3 p99 807.3 max 807.3 MiB
+   short of its peak n 5 p50 20.7 p90 45.2 p99 45.2 max 45.2 MiB
+   answers           114, unanswered 0
+   answered in       n 114 p50 6 p90 408 p99 1816 max 3112 ms
+   freed an answer   n 114 p50 0.0 p90 0.0 p99 19.0 max 22.2 MiB
+   unplug asked      n 114 p50 0.0 p90 0.0 p99 128.0 max 128.0 MiB
+   unplug done       n 111 p50 0.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 18.4 p90 22.2 p99 22.2 max 22.2 MiB
+   rooms told        116, held within n 116 p50 0.0 p90 80.8 p99 305.6 max 421.3 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.7 p90 1.1 p99 1.1 max 1.1 s
+   step #6   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #8   free n 5 p50 2.3 p90 2.8 p99 2.8 max 2.8 s; held n 5 p50 2.5 p90 114.1 p99 114.1 max 114.1 s
+   step #9   free n 5 p50 0.4 p90 0.6 p99 0.6 max 0.6 s; held n 5 p50 0.4 p90 0.6 p99 0.6 max 0.6 s
+   rule: held slower than free beyond the rounds' spread: yes (held's fastest 6.0 s, free's slowest 5.8 s)
+-- rust free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 4.7 p90 5.0 p99 5.0 max 5.0 s
+   scope anon peak   n 5 p50 190.6 p90 193.5 p99 193.5 max 193.5 MiB
+   scope held peak   n 5 p50 264.5 p90 268.3 p99 268.3 max 268.3 MiB
+   answers           7, unanswered 0
+   answered in       n 7 p50 1 p90 2 p99 2 max 2 ms
+   freed an answer   n 7 p50 2.8 p90 3.6 p99 3.6 max 3.6 MiB
+   unplug asked      n 7 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 2 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 2.9 p90 6.4 p99 6.4 max 6.4 MiB
+-- rust held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.3 p90 16.6 p99 16.6 max 16.6 s
+   scope anon peak   n 5 p50 188.9 p90 191.7 p99 191.7 max 191.7 MiB
+   scope held peak   n 5 p50 261.3 p90 266.2 p99 266.2 max 266.2 MiB
+   budget            n 5 p50 263.0 p90 263.0 p99 263.0 max 263.0 MiB
+   short of its peak n 5 p50 2.8 p90 5.2 p99 5.2 max 5.2 MiB
+   answers           10, unanswered 0
+   answered in       n 10 p50 0 p90 3 p99 3 max 3 ms
+   freed an answer   n 10 p50 0.3 p90 3.6 p99 3.6 max 3.6 MiB
+   unplug asked      n 10 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 7 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 0.7 p90 4.0 p99 4.0 max 4.0 MiB
+   rooms told        20, held within n 20 p50 75.4 p90 76.1 p99 131.3 max 131.3 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 1.8 p90 1.9 p99 1.9 max 1.9 s; held n 5 p50 2.8 p90 3.5 p99 3.5 max 3.5 s
+   step #5   free n 5 p50 1.5 p90 1.6 p99 1.6 max 1.6 s; held n 5 p50 1.9 p90 12.6 p99 12.6 max 12.6 s
+   step #6   free n 5 p50 0.8 p90 0.9 p99 0.9 max 0.9 s; held n 5 p50 0.8 p90 1.2 p99 1.2 max 1.2 s
+   rule: held slower than free beyond the rounds' spread: yes (held's fastest 5.8 s, free's slowest 5.0 s)

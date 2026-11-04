@@ -6098,6 +6098,41 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   runner short of memory it woke an idle daemon's thread every 2 s: job 118535098642);
   then a thread blocked in poll(2) on Linux 6.4 and later and on macOS; on an older Linux,
   a read of the host's average every ten seconds.
+- **A build's builders give back as runs do** (D133's builders; PM M422). A build's
+  builders are its own process's, not the daemon's (`shards build`), so the build watches
+  its host's memory pressure as the daemon does, the same words on every host (PSI on its
+  own cgroup on Linux, libdispatch's source on macOS, the low memory notification on
+  Windows, `SHARDS_BUILD_PRESSURE` a test's), and a write to a budget over it (inotify on
+  each `memory.high` and `memory.max` up its chain), and at each asks every builder on its
+  give-back port (`build::GIVE_PORT`, build/give.rs) to give back what it holds cold of its
+  files and what it holds plugged past twice what its build uses (init's `RECLAIM` and
+  unplug, as a run's), then tells each its share of the room the budget leaves (`ROOM`),
+  counted as a run's is, which its guest holds the build within. While a budget holds the
+  build, its builders are told its room again each pressure window where it changed, and
+  given a word of pressure where it is short: a guest holds its build within what it was
+  last told past what the build used then, and what its host gets back of it outside the
+  build (blocks it unplugs, free pages reported after its answer) the build's own growth
+  never shows; told 44 MiB as its builder's unplug of 128 MiB was under way, an apt build
+  on Fedora was held within it for 200 s while its budget had 140 MiB to spare, 219 s
+  against 31.5 s with none. Under a user scope's `MemoryHigh` the least that holds the
+  build where its builder gives back all it holds cold, interleaved with the same builds
+  unbudgeted (builder-pressure/measure.py): on Fedora (i9-14900HX, NVMe) rust, npm and apt
+  builds held took no longer than with no budget beyond their rounds' spread, an apt
+  build's builder giving back 82 MiB of its files at p50 and unplugging up to 492 MiB,
+  its answers 4 ms after the word at p50; on an M3 Ultra, its builds told every 2 s that
+  their host was short, none slower beyond the spread, an apt build's builder giving back
+  70 MiB at p50 and unplugging up to 1,152 MiB, its answers 2 ms after at p50. On CI's
+  runners (EPYC 7763 and 9V45, Xeon 8573C), the answers 1 to 11 ms after at p50 and an apt
+  builder giving back 69 to 91 MiB, rust held no slower beyond the spread on two runners
+  and npm on one; the rest 0.4 to 3.3 s slower (16 s for apt on the Xeon), in the steps
+  that write to the host's disk (an apt build's caches and its image's root filesystem),
+  which the memory controller holds to the budget's share of dirty pages
+  (`balance_dirty_pages`) where with no budget they went out after the build: its builder,
+  held within 300 MiB of room it never filled, was not what held it. On Windows
+  too since 2026-10-28, free page reporting (D151) theirs there as a run's: on jupiter's
+  WHP a builder holding a step's 256 MiB file gave back 253 MiB of it, its VM process from
+  350,516 KiB to 96,168, and again at d1deefd9, from 352,088 KiB to 96,220
+  (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`).
 
 **Measured against DAMON (PM M293).** DAMON_RECLAIM, built into the pinned kernel, does
 nothing in a run's guest as the kernel has it (its watermarks, which run it only while a
@@ -6196,13 +6231,8 @@ none. Plugged memory stays the kernel's own (D133).
 is all anonymous memory, which its host cannot take back without swap, and a read under
 such a budget is throttled for as long as it runs (761 to 1,729 s a gigabyte, PM M318),
 where one restored from its template holds that template's clean pages beside as much
-anonymous memory, which its host may take back. Builders (D133) give back at their build's
-word on their give-back port (`build::GIVE_PORT`, build/give.rs), a build running in `shards
-build`'s own process, not the daemon's; on Windows too since 2026-10-28, free page reporting
-(D151) theirs there as a run's: on jupiter's WHP a builder holding a step's 256 MiB file
-gave back 253 MiB of it, its VM process from 350,516 KiB to 96,168, and again at
-d1deefd9, from 352,088 KiB to 96,220
-(`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`). And they hold little a pass could take (PM M295): what a
+anonymous memory, which its host may take back. Builders hold little a pass could take
+(PM M295): what a
 builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
 MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
 leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
@@ -11516,9 +11546,15 @@ given the rest as its build needs it, up to what it may have.
   that comes to all of it asks a logarithm of times), raises `memory.high` as each block
   comes online, and lifts it once all of it is plugged, or once memory asked for stops
   coming (D137). Plugged memory comes online as the
-  kernel's own (`memhp_default_state=online_kernel`): a builder gives no memory back, and
-  memory online as movable alone can leave the kernel short with memory free
-  (memory-hotplug.rst, "ZONE_MOVABLE Sizing Considerations").
+  kernel's own (`memhp_default_state=online_kernel`), as memory online as movable alone
+  can leave the kernel short with memory free (memory-hotplug.rst, "ZONE_MOVABLE Sizing
+  Considerations"). At its build's word that its host is short of memory, a builder gives
+  back what it holds cold of its files and the blocks it holds plugged past twice what its
+  build uses where its kernel holds none of a block, and holds its build within the room
+  a budget over the build leaves it, told again each pressure window where it changed
+  (D188's builders): on Fedora an apt build's builder gave back 82 MiB of its files at
+  p50 and unplugged up to 492 MiB, its build no slower beyond its rounds' spread than
+  with no budget (PM M422).
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
   layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512
@@ -15646,7 +15682,13 @@ own.
   compressed blob, as Docker keeps a layer's blob and its snapshot (D75): builds, the build
   cache and runs read it as before, and an image holds it (`Store::roots`: the blob
   whose digest is a DiffID of the image's config, where there is one), so a step whose
-  layer an image holds stays shared in `builder prune`.
+  layer an image holds stays shared in `builder prune`. A build's base layers are kept so
+  too, decompressed and checked once (`Store::unpack_layers`), and each build after reads
+  their archives' headers from there: decompressed into `ingest/` at each build, they were
+  written again whole, rust:1-slim's 850 MiB, which under a memory budget the host wrote
+  out at its disk's pace, a held build's `FROM` 2.7 to 6.3 s at p50 against 1.7 to 2.6
+  with none; kept, 0.0 to 0.1 s either way, a rust build 3.0 s at p50 where it took 4.7
+  (PM M422). A root filesystem's unpack keeps nothing past it.
 - **Inline caches** name the layers as the image holds them, compressed, so that an
   importer fetches what the image pushed.
 
