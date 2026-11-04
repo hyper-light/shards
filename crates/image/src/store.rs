@@ -2210,7 +2210,7 @@ impl Store {
     ) -> Result<T, Error> {
         let room = Room::new(&self.root.join("ingest"), limits)?;
         let bytes = AtomicU64::new(0);
-        let tar = self.unpack(layer, &bytes, limits, &room)?;
+        let tar = self.unpack(layer, &bytes, limits, &room, false)?;
         let mut file = File::open(tar.path())?;
         f(&mut file)
     }
@@ -2219,8 +2219,33 @@ impl Store {
     /// media type says whether the compression is sniffed (`oci::layer_compression`). The
     /// whole decompressed stream, bytes after the tar's end included, must match the
     /// DiffID, as containerd's applier checks it (`core/diff/apply/apply.go`), and must
-    /// not pass `max` bytes.
-    fn unpack(&self, layer: &Layer, bytes: &AtomicU64, limits: &Limits, room: &Room) -> Result<Tar, Error> {
+    /// not pass `max` bytes. Where `keep`, the checked archive is kept as the layer's
+    /// uncompressed blob, named by its DiffID, as a layer a build made and compressed keeps
+    /// one ([`Store::keep_manifest`]), and read from there by every unpack after, its
+    /// bytes counted against `max` and not hashed again, as a root filesystem's are not: a
+    /// build's base decompressed into `ingest/` at each build wrote its whole size again
+    /// (rust:1-slim's 850 MiB), which under a budget its host wrote out at its disk's pace
+    /// (PM M422).
+    fn unpack(
+        &self,
+        layer: &Layer,
+        bytes: &AtomicU64,
+        limits: &Limits,
+        room: &Room,
+        keep: bool,
+    ) -> Result<Tar, Error> {
+        let kept = self.blob_path(&layer.diff_id);
+        if keep && layer.diff_id != layer.blob && kept.is_file() {
+            let n = fs::metadata(&kept)?.len();
+            let written = bytes.fetch_add(n, Ordering::AcqRel).saturating_add(n);
+            if written > limits.bytes {
+                return bad(format!(
+                    "the image decompresses to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
+                    limits.bytes
+                ));
+            }
+            return Ok(Tar::Blob(kept));
+        }
         let how = oci::layer_compression(&layer.media_type)?;
         let blob = self.blob_path(&layer.blob);
         let mut file = File::open(&blob)?;
@@ -2273,6 +2298,10 @@ impl Store {
         }
         check(sink.hasher)?;
         partial.flush()?;
+        if keep {
+            partial.commit(&kept)?;
+            return Ok(Tar::Blob(kept));
+        }
         Ok(Tar::Temp(partial))
     }
 
@@ -2302,7 +2331,7 @@ impl Store {
     pub fn unpack_layers(&self, layers: &[Layer], limits: &Limits) -> Result<Vec<Unpacked>, Error> {
         let room = Room::new(&self.root.join("ingest"), limits)?;
         let mut out = Vec::with_capacity(layers.len());
-        self.unpack_in_order(layers, limits, &room, &|_| Ok(()), |_, tar| {
+        self.unpack_in_order_keeping(layers, limits, &room, &|_| Ok(()), true, |_, tar| {
             out.push(Unpacked(tar));
             Ok(())
         })?;
@@ -2323,6 +2352,20 @@ impl Store {
         limits: &Limits,
         room: &Room,
         ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        each: impl FnMut(usize, Tar) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.unpack_in_order_keeping(layers, limits, room, ready, false, each)
+    }
+
+    /// [`Store::unpack_in_order`], each layer's archive kept as its uncompressed blob where
+    /// `keep` ([`Store::unpack`]).
+    fn unpack_in_order_keeping(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        room: &Room,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        keep: bool,
         mut each: impl FnMut(usize, Tar) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let workers = std::thread::available_parallelism()
@@ -2343,7 +2386,7 @@ impl Store {
                         while !stop.load(Ordering::Acquire) {
                             let i = next.fetch_add(1, Ordering::AcqRel);
                             let Some(layer) = layers.get(i) else { break };
-                            let r = ready(i).and_then(|()| self.unpack(layer, bytes, limits, room));
+                            let r = ready(i).and_then(|()| self.unpack(layer, bytes, limits, room, keep));
                             if r.is_err() {
                                 stop.store(true, Ordering::Release);
                             }
@@ -3821,6 +3864,71 @@ mod tests {
         (tars, layers)
     }
 
+    /// A build's base layers, unpacked, are kept as their uncompressed blobs, named by
+    /// their DiffIDs, and read from there by every unpack after: none decompressed into
+    /// `ingest/` again, their bytes still counted against the image's limit; a collection
+    /// keeps them while an image names their layers, and takes them with it (PM M422).
+    #[test]
+    fn a_builds_base_layers_are_decompressed_once() {
+        let root = temp("kept");
+        let store = Store::open(&root).unwrap();
+        let (tars, layers) = uneven_layers(&store, 3);
+        let limits = Limits::none();
+        let unpacked = store.unpack_layers(&layers, &limits).unwrap();
+        for (i, l) in layers.iter().enumerate() {
+            let kept = store.blob_path(&l.diff_id);
+            assert_eq!(fs::read(&kept).unwrap(), tars[i], "layer {i} kept whole");
+            assert_eq!(unpacked[i].0.path(), kept.as_path());
+        }
+        drop(unpacked);
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        // Read from there: its blob gone, the kept archive is what an unpack gives.
+        for l in &layers {
+            fs::remove_file(store.blob_path(&l.blob)).unwrap();
+        }
+        let again = store.unpack_layers(&layers, &limits).unwrap();
+        for (i, u) in again.iter().enumerate() {
+            assert_eq!(fs::read(u.0.path()).unwrap(), tars[i]);
+        }
+        drop(again);
+        // Counted against the image's limit as an unpack counts it.
+        let total: u64 = tars.iter().map(|t| t.len() as u64).sum();
+        let tight = Limits {
+            bytes: total - 1,
+            ..Limits::none()
+        };
+        let e = store.unpack_layers(&layers, &tight).unwrap_err();
+        assert!(e.0.contains("SHARDS_MAX_IMAGE_BYTES"), "{e}");
+        // A root filesystem's unpack keeps nothing.
+        let other = tar_of(b"other", b"other");
+        let layer = stored_layer(&store, &other);
+        store.rootfs(std::slice::from_ref(&layer), &limits).unwrap();
+        assert!(!store.blob_path(&layer.diff_id).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// What a collection makes of a kept archive: kept while a reference's image names its
+    /// layer, collected once none does.
+    #[test]
+    fn a_kept_base_layer_goes_with_its_image() {
+        let root = temp("kept-gc");
+        let store = Store::open(&root).unwrap();
+        let a = tar_of(b"a", b"a");
+        tagged(&store, "base:v1", &[&a]);
+        let layer = stored_layer(&store, &a);
+        store
+            .unpack_layers(std::slice::from_ref(&layer), &Limits::none())
+            .unwrap();
+        let kept = store.blob_path(&layer.diff_id);
+        assert!(kept.is_file());
+        drop(store.collect().unwrap());
+        assert!(kept.is_file(), "its image named");
+        store.untag("base:v1").unwrap();
+        drop(store.collect().unwrap());
+        assert!(!kept.exists(), "no image names it");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn layers_unpacked_together_are_applied_in_order_and_fail_as_one_by_one() {
         let root = temp("in-order");
@@ -3906,7 +4014,7 @@ mod tests {
             ..Limits::none()
         };
         let room = Room::new(&store.root.join("ingest"), &limits)?;
-        store.unpack(layer, &AtomicU64::new(0), &limits, &room)
+        store.unpack(layer, &AtomicU64::new(0), &limits, &room, false)
     }
 
     /// Stores `tar`, gzipped, as a layer.
