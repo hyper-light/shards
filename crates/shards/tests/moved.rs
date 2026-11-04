@@ -438,7 +438,7 @@ fn live_move_downtime() {
         let rounds: Vec<&str> = moved
             .stderr
             .lines()
-            .filter(|l| l.starts_with("move: round"))
+            .filter(|l| l.starts_with("move: ") && !l.starts_with("move: saved at"))
             .collect();
         eprintln!("move {i}: {downtime:?} us; {rounds:?}");
         downtimes.extend(downtime);
