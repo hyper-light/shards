@@ -1023,6 +1023,9 @@ fn cgroups() -> Result<(), Failure> {
     )?;
     // One at a time: a controller the kernel lacks stays off, and a limit of it then
     // fails where it is asked for. The root's, and the run's below it (D148).
+    // EXP: favordynmods, where the kernel has it.
+    // SAFETY: mount(2) remount of NUL-terminated strings.
+    unsafe { libc::mount(std::ptr::null(), c"/sys/fs/cgroup".as_ptr(), std::ptr::null(), libc::MS_REMOUNT | nosuid | noexec | nodev, c"nsdelegate,favordynmods".as_ptr().cast()) };
     let enable = |dir: &str| {
         for controller in ["cpu", "cpuset", "io", "memory", "pids"] {
             let _ = std::fs::OpenOptions::new()
@@ -1099,6 +1102,7 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
     }
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
     crate::over::mark("child-isolate");
+    if let Ok(m) = std::fs::read_to_string("/proc/self/mountinfo") { if m.contains("favordynmods") { crate::over::mark("favordynmods-on"); } }
     let own_shm = std::ffi::CString::new(shm()).map_err(|_| libc::EINVAL)?;
     // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated strings that outlive
     // the calls; this process is a single-threaded fork of init.
@@ -3039,6 +3043,7 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
         inits,
     } = ends;
     drop(inits);
+    crate::over::mark("child-born");
     // Before the orders: the standby the template keeps is isolated before its snapshot.
     let joined = matches!(isolation, Isolation::Joined { .. });
     let isolated = match isolation {
