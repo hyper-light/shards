@@ -1008,13 +1008,27 @@ pub fn workload_headroom() -> u64 {
 /// shared, so that what init mounts later reaches the workload's mount namespace.
 fn cgroups() -> Result<(), Failure> {
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
-    mount(
+    // favordynmods (Linux 6.0, Documentation/admin-guide/cgroup-v2.rst): a process moving
+    // into a cgroup takes the hierarchy's threadgroup lock for writing, which waits for an
+    // RCU grace period unless the lock is held in its slow mode (kernel/cgroup/cgroup.c,
+    // cgroup_attach_lock; kernel/rcu/sync.c), as favordynmods holds it; there each fork and
+    // exit pays a full barrier more (kernel/locking/percpu-rwsem.c, __percpu_down_read_trylock).
+    // A standby born after the snapshot, as one going on over a stopped container's layer
+    // is (over.rs), moved itself into the workload's cgroup in 10 to 40 ms on a 32-vCPU
+    // guest, and in 0.3 to 0.4 favored (PM M422); an exec's too. A kernel without it refuses
+    // the option, and the hierarchy is mounted without it.
+    let flags = nosuid | noexec | nodev;
+    if mount(
         "cgroup2",
         "/sys/fs/cgroup",
         "cgroup2",
-        nosuid | noexec | nodev,
-        "nsdelegate",
-    )?;
+        flags,
+        "nsdelegate,favordynmods",
+    )
+    .is_err()
+    {
+        mount("cgroup2", "/sys/fs/cgroup", "cgroup2", flags, "nsdelegate")?;
+    }
     // One at a time: a controller the kernel lacks stays off, and a limit of it then
     // fails where it is asked for. The root's, and the run's below it (D148).
     let enable = |dir: &str| {

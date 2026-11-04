@@ -81,8 +81,8 @@ pub fn go_over() -> Result<(), String> {
     chdir(c"/")?;
     // The template's layer, every process's root no longer, shut down: nothing it would
     // write as it is unmounted (its journal committed, its superblock) outlives it, and
-    // each such write was the host's to make durable (`Layer::flush`), 7 a restart, 20 to
-    // 38 ms of it on a loaded host (PM M422). EXT4_IOC_SHUTDOWN with
+    // each such write was the host's to make durable (`Layer::flush`): its unmount took a
+    // restart 21 to 38 ms on a loaded host, its flushes most of it (PM M422). EXT4_IOC_SHUTDOWN with
     // EXT4_GOING_FLAGS_NOLOGFLUSH (fs/ext4/ioctl.c, Linux 4.10): every access fails from
     // here on, and its journal is aborted unwritten. A kernel without it unmounts it whole.
     if let Some(fd) = crate::pmem::layer_fd() {
