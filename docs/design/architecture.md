@@ -6709,6 +6709,75 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
+### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
+
+The roadmap's item 6b, after D201: Venus on Linux hosts was built for glibc's and tested on
+NVIDIA's and AMD's GPUs. shards runs on Linux with glibc and with musl (CLAUDE.md), and a
+musl build carried no GPU's VM process: a run asking for a GPU was told this shards was
+built without one. What every Linux host has now:
+
+- **musl's GPU's VM process links musl dynamically.** A host's GPU driver is a library of
+  its C library (D201): on a musl host, Alpine's, Mesa and the Vulkan loader are musl's,
+  which a static program cannot dlopen(3). So musl's GPU's VM process is built on a musl
+  host, against its musl, with musl's static default turned off for it alone (Rust's
+  `-C target-feature=-crt-static`, "Static and dynamic C runtimes" in the rustc book) and
+  linked by the host's C compiler (build.rs, `compile_gpu_helper`); `shards` itself and
+  every other helper stay static (PM M281). CI's musl release job and the release's musl
+  builds make the renderer in their Alpine container (scripts/musl-ci, given
+  SHARDS_GPU_LIBS: bash, pkgconf, Python and Linux's headers added for scripts/gpu-libs,
+  whose meson and ninja and PyYAML come as PyPI's musllinux wheels, pinned by hash beside
+  the manylinux ones). The process's interpreter is musl's loader,
+  `/lib/ld-musl-<arch>.so.1`: a musl build on a host of glibc's, which has none, refuses a
+  GPU in words naming the glibc build (`helpers::vm_gpu`), where exec(2) would say only
+  that a file it has is not there. It needs musl's libc and libgcc_s alone, which a musl
+  host's Mesa drivers, C++, need too. Landlock lets it read musl's loader's search path
+  (`/etc/ld-musl-<arch>.path`, musl's ldso/dynlink.c), where a host names one.
+- **What else the GPU's VM process is allowed** (PM M422), found as tests/gpu.rs ran on
+  Intel's UHD Graphics (Raptor Lake-S) under Mesa's Intel driver, glibc's and musl's, each
+  refusal ending the VM process before its guest was ready or as its `vulkaninfo` ran:
+  `sysinfo`, by which glibc's and musl's `sysconf(_SC_PHYS_PAGES)` says the host's memory
+  to the driver, which sizes an integrated GPU's heap by it; udmabuf's UDMABUF_CREATE
+  alone, by which Venus makes a dma-buf of the renderer's memory files where a driver
+  exports no host memory it can map (virglrenderer's vkr_device_memory.c), /dev/udmabuf
+  being Landlock's already (D201); a dma-buf's sync-file export and import
+  (DMA_BUF_IOCTL_EXPORT_SYNC_FILE and _IMPORT_SYNC_FILE, linux/dma-buf.h), the implicit
+  sync Mesa 26.1's Intel driver keeps; a thread's priority and policy refused with EPERM,
+  as its CPUs are (D201), which Venus's ring thread sets as its guest asks (vkr_ring.c,
+  setpriority) and Mesa's sets for the queues it starts at their least (u_queue.c,
+  SCHED_BATCH and nice 19), both going on past the refusal, the VM process's threads'
+  scheduling being shards'; and, for musl's build alone, membarrier's private expedited
+  command and its registration, which musl makes as a process starts its first thread and
+  as its loader installs a library's thread-local storage in every thread (musl's
+  src/linux/membarrier.c, ldso/dynlink.c), and pwritev2 with RWF_NOAPPEND alone, musl
+  1.2.6's pwrite(3) (src/unistd/pwrite.c), as a GPU's template is saved. Each is matched
+  exactly, by request or command: the filter compares an argument's low 32 bits, as
+  musl's `ioctl` passes its `int` request sign-extended.
+- **The renderer's objects are position-independent wherever built** (scripts/gpu-libs,
+  meson's `b_pie`): Fedora's gcc 16.2.1 makes none by default (built without
+  `--enable-default-pie`), and the render server's objects' absolute relocations failed
+  the GPU's VM process's link there, a position-independent executable.
+- **Tested** (tests/gpu.rs on fedora: Core i9-14900HX, its UHD Graphics and an RTX 4070
+  Laptop GPU on nouveau, Fedora 44 on Linux 6.19.10, 2026-11-03, the host busy with other
+  agents' work, load average up to 111). glibc's build, Fedora's Mesa 26.0.3: passes, 4
+  runs of 4 at the last two commits, 25 to 137 s (the first building the image); a run
+  given `--gpus all` finds `Virtio-GPU Venus (Intel(R) Graphics (RPL-S))`,
+  `Virtio-GPU Venus (NVIDIA GeForce RTX 4070 Laptop GPU (NVK AD106))`, NVIDIA's GPU
+  through Mesa's NVK, and `Virtio-GPU Venus (llvmpipe (LLVM 22.1.1, 256 bits))`. musl's,
+  built and run in CI's rust:1.98.1-alpine image (Alpine 3.24.2, musl 1.2.6, Mesa 26.1.6's
+  Intel driver), given the host's /dev/kvm, /dev/dri and /dev/udmabuf, as uid 1000:
+  passes, 3 runs of 3, 23 to 24 s, finding `Virtio-GPU Venus (Intel(R) Graphics (RPL-S))`;
+  its GPU's VM process a position-independent executable whose interpreter is
+  /lib/ld-musl-x86_64.so.1, needing libc.musl-x86_64.so.1 and libgcc_s.so.1, `shards`
+  static-pie. In both, a build's steps given the render node by a CDI device find it as
+  root and as user 1000, so do a run given it by CDI name and a run of user 1000, and the
+  GPU's runs restore templates of their own (D150). The same day, a run's /dev/shm half
+  its microVM's memory (D156) on fedora:
+  `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer` passes (71.5 s).
+- **Not yet:** the GPU desktop's run of this build (its NVIDIA GeForce RTX 5060 Ti on
+  NVIDIA's driver and Radeon 610M, D201's) waits for its owner's go; a musl host gives a
+  run Mesa's drivers alone (Intel's, AMD's, NVK), NVIDIA shipping no driver for musl; and
+  arm64 musl hosts are built for as x86_64's are, untested on a GPU.
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
@@ -6844,7 +6913,7 @@ node's mode, templates of their own (D150). What a Linux host makes otherwise:
   musl (PM M281): a host's GPU driver is a library of its C library, which a static program
   cannot load. build.rs builds it for the `-linux-gnu` targets where SHARDS_GPU_LIBS names
   the renderer's libraries (`gpu_target`), and CI and releases build them there, as on
-  Apple silicon. A musl build carries none yet.
+  Apple silicon. A musl build's links musl dynamically, built on Alpine (D208).
 - **A blob is held by its descriptor** (PM M381). Venus exports host-visible memory as a
   dma-buf where the driver can, as both NVIDIA's and Mesa's can, and the renderer exports
   each mappable blob as it is made and keeps the descriptor: a dma-buf maps at any address
@@ -6865,7 +6934,8 @@ node's mode, templates of their own (D150). What a Linux host makes otherwise:
   NVIDIA's control, GPU, modesetting and unified memory nodes, udmabuf); its seccomp filter
   allows the GPU drivers' ioctls by their types (NVIDIA's 'F' and 'm', DRM's 'd'), which a
   rule matches by the request's bits 8 to 15 (`Rule::masked`), seven syscalls more, two
-  fcntl commands, fallocate's mode 0 and getsockopt's SO_TYPE, and fails symlink as its
+  fcntl commands, fallocate's mode 0 and getsockopt's SO_TYPE (and what Intel's GPUs and
+  musl's loader make besides, D208), and fails symlink as its
   host does (NVIDIA's /dev/char links) and sched_setaffinity with EPERM (RADV's, which
   renders on, M384). Its drivers' shader caches stay off: it writes nothing of its host's.
 - **Vulkan programs** (PM M384): llama.cpp's matrix multiplications in a guest get its

@@ -17270,3 +17270,51 @@ revision before comparing a changed API/implementation.
   memory file stays sparse, taking the disk its guest used (M345). The restore bench holds
   its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
   `shards restore` finds it.
+
+### M422. What a GPU's VM process needs on Intel's GPUs and on a musl host (D208)
+
+- **Question.** M382 found what NVIDIA's and AMD's drivers reach of a Linux host from the
+  GPU's VM process, with glibc. Does Mesa's Intel driver reach more, and does a GPU's VM
+  process built against musl, as a musl host's must be (D208), run under the same
+  confinement?
+- **Method.** fedora (Intel Core i9-14900HX, its UHD Graphics, Raptor Lake-S, at
+  /dev/dri/renderD128, and an RTX 4070 Laptop GPU on nouveau, which no Vulkan driver took;
+  Fedora 44, Linux 6.19.10), 2026-11-03, p/venus. tests/gpu.rs, glibc's build with Fedora's
+  Mesa 26.0.3 and Vulkan loader 1.4.341; musl's, built and run in the rust:1.98.1-alpine
+  image CI's musl jobs use (Alpine 3.24.2, musl 1.2.6, Mesa 26.1.6's Intel driver and
+  Vulkan loader added), given the host's /dev/kvm, /dev/dri and /dev/udmabuf, as uid 1000.
+  Round by round, each refusal the filter logged allowed in the next; one glibc round under
+  M382's refusals.patch, which logs every refusal and goes on.
+- **Results.**
+  - glibc: (1) sysinfo (99) refused in the VM process's main thread before its guest was
+    ready: glibc's `sysconf(_SC_PHYS_PAGES)`, which Mesa's `os_get_total_physical_memory`
+    asks as the Intel driver sizes its heap. (2) ioctl 0x40187542, udmabuf's
+    UDMABUF_CREATE, on /dev/udmabuf. (3) Under refusals.patch: none; the test passed.
+  - musl: (1) membarrier (324) MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, in the main
+    thread, before the guest was ready. (2) ioctl 0xffffffffc0086202 on a dma-buf,
+    DMA_BUF_IOCTL_EXPORT_SYNC_FILE sign-extended (musl's `ioctl` takes an `int` request),
+    as the guest's vulkaninfo ran. (3) Logged by the kernel's audit, not the filter (the
+    thread blocks SIGSYS, which the kernel then delivers by its default action, ending the
+    process): sched_setscheduler (144) and setpriority (141) in the thread `vkr-ring-1`,
+    Venus's ring thread, whose setpriority is its guest's ask (virglrenderer's
+    vkr_ring.c) and whose sched_setscheduler is Mesa's pthread_setschedparam(SCHED_BATCH)
+    of a queue thread it starts (u_queue.c); glibc's build, its next round, refused the
+    same (`seccomp refused syscall 144 in thread vkr-ring-1, arguments 0x2b9db3 0x3`:
+    SCHED_BATCH), which its rounds before had not reached. (4) pwritev2 (328) in the thread
+    `snapshot`, as the GPU's template was saved: musl 1.2.6's pwrite(3), pwritev2 of one
+    buffer with RWF_NOAPPEND (musl's src/unistd/pwrite.c; 1.2.5's is pwrite64, as the
+    static helpers', built with Rust's own musl, make it in CI's musl jobs' snapshot
+    tests). (5) None: 3 runs of 3 passed, 23 to 24 s; glibc's at the
+    same commit passed too (4 runs of 4 across the last two).
+  - The link: Fedora's gcc 16.2.1 (no `--enable-default-pie`) compiled the render server's
+    objects without -fPIE, and rust-lld refused their R_X86_64_64 and R_X86_64_32S
+    relocations in the GPU's VM process, a position-independent executable; with meson's
+    `b_pie` they link.
+- **Reading.** Beyond M382's: sysinfo; UDMABUF_CREATE; a dma-buf's sync-file export (and
+  its import, its pair in linux/dma-buf.h); a thread's priority and policy, which both
+  callers go on past when refused, so refused with EPERM as sched_setaffinity is (M384);
+  for musl's build, membarrier's two private expedited commands and pwritev2 with
+  RWF_NOAPPEND alone. Nothing more is opened than M382's paths and musl's loader's search
+  path. Through the GPU's VM process the guest found three GPUs on glibc's build (Intel's
+  through ANV, the RTX 4070 through NVK, and llvmpipe), which the host's own vulkaninfo,
+  run in its session, listed two of (ANV, llvmpipe).

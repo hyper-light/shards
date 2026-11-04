@@ -128,7 +128,9 @@ Each lone item is confirmed or closed as its row is worked.
   and etwlogs on Windows, journald itself refused off Linux as Linux's own.
 - Row 6, Linux: a microVM given its host's GPUs through Venus, rendered by the host's own
   Vulkan driver in the GPU's VM process (D201), tested by tests/gpu.rs on the GPU desktop's
-  NVIDIA GeForce RTX 5060 Ti and Radeon 610M (PM M381, M382, M384).
+  NVIDIA GeForce RTX 5060 Ti and Radeon 610M (PM M381, M382, M384); on musl hosts too, the
+  GPU's VM process linked against the host's musl, and on Intel's GPUs, tested by
+  tests/gpu.rs on fedora's UHD Graphics with glibc and in Alpine (D208, PM M422).
 - Row 6, Windows: the same on an x86_64 Windows host, the krunkit fork's Venus in the GPU's
   VM process, its blobs of the renderer's own pages mapped by WHP, the process in its
   AppContainer on a window station and desktop of its own (D202), tested by tests/gpu.rs on

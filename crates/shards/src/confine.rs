@@ -177,6 +177,43 @@ pub fn confine() -> Result<(), String> {
         // VM process sets no thread's CPUs, which could be another of its user's
         // processes' (PM M384).
         rules.push(Rule::fails(libc::SYS_sched_setaffinity, libc::EPERM as u16));
+        // So are a thread's priority and policy, which Venus's ring thread sets as its
+        // guest asks (virglrenderer's vkr_ring.c, setpriority) and Mesa's sets for the
+        // queues it starts at their least (u_queue.c: SCHED_BATCH by pthread_setschedparam,
+        // nice 19): refused with EPERM, which both go on past, as the VM process's threads'
+        // scheduling is shards' (Mesa 26.1's Intel driver, from musl, ended the process
+        // with them, its ring thread blocking the filter's signal).
+        rules.push(Rule::fails(libc::SYS_setpriority, libc::EPERM as u16));
+        rules.push(Rule::fails(libc::SYS_sched_setscheduler, libc::EPERM as u16));
+        // Venus makes a dma-buf of the renderer's memory files through udmabuf where a
+        // driver exports no host memory it can map, as Mesa's Intel driver on Intel's UHD
+        // Graphics (vkr_physical_device.c): UDMABUF_CREATE alone, _IOW('u', 0x42, struct
+        // udmabuf_create) of linux/udmabuf.h, Landlock's rules giving it /dev/udmabuf.
+        rules.push(Rule::with(libc::SYS_ioctl, 1, &[UDMABUF_CREATE]));
+        // A dma-buf's fences as a sync file, out and in (linux/dma-buf.h,
+        // DMA_BUF_IOCTL_EXPORT_SYNC_FILE and _IMPORT_SYNC_FILE), the implicit sync a driver
+        // keeps with what else uses its memory: Mesa 26.1's Intel driver exported one,
+        // Alpine's, and refused, its VM process ended as its guest's vulkaninfo ran.
+        rules.push(Rule::with(
+            libc::SYS_ioctl,
+            1,
+            &[DMA_BUF_IOCTL_EXPORT_SYNC_FILE, DMA_BUF_IOCTL_IMPORT_SYNC_FILE],
+        ));
+        // musl's GPU's VM process, linked dynamically: musl registers for private expedited
+        // memory barriers as a process starts its first thread, and its loader takes one as
+        // a library it opens brings thread-local storage, the drivers' (musl's
+        // src/linux/membarrier.c and ldso/dynlink.c, install_new_tls). Refused, the first
+        // ended the process before it was ready.
+        if cfg!(target_env = "musl") {
+            rules.push(Rule::with(
+                libc::SYS_membarrier,
+                0,
+                &[
+                    MEMBARRIER_CMD_PRIVATE_EXPEDITED,
+                    MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED,
+                ],
+            ));
+        }
     }
     let commands = [
         libc::F_DUPFD,
@@ -187,6 +224,14 @@ pub fn confine() -> Result<(), String> {
         libc::F_SETFL,
     ];
     rules.push(Rule::with(libc::SYS_fcntl, 1, &commands.map(|c| c as u32)));
+    // musl 1.2.6's pwrite(3) is pwritev2 of its one buffer with RWF_NOAPPEND, which writes
+    // at the offset as pwrite64 does, an O_APPEND file's too (musl's src/unistd/pwrite.c):
+    // the GPU's VM process, linked to a musl host's musl (D208), makes it as it saves a
+    // snapshot; the other helpers, static with Rust's own musl, make pwrite64 as they
+    // save (CI's musl jobs' snapshot tests).
+    if cfg!(target_env = "musl") {
+        rules.push(Rule::with(libc::SYS_pwritev2, 5, &[libc::RWF_NOAPPEND as u32]));
+    }
     // Signals to this process's own threads alone: a vCPU's kick, and glibc's raise(3).
     // SAFETY: getpid(2) has no preconditions.
     let pid = unsafe { libc::getpid() };
@@ -248,14 +293,37 @@ pub fn confine() -> Result<(), String> {
 #[cfg(target_os = "linux")]
 const GPU_IOCTL_TYPES: [u8; 3] = *b"Fmd";
 
+/// udmabuf's one request a GPU's VM process makes (linux/udmabuf.h): _IOW('u', 0x42,
+/// struct udmabuf_create), its 24 bytes a descriptor, flags, an offset and a size.
+#[cfg(target_os = "linux")]
+const UDMABUF_CREATE: u32 = (1 << 30) | (24 << 16) | ((b'u' as u32) << 8) | 0x42;
+
+/// A dma-buf's sync-file requests (linux/dma-buf.h): _IOWR('b', 2, struct
+/// dma_buf_export_sync_file) and _IOW('b', 3, struct dma_buf_import_sync_file), each 8
+/// bytes, flags and a descriptor.
+#[cfg(target_os = "linux")]
+const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: u32 = (3 << 30) | (8 << 16) | ((b'b' as u32) << 8) | 2;
+#[cfg(target_os = "linux")]
+const DMA_BUF_IOCTL_IMPORT_SYNC_FILE: u32 = (1 << 30) | (8 << 16) | ((b'b' as u32) << 8) | 3;
+
+/// membarrier(2)'s commands musl makes (linux/membarrier.h), which the libc crate names on
+/// Android alone.
+#[cfg(target_os = "linux")]
+const MEMBARRIER_CMD_PRIVATE_EXPEDITED: u32 = 1 << 3;
+#[cfg(target_os = "linux")]
+const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED: u32 = 1 << 4;
+
 /// What else the GPU's VM process's drivers make, every argument allowed (PM M382):
 /// NVIDIA's `statfs` of where it keeps files and `sched_get_priority_max` and `_min` of the
 /// threads it starts, the address of a socket it was given (`getsockname`, libGLX_nvidia),
 /// the C library's `getresuid` and `getresgid` as a driver asks whether it runs set-uid or
-/// set-gid, and anonymous
-/// files of memory (`memfd_create`): Mesa's, NVIDIA's and the renderer's own shared memory.
+/// set-gid, anonymous files of memory (`memfd_create`): Mesa's, NVIDIA's and the renderer's
+/// own shared memory, and `sysinfo`, by which the C library's `sysconf(_SC_PHYS_PAGES)`
+/// says the host's memory to Mesa's Intel driver, which sizes an integrated GPU's heap by
+/// it (glibc's and musl's sysconf; Mesa's os_get_total_physical_memory; refused, ANV on
+/// Intel's UHD Graphics ended its VM process before it was ready).
 #[cfg(target_os = "linux")]
-const GPU_SYSCALLS: [libc::c_long; 7] = [
+const GPU_SYSCALLS: [libc::c_long; 8] = [
     libc::SYS_statfs,
     libc::SYS_sched_get_priority_max,
     libc::SYS_sched_get_priority_min,
@@ -263,6 +331,7 @@ const GPU_SYSCALLS: [libc::c_long; 7] = [
     libc::SYS_getresuid,
     libc::SYS_getresgid,
     libc::SYS_memfd_create,
+    libc::SYS_sysinfo,
 ];
 
 /// What a GPU's VM process reads and controls besides a VM process's, on Linux (D201), as
@@ -346,6 +415,10 @@ pub fn gpu_paths(paths: &mut Paths) {
         .iter()
         .filter_map(|p| there(p)),
     );
+    // musl's loader's search path, where a musl host names one (musl's ldso/dynlink.c).
+    paths
+        .read
+        .extend(there(&format!("/etc/ld-musl-{}.path", std::env::consts::ARCH)));
     // /dev/dri listed, its render nodes used; NVIDIA's control, GPU, modesetting and
     // unified memory nodes; udmabuf, which Venus makes host memory of where a driver
     // exports none (vkr_physical_device.c).
@@ -673,6 +746,22 @@ mod tests {
         );
         assert_eq!(library_paths(r#"{"library_path": "lib.so"#), Vec::<String>::new());
         assert_eq!(library_paths("{}"), Vec::<String>::new());
+    }
+
+    /// udmabuf's request as Venus made it under Mesa's Intel driver, which the filter
+    /// refused before it was allowed (seccomp's record: ioctl 0x40187542).
+    #[test]
+    fn udmabuf_create_is_the_request_venus_makes() {
+        assert_eq!(UDMABUF_CREATE, 0x4018_7542);
+    }
+
+    /// A dma-buf's sync-file requests as linux/dma-buf.h defines them, the export as Mesa's
+    /// Intel driver made it (seccomp's record: 0xffffffffc0086202, musl's `int` request
+    /// sign-extended, whose low 32 bits the filter compares).
+    #[test]
+    fn dma_buf_sync_file_requests_are_the_kernels() {
+        assert_eq!(DMA_BUF_IOCTL_EXPORT_SYNC_FILE, 0xc008_6202);
+        assert_eq!(DMA_BUF_IOCTL_IMPORT_SYNC_FILE, 0x4008_6203);
     }
 
     /// In a child process (this test binary, told by `LANDLOCK_CHILD` where its files

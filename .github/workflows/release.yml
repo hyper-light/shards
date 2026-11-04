@@ -78,7 +78,8 @@ jobs:
           unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
       # The GPU's renderer (D144, D201, D202), from pinned sources: `shards` then carries
-      # shards-vm-gpu, on macOS, on Linux with glibc and on x86_64 Windows.
+      # shards-vm-gpu, on macOS, on Linux with glibc and on x86_64 Windows; musl's builds
+      # make theirs in Alpine (below).
       - name: The GPU's renderer
         if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-linux-gnu') || matrix.target == 'x86_64-pc-windows-msvc'
         shell: bash
@@ -92,7 +93,10 @@ jobs:
       - name: Build on the native architecture, in Alpine
         if: matrix.musl
         run: |
+          # The GPU's VM process, linked against Alpine's musl, its renderer built there
+          # (D201, scripts/musl-ci); `shards` itself stays static.
           docker run --rm -v "$PWD:/work" -w /work -e TARGET -e SHARDS_GIT_COMMIT -e MUSL_CI=build \
+            -e SHARDS_GPU_LIBS=/work/target/gpu-libs \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             "$MUSL_IMAGE" scripts/musl-ci

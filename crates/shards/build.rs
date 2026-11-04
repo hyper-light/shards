@@ -14,7 +14,7 @@
 //!   carries none, for check builds of other targets (scripts/lint), and such a `shards`
 //!   refuses what needs them.
 //! - The GPU's VM process (`shards-vm-gpu`, D144, D201, D202): the VM process built with
-//!   its renderer, on Apple silicon, on Linux with glibc and on x86_64 Windows where
+//!   its renderer, on Apple silicon, on Linux (glibc's and musl's) and on x86_64 Windows where
 //!   `SHARDS_GPU_LIBS` names the renderer's libraries (scripts/gpu-libs), into
 //!   `target/helpers-gpu`, signed as the VM process is on macOS; or `SHARDS_HELPERS_DIR`'s.
 //!   Without it, `shards` carries none and refuses a GPU.
@@ -460,16 +460,18 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
 }
 
 /// Whether `target` carries a GPU's VM process where its renderer's libraries are given
-/// (D144, D201, D202): Apple silicon's, Linux's with glibc, which a GPU's VM process links,
-/// dynamic, as it opens the host's Vulkan driver, a library of the host's C library (on
-/// Linux the other helpers are static, PM M281), and x86_64 Windows's, whose VMs WHP
-/// runs.
+/// (D144, D201, D202): Apple silicon's, Linux's, glibc's and musl's, whose GPU's VM process
+/// links its C library dynamically, as it opens the host's Vulkan driver, a library of the
+/// host's C library (on Linux the other helpers are static, PM M281), and x86_64
+/// Windows's, whose VMs WHP runs.
 fn gpu_target(target: &str) -> bool {
     matches!(
         target,
         "aarch64-apple-darwin"
             | "x86_64-unknown-linux-gnu"
             | "aarch64-unknown-linux-gnu"
+            | "x86_64-unknown-linux-musl"
+            | "aarch64-unknown-linux-musl"
             | "x86_64-pc-windows-msvc"
     )
 }
@@ -506,7 +508,8 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("target"))
         .join("helpers-gpu");
-    let output = Command::new(var("CARGO")?)
+    let mut command = Command::new(var("CARGO")?);
+    command
         .current_dir(&root)
         .args([
             "build",
@@ -520,7 +523,32 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
         .arg(&profile)
         .args(["--target", &target, "--target-dir"])
         .arg(&target_dir)
-        .env("SHARDS_GPU_LIBS", libs)
+        .env("SHARDS_GPU_LIBS", libs);
+    // musl's GPU's VM process, built on a musl host (Alpine), links that host's musl
+    // dynamically, as glibc's does glibc (D201): a static program has no dlopen(3) of a
+    // host's Vulkan driver. So musl's static default is turned off for it alone
+    // (`-crt-static`, Rust's "Static and dynamic C runtimes"), after the outer build's own
+    // flags, and it is linked by the host's C compiler, which finds the host's libc.so,
+    // where no linker is named for it already (.cargo/config.toml names rust-lld for musl's
+    // static guests).
+    if target.ends_with("-unknown-linux-musl") {
+        let mut flags: Vec<String> = env::var("CARGO_ENCODED_RUSTFLAGS")
+            .unwrap_or_default()
+            .split('\x1f')
+            .filter(|f| !f.is_empty())
+            .map(String::from)
+            .collect();
+        flags.push("-Ctarget-feature=-crt-static".into());
+        command.env("CARGO_ENCODED_RUSTFLAGS", flags.join("\x1f"));
+        let linker = format!(
+            "CARGO_TARGET_{}_LINKER",
+            target.to_ascii_uppercase().replace('-', "_")
+        );
+        if env::var_os(&linker).is_none() {
+            command.env(linker, "cc");
+        }
+    }
+    let output = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
