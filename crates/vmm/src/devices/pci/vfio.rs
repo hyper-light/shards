@@ -1477,7 +1477,8 @@ pub struct VfioFunction {
     /// mapped while its memory decoding is on (`mapped`), in `_mappings` of its regions.
     windows: Vec<Window>,
     slots: Option<Box<dyn BarSlots>>,
-    mapped: Mutex<bool>,
+    /// Each window's, whether it is in the guest now.
+    mapped: Mutex<Vec<bool>>,
     _mappings: Vec<Mapping>,
     /// Bits of its configuration the guest reads as the VMM puts them, not as the device
     /// has them: each a register's offset (a multiple of 4), the bits it reads, and the
@@ -1542,7 +1543,9 @@ impl VfioFunction {
         movable: bool,
     ) -> Result<VfioFunction, String> {
         let routed = route.is_some() && send.is_some();
-        let pin = if routed && device.signals(IRQ_INTX) {
+        // A plugged function's slot has no INTx line its machine's firmware tables route
+        // (D214): its MSIs alone.
+        let pin = if routed && !movable && device.signals(IRQ_INTX) {
             device.config(reg::INTERRUPT_PIN, 1) as u8
         } else {
             0
@@ -1635,7 +1638,7 @@ impl VfioFunction {
             }),
             windows,
             slots,
-            mapped: Mutex::new(false),
+            mapped: Mutex::new(Vec::new()),
             _mappings: mappings,
             overlays,
             decoding: std::sync::atomic::AtomicBool::new(false),
@@ -1652,13 +1655,19 @@ impl VfioFunction {
             return;
         };
         let mut mapped = self.mapped.lock().unwrap_or_else(PoisonError::into_inner);
-        if *mapped == on {
-            return;
-        }
+        mapped.resize(self.windows.len(), false);
         let mut done = 0;
-        for (i, window) in (0u32..).zip(&self.windows) {
-            // Where its BAR is now: where the guest placed a plugged function's.
-            let gpa = self.kept.bar_addr(window.bar).unwrap_or(0) + window.offset;
+        for ((i, window), in_guest) in (0u32..).zip(&self.windows).zip(mapped.iter_mut()) {
+            if *in_guest == on {
+                continue;
+            }
+            // Where its BAR is now: where the guest placed a plugged function's, none of it
+            // in the guest before it does (D214).
+            let at = self.kept.bar_addr(window.bar).unwrap_or(0);
+            if on && at == 0 {
+                continue;
+            }
+            let gpa = at + window.offset;
             let result = if on {
                 // SAFETY: the window lies in one of `_mappings`, which outlive the VM.
                 unsafe { slots.map(i, window.host as *mut u8, gpa, window.len) }
@@ -1666,11 +1675,13 @@ impl VfioFunction {
                 slots.unmap(i)
             };
             match result {
-                Ok(()) => done += 1,
+                Ok(()) => {
+                    *in_guest = on;
+                    done += 1;
+                }
                 Err(e) => crate::warn!("{}: a BAR's window at {gpa:#x}: {e}", self.device.name),
             }
         }
-        *mapped = on;
         crate::debug!(
             "{}: BAR windows {} the guest: {done}",
             self.device.name,

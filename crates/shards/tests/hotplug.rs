@@ -254,3 +254,75 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         eprintln!("{}", stats(name, samples));
     }
 }
+
+/// The host's QEMU edu function (1234:11e8), where it has one: a test function its own
+/// host gave it (`--pci-tests`), as a nested guest of the L1 tests has with
+/// SHARDS_L1_PCI_TESTS (boot.rs).
+#[cfg(target_os = "linux")]
+fn edu_function() -> Option<String> {
+    std::fs::read_dir("/sys/bus/pci/devices")
+        .ok()?
+        .flatten()
+        .find_map(|e| {
+            let read = |f: &str| std::fs::read_to_string(e.path().join(f)).ok();
+            (read("vendor")?.trim() == "0x1234" && read("device")?.trim() == "0x11e8")
+                .then(|| e.file_name().to_string_lossy().into_owned())
+        })
+}
+
+/// A host's PCI function passed through to a running microVM (D214), outside its guest's
+/// IOMMU: its guest rescans, finds QEMU edu's IDs at the place it was plugged into, and
+/// reads its identification register and liveness check through its BAR 0, mapped from
+/// sysfs where the guest placed it, the BAR's window a memory slot of KVM's that moved
+/// with it; then lets it go, and it is unplugged, KVM told to forget its group. Twice, as
+/// a function let go is the host's again. Runs where a host has an edu function to give:
+/// nested, `SHARDS_L1_PCI_TESTS=01.0 SHARDS_L1_TESTS=hotplug` (boot.rs).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hosts_function_is_plugged_into_a_running_microvm() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(name) = edu_function() else {
+        eprintln!("SKIP: this host has no QEMU edu function to pass through");
+        return;
+    };
+    // Its host's vfio-pci given it, as an administrator gives one (vfio.rst).
+    let dir = std::path::Path::new("/sys/bus/pci/devices").join(&name);
+    if let Ok(driver) = std::fs::read_link(dir.join("driver"))
+        && driver.file_name().is_some_and(|d| d != "vfio-pci")
+    {
+        std::fs::write(dir.join("driver/unbind"), &name).unwrap();
+    }
+    std::fs::write(dir.join("driver_override"), "vfio-pci").unwrap();
+    let _ = std::fs::write("/sys/bus/pci/drivers_probe", &name);
+    let f = vm::Vfio::of(&name).unwrap_or_else(|e| panic!("{e}"));
+
+    let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
+    cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
+    cfg.memory_mib = 512;
+    cfg.console = Console::Discard;
+    cfg.pci_slots = 2;
+    let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
+    let mut step = 0;
+    let mut ask = |handle: &Handle, what: String| {
+        until(handle, &format!("SHARDS-PLUG WAIT {step}"));
+        handle.console_input(format!("{what}\n").as_bytes());
+        step += 1;
+        until(handle, &format!("SHARDS-PLUG WAIT {step}"))
+    };
+    for _ in 0..2 {
+        let plugged = handle.plug_vfio(&f).unwrap_or_else(|e| panic!("{e}"));
+        let said = ask(&handle, format!("vfio {}", plugged.address));
+        eprintln!(
+            "PLUG-STATS a host's function, rescan to its BAR read: {} us",
+            answer(&said, "SHARDS-PLUG VFIO ")[0]
+        );
+        ask(&handle, format!("remove {}", plugged.address));
+        handle.unplug(plugged.devfn).unwrap_or_else(|e| panic!("{e}"));
+    }
+    until(&handle, &format!("SHARDS-PLUG WAIT {step}"));
+    handle.console_input(b"done\n");
+    let said = until(&handle, "SHARDS-TEST PASS");
+    assert_eq!(running.wait(), ExitReason::PowerOff, "{said}");
+}

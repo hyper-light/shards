@@ -1413,6 +1413,8 @@ fn work() -> Result<(), String> {
 ///   configuration change, reads its last sector, and says `SHARDS-PLUG GREW NAME US`.
 /// - `share ADDR TAG`: rescans, mounts virtiofs TAG once its driver has the function,
 ///   reads `/hello`, writes `/from-guest` synced, unmounts, says `SHARDS-PLUG SHARE US`.
+/// - `vfio ADDR`: rescans, and reads the host's QEMU edu function passed through at ADDR
+///   through its BAR 0, mapped from sysfs, and says `SHARDS-PLUG VFIO US`.
 /// - `remove ADDR`: lets the function go as shards-init does, its `remove` written, and
 ///   says `SHARDS-PLUG REMOVED US`.
 /// - `done`: the test passes.
@@ -1526,6 +1528,61 @@ fn pci_plug() -> Result<(), String> {
                     return Err(format!("umount /mnt: {}", io::Error::last_os_error()));
                 }
                 let _ = writeln!(io::stdout(), "SHARDS-PLUG SHARE {}", us(t0));
+            }
+            ["vfio", addr] => {
+                // QEMU edu's IDs, its identification register 0x010000ed and its liveness
+                // check's inverse through its BAR 0, as `pci` reads the test function's.
+                let t0 = monotonic_ns();
+                rescan()?;
+                let dir = format!("/sys/bus/pci/devices/{addr}");
+                let ids = wait_for(Duration::from_secs(10), || {
+                    let read = |f: &str| std::fs::read_to_string(format!("{dir}/{f}")).ok();
+                    Some((
+                        read("vendor")?.trim().to_string(),
+                        read("device")?.trim().to_string(),
+                    ))
+                })
+                .ok_or_else(|| format!("no function at {addr} after a rescan"))?;
+                if ids != ("0x1234".to_string(), "0x11e8".to_string()) {
+                    return Err(format!("{addr} is {ids:?}"));
+                }
+                std::fs::write(format!("{dir}/enable"), "1").map_err(|e| format!("{dir}/enable: {e}"))?;
+                let bar = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(format!("{dir}/resource0"))
+                    .map_err(|e| format!("{dir}/resource0: {e}"))?;
+                use std::os::fd::AsRawFd as _;
+                // SAFETY: a fresh shared mapping of the BAR's first page, which nothing else maps.
+                let regs = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        4096,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_SHARED,
+                        bar.as_raw_fd(),
+                        0,
+                    )
+                };
+                if regs == libc::MAP_FAILED {
+                    return Err(format!("mapping {addr}'s BAR 0: {}", io::Error::last_os_error()));
+                }
+                let regs = regs.cast::<u32>();
+                // SAFETY: volatile accesses of the mapping's first two registers, a device's.
+                let (identification, live) = unsafe {
+                    let identification = regs.read_volatile();
+                    regs.add(1).write_volatile(0x1234_5678);
+                    (identification, regs.add(1).read_volatile())
+                };
+                // SAFETY: the mapping made above.
+                unsafe { libc::munmap(regs.cast(), 4096) };
+                std::fs::write(format!("{dir}/enable"), "0").map_err(|e| format!("{dir}/enable: {e}"))?;
+                if identification != 0x0100_00ed || live != !0x1234_5678 {
+                    return Err(format!(
+                        "{addr}'s BAR 0 said identification {identification:#x}, liveness {live:#x}"
+                    ));
+                }
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG VFIO {}", us(t0));
             }
             ["remove", addr] => {
                 let t0 = monotonic_ns();
