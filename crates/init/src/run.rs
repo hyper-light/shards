@@ -206,7 +206,13 @@ pub fn main(device: &str, template: bool) -> ! {
         // starts; none of a visit to a stopped container's files, which runs nothing.
         let procs = (spec.builtin != run::builtin::HOLD)
             .then(|| crate::procevents::Listener::new().map_err(|e| e.to_string()));
+        crate::over::mark("received");
         let (mut workload, declared) = standby.start(&spec)?;
+        crate::over::mark("standby-started");
+        {
+            let m = crate::over::MARKS.lock().map(|m| m.clone()).unwrap_or_default();
+            let _ = crate::pmem::write_in_layer("over-timing", m.as_bytes());
+        }
         workload.procs = procs;
         // A visit to a stopped container's files (`HOLD`, D37) runs nothing of the image's:
         // no command, and no agent or harness.
@@ -2060,8 +2066,6 @@ fn receive(conn: &File, standby: Standby) -> Result<(Spec, Standby), Failure> {
                 .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
             let s = Standby::fork(Born::Own)?;
             crate::over::mark("forked");
-            let m = crate::over::MARKS.lock().map(|m| m.clone()).unwrap_or_default();
-            let _ = crate::pmem::write_in_layer("over-timing", m.as_bytes());
             s
         }
         _ => standby,
