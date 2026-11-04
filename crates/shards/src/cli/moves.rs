@@ -50,6 +50,13 @@ struct Plan {
     name: String,
     image_id: String,
     snapshot: String,
+    files: Vec<PlanFile>,
+}
+
+/// A file a plan names, by its name relative to its home.
+#[derive(serde::Deserialize)]
+struct PlanFile {
+    rel: String,
 }
 
 /// What the other machine lacks (daemon/moves.rs `Needs`).
