@@ -843,6 +843,23 @@ impl Vcpu {
         ID_REGS.iter().map(|&r| Ok((r, self.sys.sys_reg(r)?))).collect()
     }
 
+    /// Tells the guest the CPU `id` describes, each ID register set and read back: a guest
+    /// resumed on another CPU than its snapshot's goes on with the one it found (D176 part
+    /// 6). A register the framework keeps as it is fails it.
+    pub fn set_cpu_id(&mut self, id: &[(u16, u64)]) -> Result<()> {
+        for &(r, v) in id {
+            self.sys.set_sys_reg(r, v)?;
+            let now = self.sys.sys_reg(r)?;
+            if now != v {
+                return Err(Error::Guest(format!(
+                    "{} stays {now:#x} where its guest's is {v:#x}",
+                    crate::arch::aarch64::cpu::name(r)
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Sets `CNTVCT_EL0 = host_counter() - offset`. Every vCPU of a VM gets the same
     /// offset, so their counters agree.
     pub fn set_counter_offset(&mut self, offset: u64) -> Result<()> {
@@ -1159,6 +1176,11 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 let mut a = vm.create_vcpu(0).unwrap();
+                for r in [0xc000u16,0xc005,0xc006,0xc020,0xc021,0xc022,0xc024,0xc025,0xc028,0xc029,0xc02c,0xc02d,0xc030,0xc031,0xc032,0xc033,0xc038,0xc039,0xc03a,0xc03b,0xc03c] {
+                    let got = a.sys.sys_reg(r);
+                    let set = got.as_ref().ok().map(|v| { let w = *v & !0xf0u64; let s = a.sys.set_sys_reg(r, w); let back = a.sys.sys_reg(r); let _ = a.sys.set_sys_reg(r, *v); (s.is_ok(), back.ok().map(|b| format!("{b:#x}"))) });
+                    eprintln!("PROBE {r:#x}: {:x?} set-low-field-0 {:?}", got.map_err(|e| e.code), set);
+                }
 
                 // The prefetch touches a page read and a page written, leaves out a page
                 // outside guest memory and a page listed twice, and changes no byte. A

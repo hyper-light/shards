@@ -801,6 +801,7 @@ mod tests {
             restart: Default::default(),
             size_rw: None,
             saved: None,
+            moved: false,
             engine_made: of.map(|(of, name)| crate::containers::EngineMade {
                 of: of.into(),
                 name: name.into(),

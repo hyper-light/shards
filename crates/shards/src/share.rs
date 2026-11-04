@@ -47,6 +47,21 @@ struct Given {
     only: Option<CString>,
 }
 
+/// Whether `args`, those after `share`, begin with `--moved`, taken out: its shares are
+/// copies of the directories a microVM moved from another machine was saved with, which a
+/// restore takes by their paths (D176 part 6).
+fn take_moved(args: &mut Vec<OsString>) -> bool {
+    let moved = args.first().is_some_and(|a| a == MOVED);
+    if moved {
+        args.remove(0);
+    }
+    moved
+}
+
+/// The flag before a share process's shares that says they are copies made on another
+/// machine ([`take_moved`]).
+pub(crate) const MOVED: &str = "--moved";
+
 /// The arguments after `share`: `MODE NAME` for each share.
 fn parse(args: &[OsString]) -> Result<Vec<Given>, String> {
     if !args.len().is_multiple_of(2) {
@@ -113,10 +128,11 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         let _ = writeln!(std::io::stderr(), "shards: {e}");
         ExitCode::FAILURE
     };
-    let args: Vec<OsString> = args.collect();
+    let mut args: Vec<OsString> = args.collect();
     if args.first().is_some_and(|a| a == "--join") {
         return join();
     }
+    let moved = take_moved(&mut args);
     let given = match parse(&args) {
         Ok(given) => given,
         Err(e) => return failed(&e),
@@ -145,6 +161,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
                 .map_err(|e| format!("share {i}'s stream: {e}"))?;
             let server = Server::with_budget(dir, g.read_only, g.only, budget)
                 .map_err(|e| format!("share {i}: {e}"))?;
+            if moved {
+                server.restores_moved();
+            }
             server.keep_ghosts_in(
                 ghosts
                     .try_clone()
@@ -192,10 +211,11 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         let _ = writeln!(std::io::stderr(), "shards: {e}");
         ExitCode::FAILURE
     };
-    let args: Vec<OsString> = args.collect();
+    let mut args: Vec<OsString> = args.collect();
     if args.first().is_some_and(|a| a == "--join") {
         return join();
     }
+    let moved = take_moved(&mut args);
     let given = match parse(&args) {
         Ok(given) => given,
         Err(e) => return failed(&e),
@@ -268,6 +288,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         match Server::with_budget(dir, g.read_only, g.only, budget) {
             Ok(server) => {
                 server.keep_ghosts_in(kept);
+                if moved {
+                    server.restores_moved();
+                }
                 if let Some(headroom) = headroom {
                     server.drop_reads_past(headroom);
                 }

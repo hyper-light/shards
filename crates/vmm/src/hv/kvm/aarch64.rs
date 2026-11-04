@@ -567,6 +567,25 @@ impl Vcpu {
             .collect()
     }
 
+    /// Tells the guest the CPU `id` describes, each ID register set and read back (KVM takes
+    /// its writable fields, api.rst 4.68, "Writable ID registers"): a guest resumed on another
+    /// CPU than its snapshot's goes on with the one it found (D176 part 6).
+    pub fn set_cpu_id(&mut self, id: &[(u16, u64)]) -> Result<()> {
+        for &(r, v) in id {
+            self.fd
+                .set_reg(sys::sysreg(r), v)
+                .map_err(call("KVM_SET_ONE_REG"))?;
+            let now = self.fd.get_reg(sys::sysreg(r)).map_err(call("KVM_GET_ONE_REG"))?;
+            if now != v {
+                return Err(Error::Guest(format!(
+                    "{} stays {now:#x} where its guest's is {v:#x}",
+                    crate::arch::aarch64::cpu::name(r)
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Captures the vCPU's state (`state`). Call on the owning thread, with the vCPU out of
     /// the guest.
     pub fn save_state(&self) -> Result<VcpuState> {

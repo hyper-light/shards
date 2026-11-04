@@ -972,6 +972,49 @@ pub fn fill(
     write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
 }
 
+/// The snapshot in `dir`, moved to another machine (D176 part 6), made to restore against
+/// that machine's files: each file it names, disks then pmem, named again as `to` says, and
+/// taken as the file that is there now, its identity that file's. The files are its
+/// mover's to have checked, byte for byte, as the ones it was taken with (a home's files
+/// named by their content, an image's root filesystem by its ChainID): no identity of
+/// another machine's file says anything of one here. A file `to` gives no name for refuses
+/// it, and the state is left as it was. Its new state is written beside the old one,
+/// synced, and renamed over it.
+pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), String> {
+    let generation = generation(dir)?;
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", generation.join(STATE).display());
+    let name = generation
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| at(&"a generation with no name"))?
+        .to_string();
+    let bytes = platform::read_beneath(dir, &[name.as_str(), STATE], MAX_STATE)
+        .map_err(|e| at(&e))?
+        .ok_or_else(|| at(&"gone"))?;
+    let decoded = decode(&bytes).map_err(|e| at(&e))?;
+    if decoded.generation != name {
+        return Err(at(&format!("the state of generation {}", decoded.generation)));
+    }
+    let mut snap = decoded.snapshot;
+    let moved = |path: &Path| {
+        to(path).ok_or_else(|| format!("{}: no file here to restore it against", path.display()))
+    };
+    for (path, _) in &mut snap.config.disks {
+        *path = moved(path)?;
+    }
+    for path in &mut snap.config.pmem {
+        *path = moved(path)?;
+    }
+    let state = state_of(&snap, &name)?;
+    let staged = generation.join(".state.moved");
+    let _ = fs::remove_file(&staged);
+    let file = create_unsynced(&staged, |mut f| f.write_all(&state)).map_err(|e| at(&e))?;
+    platform::sync_durable(&file).map_err(|e| at(&e))?;
+    drop(file);
+    fs::rename(&staged, generation.join(STATE)).map_err(|e| at(&e))?;
+    platform::sync_dir(&generation).map_err(|e| at(&e))
+}
+
 /// The state file of `snap` for generation `name`, with its backing files' identities as
 /// they are now.
 fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {

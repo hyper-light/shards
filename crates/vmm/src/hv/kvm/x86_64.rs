@@ -655,10 +655,27 @@ impl Vcpu {
     /// each vCPU's TSC where its own capture found it, apart from the others' by however
     /// far apart the captures were (arch/x86/kvm/x86.c, kvm_synchronize_tsc).
     pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
+        // Another CPU than the snapshot's (D176 part 6): one with every feature its guest
+        // found is given the guest's CPUID, which the guest goes on believing; one short of
+        // any is refused, naming what it lacks.
         if !same_cpu(&st.cpuid, &self.cpuid) {
-            return Err(Error::Guest(
-                "this CPU is not the one the snapshot was taken on (its CPUID differs)".into(),
-            ));
+            cpuid::covers(&self.cpuid, &st.cpuid).map_err(Error::Guest)?;
+            let leaves: Vec<sys::kvm_cpuid_entry2> = st
+                .cpuid
+                .iter()
+                .map(|l| sys::kvm_cpuid_entry2 {
+                    function: l[0],
+                    index: l[1],
+                    flags: l[2],
+                    eax: l[3],
+                    ebx: l[4],
+                    ecx: l[5],
+                    edx: l[6],
+                    padding: [0; 3],
+                })
+                .collect();
+            self.fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
+            self.cpuid.clone_from(&st.cpuid);
         }
         if st.xsave.len() < self.xsave_size {
             return Err(Error::Guest(format!(

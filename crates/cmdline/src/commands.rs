@@ -2148,6 +2148,19 @@ pub static SAVE_VM: Command = Command {
     error_prefix: "",
 };
 
+/// `shards move vm` (D176 part 6): a microVM saved whole, moved to the machine a context
+/// reaches (D180), and resumed there, where it was saved.
+pub static MOVE_VM: Command = Command {
+    usage: "MICROVM CONTEXT",
+    about: "Move a microVM to the machine a context reaches: saved whole here, and resumed there where it was",
+    aliases: "shards move vm",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards restore vm` (D176): a stopped microVM resumed from a snapshot of its own, where
 /// it was saved. `shards restore DIR`, a directory holding a snapshot, is the VM process's
 /// (`shards run vm --kernel`'s, D25).
@@ -2847,6 +2860,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", "vm", ..] => (&SAVE_VM, "shards save vm", 2),
+        ["move", "vm", ..] => (&MOVE_VM, "shards move vm", 2),
         ["checkpoint", "create", ..] => (&CHECKPOINT_CREATE, "shards checkpoint create", 2),
         ["checkpoint", "ls" | "list", ..] => (&CHECKPOINT_LS, "shards checkpoint ls", 2),
         ["checkpoint", "rm" | "remove", ..] => (&CHECKPOINT_RM, "shards checkpoint rm", 2),

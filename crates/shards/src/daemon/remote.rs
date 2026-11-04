@@ -110,6 +110,12 @@ impl Host for Machine {
             super::log(format!("client {client}: copy step {}", shown.join(" ")));
             return self.copy_step(args);
         }
+        // `shards move vm`'s steps, this machine the one moved to (D176 part 6).
+        if args.first().map(String::as_str) == Some(shards_ipc::MOVE_STEP) {
+            let step = args.get(1).map_or("", String::as_str);
+            super::log(format!("client {client}: move step {step}"));
+            return self.copy_step(args);
+        }
         if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
             return self.engine_step();
         }
@@ -922,9 +928,10 @@ impl Machine {
             .name("copy-step".into())
             .spawn(move || {
                 let (code, out, err) = {
+                    // A copy's archive, or a move's stream (D176 part 6), its way.
                     let fds: Vec<crate::cli::Stream<'_>> = match args.get(1).map(String::as_str) {
-                        Some("archive") => vec![crate::cli::Stream::To(out_w.as_fd())],
-                        Some("extract") => vec![crate::cli::Stream::From(in_r.as_fd())],
+                        Some("archive" | "export") => vec![crate::cli::Stream::To(out_w.as_fd())],
+                        Some("extract" | "import") => vec![crate::cli::Stream::From(in_r.as_fd())],
                         _ => Vec::new(),
                     };
                     ask_self(args, identity, &fds).unwrap_or_else(|e| (1, Vec::new(), e.into_bytes()))

@@ -69,6 +69,11 @@ pub fn log(home: &Path) -> PathBuf {
 /// the daemon one at a time (cli/cp.rs, daemon/commands.rs).
 pub const COPY_STEP: &str = "\u{0}cp";
 
+/// The first word of `shards move vm`'s steps, which no command line has: what its client
+/// asks this machine's daemon and the other machine's one at a time (D176 part 6, cli/moves.rs,
+/// daemon/moves.rs).
+pub const MOVE_STEP: &str = "\u{0}mv";
+
 /// Message kinds between the daemon, warm VMs and clients.
 pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.

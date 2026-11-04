@@ -229,6 +229,9 @@ struct State {
     /// The budgets over the share process's cgroups, which its host's copy of what the guest
     /// reads is dropped past (D188): none for a server that keeps every copy.
     headroom: Option<super::headroom::Headroom>,
+    /// Its directory is a copy of the one its guest's tables were saved with, made on another
+    /// machine (D176 part 6): a restore takes each node as the file at its path here.
+    moved: bool,
 }
 
 /// The descriptors of the directories the guest named and of the files and directories it
@@ -469,6 +472,57 @@ fn key(st: &Stat) -> (u64, u64) {
     (st.dev, st.ino)
 }
 
+/// Each node of `nodes`, a share's saved tables, keyed as the file its path reaches under
+/// `root` now (D176 part 6): its microVM moved to another machine with a copy of its
+/// directory, whose files are the ones saved by their paths, never by their inodes. A node
+/// of a join share's volume is left as it was, as is one no path reaches, a removed file
+/// its guest holds, which its pin serves, or one that is stale as it would be anywhere.
+fn rekey(root: host::Raw, nodes: &mut HashMap<u64, Node>) -> Result<(), String> {
+    let root_key = key(&stat_fd(root).map_err(|e| format!("the shared directory: errno {e}"))?);
+    let mut keys = Vec::with_capacity(nodes.len());
+    for (&id, node) in nodes.iter() {
+        if id == ROOT {
+            keys.push((id, root_key));
+            continue;
+        }
+        if node.volume != NO_VOLUME {
+            continue;
+        }
+        // Its names from the root down, each node's parent's; a chain longer than the
+        // tables is a loop, which no directory has.
+        let mut names = Vec::new();
+        let mut at = id;
+        while at != ROOT {
+            let n = nodes.get(&at).ok_or("a share's saved tables name a node they do not hold")?;
+            names.push(n.name.clone());
+            at = n.parent;
+            if names.len() > nodes.len() {
+                return Err("a share's saved tables hold a loop".into());
+            }
+        }
+        names.reverse();
+        let Some((last, dirs)) = names.split_last() else {
+            continue;
+        };
+        let parent = match dirs {
+            [] => None,
+            dirs => match open_beneath(root, dirs) {
+                Ok(dir) => Some(dir),
+                Err(_) => continue,
+            },
+        };
+        if let Ok(st) = stat_at(parent.as_ref().map_or(root, |d| d.raw()), last) {
+            keys.push((id, key(&st)));
+        }
+    }
+    for (id, k) in keys {
+        if let Some(n) = nodes.get_mut(&id) {
+            n.key = k;
+        }
+    }
+    Ok(())
+}
+
 fn is_dir(st: &Stat) -> bool {
     mode_of(st) & S_IFMT == S_IFDIR
 }
@@ -653,6 +707,7 @@ impl Server {
                 budget,
                 ghosts: None,
                 headroom: None,
+                moved: false,
             }),
         })
     }
@@ -830,6 +885,13 @@ impl Server {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).ghosts = Some(dir);
     }
 
+    /// Takes the tables a restore gives it as those of a copy of its directory made on
+    /// another machine, its microVM moved there (D176 part 6): each node the file at its
+    /// path here, whatever its device and inode were where it was saved.
+    pub fn restores_moved(&self) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).moved = true;
+    }
+
     /// Drops its host's copy of what the guest reads once keeping it would leave the budgets
     /// `headroom` watches less room than the share's own reads need (D188): the guest keeps
     /// what it read in its own page cache.
@@ -923,15 +985,21 @@ impl Server {
         let now = s.nodes.get(&ROOT).map(|n| n.key).ok_or("the share has no root")?;
         let mut nodes: HashMap<u64, Node> = nodes.into_iter().collect();
         let root = nodes.get(&ROOT).ok_or("a share's saved tables have no root")?;
-        if root.key.1 != now.1 {
-            return Err(
-                "its volume is not the directory it was saved with: every file the microVM holds of it would be stale"
-                    .into(),
-            );
-        }
-        for n in nodes.values_mut() {
-            if n.key.0 == saved_dev {
-                n.key.0 = now.0;
+        if s.moved {
+            // A copy made on another machine: no device or inode of the one saved says
+            // anything here, and each node is what its path reaches now.
+            rekey(s.root.raw(), &mut nodes)?;
+        } else {
+            if root.key.1 != now.1 {
+                return Err(
+                    "its volume is not the directory it was saved with: every file the microVM holds of it would be stale"
+                        .into(),
+                );
+            }
+            for n in nodes.values_mut() {
+                if n.key.0 == saved_dev {
+                    n.key.0 = now.0;
+                }
             }
         }
         let known = |id: &u64| nodes.contains_key(id);
@@ -3019,6 +3087,18 @@ mod tests {
             "another directory's"
         );
         assert!(elsewhere.restore(&tables[..tables.len() - 1]).is_err());
+        // A copy of the directory, made on another machine its microVM moved to (D176 part
+        // 6): each node is the file at its path there, its open handle read on, and a name
+        // looked up again the node it was.
+        let copy = shards_testdir::TempDir::new("fs-moved").unwrap();
+        std::fs::create_dir(copy.join("d")).unwrap();
+        std::fs::write(copy.join("d/f"), "kept bytes").unwrap();
+        let moved = Server::new(root_of(&copy), false, None).unwrap();
+        moved.restores_moved();
+        moved.restore(&tables).unwrap();
+        assert_eq!(read(&moved), (0, b"kept bytes".to_vec()));
+        assert_eq!(id(answer(&moved, &req(op::LOOKUP, d, 0, &name("f")))), f);
+        assert_eq!(id(answer(&moved, &req(op::LOOKUP, ROOT, 0, &name("d")))), d);
         // A file the guest holds open after removing its last name no path reaches: its
         // bytes go with the tables, and a restored server holds them in a file of its own,
         // made in its private directory and removed there at once.
