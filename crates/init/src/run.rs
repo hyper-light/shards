@@ -1098,6 +1098,7 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
         return Ok(());
     }
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
+    crate::over::mark("child-isolate");
     let own_shm = std::ffi::CString::new(shm()).map_err(|_| libc::EINVAL)?;
     // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated strings that outlive
     // the calls; this process is a single-threaded fork of init.
@@ -1105,6 +1106,7 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
         if libc::unshare(libc::CLONE_NEWCGROUP | libc::CLONE_NEWNS | libc::CLONE_NEWIPC) != 0 {
             return Err(last());
         }
+        crate::over::mark("child-unshared");
         if libc::mount(
             std::ptr::null(),
             c"/".as_ptr(),
@@ -1132,7 +1134,12 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
             return Err(last());
         }
     }
-    own_proc()
+    crate::over::mark("child-mounted");
+    let r = own_proc();
+    crate::over::mark("child-proc");
+    let m = crate::over::MARKS.lock().map(|m| m.clone()).unwrap_or_default();
+    let _ = crate::pmem::write_in_layer("standby-timing", m.as_bytes());
+    r
 }
 
 /// The cgroup joiner `pid`'s process is in (D119), as `/proc/PID/cgroup` names it from
