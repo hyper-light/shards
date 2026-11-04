@@ -30,12 +30,14 @@ impl Record {
     }
 }
 
-/// A container, as image removal sees it: its ID, whether it runs, and its image's.
+/// A container, as image removal sees it: its ID, whether it runs, its image's, and the
+/// manifest of it it was made from, where its record says (D179).
 #[derive(Clone, Debug)]
 pub(super) struct User {
     pub id: String,
     pub running: bool,
     pub image: Option<String>,
+    pub manifest: Option<String>,
 }
 
 /// What removing one image did: each line `rmi` prints of it.
@@ -394,8 +396,43 @@ pub(super) fn users<'a>(containers: impl Iterator<Item = &'a crate::containers::
             id: c.id.clone(),
             running: c.state == Life::Running,
             image: c.image_id.clone(),
+            manifest: c.image_manifest.clone(),
         })
         .collect()
+}
+
+/// Whether the platforms whose manifests are `taken` may go from image `id`, `shown` as
+/// its name (`rmi --platform`, D179): a microVM made of one of them keeps it, a running one
+/// whatever `force` says, a stopped one unless forced; one whose record names no manifest
+/// was made of the platform the image's record names, `named`. The microVMs of its other
+/// platforms keep only theirs.
+pub(super) fn check_platforms(
+    id: &Digest,
+    shown: &str,
+    named: &str,
+    taken: &[(String, String)],
+    users: &[User],
+    force: bool,
+) -> Result<(), Refused> {
+    let image = id.to_string();
+    for u in users
+        .iter()
+        .filter(|u| u.image.as_deref() == Some(image.as_str()))
+    {
+        let made_of = u.manifest.as_deref().unwrap_or(named);
+        let Some((_, platform)) = taken.iter().find(|(m, _)| m == made_of) else {
+            continue;
+        };
+        if u.running || !force {
+            let verb = if u.running { "runs" } else { "was made of" };
+            return Err(conflict(
+                &format!("{shown}'s {platform}"),
+                u.running,
+                &format!("microVM {} {verb} it", super::images::truncate_id(&u.id)),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -442,7 +479,56 @@ mod tests {
             id: "f".repeat(64),
             running,
             image: Some(digest(c).to_string()),
+            manifest: None,
         }
+    }
+
+    /// A platform of an image goes unless a microVM made of it holds it: a running one
+    /// always, a stopped one unless forced; a microVM of its other platform holds only
+    /// that, and one whose record names no manifest was made of what the image's names.
+    #[test]
+    fn a_platform_goes_unless_a_microvm_of_it_holds_it() {
+        let (arm, amd) = ("sha256:arm".to_string(), "sha256:amd".to_string());
+        let taken = [(amd.clone(), "linux/amd64".to_string())];
+        let made_of = |running: bool, manifest: Option<&str>| User {
+            manifest: manifest.map(String::from),
+            ..user(running, 'a')
+        };
+        let check = |users: &[User], force: bool| {
+            check_platforms(&digest('a'), "a", &arm, &taken, users, force).map_err(|e| e.said)
+        };
+        assert_eq!(
+            check(&[made_of(true, Some(&arm)), made_of(false, None)], false),
+            Ok(())
+        );
+        assert_eq!(
+            check(&[made_of(true, Some(&amd))], true),
+            Err("shards: cannot remove image a's linux/amd64: microVM ffffffffffff runs it, which -f does not take from it".into())
+        );
+        assert_eq!(
+            check(&[made_of(false, Some(&amd))], false),
+            Err("shards: cannot remove image a's linux/amd64: microVM ffffffffffff was made of it: -f removes it anyway".into())
+        );
+        assert_eq!(check(&[made_of(false, Some(&amd))], true), Ok(()));
+        // Another image's microVMs hold nothing of it.
+        let other = User {
+            image: Some(digest('b').to_string()),
+            ..made_of(true, Some(&amd))
+        };
+        assert_eq!(check(&[other], false), Ok(()));
+        // A record of no manifest: made of the one the image's record names.
+        let taken_named = [(arm.clone(), "linux/arm64".to_string())];
+        assert!(
+            check_platforms(
+                &digest('a'),
+                "a",
+                &arm,
+                &taken_named,
+                &[made_of(false, None)],
+                false
+            )
+            .is_err()
+        );
     }
 
     use Removed::{Deleted, Untagged};

@@ -586,9 +586,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &CONTAINER_INSPECT) {
             self.container_inspect(&parsed, asker.styled(), reply, parsed.bool("convert"))
         } else if std::ptr::eq(command, &SAVE) {
-            self.save(&parsed.args, asker, reply)
+            self.save(&parsed.args, parsed.many("platform"), asker, reply)
         } else if std::ptr::eq(command, &LOAD) {
-            self.load(asker, reply)
+            self.load(parsed.many("platform"), asker, reply)
         } else if std::ptr::eq(command, &PULL) {
             self.pull(&parsed, asker, reply)
         } else if std::ptr::eq(command, &PUSH) {

@@ -146,7 +146,7 @@ impl<D: Disk> Daemon<D> {
         if is_image_archive(&store.blob_path(&raw)) {
             let loaded = std::fs::File::open(store.blob_path(&raw))
                 .map_err(|e| e.to_string())
-                .and_then(|file| self.load_archive(&store, file));
+                .and_then(|file| self.load_archive(&store, file, &[]));
             self.collect_soon();
             let loaded = match loaded {
                 Ok(l) => l,

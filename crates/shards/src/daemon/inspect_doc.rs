@@ -1570,6 +1570,7 @@ mod tests {
                 stop_timeout: run.stop_timeout,
                 ports: Vec::new(),
                 image_id: Some(golden["image_id"].as_str().unwrap().to_owned()),
+                image_manifest: None,
                 labels: Default::default(),
                 annotations: crate::daemon::annotations(&run),
                 oom_killed: false,

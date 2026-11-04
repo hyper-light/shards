@@ -7,6 +7,12 @@
 //!   platform's config and layers, and the names asked for it (`null` for none).
 //! - `blobs/<algorithm>/<hex>` holds what is here of each image: its index, and each
 //!   manifest of it here with its config and layers, attestations included.
+//! - Of an image saved for some of its platforms (D179), only theirs: each one's manifest,
+//!   config and layers, and its attestations. Saved for one, the archive is that
+//!   platform's microVM alone: `index.json` names its manifest, labelled with its
+//!   platform, and holds no index, so that a load anywhere takes it as the one image it
+//!   is. Saved for several, `index.json` names the index, its other platforms not here,
+//!   as a pull of some of an index's platforms leaves it.
 //!
 //! The tar is Go's archive/tar's, as containerd's exporter writes it: USTAR headers,
 //! every time 0 and owner 0, directories 0755, `index.json` and `manifest.json` 0644,
@@ -23,11 +29,13 @@ use crate::store::{Held, Image, Store};
 use crate::{Error, bad};
 
 /// An image asked for, and the name it was asked by, if a name: a reference's record
-/// name (`docker.io/library/alpine:3.22`).
+/// name (`docker.io/library/alpine:3.22`); and the manifests of the platforms asked for,
+/// none for all of them here. `image` is read as one of those.
 #[derive(Debug)]
 pub struct Asked<'a> {
     pub image: &'a Image,
     pub name: Option<String>,
+    pub manifests: Vec<oci::Descriptor>,
 }
 
 /// What a record holds.
@@ -42,7 +50,7 @@ pub fn save<W: Write>(store: &Store, asked: &[Asked<'_>], out: W) -> Result<(), 
     let mut records: BTreeMap<String, (u32, Content)> = BTreeMap::new();
     let mut index_entries = Vec::with_capacity(asked.len());
     // Each image once, with the names asked for it, in order of first asking.
-    let mut listed: Vec<(&Image, Vec<String>)> = Vec::new();
+    let mut listed: Vec<(&Image, &[oci::Descriptor], Vec<String>)> = Vec::new();
     for a in asked {
         index_entries.push(index_entry(a)?);
         let familiar = a
@@ -50,14 +58,14 @@ pub fn save<W: Write>(store: &Store, asked: &[Asked<'_>], out: W) -> Result<(), 
             .as_deref()
             .and_then(|n| Reference::parse_normalized(n).ok())
             .map(|r| r.familiar());
-        match listed.iter_mut().find(|(i, _)| i.id == a.image.id) {
-            Some((_, names)) => names.extend(familiar),
-            None => listed.push((a.image, familiar.into_iter().collect())),
+        match listed.iter_mut().find(|(i, _, _)| i.id == a.image.id) {
+            Some((_, _, names)) => names.extend(familiar),
+            None => listed.push((a.image, &a.manifests, familiar.into_iter().collect())),
         }
     }
     let mut manifests = Vec::with_capacity(listed.len());
-    for (image, names) in &listed {
-        for digest in present(store, image)? {
+    for (image, platforms, names) in &listed {
+        for digest in present(store, image, platforms)? {
             let path = store.blob_path(&digest);
             let len = std::fs::metadata(&path)?.len();
             records.insert(blob_name(&digest), (0o444, Content::File(path, len)));
@@ -121,10 +129,20 @@ fn blob_name(d: &Digest) -> String {
 
 /// What is here of `image`, walked from what its references resolved to (containerd's
 /// walk of present children): its index, and each manifest here, with its config and
-/// layers here.
-fn present(store: &Store, image: &Image) -> Result<Vec<Digest>, Error> {
+/// layers here. Where `platforms` names some of its manifests, those alone and their
+/// attestations, and its index only where they are more than one.
+fn present(store: &Store, image: &Image, platforms: &[oci::Descriptor]) -> Result<Vec<Digest>, Error> {
     let mut found = Vec::new();
-    let manifests = if image.target.digest == image.manifest.to_string() {
+    let manifests = if let [one] = platforms {
+        let mut chosen = vec![one.clone()];
+        chosen.extend(attestations_of(store, image, platforms)?);
+        chosen
+    } else if !platforms.is_empty() {
+        found.push(image.id.clone());
+        let mut chosen = platforms.to_vec();
+        chosen.extend(attestations_of(store, image, platforms)?);
+        chosen
+    } else if image.target.digest == image.manifest.to_string() {
         vec![image.target.clone()]
     } else {
         match store.held(&image.target, oci::MAX_MANIFEST)? {
@@ -156,11 +174,36 @@ fn present(store: &Store, image: &Image) -> Result<Vec<Digest>, Error> {
     Ok(found)
 }
 
+/// The attestations `image`'s index lists of the manifests `platforms` describes.
+fn attestations_of(
+    store: &Store,
+    image: &Image,
+    platforms: &[oci::Descriptor],
+) -> Result<Vec<oci::Descriptor>, Error> {
+    let Some((_, index)) = store.index(&image.id) else {
+        return Ok(Vec::new());
+    };
+    Ok(index
+        .manifests
+        .into_iter()
+        .filter(|d| {
+            d.annotations.get("vnd.docker.reference.type").map(String::as_str) == Some("attestation-manifest")
+                && d.annotations
+                    .get("vnd.docker.reference.digest")
+                    .is_some_and(|of| platforms.iter().any(|p| p.digest == *of))
+        })
+        .collect())
+}
+
 /// `index.json`'s entry for `asked`: what its name resolved to, annotated with the name
 /// and its tag, and the repository it was pulled from (containerd's
 /// `containerd.io/distribution.source.<registry>`), keys sorted as Go writes a map.
 fn index_entry(asked: &Asked<'_>) -> Result<String, Error> {
-    let t = &asked.image.target;
+    // Saved for one platform, that platform's manifest.
+    let t = match asked.manifests.as_slice() {
+        [one] => one,
+        _ => &asked.image.target,
+    };
     let mut annotations: BTreeMap<String, String> = BTreeMap::new();
     // Each registry's repositories, comma-separated, as containerd labels them.
     let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -199,6 +242,14 @@ fn index_entry(asked: &Asked<'_>) -> Result<String, Error> {
             .map(|(k, v)| Ok(format!("{}:{}", json(k)?, json(v)?)))
             .collect();
         entry.push_str(&format!(r#","annotations":{{{}}}"#, pairs?.join(",")));
+    }
+    // A platform's manifest saved alone says its platform, after its annotations as Go's
+    // ocispec.Descriptor orders them.
+    if let Some(p) = t.platform.as_ref().filter(|_| asked.manifests.len() == 1) {
+        entry.push_str(&format!(
+            r#","platform":{}"#,
+            serde_json::to_string(p).map_err(|e| Error(e.to_string()))?
+        ));
     }
     entry.push('}');
     Ok(entry)

@@ -1200,10 +1200,15 @@ pub static RMI: Command = Command {
         Flag::bool("force", Some(b'f'), "Force removal of the image"),
         HELP,
         Flag::bool("no-prune", None, "Do not delete untagged parents"),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Remove only the given platform variant. Formatted as \"os[/arch[/variant]]\" (e.g., \"linux/amd64\")",
+        ),
         Flag::bool("vms", None, "Remove stopped microVMs").extension(),
     ],
-    unserved: "\
-platform - m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1223,9 +1228,14 @@ pub static IMAGE_INSPECT: Command = Command {
         .extension(),
         Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
         HELP,
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Inspect a specific platform of the multi-platform image.\nIf the image or the server is not multi-platform capable, the command will error out if the platform does not match.\n'os[/arch[/variant]]': Explicit platform (eg. linux/amd64)",
+        ),
     ],
-    unserved: "\
-platform - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1281,10 +1291,15 @@ pub static HISTORY: Command = Command {
         )
         .defaulting("true"),
         Flag::bool("no-trunc", None, "Don't truncate output"),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Show history for the given platform. Formatted as \"os[/arch[/variant]]\" (e.g., \"linux/amd64\")",
+        ),
         Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
     ],
-    unserved: "\
-platform - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1847,9 +1862,14 @@ pub static SAVE: Command = Command {
         .extension(),
         HELP,
         Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Save only the given platform(s). Formatted as a comma-separated list of \"os[/arch[/variant]]\" (e.g., \"linux/amd64,linux/arm64/v8\")",
+        ),
     ],
-    unserved: "\
-platform - m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1868,10 +1888,15 @@ pub static LOAD: Command = Command {
             "",
             "Read from tar archive file, instead of STDIN",
         ),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Load only the given platform(s). Formatted as a comma-separated list of \"os[/arch[/variant]]\" (e.g., \"linux/amd64,linux/arm64/v8\").",
+        ),
         Flag::bool("quiet", Some(b'q'), "Suppress the load output"),
     ],
-    unserved: "\
-platform - m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1949,10 +1974,15 @@ pub static PUSH: Command = Command {
         .defaulting("true")
         .deprecated("support for docker content trust was removed"),
         HELP,
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Push a platform-specific manifest as a single-platform image to the registry.\nImage index won't be pushed, meaning that other manifests, including attestations won't be preserved.\n'os[/arch[/variant]]': Explicit platform (eg. linux/amd64)",
+        ),
         Flag::bool("quiet", Some(b'q'), "Suppress verbose output"),
     ],
-    unserved: "\
-platform - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };

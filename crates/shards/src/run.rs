@@ -351,6 +351,8 @@ pub struct Prepared {
     pub parent: String,
     /// The image's ID: what its reference resolved to.
     pub image_id: String,
+    /// The manifest of the image the run takes: its platform's (D179).
+    pub image_manifest: String,
     /// The microVM's vCPUs and the memory it boots with, in MiB ([`sizes`]).
     pub size: (u32, u64),
     /// The most memory the microVM may have in all, in MiB ([`sizes`], D148).
@@ -876,6 +878,7 @@ pub fn prepare(
             exposed
         },
         image_id: image.resolved.to_string(),
+        image_manifest: image.manifest.to_string(),
     })
 }
 

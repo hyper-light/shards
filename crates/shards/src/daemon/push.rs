@@ -42,7 +42,9 @@ pub(super) fn note(text: &str, color: bool) -> String {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards push NAME[:TAG]`, `-a` for every tag of the repository.
+    /// `shards push NAME[:TAG]`, `-a` for every tag of the repository; with `--platform`,
+    /// that platform's microVM of each, pushed as an image of that platform alone (D179):
+    /// its manifest, config and layers, under the tag, with no index.
     pub(super) fn push(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
@@ -55,6 +57,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         };
         let given = parsed.args.first().map(String::as_str).unwrap_or_default();
         let (all, quiet) = (parsed.bool("all-tags"), parsed.bool("quiet"));
+        // `--platform`: that platform's microVM of each image, pushed as an image of its
+        // own (D179).
+        let platform = match super::images::asked_platform(parsed.string("platform")) {
+            Ok(p) => p,
+            Err(e) => return refuse(&format!("shards: {e}")),
+        };
         // A colour terminal is shown the push as it goes, in shards' look.
         let shown = asker.styled() && !quiet;
         let mut named = match Reference::parse_normalized(given) {
@@ -122,16 +130,38 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         Reference::parse_normalized(name).map_or_else(|_| name.clone(), |r| r.familiar());
                     return refuse(&format!("tag does not exist: {shown}"));
                 };
-                // Only what is pushed is read.
-                let image = match store.image(named) {
-                    Ok(image) => image,
-                    Err(e) => return refuse(&e.to_string()),
-                };
                 let reference = match Reference::parse_normalized(name) {
                     Ok(r) => r,
                     Err(e) => return refuse(&e.to_string()),
                 };
-                let target = image.targets.get(name).unwrap_or(&image.target).clone();
+                // Only what is pushed is read: what the name resolved to, or the manifest
+                // of the platform asked, alone.
+                let (image, target) = match &platform {
+                    None => match store.image(named) {
+                        Ok(image) => {
+                            let target = image.targets.get(name).unwrap_or(&image.target).clone();
+                            (image, target)
+                        }
+                        Err(e) => return refuse(&e.to_string()),
+                    },
+                    Some(p) => {
+                        let read = super::images::platform_manifest(&store, named, &reference.familiar(), p)
+                            .and_then(|m| {
+                                store
+                                    .image_as(named, &m)
+                                    .map(|i| (i, m))
+                                    .map_err(|e| e.to_string())
+                            });
+                        match read {
+                            Ok((image, mut manifest)) => {
+                                manifest.platform = None;
+                                manifest.annotations.clear();
+                                (image, manifest)
+                            }
+                            Err(e) => return refuse(&format!("shards: {e}")),
+                        }
+                    }
+                };
                 // A repository of the same registry the image came from: its blobs mount.
                 let from = mount_source(&image.sources, &reference);
                 let registry = match registries.entry(from.clone()) {

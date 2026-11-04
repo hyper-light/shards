@@ -464,7 +464,7 @@ impl<D: Disk> Daemon<D> {
     /// `GET /images/{name}/get`, `GET /images/get`: `shards save image`, the images as one
     /// archive, written onto the connection as it is made, never staged; each found
     /// before the head, as dockerd finds them all before it streams, so that one not here
-    /// is answered 404.
+    /// is answered 404, and so is one without a `platform` named (D179).
     pub(super) fn engine_save<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -485,13 +485,15 @@ impl<D: Disk> Daemon<D> {
             argv.extend(["--platform", p]);
         }
         argv.extend(names.iter().map(String::as_str));
-        // One the CLI does not serve, refused in its words before anything is written.
-        if !platforms.is_empty() {
-            return Done::Answer(match self.ask_command(threads, &argv) {
-                Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 400),
-                Err(e) => Answer::error(500, e),
-            });
-        }
+        // Each platform named, of each image, here too (D179).
+        let targets = platforms
+            .iter()
+            .map(|p| crate::daemon::images::asked_platform(p))
+            .collect::<Result<Vec<_>, _>>();
+        let targets: Vec<_> = match targets {
+            Ok(t) => t.into_iter().flatten().collect(),
+            Err(e) => return Done::Answer(Answer::error(400, e)),
+        };
         let found = self.store().and_then(|store| {
             let Some(store) = store else {
                 return Err(crate::daemon::images::not_found(
@@ -499,9 +501,12 @@ impl<D: Disk> Daemon<D> {
                 ));
             };
             let named = store.named().map_err(|e| e.to_string())?;
-            names
-                .iter()
-                .try_for_each(|n| crate::daemon::images::resolve(&named, n).map(drop))
+            names.iter().try_for_each(|n| {
+                let image = crate::daemon::images::resolve(&named, n)?;
+                targets
+                    .iter()
+                    .try_for_each(|t| crate::daemon::images::platform_manifest(&store, image, n, t).map(drop))
+            })
         });
         if let Err(e) = found {
             return Done::Answer(refused(&e, 500));
@@ -754,21 +759,14 @@ impl<D: Disk> Daemon<D> {
     /// `GET /images/{name}/history`: `shards history image`, each step the newest first,
     /// the image's ID and names on the newest, as dockerd's containerd store gives them; a
     /// layer's size its compressed size, where dockerd's is unpacked.
-    pub(super) fn engine_image_history<'s, 'e>(
-        &'s self,
-        threads: &'s Threads<'s, 'e>,
-        name: &str,
-        call: &Call<'_>,
-    ) -> Answer {
-        // One the CLI does not serve, refused in its words.
-        if let Some(p) = call.query("platform").filter(|p| !p.is_empty()) {
-            let p = platform_arg(p);
-            return match self.ask_command(threads, &["history", "--platform", &p, name]) {
-                Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 400),
-                Err(e) => Answer::error(500, e),
-            };
-        }
-        let history = match self.history_of(name) {
+    pub(super) fn engine_image_history(&self, name: &str, call: &Call<'_>) -> Answer {
+        // One platform's history, where one is named (D179).
+        let platform = call.query("platform").filter(|p| !p.is_empty()).map(platform_arg);
+        let platform = match crate::daemon::images::asked_platform(platform.as_deref().unwrap_or_default()) {
+            Ok(p) => p,
+            Err(e) => return Answer::error(400, e),
+        };
+        let history = match self.history_of(name, platform.as_ref()) {
             Ok(h) => h,
             Err(e) => return refused(&e, 500),
         };
@@ -819,9 +817,15 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// `GET /images/{name}/json`: its InspectResponse, as `image inspect` gives it.
-    pub(super) fn engine_image_inspect(&self, name: &str) -> Answer {
-        match self.image_doc(name) {
+    /// `GET /images/{name}/json`: its InspectResponse, as `image inspect` gives it, of the
+    /// platform `platform` names where it names one (D179).
+    pub(super) fn engine_image_inspect(&self, name: &str, call: &Call<'_>) -> Answer {
+        let platform = call.query("platform").filter(|p| !p.is_empty()).map(platform_arg);
+        let platform = match crate::daemon::images::asked_platform(platform.as_deref().unwrap_or_default()) {
+            Ok(p) => p,
+            Err(e) => return Answer::error(400, e),
+        };
+        match self.image_doc_of(name, platform.as_ref()) {
             Ok(doc) => Answer::document(200, crate::daemon::inspect_doc::json(&doc)),
             Err(Missing::Not(e)) => Answer::error(404, plain(&e)),
             Err(Missing::Failed(e)) => Answer::error(500, plain(&e)),

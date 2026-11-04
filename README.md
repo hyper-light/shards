@@ -317,7 +317,7 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 | `shards restore vm NAME [SNAPSHOT]` | Resume a saved microVM exactly where it was, from its newest snapshot unless you name one |
 | `shards list vm` · `shards list image` · `shards list volume` | List microVMs, images or volumes |
 | `shards list snapshots NAME` · `shards remove snapshot NAME SNAPSHOT...` | List a microVM's snapshots, newest first, with when each was saved and the disk it takes; remove them |
-| `shards inspect vm NAME` · `shards inspect image NAME` | What a microVM runs, or an image's documents |
+| `shards inspect vm NAME` · `shards inspect image NAME` | What a microVM runs, or an image's documents, `--platform`'s for an image of several |
 | `shards inspect disk` · `shards inspect system` · `shards inspect guest` | What shards takes on disk; what it is, holds and runs on; the kernel and shards-init runs boot |
 | `shards read logs NAME` · `shards watch logs NAME` | What a microVM's command printed; what it prints, as it prints it |
 | `shards read processes NAME` · `shards watch processes NAME` | The processes a microVM's agents started and ended, each whole, as the kernel saw them; as they come |
@@ -328,13 +328,13 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 | `shards rename vm NAME NEW_NAME` | Name a microVM again |
 | `shards remove vm NAME` · `shards prune vm` | Remove a microVM, and its snapshots with it; remove every stopped one |
 | `shards create volume [NAME]` · `shards remove volume NAME` · `shards prune volume` | Make a volume microVMs mount; remove one no microVM mounts; remove those no microVM mounts |
-| `shards pull image NAME` · `shards push image NAME` | Download an image and make it a microVM, for this machine's CPU or `--platform`'s; upload one. Every layer is checked against its digests before it is kept |
+| `shards pull image NAME` · `shards push image NAME` | Download an image and make it a microVM, for this machine's CPU or `--platform`'s; upload one, or `--platform`'s microVM of it alone. Every layer is checked against its digests before it is kept |
 | `shards build image PATH` | Build an image from the Dockerfile or Agentfile in `PATH`, its `RUN` steps in a microVM of the build's own. `--platform linux/amd64,linux/arm64` builds for both, a step for another CPU under that CPU's emulator inside the build's microVM |
 | `shards build agent DIR` · `shards push agent NAME` · `shards sign agent NAME` | Build an agent (or a harness or an MCP server) as an OCI artifact, push it, and sign it with your key or your identity |
-| `shards read history IMAGE` · `shards tag image SOURCE TARGET` | How an image's layers were made; name an image again |
-| `shards save image NAME` · `shards load image` · `shards export vm NAME` | Images to a tar archive and back; a microVM's files as a tar archive |
+| `shards read history IMAGE` · `shards tag image SOURCE TARGET` | How an image's layers were made, `--platform`'s for an image of several; name an image again |
+| `shards save image NAME` · `shards load image` · `shards export vm NAME` | Images to a tar archive and back, every platform of each or `--platform`'s alone; a microVM's files as a tar archive |
 | `shards commit vm NAME [IMAGE]` | Make an image of what a microVM changed |
-| `shards remove image NAME` · `shards prune image` | Remove an image with its stopped microVMs; remove unused images |
+| `shards remove image NAME` · `shards prune image` | Remove an image with its stopped microVMs, or `--platform`'s microVM of it alone, freeing the disk it took; remove unused images |
 | `shards login registry [SERVER]` · `shards logout registry [SERVER]` | Log in to a registry, or forget a login: kept where `docker login` keeps one, so both find it |
 | `shards search image TERM` | Find images on Docker Hub, on quay.io (`quay.io/TERM`), or in any registry's catalog (`HOST/TERM`); on a terminal, whether each runs on this machine, and what its first pull downloads |
 | `shards run daemon` · `shards stop daemon` | The daemon that serves runs from warm microVMs, which the first run starts; end it and its runs. It keeps up to `SHARDS_POOL` microVMs ready for each image you run (default 2), and none once the image has gone unused for `SHARDS_POOL_KEEP` seconds (default 600) |

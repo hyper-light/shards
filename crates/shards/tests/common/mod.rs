@@ -2493,10 +2493,60 @@ pub fn served_variant(variant: &[u8]) -> String {
 /// undefined instruction (x86-64's `ud2`, AArch64's `udf #0`): it dies of SIGILL, a fault,
 /// natively or emulated alike. One ELF64 program header loads the file whole.
 pub fn crashing_program(arch: &str) -> Vec<u8> {
-    let (machine, code): (u16, &[u8]) = match arch {
-        "amd64" => (0x3e, &[0x0f, 0x0b]),
-        "arm64" => (0xb7, &[0, 0, 0, 0]),
+    let code: &[u8] = match arch {
+        "amd64" => &[0x0f, 0x0b],
+        "arm64" => &[0, 0, 0, 0],
         other => panic!("no crashing program for {other}"),
+    };
+    elf_program(arch, code)
+}
+
+/// A static program for `arch` (`amd64` or `arm64`) that writes `text` to its stdout and
+/// exits 0, with Linux's own system calls alone: what an image of that CPU runs, natively
+/// or emulated.
+pub fn printing_program(arch: &str, text: &[u8]) -> Vec<u8> {
+    let len = u32::try_from(text.len()).unwrap();
+    let mut code = Vec::new();
+    match arch {
+        "amd64" => {
+            // write(1, msg, len); exit(0). `msg` follows the code, 16 bytes past the
+            // `lea`'s end.
+            code.extend_from_slice(&[0xb8, 1, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0x48, 0x8d, 0x35]);
+            code.extend_from_slice(&16u32.to_le_bytes());
+            code.push(0xba);
+            code.extend_from_slice(&len.to_le_bytes());
+            code.extend_from_slice(&[0x0f, 0x05, 0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+        }
+        "arm64" => {
+            assert!(len < 1 << 16, "a short text");
+            // mov x0, #1; adr x1, msg (28 bytes on); mov x2, #len; mov x8, #64 (write);
+            // svc #0; mov x0, #0; mov x8, #93 (exit); svc #0.
+            for word in [
+                0xd280_0020u32,
+                0x1000_00e1,
+                0xd280_0002 | (len << 5),
+                0xd280_0808,
+                0xd400_0001,
+                0xd280_0000,
+                0xd280_0ba8,
+                0xd400_0001,
+            ] {
+                code.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        other => panic!("no printing program for {other}"),
+    }
+    code.extend_from_slice(text);
+    elf_program(arch, &code)
+}
+
+/// A static ELF64 program for `arch` whose entry is `code`: one program header loads the
+/// file whole.
+fn elf_program(arch: &str, code: &[u8]) -> Vec<u8> {
+    let machine: u16 = match arch {
+        "amd64" => 0x3e,
+        "arm64" => 0xb7,
+        other => panic!("no program for {other}"),
     };
     let base: u64 = 0x40_0000;
     let entry: u64 = 0x78;

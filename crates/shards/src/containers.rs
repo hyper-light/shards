@@ -70,6 +70,10 @@ pub struct Container {
     /// the containers of each); none in a record from before shards kept it.
     #[serde(default)]
     pub image_id: Option<String>,
+    /// The manifest of its image it was made from: the platform its microVM runs, one of
+    /// a multi-platform image's (D179); none in a record from before shards kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_manifest: Option<String>,
     /// Its labels: its image's, and its run's over them (Config.Labels); none in a
     /// record from before shards kept them.
     #[serde(default)]
@@ -883,6 +887,7 @@ mod tests {
             stop_timeout: None,
             ports: Vec::new(),
             image_id: None,
+            image_manifest: None,
             labels: Default::default(),
             annotations: Default::default(),
             oom_killed: false,

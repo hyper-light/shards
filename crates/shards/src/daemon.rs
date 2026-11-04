@@ -4445,6 +4445,7 @@ impl<D: Disk> Daemon<D> {
             name: name.clone(),
             image: run.image.clone(),
             image_id: Some(prepared.image_id.clone()),
+            image_manifest: Some(prepared.image_manifest.clone()),
             command: prepared
                 .spec
                 .argv
@@ -9135,6 +9136,7 @@ mod tests {
                 parent: String::new(),
                 exposed: Vec::new(),
                 image_id: String::new(),
+                image_manifest: String::new(),
                 size: (1, shards_vmm::vm::MEMORY_MIB),
                 memory_max: shards_vmm::vm::MEMORY_MIB,
                 image_volumes: Vec::new(),
