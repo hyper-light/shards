@@ -17318,3 +17318,154 @@ revision before comparing a changed API/implementation.
   path. Through the GPU's VM process the guest found three GPUs on glibc's build (Intel's
   through ANV, the RTX 4070 through NVK, and llvmpipe), which the host's own vulkaninfo,
   run in its session, listed two of (ANV, llvmpipe).
+
+### M440. A start on a contended host: a microVM's vCPUs wake behind its host's busy threads' slices (D191)
+
+- **Question.** D191's slice 1 gives a run's microVM every CPU of its host, and on 4 CPUs
+  that 4 busy loops hold a `--cpus 1` run started 22 ms later at p50 than before it (M292:
+  17.9 against 39.7 ms), where idle it started 2 to 3 ms later (M288). M292 found the time in
+  the guest's start of the run, growing with its vCPUs' count at the same contention, and in
+  three steps (`cpu.max`'s static key, the first write to its layer, init's wake at the
+  exec), each a hand-off from one vCPU to another: an IPI, or a task woken on another CPU.
+  Neither holding the key on, nor init on one CPU, nor keeping the guest's work on the
+  run's CPUs gave the start its time back. What does a vCPU woken by another wait for?
+- **The host's scheduler.** A woken vCPU thread is runnable on a host CPU that a busy loop
+  runs on. Linux's fair scheduler (EEVDF, Linux 6.6 on) lets a woken thread preempt the
+  running one only once that one has run to its slice's end or its fair share
+  (RUN_TO_PARITY, kernel/sched/features.h), every thread's slice `base_slice_ns`, 2.8 ms on a
+  host of 8 CPUs or more (0.7 ms times 1 + ilog2 of up to 8 CPUs, kernel/sched/fair.c
+  `get_update_sysctl_factor`; sched_getattr(2) reports 2,800,000 ns on this host): each
+  hand-off may wait up to 2.8 ms for its vCPU to run, where a microVM of one vCPU hands off
+  nothing. Since Linux 6.12 a thread may ask for a slice of its own, 100 µs to 100 ms
+  (sched_setattr(2), SCHED_OTHER with `sched_runtime`, fair.c `__setparam_fair`), and a woken
+  thread of a shorter slice than the running one's cancels its protection and preempts it
+  (PREEMPT_SHORT, `check_preempt_wakeup_fair`): its share of the CPU is its weight's as
+  before (EEVDF's lag; what it may run ahead after a sleep is bounded by the longest slice
+  beside it plus a tick, `entity_lag`), only when it runs changes. No privilege is needed;
+  a lower nice value or a real-time policy needs CAP_SYS_NICE.
+- **Method.** Fedora 44, Linux 6.19.10-300.fc44 (M258's Intel Core i9-14900HX, 32 CPUs),
+  other agents' builds, tests and CI running throughout (its load given with each case),
+  2026-11-03; release builds; `docs/research/measurements/cpu-elastic/phases.py` under
+  `taskset -c 0-3` (4 CPUs; a microVM of 4 vCPUs; 0-15, 16 P-cores, where said),
+  `run --rm --cpus 1 alpine true` unless said, 20 rounds of 5 starts after a warmup, the
+  two arms alternating each round, n 100 a side. First from outside one build (de2b1cf5): `slice.py` gives the vCPU threads (and the
+  hold's governor) of one home's VM processes a slice of their own as they appear, the
+  other home's left; then this change (its vCPUs, device workers and governor at 100 µs,
+  `platform::run_promptly`) against de2b1cf5, and both against 1468f07d, the build before
+  slice 1 that M292 compared. Each pair its own run, so only a row's two sides compare.
+- **Results** (ms, p50 (p90); `start` the request to the command executing, `command` its
+  run, `wall` the client's, as phases.py takes them):
+
+  | case (host's load) | arms | wall | start | command |
+  |---|---|---|---|---|
+  | 4 busy loops: vCPUs and governor at 100 µs, from outside (13.7 → 16.6) | de2b1cf5, the same sliced | 47.87 (80.11) → 38.42 (66.45) | 15.79 (36.16) → **8.21 (17.05)** | 5.82 (15.93) → 1.88 (7.42) |
+  | 4 busy loops: every VM process thread at 100 µs (11.3 → 13.8) | | 43.18 (68.06) → 35.75 (51.07) | 17.86 (40.54) → 8.58 (13.02) | 5.48 (11.57) → 1.84 (5.18) |
+  | 4 busy loops: vCPUs and governor at 500 µs (13.8 → 15.9) | | 42.32 (75.25) → 33.91 (50.38) | 20.08 (43.49) → 9.92 (18.30) | 4.65 (11.55) → 2.18 (5.86) |
+  | 4 busy loops, no `--cpus`: every thread at 100 µs (16.3 → 17.8) | | 39.71 (61.64) → 33.83 (48.61) | 13.46 (28.84) → 7.14 (12.23) | 5.85 (12.15) → 1.79 (3.68) |
+  | idle: vCPUs and governor at 100 µs (15.9 → 16.3) | | 13.40 (20.26) → 13.49 (18.81) | 3.03 (6.01) → 3.11 (5.67) | 0.55 (2.02) → 0.50 (1.75) |
+  | 4 busy loops (21.9 → 22.7) | de2b1cf5 → this change | 46.64 (74.05) → **37.66 (53.87)** | 20.82 (45.16) → **9.24 (15.05)** | 5.34 (11.84) → 2.02 (5.57) |
+  | 4 busy loops, no `--cpus` (22.1 → 22.2) | | 44.28 (66.07) → 39.81 (51.76) | 14.00 (29.42) → 7.00 (13.15) | 7.18 (14.89) → 2.26 (5.31) |
+  | idle (22.7 → 22.1) | | 13.73 (23.80) → 14.93 (24.59) | 3.12 (7.62) → 3.29 (6.46) | 0.51 (1.33) → 0.65 (1.54) |
+  | 4 busy loops (40.4 → 38.8) | 1468f07d → de2b1cf5 | 45.54 (79.21) → **52.52 (89.00)** | 14.30 (41.52) → 21.61 (47.49) | 0.39 (5.68) → 7.26 (13.81) |
+  | idle (38.8 → 42.0) | | 19.13 (30.98) → 13.32 (23.76) | 8.86 (21.62) → 3.33 (8.21) | 0.45 (1.33) → 0.63 (2.15) |
+  | 4 busy loops (47.0 → 41.2) | 1468f07d → this change | 48.37 (100.15) → **40.11 (60.50)** | 15.29 (59.81) → 9.30 (17.93) | 0.48 (6.08) → 2.14 (5.07) |
+  | idle (41.2 → 40.4) | | 19.22 (29.09) → 14.53 (21.95) | 8.29 (15.52) → 3.48 (6.47) | 0.41 (1.00) → 0.61 (1.86) |
+  | idle, n 200 (20.0 → 21.9) | de2b1cf5 → this change and M441's | 14.63 (26.33) → 14.61 (27.07) | 3.18 (8.40) → 3.18 (6.08) | 0.56 (1.69) → 0.53 (1.38) |
+  | 16 CPUs, 16 busy loops (21.9 → 25.3) | | 46.45 (62.00) → **32.37 (50.70)** | 24.71 (32.05) → **7.90 (12.26)** | 3.81 (8.52) → 1.73 (5.17) |
+  | 16 CPUs idle (25.3 → 33.5) | | 7.75 (11.88) → 8.10 (13.48) | 2.42 (3.65) → 2.46 (3.99) | 0.46 (0.61) → 0.43 (0.62) |
+
+  p99 and max, the contended pairs: de2b1cf5 → this change, wall 123.89 → 98.55 (both
+  max: n 100), start 68.89 → 28.94; 1468f07d → this change, wall 227.95 → 125.22, start
+  209.99 → 22.49.
+- **Reading.** The vCPUs' slice takes half of a contended start back: the guest's part of
+  it 9.2 ms where 20.8, its tail (p90) a third, the command's run 2.0 where 5.3; the wall
+  9 ms. Slicing every thread of the VM process gains no more than its vCPUs' (and the
+  governor's) alone, and 500 µs about what 100 µs does. Against the build before slice 1,
+  de2b1cf5 starts 7.0 ms later on the contended host and 5.8 ms sooner idle (what came
+  since, M297's readahead among it, is in both): a 12.8 ms swing that contention costs it.
+  With the slice, a start is 8.3 ms sooner than 1468f07d's contended and 4.7 sooner idle:
+  contention costs slice 1's start no more than idleness does, the 22 ms of M292 gone. The
+  command's run is still 1.7 ms longer than in a microVM of one vCPU when contended (2.14
+  against 0.48), its exit seen on another vCPU than init's; idle, 0.2. On 16 CPUs that 16
+  busy loops hold, the start's guest part is a third of what it was (7.90 against 24.71).
+  Idle, it costs nothing seen: the start alike at n 200 on 4 CPUs (3.18 both) and on 16
+  (2.42, 2.46), the wall within its spread.
+- **Consequence.** D191: on Linux a VM process's vCPU threads, its device workers and its
+  hold's governor take the 100 µs slice as they start (`platform::run_promptly`, through
+  `prioritize_vcpu_thread`, which on macOS gives them the real-time policy, M8, M10, a
+  woken one preempting any timeshare thread already), their nice value kept; the VM process's seccomp filter allows sched_getattr(2)
+  and sched_setattr(2) of the calling thread alone. Tested: platform's
+  `a_prompt_thread_has_the_shortest_slice_at_its_own_weight` (a thread at nice 5 keeps it
+  and has the slice; one of SCHED_BATCH is left as it was), and on real microVMs
+  containers.rs `a_microvms_vcpus_and_governor_wake_at_the_shortest_slice` (every vCPU
+  thread and the governor of a `--cpus 1` run's VM process, as sched_getattr(2) reads them
+  from the test). Windows' vCPUs are left as they are: unmeasured there, jupiter's runs
+  held to a few thousandths of a core by its headroom guard. Harness:
+  `cpu-elastic/phases.py`, `slice.py`.
+
+### M441. The hold's cost to a memory-heavy run on a contended host (D191)
+
+- **Question.** With the host's hold on a run's vCPUs (D191 slice 2), M292's contended
+  host filled 684 and 2484 MiB 9 and 16% more slowly (n 8, its load rising). Is that so
+  when repeated, and why?
+- **Method.** M440's host and day. `cpu-elastic/memory.py` under `taskset -c 0-3`, rounds
+  alternating its two arms, `--raw`: a start, then 684 MiB written to a tmpfs at `-m 700m`
+  and 2484 at `-m 2500m`, each `--cpus 1`. First de2b1cf5 against the same with no hold
+  (`hold-off.patch`). Then what the hold does in each run: `hold-stats.patch` (on
+  de2b1cf5) logs, as each governor ends, its periods, how many it held and for how long,
+  the CPU time its vCPUs used, and how late it woke at each period's end;
+  `hold-stats2.patch`, on this change, the same, and how long past its period's end each
+  held vCPU went on.
+- **Repeated** (4 busy loops, n 16, the host's load 13.0 → 35.2; ms, p50 (p90) max):
+
+  | case | de2b1cf5 | no hold |
+  |---|---|---|
+  | fill 684 MiB | 754.3 (887.0) 1043.6 | 718.0 (816.1) 817.7 |
+  | fill 2484 MiB | 7639.0 (8727.2) 9270.7 | 6889.7 (10099.4) 10518.1 |
+
+  The 2484 MiB fill took 3.7 s in the first round and 8 to 10 in the last, as the host's
+  load rose; round by round, the held arm was the quicker in 9 of 16. No difference stands
+  out of the host's drift, as M292 found of its own (1458 against 680 ms, one build).
+- **What the hold does there** (de2b1cf5 with hold-stats.patch; every governed run, starts
+  and fills, n about 50 a side):
+
+  | host (load) | arm | runs held | holds | held, all runs (vCPUs' CPU time) | governor late, max |
+  |---|---|---|---|---|---|
+  | 4 busy loops (5.5 → 16.8) | de2b1cf5 | 7 of 51 | 13 | 130.8 ms (49.3 s used) | 4.8 ms |
+  | | this change | 8 of 50 | 9 | 44.8 ms (40.7 s used) | 2.0 ms; vCPUs on at most 3.2 ms past their period (n 36) |
+  | 2 busy loops (33.5 → 26.0) | de2b1cf5 | 18 of 27 | 67 | 240.7 ms (21.6 s used) | 2.8 ms |
+  | | this change | 16 of 26 | 62 | 284.7 ms (17.6 s used) | 1.7 ms; vCPUs at most 1.2 ms past (n 247) |
+  | 32 busy loops, 8 a CPU (28.2 → 42.2; n 4 rounds) | de2b1cf5 | 1 of 15 | 1 | 3.8 ms (55.3 s used) | 56.1 ms |
+  | | this change | 3 of 15 | 5 | 48.5 ms (58.2 s used) | 52.7 ms; vCPUs at most 0.9 ms past (n 15) |
+  | 4 busy loops, the host overloaded (42 → 94, about 1,000 between) | de2b1cf5 | 13 of 51 | 422 | **334.1 s** (231.3 s used) | **57.4 s** |
+  | | its vCPUs and governor at 100 µs (slice.py) | 11 of 51 | 35 | 1.4 s (171.6 s used) | 6.0 ms |
+
+  Fills (p50 (p90)): 4 busy loops, 684 MiB 714.9 (852.5) and 702.9 (798.2), 2484 MiB
+  1921.5 (7595.3) and 1837.9 (4990.4); 2 busy loops, 463.7 (547.2) and 462.1 (560.5),
+  2116.8 (2580.4) and 2108.1 (2257.2).
+- **Reading.** On a contended host the hold seldom holds: its vCPUs are given less than
+  the run's one CPU there, 0.65 to 0.7 of one a period, and the share is spent in a period
+  of one run in four or five, a hold then of a few milliseconds to a period's end. Where
+  two CPUs are free it holds more often, 1.0 to 1.5 ms a period on average, about 1% of
+  the fill, as a microVM of one CPU would be held by having one. Its cost is not the
+  holding but its end: a held vCPU waited for the governor to wake at the period's end and
+  let it go, and a governor that wakes late holds the run as late. On the host overloaded
+  (its load near 1,000 while other work ran away), one 2484 MiB fill was held 333.0 s of
+  the 624.6 it took, 381 holds, its governor 6.8 ms late at p50, 520 ms at p90 and 57.4 s
+  at most; the arm whose vCPUs and governor ran at the 100 µs slice, in the same minutes,
+  was held 1.4 s in all, its governor never more than 6.0 ms late.
+  Where 8 busy loops share each CPU the vCPUs are given a sixth of the share and the hold
+  all but never holds; the governor, at the 100 µs slice or not, then wakes up to 53 to 56
+  ms late, and the vCPUs it held went on at most 0.9 ms past their period by themselves.
+- **Consequence.** D191: a held vCPU goes on as its period ends by itself
+  (`Hold::set_held` takes the period's end, `Hold::wait` waits no longer), so a governor
+  that wakes late can no longer hold a run past its period; what its vCPUs ran meanwhile
+  it counts as it wakes, and it comes off the next period as an overrun did before. The
+  governor runs at the vCPUs' 100 µs slice on Linux (M440). The hold's cost to a fill on
+  a contended host is then the holding itself, which a microVM of the run's CPUs alone
+  would pay by having no more: 1 to 1.5% of a fill's time where two CPUs were free, 0.1
+  to 0.2% where none were. Tested: hold's
+  `a_held_vcpu_goes_on_at_its_periods_end_without_its_governor` (held to a period's end
+  100 ms off with no governor, a vCPU waits 100 ms and no more than its host's wake), and
+  its tests of a share, a group and a pause as before. Harness: `cpu-elastic/memory.py`,
+  `hold-off.patch`, `hold-stats.patch`, `hold-stats2.patch`.

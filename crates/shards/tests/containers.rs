@@ -14938,6 +14938,81 @@ fn a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host() {
     let _ = exit(&mut free);
 }
 
+/// On Linux a run's vCPUs and its hold's governor run at the fair scheduler's shortest
+/// slice, at their weight as before (D191, PM M440): on a host whose CPUs are busy each
+/// takes its CPU as it wakes. Every vCPU thread of a `--cpus 1` run's VM process, and its
+/// governor, as sched_getattr(2) reads them: SCHED_OTHER at the nice value of the
+/// processes that started it (this test's), and 100 µs where the
+/// host's kernel takes a thread's slice (6.12 and later). A VM process whose seccomp filter
+/// refused the call would have ended at its first vCPU.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_microvms_vcpus_and_governor_wake_at_the_shortest_slice() {
+    let Some((home, image)) = home("containers-slice") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut sliced = start(&home, &image, &["--name", "sliced", "--cpus", "1"], &["sleep"]);
+    let pid: u32 = shards(&["inspect", "-f", "{{.State.Pid}}", "sliced"])
+        .stdout
+        .trim()
+        .parse()
+        .unwrap();
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+    let mut numbers = release
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|n| n.parse::<u32>().unwrap_or(0));
+    let takes_slices = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (6, 12);
+    let host = std::thread::available_parallelism().unwrap().get();
+    // Each thread named vcpuN or hold: its policy, nice and slice. The governor starts as
+    // the run's limit comes, so it is looked for until it is there (on a host of one CPU
+    // a run of one is not held, and has none).
+    let threads = || {
+        let mut seen = Vec::new();
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+            let task = task.unwrap();
+            let Ok(name) = std::fs::read_to_string(task.path().join("comm")) else {
+                continue;
+            };
+            let name = name.trim().to_string();
+            if !(name.starts_with("vcpu") || name == "hold") {
+                continue;
+            }
+            let tid: libc::pid_t = task.file_name().to_str().unwrap().parse().unwrap();
+            // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.
+            let mut attr: libc::sched_attr = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of::<libc::sched_attr>() as u32;
+            // SAFETY: thread `tid`'s attributes, into `attr`, which has `size` bytes.
+            if unsafe { libc::syscall(libc::SYS_sched_getattr, tid, &mut attr as *mut _, size, 0) } == 0 {
+                seen.push((name, attr.sched_policy, attr.sched_nice, attr.sched_runtime));
+            }
+        }
+        seen.sort();
+        seen
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen = threads();
+    while host > 1 && !seen.iter().any(|t| t.0 == "hold") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        seen = threads();
+    }
+    let vcpus = seen.iter().filter(|t| t.0.starts_with("vcpu")).count();
+    assert_eq!(vcpus, host, "{seen:?}");
+    assert_eq!(seen.iter().any(|t| t.0 == "hold"), host > 1, "{seen:?}");
+    let slice = if takes_slices { 100_000 } else { 0 };
+    // SAFETY: getpriority(2) of this process.
+    let own = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    for (name, policy, nice, runtime) in &seen {
+        assert_eq!(
+            (*policy, *nice, *runtime),
+            (libc::SCHED_OTHER as u32, own, slice),
+            "{name} on Linux {release}: {seen:?}"
+        );
+    }
+    assert_eq!(shards(&["rm", "-f", "sliced"]).status, Some(0));
+    let _ = exit(&mut sliced);
+}
+
 /// A run's busy vCPUs are never depressed by XNU's real-time fail-safe (D4, PM M317):
 /// with two threads of its guest busy for five seconds, no vCPU thread of its VM process
 /// is at priority 0 at any look, and the busy ones go to timeshare while they run. Without

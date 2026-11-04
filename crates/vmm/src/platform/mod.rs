@@ -117,20 +117,30 @@ pub struct Prioritized {
     _watch: macos_thread::Watch,
 }
 
-/// Applies the scheduling policy measured to give vCPUs precise timer wake-ups. Only
-/// macOS has a measured policy (docs/research/platform-measurements.md M8, M10); on other
-/// hosts this is a no-op until one is measured.
+/// Applies the scheduling policy measured to have a vCPU run as it wakes: on macOS the
+/// real-time policy, for precise timer wake-ups (docs/research/platform-measurements.md
+/// M8, M10); on Linux EEVDF's shortest slice, at its weight as before, where on a host
+/// whose CPUs are busy each of a guest's wakeups of another vCPU (an IPI, a woken task)
+/// waited for the busy thread's slice to run out, and a run's start in a microVM of every
+/// CPU of the host took twice as long as in one of one (PM M292, M440). Elsewhere as it is
+/// until a policy is measured.
 pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
     #[cfg(target_os = "macos")]
     return macos_thread::make_current_realtime().map(|watch| Prioritized { _watch: watch });
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    return unix::run_promptly()
+        .map(|()| Prioritized {})
+        .map_err(|e| format!("its slice (sched_setattr): {e}"));
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     Ok(Prioritized {})
 }
 
 /// A device worker's thread, which answers its guest's requests: on macOS at the vCPUs'
 /// policy, where with every CPU of the host busy a block device's readers had 238k reads
 /// verified in 3 s at p50, 210k at QoS user-interactive and 156k at the default, and all
-/// three alike on a quiet host (PM M317). Elsewhere as it is.
+/// three alike on a quiet host (PM M317); on Linux at the vCPUs' slice too (a start on a
+/// busy host gained nothing measured past its vCPUs' slice from every thread's, PM M440).
+/// Elsewhere as it is.
 pub fn prioritize_device_thread() -> Result<Prioritized, String> {
     prioritize_vcpu_thread()
 }
@@ -140,15 +150,13 @@ pub fn prioritize_device_thread() -> Result<Prioritized, String> {
 /// policy ([`prioritize_vcpu_thread`]); on Windows above them, at
 /// THREAD_PRIORITY_TIME_CRITICAL, where at their priority three spinning vCPU threads of a
 /// process held to two CPUs kept it from running and used up to 1.58 s of CPU in a second
-/// held to one (PM M294). On Linux, where the hold's test has held on every runner, as it
-/// is.
+/// held to one (PM M294); on Linux at their slice, so that a hold ends as its period does
+/// however busy the host (PM M441).
 pub fn prioritize_governor_thread() -> Result<Prioritized, String> {
-    #[cfg(target_os = "macos")]
-    return prioritize_vcpu_thread();
     #[cfg(windows)]
     return windows::run_time_critical().map(|()| Prioritized {});
-    #[cfg(not(any(target_os = "macos", windows)))]
-    Ok(Prioritized {})
+    #[cfg(not(windows))]
+    prioritize_vcpu_thread()
 }
 
 /// The bytes of `name` in the directory `dir` holds open, or `None` if there is no such
