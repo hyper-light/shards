@@ -22,6 +22,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
+/// Which file is at `path`: its device and inode on Unix, its volume's serial number and
+/// its index on that volume on Windows (`platform::file_id`), so that a test tells the same
+/// file from another put in its place.
+pub fn file_identity(path: &Path) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let meta = std::fs::metadata(path).unwrap();
+        (meta.dev(), meta.ino())
+    }
+    #[cfg(windows)]
+    {
+        let file = shards_vmm::platform::open_for_metadata(path).unwrap();
+        shards_vmm::platform::file_id(&file).unwrap()
+    }
+}
+
 /// A datagram from `socket`, a signal's interruption (EINTR) waited out: `recv_from`
 /// returns it where `read_exact` would not.
 pub fn recv_from(socket: &std::net::UdpSocket, buf: &mut [u8]) -> io::Result<(usize, std::net::SocketAddr)> {

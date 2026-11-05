@@ -594,7 +594,9 @@ impl Shared {
 
     /// Maps `file`, as long as its own, where its own was, in its place: the mapping's
     /// address stays, so that what maps it there (KVM's memslot, which follows the host's
-    /// mapping) need not change, and its own file is let go of. Where the new could not be
+    /// mapping) need not change, and its own file is let go of: `mmap(MAP_FIXED)` on Unix, on
+    /// Windows a view in place of its own, the range held by a placeholder meanwhile
+    /// ([`platform::map_file_shared_at`]). Where the new could not be
     /// mapped, its own is mapped back. Under its file's lock, as [`flush`](Self::flush) and
     /// [`release`](Self::release) take it.
     ///
@@ -830,7 +832,8 @@ impl Layer {
     /// own, as its guest asks (`control::LAYER_SWAP`) once it has let go of the layer's file
     /// system: its file system's mapping replaced where it was ([`Shared::replace`]), taken
     /// from the guest meanwhile where the hypervisor's stage 2 holds the pages it maps
-    /// (HVF, PM M193), and given back after; KVM's follows the host's mapping. From here on
+    /// (HVF, PM M193) or maps a range of host addresses (WHP's WHvUnmapGpaRange and
+    /// WHvMapGpaRange), and given back after; KVM's follows the host's mapping. From here on
     /// the guest's writes are the readied file's, which a keep, a save and a flush take,
     /// and its own is let go of. A guest that could not be given the mapping back has lost
     /// the layer ([`lost`](Self::lost)).
@@ -1772,7 +1775,6 @@ mod tests {
     /// guest and given back around it; what the mapping holds is the readied file's, both
     /// ways, and its own file is untouched after. One of another length is refused, and
     /// none readied swaps nothing.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_readied_file_goes_under_a_layers_device_in_place_of_its_own() {
         type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
