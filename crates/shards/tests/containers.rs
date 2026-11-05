@@ -5908,11 +5908,9 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
 /// stays the container's, the same file, with what each run wrote; the microVM's own layer
 /// goes. One that holds little is packed and put back, in another file. What a run's guest
 /// wrote and freed is given back to the host's disk once its microVM has gone.
-#[cfg(unix)]
 #[test]
 fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     use shards_ext4::read::Volume;
-    use std::os::unix::fs::MetadataExt as _;
     let Some((home, image)) = home("containers-over") else {
         return;
     };
@@ -5957,7 +5955,7 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     };
     settled();
     let kept = dir.join("layer.ext4");
-    let ino = std::fs::metadata(&kept).unwrap().ino();
+    let same = common::file_identity(&kept);
     for n in 1..=3 {
         let deadline = Instant::now() + TIMEOUT;
         while given().len() < n {
@@ -5989,8 +5987,8 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
         );
         settled();
         assert_eq!(
-            std::fs::metadata(&kept).unwrap().ino(),
-            ino,
+            common::file_identity(&kept),
+            same,
             "run {n}: the container's own file, not another in its place"
         );
     }
@@ -6019,14 +6017,11 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
         }
     };
     small_settled();
-    let before = std::fs::metadata(small_dir.join("layer.ext4")).unwrap().ino();
+    let before = common::file_identity(&small_dir.join("layer.ext4"));
     let again = shards(&["start", "-a", "small"]);
     assert_eq!(again.status, Some(0), "{again}");
     small_settled();
-    assert_ne!(
-        std::fs::metadata(small_dir.join("layer.ext4")).unwrap().ino(),
-        before
-    );
+    assert_ne!(common::file_identity(&small_dir.join("layer.ext4")), before);
     // Nothing of the microVMs' own layers left once they have gone.
     let layers: Vec<_> = std::fs::read_dir(home.join("layers"))
         .map(|d| d.flatten().map(|e| e.path()).collect())

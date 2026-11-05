@@ -88,7 +88,7 @@ alone, so the script keeps Windows' missing passthrough visible (row 9).
 | 15 | The policy a vCPU thread wakes at on a busy host (D191) | open: Windows, unmeasured: its vCPU threads run as they are, its hold's governor alone at TIME_CRITICAL (PM M294) | platform-parity.py (2026-11-04): platform/unix.rs's `run_promptly` and `PROMPT_SLICE_NS` (Linux's shortest slice, PM M440), platform/mod.rs's `macos_thread` (macOS's real-time policy, M8, M10); D191's Next, "Windows' vCPUs on a contended host: unmeasured" |
 | 16 | A microVM moved live (D176 part 7) | open: arm64 Linux, whose dirty rings need the ITS's bitmap beside them (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and Windows, whose dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) is not asked yet: each refuses a live move, saying so, and moves one saved. A saved move on either, built, has not run there yet | D176's Not yet; moves.rs, "this host's microVMs move only saved, not live"; tests/moved.rs asserts the refusal off macOS and Linux x86_64 |
 | 17 | Devices plugged into a running microVM through the CLI (D214: `shards plug`, `unplug`, `grow`) | open, built: Windows, whose daemon now plugs a volume, its share process's stream (a duplex pipe the daemon makes, D197) handed to the VM as a run's are (D207) and taken there as a `PipeStream` (vm_run.rs `device::SHARE`); tests/plug.rs builds and runs on every host (booted where WHP restores no template), and tests/hotplug.rs serves its shared directory over a pipe on Windows. Neither has run on WHP yet (CI's windows-2022 and windows-2025, jupiter) | daemon/devices.rs `plug_share`, every host's; tests/plug.rs no longer `cfg(unix)`; architecture.md D214's Verified and Not yet |
-| 18 | A run's writable layer restarted over its kept file, not packed (D190 slice 7, PM M443) | open: Windows, which packs as before, its views of a file not mapped over in place yet (placeholders, MapViewOfFile3's MEM_REPLACE_PLACEHOLDER); macOS, held by unit tests, not yet run on its real microVMs. A restart works on every host; this is its cost past 5 MiB written | D190's Next; `platform::map_file_shared_at` |
+| 18 | A run's writable layer restarted over its kept file, not packed (D190 slice 7, PM M443) | open: Windows and macOS, built and held by unit tests, not yet run on their real microVMs. Windows now goes over the kept file as Unix does: each shared view replaces a placeholder (VirtualAlloc2, MapViewOfFile3's MEM_REPLACE_PLACEHOLDER), and the swap unmaps the template's view back to it (UnmapViewOfFile2's MEM_PRESERVE_PLACEHOLDER) and places the container's file's there, unmapped from WHP's partition and mapped back around it; the daemon no longer packs there. To close: the two D190 E2E tests (`a_stopped_microvms_next_run_goes_on_over_its_kept_file`, `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file`, now built for Windows) passing on Windows and a Mac, and Windows' restarts measured against packing. A restart works on every host; this is its cost past 5 MiB written | D190's "On Windows, a view in place of a view" and Next; `platform::map_file_shared_at`, `a_view_goes_in_place_of_another_at_its_address` |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
 (29), `vm_run.rs` (18), `context.rs` (14) and `cli/*` items are the daemon's and its client's
@@ -130,8 +130,8 @@ Each lone item is confirmed or closed as its row is worked.
     windows-2022 and windows-2025 and on jupiter, and their numbers recorded in D214.
 18. Row 16, live moves on arm64 KVM (dirty rings with the ITS's bitmap) and WHP
     (WHvQueryGpaRangeDirtyBitmap); saved moves run on both.
-19. Row 18, restarts over the kept file on Windows (placeholder views) and on a Mac's real
-    microVMs, measured.
+19. Row 18, restarts over the kept file (built on Windows with placeholder views) run on
+    Windows' and a Mac's real microVMs, and measured.
 20. Row 9 on a Windows Server host that permits DDA (step 13), and row 5 (step 10).
 
 ## Closed
@@ -288,7 +288,8 @@ What the merges into integrate brought, host by host, each in D13's table:
   vCPU wake policy is each host's (row 15).
 - A run's writable layer (D190): ext4 over pmem and its freed blocks given back on every
   host (FALLOC_FL_PUNCH_HOLE, F_PUNCHHOLE, FSCTL_SET_ZERO_DATA); restarts over the kept
-  file on Linux, packing on Windows (row 18).
+  file on Linux, built on macOS and Windows (placeholder views) and run on neither's real
+  microVMs yet (row 18).
 - GPUs on every Linux host, musl's and Intel's (D208, PM M422; row 6).
 - Devices plugged in (D214) on Hypervisor.framework, KVM x86_64 and, nested, arm64 KVM,
   through the CLI; a host's function on Linux alone, the others refusing as at a start

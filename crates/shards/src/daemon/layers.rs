@@ -603,11 +603,10 @@ mod tests {
 
     /// What a layer's guest wrote and freed is given back to the host's disk once kept:
     /// the free blocks its file holds data in read as zeros after, take none of its disk,
-    /// and the file system reads as it did; what is in use stays.
-    #[cfg(unix)]
+    /// and the file system reads as it did; what is in use stays. On every host: Linux's and
+    /// macOS's holes punched, a sparse NTFS file's clusters zeroed away (FSCTL_SET_ZERO_DATA).
     #[test]
     fn a_kept_layers_freed_blocks_go_back_to_its_disk() {
-        use std::os::unix::fs::MetadataExt as _;
         let home = shards_testdir::TempDir::new("layers-give").unwrap();
         let made = LayerFile::made(&home, 256 << 20).unwrap();
         let at = home.join("kept.ext4");
@@ -618,18 +617,20 @@ mod tests {
             .open(&at)
             .unwrap();
         let free = Volume::open(&file).unwrap().free_runs().unwrap();
-        // 16 MiB of a free run, written as a guest's deleted file left it.
+        // 16 MiB of a free run, written as a guest's deleted file left it: at a MiB, so
+        // that NTFS's sparse units (64 KiB) hold it whole.
         let &(first, n) = free.iter().find(|r| r.1 >= 8192).unwrap();
-        let (offset, len) = ((first + 1024) * 4096, 16u64 << 20);
-        assert!(first + 1024 + 4096 <= first + n);
+        let (offset, len) = (((first + 1024) * 4096).next_multiple_of(1 << 20), 16u64 << 20);
+        assert!(offset + len <= (first + n) * 4096);
         shards_vmm::platform::write_all_at(&file, &vec![0x5Au8; len as usize], offset).unwrap();
         file.sync_all().unwrap();
-        let before = file.metadata().unwrap().blocks() * 512;
+        let on_disk = || crate::os::on_disk(&at, &file.metadata().unwrap());
+        let before = on_disk();
         let used = std::fs::read(&at).unwrap();
         let given = give_back(&at).unwrap().unwrap();
         assert!(given >= len, "{given} bytes given back");
         file.sync_all().unwrap();
-        let after = file.metadata().unwrap().blocks() * 512;
+        let after = on_disk();
         assert!(after + len <= before, "{before} bytes on disk, then {after}");
         let now = std::fs::read(&at).unwrap();
         assert!(

@@ -5559,14 +5559,11 @@ impl<D: Disk> Daemon<D> {
 
     /// Container `id`'s writable layer kept in its file (D190), to go under its next run's
     /// microVM's layer device as it is, with where it is kept: where the run's layer is of the
-    /// file's length (`--storage-opt size`, which its template is made for), and its host
-    /// remaps a file under a mapping in place (not Windows yet: `platform::map_file_shared_at`).
-    /// Its journal replayed first where its microVM was killed ([`layers::open_kept`]). None
-    /// where it has none, or where it is to be put back instead ([`layer_in`](Self::layer_in)).
+    /// file's length (`--storage-opt size`, which its template is made for): its VM maps it
+    /// where the template's layer was (`platform::map_file_shared_at`). Its journal replayed
+    /// first where its microVM was killed ([`layers::open_kept`]). None where it has none, or
+    /// where it is to be put back instead ([`layer_in`](Self::layer_in)).
     fn layer_over(&self, id: &str, run: &Run) -> Result<Option<(File, PathBuf)>, String> {
-        if !cfg!(unix) {
-            return Ok(None);
-        }
         let at = lock(&self.containers).dir(id).join(layers::KEPT);
         let Ok(meta) = std::fs::metadata(&at) else {
             return Ok(None);

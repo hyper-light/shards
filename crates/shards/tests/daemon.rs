@@ -617,10 +617,8 @@ fn errors_reach_the_client() {
 /// on over the file its layer was kept in (D190): the template's own layer let go of, the
 /// container's file under the device, what its run before made there, and the file the
 /// container's still, the same one, once it stops again.
-#[cfg(unix)]
 #[test]
 fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
-    use std::os::unix::fs::MetadataExt as _;
     if cannot_run_vms() || cannot_pool() {
         return;
     }
@@ -656,7 +654,7 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
         })
     };
     settled();
-    let ino = std::fs::metadata(&kept).unwrap().ino();
+    let same = common::file_identity(&kept);
     for n in 0..2 {
         let again = run_shards_env(&["start"], &["-a", "over"], &env, TIMEOUT);
         assert_eq!(again.status, Some(1), "run {n}: {}", again.stderr);
@@ -667,8 +665,8 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
         );
         settled();
         assert_eq!(
-            std::fs::metadata(&kept).unwrap().ino(),
-            ino,
+            common::file_identity(&kept),
+            same,
             "run {n}: another file in its place"
         );
     }

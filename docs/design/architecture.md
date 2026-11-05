@@ -227,7 +227,7 @@ amd64 cell's once it does.
 | A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
 | Networks, published ports, default deny, IPv6 on networks and past the microVM (D46, D59, D99) | yes | yes | yes | yes (D142, D143) |
 | Volumes and binds, a bind's host-made files its run's user's, DAX windows (D38, D189) | yes | yes | yes | yes (D197, D207, PM M412, M413) |
-| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer held by unit tests, not yet run on real microVMs | yes, restarts by packing: its views of a file are not mapped over in place yet (D190's Next) |
+| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer held by unit tests, not yet run on real microVMs | yes; restarts over the kept layer, a view placed where the template's was (placeholders), held by unit tests, not yet run on real microVMs |
 | Memory given back: free page reporting, budgets, the host's word, for runs and builders (D148, D151, D188) | yes | yes | yes | yes (PM M371, M375, M391) |
 | A budgeted build's writes made outside its budget (D188, PM M442) | yes | yes | needs none: no kernel charges its page cache to a group shards keeps | needs none: a job's limit is its commit, never its cache |
 | `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
@@ -8492,7 +8492,8 @@ the guest keeps their metadata alone.
   (`control::LAYER_SWAP`), which maps it where the template's was (`Layer::swap_staged`:
   `mmap(MAP_FIXED)` over the same host range, so that KVM's memslot, which follows the
   host's mapping, is unchanged; taken from HVF's stage 2 and given back around it, as a
-  save's data ranges are, PM M285), and reads back that it did; then mounts the device's
+  save's data ranges are, PM M285; on Windows a view in place of a view, below), and reads
+  back that it did; then mounts the device's
   file system, the container's, the image under it, the mounts moved onto that, makes it
   every process's root, the tmpfs detached, and forks a standby again. A copy of a
   descriptor of the layer a process forked before held the layer's file system mounted:
@@ -8527,11 +8528,38 @@ the guest keeps their metadata alone.
   packed: within the spread, p90 63.04 against 59.42), 4 MiB 95.98 / 126.78 against
   97.37 / 121.45, 64 MiB 482.05 / 503.19 against 576.05 / 899.66; `diff` alike at 0 and
   4 MiB and 28% quicker at 64 MiB; `run` and `commit` the same (PM M443).
-  Windows restarts by packing as before: its views of a file are not mapped over in place
-  yet (`platform::map_file_shared_at`); nor are visits (`cp`, `diff` and `export` of a
-  stopped container) or joiners' runs (D119), which put their layer back as before. On
-  macOS the swap and the give-back are held by unit tests (`pmem`'s, `platform`'s); its
-  real microVMs have not run it yet.
+  Visits (`cp`, `diff` and `export` of a stopped container) and joiners' runs (D119) put
+  their layer back as before. On macOS the swap and the give-back are held by unit tests
+  (`pmem`'s, `platform`'s); its real microVMs have not run it yet.
+- **On Windows, a view in place of a view** (row 18 of the parity audit). Windows maps no
+  file over a mapping as `mmap(MAP_FIXED)` does: a view is made at an address that is free
+  (MapViewOfFile3), and a range unmapped then mapped again is free between the two calls,
+  for any thread's allocation to take. A placeholder holds it instead: a layer's file
+  system, a run's swap and a group's budget are each a view that replaced a placeholder of
+  its length (VirtualAlloc2, `MEM_RESERVE | MEM_RESERVE_PLACEHOLDER`; MapViewOfFile3,
+  `MEM_REPLACE_PLACEHOLDER`, whose address and size must be the placeholder's exactly), and
+  the swap unmaps the template's view back to its placeholder (UnmapViewOfFile2,
+  `MEM_PRESERVE_PLACEHOLDER`, "unmaps a mapped view back to a placeholder") and places the
+  container's file's view in it (`platform::map_file_shared_at`), the address the same and
+  the range never free (Microsoft's VirtualAlloc2, MapViewOfFile3 and UnmapViewOfFile2
+  references). WHP's stage 2 maps a range of host addresses (WHvMapGpaRange): the layer's
+  file system is unmapped from the partition (WHvUnmapGpaRange) before the views change and
+  mapped again after, through the stage 2 the layer was given (`Layer::placed`), as HVF's
+  is. A view that cannot be placed leaves the placeholder, where its own file's view is
+  placed back; one that cannot be placed back loses the layer, and the machine stops, as on
+  Unix. A view unmapped without `MEM_PRESERVE_PLACEHOLDER` frees its range, as VirtualAlloc2's
+  own example frees its views, and a placeholder left alone is freed whole
+  (`unmap_file_shared`). The daemon gives a Windows run its container's kept file as it gives
+  a Unix one, and the freed blocks go back there as everywhere (FSCTL_SET_ZERO_DATA on the
+  sparse file, slice 8). Held by `platform`'s `a_view_goes_in_place_of_another_at_its_address`
+  (the range a view, then a placeholder, then freed, as VirtualQuery says, and what each view
+  holds its own file's) and `pmem`'s `a_readied_file_goes_under_a_layers_device_in_place_of_its_own`,
+  both on Windows now, and `layers`' `a_kept_layers_freed_blocks_go_back_to_its_disk` on every
+  host; `a_stopped_microvms_next_run_goes_on_over_its_kept_file` and
+  `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file` run on Windows too, the
+  file's identity its volume's serial and file index (GetFileInformationByHandle). Not yet
+  run on Windows' real microVMs, and its cost there against packing unmeasured: Windows
+  takes the same 5 MiB crossing (`OVER_FROM`) until it is measured there.
 - **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
   discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
   whatever its guest deleted. As a stopped container's layer is kept, its microVM gone,
@@ -8549,9 +8577,9 @@ the guest keeps their metadata alone.
   that reads the layer goes on (PM M443).
 
 **Next** (the slices after these).
-- Restarts over the kept file on Windows (a view mapped over in place: placeholders,
-  MapViewOfFile3's MEM_REPLACE_PLACEHOLDER), and on a Mac's real microVMs, measured; and
-  visits and joiners' runs over it too.
+- Restarts over the kept file run on Windows' and a Mac's real microVMs, and measured
+  there against packing (Windows' crossing its own, where it is not 5 MiB); and visits and
+  joiners' runs over it too.
 - Going over's fixed cost below packing's, so that a layer holding under 5 MiB goes over
   too: the mount of the container's file system and its one host flush, and the root's two
   moves (PM M443).
