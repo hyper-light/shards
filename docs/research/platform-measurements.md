@@ -17368,3 +17368,31 @@ revision before comparing a changed API/implementation.
 - **Decided.** As M245 sets the native lanes' limits, a third above the slowest: the tests'
   step 35 minutes, the job 52 (the step's 35 and a third above its other steps' 12.5).
   Two runs are few: limits.py derives them again over runs.txt as the lane's runs gather.
+
+### M424. Cold boots on the nested arm64 Windows host: their microVMs' CPU while they start (D209, M357)
+
+- **Question.** In step 10's full suite (FullReal04, 142 test binaries, the whp-arm64
+  branch's 2026-11-04 build) on the arm64 Windows 11 host nested under QEMU's TCG with TF-A
+  on this Mac (4 vCPUs, 24 GiB; M414), 10 binaries failed, nearly every case a run whose
+  microVM was not ready by a deadline: the client's minute, or the daemon's
+  `READY_TIMEOUT` (60 s past its 20 s of samples). Were those microVMs stuck, or booting
+  slowly?
+- **Method.** The daemon's own samples of a microVM not ready in 10 and 20 s (Windows'
+  `READY_STALL` log lines: GetProcessTimes' user and kernel time), every one in the run's
+  per-test logs, n = 61 at 10 s and 50 at 20 s (the rest had become ready, or been given
+  up on, by then); their CPU between the two samples, n = 50. Up to four tests' cold boots
+  ran at once, each microVM of the host's 4 CPUs.
+- **Found.** CPU time to 10 s: min 4,062 ms, p50 11,218, p90 13,077, p99 13,203, max
+  13,905. To 20 s: min 7,327, p50 29,796, p90 33,155, p99 35,937, max 35,937. Between the
+  two, a 10 s slice: min 3,265 ms, p50 18,828, p90 21,531, max 23,813. A rerun of the same
+  binaries with Defender excluding C:\ (2026-11-05) still failed
+  `warm_vms_are_given_their_templates_root_filesystem`, in 102 s: 14,686 ms by 10 s,
+  24,828 ms by 20 s. Defender was not the cause.
+- **Consequence (D209).** Every microVM not ready ran its start the whole time: its least
+  slice, 3,265 ms in 10 s, is 52 times the most an idle microVM takes (63 ms in 10 s,
+  M357). They were slow, not stuck, and a wall-clock deadline that holds on CI's runners
+  (a boot of 1.6 to 2.2 s, M357) ends them here. The daemon now waits for a starting
+  microVM as long as its process runs its start, and gives up on one only after
+  `READY_TIMEOUT` in which it ran no more than an idle one (`daemon::progressed`); the
+  builder's boot likewise; and a test's client past its deadline is waited on while its
+  daemon says something, as it does each 10 s of such a wait (`common::Said`).

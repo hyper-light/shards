@@ -6631,6 +6631,23 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   restores and the busy-machine test at two and eight vCPUs passed. The full snapshot
   and feature E2E suite must still pass before step 10 is closed. CI's native
   windows-11-arm image has no WHP (M172); its VM tests saying SKIP remain no VM evidence.
+- **A start is waited for while it runs** (M424, every host). Its full suite's failures
+  were nearly all microVMs given up on as they booted, each running its start the whole
+  wait: their least 10 s of it, 3.3 s of CPU. The deadline was a wall clock's, a minute
+  held to by CI's runners, where a cold boot takes 1.6 to 2.2 s (M357), which this host's
+  speed sets past it. Now the daemon judges a starting microVM by its process each
+  `READY_STALL` (10 s): one that took more CPU than an idle microVM takes in as long (63 ms
+  in 10 s, M357's most, `IDLE_VM_CPU`) ran its start, and is waited for; one given up on
+  has run no more than that for `READY_TIMEOUT`, as one that never runs is given up on a
+  minute after its start, as before. A claim of a pool whose VM is starting waits for it
+  past its minute, its watcher waking it; and a builder's boot is judged so, past
+  `BOOT_PATIENCE`'s 30 s. Not caught: a guest that spins before it is ready (a panic
+  resets it, `panic=-1`, which ends its VM). Each slice is logged, the durable evidence by
+  which the tests' clients past their deadlines are waited on while their daemon says
+  something (`common::Said`, within the daemon's `READY_TIMEOUT`), never a guess at the
+  host's speed. `a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes` holds the
+  basis to M357, and `a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs`
+  to the host's own process times.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 

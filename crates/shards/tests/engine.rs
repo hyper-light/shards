@@ -112,7 +112,30 @@ impl Answered {
 /// A client of the API on one connection, its calls one after another.
 struct Api {
     conn: UnixStream,
-    reader: BufReader<UnixStream>,
+    reader: BufReader<Patient>,
+}
+
+/// A connection's reads, each waited on past [`TIMEOUT`] while its home's daemon says
+/// something (`common::Said`): an answer that waits on a microVM its host boots slowly
+/// comes when the daemon has it, and one from a daemon that says nothing fails its test.
+struct Patient {
+    conn: UnixStream,
+    said: common::Said,
+}
+
+impl Read for Patient {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            match self.conn.read(buf) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) && self.said.lately() => {}
+                read => return read,
+            }
+        }
+    }
 }
 
 /// A connection to the engine of `home`'s daemon: its socket, or on Windows the named pipe
@@ -143,7 +166,10 @@ impl Api {
     fn new(home: &Path) -> Api {
         let conn = connect(home);
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let reader = BufReader::new(conn.try_clone().unwrap());
+        let reader = BufReader::new(Patient {
+            conn: conn.try_clone().unwrap(),
+            said: common::Said::of(home),
+        });
         Api { conn, reader }
     }
 

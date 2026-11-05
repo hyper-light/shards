@@ -114,8 +114,9 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
     volume of a microVM (default: as long as the host's memory; 0, none): its large files
     read and written from the host's page cache, never copied into the guest's.";
 
-/// How long a VM may take to be ready: a restore takes milliseconds, a boot that saves a
-/// template tens of them.
+/// How long a starting VM may run nothing of its start before it is given up ([`ready`]),
+/// and a claim of a pool with none starting waits for one: a VM that runs its start is
+/// waited for as long as it takes its host, whose speed sets a boot's cost (PM M357).
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a VM's network process may take to say it has a run's published ports: a
 /// round trip on a socket pair to a process polling it, the grace one is given to end
@@ -344,9 +345,16 @@ fn fail(message: &str) -> ExitCode {
 /// never finds part of it, nor another thread's line within it (stderr writes each piece
 /// of a formatted line as it comes).
 fn log(message: impl std::fmt::Display) {
+    #[cfg(test)]
+    LOGGED.fetch_add(1, Ordering::Relaxed);
     let line = format!("shards daemon {}: {message}\n", std::process::id());
     let _ = io::stderr().write_all(line.as_bytes());
 }
+
+/// The lines the daemons of a test process have logged: what a test's watchdog takes for
+/// its daemon's threads still ending, on a host that ends them slowly ([`log`]).
+#[cfg(test)]
+static LOGGED: AtomicU64 = AtomicU64::new(0);
 
 /// The host's hosts file, as a container on its network has it (D124): `/etc/hosts`, or
 /// Windows' own; none where it cannot be read.
@@ -7048,17 +7056,22 @@ impl<D: Disk> Daemon<D> {
                 }
                 continue;
             }
+            // Past its deadline, a claim waits on while a VM of its pool is starting: that
+            // VM's watcher says when it is ready or given up, as long as it runs its start
+            // however slowly its host runs it (`ready`), and wakes it then.
             let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
+            let starting = state.pools.get(key).is_some_and(|p| p.starting > 0);
+            if left.is_zero() && !starting {
                 leave(&mut state, waiting);
                 return Err(Claim::Failed(format!(
                     "no warm VM of {} was ready in {READY_TIMEOUT:?}",
                     key.dir.display()
                 )));
             }
+            let wait = if left.is_zero() { READY_STALL } else { left };
             state = self
                 .changed
-                .wait_timeout(state, left)
+                .wait_timeout(state, wait)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -8384,31 +8397,95 @@ struct GrantError {
     started: bool,
 }
 
-/// How long a starting VM may go without saying it is ready before the log says what its
-/// process has done (Windows), and again as long after: a diagnostic's trigger, not a limit,
-/// which [`READY_TIMEOUT`] is. A sixth of it, as macOS's `GRANT_STALL`, so that both are
-/// said while a stalled VM is still stalled: the open p99 flake of a run that waits out the
-/// whole wait (CI's windows-2022 and windows-2025, `published_ports_are_free_at_once_while_
-/// the_daemon_makes_vms`), which only what its process did meanwhile can tell apart.
-#[cfg(windows)]
-const READY_STALL: Duration = Duration::from_secs(10);
+/// How long a starting VM may go without saying it is ready before the daemon looks at what
+/// its process has done, and again each as long after, while it waits: the slice its
+/// progress is judged over ([`ready`]), and the log's word of a VM not ready yet. A sixth of
+/// [`READY_TIMEOUT`], as macOS's `GRANT_STALL`, so that a stalled VM is said while it is
+/// still stalled: the open p99 flake of a run that waits out the whole wait (CI's
+/// windows-2022 and windows-2025, `published_ports_are_free_at_once_while_the_daemon_makes_
+/// vms`), which only what its process did meanwhile can tell apart.
+pub(crate) const READY_STALL: Duration = Duration::from_secs(10);
 
-/// Waits for a starting VM to say it is ready.
-fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
+/// The most CPU time an idle microVM's process was measured to take, and the time it was
+/// measured over: 63 ms in 10 s, PM M357's most of an idle run's microVM on windows-2025
+/// (windows-2022's, 31 ms; macOS's cold boot and 10 s idle together, 56.6 ms at most, M66).
+/// A cold boot alone keeps about one CPU busy to its end (M357: its microVM's CPU to its
+/// start is its time), a hundred and sixty times as much.
+const IDLE_VM_CPU: (Duration, Duration) = (Duration::from_millis(63), Duration::from_secs(10));
+
+/// Whether a starting VM's process ran its start over `window`, its CPU time `before` and
+/// `after` it, in nanoseconds (none where it could not be read): more than an idle VM takes
+/// in as long ([`IDLE_VM_CPU`]). One that ran no more runs nothing a boot does: it waits on
+/// something that has not come, or has stalled.
+pub(crate) fn progressed(before: Option<u64>, after: Option<u64>, window: Duration) -> bool {
+    let (Some(before), Some(after)) = (before, after) else {
+        return false;
+    };
+    let ran = u128::from(after.saturating_sub(before));
+    let (idle, over) = IDLE_VM_CPU;
+    // ran / window > idle / over, without a division.
+    ran.saturating_mul(over.as_nanos()) > idle.as_nanos().saturating_mul(window.as_nanos())
+}
+
+/// Whether `socket` has something to read, or has closed, within `wait`; an error is
+/// taken for something to read, for the read that follows to say.
+fn readable_within(socket: &UnixStream, wait: Duration) -> bool {
     #[cfg(windows)]
     {
-        let began = Instant::now();
-        for n in 1..=2u32 {
-            if socket
-                .wait_readable(None, Some(began + READY_STALL * n))
-                .unwrap_or(true)
-            {
-                break;
-            }
-            log(format!(
-                "VM {pid}: not ready in {:?}: {}",
-                READY_STALL * n,
-                shards_ipc::process_activity(pid)
+        socket
+            .wait_readable(None, Some(Instant::now() + wait))
+            .unwrap_or(true)
+    }
+    #[cfg(unix)]
+    {
+        let mut next = libc::pollfd {
+            fd: socket.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: poll(2) of one pollfd of ours.
+        unsafe { libc::poll(&raw mut next, 1, ms) != 0 }
+    }
+}
+
+/// Waits for a starting VM to say it is ready, as long as its process runs its start: a
+/// boot's cost is its host's, 1.6 s alone on CI's windows-2022 and 52 s eight at once (PM
+/// M357), and over 60 s on an arm64 Windows host nested under QEMU's TCG, its process
+/// running a CPU flat out (the parity plan's step 10). A VM is given up on once it has run
+/// nothing a boot does ([`progressed`]) for [`READY_TIMEOUT`], judged each [`READY_STALL`]:
+/// at most that past its start where it never runs, as before; one whose CPU time cannot be
+/// read is held to [`READY_TIMEOUT`] from its start.
+fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
+    let cpu = || shards_vmm::platform::process_usage(pid).ok().map(|u| u.cpu_ns);
+    let began = Instant::now();
+    let (mut seen, mut at) = (cpu(), began);
+    let mut ran_last = began;
+    while !readable_within(socket, READY_STALL) {
+        let (now, now_at) = (cpu(), Instant::now());
+        let ran = progressed(seen, now, now_at.saturating_duration_since(at));
+        if ran {
+            ran_last = now_at;
+        }
+        (seen, at) = (now, now_at);
+        #[cfg(windows)]
+        let did = shards_ipc::process_activity(pid);
+        #[cfg(not(windows))]
+        let did = match now {
+            Some(ns) => format!("its CPU time {} ms", ns / 1_000_000),
+            None => "its CPU time unread".to_string(),
+        };
+        let stalled = now_at.saturating_duration_since(ran_last);
+        log(format!(
+            "VM {pid}: not ready in {:?}{}: {did}",
+            Duration::from_secs(now_at.saturating_duration_since(began).as_secs()),
+            if ran { "" } else { ", running nothing of its start" }
+        ));
+        if stalled >= READY_TIMEOUT {
+            return Err(format!(
+                "VM {pid} was not ready: it ran nothing of its start for {READY_TIMEOUT:?}, \
+                 {:?} after it began",
+                Duration::from_secs(now_at.saturating_duration_since(began).as_secs())
             ));
         }
     }
@@ -8636,6 +8713,93 @@ mod tests {
         );
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         shards_ipc::spawn(&program, &args, &[], false).unwrap()
+    }
+
+    /// A starting VM progresses by more CPU than an idle microVM takes in as long (PM M357):
+    /// an idle one's 10 s on either runner (31 and 63 ms) is no progress; a cold boot, a CPU's
+    /// worth to its start (1.6 s of 1.6 s), and step 10's nested boot (FullReal04's VM 2340:
+    /// 10,578 ms of CPU by 10 s, 32,249 ms by 20 s) are; a process whose time is unread never
+    /// is, and a VM held to READY_TIMEOUT from its start then, as before.
+    #[test]
+    fn a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes() {
+        let s = Duration::from_secs;
+        let ms = |n: u64| n * 1_000_000;
+        assert_eq!(
+            IDLE_VM_CPU,
+            (Duration::from_millis(63), s(10)),
+            "PM M357's idle microVM"
+        );
+        assert!(
+            !progressed(Some(0), Some(ms(31)), s(10)),
+            "windows-2022's idle microVM"
+        );
+        assert!(
+            !progressed(Some(0), Some(ms(63)), s(10)),
+            "windows-2025's idle microVM"
+        );
+        assert!(
+            progressed(Some(0), Some(ms(1_600)), Duration::from_millis(1_600)),
+            "a cold boot alone"
+        );
+        assert!(
+            progressed(Some(ms(10_578)), Some(ms(32_249)), s(10)),
+            "step 10's nested boot"
+        );
+        // The idle rate over a window of another length: 126 ms in 20 s is idle, 127 is not.
+        assert!(!progressed(Some(0), Some(ms(126)), s(20)));
+        assert!(progressed(Some(0), Some(ms(127)), s(20)));
+        assert!(!progressed(None, Some(ms(1_000)), s(10)), "unread before");
+        assert!(!progressed(Some(ms(1_000)), None, s(10)), "unread after");
+        assert!(
+            !progressed(Some(ms(5)), Some(ms(1)), s(10)),
+            "a time read backwards"
+        );
+        // A stall is judged in slices, each a sixth of the time a VM may run nothing.
+        assert_eq!(READY_TIMEOUT, 6 * READY_STALL);
+    }
+
+    /// The basis as the daemon reads it of a VM's process, on this host: a process that
+    /// sleeps runs nothing a boot does over a second, and one that runs a CPU does.
+    #[test]
+    fn a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs() {
+        let cpu = |pid: u32| shards_vmm::platform::process_usage(pid).ok().map(|u| u.cpu_ns);
+        let window = Duration::from_secs(1);
+        let sleeping = sleeper(60);
+        // Once its start's own CPU is spent: its time unchanged across a fifth of a second.
+        let settling = Instant::now() + PATIENCE;
+        let mut last = cpu(sleeping.id());
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            let now = cpu(sleeping.id());
+            if now == last || Instant::now() > settling {
+                break;
+            }
+            last = now;
+        }
+        let before = cpu(sleeping.id());
+        let t0 = Instant::now();
+        std::thread::sleep(window);
+        let after = cpu(sleeping.id());
+        let slept = t0.elapsed();
+        let _ = sleeping.kill(shards_ipc::signal::SIGKILL);
+        let _ = sleeping.wait();
+        assert!(before.is_some() && after.is_some(), "its CPU time unread");
+        assert!(
+            !progressed(before, after, slept),
+            "a sleeping process ran: {before:?} to {after:?}"
+        );
+        let me = std::process::id();
+        let before = cpu(me);
+        let t0 = Instant::now();
+        let mut spun = 0u64;
+        while t0.elapsed() < window {
+            spun = std::hint::black_box(spun.wrapping_add(1));
+        }
+        let after = cpu(me);
+        assert!(
+            progressed(before, after, t0.elapsed()),
+            "a busy process ran nothing: {before:?} to {after:?}"
+        );
     }
 
     /// Ends process `pid`, a child of the test's, as SIGKILL does.
@@ -9164,11 +9328,12 @@ mod tests {
             let (daemon, threads, id) = (&self.t.daemon, self.threads, id.to_string());
             let run = threads.spawn(move || {
                 let null = File::open(crate::os::NULL).unwrap();
+                // As long as its test holds the run's `Starting`, however long the host
+                // takes to make the VM the test plays: a test that gives none lets its
+                // sender go as it ends.
                 let acquire = || {
                     let _ = ask.send(());
-                    offered
-                        .recv_timeout(PATIENCE)
-                        .map_err(|_| "no warm VM".to_string())
+                    offered.recv().map_err(|_| "no warm VM".to_string())
                 };
                 let inbox = daemon.start_run(
                     threads,
@@ -9263,13 +9428,26 @@ mod tests {
                     "returned".into()
                 };
                 // Its own thread ends as the scope does: the sender goes once all are joined.
+                // Each PATIENCE in which the daemons said something is waited on: the runs a
+                // failing test leaves end saying so ("ended before its command did"), and a
+                // slow host's daemon ending sixty of them is not a thread stuck, which says
+                // nothing.
                 let _ = std::thread::Builder::new()
                     .name("watchdog".into())
                     .spawn(move || {
-                        if let Err(mpsc::RecvTimeoutError::Timeout) = joining.recv_timeout(PATIENCE) {
+                        let began = Instant::now();
+                        let mut said = LOGGED.load(Ordering::Relaxed);
+                        while let Err(mpsc::RecvTimeoutError::Timeout) = joining.recv_timeout(PATIENCE) {
+                            let now = LOGGED.load(Ordering::Relaxed);
+                            if now != said {
+                                said = now;
+                                continue;
+                            }
                             let _ = writeln!(
                                 io::stderr(),
-                                "a daemon thread outlived its test by {PATIENCE:?}: {test}, which {how}"
+                                "a daemon thread outlived its test by {:?}, {PATIENCE:?} of them \
+                                 with nothing said: {test}, which {how}",
+                                began.elapsed()
                             );
                             std::process::abort();
                         }
@@ -9841,7 +10019,12 @@ mod tests {
                 d.busy.load(Ordering::SeqCst) == 0 && lock(&d.long_waits).is_empty()
             });
             assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
-            for client in [&idle_client, &waiting_client, &following_client] {
+            let clients = [
+                ("idle", &idle_client),
+                ("wait", &waiting_client),
+                ("logs -f", &following_client),
+            ];
+            for (who, client) in clients {
                 // macOS refuses options on a socket shut down both ways (EINVAL): this one's
                 // end has nothing more to wait for anyway.
                 let _ = client.set_read_timeout(Some(PATIENCE));
@@ -9850,7 +10033,12 @@ mod tests {
                 if matches!(&got, Ok(Some(m)) if m.kind == kind::RESTART) {
                     got = shards_ipc::recv(client);
                 }
-                assert!(matches!(got, Ok(None)), "a client was not let go");
+                let what = match &got {
+                    Ok(None) => String::new(),
+                    Ok(Some(m)) => format!("message kind {}", m.kind),
+                    Err(e) => format!("{e} ({:?})", e.kind()),
+                };
+                assert!(matches!(got, Ok(None)), "the {who} client was not let go: {what}");
             }
             assert!(!lock(&t.daemon.waiters).contains_key(&id), "a waiter left behind");
             say(&vm, kind::DONE, &[143]);

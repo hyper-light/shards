@@ -1845,9 +1845,59 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     said
 }
 
+/// How long a home's daemon may say nothing while a client of it is past its deadline
+/// before the client is taken for stuck ([`Said`]): the daemon's own `READY_TIMEOUT`
+/// (daemon.rs), the longest it waits on a starting microVM that runs nothing of its start.
+/// While one runs its start, however slowly its host runs it, the daemon says so each
+/// `READY_STALL` (10 s), and says why it gave up on one when it does.
+pub const DAEMON_QUIET: Duration = Duration::from_secs(60);
+
+/// What the daemon of a home has said in its log since this began watching: a client past
+/// its deadline is waited on while its daemon says something within [`DAEMON_QUIET`], as
+/// it does while it waits on a microVM its host boots slowly (the parity plan's step 10:
+/// boots past a minute on an arm64 Windows host nested under QEMU's TCG). A test's
+/// deadline then holds where its host is fast, and follows the daemon's own judgment of
+/// progress where it is slow: never a fixed guess at the host's speed.
+pub struct Said {
+    log: PathBuf,
+    len: u64,
+    /// When the log last grew, since this began watching, to within a second.
+    at: Option<Instant>,
+    /// When its length was last read: once a second at most.
+    read: Option<Instant>,
+}
+
+impl Said {
+    pub fn of(home: &Path) -> Said {
+        let log = home.join("daemon.log");
+        let len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+        Said {
+            log,
+            len,
+            at: None,
+            read: None,
+        }
+    }
+
+    /// Whether the daemon has said something within [`DAEMON_QUIET`]. Asked as often as
+    /// its caller likes, it reads the log's length once a second.
+    pub fn lately(&mut self) -> bool {
+        if self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1)) {
+            self.read = Some(Instant::now());
+            let len = std::fs::metadata(&self.log).map(|m| m.len()).unwrap_or(0);
+            if len != self.len {
+                self.len = len;
+                self.at = Some(Instant::now());
+            }
+        }
+        self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+}
+
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
 /// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
-/// after `timeout`, `asked` naming it then.
+/// after `timeout`, `asked` naming it then, or, where its home's daemon still says
+/// something then, once it has said nothing for [`DAEMON_QUIET`] ([`Said`]).
 pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run {
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
@@ -1903,11 +1953,14 @@ pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run
     };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
+    let mut said = home.as_deref().map(Said::of);
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             break st;
         }
-        if start.elapsed() > timeout {
+        // Asked each time, so that it sees when the daemon last said something.
+        let lately = said.as_mut().is_some_and(Said::lately);
+        if start.elapsed() > timeout && !lately {
             let seen = stuck(child.id(), home.as_deref());
             let _ = child.kill();
             let _ = child.wait();
