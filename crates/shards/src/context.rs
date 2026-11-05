@@ -2414,11 +2414,12 @@ pub(crate) fn kept_here(args: &[OsString]) -> bool {
     };
     // A login is the client's, as `docker --context NAME login` keeps it (docker/cli
     // cli/command/registry/login.go): checked with the registry and kept where this
-    // client's commands find it, never in the machine's store.
+    // client's commands find it, never in the machine's store. A build's writer (D188) is
+    // the build's own, here: a build `--context default` runs here, its writer told none.
     words.is_empty()
-        || words
-            .first()
-            .is_some_and(|w| own(w) || matches!(*w, "help" | "-h" | "--help" | "login" | "logout"))
+        || words.first().is_some_and(|w| {
+            own(w) || matches!(*w, "help" | "-h" | "--help" | "login" | "logout" | "build-writer")
+        })
         || words.get(1).is_some_and(|w| own(w))
 }
 
@@ -3695,6 +3696,7 @@ mod tests {
         }
         assert!(kept_here(&args("context ls")));
         assert!(kept_here(&args("list contexts")));
+        assert!(kept_here(&args("build-writer")));
         assert!(!kept_here(&args("ps")));
     }
 

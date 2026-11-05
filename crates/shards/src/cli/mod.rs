@@ -63,7 +63,7 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
 /// `configure disk` are said as, and `daemon` how the client starts the daemon.
-const OWN: [&str; 30] = [
+const OWN: [&str; 31] = [
     "system",
     // Devices plugged into a running microVM, and its disks grown (D214).
     "plug",
@@ -88,6 +88,9 @@ const OWN: [&str; 30] = [
     "disk",
     "grants",
     "working-set",
+    // A budgeted build's writer outside its budget, which the build starts (D188): refused
+    // here, it ended at once, and every build held to a budget wrote under it (PM M442).
+    "build-writer",
     "share",
     "frontend",
     "spawner",

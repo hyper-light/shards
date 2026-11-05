@@ -471,6 +471,14 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
         unknown.stderr.contains("unknown command: shards frobnicate"),
         "{unknown}"
     );
+    // A budgeted build's writer (D188) is reached through the command line as the build
+    // starts it, and refuses to run without the build's connection: refused as unknown
+    // there, every build held to a budget wrote under it (PM M442).
+    if cfg!(target_os = "linux") {
+        let writer = run_shards(&["build-writer"], &none, TIMEOUT);
+        assert_eq!(writer.status, Some(1), "{writer}");
+        assert!(writer.stderr.contains("shards: a build's writer: "), "{writer}");
+    }
     // Piped, laid out as the scripts that read `version` parse it (cli/version.rs); the
     // server is this shards too.
     let version = run_shards(&["version"], &none, TIMEOUT);

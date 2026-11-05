@@ -48,6 +48,7 @@ fn owners(args: &[String]) -> Option<String> {
             | "invitation"
             | "daemon"
             | "spawner"
+            | "build-writer"
             | "grants"
             | "share"
             | "frontend"
@@ -1658,6 +1659,7 @@ mod tests {
             "daemon stop",
             "configure guest --kernel k --init i",
             "spawner",
+            "build-writer",
         ] {
             assert!(owners(&args(owner)).is_some(), "{owner}");
         }
