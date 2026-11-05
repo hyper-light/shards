@@ -17720,6 +17720,41 @@ revision before comparing a changed API/implementation.
   The builder's own writes to its caches' ranges (an apt build's lists and archives, npm's
   cache) stay under the budget, its VM process's. To measure: this harness, unchanged, at
   the commit that has them, on CI (`builder-pressure.yml`) and Fedora (`fedora.sh`).
+- **At 94838b88, on CI's four runners: the writer never ran.** Each of the 60 held builds'
+  output begins `shards: unknown command: shards build-writer`, and no free build's: the
+  command line refuses a word that is neither the catalog's nor in its own list (`OWN`,
+  cli/mod.rs) before the daemon side's `shardsd()` sees it, and `build-writer` was in
+  `shardsd()` alone. The writer ended at once, so the build placed none and wrote its files
+  itself, under its budget, saying so only in its debug log. What the held builds still paid
+  is those writes, step by step (s, the rounds past the caches', each runner's range):
+  - apt's own work is no slower held: its last line of output (`0 added, 0 removed; done.`,
+    the guest's clock) came 14.6 to 19.6 s into its `RUN` held against 15.5 to 19.1 free.
+    The step's end, from there to its `DONE`, as its changes go out of the guest (480 MiB
+    of shmem in it as the step ended, runner a) to the build's staging file on the host,
+    took 2.6 to 4.4 s free and 4.3 to 10.9 held, the whole of the step's difference (runner
+    a: 1.7, 3.2, 5.0, 1.8, 2.7 s of 2.5, 3.7, 5.0, 1.8, 2.5). Its export, the image's root
+    filesystem written, 1.2 to 2.8 s free and 1.9 to 4.3 held. Through the step's end free,
+    the scope's file pages rose from 6 to 517 MiB in a second, 432 MiB of them dirty
+    (runner a, round 3); held, its `memory.current` reached its budget (957 MiB) in 4 of
+    the 9 samples and was never more than 100 MiB under it, its dirty pages 197 MiB at most: written
+    at its reclaim's and writeback's pace.
+  - npm's `RUN`'s end, 0.5 to 0.8 s free, 0.9 to 6.1 held; its `npm ci` itself the same
+    but in runner b's first two held rounds (budget 702 MiB, where later rounds had 768).
+  - rust's `RUN` 1.4 to 2.1 s in either arm; its export,
+    rust:1-slim's root filesystem written whole on the runners' ext4, 2.4 to 4.9 s free
+    and 2.5 to 7.5 held.
+
+  So the diagnosis above stands for the build's own writes (its steps' changes and its
+  export, which the writer is for), and not for its caches on the join disk: apt's work,
+  which reads and writes them, is no slower held. Fixed (`build-writer` among the command
+  line's own words, and a client's not to run, boot.rs's
+  `cli_reports_usage_and_rejects_unknown_commands`), and a step's changes now go to their
+  staging file a chunk at a time (`upper::Applier`, `through::CHUNK`, the writer's most in
+  one message), not a write and a round trip to the writer for each file. The harness now
+  samples the writer's own cgroup and says, of each held build, whether it ran
+  (`writer_seen`, tables.py's `writer outside`). How much of a step's end is its caches'
+  changes, which its VM process writes under the budget (`keep_cache`), these samples do
+  not split. To measure: `builder-pressure.yml` at the commit that has the fix.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 

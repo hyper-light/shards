@@ -109,6 +109,16 @@ def report(title, into):
                           if int(builds.get(k, {}).get("scope_held_peak", 0))]
                 if shorts:
                     print(f"   short of its peak {stats(shorts, ' MiB', MIB)}")
+                # Whether its writer outside the budget ran (D188): where it did not, the
+                # build's own writes were charged to the budget (PM M442).
+                seen = [r for r in rounds if int(builds[(name, arm, r)].get("writer_seen", 0)) > 0]
+                if any("writer_seen" in builds[(name, arm, r)] for r in rounds):
+                    print(f"   writer outside    in {len(seen)} of {len(rounds)} builds")
+                    files = [int(builds[(name, arm, r)]["writer_file_peak"]) for r in seen]
+                    dirty = [int(builds[(name, arm, r)]["writer_dirty_peak"]) for r in seen]
+                    if seen:
+                        print(f"   writer file peak  {stats(files, ' MiB', MIB)}")
+                        print(f"   writer dirty peak {stats(dirty, ' MiB', MIB)}")
             answers = [g for r in rounds for g in gives.get((name, arm, r), []) if "answered_ms" in g]
             unanswered = [g for r in rounds for g in gives.get((name, arm, r), []) if "unanswered_ms" in g]
             if answers or unanswered:

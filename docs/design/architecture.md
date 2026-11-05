@@ -6389,6 +6389,13 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   container's in Docker; each of those is made durable before its record names it in
   either case (`mounts::finish`). Where nothing places the writer outside (no user
   manager, or a budget over the user's whole tree), the build writes its files itself.
+  At 94838b88 the writer never ran: the command line refused `build-writer` as unknown
+  (it was `shardsd()`'s word but not in the command line's own list), every held build on
+  CI's runners wrote under its budget, and the steps that write were slower held, apt's
+  `RUN`'s end 4.3 to 10.9 s against 2.6 to 4.4 free while apt itself was not (PM M442).
+  The word is the command line's now, and a step's changes go to their staging file a
+  chunk at a time (`through::CHUNK`, the most one message to the writer carries), not a
+  write, and a round trip to the writer, for each file.
 - **An image's root filesystem over its base's** (PM M442; built, its measurement
   awaited). An export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again
   for a build that added 7 MiB. Where the store's file system clones a file (APFS's
