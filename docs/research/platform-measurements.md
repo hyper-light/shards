@@ -17393,6 +17393,12 @@ revision before comparing a changed API/implementation.
   M357). They were slow, not stuck, and a wall-clock deadline that holds on CI's runners
   (a boot of 1.6 to 2.2 s, M357) ends them here. The daemon now waits for a starting
   microVM as long as its process runs its start, and gives up on one only after
-  `READY_TIMEOUT` in which it ran no more than an idle one (`daemon::progressed`); the
-  builder's boot likewise; and a test's client past its deadline is waited on while its
-  daemon says something, as it does each 10 s of such a wait (`common::Said`).
+  `READY_TIMEOUT` in which it ran no more than an idle one (`progressed`, now
+  `shards_vmm::platform`'s); the builder's boot likewise; and a test's client past its
+  deadline is waited on while its daemon says something, as it does each 10 s of such a
+  wait (`common::Said`).
+- **Not measured: the WORK cases.** Five failures came after their boots (the storm, the
+  3 GiB build step, `run_limits_a_microvms_resources`' 2.4 GiB allocation, two 1 GiB
+  `exec alloc-free`), and nothing in their logs says what their microVMs ran meanwhile:
+  the daemon logged nothing while a workload ran. It now logs a microVM a client waits on
+  each 10 s where it ran (D209's second bullet); the rerun's logs are those cases' evidence.

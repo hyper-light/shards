@@ -7,10 +7,12 @@ use std::io;
 
 mod checked;
 mod copy;
+mod progress;
 pub use checked::copy_checked;
 #[cfg(test)]
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};
+pub use progress::{IDLE_VM_CPU, Look, Progress, progressed};
 
 #[cfg(unix)]
 mod unix;

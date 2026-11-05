@@ -457,7 +457,9 @@ mod storm {
         stop: &AtomicBool,
         streamer: std::thread::JoinHandle<Rounds>,
     ) -> Rounds {
-        let line = vm.wait_for_any(&["storm checked", "SHARDS-TEST FAIL"], TIMEOUT);
+        // As long as its microVM runs its storm: 64 vCPUs on a host of 4 TCG CPUs ran past
+        // TIMEOUT (the parity plan's step 10).
+        let line = vm.wait_for_any_running(&["storm checked", "SHARDS-TEST FAIL"], TIMEOUT);
         stop.store(true, Ordering::Relaxed);
         let rounds = streamer.join().unwrap();
         assert!(line.contains("storm checked"), "{}", vm.seen.join("\n"));

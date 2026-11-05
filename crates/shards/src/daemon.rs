@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use shards_ipc::{Identity, Run, kind};
 use shards_registry::http::Cancel;
-use shards_vmm::platform::FileWatch;
+use shards_vmm::platform::{FileWatch, Progress};
 use shards_vmm::vm::Config;
 
 use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as Life};
@@ -837,6 +837,12 @@ struct Inbox {
     execs_in_flight: Vec<(u64, UnixStream)>,
     /// Execs that have events, by number: each one's ID, for its `exec_die`.
     exec_ids: Vec<(u64, String)>,
+    /// Its run's own client waits on its command, as an attached run's does, until it
+    /// ends: its microVM's progress is logged meanwhile ([`Daemon::log_progress`]).
+    waited: bool,
+    /// The execs whose clients wait on their ends (none detached), by number, until each
+    /// ends (`EXEC_ENDED`): its microVM's progress is logged meanwhile.
+    waited_execs: Vec<u64>,
     /// The container's writable layer is still to come, after its end (D37).
     layer_pending: bool,
     /// Its writable layer's file (D190), its VM's, for a container that stays: kept in its
@@ -1088,6 +1094,9 @@ struct Daemon<D: Disk = Real> {
     stoppers: Mutex<Vec<UnixStream>>,
     /// Every run whose container exists and has not ended, by the container's ID.
     runs: Mutex<HashMap<String, RunState>>,
+    /// The microVMs a client waits on, by their processes' IDs, each as the listener last
+    /// looked at it ([`Daemon::log_progress`]).
+    followed: Mutex<HashMap<u32, Progress>>,
     /// A run's start was decided: it runs, or never will.
     resolved: Condvar,
     /// `shards daemon stop` asked this daemon to end its runs.
@@ -1900,6 +1909,7 @@ impl<D: Disk> Daemon<D> {
             socket_at: Mutex::new(()),
             stoppers: Mutex::default(),
             runs: Mutex::default(),
+            followed: Mutex::default(),
             resolved: Condvar::new(),
             ending: AtomicBool::new(false),
             containers: Mutex::new(containers),
@@ -2091,6 +2101,7 @@ impl<D: Disk> Daemon<D> {
             }
             self.age_pools();
             self.mark_collection();
+            let progress_due = self.log_progress();
             // Closed as of here, before its slots are looked at, which hold it otherwise once
             // it has: a close since, by another thread, is the next pass's.
             let closed = self.closed.load(Ordering::SeqCst);
@@ -2120,10 +2131,12 @@ impl<D: Disk> Daemon<D> {
             } else {
                 self.next_duty(quiet)
             };
-            // A slot's client given until then to go on.
+            // A slot's client given until then to go on, and a microVM a client waits on
+            // looked at again.
             let timeout = timeout
                 .into_iter()
                 .chain(lets_go.map(|at| at.saturating_duration_since(Instant::now())))
+                .chain(progress_due)
                 .min();
             let home_changed;
             (home_changed, contexts_changed) = self.wait_for_work(
@@ -2190,6 +2203,49 @@ impl<D: Disk> Daemon<D> {
             .map(|at| at.saturating_duration_since(now))
             .min();
         idle.into_iter().chain(aging).min()
+    }
+
+    /// Logs what each microVM a client waits on has done, its run's own client or an
+    /// exec's, once each [`READY_STALL`], where it ran more than an idle microVM takes in as
+    /// long (`shards_vmm::platform::progressed`, PM M357): its CPU time and page faults, and
+    /// what each grew by. The durable word by which the wait of a client whose workload its
+    /// host runs slowly is told from one on a microVM that runs nothing (D209), which is
+    /// said nothing of, as an idle microVM has nothing to say. How long until the next look
+    /// is due; none where no client waits.
+    fn log_progress(&self) -> Option<Duration> {
+        let inboxes: Vec<(String, Arc<Mutex<Inbox>>)> = lock(&self.runs)
+            .iter()
+            .filter_map(|(id, run)| match run {
+                RunState::Tracked(t) => Some((id.clone(), t.inbox.clone())),
+                _ => None,
+            })
+            .collect();
+        let waited: Vec<(String, u32)> = inboxes
+            .iter()
+            .filter_map(|(id, inbox)| {
+                let inbox = lock(inbox);
+                let waited = !inbox.ended && (inbox.waited || !inbox.waited_execs.is_empty());
+                waited.then(|| (id.clone(), inbox.pid))
+            })
+            .collect();
+        let mut followed = lock(&self.followed);
+        followed.retain(|pid, _| waited.iter().any(|(_, p)| p == pid));
+        let mut next: Option<Duration> = None;
+        // A joiner's microVM is its provider's (D119): looked at once a turn, as one.
+        for (id, pid) in &waited {
+            let progress = followed.entry(*pid).or_insert_with(|| Progress::of(*pid));
+            if progress.since() >= READY_STALL {
+                let look = progress.look();
+                if look.ran {
+                    log(format!(
+                        "container {id}: VM {pid} runs as its client waits: {look}"
+                    ));
+                }
+            }
+            let due = READY_STALL.saturating_sub(progress.since());
+            next = Some(next.map_or(due, |n| n.min(due)));
+        }
+        next
     }
 
     /// Waits for a client at the Engine API's socket (`api`, when given), or a context's
@@ -5063,6 +5119,8 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
+        // A client that is not told of its start and goes waits on its command's end.
+        let waited = detached.is_none() && !visit;
         let detached = detached.and_then(|conn| {
             conn.try_clone()
                 .map_err(|e| log(format!("holding a detached client's connection: {e}")))
@@ -5091,6 +5149,8 @@ impl<D: Disk> Daemon<D> {
             log_compress,
             execs_in_flight: Vec::new(),
             exec_ids: Vec::new(),
+            waited,
+            waited_execs: Vec::new(),
             layer_pending,
             layer,
             named,
@@ -5132,6 +5192,10 @@ impl<D: Disk> Daemon<D> {
         let pid = tracked.vm.id();
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
         self.resolved.notify_all();
+        // Its client waits on it: the listener looks at its microVM from now on.
+        if waited {
+            self.listener_wake.wake();
+        }
         // Held within what its budget leaves it, where it has one (D188).
         if !visit {
             self.budget_ran(pid);
@@ -5382,6 +5446,9 @@ impl<D: Disk> Daemon<D> {
                     self.settle_layer(id, inbox, true, used);
                 }
                 kind::EXEC_ENDED => {
+                    if let Some((n, _)) = m.payload.split_first_chunk::<8>() {
+                        inbox.waited_execs.retain(|e| *e != u64::from_be_bytes(*n));
+                    }
                     if let Some((n, &[status])) = m.payload.split_first_chunk::<8>()
                         && let Some(at) = inbox
                             .exec_ids
@@ -8406,27 +8473,6 @@ struct GrantError {
 /// vms`), which only what its process did meanwhile can tell apart.
 pub(crate) const READY_STALL: Duration = Duration::from_secs(10);
 
-/// The most CPU time an idle microVM's process was measured to take, and the time it was
-/// measured over: 63 ms in 10 s, PM M357's most of an idle run's microVM on windows-2025
-/// (windows-2022's, 31 ms; macOS's cold boot and 10 s idle together, 56.6 ms at most, M66).
-/// A cold boot alone keeps about one CPU busy to its end (M357: its microVM's CPU to its
-/// start is its time), a hundred and sixty times as much.
-const IDLE_VM_CPU: (Duration, Duration) = (Duration::from_millis(63), Duration::from_secs(10));
-
-/// Whether a starting VM's process ran its start over `window`, its CPU time `before` and
-/// `after` it, in nanoseconds (none where it could not be read): more than an idle VM takes
-/// in as long ([`IDLE_VM_CPU`]). One that ran no more runs nothing a boot does: it waits on
-/// something that has not come, or has stalled.
-pub(crate) fn progressed(before: Option<u64>, after: Option<u64>, window: Duration) -> bool {
-    let (Some(before), Some(after)) = (before, after) else {
-        return false;
-    };
-    let ran = u128::from(after.saturating_sub(before));
-    let (idle, over) = IDLE_VM_CPU;
-    // ran / window > idle / over, without a division.
-    ran.saturating_mul(over.as_nanos()) > idle.as_nanos().saturating_mul(window.as_nanos())
-}
-
 /// Whether `socket` has something to read, or has closed, within `wait`; an error is
 /// taken for something to read, for the read that follows to say.
 fn readable_within(socket: &UnixStream, wait: Duration) -> bool {
@@ -8453,28 +8499,23 @@ fn readable_within(socket: &UnixStream, wait: Duration) -> bool {
 /// boot's cost is its host's, 1.6 s alone on CI's windows-2022 and 52 s eight at once (PM
 /// M357), and over 60 s on an arm64 Windows host nested under QEMU's TCG, its process
 /// running a CPU flat out (the parity plan's step 10). A VM is given up on once it has run
-/// nothing a boot does ([`progressed`]) for [`READY_TIMEOUT`], judged each [`READY_STALL`]:
-/// at most that past its start where it never runs, as before; one whose CPU time cannot be
-/// read is held to [`READY_TIMEOUT`] from its start.
+/// nothing a boot does ([`shards_vmm::platform::progressed`]) for [`READY_TIMEOUT`], judged
+/// each [`READY_STALL`]: at most that past its start where it never runs, as before; one
+/// whose CPU time cannot be read is held to [`READY_TIMEOUT`] from its start.
 fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
-    let cpu = || shards_vmm::platform::process_usage(pid).ok().map(|u| u.cpu_ns);
     let began = Instant::now();
-    let (mut seen, mut at) = (cpu(), began);
+    let mut progress = Progress::of(pid);
     let mut ran_last = began;
     while !readable_within(socket, READY_STALL) {
-        let (now, now_at) = (cpu(), Instant::now());
-        let ran = progressed(seen, now, now_at.saturating_duration_since(at));
+        let look = progress.look();
+        let (ran, now_at) = (look.ran, Instant::now());
         if ran {
             ran_last = now_at;
         }
-        (seen, at) = (now, now_at);
         #[cfg(windows)]
         let did = shards_ipc::process_activity(pid);
         #[cfg(not(windows))]
-        let did = match now {
-            Some(ns) => format!("its CPU time {} ms", ns / 1_000_000),
-            None => "its CPU time unread".to_string(),
-        };
+        let did = look.to_string();
         let stalled = now_at.saturating_duration_since(ran_last);
         log(format!(
             "VM {pid}: not ready in {:?}{}: {did}",
@@ -8506,6 +8547,8 @@ fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use std::io::{Read, Write};
+
+    use shards_vmm::platform::{IDLE_VM_CPU, progressed};
 
     /// Cold boots wait their turn while the vCPUs under way and theirs would pass the most
     /// (PM M357): two of 4 within 8 go at once, and a third waits until one of them has
@@ -9988,6 +10031,45 @@ mod tests {
                 .is_some_and(|c| c.state == Life::Running)
         });
         (id, starting, vm)
+    }
+
+    /// A run's microVM is looked at for its progress while its own client waits on it, an
+    /// attached run's, until it ends; a detached run's, whose client has gone, is not. Each
+    /// look is due within READY_STALL, a sixth of the time a test's client gives a daemon
+    /// that says nothing (`common::DAEMON_QUIET`, READY_TIMEOUT): a microVM that runs its
+    /// workload is said to six times before its client would give up on it. A played VM, a
+    /// sleep, runs nothing, and is said nothing of.
+    #[test]
+    fn a_microvm_is_followed_while_a_client_waits_on_it() {
+        let t = Test::new("followed");
+        t.run(|t| {
+            let (_, attached, vm) = running(t, "attached");
+            let due = t
+                .daemon
+                .log_progress()
+                .expect("an attached run's microVM not followed");
+            assert!(due <= READY_STALL, "{due:?}");
+            assert_eq!(lock(&t.daemon.followed).len(), 1);
+            say(&vm, kind::DONE, &[0]);
+            joined(attached.run).unwrap();
+            t.until("its end seen", |d| d.log_progress().is_none());
+            assert!(lock(&t.daemon.followed).is_empty());
+            let id = t.create("detached");
+            let (client, ours) = UnixStream::pair().unwrap();
+            let starting = t.start_with(&id, Some(ours));
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            client.set_read_timeout(Some(PATIENCE)).unwrap();
+            let end = shards_ipc::recv(&client).unwrap().unwrap();
+            assert_eq!((end.kind, end.payload.as_slice()), (kind::END, &[0u8][..]));
+            assert_eq!(t.daemon.log_progress(), None, "a detached run's microVM followed");
+            say(&vm, kind::DONE, &[0]);
+            joined(starting.run).unwrap();
+        });
+        assert_eq!(READY_TIMEOUT, 6 * READY_STALL);
     }
 
     /// A daemon told to stop ends the clients it would otherwise wait for: one that never

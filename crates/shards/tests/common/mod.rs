@@ -1849,13 +1849,16 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
 /// before the client is taken for stuck ([`Said`]): the daemon's own `READY_TIMEOUT`
 /// (daemon.rs), the longest it waits on a starting microVM that runs nothing of its start.
 /// While one runs its start, however slowly its host runs it, the daemon says so each
-/// `READY_STALL` (10 s), and says why it gave up on one when it does.
+/// `READY_STALL` (10 s), and says why it gave up on one when it does; and while a microVM
+/// a client waits on runs its workload, a run's or an exec's, it says that each as long
+/// (D209), saying nothing of one that runs nothing.
 pub const DAEMON_QUIET: Duration = Duration::from_secs(60);
 
 /// What the daemon of a home has said in its log since this began watching: a client past
 /// its deadline is waited on while its daemon says something within [`DAEMON_QUIET`], as
-/// it does while it waits on a microVM its host boots slowly (the parity plan's step 10:
-/// boots past a minute on an arm64 Windows host nested under QEMU's TCG). A test's
+/// it does while it waits on a microVM its host boots slowly, or a client waits on one that
+/// runs its workload slowly (the parity plan's step 10: boots past a minute, and gigabytes
+/// allocated past four minutes, on an arm64 Windows host nested under QEMU's TCG). A test's
 /// deadline then holds where its host is fast, and follows the daemon's own judgment of
 /// progress where it is slow: never a fixed guess at the host's speed.
 pub struct Said {
@@ -1894,10 +1897,120 @@ impl Said {
     }
 }
 
+/// The slice a microVM's progress is judged over, each as long: the daemon's `READY_STALL`
+/// (daemon.rs), over which it judges a starting microVM, and one a client waits on, and
+/// logs it.
+pub const PROGRESS_SLICE: Duration = Duration::from_secs(10);
+
+/// What the microVMs of a client's own have run: [`Said`]'s counterpart for one whose
+/// microVM is no daemon's, which says nothing of it. `shards run --kernel` and `shards
+/// restore` are the VM process on Unix and start it on Windows, and `shards build`'s
+/// builders are its children (builds run in its process). Each VM process under it is
+/// judged each [`PROGRESS_SLICE`] as the daemon judges one, by its CPU time against the
+/// most an idle microVM takes in as long (`shards_vmm::platform::progressed`, PM M357): a
+/// client past its deadline is waited on while one of them ran within [`DAEMON_QUIET`], as
+/// a guest's workload runs at its host's speed (the parity plan's step 10: a 64-vCPU storm
+/// and a 3 GiB build step on an arm64 Windows host nested under QEMU's TCG). One that runs
+/// nothing for as long fails it as before. Not caught: a guest that spins for ever, as
+/// D209 says of a start, which its CI job's limit ends.
+pub struct Ran {
+    client: u32,
+    followed: std::collections::HashMap<u32, shards_vmm::platform::Progress>,
+    /// When its processes were last looked at.
+    looked: Instant,
+    /// When one of them last ran, since this began watching.
+    at: Option<Instant>,
+}
+
+impl Ran {
+    pub fn of(client: u32) -> Ran {
+        Ran {
+            client,
+            followed: std::collections::HashMap::new(),
+            looked: Instant::now(),
+            at: None,
+        }
+    }
+
+    /// Whether a VM process under its client ran within [`DAEMON_QUIET`]. Asked as often as
+    /// its caller likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged
+    /// from the next look on.
+    pub fn lately(&mut self) -> bool {
+        if self.looked.elapsed() >= PROGRESS_SLICE {
+            self.looked = Instant::now();
+            let vms = vm_processes_under(self.client);
+            self.followed.retain(|pid, _| vms.contains(pid));
+            for pid in vms {
+                match self.followed.entry(pid) {
+                    std::collections::hash_map::Entry::Occupied(mut p) => {
+                        if p.get_mut().look().ran {
+                            self.at = Some(Instant::now());
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(shards_vmm::platform::Progress::of(pid));
+                    }
+                }
+            }
+        }
+        self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+}
+
+/// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
+/// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
+pub fn vm_processes_under(client: u32) -> Vec<u32> {
+    #[cfg(windows)]
+    let listed = processes();
+    #[cfg(unix)]
+    let listed: Vec<(u32, u32, String)> = Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,comm="])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut w = line.split_whitespace();
+                    Some((
+                        w.next()?.parse().ok()?,
+                        w.next()?.parse().ok()?,
+                        w.collect::<Vec<_>>().join(" "),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_vm = |name: &str| {
+        let name = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .to_ascii_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        name == "shards-vm" || name == "shards-vm-gpu"
+    };
+    let mut under = vec![client];
+    let mut i = 0;
+    while let Some(&parent) = under.get(i) {
+        for (pid, ppid, _) in &listed {
+            if *ppid == parent && !under.contains(pid) {
+                under.push(*pid);
+            }
+        }
+        i += 1;
+    }
+    listed
+        .iter()
+        .filter(|(pid, _, name)| under.contains(pid) && is_vm(name))
+        .map(|(pid, ..)| *pid)
+        .collect()
+}
+
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
 /// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
 /// after `timeout`, `asked` naming it then, or, where its home's daemon still says
-/// something then, once it has said nothing for [`DAEMON_QUIET`] ([`Said`]).
+/// something then, once it has said nothing for [`DAEMON_QUIET`] ([`Said`]), or where a
+/// microVM of its own still runs then, once none has run for as long ([`Ran`]).
 pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run {
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
@@ -1954,13 +2067,16 @@ pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
     let mut said = home.as_deref().map(Said::of);
+    let mut ran = Ran::of(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             break st;
         }
-        // Asked each time, so that it sees when the daemon last said something.
-        let lately = said.as_mut().is_some_and(Said::lately);
-        if start.elapsed() > timeout && !lately {
+        // Each asked each time, so that it sees when the daemon last said something, and
+        // when a microVM of the client's own last ran.
+        let said_lately = said.as_mut().is_some_and(Said::lately);
+        let ran_lately = ran.lately();
+        if start.elapsed() > timeout && !said_lately && !ran_lately {
             let seen = stuck(child.id(), home.as_deref());
             let _ = child.kill();
             let _ = child.wait();
@@ -2713,6 +2829,32 @@ impl Vm {
                     }
                 }
                 Err(_) => panic!("no {texts:?} from the VM; it said:\n{}", self.seen.join("\n")),
+            }
+        }
+    }
+
+    /// [`wait_for_any`](Self::wait_for_any), going on past `timeout` while its microVM
+    /// runs ([`Ran`]): for a guest whose workload its host may run slower than `timeout`
+    /// allows. One that runs nothing for [`DAEMON_QUIET`] past it fails as before.
+    pub fn wait_for_any_running(&mut self, texts: &[&str], timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        let mut ran = Ran::of(self.child.id());
+        loop {
+            // Asked each pass, so that each slice of its microVM's is judged as it comes.
+            let running = ran.lately();
+            match self.lines.recv_timeout(Duration::from_secs(1)) {
+                Ok(line) => {
+                    let found = texts.iter().any(|t| line.contains(t));
+                    self.seen.push(line.clone());
+                    if found {
+                        return line;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline || running => {}
+                Err(_) => panic!(
+                    "no {texts:?} from the VM in {timeout:?} and while its microVM ran after; it said:\n{}",
+                    self.seen.join("\n")
+                ),
             }
         }
     }

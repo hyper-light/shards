@@ -6648,6 +6648,26 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   host's speed. `a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes` holds the
   basis to M357, and `a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs`
   to the host's own process times.
+- **A workload is waited for while it runs** (M424, every host). Five of the suite's cases
+  failed after their boots, their guests' work run past a test's deadline at TCG's speed
+  (a 64-vCPU storm, a 3 GiB build step, a 2.4 GiB allocation, two 1 GiB execs), where the
+  daemon said nothing while a workload ran, so that no test could tell slow from stuck.
+  Now its listener looks at each microVM a client waits on, an attached run's own client
+  until its run ends or an exec's (none detached) until it ends (`EXEC_ENDED`), each
+  `READY_STALL`, and logs its CPU time and page faults and what each grew by where it ran
+  more than an idle microVM takes in as long (`shards_vmm::platform::progressed`, the
+  basis `ready` judges a start by, moved beside `process_usage`, which counts each
+  process's page faults now on every host). An idle or stalled microVM is said nothing
+  of: a test's client past its deadline (`common::Said`) is waited on while its microVM
+  runs, and given up on a minute after it last ran, as before. Where a microVM is the
+  client's own, no daemon's (`shards run --kernel`, `shards restore`, `shards build`'s
+  builders), the test judges the VM processes under its client itself, by the same basis
+  and slice (`common::Ran`, `Vm::wait_for_any_running`). Detached runs are not looked at:
+  a busy server run with `-d` logs nothing. Not caught, as of a start: a guest that spins
+  for ever, which its CI job's limit ends. `a_microvm_is_followed_while_a_client_waits_on_it`
+  holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
+  `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
+  process times.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 

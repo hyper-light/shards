@@ -2397,8 +2397,9 @@ mod notify {
     }
 }
 
-/// What a process uses of the host: its resident memory and its own, in bytes, and the
-/// CPU time it has had, user and system together, in nanoseconds.
+/// What a process uses of the host: its resident memory and its own, in bytes, the CPU
+/// time it has had, user and system together, in nanoseconds, and the page faults it has
+/// taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Usage {
     pub resident: u64,
@@ -2407,6 +2408,9 @@ pub struct Usage {
     /// guest or not (PM M193); Linux's anonymous resident pages (`RssAnon`, proc(5)).
     pub footprint: u64,
     pub cpu_ns: u64,
+    /// Its page faults, minor and major: macOS's `pti_faults`, Linux's `minflt` and
+    /// `majflt` (proc(5)).
+    pub faults: u64,
 }
 
 /// Whether process `pid` has run anything of its own yet: `Some(false)` for one the host
@@ -2440,7 +2444,7 @@ pub fn launched(pid: u32) -> Option<bool> {
 /// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
 /// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase,
 /// and proc_pid_rusage (RUSAGE_INFO_V2); Linux's /proc/PID/stat (utime, stime, in clock
-/// ticks), /proc/PID/statm (resident pages) and /proc/PID/status (`RssAnon`).
+/// ticks, and its faults), /proc/PID/statm (resident pages) and /proc/PID/status (`RssAnon`).
 pub fn process_usage(pid: u32) -> io::Result<Usage> {
     #[cfg(target_os = "macos")]
     {
@@ -2491,6 +2495,7 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
             resident: info.pti_resident_size,
             footprint: rusage.ri_phys_footprint,
             cpu_ns: u64::try_from(ns).unwrap_or(u64::MAX),
+            faults: u64::try_from(info.pti_faults).unwrap_or(0),
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -2503,6 +2508,8 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         // utime and stime are the stat line's 14th and 15th fields: 12th and 13th after
         // the command.
         let ticks = tick(11).saturating_add(tick(12));
+        // minflt and majflt, the 10th and 12th.
+        let faults = tick(7).saturating_add(tick(9));
         // SAFETY: sysconf(3) reads a constant.
         let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
             .unwrap_or(100)
@@ -2523,6 +2530,7 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
             resident: pages.saturating_mul(page_size()? as u64),
             footprint: anon_kib.saturating_mul(1024),
             cpu_ns: ticks.saturating_mul(1_000_000_000 / hz),
+            faults,
         })
     }
 }

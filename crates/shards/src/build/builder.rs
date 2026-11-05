@@ -33,7 +33,7 @@ use shards_vmm::platform::{AsRawSocket as _, UnixListener, UnixStream};
 
 /// How long a builder may run nothing of its boot before it is given up: one that runs it
 /// is waited for as long as its host takes to boot it, judged as the daemon judges a
-/// starting microVM (`daemon::progressed`, PM M357), a slice of `daemon::READY_STALL` at a
+/// starting microVM (`shards_vmm::platform::progressed`, PM M357), a slice of `daemon::READY_STALL` at a
 /// time.
 const BOOT_PATIENCE: Duration = Duration::from_secs(30);
 
@@ -846,7 +846,7 @@ impl Builder {
                     let slice = now.saturating_duration_since(judged);
                     if slice >= crate::daemon::READY_STALL {
                         let cpu_now = cpu();
-                        if crate::daemon::progressed(seen, cpu_now, slice) {
+                        if shards_vmm::platform::progressed(seen, cpu_now, slice) {
                             ran = now;
                         }
                         (seen, judged) = (cpu_now, now);
