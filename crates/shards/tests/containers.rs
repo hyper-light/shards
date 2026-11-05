@@ -7394,7 +7394,12 @@ impl Gated {
         };
         let out = collect(Box::new(child.stdout.take().unwrap()));
         let err = collect(Box::new(child.stderr.take().unwrap()));
-        Going { child, out, err }
+        Going {
+            child,
+            home: home.to_path_buf(),
+            out,
+            err,
+        }
     }
 
     /// `shards ARGS` from this directory in `home`.
@@ -7533,6 +7538,7 @@ impl Drop for Oplocked {
 /// A command left going, its output collected as it comes.
 struct Going {
     child: Child,
+    home: std::path::PathBuf,
     out: std::thread::JoinHandle<String>,
     err: std::thread::JoinHandle<String>,
 }
@@ -7540,7 +7546,7 @@ struct Going {
 impl Going {
     fn finish(mut self) -> Run {
         let start = Instant::now();
-        let status = exit(&mut self.child);
+        let status = exit(&mut self.child, &self.home);
         Run {
             status,
             signal: None,
