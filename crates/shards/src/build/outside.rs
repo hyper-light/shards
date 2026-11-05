@@ -255,7 +255,7 @@ fn refused(code: i32, why: &str) -> (u8, Vec<u8>) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::io::{Read as _, Seek as _, Write as _};
+    use std::io::{Read as _, Seek as _};
 
     /// A budget is found at the cgroup, or the lowest above it, whose `memory.high` or
     /// `memory.max` is a number; `max` holds nothing, and the root is never one.
