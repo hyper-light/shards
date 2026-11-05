@@ -8,7 +8,6 @@
 //! go to a staging file of the build's, read from there as any layer's are.
 
 use std::fs::File;
-use std::io::Write;
 
 use shards_abi::changes::{self, Decoder, Event, flag, kind};
 use shards_image::erofs::{DataRef, Kind, Meta, Node};
@@ -64,8 +63,8 @@ impl<'a> Applier<'a> {
             match event {
                 Event::Entry(e) => self.entry(e)?,
                 Event::Data(bytes) => {
-                    self.staging
-                        .write_all(bytes)
+                    // As the build's writes go: outside a budget it is held to (D188).
+                    shards_image::through::write_all(self.staging, bytes)
                         .map_err(|e| Error(format!("keeping the step's files: {e}")))?;
                     self.at = self.at.saturating_add(bytes.len() as u64);
                     self.pending = self.pending.saturating_sub(bytes.len() as u64);

@@ -6324,6 +6324,49 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   WHP a builder holding a step's 256 MiB file gave back 253 MiB of it, its VM process from
   350,516 KiB to 96,168, and again at d1deefd9, from 352,088 KiB to 96,220
   (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`).
+- **A budgeted build's own writes, outside its budget** (Linux; PM M442; built, its
+  measurement on CI's runners awaited). A write dirties page cache charged to its writer's
+  cgroup, and `balance_dirty_pages` (mm/page-writeback.c, Linux 7.0) throttles the writer
+  against its own cgroup's domain beside the host's (`mdtc`, the domain of the writer's
+  own wb, `wb_get_create_current` in `balance_dirty_pages_ratelimited_flags`): what that
+  domain may dirty is `dirty_ratio`'s share (`domain_dirty_limits`) of its file pages and
+  no more of its headroom than the budget leaves (`mdtc_calc_avail`, `filepages +
+  min(headroom, other_clean)`; mm/memcontrol.c `mem_cgroup_wb_stats`, the headroom
+  `min(memory.max, memory.high)` less what it uses, the least of it and each cgroup above
+  it). A build that fills its budget has none, so its `RUN` steps' changes, its layers and
+  its image's root filesystem went at its writeback's pace, and its pages past the budget
+  waited out `memory.high`'s throttle besides. So where its cgroup or one above it has a
+  `memory.high` or `memory.max`, the build starts a writer of its own (`shards
+  build-writer`), which its user's manager makes a scope in its application slice
+  (systemd.special(7), `app.slice`) as the daemon places a spawner (D183); where that scope
+  is not under the budget, every file the build writes through the store (`Partial`: its
+  layers, its image's root filesystem) and its steps' changes (`upper::Applier`'s staging
+  file) are written by it, each write to the build's own open file, passed with it
+  (SCM_RIGHTS), at that file's offset (`shards_image::through`, build/outside.rs): their
+  pages are charged to it, paced by the host's dirty limit alone. BuildKit makes its own
+  writes so, in buildkitd, never in the cgroup its `RUN` steps are given (`docker build
+  --cgroup-parent`: "the parent cgroup for the RUN instructions"). The builder's VM
+  process, whose memory the budget is for, stays under it, its writes to a cache's range
+  of the join disk (D134) with it, as a `RUN` step's writes to a cache mount are its
+  container's in Docker; each of those is made durable before its record names it in
+  either case (`mounts::finish`). Where nothing places the writer outside (no user
+  manager, or a budget over the user's whole tree), the build writes its files itself.
+- **An image's root filesystem over its base's** (PM M442; built, its measurement
+  awaited). An export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again
+  for a build that added 7 MiB. Where the store's file system clones a file (APFS's
+  clonefile, Btrfs's and XFS's FICLONE: `shards_build::host::clone_file`), the image now
+  starts as a clone of the root filesystem kept for its base's layers, sharing its blocks,
+  and only what the build added is written past them: the image's metadata, whole, and the
+  data of each file the base had not as it is (`shards_erofs::write_over`), each file the
+  base had, its data unchanged (the same place in the build's sources as in the base's
+  snapshot, and a file of that size at its path in the base's root filesystem read back),
+  pointed at in the base's blocks. Its superblock replaces the base's first block; the
+  kernel finds the metadata where `meta_blkaddr` says (erofs_fs.h, `erofs_iloc`) and a
+  flat file's data at its `raw_blkaddr` wherever that is in the device (data.c,
+  `erofs_map_blocks`), so the guest mounts it as any image, and it is a file of its own
+  whatever becomes of its base's. Where nothing clones (ext4, CI's runners), it is
+  written whole, as before. Its images are told apart by their producer (`snapshot 1,
+  over its base's root filesystem 1`).
 
 **Measured against DAMON (PM M293).** DAMON_RECLAIM, built into the pinned kernel, does
 nothing in a run's guest as the kernel has it (its watermarks, which run it only while a

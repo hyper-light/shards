@@ -191,7 +191,9 @@ pub const DANGLING: &str = "moby-dangling@";
 /// A file being written under `ingest/`, removed unless committed.
 struct Partial {
     path: PathBuf,
-    file: Option<BufWriter<File>>,
+    /// Written as the process's writes go (`crate::through`): by a writer of its own
+    /// outside the budget a build is held to, where one is set (D188).
+    file: Option<BufWriter<crate::through::Through>>,
 }
 
 impl Partial {
@@ -211,10 +213,28 @@ impl Partial {
                 Err(e) => return Err(e.into()),
             }
         };
-        Ok(Partial {
+        Ok(Partial::of(path, file))
+    }
+
+    fn of(path: PathBuf, file: File) -> Partial {
+        Partial {
             path,
-            file: Some(BufWriter::with_capacity(CHUNK, file)),
-        })
+            file: Some(BufWriter::with_capacity(CHUNK, crate::through::Through(file))),
+        }
+    }
+
+    /// A name in `dir` no file has yet, as [`Partial::create`] names one, for a file another
+    /// makes there (a clone).
+    fn unused(dir: &Path) -> Result<PathBuf, Error> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..10_000 {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = dir.join(format!("{}-clone-{n}", std::process::id()));
+            if fs::symlink_metadata(&path).is_err() {
+                return Ok(path);
+            }
+        }
+        bad(format!("{}: no unused name", dir.display()))
     }
 
     /// Flushes and syncs the file, then moves it to the content-addressed name `to`, so a
@@ -230,7 +250,7 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(sync_durable(&file)?))
+            .and_then(|file| Ok(sync_durable(&file.0)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -252,7 +272,7 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(sync_durable(&file)?))
+            .and_then(|file| Ok(sync_durable(&file.0)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -2786,6 +2806,86 @@ impl Store {
         })
     }
 
+    /// The root filesystem kept for the layers with `diff_ids`, where it is: none where it
+    /// was never built, or was of another version.
+    pub fn rootfs_kept(&self, diff_ids: &[Digest]) -> Option<PathBuf> {
+        let path = self.rootfs_path(diff_ids).ok()?;
+        path.is_file().then_some(path)
+    }
+
+    /// [`Store::rootfs_written`] over `below`, a root filesystem of `below_len` bytes kept
+    /// for a run of `layers` from the first ([`Store::rootfs_kept`]): the image starts as a
+    /// clone of it, which `clone` makes at the path it is given, sharing its blocks (APFS's
+    /// clonefile, Btrfs's and XFS's FICLONE), or says it cannot; `write` writes what follows
+    /// `below`'s blocks (shards_erofs::write_over) and returns the image's first block, put
+    /// in place of `below`'s. So only what the layers past `below` add is written (PM M442:
+    /// rust:1-slim's whole 850 MiB root filesystem written again for a build's 7 MiB).
+    /// `Ok(None)` where no clone is made, nothing written: the image is to be written whole.
+    pub fn rootfs_written_over(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        producer: &str,
+        below_len: u64,
+        clone: impl FnOnce(&Path) -> io::Result<bool>,
+        write: impl FnOnce(&mut dyn Write) -> Result<Vec<u8>, Error>,
+    ) -> Result<Option<PathBuf>, Error> {
+        let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let path = self.rootfs_path(&diff_ids)?;
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+        if below_len == 0 || below_len % crate::erofs::BLOCK != 0 {
+            return Ok(None);
+        }
+        let at = Partial::unused(&self.root.join("ingest"))?;
+        if !clone(&at)? {
+            return Ok(None);
+        }
+        let opened = File::options()
+            .read(true)
+            .write(true)
+            .open(&at)
+            .and_then(|f| Ok((f.metadata()?.len(), f)));
+        let (len, file) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                let _ = fs::remove_file(&at);
+                return Err(e.into());
+            }
+        };
+        // Removed as it drops, unless it is committed.
+        let mut cloned = Partial::of(at, file);
+        if len != below_len {
+            return bad(format!("a clone of {below_len} bytes came to {len}"));
+        }
+        let from = from_path(&path);
+        self.rootfs_by(layers, limits, false, |room, ingest| {
+            let mut marker = Partial::create(ingest)?;
+            marker.write_all(producer.as_bytes())?;
+            marker.replace(&from)?;
+            let gone = || Error("the clone's file is gone".into());
+            cloned
+                .file
+                .as_mut()
+                .ok_or_else(gone)?
+                .seek(io::SeekFrom::Start(below_len))?;
+            let head = write(&mut Checked {
+                out: &mut cloned,
+                room,
+            })?;
+            if head.len() as u64 != crate::erofs::BLOCK {
+                return bad("an image's first block of another size");
+            }
+            let f = cloned.file.as_mut().ok_or_else(gone)?;
+            f.seek(io::SeekFrom::Start(0))?;
+            f.write_all(&head)?;
+            f.flush()?;
+            Ok(cloned)
+        })
+        .map(Some)
+    }
+
     /// The root filesystem of `layers` where it is kept, made by `make` unless it is
     /// there, while this process holds the store's lock on building them: `make` writes
     /// it into a file under `ingest`, within `room`.
@@ -4804,6 +4904,114 @@ mod tests {
         fs::write(from_path(&stacked), b"snapshot 1").unwrap();
         store.collect().unwrap();
         assert!(!from_path(&stacked).exists(), "named with no image, and kept");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// An image written over its base's root filesystem starts with that one's bytes, a
+    /// clone of it, its first block the new superblock; past them only what the layers above
+    /// add, its file the base's own read where the base has it; and where no clone is made,
+    /// nothing is written, for the image to be written whole.
+    #[test]
+    fn an_image_over_its_base_writes_only_what_its_layers_add() {
+        let root = temp("over");
+        let store = Store::open(&root).unwrap();
+        let big = vec![7u8; 3 << 20];
+        let base_tar = Writer::default()
+            .member(Member {
+                name: b"big",
+                data: &big,
+                ..Member::default()
+            })
+            .finish();
+        let added_tar = Writer::default()
+            .member(Member {
+                name: b"added",
+                data: b"new",
+                ..Member::default()
+            })
+            .finish();
+        let base_layer = stored_layer(&store, &base_tar);
+        let added_layer = stored_layer(&store, &added_tar);
+        let below = store
+            .rootfs(std::slice::from_ref(&base_layer), &Limits::none())
+            .unwrap();
+        assert_eq!(
+            store.rootfs_kept(std::slice::from_ref(&base_layer.diff_id)),
+            Some(below.clone())
+        );
+        let below_bytes = fs::read(&below).unwrap();
+        let back = erofs::read_tree(&mut io::Cursor::new(&below_bytes), 0).unwrap();
+        let Some(erofs::Node {
+            kind: erofs::Kind::File { data, size },
+            ..
+        }) = back.child(erofs::Tree::ROOT, b"big").and_then(|id| back.node(id))
+        else {
+            panic!("no big file below");
+        };
+        let (held_at, held_size) = (data.offset, *size);
+        let layers = [base_layer.clone(), added_layer.clone()];
+        let tree_of = || {
+            let mut tree = layer::root();
+            layer::apply(&mut tree, 0, io::Cursor::new(&base_tar), &mut |_| Ok(())).unwrap();
+            layer::apply(&mut tree, 1, io::Cursor::new(&added_tar), &mut |_| Ok(())).unwrap();
+            tree
+        };
+        let none = store
+            .rootfs_written_over(
+                &layers,
+                &Limits::none(),
+                "over",
+                below_bytes.len() as u64,
+                |_| Ok(false),
+                |_| panic!("nothing to write with no clone"),
+            )
+            .unwrap();
+        assert_eq!(none, None);
+        let written = store
+            .rootfs_written_over(
+                &layers,
+                &Limits::none(),
+                "over",
+                below_bytes.len() as u64,
+                |dst| fs::copy(&below, dst).map(|_| true),
+                |out| {
+                    let tree = tree_of();
+                    let big = tree.child(erofs::Tree::ROOT, b"big").unwrap();
+                    let held = std::collections::HashMap::from([(
+                        big,
+                        ((held_at / erofs::BLOCK) as u32, held_size),
+                    )]);
+                    let over = erofs::Over {
+                        blocks: below_bytes.len() as u64 / erofs::BLOCK,
+                        held: &held,
+                    };
+                    let mut archives = layer::Archives(vec![
+                        io::Cursor::new(base_tar.clone()),
+                        io::Cursor::new(added_tar.clone()),
+                    ]);
+                    let (_, head) = erofs::write_over(&tree, &mut archives, out, [0; 16], &over)?;
+                    Ok(head)
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.rootfs_producer(&written).as_deref(), Some("over"));
+        let image = fs::read(&written).unwrap();
+        assert_eq!(
+            &image[erofs::BLOCK as usize..below_bytes.len()],
+            &below_bytes[erofs::BLOCK as usize..]
+        );
+        assert!(
+            image.len() - below_bytes.len() < (1 << 20),
+            "the base's 3 MiB written again: {} bytes past it",
+            image.len() - below_bytes.len()
+        );
+        for (name, want) in [(&b"big"[..], &big[..]), (b"added", b"new")] {
+            match erofs::read_file(&mut io::Cursor::new(&image), name, u64::MAX).unwrap() {
+                erofs::Found::File(bytes) => assert_eq!(bytes, want),
+                _ => panic!("no file {}", String::from_utf8_lossy(name)),
+            }
+        }
         let _ = fs::remove_dir_all(&root);
     }
 

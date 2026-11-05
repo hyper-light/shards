@@ -1190,6 +1190,44 @@ pub fn write_uuid(
     out: &mut dyn Write,
     uuid: [u8; 16],
 ) -> Result<Written, Error> {
+    write_with(tree, source, out, uuid, None).map(|(written, _)| written)
+}
+
+/// An image below the one written ([`write_over`]): its length in blocks, and where it
+/// holds the data of the files the image written takes as they are, by node of the tree
+/// written: the block their data starts at and their size, which must be the node's.
+#[derive(Debug, Clone, Copy)]
+pub struct Over<'a> {
+    pub blocks: u64,
+    pub held: &'a std::collections::HashMap<NodeId, (u32, u64)>,
+}
+
+/// `tree` written as an EROFS image over `below`, an image whose blocks the new one starts
+/// with as they are (a clone of its file): its metadata and the data of every file `below`
+/// does not hold for it follow `below`'s last block, written to `out` from there; the files
+/// `below` holds point at their data in it, written nowhere. Returns what was written and
+/// the new image's first block, its superblock, which goes in place of `below`'s first.
+/// The kernel finds the metadata where the superblock's `meta_blkaddr` says (erofs_fs.h,
+/// `erofs_iloc`: a nid counts 32-byte slots from it), and a flat file's data at its
+/// `raw_blkaddr` wherever that is in the device (data.c, `erofs_map_blocks`): `below`'s
+/// old metadata is blocks nothing names.
+pub fn write_over(
+    tree: &Tree,
+    source: &mut dyn Source,
+    out: &mut dyn Write,
+    uuid: [u8; 16],
+    below: &Over<'_>,
+) -> Result<(Written, Vec<u8>), Error> {
+    write_with(tree, source, out, uuid, Some(below))
+}
+
+fn write_with(
+    tree: &Tree,
+    source: &mut dyn Source,
+    out: &mut dyn Write,
+    uuid: [u8; 16],
+    over: Option<&Over<'_>>,
+) -> Result<(Written, Vec<u8>), Error> {
     // Depth-first order from the root, children by name: every node once, at its first
     // name, so the root is first and hard links share one inode. `index` holds each
     // node's place in `order`, by node.
@@ -1264,8 +1302,18 @@ pub fn write_uuid(
         epoch = 0;
     }
 
-    // Inode formats and the metadata area.
-    let mut offset = SUPER_OFFSET + SUPER_SIZE;
+    // Inode formats and the metadata area: after the superblock in its first block, or,
+    // over an image below, in a block of its own past it, from its second slot (nid 1),
+    // as readdir hides an inode 0.
+    let base = over.map_or(0, |o| o.blocks);
+    let meta_start = base
+        .checked_mul(BLOCK)
+        .ok_or_else(|| Error("an image below too large".into()))?;
+    let mut offset = if over.is_some() {
+        SLOT
+    } else {
+        SUPER_OFFSET + SUPER_SIZE
+    };
     for inode in &mut order {
         let node = tree
             .node(inode.node as NodeId)
@@ -1298,13 +1346,30 @@ pub fn write_uuid(
     let root_nid = u16::try_from(root_nid).map_err(|_| Error("root inode placed too far".into()))?;
     let meta_blocks = offset.div_ceil(BLOCK);
     let too_large = || Error("image too large for 32-bit block numbers".into());
-    let mut next_block = meta_blocks;
+    let mut next_block = base.checked_add(meta_blocks).ok_or_else(too_large)?;
     for inode in &mut order {
         let blocks = inode.data_blocks();
-        if blocks > 0 {
-            inode.start = u32::try_from(next_block).map_err(|_| too_large())?;
-            next_block = next_block.checked_add(blocks).ok_or_else(too_large)?;
+        if blocks == 0 {
+            continue;
         }
+        // Data the image below holds, where it holds it: a regular file's whole blocks.
+        if let Some(&(start, size)) = over.and_then(|o| o.held.get(&(inode.node as NodeId))) {
+            let regular = matches!(
+                tree.node(inode.node as NodeId).map(|n| &n.kind),
+                Some(Kind::File { .. })
+            );
+            let end = u64::from(start).checked_add(blocks);
+            if !regular || inode.inline || size != inode.size || end.is_none_or(|e| e > base) {
+                return err(format!(
+                    "node {}: data the image below does not hold as it is",
+                    inode.node
+                ));
+            }
+            inode.start = start;
+            continue;
+        }
+        inode.start = u32::try_from(next_block).map_err(|_| too_large())?;
+        next_block = next_block.checked_add(blocks).ok_or_else(too_large)?;
     }
     let total_blocks = next_block;
     let total = u32::try_from(total_blocks).map_err(|_| too_large())?;
@@ -1315,8 +1380,10 @@ pub fn write_uuid(
             .map_or(0, |i| u64::from(i.nid))
     };
 
-    // The metadata area: superblock, then inode records, each where it was placed.
-    let mut seq = Seq { out, at: 0 };
+    // The metadata area: superblock, then inode records, each where it was placed. Over an
+    // image below, `out` starts past its last block, and the superblock is returned.
+    let meta_blkaddr = u32::try_from(base).map_err(|_| too_large())?;
+    let mut seq = Seq { out, at: meta_start };
     let mut sb = [0u8; SUPER_SIZE as usize];
     {
         let mut w = &mut sb[..];
@@ -1329,13 +1396,21 @@ pub fn write_uuid(
         w.write_all(&epoch.to_le_bytes())?;
         w.write_all(&0u32.to_le_bytes())?; // fixed_nsec
         w.write_all(&total.to_le_bytes())?; // blocks_lo
-        w.write_all(&0u32.to_le_bytes())?; // meta_blkaddr
+        w.write_all(&meta_blkaddr.to_le_bytes())?;
         w.write_all(&0u32.to_le_bytes())?; // xattr_blkaddr
         w.write_all(&uuid)?;
         // volume name, features: zero
     }
-    seq.pad_to(SUPER_OFFSET)?;
-    seq.put(&sb)?;
+    let mut head = Vec::new();
+    if over.is_some() {
+        head = vec![0u8; BLOCK as usize];
+        head.get_mut(SUPER_OFFSET as usize..(SUPER_OFFSET + SUPER_SIZE) as usize)
+            .ok_or_else(|| Error("superblock".into()))?
+            .copy_from_slice(&sb);
+    } else {
+        seq.pad_to(SUPER_OFFSET)?;
+        seq.put(&sb)?;
+    }
 
     // One buffer for file bytes, and one for a directory block, reused throughout.
     let mut buf = vec![0u8; 1 << 20];
@@ -1399,7 +1474,7 @@ pub fn write_uuid(
                 w.write_all(&(m.gid as u16).to_le_bytes())?;
             }
         }
-        seq.pad_to(u64::from(inode.nid) * SLOT)?;
+        seq.pad_to(meta_start + u64::from(inode.nid) * SLOT)?;
         seq.put(rec.get(..inode.isize() as usize).unwrap_or_default())?;
         seq.put(&xattrs)?;
         if inode.inline {
@@ -1425,13 +1500,14 @@ pub fn write_uuid(
             }
         }
     }
-    seq.pad_to(meta_blocks * BLOCK)?;
+    seq.pad_to(meta_start + meta_blocks * BLOCK)?;
 
-    // Data blocks, in inode order.
+    // Data blocks, in inode order: none of what the image below holds.
     for inode in &order {
-        if inode.start == NO_BLOCK {
+        if inode.start == NO_BLOCK || u64::from(inode.start) < base {
             continue;
         }
+        seq.pad_to(u64::from(inode.start) * BLOCK)?;
         let node = tree
             .node(inode.node as NodeId)
             .ok_or_else(|| Error("missing node".into()))?;
@@ -1467,10 +1543,13 @@ pub fn write_uuid(
         }
         seq.pad_to(end)?;
     }
-    Ok(Written {
-        blocks: total_blocks,
-        inodes: order.len() as u64,
-    })
+    Ok((
+        Written {
+            blocks: total_blocks,
+            inodes: order.len() as u64,
+        },
+        head,
+    ))
 }
 
 /// One directory block into `bytes`: dirents, then the names, unpadded.
@@ -2848,5 +2927,110 @@ mod tests {
             write(&tree, &mut Mem(vec![]), &mut Vec::new()).is_err(),
             "an unstorable xattr"
         );
+    }
+
+    /// An image written over another starts with that one's blocks as they are, and reads
+    /// back from its own superblock as the tree it was written from: the files the image
+    /// below holds from its blocks, written nowhere, the rest from the blocks past it.
+    #[test]
+    fn an_image_over_another_reads_back_as_its_tree() {
+        let (base, mut mem) = sample();
+        let below = image(&base, &mut mem);
+        assert_eq!(below.len() as u64 % BLOCK, 0);
+        let back = read_tree(&mut io::Cursor::new(&below), 0).unwrap();
+        let mut tree = base.clone();
+        let etc = tree.child(Tree::ROOT, b"etc").unwrap();
+        let back_etc = back.child(Tree::ROOT, b"etc").unwrap();
+        // One file changed, one new.
+        mem.0.push(pattern(5000, 77));
+        let changed = DataRef {
+            source: (mem.0.len() - 1) as u32,
+            offset: 0,
+        };
+        let f4096 = tree.child(etc, b"f4096").unwrap();
+        tree.node_mut(f4096).unwrap().kind = Kind::File {
+            size: 5000,
+            data: changed,
+        };
+        mem.0.push(pattern(9000, 78));
+        let added = DataRef {
+            source: (mem.0.len() - 1) as u32,
+            offset: 0,
+        };
+        tree.insert(
+            etc,
+            b"new",
+            Node {
+                kind: Kind::File {
+                    size: 9000,
+                    data: added,
+                },
+                meta: meta(0o644),
+            },
+        )
+        .unwrap();
+        // What the image below holds as it is: every file but the one changed.
+        let mut held = std::collections::HashMap::new();
+        for (name, id) in base.entries(base.child(Tree::ROOT, b"etc").unwrap()) {
+            if name == b"f4096" {
+                continue;
+            }
+            let Some(Node {
+                kind: Kind::File { size, data },
+                ..
+            }) = back.node(back.child(back_etc, name).unwrap())
+            else {
+                continue;
+            };
+            if *size > 0 {
+                let offset = data.offset;
+                held.insert(id, ((offset / BLOCK) as u32, *size));
+            }
+        }
+        assert!(!held.is_empty());
+        let mut tail = Vec::new();
+        let over = Over {
+            blocks: below.len() as u64 / BLOCK,
+            held: &held,
+        };
+        let (written, head) = write_over(&tree, &mut mem, &mut tail, [0; 16], &over).unwrap();
+        assert_eq!(head.len() as u64, BLOCK);
+        assert!(
+            (tail.len() as u64) < (1 << 20),
+            "the megabyte file below is written nowhere: {} bytes",
+            tail.len()
+        );
+        let mut img = below.clone();
+        img[..BLOCK as usize].copy_from_slice(&head);
+        img.extend_from_slice(&tail);
+        assert_eq!(img.len() as u64, written.blocks * BLOCK);
+        for (name, want) in [
+            ("etc/f4096", mem.0[changed.source as usize].clone()),
+            ("etc/new", mem.0[added.source as usize].clone()),
+            ("etc/f1", mem.0[1].clone()),
+            ("etc/f4097", mem.0[4].clone()),
+            ("etc/f1048581", mem.0[6].clone()),
+            ("hardlink", mem.0[4].clone()),
+        ] {
+            match read_file(&mut io::Cursor::new(&img), name.as_bytes(), u64::MAX).unwrap() {
+                Found::File(bytes) => assert_eq!(bytes, want, "{name}"),
+                _ => panic!("{name}: no file"),
+            }
+        }
+        // Read back whole, it is the tree it was written from, its files where they lie.
+        let again = read_tree(&mut io::Cursor::new(&img), 0).unwrap();
+        let mut from_image = Mem(vec![img.clone()]);
+        let mut fresh = Vec::new();
+        write(&again, &mut from_image, &mut fresh).unwrap();
+        assert_eq!(fresh, image(&tree, &mut mem));
+        // Data the image below does not hold as it is is refused.
+        let mut wrong = held.clone();
+        wrong.insert(f4096, (1, 4096));
+        let over = Over {
+            blocks: below.len() as u64 / BLOCK,
+            held: &wrong,
+        };
+        let e = write_over(&tree, &mut mem, &mut Vec::new(), [0; 16], &over).unwrap_err();
+        assert!(e.to_string().contains("does not hold"), "{e}");
     }
 }

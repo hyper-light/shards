@@ -7,7 +7,7 @@
 //! (`shards_build::stack`), so the image's root filesystem is written from the last
 //! snapshot, not stacked again from the layers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -144,6 +144,10 @@ pub struct Exec<'a> {
     /// The build context's snapshots: what BuildKit takes content checksums of before an
     /// operation reads them.
     contexts: Vec<Rc<Fs>>,
+    /// Each base image's snapshot as its layers made it, by its layers' DiffIDs: what an
+    /// export over that base's root filesystem finds its unchanged files by
+    /// ([`Exec::rootfs`]).
+    bases: Vec<(Vec<Digest>, Rc<Fs>)>,
 }
 
 /// A thread removing what a stage holds that nothing reads: waited for as it drops.
@@ -182,6 +186,7 @@ impl<'a> Exec<'a> {
             budget: shards_build::archive::Budget::new(*limits),
             run_staging: None,
             contexts: Vec::new(),
+            bases: Vec::new(),
         }
     }
 
@@ -358,6 +363,13 @@ impl<'a> Exec<'a> {
         let mut tree = layer::root();
         let tally = self.apply(&mut tree, &layers)?;
         let fs = Rc::new(Fs::new(tree, now()));
+        let ids: Option<Vec<Digest>> = layers
+            .iter()
+            .map(|l| Digest::parse(&String::from_utf8_lossy(&l.diff_id)).ok())
+            .collect();
+        if let Some(ids) = ids.filter(|ids| !ids.is_empty()) {
+            self.bases.push((ids, fs.clone()));
+        }
         let stack = Stack::layers(tally, fs.tree());
         let origin = match base {
             Some(n) => Origin::Image(n),
@@ -634,8 +646,45 @@ impl<'a> Exec<'a> {
 
     /// The root filesystem of `layers`, the image of `flat`, as `Store::rootfs` builds
     /// it: the snapshot put in its layers' form, its files read where the build has them.
+    ///
+    /// Over a base's root filesystem where the store's file system clones it: the image
+    /// starts as a clone of the base's, and only what the build added is written past its
+    /// blocks, each file of the base the build left as it was read from the base's blocks
+    /// (shards_erofs::write_over, PM M442). Where none is made, the image is written whole.
     pub fn rootfs(&mut self, flat: Flat, layers: &[store::Layer]) -> Result<PathBuf, String> {
         let Flat { mut fs, stack } = flat;
+        if let Some((below, at)) = self.below(layers) {
+            let sources = &mut self.sources;
+            let fs = &mut fs;
+            let stack = &stack;
+            let below_len = below.metadata().map_err(err)?.len();
+            let made = self
+                .store
+                .rootfs_written_over(
+                    layers,
+                    self.limits,
+                    shards_build::stack::PRODUCER_OVER,
+                    below_len,
+                    |dst| shards_build::host::clone_file(&below, dst),
+                    |out| {
+                        stack.finish(fs).map_err(|why| {
+                            shards_image::Error::from(std::io::Error::other(why.to_string()))
+                        })?;
+                        fs.unrecorded_tree().drop_index();
+                        let held = held_below(fs.tree(), &at);
+                        let over = erofs::Over {
+                            blocks: below_len / erofs::BLOCK,
+                            held: &held,
+                        };
+                        let (_, head) = erofs::write_over(fs.tree(), sources, out, [0; 16], &over)?;
+                        Ok(head)
+                    },
+                )
+                .map_err(err)?;
+            if let Some(path) = made {
+                return Ok(path);
+            }
+        }
         let sources = &mut self.sources;
         self.store
             .rootfs_written(layers, self.limits, shards_build::stack::PRODUCER, |out| {
@@ -647,6 +696,26 @@ impl<'a> Exec<'a> {
                 Ok(())
             })
             .map_err(err)
+    }
+
+    /// The root filesystem kept for the longest run of `layers` from the first that a base
+    /// of the build's is, opened, and where it holds each of that base's files' data
+    /// ([`blocks_below`]): none where no base's is kept, or it cannot be read back.
+    fn below(&self, layers: &[store::Layer]) -> Option<(std::fs::File, HashMap<(u32, u64), (u32, u64)>)> {
+        let ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let mut bases: Vec<&(Vec<Digest>, Rc<Fs>)> = self
+            .bases
+            .iter()
+            .filter(|(base, _)| base.len() < ids.len() && ids.starts_with(base))
+            .collect();
+        bases.sort_by_key(|(base, _)| std::cmp::Reverse(base.len()));
+        let (path, base) = bases
+            .into_iter()
+            .find_map(|(ids, fs)| Some((self.store.rootfs_kept(ids)?, fs)))?;
+        let file = std::fs::File::open(&path).ok()?;
+        let below = erofs::read_tree(&mut &file, 0).ok()?;
+        let at = blocks_below(base.tree(), &below);
+        (!at.is_empty()).then_some((file, at))
     }
 
     /// A file operation's outputs, its actions run as FileOpSolver runs them: each on a
@@ -1632,6 +1701,64 @@ impl Exec<'_> {
             .collect::<Result<Vec<_>, String>>()?;
         Ok((results, capture))
     }
+}
+
+/// Where `below`, a base's root filesystem read back (shards_erofs::read_tree), holds the
+/// data of each regular file of `base`, the base's snapshot as its layers made it: by the
+/// data's place in the build's sources, its block in `below` and its size, for each path
+/// where both have a file of one size. Both are the base's layers' tree, as its ChainID
+/// names them, so a path's file is the same file in each.
+fn blocks_below(base: &Tree, below: &Tree) -> HashMap<(u32, u64), (u32, u64)> {
+    let mut at = HashMap::new();
+    let mut todo = vec![(Tree::ROOT, Tree::ROOT)];
+    while let Some((dir, there)) = todo.pop() {
+        for (name, id) in base.entries(dir) {
+            let Some(theirs) = below.child(there, name) else {
+                continue;
+            };
+            match (
+                base.node(id).map(|n| &n.kind),
+                below.node(theirs).map(|n| &n.kind),
+            ) {
+                (Some(Kind::Dir(_)), Some(Kind::Dir(_))) => todo.push((id, theirs)),
+                (
+                    Some(Kind::File { size, data }),
+                    Some(Kind::File {
+                        size: len,
+                        data: held,
+                    }),
+                ) if size == len && *size > 0 => {
+                    let offset = held.offset;
+                    if offset % erofs::BLOCK == 0
+                        && let Ok(block) = u32::try_from(offset / erofs::BLOCK)
+                    {
+                        at.insert((data.source, data.offset), (block, *size));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    at
+}
+
+/// The files of `tree` whose data is a base's as it was, by node, where the base's root
+/// filesystem holds it ([`blocks_below`]): what an image over that root filesystem points
+/// at there rather than writes again.
+fn held_below(tree: &Tree, at: &HashMap<(u32, u64), (u32, u64)>) -> HashMap<erofs::NodeId, (u32, u64)> {
+    let mut held = HashMap::new();
+    for id in 0..tree.len() {
+        if let Some(Node {
+            kind: Kind::File { size, data },
+            ..
+        }) = tree.node(id)
+            && let Some(&(block, len)) = at.get(&(data.source, data.offset))
+            && len == *size
+        {
+            held.insert(id, (block, len));
+        }
+    }
+    held
 }
 
 #[cfg(test)]
