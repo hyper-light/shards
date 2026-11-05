@@ -106,3 +106,127 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
 
     shards(&["rm"], &["-f", "plugged"]);
 }
+
+/// The host's QEMU edu function (1234:11e8), where it has one: a test function its own
+/// host gave it (`--pci-tests`), as a nested guest of the L1 tests has with
+/// SHARDS_L1_PCI_TESTS (boot.rs).
+#[cfg(target_os = "linux")]
+fn edu_function() -> Option<String> {
+    std::fs::read_dir("/sys/bus/pci/devices")
+        .ok()?
+        .flatten()
+        .find_map(|e| {
+            let read = |f: &str| std::fs::read_to_string(e.path().join(f)).ok();
+            (read("vendor")?.trim() == "0x1234" && read("device")?.trim() == "0x11e8")
+                .then(|| e.file_name().to_string_lossy().into_owned())
+        })
+}
+
+/// A host's PCI function plugged into a detached run as it runs (D214), for its workload
+/// to take through VFIO: the run given VFIO's container node alone (`--device
+/// /dev/vfio/vfio`), so its microVM boots the `kvm` kernel with its slots behind its IOMMU;
+/// the host's edu function, bound to vfio-pci, plugged in, its guest's vfio-pci given it,
+/// its group's node made in the workload's `/dev` and its device filter widened to it, so
+/// that the workload finds its group by its address as DPDK does and moves a page through
+/// it by DMA, its IOMMU's mappings followed by the host's; plugged in twice refused; then
+/// unplugged, its node gone and the function the host's again, twice over. A run not
+/// booted for functions is refused one. Runs where a host has an edu function to give:
+/// nested, `SHARDS_L1_PCI_TESTS=01.0 SHARDS_L1_TESTS=plug:a_hosts_function` (boot.rs).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hosts_function_is_plugged_into_a_run_for_its_workload() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(name) = edu_function() else {
+        eprintln!("SKIP: this host has no QEMU edu function to pass through");
+        return;
+    };
+    let Some(kvm) = common::kvm_kernel() else {
+        eprintln!("SKIP: no kernel with VFIO and virtio-iommu for {}", common::ARCH);
+        return;
+    };
+    // Its host's vfio-pci given it, as an administrator gives one (vfio.rst).
+    let dir = std::path::Path::new("/sys/bus/pci/devices").join(&name);
+    if let Ok(driver) = std::fs::read_link(dir.join("driver"))
+        && driver.file_name().is_some_and(|d| d != "vfio-pci")
+    {
+        std::fs::write(dir.join("driver/unbind"), &name).unwrap();
+    }
+    std::fs::write(dir.join("driver_override"), "vfio-pci").unwrap();
+    let _ = std::fs::write("/sys/bus/pci/drivers_probe", &name);
+
+    let (image, _) = served();
+    let home = TempDir::new("plugfn");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kvm.as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |command: &[&str], args: &[&str]| {
+        let r = run_shards_env(command, args, &env, TIMEOUT);
+        assert_eq!(
+            r.status,
+            Some(0),
+            "shards {command:?} {args:?}: {}\n{}",
+            r.stderr,
+            r.stdout
+        );
+        r.stdout
+    };
+    let refused = |command: &[&str], args: &[&str]| {
+        let r = run_shards_env(command, args, &env, TIMEOUT);
+        assert_ne!(r.status, Some(0), "shards {command:?} {args:?}: {}", r.stdout);
+        r.stderr
+    };
+    shards(
+        &["run"],
+        &[
+            "-d",
+            "--name",
+            "taker",
+            "--device",
+            "/dev/vfio/vfio",
+            &image,
+            "sleep",
+        ],
+    );
+    for round in 0..2 {
+        let said = shards(&["plug"], &["function", "taker", &name]);
+        let words: Vec<&str> = said.split_whitespace().collect();
+        assert_eq!(words.len(), 3, "round {round}: {said}");
+        let (node, address) = (words[1], words[2]);
+        assert!(node.starts_with("/dev/vfio/"), "round {round}: {said}");
+        let dma = shards(&["exec"], &["taker", "/bin/testguest", "vfio-dma", address]);
+        assert!(
+            dma.contains("SHARDS-TEST INFO dma: 4096 bytes into the function and back, through its IOMMU"),
+            "round {round}: {dma}"
+        );
+        let twice = refused(&["plug"], &["function", "taker", &name]);
+        assert!(twice.contains("plugged into it already"), "{twice}");
+        shards(&["unplug"], &["function", "taker", &name]);
+        let gone = shards(&["exec"], &["taker", "/bin/testguest", "slurp", node]);
+        assert!(gone.contains("errno 2"), "round {round}: its node, gone: {gone}");
+        let after = run_shards_env(
+            &["exec"],
+            &["taker", "/bin/testguest", "vfio-dma", address],
+            &env,
+            TIMEOUT,
+        );
+        assert_ne!(
+            after.status,
+            Some(0),
+            "round {round}: DMA once unplugged: {}",
+            after.stdout
+        );
+    }
+    let none = refused(&["unplug"], &["function", "taker", &name]);
+    assert!(none.contains("is plugged into it"), "{none}");
+    shards(&["rm"], &["-f", "taker"]);
+
+    // A run booted as any is takes none.
+    shards(&["run"], &["-d", "--name", "plain", &image, "sleep"]);
+    let plain = refused(&["plug"], &["function", "plain", &name]);
+    assert!(plain.contains("where its slots are not"), "{plain}");
+    shards(&["rm"], &["-f", "plain"]);
+}

@@ -6798,7 +6798,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework and KVM, in the VMM on WHP too; host functions in the VMM on KVM)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework and KVM, in the VMM on WHP too; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, its E2E not yet run)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -6865,8 +6865,8 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   that shrank is refused: it would take sectors from under the guest's file system.
 - **A host's function plugged in** (`Handle::plug_vfio`, Linux): opened as D154 opens one,
   through its group or its device node, all of guest RAM mapped for its DMA, pinned, outside
-  the guest's IOMMU, whose endpoints are its boot's; refused where the machine has memory to
-  plug or a balloon (D154). Its BAR windows, the memory slots the guest reaches it through
+  the guest's IOMMU; refused where the machine has memory to plug or a balloon (D154). Where
+  the machine's slots sit behind its IOMMU, behind it instead (below, a run's workload's). Its BAR windows, the memory slots the guest reaches it through
   without exits, follow its BARs as the guest places and moves them, and leave as it is
   unplugged; KVM forgets its file then (KVM_DEV_VFIO_FILE_DEL, virt/kvm/vfio.c), which it
   would otherwise hold as long as the VM. KVM's VFIO device and memory slots are reached
@@ -6951,14 +6951,81 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   go, and it is unplugged, KVM forgetting its group. Its first run found a plugged
   function's BAR windows mapped at 0 as its guest turned decoding on before placing its
   BARs (KVM refused them, EEXIST): a window is mapped only where its BAR is placed.
-- **Not yet:** a host's function plugged into a daemon's run for its workload (`plug
-  device MICROVM /dev/vfio/N`): the workload reaches a function through the guest's VFIO,
-  which takes one only behind the guest's IOMMU (D154), whose endpoints and firmware
-  description (`iommu-map`, VIOT) are its boot's; so a machine with slots would need its
-  virtio-iommu covering the slots' requester IDs from boot, endpoints added to its
-  translation as they are plugged, the group's container and group descriptors handed to
-  the confined VM process by the daemon, and the run's device filter replaced with the
-  group's node allowed. A plugged share's DAX window; a plugged function's 64-bit BARs
+- **A host's function plugged into a run for its workload** (`shards plug function
+  MICROVM FUNCTION`, `shards unplug function MICROVM FUNCTION`; Linux): FUNCTION the host's
+  name of it (`0000:01:00.0`), bound to vfio-pci, or its VFIO device node
+  (`/dev/vfio/devices/vfioN`). The workload reaches it through its guest's VFIO, which
+  gives a process a function only behind the guest's IOMMU (D154), and a guest's IOMMU
+  core finds a function's IOMMU by its firmware's description as the function is added
+  (the devicetree's `iommu-map`, Documentation/devicetree/bindings/pci/pci-iommu.txt;
+  ACPI's VIOT, drivers/acpi/viot.c), which is its boot's. So:
+  - **A run booted to take functions.** A run given VFIO's own nodes, its container
+    (`--device /dev/vfio/vfio`) or iommufd (`/dev/iommu`), which name no function but are
+    what a workload takes one through, as Docker's users give them beside a group's node
+    (`run::takes_functions`), boots as a run given a group does (D154): the `kvm` kernel,
+    which has VFIO and virtio-iommu, init's own sysfs, of no template; and its slots
+    behind its IOMMU (`Config::pci_slots_iommu`, the VM process's `--pci-slots-iommu`).
+    A run booted otherwise, whose guest's kernel has no VIRTIO_IOMMU, is refused one, its
+    VM saying its slots are not behind its IOMMU: a firmware that put them behind one would
+    have that kernel defer the probe of every disk plugged in (10 s where it has modules,
+    driver_deferred_probe_check_state).
+  - **Slots behind the IOMMU from boot, each an endpoint while plugged.** Each slot's
+    requester ID is an endpoint of the IOMMU's that the firmware names from boot, beside
+    the functions behind it; the IOMMU translates it only while something is plugged
+    there (`Translation::plugged`, `unplugged`), and answers it as no endpoint
+    (VIRTIO_IOMMU_S_NOENT) while vacant, PROBE and ATTACH alike. Unplugged, the endpoint
+    leaves its domain, which goes with its last endpoint, and what followed it alone
+    unmaps all it mapped, unpinning it (a group's other endpoints keep their follower,
+    which shows one of theirs). A disk or a shared directory plugged into a slot behind it
+    has its MSIs translated as a passed-through function's are (`iommu::Msis`): Linux maps
+    an arm64 function's MSI doorbell in its domain (iommu.c, iommu_dma_prepare_msi)
+    whether or not its driver's DMA goes through the IOMMU, which a virtio driver's does
+    not without VIRTIO_F_ACCESS_PLATFORM; on x86_64 the MSI window is reserved and lands
+    untranslated. The IOMMU offers no bypass there, as for functions passed through alone
+    (D154): what a function reaches is what its guest maps for it.
+  - **The daemon opens it, the VM plugs it.** The confined VM process opens no device
+    (Landlock's rules are its start's, D30), so the daemon checks the function as a run's
+    start does (bound to vfio-pci; a group of no IOMMU refused, whose DMA reaches all of
+    the host's memory; a group already plugged into the run, through another of its
+    functions, refused, as a microVM takes a group whole), opens VFIO's container and its
+    group's node, or iommufd and its device node, and hands them over (`DEVICE`,
+    `device::FUNCTION`). Landlock confines what a process opens, not descriptors it is
+    given (security/landlock/fs.c, hook_file_alloc_security), as with plugged disks. The VM
+    plugs it into a free slot behind the IOMMU (`Handle::plug_vfio_files`): a container,
+    or an address space, of the function's own, which follows its endpoint as one it boots
+    with behind the IOMMU does (D154), its MSIs routed where its domain maps their
+    addresses (`vfio::Translated`); memory to plug and free page reporting stay, as a
+    function behind the IOMMU pins only what its guest maps. From then on the VM process
+    holds a host's device, so its run's client waits for it to be free (`HOST_DEVICES`).
+  - **Its guest gives it to the workload.** Init's DEVICE built-in rescans the bus, gives
+    the function to vfio-pci (driver_override, drivers_probe) through its own sysfs, and
+    makes the node of it the workload opens, its guest group's (`/dev/vfio/G`) or its own
+    VFIO device node, in the workload's `/dev`, the VM's devtmpfs's numbers, mode and owner,
+    as a container given it at its start has it (D44). The workload's device filter is
+    then its run's rules and one `c MAJ:MIN rwm` for each function plugged in, given last,
+    as runc's given devices come after the defaults and take precedence (`devices::allow`):
+    done by init's own process, which keeps the run's rules and the program attached, and
+    replaces it (BPF_F_REPLACE) each time with the whole list, so a function unplugged
+    leaves it; a privileged run's has no filter. Anything else the step is asked to allow
+    is refused: a character device's whole node alone.
+  - **Unplugged once nothing holds it.** `unplug function` takes the node out of the
+    filter first, so nothing opens it anew, then has init refuse, the filter put back,
+    while any process in the microVM holds the node or the function's VFIO device open
+    (its fdinfo's `vfio-device-syspath`, vfio_device_show_fdinfo, names which; a kernel
+    that names none counts every VFIO device as the function's): its guest's remove would
+    otherwise wait for the holder to close it (vfio_unregister_group_dev). Then init takes
+    the node out of the workload's `/dev`, writes the function's `remove`, and the VM takes
+    it off its bus, its container and its file in KVM let go of, the host's again.
+  - **Verified:** unit tests of the slots' endpoints (vacant, plugged, followed, unplugged,
+    a shared follower kept), of the slots' MSIs, of the firmware's endpoints, of a slot's
+    endpoint across a plug that fails, of the filter's rules and their refusals, and of the
+    daemon's reading of init's answers. Its E2E (`a_hosts_function_is_plugged_into_a_run
+    _for_its_workload`, tests/plug.rs), nested as D214's VFIO test is (`SHARDS_L1_PCI_TESTS
+    =01.0 SHARDS_L1_TESTS=plug:a_hosts_function`): a run given `/dev/vfio/vfio`, the L1
+    guest's edu function plugged in, its workload moving a page through it by DMA through
+    its IOMMU, a second plug refused, unplugged and the node gone, twice; a run booted
+    otherwise refused. Not yet run; its numbers not yet measured.
+- **Not yet:** a plugged share's DAX window; a plugged function's 64-bit BARs
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).

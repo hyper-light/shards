@@ -1095,11 +1095,16 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
             }
         }
     };
+    // With test functions to pass through, the `kvm` kernel too, VFIO and virtio-iommu's,
+    // which a run booted to take a host's function plugged in boots (tests/plug.rs, D214):
+    // the one this guest boots itself.
+    let functions_kernel = pci_tests.as_ref().map(|_| nested);
     for file in built
         .files
         .iter()
         .map(std::path::PathBuf::as_path)
         .chain([kernel()])
+        .chain(functions_kernel)
     {
         place(&mut cpio, file, Some(&read(file)));
     }
@@ -1124,6 +1129,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     }
     if let Ok(bytes) = std::env::var("SHARDS_TEST_LOG_SHOWN") {
         env.push_str(&format!("SHARDS_TEST_LOG_SHOWN={bytes}\n"));
+    }
+    if let Some(k) = functions_kernel {
+        env.push_str(&format!("SHARDS_TEST_NESTED_KERNEL={}\n", k.display()));
     }
     cpio.file("e2e/run", 0o644, run.as_bytes())
         .file("e2e/env", 0o644, env.as_bytes());
