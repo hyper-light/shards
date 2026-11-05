@@ -5,7 +5,8 @@
 #   listen.  On the machine moved to: SHARDS=/path/to/shards [ADDR=192.168.1.71:7443]
 #            two-hosts.sh listen   (a home of its own in $HOME_THERE, its daemon listening at
 #            ADDR, this machine's LAN address and port 7443 unless given; an invitation for
-#            the other written, and printed base64 on the last line)
+#            the other written, and printed base64 on its last line before HOLD, seconds
+#            it then waits, where given, keeping the daemon, and stops it)
 #   invite.  On the machine moved to, listening: another invitation, printed base64 on the
 #            last line. One enrolls one client: each run of `e2e` joins with a home of its own,
 #            so each needs one.
@@ -156,6 +157,12 @@ listen)
 	echo "listening at $ADDR: $(machine), shards $(there version 2>/dev/null | head -1)"
 	base64 < "$HOME_THERE/mover.invite" | tr -d '\n'
 	echo
+	# Held up HOLD seconds, where given: a runner that ends what a command leaves running
+	# (kiln's) keeps the daemon while this waits, run in the background.
+	if [ -n "${HOLD:-}" ]; then
+		sleep "$HOLD"
+		there stop daemon || true
+	fi
 	;;
 invite)
 	: "${SHARDS:?the shards binary to run}"
@@ -209,7 +216,7 @@ local)
 	: "${SHARDS:?the shards binary to run}"
 	export ADDR=${ADDR:-127.0.0.1:7443}
 	trap '"$self" stop' EXIT
-	INVITE=$("$self" listen | tail -1)
+	INVITE=$(HOLD= "$self" listen | tail -1)
 	export INVITE
 	status=0
 	"$self" move || status=$?
