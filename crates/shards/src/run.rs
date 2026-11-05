@@ -225,6 +225,19 @@ pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
     Ok(groups)
 }
 
+/// Whether a run's devices' and CDI nodes' host paths, `paths`, ask for VFIO's own nodes,
+/// its container (`/dev/vfio/vfio`) or iommufd (`/dev/iommu`), which name no function but
+/// are what a workload takes a host's function through, as Docker's users give them beside
+/// a group's node: its microVM is then booted to take host functions plugged in as it runs
+/// (`shards plug function`, D214), with VFIO, its slots behind its IOMMU. Linux's alone;
+/// elsewhere [`vfio_groups`] refuses VFIO's nodes with the host's own limit.
+pub fn takes_functions<'a>(paths: impl IntoIterator<Item = &'a str>) -> bool {
+    cfg!(target_os = "linux")
+        && paths
+            .into_iter()
+            .any(|p| matches!(p.trim_end_matches('/'), "/dev/vfio/vfio" | "/dev/iommu"))
+}
+
 /// What a run's CDI devices (`--device VENDOR/CLASS=NAME`) bring it, resolved as dockerd's
 /// CDI driver resolves them as a container starts (moby daemon/cdi.go, injectCDIDevices;
 /// CDI v1.1.0 Cache.InjectDevices): each name the device of that name in the specs of the
@@ -341,8 +354,9 @@ pub struct Prepared {
     /// its start fails then, and not its making, as dockerd finds a device as a container
     /// starts.
     pub vfio: Result<Vec<VfioGroup>, String>,
-    /// The kernel its guest boots where it is given VFIO groups: the given one, or the
-    /// pinned kernel's `kvm` variant.
+    /// The kernel its guest boots where it is given VFIO groups, or VFIO's own nodes to
+    /// take a host's functions plugged in as it runs ([`takes_functions`], D214): the
+    /// given one, or the pinned kernel's `kvm` variant.
     pub vfio_kernel: Option<PathBuf>,
     /// What its CDI devices bring it (D146), or why they cannot be: its start fails then,
     /// and not its making, as dockerd's resolves them as a container starts.
@@ -756,15 +770,16 @@ pub fn prepare(
                 n.host_path.as_str()
             }
         });
-    let vfio = vfio_groups(
-        request
-            .devices
-            .iter()
-            .map(|d| d.split(':').next().unwrap_or_default())
-            .chain(cdi_paths),
-    );
+    let host_paths: Vec<&str> = request
+        .devices
+        .iter()
+        .map(|d| d.split(':').next().unwrap_or_default())
+        .chain(cdi_paths)
+        .collect();
+    let vfio = vfio_groups(host_paths.iter().copied());
+    let functions = takes_functions(host_paths.iter().copied());
     let vfio_kernel = match (&vfio, &boot) {
-        (Ok(groups), _) if groups.is_empty() => None,
+        (Ok(groups), _) if groups.is_empty() && !functions => None,
         (Err(_), _) => None,
         (Ok(_), Boot::Given(cfg)) => Some(cfg.kernel.clone()),
         (Ok(_), Boot::Stored(_)) => Some(crate::guest::kvm_kernel(home, say, Some(cancel), &|k| {
@@ -1218,6 +1233,18 @@ fn short(digest: &str) -> &str {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A run given VFIO's own nodes, its container or iommufd, is booted to take a host's
+    /// functions plugged in as it runs (D214), on Linux; one given neither, or only a
+    /// group, is not, for that.
+    #[test]
+    fn vfios_own_nodes_ask_for_functions() {
+        let linux = cfg!(target_os = "linux");
+        assert_eq!(takes_functions(["/dev/null", "/dev/vfio/vfio"]), linux);
+        assert_eq!(takes_functions(["/dev/iommu/"]), linux);
+        assert!(!takes_functions(["/dev/vfio/7", "/dev/vfio", "/dev/fuse"]));
+        assert!(!takes_functions([]));
+    }
 
     /// A microVM is given each function once, through its group where the run names the
     /// group as well as the function's device node, whichever it names first.

@@ -7003,12 +7003,14 @@ impl<D: Disk> Daemon<D> {
                 cfg.cmdline.push_str(&bridge.cmdline());
             }
         };
-        // A run given a host's VFIO groups (D154): a microVM booted for it, their functions
-        // behind its own IOMMU, with a kernel with VFIO; of no template, as a host's device
-        // is no snapshot's. Where the microVM's MSIs are not isolated (vm::ISOLATED_MSIS:
-        // x86_64 has no interrupt remapping yet), its guest's VFIO and iommufd are told to
-        // take them anyway (vfio_iommu_type1.c; iommufd/device.c, iommufd_device_bind), as
-        // they reach the microVM's own interrupt controller alone.
+        // A run given a host's VFIO groups (D154), or VFIO's own nodes to take a host's
+        // functions plugged in as it runs (D214): a microVM booted for it, their functions,
+        // and its slots, behind its own IOMMU, with a kernel with VFIO; of no template, as
+        // a host's device is no snapshot's, nor its IOMMU's domains. Where the microVM's
+        // MSIs are not isolated (vm::ISOLATED_MSIS: x86_64 has no interrupt remapping yet),
+        // its guest's VFIO and iommufd are told to take them anyway (vfio_iommu_type1.c;
+        // iommufd/device.c, iommufd_device_bind), as they reach the microVM's own interrupt
+        // controller alone.
         let vfio = prepared.vfio.as_ref().map_err(String::clone)?;
         if let Some(kernel) = &prepared.vfio_kernel {
             let mut cfg = match &prepared.boot {
@@ -7017,6 +7019,7 @@ impl<D: Disk> Daemon<D> {
             };
             on_network(&mut cfg);
             cfg.vfio = crate::run::vfio_functions(vfio);
+            cfg.pci_slots_iommu = true;
             if !shards_vmm::vm::ISOLATED_MSIS {
                 cfg.cmdline.push_str(
                     " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
@@ -7519,6 +7522,10 @@ impl<D: Disk> Daemon<D> {
         let slots = pci_slots();
         if slots > 0 {
             args.extend(["--pci-slots".into(), slots.to_string().into()]);
+            // Behind its IOMMU where it was booted to take a host's functions (D214).
+            if cfg.pci_slots_iommu {
+                args.push("--pci-slots-iommu".into());
+            }
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // container joins its network (D119): its templates have them, and so every restore

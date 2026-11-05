@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -56,6 +56,11 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --pci-slots: N places on its PCI bus kept free for disks, shared directories and host
                functions plugged into it as it runs, which its guest finds as its init
                rescans the bus. A snapshot keeps them, empty.
+  --pci-slots-iommu: the slots behind the guest's own IOMMU (virtio-iommu), each
+                     translated while a function is plugged there: what a host's
+                     function plugged in as it runs needs for the guest's own VFIO to
+                     give it to a process. The guest's kernel needs VIRTIO_IOMMU. Not
+                     with --snapshot-dir.
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Or its VFIO device node (/dev/vfio/devices/vfioN), taken
@@ -439,6 +444,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     .parse()
                     .map_err(|e| format!("--pci-slots: {e}"))?
             }
+            "--pci-slots-iommu" => cfg.pci_slots_iommu = true,
             "--vfio" => cfg.vfio.push(vfio(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
                 iommu: true,
@@ -468,6 +474,17 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
         if cfg.vfio.iter().any(|f| !f.iommu) && (memory_max.is_some() || cfg.reporting) {
             return Err("--vfio with --memory-max or --reporting: the device's DMA reaches all of guest RAM through mappings the host holds pinned, which neither may take away; behind the guest's IOMMU (--vfio-iommu) it reaches what the guest maps alone".into());
+        }
+    }
+    if cfg.pci_slots_iommu {
+        if cfg.pci_slots == 0 {
+            return Err("--pci-slots-iommu without --pci-slots: no slots to put behind the IOMMU".into());
+        }
+        if common.snapshot_dir.is_some() {
+            return Err(
+                "--pci-slots-iommu with --snapshot-dir: a machine's IOMMU's domains are not snapshotted"
+                    .into(),
+            );
         }
     }
     if cfg.nested && common.snapshot_dir.is_some() {
@@ -729,6 +746,7 @@ pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<Strin
             disks().retain(|(d, _)| *d != devfn);
             Ok(String::new())
         }
+        device::FUNCTION => function(handle, rest, fds).map(|p| placed(&p)),
         device::GROW => {
             let &devfn = rest.first().ok_or("a growth of no place")?;
             let size = disks()
@@ -742,6 +760,47 @@ pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<Strin
             "device step {other}, which this VM process does not take"
         )),
     }
+}
+
+/// A host's function plugged into this VM behind its IOMMU (`device::FUNCTION`, D214),
+/// opened by its daemon, as a confined VM process opens no device: `step` its flags and
+/// its host's name and group's node, `fds` VFIO's container and its group, or iommufd and
+/// its device node. Once one is, the VM holds a host's device, which its run's client
+/// waits to be free ([`crate::warm::HOST_DEVICES`]).
+#[cfg(target_os = "linux")]
+fn function(
+    handle: &vm::Handle,
+    step: &[u8],
+    fds: Vec<shards_ipc::fd::OwnedFd>,
+) -> Result<vm::Plugged, String> {
+    let (&flags, names) = step.split_first().ok_or("a function of no flags")?;
+    let names = std::str::from_utf8(names).map_err(|_| "a function's name that is not UTF-8")?;
+    let (name, node) = names.split_once('\0').ok_or("a function of no group")?;
+    let mut fds = fds.into_iter();
+    let (Some(first), Some(second), None) = (fds.next(), fds.next(), fds.next()) else {
+        return Err("a function without its two files".into());
+    };
+    let by_node = flags & shards_ipc::device::BY_NODE != 0;
+    let f = vm::Vfio {
+        name: name.to_string(),
+        group: PathBuf::from(if by_node { "" } else { node }),
+        noiommu: false,
+        bars64: Vec::new(),
+        iommu: true,
+        cdev: by_node.then(|| PathBuf::from(node)),
+    };
+    let plugged = handle.plug_vfio_files(&f, vm::VfioFiles { first, second })?;
+    crate::warm::HOST_DEVICES.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(plugged)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn function(
+    _handle: &vm::Handle,
+    _step: &[u8],
+    _fds: Vec<shards_ipc::fd::OwnedFd>,
+) -> Result<vm::Plugged, String> {
+    Err(vm::passthrough_refused())
 }
 
 /// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU

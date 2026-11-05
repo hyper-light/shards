@@ -86,6 +86,16 @@ pub mod device {
     pub const GROW: u8 = 4;
     /// [`DISK`]'s flag of a disk its guest may not write.
     pub const READ_ONLY: u8 = 1;
+    /// A host's PCI function plugged in behind the microVM's IOMMU (Linux; D214): a flags
+    /// byte ([`BY_NODE`]), then its host's name (`0000:01:00.0`), a NUL, and its group's
+    /// node (`/dev/vfio/N`), or with [`BY_NODE`] its own VFIO device node
+    /// (`/dev/vfio/devices/vfioN`); as descriptors, opened by the daemon, VFIO's container
+    /// (`/dev/vfio/vfio`) and the group's node, or iommufd (`/dev/iommu`) and the device's
+    /// node. Answers as [`DISK`] does.
+    pub const FUNCTION: u8 = 5;
+    /// [`FUNCTION`]'s flag of a function taken by its own VFIO device node, through
+    /// iommufd, not its group's.
+    pub const BY_NODE: u8 = 1;
 }
 
 pub mod kind {
@@ -426,8 +436,9 @@ pub mod kind {
     pub const PORTS_FREE: u8 = 79;
     /// Daemon → a running run's VM: a device plugged into its microVM, let go of, or a disk
     /// grown (D214): a number its answer ([`DEVICED`]) names (8, big-endian), then a step
-    /// ([`device`]) and what it takes. With [`device::DISK`] the disk's file, and with
-    /// [`device::SHARE`] the connection to its share's server, as descriptors.
+    /// ([`device`]) and what it takes. With [`device::DISK`] the disk's file, with
+    /// [`device::SHARE`] the connection to its share's server, and with
+    /// [`device::FUNCTION`] a host's function's VFIO files, as descriptors.
     pub const DEVICE: u8 = 80;
     /// A run's VM → its daemon: [`DEVICE`]'s answer, by its number (8, big-endian), then 0
     /// and what the step answers, or 1 and why it failed.
