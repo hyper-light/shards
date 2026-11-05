@@ -477,6 +477,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         {
             return self.copy_step(rest, asker, reply);
         }
+        // `shards move vm`'s steps (D176 part 6, cli/moves.rs).
+        if let Some((first, rest)) = argv.split_first()
+            && first == shards_ipc::MOVE_STEP
+        {
+            return self.move_step(rest, asker, reply);
+        }
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
             reply.err(&format!("shards: no container command in {argv:?}"));

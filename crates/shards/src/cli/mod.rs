@@ -22,6 +22,7 @@ pub(crate) use client::ask_here;
 pub(crate) mod cp;
 pub(crate) mod listing;
 pub(crate) mod look;
+mod moves;
 pub(crate) mod request;
 pub(crate) mod save;
 mod screens;
@@ -62,7 +63,7 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
 /// `configure disk` are said as, and `daemon` how the client starts the daemon.
-const OWN: [&str; 29] = [
+const OWN: [&str; 30] = [
     "system",
     // Devices plugged into a running microVM, and its disks grown (D214).
     "plug",
@@ -97,6 +98,8 @@ const OWN: [&str; 29] = [
     "-h",
     "--help",
     "restore",
+    // A microVM moved to another machine (`move vm`, D176 part 6).
+    "move",
 ];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
@@ -531,6 +534,13 @@ fn container(
                 if std::ptr::eq(command, &shards_cmdline::commands::COPY) {
                     drop(fds);
                     return cp::copy(&parsed, &|argv, fds| {
+                        client::ask(&home, &daemon, &command_of(argv), fds)
+                    });
+                }
+                // `move vm` asks this daemon and another machine's in steps (cli/moves.rs).
+                if std::ptr::eq(command, &shards_cmdline::commands::MOVE_VM) {
+                    drop(fds);
+                    return moves::move_vm(&parsed, &home, &|argv, fds| {
                         client::ask(&home, &daemon, &command_of(argv), fds)
                     });
                 }

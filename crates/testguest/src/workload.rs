@@ -536,6 +536,37 @@ pub fn main() -> ! {
                 std::thread::sleep(every);
             }
         }
+        // `arg(1)` MiB of memory (64 if none) stamped page by page, a sweep after another,
+        // each sweep's number in the first and last words of every 4 KiB page, 256 pages
+        // every 10 ms; after each sweep every page checked to hold it, and the sweep's
+        // number printed: a page whose last write a live move lost holds an older one, and
+        // is said (`BAD`), and the workload ends (D176 part 7).
+        "scribble" => {
+            let mib: usize = arg(1).parse().unwrap_or(64);
+            let words = 512;
+            let mut buf = vec![0u64; mib << 17];
+            let pages = buf.len() / words;
+            let _ = writeln!(io::stdout(), "ready");
+            let mut sweep = 1u64;
+            loop {
+                for p in 0..pages {
+                    buf[p * words] = sweep;
+                    buf[p * words + words - 1] = sweep;
+                    if p % 256 == 255 {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+                for p in 0..pages {
+                    let (first, last) = (buf[p * words], buf[p * words + words - 1]);
+                    if first != sweep || last != sweep {
+                        let _ = writeln!(io::stdout(), "BAD page {p}: {first} {last}, sweep {sweep}");
+                        std::process::exit(1);
+                    }
+                }
+                let _ = writeln!(io::stdout(), "{sweep}");
+                sweep += 1;
+            }
+        }
         // A counter written to file `arg(1)` as it grows, a line every `arg(2)` ms, each line
         // synced, through one descriptor opened once in the file's directory, which it works
         // in, and printed: a volume's file and directory a saved microVM holds, which a

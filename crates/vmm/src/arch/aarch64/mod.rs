@@ -1,6 +1,7 @@
 //! AArch64 guest platform: physical memory map, CPU identity, and boot protocol.
 
 pub mod boot;
+pub mod cpu;
 pub mod esr;
 pub mod prefetch;
 pub mod psci;

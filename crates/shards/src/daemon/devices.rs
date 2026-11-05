@@ -419,7 +419,7 @@ impl<D: Disk> Daemon<D> {
             std::ffi::OsString::new(),
         )];
         let parent = self.parent_of(id).unwrap_or_default();
-        let (link, child) = self.started_shares(threads, &dirs, &parent)?;
+        let (link, child) = self.started_shares(threads, &dirs, &parent, false)?;
         lock(&self.shared_by)
             .entry(id.to_string())
             .or_default()

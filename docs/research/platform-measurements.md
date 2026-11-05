@@ -17856,3 +17856,75 @@ revision before comparing a changed API/implementation.
   container's and roots every process there (init `over.rs`); cgroup2 is mounted
   `favordynmods` where the kernel has it; and the daemon gives back what a kept layer's
   bitmaps say is free as it keeps it (`layers::give_back`).
+
+### M460. The CPU identity Hypervisor.framework lets a VMM tell its guest, and microVMs moved between homes (D176 part 6)
+
+- **Question.** A snapshot restored on another Mac meets another CPU: which of the ID
+  registers a guest reads does Hypervisor.framework say, and let a VMM set, so that a guest
+  restored there is told the CPU it booted on? And does a microVM moved to another home, its
+  files, volume and image going with it, go on there with nothing of it lost?
+- **Method.** The vmm's HVF test (`vcpu_and_gic_state_round_trip`, at 02a85638, a probe of
+  `hv_vcpu_get_sys_reg` and `hv_vcpu_set_sys_reg`, each register read, its low field set
+  to 0 and read back, and set back) on adalundhe-macbook-pro (Apple M5 Max, macOS 26.5.2),
+  2026-11-03; then the same test asserting it of every register a snapshot keeps (`ID_REGS`,
+  `set_cpu_id`). `sysctl hw.optional.arm` on the M5 Max (adas-macbook-pro-2, macOS 26.4.1)
+  and an M4 Max (adas-mac-studio, macOS 26.2). tests/moved.rs on kiln-a094a12d (Intel Core
+  i9-14900HX, Fedora 44, Linux 6.19.10, KVM), two homes, the one's daemon listening on
+  loopback and the other joined to it as a context, at e430d400.
+- **Found.**
+  - Said and set, read back as set: MIDR_EL1, MPIDR_EL1, ID_AA64PFR0_EL1, PFR1, ZFR0, SMFR0,
+    DFR0, DFR1, ISAR0, ISAR1, MMFR0, MMFR1, MMFR2. Not said (`HV_BAD_ARGUMENT`,
+    0xfae94003): ID_AA64ISAR2_EL1, ISAR3, PFR2, MMFR3, MMFR4, REVIDR_EL1, AFR0 and AFR1.
+  - The M5 Max has, of the features its OS names, FEAT_CSSC, FEAT_EBF16, FEAT_HBC, the MTE
+    family, FEAT_SME2p1, FEAT_SME_B16B16, FEAT_SME_F16F16 and FEAT_SVE_B16B16 where the M4
+    Max has not; none the other way. EBF16 is ISAR1's BF16 level, which a VMM sets; CSSC
+    and HBC are ISAR2's, which it cannot.
+  - Moved between the homes, cold: a counter appending to a file it holds open in its
+    volume, from the volume's directory, appends on there, every count once, in order;
+    a counter of an image no registry holds (saved here, loaded there) counts on there,
+    its log with it, each count once; one whose name another microVM has there is
+    refused there and goes on here. All three on real microVMs, 4 of 4 runs.
+- **Reading.** A guest restored on another Mac can be told its own CPU in every register a
+  snapshot keeps; ISAR2 alone is the framework's to show, and an M4 shows a guest no CSSC
+  or HBC that one booted on an M5 may have used.
+- **Consequence.** `ID_REGS` grows by ZFR0 and SMFR0, every register the framework says; a
+  restore on a CPU whose fields cover the snapshot's is told the snapshot's (D176 part 6);
+  and a move checks the features of the two machines' CPUs as their OSes name them,
+  refusing one to a machine lacking any its guest may have used (an M5's microVM to an M4).
+  Mutation-checked: a moved share keyed as saved (`restores_moved` off), the restored
+  guest's share server refuses its volume ("not the directory it was saved with") and the
+  move fails, the microVM going on where it was.
+
+### M461. The time a microVM moved live runs nowhere (D176 part 7)
+
+- **Question.** Moved live by pre-copy, how long does a microVM run nowhere, from its last
+  save asked to its restore on the other machine said done, and what takes it?
+- **Method.** tests/moved.rs `live_move_downtime` (`SHARDS_MOVES=30`), at e430d400, on
+  kiln-a094a12d (Intel Core i9-14900HX, Fedora 44, Linux 6.19.10, KVM with
+  KVM_CAP_DIRTY_LOG_RING_ACQ_REL), 2026-11-03: 30 microVMs of the test image, one at a time,
+  each counting every 20 ms, moved live from one home to another joined to it as a context
+  over loopback QUIC (D180); each move's steps as `SHARDS_MOVE_TIMES` says them, the
+  downtime by the moving machine's clock.
+- **Found** (µs unless said; n 30):
+
+  | | p50 | p90 | p99 | max |
+  |---|---|---|---|---|
+  | downtime | 114,245 | 126,128 | 140,427 | 140,427 |
+  | its last save | 18,598 | 27,577 | 33,324 | 33,324 |
+  | its last stream (directory, delta files, laid over there) | 44,439 | 51,478 | 67,512 | 67,512 |
+  | round 0 | 402,682 | 445,937 | 2,135,329 | 2,135,329 |
+  | round 0's bytes | 73,535,488 | 74,645,504 | 74,854,400 | 74,854,400 |
+  | round 1's bytes | 1,175,552 | 1,241,088 | 190,210,048 | 190,210,048 |
+  | the pause round 0 takes to find the layer's and swap's data | 252 | 295 | 318 | 318 |
+
+  29 of 30 moves took two rounds, the second under 8 MiB; one took three. The rest of the
+  downtime, 51 ms at p50, is the stream's tail and the restore there.
+  - Mutation-checked with `scribble`, a guest stamping 64 MiB page by page and checking
+    every page after each sweep: with KVM's rings' pages not noted (`Dirty::collect`), or no
+    device's writes noted (`GuestMemory::device_wrote`), the test failed both times, a
+    `shards` command of it not ending in 120 s, where with both it passed every time.
+- **Reading.** What the guest wrote last is a megabyte; the time it runs nowhere is the last
+  save (its heads written whole, its generation committed), the stream of its directory
+  and the restore, not its memory.
+- **Consequence.** The downtime D176 part 7 says; what is left to cut is in the last stream
+  and the restore.

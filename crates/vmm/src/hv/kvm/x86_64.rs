@@ -159,7 +159,7 @@ impl Vm {
             .map_err(call("KVM_CHECK_EXTENSION"))?
             > 0;
         Ok(Vm {
-            slots: Arc::new(Slots::new(fd.clone())),
+            slots: Arc::new(Slots::new(kvm, fd.clone())),
             fd,
             cpuid,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
@@ -235,11 +235,13 @@ impl Vm {
                 .collect();
         fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
         let thread = super::this_thread();
+        self.slots.dirty.add_vcpu(&fd)?;
         Ok(Vcpu {
             kicker: Kicker {
                 run: fd.run.clone(),
                 thread: thread.clone(),
             },
+            dirty: self.slots.dirty.clone(),
             fd,
             thread,
             cpuid: leaves
@@ -448,6 +450,9 @@ pub struct Vcpu {
     kicker: Kicker,
     /// Cleared on drop, so no kick can signal a thread that no longer runs this vCPU.
     pub(super) thread: Arc<Mutex<Option<Thread>>>,
+    /// Its VM's watch of the guest's writes, which empties its dirty ring as it fills
+    /// (D176 part 7).
+    dirty: Arc<super::Dirty>,
     /// The CPUID it was given, as a snapshot keeps it.
     cpuid: Vec<[u32; 7]>,
     msrs: Arc<Vec<u32>>,
@@ -655,10 +660,27 @@ impl Vcpu {
     /// each vCPU's TSC where its own capture found it, apart from the others' by however
     /// far apart the captures were (arch/x86/kvm/x86.c, kvm_synchronize_tsc).
     pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
+        // Another CPU than the snapshot's (D176 part 6): one with every feature its guest
+        // found is given the guest's CPUID, which the guest goes on believing; one short of
+        // any is refused, naming what it lacks.
         if !same_cpu(&st.cpuid, &self.cpuid) {
-            return Err(Error::Guest(
-                "this CPU is not the one the snapshot was taken on (its CPUID differs)".into(),
-            ));
+            cpuid::covers(&self.cpuid, &st.cpuid).map_err(Error::Guest)?;
+            let leaves: Vec<sys::kvm_cpuid_entry2> = st
+                .cpuid
+                .iter()
+                .map(|l| sys::kvm_cpuid_entry2 {
+                    function: l[0],
+                    index: l[1],
+                    flags: l[2],
+                    eax: l[3],
+                    ebx: l[4],
+                    ecx: l[5],
+                    edx: l[6],
+                    padding: [0; 3],
+                })
+                .collect();
+            self.fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
+            self.cpuid.clone_from(&st.cpuid);
         }
         if st.xsave.len() < self.xsave_size {
             return Err(Error::Guest(format!(
@@ -807,7 +829,7 @@ impl Vcpu {
     /// Runs the guest until a kick, power-off or reset; device accesses complete through
     /// `io` on the way.
     pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
-        super::run(&mut self.fd, io)
+        super::run(&mut self.fd, io, &self.dirty)
     }
 }
 

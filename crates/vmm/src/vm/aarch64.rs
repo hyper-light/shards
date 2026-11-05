@@ -76,16 +76,18 @@ pub enum VcpuStart {
     Boot(Option<Entry>),
     Restore {
         state: hv::VcpuState,
+        /// The CPU the snapshot's guest found, which each vCPU is given where its host's
+        /// differs and covers it (D176 part 6).
+        cpu_id: Vec<(u16, u64)>,
         /// vCPU 0's part.
         first: Option<First>,
     },
 }
 
-/// vCPU 0's part of a restore: the CPU the snapshot was taken on, and the working set it
-/// prefetches as it sets up (HVF's: KVM's prefetches as the machine finishes, [`finish`]).
+/// vCPU 0's part of a restore: the working set it prefetches as it sets up (HVF's: KVM's
+/// prefetches as the machine finishes, [`finish`]).
 #[derive(Debug)]
 pub struct First {
-    cpu_id: Vec<(u16, u64)>,
     working_set: Vec<hv::Touch>,
 }
 
@@ -157,16 +159,15 @@ pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remai
             };
             #[cfg(not(hv = "kvm"))]
             let working_set = r.working_set;
-            let mut first = Some(First {
-                cpu_id: r.cpu_id,
-                working_set,
-            });
+            let mut first = Some(First { working_set });
+            let cpu_id = r.cpu_id;
             let starts = r
                 .vcpus
                 .into_iter()
                 .take(vcpus)
                 .map(|state| VcpuStart::Restore {
                     state,
+                    cpu_id: cpu_id.clone(),
                     first: first.take(),
                 })
                 .collect();
@@ -1156,15 +1157,26 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                 vcpu.boot(entry).map_err(e)?;
             }
         }
-        VcpuStart::Restore { state, first } => {
+        VcpuStart::Restore { state, cpu_id, first } => {
             let mut prefetched = created;
-            if let Some(First { cpu_id, working_set }) = first {
-                let here = vcpu.cpu_id().map_err(e)?;
-                if here != cpu_id {
-                    return Err(format!(
-                        "this CPU is not the one the snapshot was taken on: {here:x?} vs {cpu_id:x?}"
-                    ));
-                }
+            // Another CPU than the snapshot's (D176 part 6): one that has every feature its
+            // guest found is told the guest's CPU, which the guest goes on believing; one
+            // short of any is refused, naming what it lacks.
+            let here = vcpu.cpu_id().map_err(e)?;
+            // By the registers both name: a snapshot of a build that read fewer is of the
+            // registers it read.
+            let differs = cpu_id.iter().any(|&(r, v)| {
+                here.iter()
+                    .find(|(h, _)| *h == r)
+                    .is_none_or(|&(_, now)| now != v)
+            });
+            if differs {
+                aarch64::cpu::covers(&here, &cpu_id)?;
+                vcpu.set_cpu_id(&cpu_id).map_err(|err| {
+                    format!("this CPU is not the snapshot's, and is not told its guest's: {err}")
+                })?;
+            }
+            if let Some(First { working_set }) = first {
                 // Before the state: the prefetch runs on this vCPU. A failure is the VM's,
                 // since its translations may outlive a loop that stopped short. KVM's
                 // waits for the machine's finish ([`split`]).

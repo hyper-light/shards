@@ -828,14 +828,27 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                 // Before any message after this one: a JOIN behind it is refused, so that
                 // no joiner starts in the guest as it goes quiet.
                 SAVING.store(true, std::sync::atomic::Ordering::SeqCst);
+                let holds = message
+                    .payload
+                    .first()
+                    .is_some_and(|flags| flags & shards_ipc::SAVE_DELTA != 0);
                 let saving = std::thread::Builder::new().name("save".into()).spawn(move || {
                     let saved = save_request(message);
                     let said = saved.as_ref().err().map(String::as_bytes).unwrap_or_default();
                     if let Ok(answer) = &answer {
                         let _ = to_daemon(answer, kind::SAVED, said, &[]);
                     }
-                    SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
-                    drop(saved);
+                    // A live move's last save holds the microVM until the daemon says
+                    // whether the other machine took it (`MOVED`, D176 part 7).
+                    match saved {
+                        Ok(saved) if holds => {
+                            *HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(saved);
+                        }
+                        saved => {
+                            SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
+                            drop(saved);
+                        }
+                    }
                 });
                 if let Err(e) = saving {
                     SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -845,6 +858,61 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                         format!("its save's thread: {e}").as_bytes(),
                         &[],
                     );
+                }
+            }
+            // A live move's end (D176 part 7): the other machine took it, and it stops as
+            // saved; or not, and it goes on here.
+            kind::MOVED if matches!(from, From::Daemon(_)) => {
+                let held = HELD
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                let named = HELD_AS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(saved) = held {
+                    if message.payload.first() == Some(&1) {
+                        if let Some(named) = named {
+                            let _ = SAVED.set(named);
+                        }
+                        drop(saved);
+                    } else {
+                        crate::workload::resume_guest();
+                        if let Err(e) = saved.resume() {
+                            let _ = writeln!(io::stderr(), "shards: going on after a move: {e}");
+                        }
+                    }
+                    SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            // A live move's rounds (D176 part 7), on a thread of their own as a save is: the
+            // run goes on meanwhile.
+            kind::PRECOPY if matches!(from, From::Daemon(_)) => {
+                let answer = conn.try_clone();
+                let copying = std::thread::Builder::new().name("precopy".into()).spawn(move || {
+                    let said = match precopy_request(message) {
+                        Ok(p) => {
+                            let mut text = format!("{}\n", p.paused_us);
+                            for (pages, bytes, us) in &p.rounds {
+                                text.push_str(&format!("{pages} {bytes} {us}\n"));
+                            }
+                            text.into_bytes()
+                        }
+                        Err(e) => {
+                            let mut text = vec![0u8];
+                            text.extend_from_slice(e.as_bytes());
+                            text
+                        }
+                    };
+                    if let Ok(answer) = &answer {
+                        let _ = to_daemon(answer, kind::PRECOPIED, &said, &[]);
+                    }
+                });
+                if let Err(e) = copying {
+                    let mut said = vec![0u8];
+                    said.extend_from_slice(format!("its rounds' thread: {e}").as_bytes());
+                    let _ = to_daemon(conn, kind::PRECOPIED, &said, &[]);
                 }
             }
             // A client's INTERRUPT is its command's signal once its run is made (D26).
@@ -952,6 +1020,13 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
 /// its end is told as the save's.
 static SAVED: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
 
+/// A live move's last save, which holds the microVM until its daemon says whether the other
+/// machine took it (`MOVED`, D176 part 7).
+static HELD: std::sync::Mutex<Option<shards_vmm::vm::Saved>> = std::sync::Mutex::new(None);
+/// The microVM's name and the snapshot its held save is, told as its end where the other
+/// machine took it.
+static HELD_AS: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
 /// Saves this microVM as the daemon's `SAVE` asks (D176): into the generation's files it
 /// brings, its memory, its state and the run's swap where it has one, then on or stopped.
 fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, String> {
@@ -997,7 +1072,9 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
     if fds.next().is_some() {
         return Err(format!("a save brings too many descriptors: {count}"));
     }
-    let then = if flags & shards_ipc::SAVE_LEAVE_RUNNING != 0 {
+    let then = if flags & shards_ipc::SAVE_DELTA != 0 {
+        shards_vmm::vm::AfterSnapshot::Hold
+    } else if flags & shards_ipc::SAVE_LEAVE_RUNNING != 0 {
         shards_vmm::vm::AfterSnapshot::Resume
     } else {
         shards_vmm::vm::AfterSnapshot::Stop
@@ -1015,6 +1092,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         layer,
         window_heads,
         then,
+        delta: flags & shards_ipc::SAVE_DELTA != 0,
     });
     // The guest goes on where the microVM does: saved and left running, or not saved.
     if saved.is_err() || then == shards_vmm::vm::AfterSnapshot::Resume {
@@ -1026,11 +1104,39 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         shards_vmm::log::uptime_us().saturating_sub(quiet)
     );
     let saved = saved?;
-    // Before the microVM stops, as the guard goes: its end is the save's.
-    if then == shards_vmm::vm::AfterSnapshot::Stop {
-        let _ = SAVED.set((microvm, snapshot));
+    // Before the microVM stops, as the guard goes: its end is the save's. One a live move
+    // holds stops so too where the other machine took it.
+    match then {
+        shards_vmm::vm::AfterSnapshot::Stop => {
+            let _ = SAVED.set((microvm, snapshot));
+        }
+        shards_vmm::vm::AfterSnapshot::Hold => {
+            *HELD_AS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((microvm, snapshot));
+        }
+        shards_vmm::vm::AfterSnapshot::Resume => {}
     }
     Ok(saved)
+}
+
+/// Copies this microVM's memory for a live move as the daemon's `PRECOPY` asks (D176 part
+/// 7): its most rounds and the bytes a last round may send, into the descriptor it brings.
+/// No joiner may run in it, as no save may with one.
+fn precopy_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Precopied, String> {
+    if *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0 {
+        return Err("containers joined to it run in its microVM: move it once they end".into());
+    }
+    let (most, rest) = message
+        .payload
+        .split_first_chunk::<4>()
+        .ok_or("a live move without its rounds")?;
+    let (enough, _) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a live move without its last round's bytes")?;
+    let mut fds = message.fds.into_iter().map(File::from);
+    let (Some(out), None) = (fds.next(), fds.next()) else {
+        return Err("a live move brings one descriptor".into());
+    };
+    crate::vm_run::precopy(out, u32::from_be_bytes(*most), u64::from_be_bytes(*enough))
 }
 
 /// Starts the exec the daemon's `EXEC_RUN` asks for (workload::exec): its flags and spec,

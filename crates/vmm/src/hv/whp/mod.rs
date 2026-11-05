@@ -873,6 +873,23 @@ fn forbid_dynamic_code() -> Result<()> {
 }
 
 impl Vm {
+    /// A live move watches its guest's writes (D176 part 7), which WHP's dirty page
+    /// tracking would (WHvQueryGpaRangeDirtyBitmap) and shards does not ask yet.
+    pub fn watch_writes(&self) -> Result<()> {
+        Err(Error::Guest(
+            "this host's microVMs move only saved, not live: WHP's dirty page tracking is not asked yet"
+                .into(),
+        ))
+    }
+
+    pub fn written(&self) -> Result<Vec<u64>> {
+        Ok(Vec::new())
+    }
+
+    pub fn unwatch_writes(&self) {}
+}
+
+impl Vm {
     /// A partition of `config.vcpus` vCPUs, their local APICs emulated by the hypervisor, its
     /// guest offered [`SYNTHETIC`] of the host's synthetic features.
     pub fn new(config: VmConfig) -> Result<Vm> {

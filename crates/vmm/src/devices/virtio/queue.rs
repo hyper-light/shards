@@ -439,7 +439,17 @@ impl Queue {
         mem: &Access<'_>,
         used: impl IntoIterator<Item = (u16, u32)>,
     ) -> Result<(), QueueError> {
+        let watched = mem.memory().device_writes_watched();
+        let mut written = Vec::new();
         for (head, len) in used {
+            // What the device wrote into the chain's buffers, through whichever way it
+            // reached them, noted for a live move (D176 part 7): each writable buffer
+            // whole.
+            if watched && self.walk(mem, head, &mut written).is_ok() {
+                for d in written.iter().filter(|d| d.writable) {
+                    mem.memory().device_wrote(d.addr, u64::from(d.len));
+                }
+            }
             let elem = UsedElem {
                 id: u32::from(head),
                 len,

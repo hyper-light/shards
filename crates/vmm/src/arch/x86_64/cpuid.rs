@@ -419,3 +419,78 @@ mod tests {
         assert_eq!(many[3].eax >> 14 & 0xfff, 299);
     }
 }
+
+/// The registers of the leaves that say which features a CPU has, by leaf and subleaf,
+/// each a register's place in a leaf's `[function, index, flags, eax, ebx, ecx, edx]`
+/// (Intel SDM vol. 2A, CPUID; AMD APM vol. 3, appendix E): a set bit in each is a feature
+/// the guest may use.
+const FEATURES: &[(u32, u32, &[usize])] = &[
+    (1, 0, &[5, 6]),
+    (7, 0, &[4, 5, 6]),
+    (7, 1, &[3, 4, 5, 6]),
+    (7, 2, &[6]),
+    (0xd, 1, &[3]),
+    (0x14, 0, &[4, 5]),
+    (0x19, 0, &[4]),
+    (0x8000_0001, 0, &[5, 6]),
+    (0x8000_0007, 0, &[6]),
+    (0x8000_0008, 0, &[4]),
+    (0x8000_0021, 0, &[3]),
+];
+
+/// Whether a vCPU given `host`'s CPUID runs a guest that found `guest`'s (D176 part 6): the
+/// same vendor (leaf 0), and every feature bit the guest has set in the host's too. Why not,
+/// naming each register short, where it does not.
+pub fn covers(host: &[[u32; 7]], guest: &[[u32; 7]]) -> Result<(), String> {
+    let leaf = |table: &[[u32; 7]], f: u32, i: u32| table.iter().find(|l| l[0] == f && l[1] == i).copied();
+    let vendor = |table: &[[u32; 7]]| leaf(table, 0, 0).map(|l| [l[4], l[6], l[5]]);
+    if vendor(host) != vendor(guest) {
+        return Err("this CPU is another vendor's than its guest's".into());
+    }
+    let mut short = Vec::new();
+    for &(f, i, regs) in FEATURES {
+        let Some(g) = leaf(guest, f, i) else { continue };
+        let h = leaf(host, f, i).unwrap_or([f, i, 0, 0, 0, 0, 0]);
+        for &r in regs {
+            let (gv, hv) = (g.get(r).copied().unwrap_or(0), h.get(r).copied().unwrap_or(0));
+            let missing = gv & !hv;
+            if missing != 0 {
+                let name = ["", "", "", "eax", "ebx", "ecx", "edx"]
+                    .get(r)
+                    .copied()
+                    .unwrap_or("?");
+                short.push(format!("leaf {f:#x}.{i} {name} bits {missing:#x}"));
+            }
+        }
+    }
+    if short.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "this CPU lacks what its guest uses: {}",
+            short.join(", ")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod covers_tests {
+    use super::covers;
+
+    /// A host with every feature bit its guest found runs it, more besides; one without a
+    /// bit of it, or another vendor's, does not.
+    #[test]
+    fn a_host_runs_a_guest_whose_every_feature_it_has() {
+        let intel = [0, 0, 0, 0x1f, 0x756e_6547, 0x6c65_746e, 0x4965_6e69];
+        let amd = [0, 0, 0, 0x10, 0x6874_7541, 0x444d_4163, 0x6974_6e65];
+        let guest = [intel, [7, 0, 1, 0, 0x239c_27eb, 0x9840_0784, 0xbc18_4410]];
+        let mut more = guest;
+        more[1][4] |= 1 << 30;
+        assert!(covers(&more, &guest).is_ok());
+        let refused = covers(&guest, &more).unwrap_err();
+        assert!(refused.contains("leaf 0x7.0 ebx bits 0x40000000"), "{refused}");
+        let mut other = guest;
+        other[0] = amd;
+        assert!(covers(&other, &guest).unwrap_err().contains("vendor"));
+    }
+}

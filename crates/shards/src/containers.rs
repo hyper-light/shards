@@ -99,6 +99,10 @@ pub struct Container {
     /// and what keeps `--rm` from removing it, snapshots and all, as it stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved: Option<String>,
+    /// Moved here from another machine (D176 part 6), its volumes copies of those its
+    /// snapshot was saved with, which its restore takes by their paths; until it runs here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub moved: bool,
     /// The microVM whose own engine made it (D181), by which that engine alone reaches it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_made: Option<EngineMade>,
@@ -527,6 +531,24 @@ impl Registry {
         self.arriving.insert(c.id.clone(), c);
     }
 
+    /// Puts `c` in sight, a microVM moved here from another machine whose directory is in
+    /// place already (D176 part 6): refused where its ID or its name is another's. Its record
+    /// is behind until it is written.
+    pub fn adopt(&mut self, c: Container) -> Result<(), String> {
+        if self.by_id.contains_key(&c.id)
+            || self.arriving.contains_key(&c.id)
+            || self.leaving.contains_key(&c.id)
+        {
+            return Err(format!("a microVM with {}'s ID is here already", c.name));
+        }
+        if self.name_taken(&c.name).is_some() {
+            return Err(format!("a microVM named {} is here already", c.name));
+        }
+        self.behind.insert(c.id.clone());
+        self.see(c);
+        Ok(())
+    }
+
     /// Whether any container is reserved, its record not yet written.
     /// Whether a container being removed still holds `name`.
     pub fn is_leaving_name(&self, name: &str) -> bool {
@@ -895,6 +917,7 @@ mod tests {
             restart: Default::default(),
             size_rw: None,
             saved: None,
+            moved: false,
             engine_made: None,
             engine_images: Vec::new(),
             engine_networks: Vec::new(),

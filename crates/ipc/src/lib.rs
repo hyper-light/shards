@@ -69,6 +69,11 @@ pub fn log(home: &Path) -> PathBuf {
 /// the daemon one at a time (cli/cp.rs, daemon/commands.rs).
 pub const COPY_STEP: &str = "\u{0}cp";
 
+/// The first word of `shards move vm`'s steps, which no command line has: what its client
+/// asks this machine's daemon and the other machine's one at a time (D176 part 6, cli/moves.rs,
+/// daemon/moves.rs).
+pub const MOVE_STEP: &str = "\u{0}mv";
+
 /// Message kinds between the daemon, warm VMs and clients.
 /// [`kind::DEVICE`]'s steps (D214), each a byte after the request's number.
 pub mod device {
@@ -443,6 +448,20 @@ pub mod kind {
     /// A run's VM → its daemon: [`DEVICE`]'s answer, by its number (8, big-endian), then 0
     /// and what the step answers, or 1 and why it failed.
     pub const DEVICED: u8 = 81;
+    /// Daemon → a VM, on its link (D176 part 7): copy the running microVM's memory, writable
+    /// layer and run's swap for a live move, round after round, into the one descriptor it
+    /// brings, as its guest runs on (`shards_vmm::vm::live`): the most rounds (4,
+    /// big-endian), then the bytes a round may send and be the last (8). Answered with
+    /// `PRECOPIED`; its guest's writes watched from then on, for a `SAVE` with
+    /// [`SAVE_DELTA`](super::SAVE_DELTA).
+    pub const PRECOPY: u8 = 82;
+    /// A VM → its daemon: the rounds `PRECOPY` asked for are sent, each its pages, its bytes
+    /// and its µs, as text, a line each, after a line of the µs its first round held the
+    /// machine paused; or why not, after a NUL.
+    pub const PRECOPIED: u8 = 83;
+    /// Daemon → a VM its live move's last save holds (D176 part 7): taken by the other
+    /// machine (1), which stops it as saved, or not (0), which lets it go on.
+    pub const MOVED: u8 = 84;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -455,6 +474,9 @@ pub mod kind {
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
 pub const SAVE_LEAVE_RUNNING: u8 = 1;
+/// A `SAVE` flag: the last of a live move (D176 part 7), its memory, writable layer and
+/// swap written only where its guest wrote since its last round (`PRECOPY`).
+pub const SAVE_DELTA: u8 = 2;
 
 /// The status of a run its save stopped (D176), as a shell says of a job it stopped, 128
 /// plus SIGTSTP's number on Linux (20): not ended, but stopped where it is, to be resumed.
