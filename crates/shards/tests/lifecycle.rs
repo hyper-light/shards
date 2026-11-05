@@ -88,8 +88,9 @@ fn threads() -> Option<usize> {
 }
 
 /// Starts the threads a process keeps for its life once a machine has run: on macOS the
-/// real-time governor (platform `prioritize_vcpu_thread`), which the first machine's vCPUs
-/// would start, past a count taken before them; elsewhere none. Asked for by a thread of its
+/// real-time governor, on Windows the priority governor (platform `prioritize_vcpu_thread`),
+/// which the first machine's vCPUs would start, past a count taken before them; on Linux
+/// none. Asked for by a thread of its
 /// own, which lets go of its watch as it ends.
 fn start_process_threads() {
     std::thread::spawn(|| drop(shards_vmm::platform::prioritize_vcpu_thread()))
