@@ -237,8 +237,8 @@ amd64 cell's once it does.
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | built, not yet run: in the VMM (WHP's disk steps passed on jupiter; its shared directory over a duplex pipe), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs, now every host's) |
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its API assigns no device (PM M403) | open: refused where the hypervisor refuses (PM M401, M402); a host that permits Discrete Device Assignment has no implementation yet (the parity plan's step 13) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
-| Moved to another machine, saved (D176 part 6) | yes (PM M460) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; a volume's guest owners moved as its guest sees them (`server::guest`), not yet run |
-| Moved live (D176 part 7) | yes (PM M461) | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
+| Moved to another machine, saved (D176 part 6) | yes (PM M460; CI's runners, migrate-e2e.yml) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; a volume's guest owners moved as its guest sees them (`server::guest`), not yet run |
+| Moved live (D176 part 7) | yes (PM M461; CI's runners, migrate-e2e.yml) | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
@@ -9324,7 +9324,8 @@ other's but what the move sends, and what the other takes by content:
   an M4 Max's not, and a guest booted on the M5 may have used them. So the move checks the
   two machines' CPUs as their OSes name their features (`hw.optional.arm.FEAT_*` but SVE's,
   SME's and MTE's, which no guest is shown; /proc/cpuinfo's flags or Features), refusing
-  one to a machine lacking any the other has, before anything moves.
+  one to a machine lacking any the other has, before anything moves, naming each
+  (`a_cpu_lacking_what_its_guest_may_have_used_is_named`, moves.rs).
 - **Its connections**, dialed again by its init there as a restore here redials them
   (part 3), and its address on its network asked for again.
 
@@ -9344,6 +9345,25 @@ node and a name no Windows name holds, the guest's `tree` of its volume the same
 the `SHARDS_MOVE_INVITE` machine, a Windows one among them, else between two homes), with
 the unit tests of `server::guest`, `server`'s `a_guests_files_show_it_the_same_copied_as_they_move`
 and moves.rs's `a_volumes_files_move_as_its_guest_saw_them`, and measured there by `docs/research/measurements/migrate/two-hosts.sh` (PM M460).
+Each check the move makes holds between two homes too:
+`a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections` (its CPUs as its guest
+sees them the same there; its image pulled there by its digest though its name there tags
+another; the snapshot it moved as and none other; of the files that snapshot restores
+against, those the other lacked kept in its directory there, and no others; an exec run in
+it there and a stop's SIGTERM ending it, its connections dialed again) and
+`a_volume_shared_here_moves_with_one_and_the_other_goes_on_here` (a volume two microVMs share
+moves with the one moved, and the other's move, refused there for the volume of its name,
+leaves it appending on here).
+
+Tested on CI's runners by `.github/workflows/migrate-e2e.yml`, run when asked: two-hosts.sh
+`local` (two homes, 30 moves of each mode, then all of tests/moved.rs, between two homes and
+to the listening home) on an x86_64 KVM runner, and on a macOS arm64 runner where it offers
+Hypervisor.framework, which GitHub's own (macos-15) do not (`kern.hv_support` absent): its
+job says so and moves nothing; n, p50, p90, p99 and max of what each move took and of the
+time each ran nowhere in each job's summary. Between two runners, which take no connection
+from each other and whose contexts speak QUIC over UDP, which no TCP tunnel carries, it
+moves over a tailnet, where the repository has a Tailscale OAuth client
+(`TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`); without one, that pair does not run.
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
@@ -9376,7 +9396,9 @@ stopped here once it runs there.
   once, from here on to there; refused there, it goes on here) and
   `a_microvm_writing_its_memory_moves_live_with_none_of_it_lost` (a guest stamping 64 MiB
   page by page as it moves, checking every page after each sweep), mutation-checked: with
-  the dirty rings' pages, or the devices' writes, not noted, it fails.
+  the dirty rings' pages, or the devices' writes, not noted, it fails. Where a live move is
+  refused (KVM on arm64, WHP), both hold it refused and the microVM going on here. Run on
+  CI's runners by `.github/workflows/migrate-e2e.yml` as part 6 is.
 
 Not yet: arm64 KVM's dirty rings, which its GIC's ITS needs a bitmap beside
 (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and WHP's dirty page tracking

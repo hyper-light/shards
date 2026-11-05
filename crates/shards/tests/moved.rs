@@ -117,6 +117,48 @@ fn daemon_log(home: &Path) -> String {
     lines[lines.len().saturating_sub(40)..].join("\n")
 }
 
+/// The counts in a file a guest appends to, a line each: the lines whole, and not the last
+/// where its write is not yet.
+fn appended(file: &Path) -> Vec<u64> {
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let whole = text.rsplit_once('\n').map_or("", |(whole, _)| whole);
+    whole.lines().filter_map(|l| l.parse().ok()).collect()
+}
+
+/// Whether this host's hypervisor tells a live move what its guest writes (D176 part 7):
+/// KVM on x86_64 and Hypervisor.framework do; KVM on arm64 and WHP refuse one, the microVM
+/// going on here.
+fn live_moves_here() -> bool {
+    cfg!(any(
+        target_os = "macos",
+        all(target_os = "linux", target_arch = "x86_64")
+    ))
+}
+
+/// What a guest's /proc/cpuinfo, as testguest's `files` prints it, says of its CPUs: their
+/// numbers, identity and features, the lines of those keys alone (not their clocks).
+fn cpu_identity(said: &str) -> Vec<String> {
+    const KEYS: &[&str] = &[
+        "processor",
+        "vendor_id",
+        "cpu family",
+        "model",
+        "model name",
+        "stepping",
+        "flags",
+        "Features",
+        "CPU implementer",
+        "CPU architecture",
+        "CPU variant",
+        "CPU part",
+        "CPU revision",
+    ];
+    said.lines()
+        .filter(|l| l.split_once(':').is_some_and(|(k, _)| KEYS.contains(&k.trim())))
+        .map(str::to_string)
+        .collect()
+}
+
 /// A running microVM moved to another machine goes on there where it was: its counter
 /// counts on from the count it had, each count once, its log moved with it; its image found
 /// there by its digest, pulled from the registry it came from; and here it is no more. Its
@@ -273,6 +315,233 @@ fn a_move_refused_leaves_the_microvm_running_here() {
     assert_eq!(shards_in(&here, &["rm", "-f", "counter"]).status, Some(0));
 }
 
+/// A microVM moved saved keeps what its move checks, each as D176 part 6 has it:
+///
+/// - its CPU: the other machine's has every feature of this one's (here, the same CPU), and
+///   its guest's CPUs are there what they were here;
+/// - its image, there by the digest it was made of, pulled from its registry by that
+///   digest, though its name there tags another image;
+/// - its files: its directory with the snapshot it moves as and none other (one it was
+///   saved as before stays here), and of the files that snapshot restores against those the
+///   other machine lacked, each kept in its directory there, and no other;
+/// - its connections, dialed again by its init there: an exec runs in it, and a stop's
+///   SIGTERM ends it, well inside its timeout.
+#[test]
+fn a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections() {
+    let Some((here, there, _listening, image)) = machines("moved-checks") else {
+        return;
+    };
+    let field = |home: &Path, args: &[&str]| {
+        let said = shards_in(home, args);
+        assert_eq!(said.status, Some(0), "{args:?}: {said}");
+        said.stdout.trim().to_string()
+    };
+    // There, its image's name tags another image.
+    let other = common::served_variant(b"another");
+    let pulled = shards_in(&there, &["pull", "-q", &other]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let tagged = shards_in(&there, &["tag", &other, &image]);
+    assert_eq!(tagged.status, Some(0), "{tagged}");
+    let other_id = field(&there, &["image", "inspect", "-f", "{{.Id}}", &image]);
+    // Under --init, so that its command ends at a stop's SIGTERM.
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--init", "--pull", "never", "--name", "mover", &image, "counter", "20",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let image_id = field(&here, &["inspect", "-f", "{{.Image}}", "mover"]);
+    assert_ne!(image_id, other_id);
+    let log_here = || logs(&here, "mover");
+    until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
+    let cpu = |home: &Path| {
+        cpu_identity(&field(
+            home,
+            &["exec", "mover", "/bin/testguest", "files", "/proc/cpuinfo"],
+        ))
+    };
+    let cpu_here = cpu(&here);
+    assert!(
+        cpu_here.iter().any(|l| l.starts_with("processor")),
+        "{cpu_here:?}"
+    );
+    let early = shards_in(&here, &["save", "vm", "mover", "early", "--leave-running"]);
+    assert_eq!(early.status, Some(0), "{early}");
+
+    let (kernel, init) = (kernel(), guest_init());
+    let timed: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", here.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_MOVE_TIMES", OsStr::new("1")),
+    ];
+    let moved = run_shards_env(&[], &["move", "vm", "mover", "lab"], &timed, TIMEOUT);
+    assert_eq!(
+        (moved.status, moved.stdout.as_str()),
+        (Some(0), "mover\n"),
+        "{moved}\nhere:\n{}\nthere:\n{}",
+        daemon_log(&here),
+        daemon_log(&there)
+    );
+    let gone = shards_in(&here, &["inspect", "mover"]);
+    assert_eq!(gone.status, Some(1), "{gone}");
+    // Counting on there, each count once, its log with it.
+    let log_there = || logs(&there, "mover");
+    let n = counts(&log_there()).len();
+    until(
+        "counting there",
+        &mut || counts(&log_there()).len() >= n + 10,
+        &log_there,
+    );
+    let all = counts(&log_there());
+    assert_eq!(
+        all,
+        (1..=all.len() as u64).collect::<Vec<_>>(),
+        "each count once, from here on to there"
+    );
+
+    // Its image, by its digest.
+    assert_eq!(field(&there, &["inspect", "-f", "{{.Image}}", "mover"]), image_id);
+    assert_eq!(
+        field(&there, &["image", "inspect", "-f", "{{.Id}}", &image_id]),
+        image_id,
+        "pulled there by its digest"
+    );
+
+    // Its snapshot, the one it moved as alone; the files there lacked, and only those.
+    let listed = field(&there, &["list", "snapshots", "mover"]);
+    let names: Vec<&str> = listed
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(names.len() == 1 && names[0] != "early", "{listed}");
+    let (sent, files) = moved
+        .stderr
+        .lines()
+        .find_map(|l| {
+            let (sent, rest) = l.strip_prefix("move: ")?.split_once(" of its ")?;
+            let (files, _) = rest.split_once(" files sent")?;
+            Some((sent.parse::<usize>().ok()?, files.parse::<usize>().ok()?))
+        })
+        .unwrap_or_else(|| panic!("no files said: {moved}"));
+    assert!(files >= 1 && sent <= files, "{moved}");
+    let id = field(&there, &["inspect", "-f", "{{.Id}}", "mover"]);
+    let backing = there.join("containers").join(&id).join("backing");
+    let kept = std::fs::read_dir(&backing).map_or(0, Iterator::count);
+    assert_eq!(kept, sent, "{}: {moved}", backing.display());
+
+    // Its connections, dialed again: an exec, and a stop's signal.
+    assert_eq!(cpu(&there), cpu_here, "its CPUs, as its guest sees them");
+    let asked = Instant::now();
+    let stopped = shards_in(&there, &["stop", "-t", "30", "mover"]);
+    let took = asked.elapsed();
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let code = field(&there, &["inspect", "-f", "{{.State.ExitCode}}", "mover"]);
+    assert_eq!(
+        (code.as_str(), took < Duration::from_secs(30)),
+        ("143", true),
+        "stopped in {took:?}\n{}",
+        daemon_log(&there)
+    );
+    assert_eq!(shards_in(&there, &["rm", "-f", "mover"]).status, Some(0));
+}
+
+/// A volume two microVMs here share moves with the first moved, a copy of it there that it
+/// appends on to, each count once, the other's file in it as it was; and the other stays:
+/// its move refused there, which has a volume of the name now, it appends on here to the
+/// volume here, each count once.
+#[test]
+fn a_volume_shared_here_moves_with_one_and_the_other_goes_on_here() {
+    let Some((here, there, _listening, image)) = machines("moved-shared") else {
+        return;
+    };
+    for name in ["first", "second"] {
+        let file = format!("/kept/{name}");
+        let run = shards_in(
+            &here,
+            &[
+                "run",
+                "-d",
+                "--pull",
+                "never",
+                "--name",
+                name,
+                "-u",
+                "0",
+                "-v",
+                "shared:/kept",
+                &image,
+                "appender",
+                &file,
+                "20",
+            ],
+        );
+        assert_eq!(run.status, Some(0), "{run}");
+    }
+    let data = |home: &Path, file: &str| home.join("volumes/shared/_data").join(file);
+    let said_here = || daemon_log(&here);
+    until(
+        "appending",
+        &mut || appended(&data(&here, "first")).len() >= 10 && appended(&data(&here, "second")).len() >= 10,
+        &said_here,
+    );
+    let moved = shards_in(&here, &["move", "vm", "first", "lab"]);
+    assert_eq!(
+        (moved.status, moved.stdout.as_str()),
+        (Some(0), "first\n"),
+        "{moved}\nhere:\n{}\nthere:\n{}",
+        daemon_log(&here),
+        daemon_log(&there)
+    );
+    let at_move = appended(&data(&here, "first")).len();
+    until(
+        "appending there",
+        &mut || appended(&data(&there, "first")).len() >= at_move + 10,
+        &|| daemon_log(&there),
+    );
+    let first = appended(&data(&there, "first"));
+    assert_eq!(
+        first,
+        (1..=first.len() as u64).collect::<Vec<_>>(),
+        "each count once, in order"
+    );
+    assert!(
+        data(&there, "second").is_file(),
+        "the second's file, moved with the volume"
+    );
+
+    let refused = shards_in(&here, &["move", "vm", "second", "lab"]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(
+        refused.stderr.contains("a volume named shared is here already")
+            && refused.stderr.contains("second goes on here"),
+        "{refused}"
+    );
+    let n = appended(&data(&here, "second")).len();
+    until(
+        "appending on here",
+        &mut || appended(&data(&here, "second")).len() >= n + 10,
+        &said_here,
+    );
+    let second = appended(&data(&here, "second"));
+    assert_eq!(
+        second,
+        (1..=second.len() as u64).collect::<Vec<_>>(),
+        "each count once, in order"
+    );
+    assert_eq!(
+        appended(&data(&here, "first")).len(),
+        at_move,
+        "the first's file here as it was moved"
+    );
+    let kept = shards_in(&here, &["volume", "inspect", "shared"]);
+    assert_eq!(kept.status, Some(0), "{kept}");
+    assert_eq!(shards_in(&here, &["rm", "-f", "second"]).status, Some(0));
+    assert_eq!(shards_in(&there, &["rm", "-f", "first"]).status, Some(0));
+}
+
 /// `shards move vm --live NAME lab` with what it reports of its rounds and its downtime
 /// (`SHARDS_MOVE_TIMES`): the run, and the downtime in µs where it said one.
 fn move_live(here: &Path, name: &str) -> (Run, Option<u64>) {
@@ -317,6 +586,12 @@ fn a_running_microvm_moves_live_and_goes_on_there() {
     let log_here = || logs(&here, "counter");
     until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
     let (moved, downtime) = move_live(&here, "counter");
+    if !live_moves_here() {
+        assert_eq!(moved.status, Some(1), "{moved}");
+        assert!(moved.stderr.contains("goes on here"), "{moved}");
+        assert_eq!(shards_in(&here, &["rm", "-f", "counter"]).status, Some(0));
+        return;
+    }
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
         (Some(0), "counter\n"),
@@ -391,6 +666,12 @@ fn a_microvm_writing_its_memory_moves_live_with_none_of_it_lost() {
     let log_here = || logs(&here, "scribbler");
     until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
     let (moved, downtime) = move_live(&here, "scribbler");
+    if !live_moves_here() {
+        assert_eq!(moved.status, Some(1), "{moved}");
+        assert!(moved.stderr.contains("goes on here"), "{moved}");
+        assert_eq!(shards_in(&here, &["rm", "-f", "scribbler"]).status, Some(0));
+        return;
+    }
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
         (Some(0), "scribbler\n"),
@@ -566,11 +847,7 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     let log_here = || logs(&here, &scribbler);
     until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
     let (moved, downtime) = move_live_to(&here, &scribbler, "peer");
-    let watched = cfg!(any(
-        target_os = "macos",
-        all(target_os = "linux", target_arch = "x86_64")
-    ));
-    if !watched {
+    if !live_moves_here() {
         assert_eq!(moved.status, Some(1), "{moved}");
         assert!(moved.stderr.contains("goes on here"), "{moved}");
         return;

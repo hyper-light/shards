@@ -17870,7 +17870,14 @@ revision before comparing a changed API/implementation.
   `set_cpu_id`). `sysctl hw.optional.arm` on the M5 Max (adas-macbook-pro-2, macOS 26.4.1)
   and an M4 Max (adas-mac-studio, macOS 26.2). tests/moved.rs on kiln-a094a12d (Intel Core
   i9-14900HX, Fedora 44, Linux 6.19.10, KVM), two homes, the one's daemon listening on
-  loopback and the other joined to it as a context, at e430d400.
+  loopback and the other joined to it as a context, at e430d400. On CI's runners,
+  `.github/workflows/migrate-e2e.yml` (when asked): docs/research/measurements/migrate/two-hosts.sh
+  `local`, 30 saved moves and 30 live of alpine:3.20 counting, then all of tests/moved.rs, on
+  an ubuntu-24.04 runner (x86_64, KVM) and on a macOS arm64 runner where it offers
+  Hypervisor.framework (GitHub's macos-15 does not: `kern.hv_support` absent); n, p50, p90,
+  p99 and max of each move's time and the time it ran nowhere in each job's summary, its
+  results file and logs its artifact; and between two runners over a tailnet where the
+  repository has one (D176 part 6).
 - **Found.**
   - Said and set, read back as set: MIDR_EL1, MPIDR_EL1, ID_AA64PFR0_EL1, PFR1, ZFR0, SMFR0,
     DFR0, DFR1, ISAR0, ISAR1, MMFR0, MMFR1, MMFR2. Not said (`HV_BAD_ARGUMENT`,
@@ -17904,7 +17911,8 @@ revision before comparing a changed API/implementation.
   KVM_CAP_DIRTY_LOG_RING_ACQ_REL), 2026-11-03: 30 microVMs of the test image, one at a time,
   each counting every 20 ms, moved live from one home to another joined to it as a context
   over loopback QUIC (D180); each move's steps as `SHARDS_MOVE_TIMES` says them, the
-  downtime by the moving machine's clock.
+  downtime by the moving machine's clock. On CI's runners, `.github/workflows/migrate-e2e.yml`
+  measures it as M460 says, its live series the time each of 30 moves ran nowhere.
 - **Found** (µs unless said; n 30):
 
   | | p50 | p90 | p99 | max |
