@@ -629,7 +629,7 @@ impl<'a> Exec<'a> {
     /// `r`'s snapshot, to write its image's root filesystem from, or why the export must
     /// stack its layers again instead: a stack not followed, or one past the store's
     /// limits, which `Store::rootfs` words.
-    pub fn flat(&self, r: Ref) -> Result<Flat, String> {
+    pub fn flat(&mut self, r: Ref) -> Result<Flat, String> {
         let tally = match &r.stack {
             Stack::Unknown(why) => return Err(why.to_string()),
             Stack::Known(_) => r.stack.tally().unwrap_or_default(),
@@ -641,6 +641,10 @@ impl<'a> Exec<'a> {
         // The snapshot itself, not a copy: a copy is another tree, whose node ids the
         // stack does not follow. Its origin goes first, since it may hold it too.
         drop(r.origin);
+        // A base kept to write an image over ([`Exec::below`]) may hold this very snapshot
+        // (CI 41986336342: a staged build's export found it shared); an image that is its
+        // base's own snapshot has nothing to write over it, so the base lets go of it here.
+        self.bases.retain(|(_, base)| !Rc::ptr_eq(base, &r.fs));
         let fs = Rc::try_unwrap(r.fs).map_err(|_| "a snapshot still shared".to_string())?;
         if !r.stack.follows(fs.tree()) {
             return Err("a snapshot other than the one followed".into());
