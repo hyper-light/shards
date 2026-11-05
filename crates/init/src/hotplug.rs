@@ -15,6 +15,16 @@
 //!   in use, then the function let go (its `remove`), for its host to unplug.
 //! - `grow ADDR DST SECTORS`: once the disk at ADDR reads SECTORS, its ext4 file system at
 //!   DST grown to fill it (EXT4_IOC_RESIZE_FS, online). Answers its size in bytes.
+//! - `function ADDR group|node HOST`: a host's function at ADDR, HOST as its daemon named
+//!   it, given to vfio-pci, and its group's node, or its own VFIO device node, made in the
+//!   workload's `/dev` as a container given it at its start has it (D44, D154). Answers
+//!   the node's path and its numbers, `PATH c MAJ:MIN`.
+//! - `allow [c MAJ:MIN rwm]...`: the workload's device filter, its run's rules and these,
+//!   the nodes of every function plugged in. Init's own process does it, as it keeps the
+//!   filter (`devices::allow`); not here.
+//! - `release ADDR [PATH]`: the function at ADDR let go of, refused while anything in the
+//!   microVM holds its node at PATH or its VFIO device open, its node taken out of the
+//!   workload's `/dev`, then its `remove` written, for its host to unplug.
 
 use std::ffi::CString;
 use std::io::{self, Write};
@@ -102,6 +112,47 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
             let sectors: u64 = sectors.parse().map_err(io::Error::other)?;
             in_workload(workload, || grow_ext4(dst, sectors * 512))?;
             write!(out, "{}", sectors * 512)
+        }
+        ["function", addr, kind, host] => {
+            rescan()?;
+            wait(|| crate::devices::sysfs_list(&format!("bus/pci/devices/{addr}"))).ok_or_else(|| {
+                io::Error::other(format!("no function at {addr} after a rescan of the PCI bus"))
+            })?;
+            let node = crate::devices::vfio_function(addr, kind, host).map_err(io::Error::other)?;
+            in_workload(workload, || {
+                crate::devices::make_nodes(std::slice::from_ref(&node)).map_err(io::Error::other)
+            })?;
+            write!(out, "{} c {}:{}", node.path, node.major, node.minor)
+        }
+        ["release", addr, rest @ ..] => {
+            if let Some(path) = rest.first().filter(|p| !p.is_empty()) {
+                if let Some(node) = crate::devices::vm_devices(path)
+                    .into_iter()
+                    .find(|n| n.path == *path)
+                    && let Some(who) = crate::devices::holder(&node, addr)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        format!("{path}: {who} in the microVM has it open: it closes it first"),
+                    ));
+                }
+                in_workload(workload, || {
+                    let c = CString::new(*path).map_err(io::Error::other)?;
+                    // SAFETY: unlink(2) of a NUL-terminated path.
+                    if unsafe { libc::unlink(c.as_ptr()) } != 0 {
+                        let e = io::Error::last_os_error();
+                        if e.raw_os_error() != Some(libc::ENOENT) {
+                            return Err(io::Error::new(e.kind(), format!("{path}: {e}")));
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
+            // Let go of where its guest still has it: its driver's remove, vfio-pci's.
+            match crate::devices::sysfs_list(&format!("bus/pci/devices/{addr}")) {
+                Some(_) => crate::devices::sysfs_write(&format!("bus/pci/devices/{addr}/remove"), "1"),
+                None => Ok(()),
+            }
         }
         other => Err(io::Error::other(format!("no device step {other:?}"))),
     }

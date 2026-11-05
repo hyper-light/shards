@@ -3302,6 +3302,12 @@ fn builtin(
     let networked = networked.or_else(|| {
         (kind == run::builtin::LISTENS).then(|| crate::members::listening(joiner.unwrap_or(workload)))
     });
+    // The workload's device filter widened to the nodes of the host's functions plugged
+    // into its microVM (D214): init's own state, as the filter it keeps, done here.
+    let networked = networked.or_else(|| {
+        (kind == run::builtin::DEVICE && joiner.is_none() && args.first().is_some_and(|a| a == b"allow"))
+            .then(|| crate::devices::allow(args.get(1..).unwrap_or_default(), WORKLOAD_CGROUP))
+    });
     // What reads the host's stdin: unpacking an archive.
     let input = if kind == run::builtin::EXTRACT {
         Some(pipe()?)
