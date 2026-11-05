@@ -417,6 +417,7 @@ fn a_microvm_writing_its_memory_moves_live_with_none_of_it_lost() {
 /// failing: microVMs and volumes of names its own.
 struct LeftThere<'a> {
     here: &'a Path,
+    context: &'a str,
     microvms: Vec<String>,
     volumes: Vec<String>,
 }
@@ -424,10 +425,13 @@ struct LeftThere<'a> {
 impl Drop for LeftThere<'_> {
     fn drop(&mut self) {
         for name in &self.microvms {
-            let _ = shards_in(self.here, &["--context", "peer", "rm", "-f", name]);
+            let _ = shards_in(self.here, &["--context", self.context, "rm", "-f", name]);
         }
         for name in &self.volumes {
-            let _ = shards_in(self.here, &["--context", "peer", "volume", "rm", "-f", name]);
+            let _ = shards_in(
+                self.here,
+                &["--context", self.context, "volume", "rm", "-f", name],
+            );
         }
     }
 }
@@ -475,6 +479,7 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     let (counter, volume, scribbler) = (format!("cold{id}"), format!("kept{id}"), format!("live{id}"));
     let _left = LeftThere {
         here: &here,
+        context: "peer",
         microvms: vec![counter.clone(), scribbler.clone()],
         volumes: vec![volume.clone()],
     };
@@ -587,6 +592,115 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     assert!(!said.contains("BAD"), "a page lost its last write: {said}");
     let all = counts(&said);
     assert_eq!(all, (1..=all.len() as u64).collect::<Vec<_>>(), "{said}");
+}
+
+/// A volume's guest owners move with it (D176 part 6; the parity audit's row 14), whatever
+/// hosts the two machines are, each keeping them its own way (D38's owner attribute on
+/// Unix, WSL's metadata on Windows, D197): files a guest gave owners and groups, modes (one
+/// of 0), an extended attribute, a symlink, a device node and a name no Windows name holds
+/// show a guest there what they showed one here, as `tree` lists them. To the machine
+/// whose invitation `SHARDS_MOVE_INVITE` names (a Windows one, or a Unix one from Windows),
+/// as context `peer`; without one, between two homes here.
+#[test]
+fn a_volumes_guest_owners_move_with_it() {
+    let invite = std::env::var_os("SHARDS_MOVE_INVITE");
+    let (here, _two, image, context) = match &invite {
+        Some(invite) => {
+            if cannot_run_vms() || cannot_pool() {
+                return;
+            }
+            let (image, _) = served();
+            let here = TempDir::new("owners");
+            let joined = shards_in(
+                &here,
+                &[
+                    "create",
+                    "context",
+                    "peer",
+                    "--invite-file",
+                    invite.to_str().unwrap(),
+                ],
+            );
+            assert_eq!(joined.status, Some(0), "{joined}");
+            let pulled = shards_in(&here, &["pull", "-q", &image]);
+            assert_eq!(pulled.status, Some(0), "{pulled}");
+            (here, None, image, "peer")
+        }
+        None => {
+            let Some((here, there, listening, image)) = machines("owners") else {
+                return;
+            };
+            (here, Some((there, listening)), image, "lab")
+        }
+    };
+    let id = std::process::id();
+    let (vm, volume) = (format!("own{id}"), format!("owners{id}"));
+    let _left = LeftThere {
+        here: &here,
+        context,
+        microvms: vec![vm.clone()],
+        volumes: vec![volume.clone()],
+    };
+    let mount = format!("{volume}:/kept");
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--pull", "never", "--name", &vm, "-u", "0", "-v", &mount, &image, "sleep",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let made = shards_in(
+        &here,
+        &[
+            "exec",
+            &vm,
+            "/bin/testguest",
+            "fs",
+            "mkdir:/kept/d",
+            "write:/kept/d/f=hi",
+            "chown:1000:1001:/kept/d/f",
+            "chmod:640:/kept/d/f",
+            "xattr:user.k=v:/kept/d/f",
+            "write:/kept/d/zero=",
+            "chmod:0:/kept/d/zero",
+            "write:/kept/d/a:b=colon",
+            "symlink:f:/kept/d/l",
+            "mknod:c:1:3:/kept/d/null",
+            "chown:1234:5678:/kept/d",
+            "chmod:750:/kept/d",
+        ],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let tree = |args: &[&str]| {
+        let mut all: Vec<&str> = args.to_vec();
+        all.extend(["exec", vm.as_str(), "/bin/testguest", "tree", "/kept"]);
+        let listed = shards_in(&here, &all);
+        assert_eq!(listed.status, Some(0), "{listed}");
+        listed.stdout
+    };
+    let before = tree(&[]);
+    for line in [
+        "d dir 750 1234:5678",
+        "d/f file 640 1000:1001 2 = hi",
+        "d/zero file 0 0:0",
+        "d/null char",
+        "d/l symlink",
+        "d/a:b file",
+    ] {
+        assert!(before.contains(line), "{line}: {before}");
+    }
+    let moved = shards_in(&here, &["move", "vm", &vm, context]);
+    assert_eq!(
+        (moved.status, moved.stdout.as_str()),
+        (Some(0), format!("{vm}\n").as_str()),
+        "{moved}\nhere:\n{}",
+        daemon_log(&here)
+    );
+    assert_eq!(
+        tree(&["--context", context]),
+        before,
+        "the volume there, as its guest sees it"
+    );
 }
 
 /// The downtime of live moves, measured (PM, D176 part 7): `SHARDS_MOVES` microVMs, each

@@ -21,20 +21,25 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use shards_vmm::devices::virtio::fs::server::guest;
+
 use super::commands::{Asker, Reply};
 use super::snapshots::SNAPSHOTS;
 use super::{Daemon, lock};
 use crate::containers::{Container, Disk};
 
-/// The stream's first bytes, then its version.
+/// The stream's first bytes, then its version: 2, each entry as its guest sees it
+/// ([`guest::Meta`]), where 1's held the host's own modes and attributes.
 const MAGIC: &[u8; 8] = b"SHRDMOVE";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// Kinds of the stream's entries.
 const END: u8 = 0;
 const DIR: u8 = 1;
 const FILE: u8 = 2;
 const LINK: u8 = 3;
 const PLAN: u8 = 4;
+/// A FIFO or a device node.
+const NODE: u8 = 5;
 /// The most a name in the stream may hold, a plan's JSON, and a file's extended attributes.
 const MAX_PATH: usize = 4096;
 const MAX_PLAN: usize = 16 << 20;
@@ -254,8 +259,10 @@ fn digest_read(path: &Path) -> io::Result<(String, u64)> {
 }
 
 /// `rel` as a name relative to a home: `/`-separated normal components alone, none of them
-/// `.`, `..`, empty or holding a NUL. Anything else is refused, as it would reach out of
-/// the home.
+/// `.`, `..`, empty or holding a NUL, each the guest's name of a host's file (a volume's
+/// files' names are its guest's, [`guest::name`]) and named as this host keeps it
+/// ([`guest::host_name`]: on Windows a character no Windows name holds escaped as WSL
+/// escapes it). Anything else is refused, as it would reach out of the home.
 fn relative(rel: &str) -> Result<PathBuf, String> {
     let refuse = || format!("{rel:?} names no file in a home");
     if rel.is_empty() || rel.starts_with('/') || rel.contains(['\0', '\\']) {
@@ -266,7 +273,7 @@ fn relative(rel: &str) -> Result<PathBuf, String> {
         if part.is_empty() || part == "." || part == ".." {
             return Err(refuse());
         }
-        out.push(part);
+        out.push(guest::host_name(part.as_bytes()).map_err(|_| refuse())?);
     }
     match out.components().all(|c| matches!(c, Component::Normal(_))) {
         true => Ok(out),
@@ -290,9 +297,14 @@ fn rel_of(home: &Path, path: &Path) -> Option<String> {
 
 /// A stream of a home's files, written by [`Writer`] and read by [`read_plan`] and [`read_entries`]: a magic,
 /// a version, the plan, then entries, each its kind, its name relative to the home and what
-/// it is, and an end. A file is its mode, its extended attributes, its length and the runs
-/// of it that hold data, so that a sparse file (a snapshot's memory, a writable layer) stays
-/// as sparse; nothing past its length or outside its runs is read.
+/// it is, and an end. Each is as a share's guest sees it, through the share server's own
+/// reading of its host ([`guest::read`]), whatever the host keeps a guest's owners, modes,
+/// kinds and attributes in (D38, D197), so that a volume moved between any two hosts shows
+/// its guest there what it showed it here: its kind and mode, its recorded owner, a
+/// device's number, and its extended attributes by the guest's names ([`Writer::meta`]). A
+/// file is that, its length and the runs of it that hold data, so that a sparse file (a
+/// snapshot's memory, a writable layer) stays as sparse; nothing past its length or outside
+/// its runs is read.
 pub(crate) struct Writer<W: Write> {
     out: W,
 }
@@ -314,11 +326,17 @@ impl<W: Write> Writer<W> {
         self.out.write_all(rel.as_bytes())
     }
 
-    fn mode(&mut self, meta: &std::fs::Metadata) -> io::Result<()> {
-        self.out.write_all(&mode_of(meta).to_le_bytes())
-    }
-
-    fn xattrs(&mut self, list: &[(Vec<u8>, Vec<u8>)]) -> io::Result<()> {
+    /// A file as its guest sees it: its mode (kind and permissions), its device number,
+    /// whether its owner is recorded and the owner and group, then its extended attributes,
+    /// each its name and value.
+    fn meta(&mut self, meta: &guest::Meta) -> io::Result<()> {
+        self.out.write_all(&meta.mode.to_le_bytes())?;
+        self.out.write_all(&meta.rdev.to_le_bytes())?;
+        let (recorded, (uid, gid)) = (meta.owner.is_some(), meta.owner.unwrap_or_default());
+        self.out.write_all(&[u8::from(recorded)])?;
+        self.out.write_all(&uid.to_le_bytes())?;
+        self.out.write_all(&gid.to_le_bytes())?;
+        let list = &meta.xattrs;
         self.out.write_all(&(list.len() as u32).to_le_bytes())?;
         for (name, value) in list {
             self.out.write_all(&(name.len() as u32).to_le_bytes())?;
@@ -329,60 +347,61 @@ impl<W: Write> Writer<W> {
         Ok(())
     }
 
-    /// The tree at `path`, named `rel` in the stream: a directory and all it holds, a file
-    /// or a symlink. `skip` leaves out the entries of a directory it names by `rel`.
+    /// The tree at `path`, named `rel` in the stream: a directory and all it holds, a file,
+    /// a symlink, a FIFO or a device node, each named by its guest's name. `skip` leaves out
+    /// the entries of a directory it names by `rel`.
     pub(crate) fn tree(&mut self, path: &Path, rel: &str, skip: &dyn Fn(&str) -> bool) -> io::Result<()> {
-        let meta = std::fs::symlink_metadata(path)?;
-        let kind = meta.file_type();
-        if kind.is_symlink() {
-            let target = std::fs::read_link(path)?;
-            let target = target
-                .to_str()
-                .ok_or_else(|| io::Error::other(format!("{}: a link that is not UTF-8", path.display())))?;
-            self.name(LINK, rel)?;
-            self.out.write_all(&(target.len() as u32).to_le_bytes())?;
-            return self.out.write_all(target.as_bytes());
-        }
-        if kind.is_dir() {
-            self.name(DIR, rel)?;
-            self.mode(&meta)?;
-            self.xattrs(&xattrs::list(path)?)?;
-            let mut entries: Vec<(String, PathBuf)> = std::fs::read_dir(path)?
-                .map(|e| {
-                    let e = e?;
-                    let name = e
-                        .file_name()
-                        .into_string()
-                        .map_err(|n| io::Error::other(format!("{n:?}: a name that is not UTF-8")))?;
-                    Ok((name, e.path()))
-                })
-                .collect::<io::Result<_>>()?;
-            entries.sort();
-            for (name, at) in entries {
-                let child = format!("{rel}/{name}");
-                if !skip(&child) {
-                    self.tree(&at, &child, skip)?;
-                }
+        let meta = guest::read(path)?;
+        match meta.mode & guest::S_IFMT {
+            guest::S_IFLNK => {
+                let target = String::from_utf8(guest::read_link(path)?)
+                    .map_err(|_| io::Error::other(format!("{}: a link that is not UTF-8", path.display())))?;
+                self.name(LINK, rel)?;
+                self.out.write_all(&(target.len() as u32).to_le_bytes())?;
+                self.out.write_all(target.as_bytes())?;
+                self.meta(&meta)
             }
-            return Ok(());
+            guest::S_IFDIR => {
+                self.name(DIR, rel)?;
+                self.meta(&meta)?;
+                let mut entries: Vec<(String, PathBuf)> = std::fs::read_dir(path)?
+                    .map(|e| {
+                        let e = e?;
+                        let name = String::from_utf8(guest::name(&e.file_name())?).map_err(|n| {
+                            io::Error::other(format!("{:?}: a name that is not UTF-8", n.as_bytes()))
+                        })?;
+                        Ok((name, e.path()))
+                    })
+                    .collect::<io::Result<_>>()?;
+                entries.sort();
+                for (name, at) in entries {
+                    let child = format!("{rel}/{name}");
+                    if !skip(&child) {
+                        self.tree(&at, &child, skip)?;
+                    }
+                }
+                Ok(())
+            }
+            guest::S_IFREG => self.file(path, rel),
+            guest::S_IFIFO | guest::S_IFCHR | guest::S_IFBLK => {
+                self.name(NODE, rel)?;
+                self.meta(&meta)
+            }
+            // A socket is its listener's, which a saved microVM has none of (as tar leaves
+            // one out: GNU tar's "socket ignored").
+            _ => Ok(()),
         }
-        // A socket or a pipe is a running microVM's, which a saved one has none of.
-        if !kind.is_file() {
-            return Ok(());
-        }
-        self.file(path, rel)
     }
 
-    /// The file at `path`, named `rel`: its mode, attributes, length and the runs of it
-    /// that hold data.
+    /// The file at `path`, named `rel`: as its guest sees it ([`Writer::meta`]), its length
+    /// and the runs of it that hold data.
     pub(crate) fn file(&mut self, path: &Path, rel: &str) -> io::Result<()> {
+        let meta = guest::read(path)?;
         let file = File::open(path)?;
-        let meta = file.metadata()?;
-        let len = meta.len();
+        let len = file.metadata()?.len();
         let runs = shards_vmm::platform::data_ranges(&file, len)?;
         self.name(FILE, rel)?;
-        self.mode(&meta)?;
-        self.xattrs(&xattrs::list(path)?)?;
+        self.meta(&meta)?;
         self.out.write_all(&len.to_le_bytes())?;
         self.out.write_all(&(runs.len() as u64).to_le_bytes())?;
         let mut buf = vec![0u8; CHUNK];
@@ -410,23 +429,6 @@ impl<W: Write> Writer<W> {
     }
 }
 
-/// A file's mode as the stream keeps it: its permission bits.
-fn mode_of(meta: &std::fs::Metadata) -> u32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        meta.permissions().mode() & 0o7777
-    }
-    #[cfg(not(unix))]
-    {
-        if meta.permissions().readonly() {
-            0o444
-        } else {
-            0o644
-        }
-    }
-}
-
 /// An entry of a stream, as [`read_entries`] gives it to its taker.
 #[expect(
     clippy::type_complexity,
@@ -435,13 +437,11 @@ fn mode_of(meta: &std::fs::Metadata) -> u32 {
 pub(crate) enum Entry<'a> {
     Dir {
         rel: String,
-        mode: u32,
-        xattrs: Vec<(Vec<u8>, Vec<u8>)>,
+        meta: guest::Meta,
     },
     File {
         rel: String,
-        mode: u32,
-        xattrs: Vec<(Vec<u8>, Vec<u8>)>,
+        meta: guest::Meta,
         len: u64,
         /// Its runs of data, each read into `put` at its offset.
         runs: &'a mut dyn FnMut(&mut dyn FnMut(u64, &[u8]) -> io::Result<()>) -> io::Result<()>,
@@ -449,6 +449,12 @@ pub(crate) enum Entry<'a> {
     Link {
         rel: String,
         target: String,
+        meta: guest::Meta,
+    },
+    /// A FIFO or a device node.
+    Node {
+        rel: String,
+        meta: guest::Meta,
     },
 }
 
@@ -480,6 +486,26 @@ fn text_of(r: &mut dyn Read, max: usize, what: &str) -> io::Result<String> {
     let n = u32_of(r)?;
     String::from_utf8(bytes_of(r, u64::from(n), max, what)?)
         .map_err(|_| io::Error::other(format!("{what}: not UTF-8")))
+}
+
+/// A file as its guest sees it, as [`Writer::meta`] wrote it.
+fn meta_of(r: &mut dyn Read) -> io::Result<guest::Meta> {
+    let mode = u32_of(r)?;
+    let rdev = u32_of(r)?;
+    let mut recorded = [0u8; 1];
+    r.read_exact(&mut recorded)?;
+    let (uid, gid) = (u32_of(r)?, u32_of(r)?);
+    let owner = match recorded[0] {
+        0 => None,
+        1 => Some((uid, gid)),
+        other => return Err(io::Error::other(format!("an owner's mark of {other}"))),
+    };
+    Ok(guest::Meta {
+        mode,
+        rdev,
+        owner,
+        xattrs: xattrs_of(r)?,
+    })
 }
 
 fn xattrs_of(r: &mut dyn Read) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -537,19 +563,23 @@ pub(crate) fn read_entries(
             END => return Ok(()),
             DIR => {
                 let rel = text_of(r, MAX_PATH, "a name").map_err(io)?;
-                let mode = u32_of(r).map_err(io)?;
-                let xattrs = xattrs_of(r).map_err(io)?;
-                take(Entry::Dir { rel, mode, xattrs })?;
+                let meta = meta_of(r).map_err(io)?;
+                take(Entry::Dir { rel, meta })?;
             }
             LINK => {
                 let rel = text_of(r, MAX_PATH, "a name").map_err(io)?;
                 let target = text_of(r, MAX_PATH, "a link").map_err(io)?;
-                take(Entry::Link { rel, target })?;
+                let meta = meta_of(r).map_err(io)?;
+                take(Entry::Link { rel, target, meta })?;
+            }
+            NODE => {
+                let rel = text_of(r, MAX_PATH, "a name").map_err(io)?;
+                let meta = meta_of(r).map_err(io)?;
+                take(Entry::Node { rel, meta })?;
             }
             FILE => {
                 let rel = text_of(r, MAX_PATH, "a name").map_err(io)?;
-                let mode = u32_of(r).map_err(io)?;
-                let xattrs = xattrs_of(r).map_err(io)?;
+                let meta = meta_of(r).map_err(io)?;
                 let len = u64_of(r).map_err(io)?;
                 let count = u64_of(r).map_err(io)?;
                 let mut read_all = false;
@@ -578,8 +608,7 @@ pub(crate) fn read_entries(
                 };
                 take(Entry::File {
                     rel,
-                    mode,
-                    xattrs,
+                    meta,
                     len,
                     runs: &mut runs,
                 })?;
@@ -592,164 +621,28 @@ pub(crate) fn read_entries(
     }
 }
 
-/// Extended attributes, which a volume's server keeps its guest's owners in (D38): moved
-/// with each file, as a share's files hold them.
-mod xattrs {
-    use std::io;
-    use std::path::Path;
-
-    /// What getxattr(2) says of an attribute that is not there.
-    #[cfg(target_os = "macos")]
-    const NO_ATTR: i32 = libc::ENOATTR;
-    #[cfg(all(unix, not(target_os = "macos")))]
-    const NO_ATTR: i32 = libc::ENODATA;
-
-    /// `path`'s own attributes, a link's never followed: each name and value.
-    #[cfg(unix)]
-    pub(super) fn list(path: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        use std::os::unix::ffi::OsStrExt as _;
-        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
-        let mut names = vec![0u8; 4096];
-        let n = loop {
-            // SAFETY: llistxattr(2) writes at most `names.len()` bytes into it.
-            let n = unsafe { sys::list(c.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
-            if n >= 0 {
-                break n as usize;
-            }
-            let e = io::Error::last_os_error();
-            match e.raw_os_error() {
-                Some(libc::ERANGE) if names.len() < (1 << 20) => names.resize(names.len() * 4, 0),
-                Some(libc::ENOTSUP) => return Ok(Vec::new()),
-                _ => return Err(e),
-            }
-        };
-        let mut out = Vec::new();
-        for name in names.get(..n).unwrap_or_default().split(|&b| b == 0) {
-            if name.is_empty() {
-                continue;
-            }
-            let cname = std::ffi::CString::new(name).map_err(io::Error::other)?;
-            let mut value = vec![0u8; 1024];
-            let got = loop {
-                // SAFETY: lgetxattr(2) writes at most `value.len()` bytes into it.
-                let got =
-                    unsafe { sys::get(c.as_ptr(), cname.as_ptr(), value.as_mut_ptr().cast(), value.len()) };
-                if got >= 0 {
-                    break Some(got as usize);
-                }
-                let e = io::Error::last_os_error();
-                match e.raw_os_error() {
-                    Some(libc::ERANGE) if value.len() < super::MAX_XATTR => value.resize(super::MAX_XATTR, 0),
-                    // Gone as it was listed.
-                    Some(NO_ATTR) => break None,
-                    _ => return Err(e),
-                }
-            };
-            if let Some(got) = got {
-                value.truncate(got);
-                out.push((name.to_vec(), value));
-            }
-        }
-        Ok(out)
-    }
-
-    /// Sets `list` on `path`, a link's never followed. An attribute the file system or this
-    /// user may not set (`security.`, `trusted.`) is left out.
-    #[cfg(unix)]
-    pub(super) fn set(path: &Path, list: &[(Vec<u8>, Vec<u8>)]) -> io::Result<()> {
-        use std::os::unix::ffi::OsStrExt as _;
-        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
-        for (name, value) in list {
-            let cname = std::ffi::CString::new(name.as_slice()).map_err(io::Error::other)?;
-            // SAFETY: lsetxattr(2) reads `value.len()` bytes of it.
-            let done = unsafe { sys::set(c.as_ptr(), cname.as_ptr(), value.as_ptr().cast(), value.len()) };
-            if done != 0 {
-                let e = io::Error::last_os_error();
-                match e.raw_os_error() {
-                    Some(libc::EPERM | libc::ENOTSUP) => {}
-                    _ => return Err(e),
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    mod sys {
-        use libc::{c_char, c_void, size_t, ssize_t};
-        pub(super) unsafe fn list(path: *const c_char, buf: *mut c_char, size: size_t) -> ssize_t {
-            // SAFETY: the caller's.
-            unsafe { libc::listxattr(path, buf, size, libc::XATTR_NOFOLLOW) }
-        }
-        pub(super) unsafe fn get(
-            path: *const c_char,
-            name: *const c_char,
-            buf: *mut c_void,
-            size: size_t,
-        ) -> ssize_t {
-            // SAFETY: the caller's.
-            unsafe { libc::getxattr(path, name, buf, size, 0, libc::XATTR_NOFOLLOW) }
-        }
-        pub(super) unsafe fn set(
-            path: *const c_char,
-            name: *const c_char,
-            value: *const c_void,
-            size: size_t,
-        ) -> i32 {
-            // SAFETY: the caller's.
-            unsafe { libc::setxattr(path, name, value, size, 0, libc::XATTR_NOFOLLOW) }
-        }
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    mod sys {
-        use libc::{c_char, c_void, size_t, ssize_t};
-        pub(super) unsafe fn list(path: *const c_char, buf: *mut c_char, size: size_t) -> ssize_t {
-            // SAFETY: the caller's.
-            unsafe { libc::llistxattr(path, buf, size) }
-        }
-        pub(super) unsafe fn get(
-            path: *const c_char,
-            name: *const c_char,
-            buf: *mut c_void,
-            size: size_t,
-        ) -> ssize_t {
-            // SAFETY: the caller's.
-            unsafe { libc::lgetxattr(path, name, buf, size) }
-        }
-        pub(super) unsafe fn set(
-            path: *const c_char,
-            name: *const c_char,
-            value: *const c_void,
-            size: size_t,
-        ) -> i32 {
-            // SAFETY: the caller's.
-            unsafe { libc::lsetxattr(path, name, value, size, 0) }
-        }
-    }
-
-    /// Windows keeps a volume's owners in NTFS's own extended attributes (D197), which this
-    /// move does not carry yet: none.
-    #[cfg(windows)]
-    pub(super) fn list(_path: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        Ok(Vec::new())
-    }
-
-    #[cfg(windows)]
-    pub(super) fn set(_path: &Path, _list: &[(Vec<u8>, Vec<u8>)]) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Puts a stream's entries under `root`, a directory of the move's own: each name checked
 /// to be one [`relative`] takes, and to be one the plan allows (`allowed`), made new, never
-/// over anything there.
+/// over anything there; each made and given what its guest saw ([`guest::set`]) as the
+/// share server makes and keeps a guest's, so that this host's server shows it the same.
+/// A directory is given its own once all it holds is in it ([`Placer::finish`]), so that a
+/// mode that keeps its owner out (a guest's `0555`, kept as such where no owner of it is
+/// recorded) is no bar to what goes in it.
 struct Placer<'a> {
     root: &'a Path,
     allowed: &'a dyn Fn(&str) -> bool,
+    dirs: Vec<(PathBuf, guest::Meta)>,
 }
 
-impl Placer<'_> {
+impl<'a> Placer<'a> {
+    fn new(root: &'a Path, allowed: &'a dyn Fn(&str) -> bool) -> Placer<'a> {
+        Placer {
+            root,
+            allowed,
+            dirs: Vec::new(),
+        }
+    }
+
     fn path(&self, rel: &str) -> Result<PathBuf, String> {
         if !(self.allowed)(rel) {
             return Err(format!(
@@ -759,27 +652,32 @@ impl Placer<'_> {
         Ok(self.root.join(relative(rel)?))
     }
 
-    fn take(&self, entry: Entry<'_>) -> Result<(), String> {
+    fn take(&mut self, entry: Entry<'_>) -> Result<(), String> {
         let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
         match entry {
-            Entry::Dir { rel, mode, xattrs } => {
-                let path = self.path(&rel)?;
-                std::fs::create_dir_all(&path).map_err(|e| at(&path, &e))?;
-                xattrs::set(&path, &xattrs).map_err(|e| at(&path, &e))?;
-                set_mode(&path, mode).map_err(|e| at(&path, &e))
-            }
-            Entry::Link { rel, target } => {
+            Entry::Dir { rel, meta } => {
                 let path = self.path(&rel)?;
                 make_parent(&path)?;
-                symlink(&target, &path).map_err(|e| at(&path, &e))
+                guest::make_dir(&path).map_err(|e| at(&path, &e))?;
+                self.dirs.push((path, meta));
+                Ok(())
             }
-            Entry::File {
-                rel,
-                mode,
-                xattrs,
-                len,
-                runs,
-            } => {
+            Entry::Link { rel, target, meta } => {
+                let path = self.path(&rel)?;
+                make_parent(&path)?;
+                guest::make_link(&path, target.as_bytes()).map_err(|e| at(&path, &e))?;
+                guest::set(&path, &meta).map_err(|e| at(&path, &e))
+            }
+            Entry::Node { rel, meta } => {
+                let path = self.path(&rel)?;
+                make_parent(&path)?;
+                guest::make_node(&path, &meta).map_err(|e| at(&path, &e))?;
+                guest::set(&path, &meta).map_err(|e| at(&path, &e))
+            }
+            Entry::File { rel, meta, len, runs } => {
+                if meta.mode & guest::S_IFMT != guest::S_IFREG {
+                    return Err(format!("{rel}: a file of mode {:o}", meta.mode));
+                }
                 let path = self.path(&rel)?;
                 make_parent(&path)?;
                 let file = crate::os::owner_only(
@@ -802,10 +700,18 @@ impl Placer<'_> {
                 })
                 .map_err(|e| at(&path, &e))?;
                 drop(file);
-                xattrs::set(&path, &xattrs).map_err(|e| at(&path, &e))?;
-                set_mode(&path, mode).map_err(|e| at(&path, &e))
+                guest::set(&path, &meta).map_err(|e| at(&path, &e))
             }
         }
+    }
+
+    /// Each directory given what its guest saw, the deepest first, once the stream's
+    /// entries are all in place.
+    fn finish(self) -> Result<(), String> {
+        for (path, meta) in self.dirs.iter().rev() {
+            guest::set(path, meta).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        Ok(())
     }
 }
 
@@ -814,29 +720,6 @@ fn make_parent(path: &Path) -> Result<(), String> {
         Some(parent) => std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display())),
         None => Ok(()),
     }
-}
-
-#[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_readonly(mode & 0o222 == 0);
-    std::fs::set_permissions(path, perms)
-}
-
-#[cfg(unix)]
-fn symlink(target: &str, path: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, path)
-}
-
-#[cfg(windows)]
-fn symlink(target: &str, path: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_file(target, path)
 }
 
 /// Where in a home a move's stream may put what it holds: the microVM's own directory, its
@@ -1370,11 +1253,10 @@ impl<D: Disk> Daemon<D> {
         };
         let plan = read_plan(&mut rest)?;
         let needed: BTreeSet<String> = plan.files.iter().map(|f| f.rel.clone()).collect();
-        let placer = Placer {
-            root: staging.path(),
-            allowed: &|rel| allowed(&plan, &needed, rel),
-        };
+        let allows = |rel: &str| allowed(&plan, &needed, rel);
+        let mut placer = Placer::new(staging.path(), &allows);
         read_entries(&mut rest, &mut |entry| placer.take(entry))?;
+        placer.finish()?;
         self.adopt(&plan, staging.path(), precopied.as_ref())
     }
 
@@ -1732,8 +1614,7 @@ mod tests {
         shards_vmm::platform::write_all_at(&sparse, b"head", 0).unwrap();
         shards_vmm::platform::write_all_at(&sparse, b"tail", (64 << 20) - 4).unwrap();
         drop(sparse);
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("config.json", own.join("link")).unwrap();
+        guest::make_link(&own.join("link"), b"config.json").unwrap();
         let mut bytes = Vec::new();
         {
             let mut w = Writer::new(&mut bytes, &p).unwrap();
@@ -1751,13 +1632,12 @@ mod tests {
         assert!(bytes.len() < 4 << 20, "{}", bytes.len());
         let to = shards_testdir::TempDir::new("mv-to").unwrap();
         let needed: BTreeSet<String> = p.files.iter().map(|f| f.rel.clone()).collect();
-        let placer = Placer {
-            root: &to,
-            allowed: &|rel| allowed(&p, &needed, rel),
-        };
+        let allows = |rel: &str| allowed(&p, &needed, rel);
+        let mut placer = Placer::new(&to, &allows);
         let mut input = bytes.as_slice();
         assert_eq!(read_plan(&mut input).unwrap(), p);
         read_entries(&mut input, &mut |e| placer.take(e)).unwrap();
+        placer.finish().unwrap();
         let there = to.join(format!("containers/{}", p.id));
         assert_eq!(std::fs::read(there.join("config.json")).unwrap(), b"{}");
         assert!(!there.join("snapshots/other").exists());
@@ -1765,20 +1645,100 @@ mod tests {
         assert_eq!(memory.len(), 64 << 20);
         assert_eq!(&memory[..4], b"head");
         assert_eq!(&memory[(64 << 20) - 4..], b"tail");
-        #[cfg(unix)]
-        assert_eq!(
-            std::fs::read_link(there.join("link")).unwrap(),
-            PathBuf::from("config.json")
-        );
+        assert_eq!(guest::read_link(&there.join("link")).unwrap(), b"config.json");
         // Cut short, it is refused.
         let mut cut = &bytes[..bytes.len() - 1];
         let elsewhere = shards_testdir::TempDir::new("mv-cut").unwrap();
-        let placer = Placer {
-            root: &elsewhere,
-            allowed: &|_| true,
-        };
+        let anything = |_: &str| true;
+        let mut placer = Placer::new(&elsewhere, &anything);
         read_plan(&mut cut).unwrap();
         assert!(read_entries(&mut cut, &mut |e| placer.take(e)).is_err());
+    }
+
+    /// A volume's files move as its guest saw them (D176 part 6), whatever this host keeps
+    /// them as (D38, D197): each one's kind, mode, recorded owner and group (none where none
+    /// was, so that its share's default owner's stays), a device's number, a symlink's
+    /// target and its extended attributes, by the guest's names, a name no Windows name
+    /// holds among them; and a directory whose mode keeps its owner out takes what it holds
+    /// first. Each reads there as it read here, and as it was given.
+    #[test]
+    fn a_volumes_files_move_as_its_guest_saw_them() {
+        let from = shards_testdir::TempDir::new("mv-vfrom").unwrap();
+        let p = plan();
+        let data = from.join("data");
+        std::fs::create_dir(&data).unwrap();
+        let root = data.join("_data");
+        guest::make_dir(&root).unwrap();
+        let meta = |mode: u32, owner: Option<(u32, u32)>| guest::Meta {
+            mode,
+            owner,
+            ..guest::Meta::default()
+        };
+        let mut f = meta(guest::S_IFREG | 0o640, Some((1234, 5678)));
+        f.xattrs = vec![(b"user.k".to_vec(), b"v".to_vec())];
+        let files = [
+            ("f", f),
+            ("a:b", meta(guest::S_IFREG | 0o600, Some((1, 2)))),
+            ("zero", meta(guest::S_IFREG, Some((0, 0)))),
+            ("host", meta(guest::S_IFREG | 0o644, None)),
+        ];
+        for (name, m) in &files {
+            let at = root.join(guest::host_name(name.as_bytes()).unwrap());
+            std::fs::write(&at, name).unwrap();
+            guest::set(&at, m).unwrap();
+        }
+        let null = guest::Meta {
+            rdev: (1 << 8) | 3,
+            ..meta(guest::S_IFCHR | 0o620, Some((0, 0)))
+        };
+        guest::make_node(&root.join("null"), &null).unwrap();
+        guest::set(&root.join("null"), &null).unwrap();
+        guest::make_link(&root.join("l"), b"f").unwrap();
+        guest::set(&root.join("l"), &meta(guest::S_IFLNK | 0o777, None)).unwrap();
+        guest::set(&root, &meta(guest::S_IFDIR | 0o555, None)).unwrap();
+        let names = ["f", "a:b", "zero", "host", "null", "l"];
+        let seen = |root: &Path| -> Vec<guest::Meta> {
+            let mut all = vec![guest::read(root).unwrap()];
+            for name in names {
+                let mut m = guest::read(&root.join(guest::host_name(name.as_bytes()).unwrap())).unwrap();
+                m.xattrs.sort();
+                all.push(m);
+            }
+            all
+        };
+        let here = seen(&root);
+        for (i, (name, given)) in files.iter().enumerate() {
+            assert_eq!(&here[i + 1], given, "{name}");
+        }
+        assert_eq!((here[5].mode, here[5].rdev), (null.mode, null.rdev));
+        assert_eq!(here[0].mode, guest::S_IFDIR | 0o555);
+
+        let mut bytes = Vec::new();
+        {
+            let mut w = Writer::new(&mut bytes, &p).unwrap();
+            w.tree(&data, "volumes/data", &|_| false).unwrap();
+            w.finish().unwrap();
+        }
+        let to = shards_testdir::TempDir::new("mv-vto").unwrap();
+        let needed = BTreeSet::new();
+        let allows = |rel: &str| allowed(&p, &needed, rel);
+        let mut placer = Placer::new(&to, &allows);
+        let mut input = bytes.as_slice();
+        read_plan(&mut input).unwrap();
+        read_entries(&mut input, &mut |e| placer.take(e)).unwrap();
+        placer.finish().unwrap();
+        let there = to.join("volumes").join("data").join("_data");
+        assert_eq!(seen(&there), here);
+        assert_eq!(guest::read_link(&there.join("l")).unwrap(), b"f");
+        let ab = there.join(guest::host_name(b"a:b").unwrap());
+        assert_eq!(std::fs::read(ab).unwrap(), b"a:b");
+        // A stream of another version is refused.
+        let mut old = bytes.clone();
+        old[8..12].copy_from_slice(&1u32.to_le_bytes());
+        assert!(read_plan(&mut old.as_slice()).is_err());
+        // Put back to the host's own access, for the test's directories to go.
+        guest::set(&there, &meta(guest::S_IFDIR | 0o755, None)).unwrap();
+        guest::set(&root, &meta(guest::S_IFDIR | 0o755, None)).unwrap();
     }
 
     /// A stream may put nothing past what its plan names: another container's directory,

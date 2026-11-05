@@ -237,7 +237,7 @@ amd64 cell's once it does.
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | built, not yet run: in the VMM (WHP's disk steps passed on jupiter; its shared directory over a duplex pipe), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs, now every host's) |
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its API assigns no device (PM M403) | open: refused where the hypervisor refuses (PM M401, M402); a host that permits Discrete Device Assignment has no implementation yet (the parity plan's step 13) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
-| Moved to another machine, saved (D176 part 6) | yes (PM M460) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; open: a volume's guest owners (NTFS's extended attributes, D197) are not moved yet |
+| Moved to another machine, saved (D176 part 6) | yes (PM M460) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; a volume's guest owners moved as its guest sees them (`server::guest`), not yet run |
 | Moved live (D176 part 7) | yes (PM M461) | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
@@ -9252,9 +9252,23 @@ other's but what the move sends, and what the other takes by content:
 - **Its directory**: its record and request, its log, the snapshot it moves as and none
   other, its writable layer in the snapshot's generation (D190), never the copy its
   microVM left beside its log as it stopped.
-- **Its volumes.** A named volume moves with it, its files, modes and extended attributes
-  (the owners its guest gave them, D38) as they are, as sparse as they are, where the
-  other machine has no volume of the name. Its restored share server takes the copy by its
+- **Its volumes.** A named volume moves with it, as sparse as it is, where the other
+  machine has no volume of the name, each file as its guest sees it, whatever either host
+  keeps that in: Unix the guest's owner, group and mode in the share server's owner
+  attribute beside the host's mode, and a device node it cannot make as an empty file the
+  attribute names the kind of (D38); Windows WSL's `$LX` metadata and reparse points
+  (D197); each its extended attributes under names of its own (Linux's `trusted.` and
+  `security.` under `user.shards.`, Windows' as EAs of hexadecimal names). The move reads
+  and makes each through the share server's own calls (`server::guest`: `read`, `set`
+  and its makers), its stream (version 2) holding each entry's kind and mode, its device
+  number, its owner where one is recorded (none where the host made it, so that it stays
+  its share's default owner's, D38), its attributes by the guest's names, and its name as
+  the guest's, which a Windows host keeps escaped as WSL escapes it; a directory takes its
+  mode once all it holds is in it. So a volume moved between any two hosts shows its guest
+  there what it showed it here, macOS's and Linux's attribute names, which differ, among
+  them; a socket, its listener's, is left out, as tar leaves one. A file on Windows with a
+  mode of WSL's alone is its share's default owner's, as on Unix, where WSL's metadata
+  read as root's. Its restored share server takes the copy by its
   paths (`Server::restores_moved`, the share process's `--moved`): each node the file at
   its path there, whatever device and inode it had here, its guest's open handles and
   working directory in it going on. A bind's host path is the other machine's to share
@@ -9285,7 +9299,11 @@ holds, saved and loaded) and `a_move_refused_leaves_the_microvm_running_here`
 (tests/moved.rs); between two machines by `a_microvm_moves_to_another_host_saved_and_live`
 (tests/moved.rs, to the machine whose invitation `SHARDS_MOVE_INVITE` names: saved, with a
 volume and its image and files going with it, and live, a guest stamping 16 MiB as it moves)
-and measured there by `docs/research/measurements/migrate/two-hosts.sh` (PM M460).
+and `a_volumes_guest_owners_move_with_it` (owners, modes, an attribute, a symlink, a device
+node and a name no Windows name holds, the guest's `tree` of its volume the same there; to
+the `SHARDS_MOVE_INVITE` machine, a Windows one among them, else between two homes), with
+the unit tests of `server::guest`, `server`'s `a_guests_files_show_it_the_same_copied_as_they_move`
+and moves.rs's `a_volumes_files_move_as_its_guest_saw_them`, and measured there by `docs/research/measurements/migrate/two-hosts.sh` (PM M460).
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its

@@ -35,6 +35,10 @@ mod calls;
 mod calls;
 use calls::*;
 
+/// A share's files as its guest sees them, for a move to another machine (D176 part 6).
+#[path = "server_guest.rs"]
+pub mod guest;
+
 const ROOT: u64 = 1;
 /// How long the guest may trust what it was told of a name or its attributes: virtiofsd's
 /// `cache=auto` second, as the host may change the directory meanwhile.
@@ -5270,6 +5274,107 @@ mod tests {
             assert_eq!(write(&s, f, fh, 0, b"x"), 0);
             release(&s, f, fh);
         }
+    }
+
+    /// A LOOKUP's node, and the mode, uid, gid and device number it tells.
+    fn seen(s: &Server, parent: u64, n: &str) -> (u64, [u32; 4]) {
+        let (e, entry) = answer(s, &req(op::LOOKUP, parent, 0, &name(n)));
+        assert_eq!(e, 0, "{n}");
+        let at = |i: usize| u32::from_le_bytes(entry[40 + i..40 + i + 4].try_into().unwrap());
+        (
+            u64::from_le_bytes(entry[0..8].try_into().unwrap()),
+            [at(60), at(68), at(72), at(76)],
+        )
+    }
+
+    /// The tree at `from` copied to `to` as a move carries it (moves.rs): each entry by its
+    /// guest's name, read as its guest sees it ([`guest::read`]), made there by its kind and
+    /// given what it was ([`guest::set`]), a directory once all it holds is in it.
+    fn moved(from: &std::path::Path, to: &std::path::Path) {
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let named = guest::name(&entry.file_name()).unwrap();
+            let there = to.join(guest::host_name(&named).unwrap());
+            let meta = guest::read(&entry.path()).unwrap();
+            match meta.mode & guest::S_IFMT {
+                guest::S_IFDIR => {
+                    guest::make_dir(&there).unwrap();
+                    moved(&entry.path(), &there);
+                }
+                guest::S_IFREG => std::fs::write(&there, std::fs::read(entry.path()).unwrap()).unwrap(),
+                guest::S_IFLNK => {
+                    guest::make_link(&there, &guest::read_link(&entry.path()).unwrap()).unwrap()
+                }
+                _ => guest::make_node(&there, &meta).unwrap(),
+            }
+            guest::set(&there, &meta).unwrap();
+        }
+    }
+
+    /// A share's files copied to another tree as their guest saw them show a guest there
+    /// what they showed it here (D176 part 6), whichever host: a directory's, a file's and a
+    /// device node's kind, mode, owner and group, a device's number, a symlink's target, a
+    /// name no Windows name holds, a mode of 0, and an extended attribute; and a file the host
+    /// made, which holds no owner, its share's default owner's there too.
+    #[test]
+    fn a_guests_files_show_it_the_same_copied_as_they_move() {
+        let (from, s) = dir();
+        std::fs::write(from.join("host.txt"), "h").unwrap();
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1001"))).0,
+            0
+        );
+        let fields = |v: [u32; 4]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let mut mkdir = [0o750u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
+        mkdir.extend(name("d"));
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 1234, &mkdir)).0, 0);
+        let (d, _) = seen(&s, ROOT, "d");
+        for (n, mode, rdev, uid) in [
+            ("f", S_IFREG | 0o640, 0, 1234),
+            ("a:b", S_IFREG | 0o600, 0, 1234),
+            ("zero", S_IFREG, 0, 0),
+            ("null", S_IFCHR | 0o620, (1 << 8) | 3, 0),
+        ] {
+            let mut mknod = fields([mode, rdev, 0, 0]);
+            mknod.extend(name(n));
+            assert_eq!(answer(&s, &req(op::MKNOD, d, uid, &mknod)).0, 0, "{n}");
+        }
+        let mut link = name("l");
+        link.extend(name("f"));
+        assert_eq!(answer(&s, &req(op::SYMLINK, d, 0, &link)).0, 0);
+        let (f, _) = seen(&s, d, "f");
+        let mut set = 1u32.to_le_bytes().to_vec();
+        set.extend_from_slice(&0u32.to_le_bytes());
+        set.extend(name("user.k"));
+        set.push(b'v');
+        assert_eq!(answer(&s, &req(op::SETXATTR, f, 1234, &set)).0, 0);
+
+        let to = shards_testdir::TempDir::new("fs-moved").unwrap();
+        moved(&from, &to);
+        let t = Server::new(root_of(&to), false, None).unwrap();
+        assert_eq!(
+            answer(&t, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1001"))).0,
+            0
+        );
+        assert_eq!(seen(&t, ROOT, "host.txt").1, seen(&s, ROOT, "host.txt").1);
+        assert_eq!(seen(&t, ROOT, "host.txt").1[1..3], [1000, 1001]);
+        let (td, there) = seen(&t, ROOT, "d");
+        assert_eq!(there, seen(&s, ROOT, "d").1);
+        assert_eq!(there[..3], [S_IFDIR | 0o750, 1234, 1234]);
+        for n in ["f", "a:b", "zero", "null", "l"] {
+            assert_eq!(seen(&t, td, n).1, seen(&s, d, n).1, "{n}");
+        }
+        assert_eq!(seen(&t, td, "f").1[..3], [S_IFREG | 0o640, 1234, 1234]);
+        assert_eq!(seen(&t, td, "zero").1[0], S_IFREG);
+        let null = seen(&t, td, "null").1;
+        assert_eq!((null[0] & S_IFMT, null[3]), (S_IFCHR, (1 << 8) | 3));
+        let (tf, _) = seen(&t, td, "f");
+        let mut get = 64u32.to_le_bytes().to_vec();
+        get.extend_from_slice(&0u32.to_le_bytes());
+        get.extend(name("user.k"));
+        assert_eq!(answer(&t, &req(op::GETXATTR, tf, 0, &get)), (0, b"v".to_vec()));
+        let (tl, _) = seen(&t, td, "l");
+        assert_eq!(answer(&t, &req(op::READLINK, tl, 0, &[])), (0, b"f".to_vec()));
     }
 
     #[test]

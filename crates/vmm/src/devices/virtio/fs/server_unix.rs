@@ -53,6 +53,41 @@ pub(super) fn ghost(dir: host::Raw, bytes: &[u8]) -> Result<host::Owned, String>
     Ok(file.into())
 }
 
+/// The directory at `path`, opened as a share's root is, for calls relative to it.
+pub(super) fn open_dir(path: &std::path::Path) -> Result<host::Owned, Errno> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::File::options()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY)
+        .open(path)
+        .map(host::Owned::from)
+        .map_err(|e| host::linux_errno(e.raw_os_error().unwrap_or(libc::EIO)))
+}
+
+/// The guest's name of a host's directory entry `host`: on Unix its own bytes.
+pub(super) fn guest_name_of(host: &std::ffi::OsStr) -> Result<CString, Errno> {
+    use std::os::unix::ffi::OsStrExt as _;
+    CString::new(host.as_bytes()).map_err(|_| EINVAL)
+}
+
+/// The host's name of a guest's name `guest`, one component: on Unix its own bytes.
+pub(super) fn host_name_of(guest: &[u8]) -> Result<std::ffi::OsString, Errno> {
+    use std::os::unix::ffi::OsStrExt as _;
+    if guest.contains(&0) {
+        return Err(EINVAL);
+    }
+    Ok(std::ffi::OsStr::from_bytes(guest).to_owned())
+}
+
+/// The server's errno `e`, Linux's, as an error of this host's: its own where the two hosts
+/// number it alike (every one on Linux; on macOS the first 34 but 11, its EDEADLK).
+pub(super) fn io_error(e: Errno) -> std::io::Error {
+    if cfg!(target_os = "linux") || ((1..=34).contains(&e) && e != 11) {
+        return std::io::Error::from_raw_os_error(e);
+    }
+    std::io::Error::other(format!("Linux's errno {e}"))
+}
+
 pub(super) fn last() -> Errno {
     host::linux_errno(
         std::io::Error::last_os_error()

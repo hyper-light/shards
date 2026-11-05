@@ -141,6 +141,48 @@ pub(super) fn open_regular(
     Ok((opened, st))
 }
 
+/// The directory at `path`, opened as a share's root is (with backup semantics, which a
+/// directory is opened by), for calls relative to it.
+pub(super) fn open_dir(path: &std::path::Path) -> Result<host::Owned, Errno> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_TRAVERSE,
+    };
+    std::fs::File::options()
+        .access_mode(FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | FILE_READ_EA)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map(host::Owned::from)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => ENOENT,
+            std::io::ErrorKind::PermissionDenied => EACCES,
+            std::io::ErrorKind::NotADirectory => ENOTDIR,
+            _ => EIO,
+        })
+}
+
+/// The guest's name of a host's directory entry `host`: NTFS's, each character WSL keeps
+/// escaped its own again ([`ntfs::guest_name`]).
+pub(super) fn guest_name_of(host: &std::ffi::OsStr) -> Result<CString, Errno> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let wide: Vec<u16> = host.encode_wide().collect();
+    CString::new(ntfs::guest_name(&wide)).map_err(|_| EINVAL)
+}
+
+/// The host's name of a guest's name `guest`, one component: as NTFS keeps it, each
+/// character no Windows name holds escaped as WSL escapes it ([`ntfs::nt_name`]).
+pub(super) fn host_name_of(guest: &[u8]) -> Result<std::ffi::OsString, Errno> {
+    use std::os::windows::ffi::OsStringExt as _;
+    Ok(std::ffi::OsString::from_wide(&ntfs::nt_name(guest)?))
+}
+
+/// The server's errno `e`, Linux's, as an error of this host's ([`ntfs::io_error`]).
+pub(super) fn io_error(e: Errno) -> std::io::Error {
+    ntfs::io_error(e)
+}
+
 /// `name` in `dir` opened for its metadata alone.
 fn meta(dir: host::Raw, name: &CStr) -> Result<host::Owned, Errno> {
     ntfs::open_at(borrow(dir), &nt(name)?, 0, FILE_OPEN, 0)
@@ -257,7 +299,9 @@ pub(super) fn fs_stats(fd: host::Raw) -> Result<FsStats, Errno> {
 
 /// The owner's attribute (server.rs `Owner`'s JSON) as WSL's metadata holds it: its owner,
 /// group and mode (`$LXUID`, `$LXGID`, `$LXMOD`), a device's numbers (`$LXDEV`) where its
-/// kind is one the host keeps no node of; none where WSL keeps none.
+/// kind is one the host keeps no node of; none where WSL keeps no owner or group. A mode
+/// alone is the file's own, as a Unix host's is, which [`ntfs::stat`] reads: a chmod of a
+/// file the host made keeps it its share's default owner's, as on Unix (D38).
 fn owner_of(fd: BorrowedHandle<'_>) -> Result<Option<Vec<u8>>, Errno> {
     let eas = ntfs::eas(fd)?;
     let word = |name: &[u8]| -> Option<u32> {
@@ -265,7 +309,7 @@ fn owner_of(fd: BorrowedHandle<'_>) -> Result<Option<Vec<u8>>, Errno> {
         Some(u32::from_le_bytes(<[u8; 4]>::try_from(v.get(..4)?).ok()?))
     };
     let (uid, gid, mode) = (word(b"$LXUID"), word(b"$LXGID"), word(b"$LXMOD"));
-    if uid.is_none() && gid.is_none() && mode.is_none() {
+    if uid.is_none() && gid.is_none() {
         return Ok(None);
     }
     let mut json = format!("{{\"UID\":{},\"GID\":{}", uid.unwrap_or(0), gid.unwrap_or(0));
