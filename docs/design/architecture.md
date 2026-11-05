@@ -5583,7 +5583,10 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     the parent beside it with the memory controller (cgroup-v2.rst, "No Internal Process
     Constraint"), the daemon started there with `XDG_RUNTIME_DIR` a directory with no bus
     in it; a holder process keeps the scope, so that the daemon, not the manager, removes
-    the leaf.
+    the leaf. The test makes the scope's leaves itself, and no process but its shell is ever
+    in the scope's own cgroup: a child waited for holds its cgroup populated until its last
+    context switch (Linux 6.19, d245698d727a), and a populated cgroup takes no controller
+    (EBUSY: CI's ubuntu-24.04, kernel 7.0, run 41959673660).
     A run under the parent made in a leaf whose processes are its VM process, its network
     process and the spawner alone; the VM process's own memory charged to the parent from
     its first page; a second run in the same leaf; a run without one in the daemon's own

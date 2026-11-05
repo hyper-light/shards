@@ -2028,7 +2028,10 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // size the guest's file system asked of the share's server afresh as it looked (its
     // stderr), and the byte past that size read again two seconds on, opened afresh: three
     // times on CI's windows-2022 (793abaeb, 1415ad8f, d3d996b7) the guest saw 9 MiB, and at
-    // d3d996b7 read the new byte 2 s on.
+    // d3d996b7 read the new byte 2 s on. At b5113c13 (41959673660) the server, asked
+    // afresh, said the new size, and the guest's jiffies had gone 0.56 s across the mapper's
+    // 1.235 s sleep: its attributes were still valid by the clock FUSE times them by, which
+    // the mapper now waits out too.
     if mapped.stdout != format!("map2m /v/mapped {}\n", (9 << 20) + 1) {
         let host = std::fs::metadata(dir.join("mapped")).map(|m| m.len());
         std::thread::sleep(Duration::from_secs(2));
@@ -2570,7 +2573,7 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_microvm_is_made_in_the_delegated_cgroup_its_cgroup_parent_names() {
-    use std::io::Write as _;
+    use std::io::{Read as _, Write as _};
     if cannot_run_vms() {
         return;
     }
@@ -2602,18 +2605,28 @@ fn a_microvm_is_made_in_the_delegated_cgroup_its_cgroup_parent_names() {
         }
     }
     let _scope = Scope(unit.clone());
+    // No process but the script's shell is ever in the scope's own cgroup: its cgroup is
+    // read with the shell's builtins, and the test makes its leaves. A child the shell made
+    // there and waited for still holds it populated until the child's last context switch
+    // (Linux 6.19's d245698d727a, "cgroup: Defer task cgroup unlink until after the task is
+    // done switching out"), and a cgroup populated takes no controller in its
+    // `cgroup.subtree_control` (kernel/cgroup/cgroup.c, cgroup_vet_subtree_control_enable's
+    // EBUSY), where 7.0's rmdir waits such a child out (1b164b876c36): CI's ubuntu-24.04 at
+    // b5113c13 (41959673660, kernel 7.0.0-1017-azure) refused the write so, `mkdir` just
+    // waited for, and dash said "echo: I/O error".
     let script = r#"set -e
-cg=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
-mkdir "$cg/daemon"
+while IFS= read -r line; do
+case $line in 0::*) cg=/sys/fs/cgroup${line#0::} ;; esac
+done </proc/self/cgroup
+echo "$cg"
+read -r made
 echo $$ > "$cg/daemon/cgroup.procs"
 echo +memory > "$cg/cgroup.subtree_control"
-mkdir "$cg/agents"
 sleep 3600 </dev/null >/dev/null 2>&1 &
-echo "$cg"
 export XDG_RUNTIME_DIR="$1"
 unset DBUS_SESSION_BUS_ADDRESS
 shift
-exec "$@"
+exec "$@" </dev/null
 "#;
     // From a file: systemd-run expands `$` in its command's arguments as a unit's
     // ExecStart= is (systemd.service(5), "Command lines"; systemd-run(1),
@@ -2640,16 +2653,30 @@ exec "$@"
         .env("SHARDS_HOME", home.as_os_str())
         .env("SHARDS_KERNEL", kernel())
         .env("SHARDS_INIT", guest_init())
-        .stdin(Stdio::null());
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     common::as_tests_run(&mut started);
-    let pulled = started.output().unwrap();
-    let said = String::from_utf8_lossy(&pulled.stdout).into_owned();
+    let mut child = started.spawn().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut said = String::new();
+    out.read_line(&mut said).unwrap();
+    let delegated = std::path::PathBuf::from(said.trim_end());
+    if !delegated.starts_with("/sys/fs/cgroup/") {
+        let ended = child.wait_with_output().unwrap();
+        panic!("{said}{}", String::from_utf8_lossy(&ended.stderr));
+    }
+    for leaf in ["daemon", "agents"] {
+        std::fs::create_dir(delegated.join(leaf)).unwrap();
+    }
+    child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    out.read_to_string(&mut said).unwrap();
+    let pulled = child.wait_with_output().unwrap();
     assert!(
         pulled.status.success(),
         "{said}{}",
         String::from_utf8_lossy(&pulled.stderr)
     );
-    let delegated = std::path::PathBuf::from(said.lines().next().unwrap());
     let path_of = |dir: &Path| format!("/{}", dir.strip_prefix("/sys/fs/cgroup").unwrap().display());
     let agents = path_of(&delegated.join("agents"));
     let shards = |args: &[&str]| shards_in(&home, args);
@@ -12791,7 +12818,7 @@ fn import_makes_images_of_tarballs() {
     let engine = shards_vmm::platform::UnixListener::bind(&socket.0).unwrap();
     let (sent, served) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        use std::io::{BufRead as _, Read as _, Write as _};
+        use std::io::{Read as _, Write as _};
         // Asked first whether it holds the microVM, which it does not.
         let (mut stream, mut reader, request) = loop {
             let (mut stream, _) = engine.accept().unwrap();
@@ -17176,7 +17203,7 @@ struct HecRequest {
 /// indexed. Each connection on a thread of its own, as a driver keeps its own; each
 /// request sent on `seen`.
 fn hec(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<HecRequest>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{Read as _, Write as _};
     let posted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     std::thread::spawn(move || {
         for conn in listener.incoming() {
@@ -17425,7 +17452,7 @@ struct CloudWatchRequest {
 /// put to a stream there. Each connection on a thread of its own, as a client keeps its
 /// own; each request sent on `seen`.
 fn cloudwatch(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<CloudWatchRequest>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{Read as _, Write as _};
     type Made = (
         std::collections::BTreeSet<String>,
         std::collections::BTreeSet<(String, String)>,
@@ -17846,7 +17873,7 @@ struct GoogleRequest {
 /// GCE's metadata server, its project, its instance and its default account's token. Each
 /// connection on a thread of its own; each request sent on `seen`.
 fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleRequest>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{Read as _, Write as _};
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(conn) = conn else {
