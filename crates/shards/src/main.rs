@@ -89,6 +89,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),
+        // a budgeted build's writer, outside its budget (D188): not for people to run.
+        #[cfg(target_os = "linux")]
+        Some("build-writer") => build::outside::serve(),
         // a run's share process (D38), which the daemon starts: not for people to run.
         Some("share") => share::share(args),
         // the daemon's spawner (shards_ipc::start_spawner, PM M158): not for people to run.

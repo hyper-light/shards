@@ -42,6 +42,11 @@ use crate::vfs::{CAPABILITY, Fs};
 /// wrong.
 pub const PRODUCER: &str = "snapshot 1";
 
+/// [`PRODUCER`]'s images written over their base's root filesystem, a clone of it, only
+/// what the build added written past its blocks (shards_erofs::write_over): told apart, so
+/// that what these rules wrote can be removed alone should they prove wrong.
+pub const PRODUCER_OVER: &str = "snapshot 1, over its base's root filesystem 1";
+
 /// What a stack of layers holds against `Store::rootfs`'s limits: its layers' entries,
 /// the bytes of their names, link targets and xattrs (at most), and the bytes the layers'
 /// archives take uncompressed.

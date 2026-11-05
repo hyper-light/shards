@@ -17704,6 +17704,22 @@ revision before comparing a changed API/implementation.
   limit, which no give-back can take, and the root filesystem an image's export writes
   whole, 850 MiB for rust:1-slim's 7 MiB addition, which a root filesystem made of
   its base's and its own layers would not.
+- **Since (D188, built; awaiting the coordinator's measurement on CI's runners and
+  Fedora).** One correction to the reading above: an export's root filesystem is made
+  durable before it is named (`Partial::commit`'s fsync), so a free arm paid its disk too,
+  only at memory's pace before its sync; what is flushed after a free build ends is its
+  steps' changes, kept in a staging file the build reads and removes. Two changes, both
+  from the kernel's source (mm/page-writeback.c and mm/memcontrol.c at v7.0, CI's
+  kernel's): a build its budget holds hands its own writes (its steps' changes, its layers,
+  its image's root filesystem) to a writer its user's manager places outside the budget
+  (`shards build-writer`, build/outside.rs), whose cgroup `balance_dirty_pages` throttles
+  them against, as it throttles every writer against its own (`wb_get_create_current`,
+  `mdtc_calc_avail`); and an export over a base whose root filesystem the store's file
+  system clones writes only what the build added past the clone's blocks
+  (`shards_erofs::write_over`), which on CI's ext4 is not made, the image written whole.
+  The builder's own writes to its caches' ranges (an apt build's lists and archives, npm's
+  cache) stay under the budget, its VM process's. To measure: this harness, unchanged, at
+  the commit that has them, on CI (`builder-pressure.yml`) and Fedora (`fedora.sh`).
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
