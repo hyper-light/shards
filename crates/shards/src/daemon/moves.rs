@@ -186,6 +186,20 @@ pub(crate) fn host_cpu() -> Vec<String> {
     }
 }
 
+/// The features of `ran_on`, the CPU of the machine a microVM ran on, that `here`, this
+/// machine's, lacks: none where this machine's OS names none ([`host_cpu`]), which no move
+/// checks.
+fn cpu_lacks<'a>(ran_on: &'a [String], here: &[String]) -> Vec<&'a str> {
+    if here.is_empty() {
+        return Vec::new();
+    }
+    ran_on
+        .iter()
+        .filter(|f| !here.contains(f))
+        .map(String::as_str)
+        .collect()
+}
+
 /// A file a snapshot restores against, by its name relative to the home, its length and
 /// its bytes' SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1072,12 +1086,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Its CPU: every feature of the machine it ran on, as its guest may have used any.
         let here = host_cpu();
-        let lacks: Vec<&str> = plan
-            .cpu
-            .iter()
-            .filter(|f| !here.is_empty() && !here.contains(f))
-            .map(String::as_str)
-            .collect();
+        let lacks = cpu_lacks(&plan.cpu, &here);
         if !lacks.is_empty() {
             return Err(format!(
                 "this machine's CPU lacks {}, which {}'s guest may have used where it ran",
@@ -1595,6 +1604,28 @@ mod tests {
             volumes: vec!["data".into()],
             binds: Vec::new(),
             cpu: Vec::new(),
+        }
+    }
+
+    /// A move to a machine whose CPU lacks a feature of the one its microVM ran on is
+    /// refused, naming each (an M5 Max's microVM to an M4 Max, PM M460); one whose CPU has
+    /// them all, or whose OS names none, is taken. This machine takes its own.
+    #[test]
+    fn a_cpu_lacking_what_its_guest_may_have_used_is_named() {
+        let names = |l: &[&str]| l.iter().map(|f| (*f).to_string()).collect::<Vec<String>>();
+        let m5 = names(&["FEAT_AES", "FEAT_CSSC", "FEAT_EBF16", "FEAT_HBC"]);
+        let m4 = names(&["FEAT_AES"]);
+        assert_eq!(cpu_lacks(&m5, &m4), ["FEAT_CSSC", "FEAT_EBF16", "FEAT_HBC"]);
+        assert!(cpu_lacks(&m4, &m5).is_empty());
+        assert!(cpu_lacks(&m5, &m5).is_empty());
+        assert!(cpu_lacks(&m5, &[]).is_empty());
+        let own = host_cpu();
+        assert!(cpu_lacks(&own, &own).is_empty());
+        if cfg!(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            target_os = "linux"
+        )) {
+            assert!(!own.is_empty(), "this machine's OS names its CPU's features");
         }
     }
 

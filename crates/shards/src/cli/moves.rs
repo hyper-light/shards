@@ -276,6 +276,14 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         };
     }
     times.step("ready there");
+    if times.on {
+        let _ = writeln!(
+            io::stderr(),
+            "move: {} of its {} files sent, {to} lacking them",
+            needs.files.len(),
+            plan.files.len()
+        );
+    }
 
     // 3. Its files, from this daemon to that one: moved live, its memory round after round
     // first, then its last save, which holds it here until that one has it.
