@@ -203,12 +203,46 @@ the guest arch is always the host arch.
 
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
-| Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; snapshots with cold and warm restore; CI on both libcs |
-| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; snapshots with cold and warm restore (D154) |
-| macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
-| macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
-| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; snapshots with cold and warm restore (D196); the daemon and its client (D195) |
-| Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
+| Linux (glibc, musl) | x86_64 / amd64 | KVM | the features below, as their cells say; CI on both libcs |
+| Linux (glibc, musl) | aarch64 / arm64 | KVM | the features below, as their cells say; its VM tests run nested, in an arm64 Linux guest with EL2 on an M3 or later Mac (D154), as no arm64 Linux host here or on CI has KVM |
+| macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | the features below, as their cells say |
+| macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | out: Intel Macs left out (2026-10-13); built and linted, no backend |
+| Windows | x86_64 / amd64 | Windows Hypervisor Platform | the features below, as their cells say |
+| Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | in progress (the platform parity plan's step 10): its backend on whp-arm64, not yet merged; its real-VM suite on a native arm64 Windows host last seen at 81 of 84 test binaries passing, three failing at their commands' deadlines |
+
+What each target runs, feature by feature (2026-11-04, branch integrate; the platform parity
+audit, docs/audit/2026-10-27_platform-parity.md, holds the evidence of each and its open
+rows). "Yes" is built and tested with real VMs there. Linux arm64's are built and linted on
+CI, whose arm64 runners have no KVM, and tested with real VMs nested (D154's L1 harness):
+the snapshot suites (PM M346), and the daemon, warm, saved, restore, run, vsock, pmem, boot
+and hot-plug suites (D214); its other cells' VM tests are amd64's code, not yet run there.
+Windows arm64 runs nothing until its backend lands, and each of its cells is the Windows
+amd64 cell's once it does.
+
+| Feature | Linux amd64 | Linux arm64 | macOS arm64 | Windows amd64 |
+|---|---|---|---|---|
+| Boot, `run --kernel`, `shards run IMAGE`, builds (D16, D33) | yes | yes | yes | yes (D140, D141) |
+| The daemon, containers and every command, the CLI's client, Engine API, compose, events (D26, D27, D170) | yes | yes | yes | yes (D195) |
+| Snapshots, restores, templates, warm pools (D14, D25, D26) | yes | yes (D154) | yes | yes (D196) |
+| A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
+| Networks, published ports, default deny, IPv6 on networks and past the microVM (D46, D59, D99) | yes | yes | yes | yes (D142, D143) |
+| Volumes and binds, a bind's host-made files its run's user's, DAX windows (D38, D189) | yes | yes | yes | yes (D197, D207, PM M412, M413) |
+| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer held by unit tests, not yet run on real microVMs | yes, restarts by packing: its views of a file are not mapped over in place yet (D190's Next) |
+| Memory given back: free page reporting, budgets, the host's word, for runs and builders (D148, D151, D188) | yes | yes | yes | yes (PM M371, M375, M391) |
+| A budgeted build's writes made outside its budget (D188, PM M442) | yes | yes | needs none: no kernel charges its page cache to a group shards keeps | needs none: a job's limit is its commit, never its cache |
+| `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
+| vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes; open: its vCPUs' wake policy on a busy host, unmeasured (D191's Next) |
+| Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
+| A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
+| Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | open: in the VMM (WHP's disk steps passed on jupiter); through the CLI a volume is refused and a disk untested (tests/plug.rs is Unix's) |
+| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its API assigns no device (PM M403) | open: refused where the hypervisor refuses (PM M401, M402); a host that permits Discrete Device Assignment has no implementation yet (the parity plan's step 13) |
+| A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
+| Moved to another machine, saved (D176 part 6) | yes (PM M460) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; open: a volume's guest owners (NTFS's extended attributes, D197) are not moved yet |
+| Moved live (D176 part 7) | yes (PM M461) | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
+| Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
+| Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
+| `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
+| The build cache collected as its user's shares say (D212) | yes | yes | yes | yes |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
 ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
