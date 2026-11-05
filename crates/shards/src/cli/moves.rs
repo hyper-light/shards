@@ -118,6 +118,31 @@ impl Times {
     }
 }
 
+/// Whether microVM `name` runs on the other machine, asked through `there` up to a minute
+/// as its answers do not come: none where none came.
+fn running_there(
+    there: &dyn Fn(Vec<String>, Option<Box<dyn Read + Send>>) -> Result<There, String>,
+    name: &str,
+) -> Option<bool> {
+    let ask = || {
+        there(
+            ["inspect", "-f", "{{.State.Running}}", name]
+                .iter()
+                .map(|a| (*a).to_string())
+                .collect(),
+            None,
+        )
+    };
+    for _ in 0..12 {
+        match ask() {
+            Ok((0, out, _)) => return Some(String::from_utf8_lossy(&out).trim() == "true"),
+            Ok(_) => return Some(false),
+            Err(_) => std::thread::sleep(std::time::Duration::from_secs(5)),
+        }
+    }
+    None
+}
+
 fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result<(), String> {
     let times = Times {
         on: std::env::var_os("SHARDS_MOVE_TIMES").is_some(),
@@ -304,15 +329,26 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     let resumed = there(step(&["restore", name, &plan.snapshot]), None);
     match resumed {
         Ok((0, _, _)) => {}
-        failed => {
-            let why = match failed {
-                Ok(r) => format!("{to}: {}", said("its restore", &r)),
-                Err(e) => e,
-            };
-            // What was made there of it goes, and it goes on here.
+        // Refused there: what was made there of it goes, and it goes on here.
+        Ok(r) => {
             let _ = there(step(&["rm", "-f", name]), None);
-            return Err(back_here(why));
+            return Err(back_here(format!("{to}: {}", said("its restore", &r))));
         }
+        // No answer: it may run there. Asked again until the other machine says; never
+        // run in both places, nor in neither, where it cannot.
+        Err(e) => match running_there(&there, name) {
+            Some(true) => {}
+            Some(false) => {
+                let _ = there(step(&["rm", "-f", name]), None);
+                return Err(back_here(e));
+            }
+            None => {
+                return Err(format!(
+                    "{e}; whether {name} runs on {to} is not known: {}, saved, is held here until it is (shards --context {to} ps -a; then shards rm -f {name}, here or there)",
+                    if held { "it" } else { "its copy" }
+                ));
+            }
+        },
     }
     times.step("resumed there");
     // How long it ran nowhere, as this machine's clock says: from its last save asked,

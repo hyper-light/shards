@@ -11,8 +11,8 @@
 #            ran nowhere, with n, p50, p90, p99 and max)
 #   stop.    On the machine moved to: its daemon stopped, its home removed.
 #
-# The counter writes a line every 50 ms, and for live moves rewrites 4 MiB of its memory
-# each time it counts (80 MiB/s), so that the rounds have its writes to chase.
+# The counter writes a line every 50 ms, and for live moves rewrites 1 MiB of its memory
+# each time it counts (20 MiB/s), so that the rounds have its writes to chase.
 set -euo pipefail
 : "${SHARDS:?the shards binary to run}"
 HOME_THERE=${HOME_THERE:-$HOME/.cache/shards-move-there}
@@ -53,12 +53,12 @@ move)
 	: "${INVITE:?the invitation the listening machine printed}"
 	mkdir -p "$HOME_HERE"
 	echo "$INVITE" | base64 -d > "$HOME_HERE/lab.invite"
-	here context rm lab >/dev/null 2>&1 || true
-	here create context lab --invite-file "$HOME_HERE/lab.invite"
+	# Joined once: an invitation enrolls one client, which stays enrolled.
+	here inspect context lab >/dev/null 2>&1 || here create context lab --invite-file "$HOME_HERE/lab.invite"
 	here pull -q "$IMAGE" >/dev/null
 	echo "moving from: $(uname -sm), $(sw_vers -productVersion 2>/dev/null || uname -r), revision ${REVISION:-unknown}, mode $MODE, image $IMAGE"
 	work='i=0; while :; do i=$((i+1)); echo $i; '
-	[ "$MODE" = live ] && work="$work"'head -c 4194304 /dev/zero | tr "\0" "x" > /dev/shm/dirty; '
+	[ "$MODE" = live ] && work="$work"'head -c 1048576 /dev/zero | tr "\0" "x" > /dev/shm/dirty; '
 	work="$work"'sleep 0.05; done'
 	flag=""
 	[ "$MODE" = live ] && flag="--live"
@@ -85,7 +85,6 @@ move)
 	done
 	stats "move took (us)" < "$HOME_HERE/took.txt"
 	[ "$MODE" = live ] && stats "downtime (us)" < "$HOME_HERE/downtime.txt"
-	here context rm lab >/dev/null 2>&1 || true
 	;;
 *)
 	echo "usage: two-hosts.sh listen|move|stop" >&2
