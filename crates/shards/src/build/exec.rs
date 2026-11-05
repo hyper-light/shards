@@ -174,7 +174,7 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 /// A base's kept root filesystem, opened, and where it holds each of that base's files' data:
-/// (inode, offset) in the build's image to (block, length) in it ([`blocks_below`]).
+/// by the data's place in the build's sources, its block there and its size ([`blocks_below`]).
 type Below = (std::fs::File, HashMap<(u32, u64), (u32, u64)>);
 
 impl<'a> Exec<'a> {
