@@ -895,6 +895,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         let any = kind.is_empty();
         let (mut documents, mut errors) = (Vec::new(), Vec::new());
+        // The image store opened and its references read once for every name, as first
+        // needed: each name is looked up among them. Opened for each, an inspect of 4,500
+        // names nothing has (the stop test's on Windows) made 4,500 opens of the store,
+        // each 15 directories made and its references read, before its first byte.
+        let images = std::cell::OnceCell::new();
         for given in &parsed.args {
             let found = (|| {
                 if any || kind == "container" {
@@ -911,7 +916,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     }
                 }
                 if any || kind == "image" {
-                    match self.image_doc(given) {
+                    match image_doc_in(images.get_or_init(|| self.images_named()), given) {
                         Ok(d) => return Ok(d),
                         // docker/cli tries the next kind only past what is not found.
                         Err(Missing::Not(e)) if !any => return Err(daemon_said(&e)),
@@ -950,16 +955,35 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// Image `given`'s InspectResponse, or why not.
     pub(super) fn image_doc(&self, given: &str) -> Result<shards_template::Value, Missing> {
-        let store = self
-            .store()
-            .map_err(Missing::Not)?
-            .ok_or_else(|| Missing::Not(super::images::not_found(given)))?;
-        let images = store.named().map_err(|e| Missing::Not(e.to_string()))?;
-        let named = super::images::resolve(&images, given).map_err(Missing::Not)?;
-        let image = store.image(named).map_err(|e| Missing::Not(e.to_string()))?;
-        let doc = document(&image, record_name(given).as_deref()).map_err(Missing::Failed)?;
-        Ok(super::inspect_doc::image_value(&doc))
+        image_doc_in(&self.images_named(), given)
     }
+
+    /// The image store and the images its references name, for names to be looked up
+    /// among ([`image_doc_in`]); none where the home has no store.
+    fn images_named(&self) -> Images {
+        let Some(store) = self.store()? else {
+            return Ok(None);
+        };
+        let named = store.named().map_err(|e| e.to_string())?;
+        Ok(Some((store, named)))
+    }
+}
+
+/// What `images_named` reads: the image store and its named images, none
+/// where the home has no store, or why they could not be read.
+type Images = Result<Option<(shards_image::store::Store, Vec<shards_image::store::Named>)>, String>;
+
+/// Image `given`'s InspectResponse, found among `images`, or why not.
+fn image_doc_in(images: &Images, given: &str) -> Result<shards_template::Value, Missing> {
+    let (store, named) = match images {
+        Ok(Some(read)) => read,
+        Ok(None) => return Err(Missing::Not(super::images::not_found(given))),
+        Err(e) => return Err(Missing::Not(e.clone())),
+    };
+    let found = super::images::resolve(named, given).map_err(Missing::Not)?;
+    let image = store.image(found).map_err(|e| Missing::Not(e.to_string()))?;
+    let doc = document(&image, record_name(given).as_deref()).map_err(Missing::Failed)?;
+    Ok(super::inspect_doc::image_value(&doc))
 }
 
 /// Why an image has no document: not found, which `inspect` without a `--type` passes

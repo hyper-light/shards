@@ -1676,7 +1676,7 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");
-    start_daemon(&home, None);
+    let daemon = start_daemon(&home, None);
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_LOCAL_STORE", "none".as_ref()),
@@ -1727,14 +1727,28 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
         .collect();
     let cut = inspect(&cut);
     let whole = inspect(&["big"]);
-    // Each has the volume in its hands, and stops reading as it waits on its full pipe.
-    for out in [&cut.1, &whole.1] {
+    // Each has the volume in its hands, and stops reading as it waits on its full pipe:
+    // within TIMEOUT, or past it for as long as the daemon works on the answers, its
+    // seconds of work each costing more than an idle daemon's
+    // (idle_followers_cost_nothing_and_end_with_their_container's 30 ms). Step 10's arm64
+    // Windows host under QEMU's TCG showed a client nothing in a minute (FullReal04); a
+    // daemon that does nothing for DAEMON_QUIET fails it as before.
+    for (who, out) in [("cut", &cut.1), ("whole", &whole.1)] {
         let deadline = Instant::now() + TIMEOUT;
-        loop {
-            if waiting_in(out) > 0 {
-                break;
+        let (mut spent, mut looked, mut worked) = (cpu_time(daemon), Instant::now(), Instant::now());
+        while waiting_in(out) == 0 {
+            if looked.elapsed() >= Duration::from_secs(1) {
+                let now = cpu_time(daemon);
+                if now.saturating_sub(spent) >= Duration::from_millis(30) {
+                    worked = Instant::now();
+                }
+                (spent, looked) = (now, Instant::now());
             }
-            assert!(Instant::now() < deadline, "a client showed nothing");
+            assert!(
+                Instant::now() < deadline || worked.elapsed() < common::DAEMON_QUIET,
+                "the {who} client showed nothing, its daemon idle for {:?}: {spent:?} of CPU in all",
+                worked.elapsed()
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     }
