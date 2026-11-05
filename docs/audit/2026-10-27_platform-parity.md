@@ -55,7 +55,9 @@ needed on either. The 19 items it finds now are Windows' alone, each of an open 
 stand alone until their row is closed: row 9's 12 (VFIO's routes, module and plugs), row
 14's 4 (`daemon::moves`' attributes) and row 15's 3 (`run_promptly`, `PROMPT_SLICE_NS`, and
 `macos_thread`, whose line had said Linux and Windows needed no policy before Linux's was
-measured). A stub of the same name hides a gap from the script, as a twin it cannot tell
+measured). On p/winmove row 14's 4 are gone, moves.rs's attributes read and made through the share
+server's own calls on every host (`server::guest`), the script finding 15. A stub of the
+same name hides a gap from the script, as a twin it cannot tell
 from one: the messages of the merged code that name a host found row 17's
 (`daemon::devices`' `plug_share` on Windows, "not plugged into a running microVM on Windows
 yet").
@@ -83,7 +85,7 @@ alone, so the script keeps Windows' missing passthrough visible (row 9).
 | 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | closed: Windows (D196) | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
 | 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
 | 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | closed: Windows, its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
-| 14 | A microVM moved to another machine (D176 part 6) with its volumes' guest owners, which a volume's server keeps in its files' extended attributes (D38; on Windows NTFS's, as WSL keeps them, D197) | open: Windows, whose move carries no attribute (`xattrs::list` and `set` there say none), so a volume moved from or to a Windows machine leaves its guest's owners behind | platform-parity.py (2026-11-04): daemon/moves.rs's `NO_ATTR` and `sys`, macOS's and Linux's, alone; moves.rs "Windows keeps a volume's owners in NTFS's own extended attributes (D197), which this move does not carry yet" |
+| 14 | A microVM moved to another machine (D176 part 6) with its volumes' guest owners, which a volume's server keeps in its files' extended attributes (D38; on Windows NTFS's, as WSL keeps them, D197) | built on every host, its tests not yet run: each file moves as its guest sees it, read and made through the share server's own calls on both sides (`server::guest`, stream version 2), so its owner, mode, kind, device number and attributes, and a name no Windows name holds, cross any pair of hosts; open until its unit tests pass on each host and `a_volumes_guest_owners_move_with_it` (tests/moved.rs) passes with a Windows peer | was: daemon/moves.rs's `NO_ATTR` and `sys`, macOS's and Linux's, alone, Windows' `xattrs::list` and `set` saying none; platform-parity.py (p/winmove) finds no item of moves.rs |
 | 15 | The policy a vCPU thread wakes at on a busy host (D191) | open: Windows, unmeasured: its vCPU threads run as they are, its hold's governor alone at TIME_CRITICAL (PM M294) | platform-parity.py (2026-11-04): platform/unix.rs's `run_promptly` and `PROMPT_SLICE_NS` (Linux's shortest slice, PM M440), platform/mod.rs's `macos_thread` (macOS's real-time policy, M8, M10); D191's Next, "Windows' vCPUs on a contended host: unmeasured" |
 | 16 | A microVM moved live (D176 part 7) | open: arm64 Linux, whose dirty rings need the ITS's bitmap beside them (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and Windows, whose dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) is not asked yet: each refuses a live move, saying so, and moves one saved. A saved move on either, built, has not run there yet | D176's Not yet; moves.rs, "this host's microVMs move only saved, not live"; tests/moved.rs asserts the refusal off macOS and Linux x86_64 |
 | 17 | Devices plugged into a running microVM through the CLI (D214: `shards plug`, `unplug`, `grow`) | open: Windows, where the VMM plugs a disk (its steps passed on jupiter) but the daemon refuses a volume and a disk's CLI path is untested | daemon/devices.rs `plug_share` on Windows: "a volume is not plugged into a running microVM on Windows yet (D214)"; tests/plug.rs `#![cfg(unix)]` |
@@ -122,7 +124,8 @@ Each lone item is confirmed or closed as its row is worked.
 15. Row 14, a volume's guest owners moved to and from a Windows machine: each file's
     attributes as the guest sees them on both sides, through its share server's own reading
     of them (the owner's attribute on Unix, WSL's metadata on Windows), so that a move between
-    hosts of either kind keeps them.
+    hosts of either kind keeps them. Built on p/winmove (`server::guest`); its unit tests on
+    each host and its E2E with a Windows peer to run.
 16. Row 15, Windows' vCPU threads on a busy host measured as Linux's were (PM M440), and a
     policy taken where they wait as Linux's did.
 17. Row 17, `shards plug volume` on Windows (its share process's stream given the VM as a
