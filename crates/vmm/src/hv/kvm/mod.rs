@@ -210,6 +210,7 @@ struct Slots {
 /// The bytes of each vCPU's dirty ring (D176 part 7): 256 entries, a page of the host's
 /// memory for each vCPU, all the time; KVM fills one only while its VMM watches the guest's
 /// writes, and a vCPU whose ring fills exits for it to be emptied ([`Dirty::collect`]).
+#[cfg(target_arch = "x86_64")]
 const DIRTY_RING_BYTES: u32 = 4096;
 
 /// A VM's watch of its guest's writes (D176 part 7): its writable slots, which KVM logs the

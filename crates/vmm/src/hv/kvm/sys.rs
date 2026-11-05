@@ -97,7 +97,9 @@ pub const CAP_IMMEDIATE_EXIT: u64 = 136;
 pub const CAP_READONLY_MEM: u64 = 81;
 /// Per-vCPU rings of the pages its guest dirtied (api.rst 8.29), and their ordered variant,
 /// arm64's only one (8.35). Each reports the most bytes a ring may take.
+#[cfg(target_arch = "x86_64")]
 pub const CAP_DIRTY_LOG_RING: u64 = 192;
+#[cfg(target_arch = "x86_64")]
 pub const CAP_DIRTY_LOG_RING_ACQ_REL: u64 = 223;
 /// A memory slot whose guest writes KVM logs (api.rst 4.35, KVM_MEM_LOG_DIRTY_PAGES).
 pub const MEM_LOG_DIRTY_PAGES: u32 = 1 << 0;
@@ -416,6 +418,7 @@ impl VmFd {
 
     /// Gives each vCPU made after this a dirty ring of `bytes` (api.rst 4.37 and 8.29):
     /// `cap`, [`CAP_DIRTY_LOG_RING_ACQ_REL`] where KVM has it, else [`CAP_DIRTY_LOG_RING`].
+    #[cfg(target_arch = "x86_64")]
     pub fn enable_dirty_ring(&self, cap: u64, bytes: u32) -> io::Result<()> {
         #[repr(C)]
         struct EnableCap {

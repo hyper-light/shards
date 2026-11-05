@@ -12,7 +12,6 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
 
-use super::host::AsRaw as _;
 use super::*;
 
 /// A file as a share's guest sees it, beyond its data and a symlink's target.
