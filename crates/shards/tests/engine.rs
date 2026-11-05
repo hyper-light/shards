@@ -1557,8 +1557,21 @@ fn images_are_tagged_traced_removed_and_pruned() {
         "/images/shp/hist:1/history?platform=%7B%22os%22%3A%22linux%22%7D",
         None,
     );
-    assert_eq!(platform.status, 400, "{}", platform.text());
-    assert!(platform.text().contains("--platform"), "{}", platform.text());
+    // One platform's history (D179): this image's only platform is Linux's, and its
+    // history is the image's; a platform it lacks is not found.
+    assert_eq!(platform.status, 200, "{}", platform.text());
+    assert_eq!(platform.json(), steps, "{}", platform.text());
+    let lacking = api.call(
+        "GET",
+        "/images/shp/hist:1/history?platform=%7B%22os%22%3A%22windows%22%7D",
+        None,
+    );
+    assert_eq!(lacking.status, 404, "{}", lacking.text());
+    assert!(
+        lacking.text().contains("does not provide the specified platform"),
+        "{}",
+        lacking.text()
+    );
     // A run of it, which a template is made of where this host saves them.
     let made = api.call(
         "POST",
