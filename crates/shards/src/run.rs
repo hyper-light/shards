@@ -959,14 +959,24 @@ pub fn shm_bytes(most_mib: u64) -> u64 {
 
 /// The template a run of `rootfs` on `guest` with `cfg`'s shape and a writable layer that
 /// holds `layer` bytes (D190) restores: named by the SHA-256 of everything that goes into
-/// it, the snapshot format included.
-pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config, layer: u64) -> PathBuf {
+/// it, the snapshot format included, and the root filesystem's `stamp` as the run found it
+/// (shards_image::store::rootfs_stamp): a file `pull --no-cache` put at its name since has
+/// templates of its own, never the replaced one's, saved with its bytes.
+pub fn template(
+    home: &Path,
+    guest: &Guest,
+    rootfs: &Path,
+    stamp: Option<&str>,
+    cfg: &Config,
+    layer: u64,
+) -> PathBuf {
     let key = format!(
-        "snapshot format {}\nkernel {}\ninit {}\nrootfs {}\ncpus {}\nmemory {}\ncmdline {}\n{}",
+        "snapshot format {}\nkernel {}\ninit {}\nrootfs {}\nrootfs stamp {}\ncpus {}\nmemory {}\ncmdline {}\n{}",
         shards_vmm::snapshot::FORMAT,
         guest.kernel_digest,
         guest.init_digest,
         rootfs.display(),
+        stamp.unwrap_or_default(),
         cfg.vcpus,
         cfg.memory_mib,
         cfg.cmdline,
@@ -1039,7 +1049,8 @@ fn shares(cfg: &Config) -> String {
 }
 
 /// What a template was saved from: its root filesystem and its guest. It is live while
-/// that root filesystem is there, and its emulator's where it has one (D179), and that
+/// that root filesystem is there, the file its template was keyed by (`stamp`), and its
+/// emulator's where it has one (D179), and that
 /// guest is the current one (daemon.rs, `collect_garbage`). It is the daemon's record, kept beside the template rather than in
 /// it: a template's directory is a VM process's to write while it saves, and a VM taken
 /// over then could leave there a record naming any file, or a link the daemon would write
@@ -1047,6 +1058,12 @@ fn shares(cfg: &Config) -> String {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Origin {
     rootfs: PathBuf,
+    /// What told its root filesystem apart as its template was keyed ([`template`]): a
+    /// file put at that name since (`pull --no-cache`) is another's, which none of its
+    /// restores is given. None in records written before, whose templates no run is keyed
+    /// to now.
+    #[serde(default)]
+    stamp: Option<String>,
     kernel_digest: String,
     init_digest: String,
     /// Whether it was saved with the in-VM server's device after its root filesystem (an
@@ -1094,9 +1111,17 @@ impl Origin {
         }
     }
 
-    pub fn of(guest: &Guest, rootfs: &Path, server: bool, gpu: bool, emulator: Option<&Path>) -> Origin {
+    pub fn of(
+        guest: &Guest,
+        rootfs: &Path,
+        stamp: Option<&str>,
+        server: bool,
+        gpu: bool,
+        emulator: Option<&Path>,
+    ) -> Origin {
         Origin {
             rootfs: rootfs.to_path_buf(),
+            stamp: stamp.map(str::to_string),
             kernel_digest: guest.kernel_digest.clone(),
             init_digest: guest.init_digest.clone(),
             server,
@@ -1143,11 +1168,17 @@ impl Origin {
         &self.rootfs
     }
 
+    /// What told that root filesystem apart as the template was keyed.
+    pub fn stamp(&self) -> Option<&str> {
+        self.stamp.as_deref()
+    }
+
     /// Whether it is still the template of `guest`'s runs: a GPU's is of the pinned GPU
     /// kernel instead of `guest`'s (D150).
     pub fn live(&self, guest: Option<&Guest>) -> bool {
         let gpu = || crate::kernel::KERNEL_GPU.map(|k| format!("sha256:{}", k.sha256));
-        self.rootfs.is_file()
+        self.stamp.is_some()
+            && shards_image::store::rootfs_stamp(&self.rootfs) == self.stamp
             && self.emulator.as_deref().is_none_or(Path::is_file)
             && guest.is_some_and(|g| {
                 let kernel = if self.gpu {
@@ -1404,7 +1435,8 @@ mod tests {
         std::fs::write(&victim, b"the user's").unwrap();
         std::os::unix::fs::symlink(&victim, &place).unwrap();
         assert!(Origin::read(&dir).is_none(), "a link is read through");
-        Origin::of(&guest, &rootfs, true, false, None)
+        let stamp = shards_image::store::rootfs_stamp(&rootfs);
+        Origin::of(&guest, &rootfs, stamp.as_deref(), true, false, None)
             .write(&dir)
             .unwrap();
         assert_eq!(
@@ -1422,6 +1454,56 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         assert!(Origin::read(&dir).is_none());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A root filesystem put at its name since a template was keyed, as `pull --no-cache`
+    /// puts one (by rename, its modification time later: shards_image::store::rootfs_stamp),
+    /// keys templates of its own, though its length is the same; the template keyed by the
+    /// file it replaced is live no more, for a collection to remove, nor is one whose
+    /// record keeps no stamp.
+    #[test]
+    fn a_replaced_root_filesystem_has_templates_of_its_own() {
+        let home_dir = shards_testdir::TempDir::new("stamp").unwrap();
+        let home = home_dir.join("stamp");
+        std::fs::create_dir_all(home.join("templates")).unwrap();
+        let rootfs = home.join("rootfs.erofs");
+        std::fs::write(&rootfs, b"old").unwrap();
+        let guest = Guest {
+            kernel: home.join("kernel"),
+            init: home.join("init"),
+            kernel_digest: "sha256:k".into(),
+            init_digest: "sha256:i".into(),
+        };
+        let cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
+        let before = shards_image::store::rootfs_stamp(&rootfs);
+        let dir = template(&home, &guest, &rootfs, before.as_deref(), &cfg, 0);
+        std::fs::create_dir_all(&dir).unwrap();
+        Origin::of(&guest, &rootfs, before.as_deref(), false, false, None)
+            .write(&dir)
+            .unwrap();
+        assert!(Origin::read(&dir).unwrap().live(Some(&guest)));
+
+        let new = home.join("new");
+        std::fs::write(&new, b"new").unwrap();
+        let later =
+            std::fs::metadata(&rootfs).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        std::fs::File::options()
+            .write(true)
+            .open(&new)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        std::fs::rename(&new, &rootfs).unwrap();
+        let after = shards_image::store::rootfs_stamp(&rootfs);
+        assert!(after.is_some());
+        assert_ne!(after, before);
+        assert_ne!(template(&home, &guest, &rootfs, after.as_deref(), &cfg, 0), dir);
+        assert!(
+            !Origin::read(&dir).unwrap().live(Some(&guest)),
+            "the replaced file's"
+        );
+        assert!(!Origin::of(&guest, &rootfs, None, false, false, None).live(Some(&guest)));
+        assert!(Origin::of(&guest, &rootfs, after.as_deref(), false, false, None).live(Some(&guest)));
     }
 
     fn strings(v: &[&str]) -> Vec<String> {

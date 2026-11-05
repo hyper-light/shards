@@ -6426,6 +6426,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   byte for byte of each file (`assert_same_tree`), and one written whole to their stacked
   bytes (CI 41989398811: APFS's export over its base's, failing the byte comparison).
 
+  `pull --no-cache` is the one way a name comes to hold other bytes: it builds the image
+  again where a file at its name may not hold what its layers stack to (a producer's whose
+  rules proved wrong, a file changed on disk). Before, `Partial::commit` kept that file as
+  "the same bytes", throwing the build away, and its producer's mark was removed first, so
+  a kept snapshot-written image lost it. Now one that holds the same bytes, compared whole,
+  is kept with its mark, and whatever was made of it holds; one that holds others is
+  replaced by rename (`Partial::commit_again`), whoever holds it open keeping their own,
+  given a later modification time than it (two seconds past it where the clock is not,
+  past FAT's coarsest file times), and unmarked once in place, so that a crash between
+  leaves a producer named of a file it never wrote, which its disowning only builds again.
+  Templates are keyed by the root filesystem's length and modification time as their run
+  found them (`shards_image::store::rootfs_stamp`, run.rs `template`), which the daemon's
+  record keeps (`Origin`): a replaced file's runs key templates of their own, the old
+  file's are live no more and go at the next collection, and a pool keyed before refills
+  against the new file no more (refill.rs), its claims booting instead.
+
 **Measured against DAMON (PM M293).** DAMON_RECLAIM, built into the pinned kernel, does
 nothing in a run's guest as the kernel has it (its watermarks, which run it only while a
 guest's free memory is between a fifth and a half of it, kept it off in five rounds of

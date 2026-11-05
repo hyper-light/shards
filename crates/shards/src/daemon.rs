@@ -598,6 +598,10 @@ struct Pool {
     /// run that made it: the one file a restore of it may be given (`--backing`), whatever
     /// the template's state, which a VM process wrote, names.
     rootfs: Option<PathBuf>,
+    /// What told that root filesystem apart as its template was keyed (run.rs `template`),
+    /// once known: from the run that keyed it, else its template's record. A file put at
+    /// its name since (`pull --no-cache`) is given to none of its restores.
+    stamp: Option<Option<String>>,
     /// Whether its template was saved with the in-VM server's device (D60), once read:
     /// its restores are given the daemon's own, as its cold boots are.
     server: Option<bool>,
@@ -974,9 +978,10 @@ impl Waiter {
 
 /// The pool `key`, of a template saved from `rootfs`, which it keeps as the VM saving the
 /// template recorded it: resolved, links and all (vmm platform::input_path).
-fn pool_of<'s>(state: &'s mut State, key: &PoolKey, rootfs: &Path) -> &'s mut Pool {
+fn pool_of<'s>(state: &'s mut State, key: &PoolKey, rootfs: &Path, stamp: Option<&str>) -> &'s mut Pool {
     let pool = state.pools.entry(key.clone()).or_default();
     pool.rootfs.get_or_insert_with(|| resolved(rootfs));
+    pool.stamp.get_or_insert_with(|| stamp.map(str::to_string));
     pool
 }
 
@@ -7100,11 +7105,20 @@ impl<D: Disk> Daemon<D> {
                 prepared.layer,
             );
         }
-        let dir = crate::run::template(&self.home, guest, &prepared.rootfs, &cfg, prepared.layer);
+        // The file at the root filesystem's name now, which its template is keyed by.
+        let stamp = shards_image::store::rootfs_stamp(&prepared.rootfs);
+        let dir = crate::run::template(
+            &self.home,
+            guest,
+            &prepared.rootfs,
+            stamp.as_deref(),
+            &cfg,
+            prepared.layer,
+        );
         // Its pool: the template's warm VMs under its parent (D183).
         let key = PoolKey::new(&dir, &prepared.parent);
         if shards_vmm::snapshot::exists(&dir) {
-            match self.claim(threads, &key, &prepared.rootfs) {
+            match self.claim(threads, &key, &prepared.rootfs, stamp.as_deref()) {
                 Ok(ready) => return Ok(ready),
                 Err(Claim::Failed(e)) => return Err(e),
                 Err(Claim::Broken) => {
@@ -7133,6 +7147,7 @@ impl<D: Disk> Daemon<D> {
             && let Err(e) = crate::run::Origin::of(
                 guest,
                 &prepared.rootfs,
+                stamp.as_deref(),
                 server.is_some(),
                 cfg.gpu,
                 prepared.emulator.as_ref().map(|e| e.root.as_path()),
@@ -7156,7 +7171,7 @@ impl<D: Disk> Daemon<D> {
                 dir: dir.clone(),
                 limit,
             });
-            pool_of(&mut lock(&self.state), &key, &prepared.rootfs)
+            pool_of(&mut lock(&self.state), &key, &prepared.rootfs, stamp.as_deref())
                 .working_set_limit
                 .get_or_insert(limit);
             self.refill_soon(threads, Some(&key));
@@ -7172,6 +7187,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         key: &PoolKey,
         rootfs: &Path,
+        stamp: Option<&str>,
     ) -> Result<Ready, Claim> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut state = lock(&self.state);
@@ -7182,7 +7198,7 @@ impl<D: Disk> Daemon<D> {
             }
         };
         loop {
-            let pool = pool_of(&mut state, key, rootfs);
+            let pool = pool_of(&mut state, key, rootfs, stamp);
             if pool.failures >= MAX_FAILURES {
                 state.pools.remove(key);
                 return Err(Claim::Broken);
@@ -7220,6 +7236,10 @@ impl<D: Disk> Daemon<D> {
                     self.changed.notify_all();
                     return Err(Claim::Failed(e));
                 }
+                continue;
+            }
+            // Found broken as it planned (its root filesystem replaced): said at once.
+            if state.pools.get(key).is_some_and(|p| p.failures >= MAX_FAILURES) {
                 continue;
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -12268,7 +12288,9 @@ mod tests {
         std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
         let rootfs = dir.with_extension("erofs");
         std::fs::write(&rootfs, b"").unwrap();
-        let origin = serde_json::json!({"rootfs": rootfs, "kernel_digest": "", "init_digest": ""});
+        let stamp = shards_image::store::rootfs_stamp(&rootfs);
+        let origin =
+            serde_json::json!({"rootfs": rootfs, "stamp": stamp, "kernel_digest": "", "init_digest": ""});
         std::fs::write(crate::run::Origin::path(dir).unwrap(), origin.to_string()).unwrap();
     }
 
@@ -12285,7 +12307,7 @@ mod tests {
             let dir = t.home.join("template");
             template(&dir);
             let rootfs = dir.with_extension("erofs");
-            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs);
+            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, None);
             t.daemon.age_pools();
             assert!(
                 !lock(&t.daemon.state).pools.contains_key(&own(&dir)),
@@ -12310,6 +12332,43 @@ mod tests {
                     .plan_refill(&mut lock(&t.daemon.state), &own(&bare), true)
                     .is_none()
             );
+        });
+    }
+
+    /// A pool whose root filesystem was replaced since its template was keyed (`pull
+    /// --no-cache`) restores it against the new file no more: its refill plans no VM and
+    /// leaves it broken, for its claims to boot instead.
+    #[test]
+    fn a_pool_restores_no_replaced_root_filesystem() {
+        let mut t = Test::new("replaced");
+        t.daemon.target = 2;
+        t.daemon.warm_max = 8;
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let planned =
+                t.t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&dir), true);
+            assert!(planned.is_some(), "no VM planned");
+            // Replaced as the store replaces it: by rename, its time later.
+            let rootfs = dir.with_extension("erofs");
+            let new = t.home.join("new.erofs");
+            std::fs::write(&new, b"").unwrap();
+            let later = std::fs::metadata(&rootfs).unwrap().modified().unwrap() + Duration::from_secs(2);
+            std::fs::File::options()
+                .write(true)
+                .open(&new)
+                .unwrap()
+                .set_modified(later)
+                .unwrap();
+            std::fs::rename(&new, &rootfs).unwrap();
+            assert!(
+                t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&dir), false)
+                    .is_none(),
+                "a VM planned against the new file"
+            );
+            assert_eq!(lock(&t.daemon.state).pools[&own(&dir)].failures, MAX_FAILURES);
         });
     }
 

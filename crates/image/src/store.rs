@@ -264,6 +264,45 @@ impl Partial {
 }
 
 impl Partial {
+    /// [`Partial::commit`], for a root filesystem built again (`pull --no-cache`), where a
+    /// file at `to` may hold other bytes than it should: one that holds the same bytes is
+    /// kept, as `commit` keeps it, and whatever was made of it holds still; one that holds
+    /// others is replaced, by rename, whoever holds it open keeping its own. Returns whether
+    /// the file was put at `to`.
+    ///
+    /// A replacement is given a later modification time than the file it replaces, set
+    /// before it is made durable, so that [`rootfs_stamp`] tells them apart: what is keyed
+    /// by a root filesystem's name keeps its bytes by that too (run.rs `template`).
+    fn commit_again(mut self, to: &Path) -> Result<bool, Error> {
+        let Some(f) = self.file.take() else {
+            return Ok(false);
+        };
+        let placed = f.into_inner().map_err(|e| Error(e.to_string())).and_then(|file| {
+            let before = match fs::metadata(to) {
+                Ok(before) => Some(before),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            };
+            if let Some(before) = before {
+                if same_bytes(&self.path, to)? {
+                    return Ok(false);
+                }
+                // Two seconds: past the coarsest file times a store may be on (FAT's).
+                let was = before.modified()?;
+                if file.0.metadata()?.modified()? <= was {
+                    file.0.set_modified(was + std::time::Duration::from_secs(2))?;
+                }
+            }
+            sync_durable(&file.0)?;
+            fs::rename(&self.path, to)?;
+            Ok(true)
+        });
+        if !matches!(placed, Ok(true)) {
+            let _ = fs::remove_file(&self.path);
+        }
+        placed
+    }
+
     /// Flushes and syncs the file, then moves it to `to`, replacing what is there.
     fn replace(mut self, to: &Path) -> Result<(), Error> {
         let Some(f) = self.file.take() else {
@@ -2739,8 +2778,11 @@ impl Store {
         self.rootfs_built(layers, limits, ready, false)
     }
 
-    /// [`Store::rootfs_as_ready`], built again whether or not it is here, and put in the
-    /// old one's place whole: `pull --no-cache`.
+    /// [`Store::rootfs_as_ready`], built again whether or not it is here: `pull --no-cache`.
+    /// A file at its name that holds other bytes than the layers stack to (a producer's
+    /// whose rules proved wrong, say, or a file changed on disk) is replaced whole, by
+    /// rename, with a later modification time ([`rootfs_stamp`]), and named by no producer
+    /// then; one that holds the same bytes is kept, with what names its producer.
     pub fn rootfs_again_as_ready(
         &self,
         layers: &[Layer],
@@ -2759,12 +2801,15 @@ impl Store {
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let from = from_path(&self.rootfs_path(&diff_ids)?);
-        self.rootfs_by(layers, limits, again, |room, ingest| {
-            // Stacked from the layers: nothing else wrote it, whatever was named before.
-            match fs::remove_file(&from) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
+        // Stacked from the layers: nothing else wrote it, whatever was named before. Unnamed
+        // once it is in place, so that a crash between leaves the producer named of a file
+        // it never wrote, which its disowning would only build again, never one it wrote
+        // named by nothing.
+        let placed = || match fs::remove_file(&from) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        };
+        self.rootfs_by(layers, limits, again, placed, |room, ingest| {
             let (mut entries, mut metadata) = (0u64, 0u64);
             let mut tree = layer::root();
             let mut tars = Vec::with_capacity(layers.len());
@@ -2837,17 +2882,23 @@ impl Store {
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let from = from_path(&self.rootfs_path(&diff_ids)?);
-        self.rootfs_by(layers, limits, false, |room, ingest| {
-            let mut marker = Partial::create(ingest)?;
-            marker.write_all(producer.as_bytes())?;
-            marker.replace(&from)?;
-            let mut partial = Partial::create(ingest)?;
-            write(&mut Checked {
-                out: &mut partial,
-                room,
-            })?;
-            Ok(partial)
-        })
+        self.rootfs_by(
+            layers,
+            limits,
+            false,
+            || Ok(()),
+            |room, ingest| {
+                let mut marker = Partial::create(ingest)?;
+                marker.write_all(producer.as_bytes())?;
+                marker.replace(&from)?;
+                let mut partial = Partial::create(ingest)?;
+                write(&mut Checked {
+                    out: &mut partial,
+                    room,
+                })?;
+                Ok(partial)
+            },
+        )
     }
 
     /// The root filesystem kept for the layers with `diff_ids`, where it is ([`Store::kept_at`]):
@@ -2980,14 +3031,16 @@ impl Store {
     }
 
     /// The root filesystem of `layers` where it is kept ([`Store::kept_at`]), made by
-    /// `make` unless it is there, while this process holds the store's lock on building
-    /// them: `make` writes it into a file under `ingest`, within `room`, for the place of
-    /// the one stacked of them.
+    /// `make` unless it is there, or `again`, while this process holds the store's lock on
+    /// building them: `make` writes it into a file under `ingest`, within `room`, for the
+    /// place of the one stacked of them, and `placed` follows once it is put there, under
+    /// the lock still. Made `again`, it is put there as [`Partial::commit_again`] puts it.
     fn rootfs_by(
         &self,
         layers: &[Layer],
         limits: &Limits,
         again: bool,
+        placed: impl FnOnce() -> Result<(), Error>,
         make: impl FnOnce(&Room, &Path) -> Result<Partial, Error>,
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
@@ -3003,7 +3056,16 @@ impl Store {
         let ingest = self.root.join("ingest");
         let room = Room::new(&ingest, limits)?;
         let partial = make(&room, &ingest)?;
-        partial.commit(&path)?;
+        let put = if again {
+            partial.commit_again(&path)?
+        } else {
+            // Nothing is there: it was looked for under the lock.
+            partial.commit(&path)?;
+            true
+        };
+        if put {
+            placed()?;
+        }
         drop(building);
         Ok(path)
     }
@@ -3271,6 +3333,48 @@ impl<R: BufRead> Read for Zstd<R> {
 /// reads them.
 pub fn gunzip<R: BufRead>(src: R) -> impl Read {
     flate2::bufread::MultiGzDecoder::new(src)
+}
+
+/// Whether the files at `a` and `b` hold the same bytes.
+fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
+    let (mut a, mut b) = (File::open(a)?, File::open(b)?);
+    if a.metadata()?.len() != b.metadata()?.len() {
+        return Ok(false);
+    }
+    let (mut x, mut y) = (Vec::with_capacity(CHUNK), Vec::with_capacity(CHUNK));
+    loop {
+        x.clear();
+        y.clear();
+        let n = (&mut a).take(CHUNK as u64).read_to_end(&mut x)?;
+        (&mut b).take(CHUNK as u64).read_to_end(&mut y)?;
+        if x != y {
+            return Ok(false);
+        }
+        if n == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// What tells the root filesystem at `rootfs` from another put at its name since: its
+/// length and modification time; none where no file is there. A name keeps its bytes, but
+/// for one `pull --no-cache` finds holding others than its layers stack to, which it
+/// replaces with a later modification time ([`Store::rootfs_again_as_ready`]): what is
+/// made of a root filesystem and keyed by its name, a template (run.rs `template`), is
+/// keyed by this too, and so apart from what was made of the file it replaced.
+pub fn rootfs_stamp(rootfs: &Path) -> Option<String> {
+    let meta = fs::metadata(rootfs).ok().filter(fs::Metadata::is_file)?;
+    let modified = meta.modified().ok()?;
+    let (sign, since) = match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(since) => ("", since),
+        Err(e) => ("-", e.duration()),
+    };
+    Some(format!(
+        "{} {sign}{}.{:09}",
+        meta.len(),
+        since.as_secs(),
+        since.subsec_nanos()
+    ))
 }
 
 /// Where what wrote the root filesystem at `rootfs` is named.
@@ -5013,6 +5117,130 @@ mod tests {
         fs::write(from_path(&stacked), b"snapshot 1").unwrap();
         store.collect().unwrap();
         assert!(!from_path(&stacked).exists(), "named with no image, and kept");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `pull --no-cache` puts the bytes its layers stack to at their root filesystem's name
+    /// where a file there holds others (a producer's whose rules proved wrong, here): by
+    /// rename, so that a reader holding the old file keeps it whole, with a later
+    /// modification time even where the old one's is ahead of the clock, so that what is
+    /// keyed by the name and its stamp (run.rs `template`) is keyed apart, and named by no
+    /// producer then. Nothing is left in `ingest/`.
+    #[test]
+    fn building_again_replaces_a_root_filesystem_of_other_bytes() {
+        let root = temp("again-other");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        let stacked_bytes = fs::read(&stacked).unwrap();
+        fs::remove_file(&stacked).unwrap();
+        let wrong = vec![0x5a; stacked_bytes.len()];
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                out.write_all(&wrong)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(written, stacked);
+        // Its time ahead of the clock: a replacement written now would otherwise be older.
+        let ahead = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        File::options()
+            .write(true)
+            .open(&written)
+            .unwrap()
+            .set_modified(ahead)
+            .unwrap();
+        let before = rootfs_stamp(&written).unwrap();
+        #[cfg(unix)]
+        let mut held = File::open(&written).unwrap();
+
+        let again = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(again, stacked);
+        assert_eq!(fs::read(&again).unwrap(), stacked_bytes, "not replaced");
+        assert_eq!(
+            store.rootfs_producer(&again),
+            None,
+            "named as the producer's still"
+        );
+        let after = rootfs_stamp(&again).unwrap();
+        assert_ne!(after, before, "stamped as the file it replaced");
+        assert!(fs::metadata(&again).unwrap().modified().unwrap() > ahead);
+        #[cfg(unix)]
+        {
+            let mut old = Vec::new();
+            held.read_to_end(&mut old).unwrap();
+            assert_eq!(old, wrong, "written over in place");
+        }
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `pull --no-cache` keeps a root filesystem that holds the bytes its layers stack to,
+    /// the same file, so that what was made of it holds still, and what names its producer
+    /// with it; and builds one where none is.
+    #[test]
+    fn building_again_keeps_a_root_filesystem_of_the_same_bytes() {
+        let root = temp("again-same");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        let stacked_bytes = fs::read(&stacked).unwrap();
+        fs::remove_file(&stacked).unwrap();
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                out.write_all(&stacked_bytes)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(written, stacked);
+        let before = rootfs_stamp(&written).unwrap();
+        #[cfg(unix)]
+        let ino = {
+            use std::os::unix::fs::MetadataExt as _;
+            fs::metadata(&written).unwrap().ino()
+        };
+        let again = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(again, written);
+        assert_eq!(rootfs_stamp(&again).unwrap(), before, "replaced");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(fs::metadata(&again).unwrap().ino(), ino, "replaced");
+        }
+        assert_eq!(store.rootfs_producer(&again).as_deref(), Some("snapshot 1"));
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+
+        fs::remove_file(&again).unwrap();
+        let built = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(built, written);
+        assert!(rootfs_stamp(&built).is_some());
+        assert_eq!(
+            store.rootfs_producer(&built),
+            None,
+            "stacked, so named by nothing"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
