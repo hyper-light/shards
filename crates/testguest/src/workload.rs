@@ -2937,7 +2937,8 @@ fn fs(ops: &[String]) -> i32 {
             // `map2m:PATH:SIGNAL`: its first 8 MiB mapped shared at a 2 MiB boundary and each
             // page read, which a DAX file's mapping takes in 2 MiB pages (fs/dax.c,
             // `dax_iomap_pmd_fault`), SIGNAL.ready made; once the host makes SIGNAL, and its
-            // attributes have aged (VALID_S, a second), the file stat'ed and opened again,
+            // attributes have aged (VALID_S, a second, by CLOCK_MONOTONIC and by the jiffies
+            // FUSE times it by), the file stat'ed and opened again,
             // and each page read again, said as `map2m PATH SIZE`.
             "map2m" => {
                 let (path, signal) = rest.rsplit_once(':').unwrap_or((rest, ""));
@@ -3045,9 +3046,18 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
     // the kernel's jiffies, which FUSE times its attributes' second by (fs/fuse/dir.c,
     // fuse_dentry_revalidate), went against CLOCK_MONOTONIC, which the sleep is timed by:
     // CI's windows-2025 saw a stat 1.2 s past its file's attributes ask nothing of its
-    // share's server (05e9cc57, the server's log).
+    // share's server (05e9cc57, the server's log). So the second is waited out in jiffies
+    // too, 1.1 s of their clock ticks: on CI's windows-2022 at b5113c13 (41959673660) they
+    // went 56 ticks at 100 a second across a sleep of 1,235,378 us, the attributes still
+    // valid by them, and the stat said the size the server had told before the host grew
+    // the file, where a statx asked afresh said the new one.
     let (mono, ticks) = (std::time::Instant::now(), clock_ticks());
+    // SAFETY: sysconf(3) reads a constant.
+    let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).map_err(io::Error::other)?;
     std::thread::sleep(std::time::Duration::from_millis(1100));
+    while clock_ticks().saturating_sub(ticks) < hz.saturating_mul(11) / 10 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let size = std::fs::metadata(path)?.len();
     let slept = (mono.elapsed(), clock_ticks().saturating_sub(ticks));
     // And asked of the file system afresh, whatever the kernel holds of it, said on stderr:
@@ -3067,8 +3077,7 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
         "map2m {path} asked afresh {asked}; slept {} us of CLOCK_MONOTONIC, {} clock ticks of jiffies at {} a second; clocksource {}, clockevent {}",
         slept.0.as_micros(),
         slept.1,
-        // SAFETY: sysconf(3) reads a constant.
-        unsafe { libc::sysconf(libc::_SC_CLK_TCK) },
+        hz,
         clocks[0],
         clocks[1]
     );
