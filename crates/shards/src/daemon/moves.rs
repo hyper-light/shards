@@ -1640,7 +1640,10 @@ mod tests {
         std::fs::create_dir_all(own.join("snapshots/other")).unwrap();
         std::fs::write(own.join("snapshots/other/memory"), b"left").unwrap();
         std::fs::write(own.join("config.json"), b"{}").unwrap();
+        // Sparse as a snapshot's memory is made: NTFS takes every cluster up to a file's end
+        // as it is extended unless it is sparse (PM M349), and all 64 MiB are its data then.
         let sparse = std::fs::File::create(own.join("snapshots/s1/memory")).unwrap();
+        shards_vmm::platform::make_sparse(&sparse).unwrap();
         sparse.set_len(64 << 20).unwrap();
         shards_vmm::platform::write_all_at(&sparse, b"head", 0).unwrap();
         shards_vmm::platform::write_all_at(&sparse, b"tail", (64 << 20) - 4).unwrap();
