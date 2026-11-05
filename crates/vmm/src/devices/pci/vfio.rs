@@ -262,8 +262,16 @@ pub struct Container {
 
 impl Container {
     pub fn open(noiommu: bool) -> Result<Container, String> {
+        let fd = open(Path::new("/dev/vfio/vfio")).map_err(|e| format!("VFIO's /dev/vfio/vfio: {e}"))?;
+        Container::of_file(fd, noiommu, true)
+    }
+
+    /// The container whose descriptor is `fd`, `/dev/vfio/vfio` opened by another process,
+    /// as a confined VM process is handed one (D214); with guest RAM mapped for its first
+    /// group's DMA where `maps_ram`, else following a function's endpoint
+    /// ([`Container::followed`]).
+    pub fn of_file(fd: OwnedFd, noiommu: bool, maps_ram: bool) -> Result<Container, String> {
         let err = |what: &str, e: io::Error| format!("VFIO's {what}: {e}");
-        let fd = open(Path::new("/dev/vfio/vfio")).map_err(|e| err("/dev/vfio/vfio", e))?;
         // SAFETY: VFIO_GET_API_VERSION takes no argument.
         let version = unsafe { ioctl(&fd, VFIO_GET_API_VERSION, 0) }.map_err(|e| err("version", e))?;
         if version != VFIO_API_VERSION {
@@ -285,7 +293,7 @@ impl Container {
             fd: Arc::new(fd),
             noiommu,
             groups: Vec::new(),
-            maps_ram: true,
+            maps_ram,
         })
     }
 
@@ -321,22 +329,31 @@ impl Container {
 
     /// The group at `path`, set in this container and told of to `host`'s hypervisor: the
     /// first sets its IOMMU and maps guest RAM, `memory`, for their DMA; a group set
-    /// already is the same.
-    fn group(&mut self, path: &Path, memory: &GuestMemory, host: &dyn Host) -> Result<Arc<OwnedFd>, String> {
+    /// already is the same. Opened here, or `given`, opened by another process.
+    fn group(
+        &mut self,
+        path: &Path,
+        given: Option<OwnedFd>,
+        memory: &GuestMemory,
+        host: &dyn Host,
+    ) -> Result<Arc<OwnedFd>, String> {
         if let Some((_, fd)) = self.groups.iter().find(|(p, _)| p == path) {
             return Ok(fd.clone());
         }
         let err = |what: &str, e: io::Error| format!("{}: {what}: {e}", path.display());
-        let group = open(path).map_err(|e| {
-            // VFIO opens a group for one process at a time (group.c, vfio_group_fops_open).
-            let hint = match e.raw_os_error() {
-                Some(libc::EBUSY) => {
-                    ": another process has it open, or a device of it through iommufd, as VFIO lets one at a time"
-                }
-                _ => "",
-            };
-            format!("{}: opening it: {e}{hint}", path.display())
-        })?;
+        let group = match given {
+            Some(fd) => fd,
+            None => open(path).map_err(|e| {
+                // VFIO opens a group for one process at a time (group.c, vfio_group_fops_open).
+                let hint = match e.raw_os_error() {
+                    Some(libc::EBUSY) => {
+                        ": another process has it open, or a device of it through iommufd, as VFIO lets one at a time"
+                    }
+                    _ => "",
+                };
+                format!("{}: opening it: {e}{hint}", path.display())
+            })?,
+        };
         host.add_file(group.as_raw_fd())
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let mut status = GroupStatus {
@@ -499,7 +516,13 @@ pub struct Iommufd {
 impl Iommufd {
     pub fn open() -> Result<Iommufd, String> {
         let fd = open(Path::new("/dev/iommu")).map_err(|e| format!("/dev/iommu: {e}"))?;
-        Ok(Iommufd { fd: Arc::new(fd) })
+        Ok(Iommufd::of_file(fd))
+    }
+
+    /// iommufd by its descriptor `fd`, `/dev/iommu` opened by another process, as a
+    /// confined VM process is handed it (D214).
+    pub fn of_file(fd: OwnedFd) -> Iommufd {
+        Iommufd { fd: Arc::new(fd) }
     }
 
     /// A new I/O address space, mapping nothing (IOMMU_IOAS_ALLOC).
@@ -861,9 +884,22 @@ impl Device {
         memory: &GuestMemory,
         host: &dyn Host,
     ) -> Result<Device, String> {
+        Device::open_with(name, group, None, container, memory, host)
+    }
+
+    /// [`Device::open`], its group's node opened here, or `given`, opened by another
+    /// process (D214).
+    pub fn open_with(
+        name: &str,
+        group: &Path,
+        given: Option<OwnedFd>,
+        container: &mut Container,
+        memory: &GuestMemory,
+        host: &dyn Host,
+    ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let group = container
-            .group(group, memory, host)
+            .group(group, given, memory, host)
             .map_err(|e| format!("{name}: {e}"))?;
         let cname = CString::new(name).map_err(|_| format!("{name}: a NUL in its name"))?;
         // SAFETY: VFIO_GROUP_GET_DEVICE_FD reads a NUL-terminated device name.
@@ -879,8 +915,23 @@ impl Device {
     /// cdev"): told of to `host`'s hypervisor, bound to iommufd and attached to `ioas`,
     /// where its DMA's mappings are made; reset where it can be.
     pub fn open_cdev(name: &str, cdev: &Path, ioas: &Ioas, host: &dyn Host) -> Result<Device, String> {
+        Device::open_cdev_with(name, cdev, None, ioas, host)
+    }
+
+    /// [`Device::open_cdev`], its node opened here, or `given`, opened by another process
+    /// (D214).
+    pub fn open_cdev_with(
+        name: &str,
+        cdev: &Path,
+        given: Option<OwnedFd>,
+        ioas: &Ioas,
+        host: &dyn Host,
+    ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {} {what}: {e}", cdev.display());
-        let fd = open(cdev).map_err(|e| err("opening it", e))?;
+        let fd = match given {
+            Some(fd) => fd,
+            None => open(cdev).map_err(|e| err("opening it", e))?,
+        };
         // Before it is bound, as a driver that needs the VM finds it then (vfio.rst).
         host.add_file(fd.as_raw_fd())
             .map_err(|e| format!("{name}: {}: {e}", cdev.display()))?;

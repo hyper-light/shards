@@ -691,6 +691,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,
                 slots: cfg.pci_slots,
+                slots_iommu: cfg.pci_slots_iommu,
             },
         )?;
         let tables = acpi::build(cfg.vcpus, &a.virtio, a.pci.as_ref())?.blobs;

@@ -303,8 +303,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "plug",
-        "disk | volume",
-        "Plug a disk or a directory into a running microVM, mounted where it says",
+        "disk | volume | function",
+        "Plug a disk, a directory or a host's PCI function into a running microVM",
     ),
     (
         "manage",
@@ -330,8 +330,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "unplug",
-        "disk | volume",
-        "Unmount a disk or a directory plugged into a running microVM, and unplug it",
+        "disk | volume | function",
+        "Unplug a disk, a directory or a host's PCI function from a running microVM",
     ),
     (
         "manage",
@@ -587,6 +587,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "plug",
+        "function NAME FUNCTION",
+        "Plug a host's PCI function (as 0000:01:00.0, bound to vfio-pci) into a running microVM started with --device /dev/vfio/vfio, its workload given its VFIO group (Linux)",
+    ),
+    (
+        "manage",
+        "plug",
         "volume NAME SOURCE:PATH[:ro]",
         "Plug a host directory or a volume into a running microVM, mounted at PATH",
     ),
@@ -595,6 +601,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "unplug",
         "disk | volume NAME PATH",
         "Unmount what is plugged in at PATH, and unplug it, refused while anything there is in use",
+    ),
+    (
+        "manage",
+        "unplug",
+        "function NAME FUNCTION",
+        "Unplug a host's PCI function, refused while anything in the microVM holds it open",
     ),
     (
         "manage",

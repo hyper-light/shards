@@ -1,14 +1,20 @@
 //! Devices plugged into a running microVM, and its disks grown (D214): `shards plug disk
 //! MICROVM FILE:PATH[:ro]`, `shards plug volume MICROVM SOURCE:PATH[:ro]`, `shards unplug
-//! disk|volume MICROVM PATH`, and `shards grow disk MICROVM PATH SIZE`.
+//! disk|volume MICROVM PATH`, `shards grow disk MICROVM PATH SIZE`, and on Linux `shards
+//! plug|unplug function MICROVM FUNCTION`.
 //!
 //! Each is asked of the run's VM first (`DEVICE`), which plugs the device into one of its
 //! microVM's PCI slots and answers its place, then of its guest's init (`builtin::DEVICE`),
 //! which finds it by a rescan and mounts it at PATH in the run's workload; let go of the
 //! other way round. A disk is a file holding a file system, made empty and ext4 where
 //! `--size` asks for one that is not there; a volume a host directory or a named volume,
-//! served by a share process of its own. What is plugged into a run is kept as long as it
-//! runs, by the path it is mounted at.
+//! served by a share process of its own. A host's function, bound to vfio-pci, is opened
+//! here, the confined VM process opening no device, and its VFIO files handed to the VM,
+//! which plugs it in behind its microVM's IOMMU; its guest's init gives it to vfio-pci,
+//! makes its group's node in the workload's `/dev` and widens the workload's device
+//! filter to it, as a container given it at its start has it (D44, D154). What is plugged
+//! into a run is kept as long as it runs, by the path it is mounted at, or a function by
+//! its host's name.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,12 +36,26 @@ pub(super) struct Plugged {
     pub address: String,
     /// A disk's file.
     pub file: Option<PathBuf>,
+    /// A host's function's node in the workload and what it was had by.
+    pub function: Option<Function>,
+}
+
+/// A host's function plugged into a run (D214): what its user named it by (its host's
+/// name, or its VFIO device node), its host IOMMU group's node, and the node its workload
+/// has of it, with the device rule that allows that (`c MAJ:MIN rwm`).
+#[derive(Debug, Clone)]
+pub(super) struct Function {
+    pub given: String,
+    pub group: PathBuf,
+    pub node: String,
+    pub rule: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum What {
     Disk,
     Volume,
+    Function,
 }
 
 /// Each running microVM's plugged devices, by container ID, then by path.
@@ -134,11 +154,21 @@ impl<D: Disk> Daemon<D> {
         argv: &[String],
         reply: &Reply<'_>,
     ) -> Option<u8> {
-        use shards_cmdline::commands::{GROW_DISK, PLUG_DISK, PLUG_VOLUME, UNPLUG_DISK, UNPLUG_VOLUME};
+        use shards_cmdline::commands::{
+            GROW_DISK, PLUG_DISK, PLUG_FUNCTION, PLUG_VOLUME, UNPLUG_DISK, UNPLUG_FUNCTION, UNPLUG_VOLUME,
+        };
         use shards_cmdline::flags::{self, Outcome};
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let (command, path, named) = shards_cmdline::commands::find(&words)?;
-        let ours = [&PLUG_DISK, &PLUG_VOLUME, &UNPLUG_DISK, &UNPLUG_VOLUME, &GROW_DISK];
+        let ours = [
+            &PLUG_DISK,
+            &PLUG_VOLUME,
+            &PLUG_FUNCTION,
+            &UNPLUG_DISK,
+            &UNPLUG_VOLUME,
+            &UNPLUG_FUNCTION,
+            &GROW_DISK,
+        ];
         if !ours.iter().any(|c| std::ptr::eq(command, *c)) {
             return None;
         }
@@ -163,10 +193,14 @@ impl<D: Disk> Daemon<D> {
             self.plug(threads, What::Disk, &parsed, reply)
         } else if std::ptr::eq(command, &PLUG_VOLUME) {
             self.plug(threads, What::Volume, &parsed, reply)
+        } else if std::ptr::eq(command, &PLUG_FUNCTION) {
+            self.plug(threads, What::Function, &parsed, reply)
         } else if std::ptr::eq(command, &UNPLUG_DISK) {
             self.unplug(What::Disk, &parsed, reply)
         } else if std::ptr::eq(command, &UNPLUG_VOLUME) {
             self.unplug(What::Volume, &parsed, reply)
+        } else if std::ptr::eq(command, &UNPLUG_FUNCTION) {
+            self.unplug(What::Function, &parsed, reply)
         } else {
             self.grow(&parsed, reply)
         })
@@ -253,12 +287,18 @@ impl<D: Disk> Daemon<D> {
         reply: &Reply<'_>,
     ) -> u8 {
         let (Some(given), Some(spec)) = (parsed.args.first(), parsed.args.get(1)) else {
-            reply.err("shards: plug takes a microVM and SOURCE:PATH");
+            reply.err(match what {
+                What::Function => "shards: plug function takes a microVM and a host's PCI function",
+                _ => "shards: plug takes a microVM and SOURCE:PATH",
+            });
             return 1;
         };
         let done = self.running_own(given).and_then(|id| {
-            self.plug_one(threads, &id, what, spec, parsed.string("size"))
-                .map(|said| (id, said))
+            match what {
+                What::Function => self.plug_function(&id, spec),
+                _ => self.plug_one(threads, &id, what, spec, parsed.string("size")),
+            }
+            .map(|said| (id, said))
         });
         match done {
             Ok((id, said)) => {
@@ -311,14 +351,15 @@ impl<D: Disk> Daemon<D> {
                 (self.ask_device(id, &step, &[opened.as_fd()])?, Some(file))
             }
             What::Volume => (self.plug_share(threads, id, &source, read_only, &name)?, None),
+            What::Function => return Err("a function is plugged in by plug function".into()),
         };
         let (devfn, address) = answer
             .split_once(' ')
             .and_then(|(d, a)| Some((d.parse::<u8>().ok()?, a.to_string())))
             .ok_or_else(|| format!("its microVM answered {answer:?}"))?;
         let mounted = match what {
-            What::Disk => self.guest_device(id, &["disk", &address, &path, flag]),
             What::Volume => self.guest_device(id, &["share", &address, &name, &path, flag]),
+            _ => self.guest_device(id, &["disk", &address, &path, flag]),
         };
         let device = match mounted {
             Ok(device) => device,
@@ -336,6 +377,7 @@ impl<D: Disk> Daemon<D> {
                 devfn,
                 address: address.clone(),
                 file,
+                function: None,
             },
         );
         Ok(if device.is_empty() {
@@ -412,10 +454,18 @@ impl<D: Disk> Daemon<D> {
     /// its microVM's bus.
     pub(super) fn unplug(&self, what: What, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
         let (Some(given), Some(path)) = (parsed.args.first(), parsed.args.get(1)) else {
-            reply.err("shards: unplug takes a microVM and the path a device is plugged in at");
+            reply.err(match what {
+                What::Function => {
+                    "shards: unplug function takes a microVM and a host's PCI function plugged into it"
+                }
+                _ => "shards: unplug takes a microVM and the path a device is plugged in at",
+            });
             return 1;
         };
         let done = self.running_own(given).and_then(|id| {
+            if what == What::Function {
+                return self.unplug_function(&id, path);
+            }
             let plugged = lock(&self.plugged)
                 .get(&id)
                 .and_then(|p| p.get(path.as_str()))
@@ -500,6 +550,202 @@ fn noun(what: What) -> &'static str {
     match what {
         What::Disk => "disk",
         What::Volume => "volume",
+        What::Function => "function",
+    }
+}
+
+/// The device rules of the functions plugged into a run (D214), `plugged`, but the one
+/// plugged in as `but`: what its workload's device filter allows past its run's own.
+fn function_rules(plugged: Option<&HashMap<String, Plugged>>, but: &str) -> Vec<String> {
+    let mut rules: Vec<(&String, String)> = plugged
+        .into_iter()
+        .flatten()
+        .filter(|(name, _)| name.as_str() != but)
+        .filter_map(|(name, p)| Some((name, p.function.as_ref()?.rule.clone())))
+        .collect();
+    rules.sort();
+    rules.into_iter().map(|(_, r)| r).collect()
+}
+
+/// What init's `function` step answers, `PATH c MAJ:MIN`: the node, and its device rule.
+fn node_of(said: &str) -> Option<(String, String)> {
+    let (path, rest) = said.split_once(' ')?;
+    let (kind, numbers) = rest.split_once(' ')?;
+    let (major, minor) = numbers.split_once(':')?;
+    (kind == "c"
+        && path.starts_with("/dev/vfio/")
+        && major.parse::<u32>().is_ok()
+        && minor.parse::<u32>().is_ok())
+    .then(|| (path.to_string(), format!("c {major}:{minor} rwm")))
+}
+
+impl<D: Disk> Daemon<D> {
+    /// `shards plug function MICROVM FUNCTION` (D214, Linux): the host's function FUNCTION,
+    /// by its name (`0000:01:00.0`) or its VFIO device node (`/dev/vfio/devices/vfioN`),
+    /// bound to vfio-pci, plugged into running container `id`'s microVM behind its IOMMU,
+    /// which a microVM booted to take functions has its slots behind ([`crate::run::
+    /// takes_functions`]); its guest's vfio-pci given it, its node made in the workload's
+    /// `/dev` and allowed by its device filter. Refused, as a run's start refuses one
+    /// (`run::vfio_groups`), where its group has no IOMMU, whose DMA reaches all of the
+    /// host's memory. Said as FUNCTION, the node its workload has, and its guest's address.
+    #[cfg(target_os = "linux")]
+    fn plug_function(&self, id: &str, given: &str) -> Result<String, String> {
+        use shards_ipc::fd::AsFd as _;
+        let by_node = given.starts_with("/dev/vfio/devices/");
+        let f = match by_node {
+            true => shards_vmm::vm::Vfio::of_cdev(Path::new(given))?,
+            false => shards_vmm::vm::Vfio::of(given)?,
+        };
+        if f.noiommu {
+            return Err(format!(
+                "{given}: its group {} has no IOMMU, whose DMA reaches all of the host's memory: a microVM is given none",
+                f.group.display()
+            ));
+        }
+        let driver = std::fs::read_link(format!("/sys/bus/pci/devices/{}/driver", f.name)).ok();
+        let bound = driver
+            .as_ref()
+            .and_then(|d| d.file_name())
+            .and_then(|d| d.to_str())
+            .is_some_and(|d| d.ends_with("vfio-pci") || d.ends_with("vfio_pci"));
+        if !bound {
+            return Err(format!(
+                "{given}: not bound to vfio-pci, which its host gives a function a process may take (vfio.rst)"
+            ));
+        }
+        if let Some(plugged) = lock(&self.plugged).get(id) {
+            for (name, p) in plugged {
+                let Some(other) = &p.function else {
+                    continue;
+                };
+                if *name == f.name {
+                    return Err(format!("{given} is plugged into it already"));
+                }
+                if other.group == f.group {
+                    return Err(format!(
+                        "{given}: its IOMMU group {} is plugged into it already, through {name}: a microVM takes a group whole, as its guest does",
+                        f.group.display()
+                    ));
+                }
+            }
+        }
+        let open = |path: &Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(|e| {
+                    // VFIO opens a group for one process at a time (vfio_group_fops_open).
+                    let hint = match e.raw_os_error() {
+                        Some(libc::EBUSY) => {
+                            ": another process has it, as VFIO gives a group to one at a time"
+                        }
+                        _ => "",
+                    };
+                    format!("{}: {e}{hint}", path.display())
+                })
+        };
+        let (node, [first, second]) = match &f.cdev {
+            Some(cdev) => (cdev.clone(), [open(Path::new("/dev/iommu"))?, open(cdev)?]),
+            None => (
+                f.group.clone(),
+                [open(Path::new("/dev/vfio/vfio"))?, open(&f.group)?],
+            ),
+        };
+        let flags = if by_node { device::BY_NODE } else { 0 };
+        let step = [
+            &[device::FUNCTION, flags][..],
+            f.name.as_bytes(),
+            &[0],
+            node.as_os_str().as_encoded_bytes(),
+        ]
+        .concat();
+        let answer = self.ask_device(id, &step, &[first.as_fd(), second.as_fd()])?;
+        // The VM has them now; the host's function is its while it runs.
+        drop((first, second));
+        let (devfn, address) = answer
+            .split_once(' ')
+            .and_then(|(d, a)| Some((d.parse::<u8>().ok()?, a.to_string())))
+            .ok_or_else(|| format!("its microVM answered {answer:?}"))?;
+        let kind = if by_node { "node" } else { "group" };
+        let given_up = |e: String| {
+            let _ = self.guest_device(id, &["release", &address]);
+            let _ = self.ask_device(id, &[device::UNPLUG, devfn], &[]);
+            e
+        };
+        let found = self
+            .guest_device(id, &["function", &address, kind, given])
+            .map_err(given_up)?;
+        let (workload_node, rule) =
+            node_of(&found).ok_or_else(|| given_up(format!("its guest answered {found:?}")))?;
+        let mut rules = function_rules(lock(&self.plugged).get(id), &f.name);
+        rules.push(rule.clone());
+        let mut allow = vec!["allow"];
+        allow.extend(rules.iter().map(String::as_str));
+        if let Err(e) = self.guest_device(id, &allow) {
+            let _ = self.guest_device(id, &["release", &address, &workload_node]);
+            let _ = self.ask_device(id, &[device::UNPLUG, devfn], &[]);
+            return Err(e);
+        }
+        lock(&self.plugged).entry(id.to_string()).or_default().insert(
+            f.name.clone(),
+            Plugged {
+                what: What::Function,
+                devfn,
+                address: address.clone(),
+                file: None,
+                function: Some(Function {
+                    given: given.to_string(),
+                    group: f.group.clone(),
+                    node: workload_node.clone(),
+                    rule,
+                }),
+            },
+        );
+        Ok(format!("{given} {workload_node} {address}"))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn plug_function(&self, _id: &str, given: &str) -> Result<String, String> {
+        Err(format!("{given}: {}", shards_vmm::vm::passthrough_refused()))
+    }
+
+    /// `shards unplug function MICROVM FUNCTION` (D214): its node taken from the
+    /// workload's device filter first, so that nothing opens it anew, then refused,
+    /// the filter as it was, while anything in the microVM holds it or its VFIO device
+    /// open; else its node taken out of the workload's `/dev`, its guest's function let go
+    /// of, and it is taken off the microVM's bus, the host's again.
+    fn unplug_function(&self, id: &str, given: &str) -> Result<(), String> {
+        let (name, plugged) = lock(&self.plugged)
+            .get(id)
+            .and_then(|p| {
+                p.iter().find(|(name, p)| {
+                    p.what == What::Function
+                        && (name.as_str() == given || p.function.as_ref().is_some_and(|f| f.given == given))
+                })
+            })
+            .map(|(name, p)| (name.clone(), p.clone()))
+            .ok_or_else(|| format!("no function {given} is plugged into it"))?;
+        let function = plugged.function.as_ref().ok_or("its node is not known")?;
+        let rest = function_rules(lock(&self.plugged).get(id), &name);
+        let allow = |rules: &[String]| {
+            let mut args = vec!["allow"];
+            args.extend(rules.iter().map(String::as_str));
+            self.guest_device(id, &args)
+        };
+        allow(&rest)?;
+        if let Err(e) = self.guest_device(id, &["release", &plugged.address, &function.node]) {
+            let mut all = rest.clone();
+            all.push(function.rule.clone());
+            let _ = allow(&all);
+            return Err(e);
+        }
+        self.ask_device(id, &[device::UNPLUG, plugged.devfn], &[])?;
+        if let Some(p) = lock(&self.plugged).get_mut(id) {
+            p.remove(&name);
+        }
+        self.container_event(id, "unplug", &[("path", given.to_string())]);
+        Ok(())
     }
 }
 
@@ -526,6 +772,65 @@ mod tests {
         assert_eq!(split_spec("vol:/v"), Ok(("vol".into(), "/v".into(), false)));
         assert!(split_spec("/a/b.img").is_err());
         assert!(split_spec(":/data").is_err());
+    }
+
+    /// Init's answer of a function's node reads as its path and its rule, a VFIO node's
+    /// alone; the rules a run's filter keeps are every other function's, in order.
+    #[test]
+    fn a_functions_node_and_rules_are_read() {
+        assert_eq!(
+            node_of("/dev/vfio/0 c 241:0"),
+            Some(("/dev/vfio/0".into(), "c 241:0 rwm".into()))
+        );
+        assert_eq!(
+            node_of("/dev/vfio/devices/vfio0 c 238:0"),
+            Some(("/dev/vfio/devices/vfio0".into(), "c 238:0 rwm".into()))
+        );
+        for wrong in [
+            "/dev/sda b 8:0",
+            "/dev/vfio/0 c 241",
+            "/dev/vfio/0 c x:0",
+            "/dev/null c 1:3",
+            "",
+        ] {
+            assert_eq!(node_of(wrong), None, "{wrong}");
+        }
+        let function = |name: &str, rule: &str| {
+            (
+                name.to_string(),
+                Plugged {
+                    what: What::Function,
+                    devfn: 0,
+                    address: String::new(),
+                    file: None,
+                    function: Some(Function {
+                        given: name.into(),
+                        group: PathBuf::new(),
+                        node: String::new(),
+                        rule: rule.into(),
+                    }),
+                },
+            )
+        };
+        let mut plugged: HashMap<String, Plugged> = [
+            function("0000:02:00.0", "c 241:1 rwm"),
+            function("0000:01:00.0", "c 241:0 rwm"),
+        ]
+        .into_iter()
+        .collect();
+        plugged.insert(
+            "/data".into(),
+            Plugged {
+                what: What::Disk,
+                devfn: 0,
+                address: String::new(),
+                file: None,
+                function: None,
+            },
+        );
+        assert_eq!(function_rules(Some(&plugged), ""), ["c 241:0 rwm", "c 241:1 rwm"]);
+        assert_eq!(function_rules(Some(&plugged), "0000:01:00.0"), ["c 241:1 rwm"]);
+        assert!(function_rules(None, "").is_empty());
     }
 
     /// Sizes in bytes or 1024's powers.

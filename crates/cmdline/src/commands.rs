@@ -2238,6 +2238,31 @@ pub static PLUG_VOLUME: Command = Command {
     error_prefix: "",
 };
 
+/// `shards plug function` (D214): a host's PCI function plugged into a running microVM,
+/// behind its IOMMU, for its workload to take through VFIO (Linux).
+pub static PLUG_FUNCTION: Command = Command {
+    usage: "MICROVM FUNCTION",
+    about: "Plug a host's PCI function, bound to vfio-pci, into a running microVM, for its workload to take through VFIO",
+    aliases: "shards plug function",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug function` (D214).
+pub static UNPLUG_FUNCTION: Command = Command {
+    usage: "MICROVM FUNCTION",
+    about: "Unplug a host's PCI function from a running microVM, refused while its workload holds it open",
+    aliases: "shards unplug function",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards unplug disk` (D214).
 pub static UNPLUG_DISK: Command = Command {
     usage: "MICROVM PATH",
@@ -2953,6 +2978,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["snapshot", "ls" | "list", ..] => (&SNAPSHOT_LS, "shards list snapshots", 2),
         ["plug", "disk", ..] => (&PLUG_DISK, "shards plug disk", 2),
         ["plug", "volume", ..] => (&PLUG_VOLUME, "shards plug volume", 2),
+        ["plug", "function", ..] => (&PLUG_FUNCTION, "shards plug function", 2),
+        ["unplug", "function", ..] => (&UNPLUG_FUNCTION, "shards unplug function", 2),
         ["unplug", "disk", ..] => (&UNPLUG_DISK, "shards unplug disk", 2),
         ["unplug", "volume", ..] => (&UNPLUG_VOLUME, "shards unplug volume", 2),
         ["grow", "disk", ..] => (&GROW_DISK, "shards grow disk", 2),
