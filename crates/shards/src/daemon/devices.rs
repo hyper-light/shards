@@ -11,7 +11,6 @@
 //! runs, by the path it is mounted at.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -372,7 +371,11 @@ impl<D: Disk> Daemon<D> {
         if !opened.metadata().map_err(|e| e.to_string())?.is_dir() {
             return Err(format!("{}: not a directory", dir.display()));
         }
-        let dirs = [(std::os::fd::OwnedFd::from(opened), read_only, OsString::new())];
+        let dirs = [(
+            std::os::fd::OwnedFd::from(opened),
+            read_only,
+            std::ffi::OsString::new(),
+        )];
         let parent = self.parent_of(id).unwrap_or_default();
         let (link, child) = self.started_shares(threads, &dirs, &parent)?;
         lock(&self.shared_by)

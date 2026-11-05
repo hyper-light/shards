@@ -116,7 +116,7 @@ pub fn main() -> ! {
                         let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
                         // SAFETY: statvfs(3) of a NUL-terminated path into a struct it owns.
                         if unsafe { libc::statvfs(c.as_ptr(), &raw mut st) } == 0 {
-                            (u64::from(st.f_blocks) * u64::from(st.f_frsize)).to_string()
+                            st.f_blocks.saturating_mul(st.f_frsize).to_string()
                         } else {
                             format!("errno {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
                         }
